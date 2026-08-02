@@ -720,6 +720,17 @@ export type AgentMetadata = {
      *
      */
     apply_id?: string;
+    /**
+     * Connection-release rung the apply actually ran on: fpm or
+     * litespeed released the response before the swap, the portable
+     * fallback held the caller's connection for its whole duration.
+     * Diagnostic only, it gates nothing. It exists so a fleet-wide
+     * read can tell which sites upgrade on an attached connection,
+     * which is what keeps that decision evidence-based. Absent from
+     * every agent before 0.61.110.
+     *
+     */
+    rung?: string;
   };
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
@@ -6816,6 +6827,95 @@ export type FleetAgentVersions = {
    *
    */
   self_update_enabled?: boolean;
+  agent_mirror: AgentMirrorStatus;
+};
+
+/**
+ * Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream, WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps agent-releases/latest.json, and therefore latest_version, up to date (GH #322).
+ * This object describes the MIRROR JOB, never the reference version itself. When reference_source is "fleet" or "none" there is no published reference, and these timestamps say nothing about latest_version. When enabled is false there is no mirror at all: on the hosted service the release pipeline writes the manifest directly, so every field here is null and no freshness age should be shown to a user.
+ *
+ */
+export type AgentMirrorStatus = {
+  /**
+   * Whether this install runs the upstream mirror (WPMGR_UPDATE_AGENT_MIRROR_ENABLED). False on the hosted service and by default. Always emitted so a caller never has to treat "absent" and "off" as the same undefined thing.
+   *
+   */
+  enabled: boolean;
+  /**
+   * Server-computed roll-up, so the staleness threshold has exactly one definition. "disabled": mirroring is off, show nothing. "misconfigured": enabled but it cannot run (the last attempt was not_configured), which never self-heals, so it warns immediately. "standing_down": this install publishes its own agent releases and the mirror is correctly refusing to overwrite them (foreign_channel); informational, never a warning. "pending": enabled, no attempt yet. "stale": nothing confirmed against upstream within stale_after_seconds, or never confirmed. "ok": confirmed recently.
+   *
+   */
+  status:
+    | "disabled"
+    | "pending"
+    | "ok"
+    | "stale"
+    | "standing_down"
+    | "misconfigured";
+  /**
+   * The staleness threshold behind status="stale", in seconds (46800, i.e. 13 hours). Emitted so a client can phrase the warning without duplicating the constant. It is two nominal 6h30m cycles (the 6h schedule plus up to 30m jitter) and clears the roughly 12h30m gap a single control-plane restart can legitimately produce (River's periodic-job scheduler recomputes its next run as "now plus the interval" on restart rather than resuming a prior clock), so reaching it means at least two consecutive scheduled runs failed to confirm anything.
+   *
+   */
+  stale_after_seconds: number;
+  /**
+   * When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago must never be reported as "checked ten minutes ago".
+   *
+   */
+  last_success_at: string;
+  /**
+   * Which kind of confirmation last_success_at was. "mirrored": a new release was published here. "current": upstream examined and this install already publishes exactly it. "unchanged": upstream answered 304, which is a genuine confirmation because the conditional request is only sent while the published pointer is unchanged too.
+   *
+   */
+  last_success_outcome: "mirrored" | "current" | "unchanged";
+  /**
+   * The agent version that confirmation established. Carried forward across an "unchanged" (304) result, which by definition names the same release.
+   *
+   */
+  last_success_version: string;
+  /**
+   * When a mirror run last executed, whatever the result. Null when none ever has. Never render an age from this field.
+   *
+   */
+  last_attempt_at: string;
+  /**
+   * "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.
+   *
+   */
+  last_attempt_outcome:
+    | "mirrored"
+    | "current"
+    | "unchanged"
+    | "rate_limited"
+    | "refused"
+    | "foreign_channel"
+    | "upstream_unavailable"
+    | "storage_error"
+    | "not_configured";
+  /**
+   * Short non-secret reason for the last attempt, composed by the control plane and capped at 200 characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.
+   *
+   */
+  last_attempt_detail: string;
+  /**
+   * Whether the last attempt was the scheduled tick or an operator-requested check now.
+   */
+  last_attempt_trigger: "periodic" | "manual";
+  /**
+   * When the mirror last actually PUBLISHED a new release into this install's storage, as opposed to merely confirming the existing one.
+   *
+   */
+  last_mirrored_at: string;
+  last_mirrored_version: string;
+};
+
+export type AgentMirrorCheckQueued = {
+  /**
+   * Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real outcome.
+   *
+   */
+  status: "queued";
+  queued_at: string;
+  message: string;
 };
 
 export type SmtpSettings = {
@@ -10354,6 +10454,52 @@ export type SyncAdminVulnFeedResponses = {
 
 export type SyncAdminVulnFeedResponse =
   SyncAdminVulnFeedResponses[keyof SyncAdminVulnFeedResponses];
+
+export type CheckAgentMirrorNowData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/v1/admin/agent-mirror/check";
+};
+
+export type CheckAgentMirrorNowErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+  /**
+   * agent_mirror_check_in_flight - a mirror run is already queued or running. Nothing was queued.
+   *
+   */
+  409: Error;
+  /**
+   * agent_mirror_rate_limited - the last actual upstream request was less than the mirror's minimum request spacing ago, so nothing was checked and nothing was queued. Carries a Retry-After header, and details with retry_after_seconds (integer), next_check_after (RFC3339) and last_request_at (RFC3339).
+   *
+   */
+  429: Error;
+  /**
+   * agent_mirror_disabled - WPMGR_UPDATE_AGENT_MIRROR_ENABLED is false (the default, and the hosted service's setting), or agent_mirror_not_configured - the mirror is enabled but object storage is not wired, or agent_mirror_not_wired - the admin sub-handler itself was never wired.
+   *
+   */
+  503: Error;
+};
+
+export type CheckAgentMirrorNowError =
+  CheckAgentMirrorNowErrors[keyof CheckAgentMirrorNowErrors];
+
+export type CheckAgentMirrorNowResponses = {
+  /**
+   * A mirror run was queued. Nothing has been checked yet.
+   */
+  202: AgentMirrorCheckQueued;
+};
+
+export type CheckAgentMirrorNowResponse =
+  CheckAgentMirrorNowResponses[keyof CheckAgentMirrorNowResponses];
 
 export type ListAdminAccountsData = {
   body?: never;

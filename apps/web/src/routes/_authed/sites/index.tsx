@@ -975,6 +975,7 @@ function SitesPage() {
               densityState={densityState}
               agentStatusById={agentStatusById}
               agentReferenceSource={fleetAgents?.reference_source}
+              agentReferenceCheck={fleetAgents?.agent_mirror}
               onOpenAutoLogin={autoLogin ? handleOpenAutoLogin : undefined}
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}

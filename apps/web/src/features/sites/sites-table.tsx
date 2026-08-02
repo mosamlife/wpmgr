@@ -31,7 +31,7 @@ import {
   Plus,
 } from "lucide-react";
 import { motion } from "motion/react";
-import type { FleetAgentVersions, Site } from "@wpmgr/api";
+import type { AgentMirrorStatus, FleetAgentVersions, Site } from "@wpmgr/api";
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { TagChip, TagOverflowChip } from "@/features/sites/tag-chip";
@@ -133,6 +133,14 @@ export interface SitesTableProps {
    * behind a real published build). Omit while the rollup is loading.
    */
   agentReferenceSource?: FleetAgentVersions["reference_source"];
+  /**
+   * Freshness of the upstream agent-release mirror (GH #322;
+   * FleetAgentVersions.agent_mirror), threaded only to the Agent column
+   * HEADER's popover (AgentColumnFleetNote): it is a property of the
+   * install-wide comparison, not of any row, so it is never passed to the
+   * per-row AgentStatusChip. Omit while the rollup is loading.
+   */
+  agentReferenceCheck?: AgentMirrorStatus;
   /** Optional click handler for the inline "Log in" (Zap) action. */
   onOpenAutoLogin?: (site: Site) => void;
   /** Optional click handler for the three-dot "More" item entries. */
@@ -744,6 +752,7 @@ export function SitesTable({
   densityState: externalDensityState,
   agentStatusById,
   agentReferenceSource,
+  agentReferenceCheck,
   onOpenAutoLogin,
   onOpenDetail,
   onDisconnect,
@@ -888,6 +897,7 @@ export function SitesTable({
               <TableHeaderRow
                 headerGroups={table.getHeaderGroups()}
                 agentReferenceSource={agentReferenceSource}
+                agentReferenceCheck={agentReferenceCheck}
               />
             )}
             itemContent={(_, row) => <TableBodyCells row={row} />}
@@ -906,11 +916,13 @@ export function SitesTable({
 function TableHeaderRow({
   headerGroups,
   agentReferenceSource,
+  agentReferenceCheck,
 }: {
   headerGroups: ReturnType<
     ReturnType<typeof useReactTable<SiteRow>>["getHeaderGroups"]
   >;
   agentReferenceSource?: FleetAgentVersions["reference_source"];
+  agentReferenceCheck?: AgentMirrorStatus;
 }) {
   return (
     <>
@@ -933,7 +945,10 @@ function TableHeaderRow({
             // button nested in a button is invalid and unreachable.
             const accessory =
               header.column.id === "agent_version" ? (
-                <AgentColumnFleetNote referenceSource={agentReferenceSource} />
+                <AgentColumnFleetNote
+                  referenceSource={agentReferenceSource}
+                  referenceCheck={agentReferenceCheck}
+                />
               ) : null;
             const content = header.isPlaceholder ? null : canSort ? (
               <button

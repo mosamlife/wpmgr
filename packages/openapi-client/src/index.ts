@@ -216,6 +216,8 @@ export {
   // agent release freshness (agent-releases)
   getAgentLatestVersion,
   getFleetAgentVersions,
+  // upstream agent-release mirror manual check (GH #322, admin console)
+  checkAgentMirrorNow,
   // file manager (P1 read-only browser)
   getSiteFilesSettings,
   updateSiteFilesSettings,
@@ -769,8 +771,13 @@ export type {
   FleetAgentCounts,
   FleetAgentSite,
   FleetAgentVersions,
+  AgentMirrorStatus,
   GetAgentLatestVersionResponse,
   GetFleetAgentVersionsResponse,
+  // upstream agent-release mirror manual check (GH #322, admin console)
+  AgentMirrorCheckQueued,
+  CheckAgentMirrorNowError,
+  CheckAgentMirrorNowResponse,
   // file manager (P1 read-only browser)
   FileEntry,
   FileListResult,

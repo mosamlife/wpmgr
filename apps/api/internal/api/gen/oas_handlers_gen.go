@@ -9185,6 +9185,147 @@ func (s *Server) handleChangeMyPasswordRequest(args [0]string, argsEscaped bool,
 	}
 }
 
+// handleCheckAgentMirrorNowRequest handles checkAgentMirrorNow operation.
+//
+// Queues one immediate run of the upstream agent-release mirror
+// (internal/agentupstream), instead of waiting up to six hours for the
+// next scheduled run (GH #322).
+// Superadmin only, and deliberately NOT under /api/v1/fleet. The mirror
+// is ONE PER INSTALL: it fetches one public GitHub release and writes
+// one pair of objects into one bucket. A tenant-scoped trigger would let
+// any org admin on a shared install spend the install's shared
+// unauthenticated GitHub request budget (60 per hour per IP) and
+// rewrite the install's shared release pointer. Mirrors
+// POST /api/v1/admin/vuln-feed/sync, gated for the identical reason (a
+// shared feed, a shared rate limit).
+// A 202 means the run was QUEUED, not that anything was checked. The
+// run may still end rate limited, refused or unavailable; the real
+// outcome appears as agent_mirror.last_attempt_outcome on
+// GET /api/v1/fleet/agents.
+// No request body and no force parameter: bypassing the request
+// spacing would spend the install's shared upstream budget for no new
+// information.
+//
+// POST /api/v1/admin/agent-mirror/check
+func (s *Server) handleCheckAgentMirrorNowRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("checkAgentMirrorNow"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/admin/agent-mirror/check"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), CheckAgentMirrorNowOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err error
+	)
+
+	var rawBody []byte
+
+	var response CheckAgentMirrorNowRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    CheckAgentMirrorNowOperation,
+			OperationSummary: "Check the upstream agent release now (superadmin)",
+			OperationID:      "checkAgentMirrorNow",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params:           middleware.Parameters{},
+			Raw:              r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = struct{}
+			Response = CheckAgentMirrorNowRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			nil,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.CheckAgentMirrorNow(ctx)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.CheckAgentMirrorNow(ctx)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeCheckAgentMirrorNowResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleChmodSiteFileRequest handles chmodSiteFile operation.
 //
 // Issues a `file_chmod` command to the site's agent. The agent validates
@@ -22870,6 +23011,12 @@ func (s *Server) handleGetEmailNotifySettingsRequest(args [0]string, argsEscaped
 // false "outdated". Org-scoped only
 // (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
 // a site-scoped collaborator has no cross-site rollup.
+// agent_mirror (GH #322) reports the freshness of the upstream release
+// mirror, which on a self-hosted install is what keeps latest_version
+// up to date. It describes the mirror job, not the reference version:
+// when reference_source is "fleet" or "none", or when
+// agent_mirror.enabled is false, its timestamps say nothing about
+// latest_version and no freshness age should be shown.
 //
 // GET /api/v1/fleet/agents
 func (s *Server) handleGetFleetAgentVersionsRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

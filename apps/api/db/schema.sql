@@ -4190,3 +4190,59 @@ CREATE POLICY site_tags_tenant_isolation ON site_tags
 CREATE POLICY site_tags_agent ON site_tags
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- ---------------------------------------------------------------------------
+-- agent_mirror_state  (m109, GH #322: upstream agent-release mirror freshness)
+-- ---------------------------------------------------------------------------
+-- ONE ROW PER INSTALL (id=1 enforced by CHECK), NOT per tenant: the mirror
+-- (internal/agentupstream) fetches one public GitHub release and writes into
+-- one bucket, so it has no tenant to key on. No RLS: this table carries no
+-- tenant_id, no PII and no secrets (last_attempt_detail is a curated,
+-- non-secret string, never a raw wrapped error), and follows the same
+-- posture as its structural sibling wordfence_vuln_feed_meta (m79/m102),
+-- read/written via bare pool queries (internal/agentmirror.Repo). Contrast
+-- instance_settings (m80), which DOES carry RLS because it stores encrypted
+-- secrets.
+--
+-- last_attempt_* describes the LAST run that actually executed, whatever its
+-- result; last_success_* advances ONLY when that run CONFIRMED what upstream
+-- publishes (mirrored, current, or an unchanged 304); an operator-facing
+-- "checked N ago" age must always be computed from last_success_at, never
+-- last_attempt_at. last_mirrored_* tracks only the runs that actually
+-- published something new. last_request_at is the persisted, cross-replica
+-- form of the in-process request-spacing clock (agentupstream.Mirror),
+-- letting the manual check endpoint answer honestly from a different
+-- process than the one that will work the job.
+CREATE TABLE agent_mirror_state (
+    id integer PRIMARY KEY DEFAULT 1
+        CONSTRAINT agent_mirror_state_singleton_chk CHECK (id = 1),
+
+    last_request_at timestamptz,
+
+    last_attempt_at      timestamptz,
+    last_attempt_outcome text
+        CONSTRAINT agent_mirror_state_attempt_outcome_chk
+        CHECK (last_attempt_outcome IS NULL OR last_attempt_outcome IN (
+            'mirrored', 'current', 'unchanged', 'rate_limited', 'refused',
+            'foreign_channel', 'upstream_unavailable', 'storage_error',
+            'not_configured'
+        )),
+    last_attempt_detail  text,
+    last_attempt_trigger text
+        CONSTRAINT agent_mirror_state_trigger_chk
+        CHECK (last_attempt_trigger IS NULL OR last_attempt_trigger IN ('periodic', 'manual')),
+
+    last_success_at      timestamptz,
+    last_success_outcome text
+        CONSTRAINT agent_mirror_state_success_outcome_chk
+        CHECK (last_success_outcome IS NULL OR last_success_outcome IN ('mirrored', 'current', 'unchanged')),
+    last_success_version text,
+
+    last_mirrored_at      timestamptz,
+    last_mirrored_version text,
+
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Seed the single row so every write is a plain UPDATE ... WHERE id = 1.
+INSERT INTO agent_mirror_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;

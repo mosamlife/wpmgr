@@ -1,10 +1,13 @@
 package agentrelease
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
@@ -30,7 +33,23 @@ type Handler struct {
 	// A boot-time snapshot is the whole truth here: the flag is process
 	// configuration (env/koanf), never a per-request or database value.
 	selfUpdateEnabled bool
+
+	// mirrorReader/mirrorEnabled back the agent_mirror field on the fleet
+	// rollup (GH #322): the freshness of the upstream agent-release mirror
+	// (internal/agentupstream), wired via SetMirror. Both are zero-valued
+	// (nil / false) until SetMirror is called, which degrades exactly like
+	// disabled mirroring would: status "disabled", every timestamp null.
+	mirrorReader  MirrorStateReader
+	mirrorEnabled bool
 }
+
+// MirrorStateReader reads the persisted upstream-mirror freshness sentinel
+// (GH #322). Satisfied by *agentmirror.Repo.
+type MirrorStateReader interface {
+	Load(ctx context.Context) (agentmirror.State, error)
+}
+
+var _ MirrorStateReader = (*agentmirror.Repo)(nil)
 
 // NewHandler builds the Handler. svc may be nil (see the routes' nil guards
 // below); Register still mounts the routes so a misconfiguration is a clean
@@ -39,6 +58,18 @@ type Handler struct {
 // dispatch on.
 func NewHandler(svc *Service, selfUpdateEnabled bool) *Handler {
 	return &Handler{svc: svc, selfUpdateEnabled: selfUpdateEnabled}
+}
+
+// SetMirror wires the upstream agent-release mirror's freshness state into
+// the fleet rollup response (GH #322). Called once at boot, after
+// internal/agentmirror.Repo is built. reader may be nil (mirror persistence
+// not wired); enabled MUST be the SAME cfg.Update.AgentMirrorEnabled value
+// agentupstream.NewMirrorWorker was given, so the two agree on whether a
+// mirror job exists on this install at all, see agent_mirror's field doc on
+// fleetAgentsResponseDTO.
+func (h *Handler) SetMirror(reader MirrorStateReader, enabled bool) {
+	h.mirrorReader = reader
+	h.mirrorEnabled = enabled
 }
 
 // Register mounts the routes on the authenticated /api/v1 group.
@@ -116,6 +147,57 @@ type fleetAgentsResponseDTO struct {
 	Counts            fleetAgentsCountsDTO `json:"counts"`
 	Sites             []fleetAgentSiteDTO  `json:"sites"`
 	SelfUpdateEnabled bool                 `json:"self_update_enabled"`
+	AgentMirror       agentMirrorDTO       `json:"agent_mirror"`
+}
+
+// agentMirrorDTO reports the freshness of the UPSTREAM AGENT-RELEASE MIRROR
+// (internal/agentupstream), GH #322. This describes the MIRROR JOB, never
+// latest_version/reference_source directly: when reference_source is "fleet"
+// or "none", or when enabled is false, these timestamps say nothing about
+// latest_version and no freshness age should be presented to an operator as
+// the age of the reference, see each field's own doc and Status's doc.
+//
+// Always emitted, never omitted, for the same reason self_update_enabled is:
+// a caller must never have to treat "absent" and "off" as the same undefined
+// thing. Every optional field is a real JSON null when unset, not omitted,
+// deliberately NOT the legacy "unknown" string sentinel latest_version uses,
+// because that sentinel is backwards compatibility on an existing field, and
+// this is a new one.
+type agentMirrorDTO struct {
+	// Enabled mirrors cfg.Update.AgentMirrorEnabled. False on the hosted
+	// service and by default: there, the release pipeline writes the
+	// manifest directly, so there is no mirror run to time and this whole
+	// object reports StatusDisabled with every timestamp null.
+	Enabled bool `json:"enabled"`
+	// Status is the single server-computed roll-up, see
+	// agentmirror.State.Status's doc for the full derivation and ordering.
+	Status string `json:"status"`
+	// StaleAfterSeconds is the threshold behind status="stale"
+	// (agentmirror.StalenessThreshold), emitted so nothing downstream has to
+	// duplicate the constant.
+	StaleAfterSeconds int `json:"stale_after_seconds"`
+
+	// LastSuccessAt/LastSuccessOutcome/LastSuccessVersion: the LAST time this
+	// install CONFIRMED what upstream publishes. LastSuccessAt is the ONLY
+	// field an operator-facing freshness AGE may ever be computed from.
+	LastSuccessAt      *string `json:"last_success_at"`
+	LastSuccessOutcome *string `json:"last_success_outcome"`
+	LastSuccessVersion *string `json:"last_success_version"`
+
+	// LastAttemptAt/LastAttemptOutcome/LastAttemptDetail/LastAttemptTrigger:
+	// the LAST run that actually executed, whatever its result. Never render
+	// an age from LastAttemptAt: a run that failed ten minutes ago must
+	// never be reported as "checked ten minutes ago" (see the module doc).
+	LastAttemptAt      *string `json:"last_attempt_at"`
+	LastAttemptOutcome *string `json:"last_attempt_outcome"`
+	LastAttemptDetail  *string `json:"last_attempt_detail"`
+	LastAttemptTrigger *string `json:"last_attempt_trigger"`
+
+	// LastMirroredAt/LastMirroredVersion: the last time a NEW release was
+	// actually published into this install's storage, as distinct from
+	// merely confirming the existing one.
+	LastMirroredAt      *string `json:"last_mirrored_at"`
+	LastMirroredVersion *string `json:"last_mirrored_version"`
 }
 
 // ---------------------------------------------------------------------------
@@ -176,5 +258,66 @@ func (h *Handler) fleetAgents(c *gin.Context) {
 		},
 		Sites:             sites,
 		SelfUpdateEnabled: h.selfUpdateEnabled,
+		AgentMirror:       h.buildAgentMirrorDTO(c.Request.Context()),
 	})
+}
+
+// buildAgentMirrorDTO reads the persisted mirror state and derives the wire
+// DTO. This dashboard read must never fail the whole /fleet/agents response:
+// a mirror-state read failure (or mirroring never having been wired at all)
+// degrades to the zero agentmirror.State, which Status reports as "pending"
+// once enabled, or "disabled" when not, never an error, matching this
+// package's existing read-only, never-blocks contract (see reader.go).
+func (h *Handler) buildAgentMirrorDTO(ctx context.Context) agentMirrorDTO {
+	dto := agentMirrorDTO{
+		Enabled:           h.mirrorEnabled,
+		StaleAfterSeconds: int(agentmirror.StalenessThreshold / time.Second),
+	}
+	if !h.mirrorEnabled {
+		dto.Status = string(agentmirror.StatusDisabled)
+		return dto
+	}
+
+	var st agentmirror.State
+	if h.mirrorReader != nil {
+		if loaded, err := h.mirrorReader.Load(ctx); err == nil {
+			st = loaded
+		}
+		// A read failure leaves st at its zero value (never attempted),
+		// which is the safe degraded answer, see the doc above.
+	}
+
+	now := time.Now()
+	dto.Status = string(st.Status(h.mirrorEnabled, now))
+	dto.LastSuccessAt = formatMirrorTime(st.LastSuccessAt)
+	dto.LastSuccessOutcome = nonEmptyMirrorString(string(st.LastSuccessOutcome))
+	dto.LastSuccessVersion = nonEmptyMirrorString(st.LastSuccessVersion)
+	dto.LastAttemptAt = formatMirrorTime(st.LastAttemptAt)
+	dto.LastAttemptOutcome = nonEmptyMirrorString(string(st.LastAttemptOutcome))
+	dto.LastAttemptDetail = nonEmptyMirrorString(st.LastAttemptDetail)
+	dto.LastAttemptTrigger = nonEmptyMirrorString(string(st.LastAttemptTrigger))
+	dto.LastMirroredAt = formatMirrorTime(st.LastMirroredAt)
+	dto.LastMirroredVersion = nonEmptyMirrorString(st.LastMirroredVersion)
+	return dto
+}
+
+// formatMirrorTime renders a nullable timestamp as RFC3339 UTC, or nil (a
+// real JSON null) when unset.
+func formatMirrorTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
+// nonEmptyMirrorString returns nil (a real JSON null) for an empty string,
+// and a pointer to s otherwise. Used for every agent_mirror string field so
+// "never recorded" is a genuine null, not an empty string a caller has to
+// treat specially.
+func nonEmptyMirrorString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

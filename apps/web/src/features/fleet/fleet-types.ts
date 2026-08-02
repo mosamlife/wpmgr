@@ -203,3 +203,12 @@ export interface FleetRumResponse {
   worst_offenders: FleetRumOffender[];
   trend: FleetRumTrendPoint[];
 }
+
+// ---------------------------------------------------------------------------
+// Agent-release mirror freshness (GH #322) is NOT redeclared here. The
+// control plane emits it as `FleetAgentVersions.agent_mirror`, typed
+// `AgentMirrorStatus`, and both are generated from the OpenAPI contract
+// (see packages/openapi-client). Consumers should import those directly from
+// "@wpmgr/api" rather than a hand-rolled shape; see
+// features/sites/agent-reference-check.ts for the copy this DTO drives.
+// ---------------------------------------------------------------------------

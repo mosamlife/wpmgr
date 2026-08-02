@@ -1246,6 +1246,11 @@ export const AgentMetadataSchema = {
           description:
             "Opaque per-apply identifier the agent mints when it takes its\napply and stamps into this record. Additive: absent from every\nagent that predates it. The control plane compares it whole\nagainst the apply id it carried on the arm command it sent, so\na version movement can only be credited to the run that caused\nit rather than to some other event that happened to move the\nsite's version.\n",
         },
+        rung: {
+          type: "string",
+          description:
+            "Connection-release rung the apply actually ran on: fpm or\nlitespeed released the response before the swap, the portable\nfallback held the caller's connection for its whole duration.\nDiagnostic only, it gates nothing. It exists so a fleet-wide\nread can tell which sites upgrade on an attached connection,\nwhich is what keeps that decision evidence-based. Absent from\nevery agent before 0.61.110.\n",
+        },
       },
     },
     plugins: {
@@ -12271,7 +12276,13 @@ export const FleetAgentSiteSchema = {
 
 export const FleetAgentVersionsSchema = {
   type: "object",
-  required: ["latest_version", "reference_source", "counts", "sites"],
+  required: [
+    "latest_version",
+    "reference_source",
+    "counts",
+    "sites",
+    "agent_mirror",
+  ],
   properties: {
     latest_version: {
       type: "string",
@@ -12297,6 +12308,143 @@ export const FleetAgentVersionsSchema = {
       type: "boolean",
       description:
         "Whether the control plane's agent self-update channel (the fleet-wide WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance. Absent or false while the channel ships dark. The frontend uses this, together with the operator's role, to decide whether the \"Update WPMgr agent\" bulk action is shown at all, rather than let an operator arm a run the control plane will only refuse.\n",
+    },
+    agent_mirror: {
+      $ref: "#/components/schemas/AgentMirrorStatus",
+    },
+  },
+} as const;
+
+export const AgentMirrorStatusSchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "status",
+    "stale_after_seconds",
+    "last_success_at",
+    "last_success_outcome",
+    "last_success_version",
+    "last_attempt_at",
+    "last_attempt_outcome",
+    "last_attempt_detail",
+    "last_attempt_trigger",
+    "last_mirrored_at",
+    "last_mirrored_version",
+  ],
+  description:
+    'Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream, WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps agent-releases/latest.json, and therefore latest_version, up to date (GH #322).\nThis object describes the MIRROR JOB, never the reference version itself. When reference_source is "fleet" or "none" there is no published reference, and these timestamps say nothing about latest_version. When enabled is false there is no mirror at all: on the hosted service the release pipeline writes the manifest directly, so every field here is null and no freshness age should be shown to a user.\n',
+  properties: {
+    enabled: {
+      type: "boolean",
+      description:
+        'Whether this install runs the upstream mirror (WPMGR_UPDATE_AGENT_MIRROR_ENABLED). False on the hosted service and by default. Always emitted so a caller never has to treat "absent" and "off" as the same undefined thing.\n',
+    },
+    status: {
+      type: "string",
+      enum: [
+        "disabled",
+        "pending",
+        "ok",
+        "stale",
+        "standing_down",
+        "misconfigured",
+      ],
+      description:
+        'Server-computed roll-up, so the staleness threshold has exactly one definition. "disabled": mirroring is off, show nothing. "misconfigured": enabled but it cannot run (the last attempt was not_configured), which never self-heals, so it warns immediately. "standing_down": this install publishes its own agent releases and the mirror is correctly refusing to overwrite them (foreign_channel); informational, never a warning. "pending": enabled, no attempt yet. "stale": nothing confirmed against upstream within stale_after_seconds, or never confirmed. "ok": confirmed recently.\n',
+    },
+    stale_after_seconds: {
+      type: "integer",
+      format: "int32",
+      description:
+        'The staleness threshold behind status="stale", in seconds (46800, i.e. 13 hours). Emitted so a client can phrase the warning without duplicating the constant. It is two nominal 6h30m cycles (the 6h schedule plus up to 30m jitter) and clears the roughly 12h30m gap a single control-plane restart can legitimately produce (River\'s periodic-job scheduler recomputes its next run as "now plus the interval" on restart rather than resuming a prior clock), so reaching it means at least two consecutive scheduled runs failed to confirm anything.\n',
+    },
+    last_success_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        'When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago must never be reported as "checked ten minutes ago".\n',
+    },
+    last_success_outcome: {
+      type: "string",
+      enum: ["mirrored", "current", "unchanged"],
+      nullable: true,
+      description:
+        'Which kind of confirmation last_success_at was. "mirrored": a new release was published here. "current": upstream examined and this install already publishes exactly it. "unchanged": upstream answered 304, which is a genuine confirmation because the conditional request is only sent while the published pointer is unchanged too.\n',
+    },
+    last_success_version: {
+      type: "string",
+      nullable: true,
+      description:
+        'The agent version that confirmation established. Carried forward across an "unchanged" (304) result, which by definition names the same release.\n',
+    },
+    last_attempt_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "When a mirror run last executed, whatever the result. Null when none ever has. Never render an age from this field.\n",
+    },
+    last_attempt_outcome: {
+      type: "string",
+      enum: [
+        "mirrored",
+        "current",
+        "unchanged",
+        "rate_limited",
+        "refused",
+        "foreign_channel",
+        "upstream_unavailable",
+        "storage_error",
+        "not_configured",
+      ],
+      nullable: true,
+      description:
+        '"rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.\n',
+    },
+    last_attempt_detail: {
+      type: "string",
+      nullable: true,
+      description:
+        "Short non-secret reason for the last attempt, composed by the control plane and capped at 200 characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.\n",
+    },
+    last_attempt_trigger: {
+      type: "string",
+      enum: ["periodic", "manual"],
+      nullable: true,
+      description:
+        "Whether the last attempt was the scheduled tick or an operator-requested check now.",
+    },
+    last_mirrored_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "When the mirror last actually PUBLISHED a new release into this install's storage, as opposed to merely confirming the existing one.\n",
+    },
+    last_mirrored_version: {
+      type: "string",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const AgentMirrorCheckQueuedSchema = {
+  type: "object",
+  required: ["status", "queued_at", "message"],
+  properties: {
+    status: {
+      type: "string",
+      enum: ["queued"],
+      description:
+        'Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real outcome.\n',
+    },
+    queued_at: {
+      type: "string",
+      format: "date-time",
+    },
+    message: {
+      type: "string",
     },
   },
 } as const;

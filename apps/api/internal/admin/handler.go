@@ -15,10 +15,11 @@ import (
 
 // Handler serves the superadmin area under /api/v1/admin.
 type Handler struct {
-	svc       *Service
-	pool      *db.Pool
-	auditRec  *audit.Recorder
-	vulnFeedH *vulnFeedAdminHandler // wired via RegisterVulnFeed; nil until wired
+	svc          *Service
+	pool         *db.Pool
+	auditRec     *audit.Recorder
+	vulnFeedH    *vulnFeedAdminHandler    // wired via SetVulnFeed; nil until wired
+	agentMirrorH *agentMirrorAdminHandler // wired via SetAgentMirror; nil until wired
 }
 
 // NewHandler builds an admin Handler.
@@ -62,6 +63,11 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 		vfg.PUT("/key", h.vulnFeedSetKey)
 		vfg.DELETE("/key", h.vulnFeedClearKey)
 		vfg.POST("/sync", h.vulnFeedSync)
+	}
+	// GH #322: manual "check now" for the upstream agent-release mirror
+	// (optional; wired via SetAgentMirror after boot).
+	if h.agentMirrorH != nil {
+		g.POST("/agent-mirror/check", h.agentMirrorCheck)
 	}
 }
 

@@ -1688,6 +1688,183 @@ func (s *AgentMetadata) Validate() error {
 	return nil
 }
 
+func (s *AgentMirrorCheckQueued) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Status.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "status",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AgentMirrorCheckQueuedStatus) Validate() error {
+	switch s {
+	case "queued":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *AgentMirrorStatus) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Status.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "status",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.LastSuccessOutcome.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "last_success_outcome",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.LastAttemptOutcome.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "last_attempt_outcome",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if value, ok := s.LastAttemptTrigger.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "last_attempt_trigger",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s AgentMirrorStatusLastAttemptOutcome) Validate() error {
+	switch s {
+	case "mirrored":
+		return nil
+	case "current":
+		return nil
+	case "unchanged":
+		return nil
+	case "rate_limited":
+		return nil
+	case "refused":
+		return nil
+	case "foreign_channel":
+		return nil
+	case "upstream_unavailable":
+		return nil
+	case "storage_error":
+		return nil
+	case "not_configured":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AgentMirrorStatusLastAttemptTrigger) Validate() error {
+	switch s {
+	case "periodic":
+		return nil
+	case "manual":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AgentMirrorStatusLastSuccessOutcome) Validate() error {
+	switch s {
+	case "mirrored":
+		return nil
+	case "current":
+		return nil
+	case "unchanged":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s AgentMirrorStatusStatus) Validate() error {
+	switch s {
+	case "disabled":
+		return nil
+	case "pending":
+		return nil
+	case "ok":
+		return nil
+	case "stale":
+		return nil
+	case "standing_down":
+		return nil
+	case "misconfigured":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *AgentPresignChunksRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer
@@ -6241,6 +6418,17 @@ func (s *FleetAgentVersions) Validate() error {
 	}(); err != nil {
 		failures = append(failures, validate.FieldError{
 			Name:  "sites",
+			Error: err,
+		})
+	}
+	if err := func() error {
+		if err := s.AgentMirror.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "agent_mirror",
 			Error: err,
 		})
 	}

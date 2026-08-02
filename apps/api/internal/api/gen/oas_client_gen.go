@@ -559,6 +559,29 @@ type Invoker interface {
 	//
 	// POST /auth/me/password
 	ChangeMyPassword(ctx context.Context, request *ChangeMyPasswordReq) (ChangeMyPasswordRes, error)
+	// CheckAgentMirrorNow invokes checkAgentMirrorNow operation.
+	//
+	// Queues one immediate run of the upstream agent-release mirror
+	// (internal/agentupstream), instead of waiting up to six hours for the
+	// next scheduled run (GH #322).
+	// Superadmin only, and deliberately NOT under /api/v1/fleet. The mirror
+	// is ONE PER INSTALL: it fetches one public GitHub release and writes
+	// one pair of objects into one bucket. A tenant-scoped trigger would let
+	// any org admin on a shared install spend the install's shared
+	// unauthenticated GitHub request budget (60 per hour per IP) and
+	// rewrite the install's shared release pointer. Mirrors
+	// POST /api/v1/admin/vuln-feed/sync, gated for the identical reason (a
+	// shared feed, a shared rate limit).
+	// A 202 means the run was QUEUED, not that anything was checked. The
+	// run may still end rate limited, refused or unavailable; the real
+	// outcome appears as agent_mirror.last_attempt_outcome on
+	// GET /api/v1/fleet/agents.
+	// No request body and no force parameter: bypassing the request
+	// spacing would spend the install's shared upstream budget for no new
+	// information.
+	//
+	// POST /api/v1/admin/agent-mirror/check
+	CheckAgentMirrorNow(ctx context.Context) (CheckAgentMirrorNowRes, error)
 	// ChmodSiteFile invokes chmodSiteFile operation.
 	//
 	// Issues a `file_chmod` command to the site's agent. The agent validates
@@ -1386,6 +1409,12 @@ type Invoker interface {
 	// false "outdated". Org-scoped only
 	// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
 	// a site-scoped collaborator has no cross-site rollup.
+	// agent_mirror (GH #322) reports the freshness of the upstream release
+	// mirror, which on a self-hosted install is what keeps latest_version
+	// up to date. It describes the mirror job, not the reference version:
+	// when reference_source is "fleet" or "none", or when
+	// agent_mirror.enabled is false, its timestamps say nothing about
+	// latest_version and no freshness age should be shown.
 	//
 	// GET /api/v1/fleet/agents
 	GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error)
@@ -8938,6 +8967,97 @@ func (c *Client) sendChangeMyPassword(ctx context.Context, request *ChangeMyPass
 
 	stage = "DecodeResponse"
 	result, err := decodeChangeMyPasswordResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CheckAgentMirrorNow invokes checkAgentMirrorNow operation.
+//
+// Queues one immediate run of the upstream agent-release mirror
+// (internal/agentupstream), instead of waiting up to six hours for the
+// next scheduled run (GH #322).
+// Superadmin only, and deliberately NOT under /api/v1/fleet. The mirror
+// is ONE PER INSTALL: it fetches one public GitHub release and writes
+// one pair of objects into one bucket. A tenant-scoped trigger would let
+// any org admin on a shared install spend the install's shared
+// unauthenticated GitHub request budget (60 per hour per IP) and
+// rewrite the install's shared release pointer. Mirrors
+// POST /api/v1/admin/vuln-feed/sync, gated for the identical reason (a
+// shared feed, a shared rate limit).
+// A 202 means the run was QUEUED, not that anything was checked. The
+// run may still end rate limited, refused or unavailable; the real
+// outcome appears as agent_mirror.last_attempt_outcome on
+// GET /api/v1/fleet/agents.
+// No request body and no force parameter: bypassing the request
+// spacing would spend the install's shared upstream budget for no new
+// information.
+//
+// POST /api/v1/admin/agent-mirror/check
+func (c *Client) CheckAgentMirrorNow(ctx context.Context) (CheckAgentMirrorNowRes, error) {
+	res, err := c.sendCheckAgentMirrorNow(ctx)
+	return res, err
+}
+
+func (c *Client) sendCheckAgentMirrorNow(ctx context.Context) (res CheckAgentMirrorNowRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("checkAgentMirrorNow"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/admin/agent-mirror/check"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CheckAgentMirrorNowOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/agent-mirror/check"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCheckAgentMirrorNowResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -17760,6 +17880,12 @@ func (c *Client) sendGetEmailNotifySettings(ctx context.Context) (res GetEmailNo
 // false "outdated". Org-scoped only
 // (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
 // a site-scoped collaborator has no cross-site rollup.
+// agent_mirror (GH #322) reports the freshness of the upstream release
+// mirror, which on a self-hosted install is what keeps latest_version
+// up to date. It describes the mirror job, not the reference version:
+// when reference_source is "fleet" or "none", or when
+// agent_mirror.enabled is false, its timestamps say nothing about
+// latest_version and no freshness age should be shown.
 //
 // GET /api/v1/fleet/agents
 func (c *Client) GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error) {

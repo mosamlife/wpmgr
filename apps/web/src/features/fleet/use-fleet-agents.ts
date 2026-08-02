@@ -1,7 +1,17 @@
 // TanStack Query hooks for the agent-release freshness surfaces.
-// Endpoints: GET /api/v1/agent/latest, GET /api/v1/fleet/agents
+// Endpoints: GET /api/v1/agent/latest, GET /api/v1/fleet/agents.
+//
+// The manual "check now" trigger for the upstream agent-release mirror
+// (GH #322, POST /api/v1/admin/agent-mirror/check) is a superadmin,
+// install-level admin-console action, not a tenant-scoped fleet read; its
+// hook lives in features/admin/use-admin-agent-mirror.ts, alongside the
+// admin console page that renders it
+// (routes/_authed/admin/agent-mirror.tsx).
 
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import {
+  useQuery,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import {
   getAgentLatestVersion,
   getFleetAgentVersions,
@@ -40,11 +50,14 @@ export function useAgentLatestVersion(): UseQueryResult<
 
 /**
  * Tenant-wide agent-version rollup: per-site freshness classification
- * (current | outdated | unknown | ineligible) plus fleet counts. Org-scoped
- * only on the control plane (mirrors the vulnerability-scanner fleet
- * rollup); a site-scoped collaborator gets a 403, which surfaces here as
- * `isError` so callers can degrade gracefully (see `AgentFleetSummaryCard`
- * and the Sites page, both of which hide rather than break on it).
+ * (current | outdated | unknown | ineligible) plus fleet counts, and (GH
+ * #322) the freshness of the upstream agent-release mirror itself
+ * (`agent_mirror`, typed `AgentMirrorStatus`, generated from the OpenAPI
+ * contract). Org-scoped only on the control plane (mirrors the
+ * vulnerability-scanner fleet rollup); a site-scoped collaborator gets a
+ * 403, which surfaces here as `isError` so callers can degrade gracefully
+ * (see `AgentFleetSummaryCard` and the Sites page, both of which hide
+ * rather than break on it).
  */
 export function useFleetAgentVersions(): UseQueryResult<
   FleetAgentVersions,

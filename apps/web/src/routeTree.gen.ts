@@ -58,6 +58,7 @@ import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/re
 import { Route as AuthedClientsClientIdRouteImport } from './routes/_authed/clients/$clientId'
 import { Route as AuthedAdminVulnFeedRouteImport } from './routes/_authed/admin/vuln-feed'
 import { Route as AuthedAdminRevenueRouteImport } from './routes/_authed/admin/revenue'
+import { Route as AuthedAdminAgentMirrorRouteImport } from './routes/_authed/admin/agent-mirror'
 import { Route as AuthedSitesSiteIdIndexRouteImport } from './routes/_authed/sites/$siteId.index'
 import { Route as AuthedClientsClientIdIndexRouteImport } from './routes/_authed/clients/$clientId.index'
 import { Route as AuthedAdminAccountsIndexRouteImport } from './routes/_authed/admin/accounts/index'
@@ -327,6 +328,11 @@ const AuthedAdminRevenueRoute = AuthedAdminRevenueRouteImport.update({
   path: '/revenue',
   getParentRoute: () => AuthedAdminRouteRoute,
 } as any)
+const AuthedAdminAgentMirrorRoute = AuthedAdminAgentMirrorRouteImport.update({
+  id: '/agent-mirror',
+  path: '/agent-mirror',
+  getParentRoute: () => AuthedAdminRouteRoute,
+} as any)
 const AuthedSitesSiteIdIndexRoute = AuthedSitesSiteIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -483,6 +489,7 @@ export interface FileRoutesByFullPath {
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/': typeof PortalIndexRoute
+  '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
@@ -553,6 +560,7 @@ export interface FileRoutesByTo {
   '/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal': typeof PortalIndexRoute
+  '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
@@ -625,6 +633,7 @@ export interface FileRoutesById {
   '/_authed/vulnerabilities': typeof AuthedVulnerabilitiesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/': typeof PortalIndexRoute
+  '/_authed/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/_authed/admin/revenue': typeof AuthedAdminRevenueRoute
   '/_authed/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
   '/_authed/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
@@ -700,6 +709,7 @@ export interface FileRouteTypes {
     | '/vulnerabilities'
     | '/portal/reports'
     | '/portal/'
+    | '/admin/agent-mirror'
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/clients/$clientId'
@@ -770,6 +780,7 @@ export interface FileRouteTypes {
     | '/vulnerabilities'
     | '/portal/reports'
     | '/portal'
+    | '/admin/agent-mirror'
     | '/admin/revenue'
     | '/admin/vuln-feed'
     | '/restores/$restoreId'
@@ -841,6 +852,7 @@ export interface FileRouteTypes {
     | '/_authed/vulnerabilities'
     | '/portal/reports'
     | '/portal/'
+    | '/_authed/admin/agent-mirror'
     | '/_authed/admin/revenue'
     | '/_authed/admin/vuln-feed'
     | '/_authed/clients/$clientId'
@@ -1250,6 +1262,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminRevenueRouteImport
       parentRoute: typeof AuthedAdminRouteRoute
     }
+    '/_authed/admin/agent-mirror': {
+      id: '/_authed/admin/agent-mirror'
+      path: '/agent-mirror'
+      fullPath: '/admin/agent-mirror'
+      preLoaderRoute: typeof AuthedAdminAgentMirrorRouteImport
+      parentRoute: typeof AuthedAdminRouteRoute
+    }
     '/_authed/sites/$siteId/': {
       id: '/_authed/sites/$siteId/'
       path: '/'
@@ -1431,6 +1450,7 @@ const PortalRouteRouteWithChildren = PortalRouteRoute._addFileChildren(
 )
 
 interface AuthedAdminRouteRouteChildren {
+  AuthedAdminAgentMirrorRoute: typeof AuthedAdminAgentMirrorRoute
   AuthedAdminRevenueRoute: typeof AuthedAdminRevenueRoute
   AuthedAdminVulnFeedRoute: typeof AuthedAdminVulnFeedRoute
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
@@ -1439,6 +1459,7 @@ interface AuthedAdminRouteRouteChildren {
 }
 
 const AuthedAdminRouteRouteChildren: AuthedAdminRouteRouteChildren = {
+  AuthedAdminAgentMirrorRoute: AuthedAdminAgentMirrorRoute,
   AuthedAdminRevenueRoute: AuthedAdminRevenueRoute,
   AuthedAdminVulnFeedRoute: AuthedAdminVulnFeedRoute,
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,

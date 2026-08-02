@@ -205,6 +205,10 @@ type ChangeMyPasswordRes interface {
 	changeMyPasswordRes()
 }
 
+type CheckAgentMirrorNowRes interface {
+	checkAgentMirrorNowRes()
+}
+
 type ChmodSiteFileRes interface {
 	chmodSiteFileRes()
 }

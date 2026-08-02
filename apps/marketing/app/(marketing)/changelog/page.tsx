@@ -39,6 +39,25 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.113",
+    date: "2026-08-02",
+    summary: "The fleet Agent column can now show when the upstream release was last confirmed, and superadmins can check for a new release on demand from the admin console instead of waiting up to six hours.",
+    items: [
+      {
+        tag: "Added",
+        text: "The fleet Agent column's header popover can now say when the upstream agent release reference was last confirmed, instead of just showing a plain \"current\" badge computed against a reference that, on a self-hosted install running the upstream mirror, could quietly be hours behind. The fleet agent view now reports the mirror's own status (ok, stale, pending, standing down, misconfigured, or disabled), the time of the last successful confirmation against upstream, and the time and outcome of the last attempt, kept as two separate facts on purpose: a run that failed a few minutes ago is never reported as \"checked a few minutes ago\" while an older confirmation sits behind it unmentioned.",
+      },
+      {
+        tag: "Added",
+        text: "Superadmins on a self-hosted install with the upstream mirror enabled can now trigger an immediate check from the admin console's Agent mirror page instead of waiting for the next scheduled one, up to six hours away. This is an install-level action, not a per-site one, so it lives in the admin console rather than on the Sites page. A request made too soon after the last one is refused honestly with a wait time, never a false success, and a check already in progress is reported as such rather than starting a second one.",
+      },
+      {
+        tag: "Changed",
+        text: "Being rate limited is no longer treated the same as a real failure. The mirror now records and reports that outcome separately from a genuine problem such as the upstream being unreachable or this install's own storage failing to write, so an operator is never alarmed by an outcome that is normal and expected.",
+      },
+    ],
+  },
+  {
     version: "0.61.112",
     date: "2026-07-31",
     summary: "Outgoing email failed entirely when a plugin set a Reply-To in the usual Name <email> form. Fixed, along with three related address bugs.",

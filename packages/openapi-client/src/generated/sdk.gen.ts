@@ -165,6 +165,9 @@ import type {
   ChangeMyPasswordData,
   ChangeMyPasswordErrors,
   ChangeMyPasswordResponses,
+  CheckAgentMirrorNowData,
+  CheckAgentMirrorNowErrors,
+  CheckAgentMirrorNowResponses,
   ChmodSiteFileData,
   ChmodSiteFileErrors,
   ChmodSiteFileResponses,
@@ -2484,6 +2487,41 @@ export const syncAdminVulnFeed = <ThrowOnError extends boolean = false>(
     SyncAdminVulnFeedErrors,
     ThrowOnError
   >({ url: "/api/v1/admin/vuln-feed/sync", ...options });
+
+/**
+ * Check the upstream agent release now (superadmin)
+ *
+ * Queues one immediate run of the upstream agent-release mirror
+ * (internal/agentupstream), instead of waiting up to six hours for the
+ * next scheduled run (GH #322).
+ *
+ * Superadmin only, and deliberately NOT under /api/v1/fleet. The mirror
+ * is ONE PER INSTALL: it fetches one public GitHub release and writes
+ * one pair of objects into one bucket. A tenant-scoped trigger would let
+ * any org admin on a shared install spend the install's shared
+ * unauthenticated GitHub request budget (60 per hour per IP) and
+ * rewrite the install's shared release pointer. Mirrors
+ * POST /api/v1/admin/vuln-feed/sync, gated for the identical reason (a
+ * shared feed, a shared rate limit).
+ *
+ * A 202 means the run was QUEUED, not that anything was checked. The
+ * run may still end rate limited, refused or unavailable; the real
+ * outcome appears as agent_mirror.last_attempt_outcome on
+ * GET /api/v1/fleet/agents.
+ *
+ * No request body and no force parameter: bypassing the request
+ * spacing would spend the install's shared upstream budget for no new
+ * information.
+ *
+ */
+export const checkAgentMirrorNow = <ThrowOnError extends boolean = false>(
+  options?: Options<CheckAgentMirrorNowData, ThrowOnError>,
+) =>
+  (options?.client ?? client).post<
+    CheckAgentMirrorNowResponses,
+    CheckAgentMirrorNowErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/agent-mirror/check", ...options });
 
 /**
  * Paginated, filtered list of tenant accounts (superadmin)
@@ -5133,6 +5171,13 @@ export const getAgentLatestVersion = <ThrowOnError extends boolean = false>(
  * false "outdated". Org-scoped only
  * (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
  * a site-scoped collaborator has no cross-site rollup.
+ *
+ * agent_mirror (GH #322) reports the freshness of the upstream release
+ * mirror, which on a self-hosted install is what keeps latest_version
+ * up to date. It describes the mirror job, not the reference version:
+ * when reference_source is "fleet" or "none", or when
+ * agent_mirror.enabled is false, its timestamps say nothing about
+ * latest_version and no freshness age should be shown.
  *
  */
 export const getFleetAgentVersions = <ThrowOnError extends boolean = false>(
