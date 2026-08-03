@@ -74,7 +74,7 @@ type UpdateRequest struct {
 //	to_version   the version present AFTER the update (the available version on a
 //	             dry run; equals from_version when nothing would change).
 //	status       "succeeded" | "failed" | "skipped" | "would_update" (dry run) |
-//	             "up_to_date".
+//	             "up_to_date" | "site_busy".
 //	snapshot_id  opaque token the agent returns when it took a pre-update
 //	             snapshot; the CP echoes it back in a rollback command.
 //	log          short human-readable detail (WP-CLI output tail / error text).
@@ -95,6 +95,20 @@ const (
 	ItemSkipped     = "skipped"
 	ItemUpToDate    = "up_to_date"
 	ItemWouldUpdate = "would_update" // dry-run only
+
+	// ItemSiteBusy (GH #328) reports that this site's update lock is held by
+	// another in-flight update, rollback, or agent self-update, and the agent
+	// attempted NOTHING for this item: no file was touched, no snapshot was
+	// taken, no plugin/theme state changed. Log carries a short human
+	// sentence explaining why.
+	//
+	// This is the ONE wire contract both the agent and the control plane
+	// build to for GH #328's serialisation piece; do not invent a second
+	// shape for it. The control plane MUST NOT treat this as a terminal
+	// result the way ItemFailed is: see update.Worker.deferForBusySite, which
+	// defers the task back to 'pending' and retries later instead of
+	// recording TaskFailed.
+	ItemSiteBusy = "site_busy"
 )
 
 // UpdateResponse is the agent's response to the `update` command.
@@ -172,18 +186,17 @@ type PingRequest struct{}
 
 // PingResponse is the agent's response to the `ping` command.
 //
-//   ok                    true iff the agent handled the command.
-//   agent_version         the agent's build version string.
-//   php_time              Unix timestamp as seen from PHP (sanity clock check).
-//   wp_cron_disabled      true when DISABLE_WP_CRON is set (explains why
-//                         passive heartbeats stopped; the site is still alive).
-//   heartbeat_overdue_sec seconds since the last WP-Cron-driven heartbeat, or
-//                         null when no heartbeat has been recorded locally.
+//	ok                    true iff the agent handled the command.
+//	agent_version         the agent's build version string.
+//	php_time              Unix timestamp as seen from PHP (sanity clock check).
+//	wp_cron_disabled      true when DISABLE_WP_CRON is set (explains why
+//	                      passive heartbeats stopped; the site is still alive).
+//	heartbeat_overdue_sec seconds since the last WP-Cron-driven heartbeat, or
+//	                      null when no heartbeat has been recorded locally.
 type PingResponse struct {
-	OK                 bool   `json:"ok"`
-	AgentVersion       string `json:"agent_version"`
-	PHPTime            int64  `json:"php_time"`
-	WPCronDisabled     bool   `json:"wp_cron_disabled"`
+	OK                  bool   `json:"ok"`
+	AgentVersion        string `json:"agent_version"`
+	PHPTime             int64  `json:"php_time"`
+	WPCronDisabled      bool   `json:"wp_cron_disabled"`
 	HeartbeatOverdueSec *int64 `json:"heartbeat_overdue_sec"`
 }
-

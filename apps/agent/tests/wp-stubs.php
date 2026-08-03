@@ -581,3 +581,46 @@ if (!function_exists('wp_json_encode')) {
         return json_encode($data, $options, $depth);
     }
 }
+
+if (!function_exists('get_file_data')) {
+    /**
+     * Reads header fields out of the first 8KB of a file, the way WordPress's
+     * own get_file_data() (wp-includes/functions.php) does.
+     *
+     * Faithful enough for the destination verifier's positive header re-read:
+     * same 8KB window, same BOM/line-ending normalisation and the same
+     * per-header regex core uses. Deliberately omits core's `extra_$context`
+     * filter and its _cleanup_header_comment() markdown-link trimming, neither
+     * of which any agent code path depends on.
+     *
+     * @param string                $file    Absolute path to read.
+     * @param array<string,string>  $headers Key => header label.
+     * @param string                $context Unused; mirrors core's signature.
+     * @return array<string,string>
+     */
+    function get_file_data(string $file, array $headers, string $context = ''): array
+    {
+        $handle = @fopen($file, 'r'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- test stub mirroring core's own fopen-based header read
+        if ($handle === false) {
+            $data = '';
+        } else {
+            $data = (string) fread($handle, 8192); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- test stub
+            fclose($handle); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- test stub
+        }
+
+        // Core strips a UTF-8 BOM and normalises line endings before matching.
+        $data = str_replace("\r", "\n", preg_replace('/^\xEF\xBB\xBF/', '', $data) ?? '');
+
+        $out = [];
+        foreach ($headers as $field => $label) {
+            $pattern = '/^(?:[ \t]*<\?php)?[ \t\/*#@]*' . preg_quote($label, '/') . ':(.*)$/mi';
+            if (preg_match($pattern, $data, $match) === 1 && $match[1] !== '') {
+                $out[$field] = trim(preg_replace('/\s*(?:\*\/|\?>).*/', '', $match[1]) ?? '');
+            } else {
+                $out[$field] = '';
+            }
+        }
+
+        return $out;
+    }
+}

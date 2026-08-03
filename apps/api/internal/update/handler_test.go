@@ -79,6 +79,14 @@ func (f *fakeRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) (
 	panic("not used")
 }
 
+func (f *fakeRepo) SiteHasRunningTask(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Duration) (bool, error) {
+	panic("not used")
+}
+
+func (f *fakeRepo) DeferTaskToPending(context.Context, DeferTaskInput) (Task, error) {
+	panic("not used")
+}
+
 // flushableRecorder wraps httptest.ResponseRecorder so gin's writer implements
 // http.Flusher (the events handler checks for it before opening the stream).
 type flushableRecorder struct {

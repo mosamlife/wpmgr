@@ -68,6 +68,35 @@ type Repo interface {
 	// partial unique index (m88) — without this, every future update attempt
 	// for that target would 409 targets_in_flight forever.
 	ListStaleUpdateTasks(ctx context.Context, threshold time.Duration, limit int32) ([]Task, error)
+
+	// SiteHasRunningTask is the GH #328 per-site serialisation pre-check
+	// (INVARIANT R): does SOME OTHER task for this site currently have a
+	// command dispatched and unresolved? Best-effort — the agent's own
+	// site-update lock is the authoritative bound; a missed collision here
+	// just costs one HTTP round trip the agent itself refuses, which the
+	// worker then defers. excludeTaskID excludes the caller's own row (a task
+	// re-checking the gate against itself would always see itself as busy).
+	// holdMax is the staleness bound (see SiteHasRunningUpdateTask's own
+	// comment in db/query/updates.sql for why an over-age 'running' row is
+	// ignored rather than trusted).
+	SiteHasRunningTask(ctx context.Context, tenantID, siteID, excludeTaskID uuid.UUID, holdMax time.Duration) (bool, error)
+
+	// DeferTaskToPending records that a task is WAITING for its site (busy
+	// with another update) rather than talking to it: moves it back to
+	// 'pending' (see DeferUpdateTaskToPending). Returns ErrTaskNotOpen when
+	// the task already reached a terminal state (e.g. a halt raced the
+	// defer); the caller must stop rather than snooze in that case, exactly
+	// like FinishTask.
+	DeferTaskToPending(ctx context.Context, in DeferTaskInput) (Task, error)
+}
+
+// DeferTaskInput is the input to DeferTaskToPending.
+type DeferTaskInput struct {
+	TenantID uuid.UUID
+	TaskID   uuid.UUID
+	// Detail is the operator-facing "waiting: ..." sentence recorded on the
+	// task while it waits for its site.
+	Detail string
 }
 
 // InFlightKey identifies one (site, target) pair that currently has a
@@ -419,6 +448,60 @@ func (r *pgRepo) ListStaleUpdateTasks(ctx context.Context, threshold time.Durati
 		for _, row := range rows {
 			out = append(out, toTask(row))
 		}
+		return nil
+	})
+	return out, err
+}
+
+// SiteHasRunningTask runs in the tenant's RLS scope (the caller already holds
+// a tenant-scoped task, and a cross-tenant collision on the same site is not
+// possible: site_id belongs to exactly one tenant).
+func (r *pgRepo) SiteHasRunningTask(ctx context.Context, tenantID, siteID, excludeTaskID uuid.UUID, holdMax time.Duration) (bool, error) {
+	var busy bool
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		b, err := sqlc.New(tx).SiteHasRunningUpdateTask(ctx, sqlc.SiteHasRunningUpdateTaskParams{
+			SiteID:        siteID,
+			TenantID:      tenantID,
+			ExcludeTaskID: excludeTaskID,
+			HoldMax:       durationToInterval(holdMax),
+		})
+		if err != nil {
+			return domain.Internal("update_site_busy_check_failed", "failed to check for a running update task on this site").WithCause(err)
+		}
+		busy = b
+		return nil
+	})
+	return busy, err
+}
+
+func (r *pgRepo) DeferTaskToPending(ctx context.Context, in DeferTaskInput) (Task, error) {
+	var out Task
+	err := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).DeferUpdateTaskToPending(ctx, sqlc.DeferUpdateTaskToPendingParams{
+			ID:       in.TaskID,
+			TenantID: in.TenantID,
+			Detail:   in.Detail,
+		})
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("update_task_defer_failed", "failed to defer update task to pending").WithCause(err)
+			}
+			// No open (pending|running) row matched: the task already reached
+			// a terminal state, most likely 'cancelled' from a halt racing
+			// this defer. Read it back and report ErrTaskNotOpen, exactly
+			// like FinishTask, so the caller leaves the recorded outcome
+			// alone rather than treating this as an infrastructure error.
+			existing, gerr := sqlc.New(tx).GetUpdateTask(ctx, sqlc.GetUpdateTaskParams{ID: in.TaskID, TenantID: in.TenantID})
+			if gerr != nil {
+				if errors.Is(gerr, pgx.ErrNoRows) {
+					return domain.NotFound("update_task_not_found", "update task not found")
+				}
+				return domain.Internal("update_task_get_failed", "failed to load update task").WithCause(gerr)
+			}
+			out = toTask(existing)
+			return ErrTaskNotOpen
+		}
+		out = toTask(row)
 		return nil
 	})
 	return out, err

@@ -12,6 +12,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AgentMirrorState struct {
+	ID                  int32              `json:"id"`
+	LastRequestAt       pgtype.Timestamptz `json:"last_request_at"`
+	LastAttemptAt       pgtype.Timestamptz `json:"last_attempt_at"`
+	LastAttemptOutcome  *string            `json:"last_attempt_outcome"`
+	LastAttemptDetail   *string            `json:"last_attempt_detail"`
+	LastAttemptTrigger  *string            `json:"last_attempt_trigger"`
+	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
+	LastSuccessOutcome  *string            `json:"last_success_outcome"`
+	LastSuccessVersion  *string            `json:"last_success_version"`
+	LastMirroredAt      pgtype.Timestamptz `json:"last_mirrored_at"`
+	LastMirroredVersion *string            `json:"last_mirrored_version"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+}
+
 type AgentNonce struct {
 	ID        uuid.UUID `json:"id"`
 	SiteID    uuid.UUID `json:"site_id"`

@@ -77,6 +77,34 @@ type fakeAgent struct {
 	// updateResp/rollbackResp override the command responses.
 	updateResp   agentcmd.UpdateResponse
 	rollbackResp agentcmd.RollbackResponse
+
+	// --- GH #328: simulated per-site update lock (see enableSiteLock) ---
+	//
+	// siteLockHold, when > 0, makes the update handler behave like a real
+	// agent holding WP_Upgrader::create_lock for approximately this long per
+	// request: it holds an internal mutex for the duration and refuses any
+	// OVERLAPPING request with an ItemSiteBusy result instead of the
+	// scripted updateResp. concurrentPeak is the high-water mark of
+	// SIMULTANEOUS lock holders observed (must never exceed 1 if the lock is
+	// doing its job); lockWon counts requests that actually acquired it.
+	siteLockHold   time.Duration
+	lockMu         sync.Mutex
+	concurrentNow  int32
+	concurrentPeak int32
+	lockWon        int32
+	busyRefusals   int32
+}
+
+// enableSiteLock turns on the simulated per-site update lock: the update
+// handler now holds an internal mutex for `hold` per request and answers any
+// overlapping request with a single ItemSiteBusy result (ok=false), instead
+// of the scripted updateResp. Used by the GH #328 serialisation tests to
+// prove the control plane's per-site gate plus the agent's own lock actually
+// keep concurrent applies against one site down to exactly one at a time.
+func (fa *fakeAgent) enableSiteLock(hold time.Duration) {
+	fa.mu.Lock()
+	fa.siteLockHold = hold
+	fa.mu.Unlock()
 }
 
 func newFakeAgent(t *testing.T) *fakeAgent {
@@ -100,12 +128,41 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 		fa.updateCmd = cmd
 		expect := fa.expectAud
 		resp := fa.updateResp
+		lockHold := fa.siteLockHold
 		fa.mu.Unlock()
 		// Mirror the real agent: require a Bearer token whose aud == this site's
 		// enrollment id and cmd == the dispatched command. Reject otherwise.
 		if r.Header.Get("Authorization") == "" || (expect != "" && aud != expect) || cmd != "update" {
 			w.WriteHeader(http.StatusForbidden)
 			return
+		}
+		if lockHold > 0 {
+			// Simulated site lock (GH #328): only ONE request may hold it at a
+			// time; an overlapping request is refused as busy exactly like a
+			// real agent whose WP_Upgrader::create_lock failed.
+			if !fa.lockMu.TryLock() {
+				atomic.AddInt32(&fa.busyRefusals, 1)
+				var item agentcmd.UpdateItem
+				if len(req.Items) > 0 {
+					item = req.Items[0]
+				}
+				writeJSON(w, agentcmd.UpdateResponse{OK: false, Results: []agentcmd.ItemResult{{
+					Type: item.Type, Slug: item.Slug, Status: agentcmd.ItemSiteBusy,
+					Log: "another update is running on this site",
+				}}})
+				return
+			}
+			atomic.AddInt32(&fa.lockWon, 1)
+			n := atomic.AddInt32(&fa.concurrentNow, 1)
+			for {
+				old := atomic.LoadInt32(&fa.concurrentPeak)
+				if n <= old || atomic.CompareAndSwapInt32(&fa.concurrentPeak, old, n) {
+					break
+				}
+			}
+			time.Sleep(lockHold)
+			atomic.AddInt32(&fa.concurrentNow, -1)
+			fa.lockMu.Unlock()
 		}
 		writeJSON(w, resp)
 	})

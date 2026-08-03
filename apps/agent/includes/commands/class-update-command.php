@@ -134,6 +134,23 @@
  *     would misreport an item that was never even attempted as a successful
  *     update: worse than the bug being fixed here.
  *
+ *   - Per-site serialisation and the restore-skip (GitHub issue #328): the
+ *     control plane sends one item per command but runs several commands
+ *     against one site at once, and WordPress core is not built for that -
+ *     unpack_package() deletes EVERY entry under wp-content/upgrade/ as its
+ *     first act, so a second upgrader destroys the first one's extracted
+ *     source mid-flight. execute() therefore takes a per-SITE update lock
+ *     (WPMgr\Agent\Support\SiteUpdateLock, core's own create_lock primitive)
+ *     before anything that writes, holds it for the whole command, renews it
+ *     between items and releases it in a `finally`. A command that arrives
+ *     while another update, rollback or agent upgrade holds it is refused with
+ *     the `site_busy` status, having written NOTHING at all. Separately, an
+ *     update that failed BEFORE core could touch the destination no longer
+ *     gets a precautionary restore over a directory nobody modified: see the
+ *     four-combination fail-safe table at the decision site, and
+ *     WPMgr\Agent\Support\UpdateOutcome plus
+ *     WPMgr\Agent\Support\DestinationVerifier for the two independent
+ *     conditions that must both hold before a restore is skipped.
  *   - Self-target refusal (agent-only hardening): an item that resolves to
  *     the agent's own plugin is refused outright, before any detection,
  *     download, staging or write, and reported with the existing `skipped`
@@ -157,7 +174,9 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Support\DebugLog;
+use WPMgr\Agent\Support\DestinationVerifier;
 use WPMgr\Agent\Support\Maintenance;
+use WPMgr\Agent\Support\SiteUpdateLock;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateGuard;
 use WPMgr\Agent\Support\UpdateInFlight;
@@ -201,6 +220,29 @@ final class UpdateCommand implements CommandInterface
      * covers the case where FPM's own timeout IS shorter than this bound.
      */
     private const APPLY_TIME_LIMIT_SECONDS = 900;
+
+    /**
+     * Per-item status meaning "this site is already running another update,
+     * rollback or agent upgrade; NOTHING was attempted and NOTHING on this site
+     * was changed" (GitHub issue #328).
+     *
+     * THE WIRE CONTRACT, pinned and not negotiable here: the control plane
+     * declares the same literal beside its other item statuses and, on seeing
+     * it, defers the task back to `pending` and retries later rather than
+     * producing any terminal status. Renaming this string on one side only is a
+     * build error on the other.
+     *
+     * WHY THE COMMAND STILL ANSWERS ok=false ALONGSIDE IT. An older control
+     * plane does not know this status. Its per-item switch has no case for it,
+     * so an unknown status with ok=TRUE would fall through to the post-probe
+     * branch and could record an update that never ran as SUCCEEDED. With
+     * ok=false the same old control plane takes its "agent rejected the update
+     * command" path and carries the log sentence below to the operator, which
+     * is wrong-but-safe rather than wrong-and-silent. A newer control plane
+     * must therefore test for this status BEFORE it tests ok, and its own
+     * comment says so.
+     */
+    private const STATUS_SITE_BUSY = 'site_busy';
 
     private SnapshotManager $snapshots;
 
@@ -252,63 +294,181 @@ final class UpdateCommand implements CommandInterface
         }
         @ignore_user_abort(true); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- keep applying even if the control plane's HTTP client disconnects mid-request; @-guarded
 
-        // Heal a `.maintenance` flag left behind by a prior interrupted
-        // update/rollback before starting new work, and arm the shutdown
-        // backstop so a fatal error or a timeout mid-update still clears
-        // whatever flag THIS run may leave set.
-        Maintenance::healStaleIfPresent();
-        Maintenance::armShutdownGuard();
-
-        // S4 (adversarial review) — reconcile any update-in-flight marker
-        // left stale by a prior request that was hard-killed severely enough
-        // that UpdateGuard's own shutdown hook never ran (see
-        // UpdateInFlight's class doc). This is the "next agent request" half
-        // of that recovery; HOOK_GC's recurring cron sweep is the other half,
-        // covering the case where no further `update` command ever arrives.
-        //
-        // F2 (final-hardening review) — pass THIS command's own injected
-        // $this->runner, not a fresh ad-hoc UpdateRunner, so the F2
-        // live-directory health check reconcile now performs uses exactly
-        // the same WP-CLI/upgrader-aware runner the rest of this command
-        // does (and so a test that injects a runner double controls this
-        // path too, rather than always hitting a real UpdateRunner).
-        UpdateInFlight::healStaleIfPresent($this->snapshots, $this->runner);
-
-        // C (issue #131 final-hardening review) — invoke the snapshot-store
-        // GC backstop OPPORTUNISTICALLY here too, not cron-only. WP-Cron is
-        // unreliable on `DISABLE_WP_CRON`/dormant sites (no visitor traffic
-        // ever fires the wp-cron.php pseudo-cron request), so an orphaned
-        // snapshot — a since-uninstalled/renamed slug, a crashed capture, or
-        // a stranded restore-failure aside (F4) — could otherwise sit
-        // unreclaimed indefinitely on such a site. Belt-and-suspenders,
-        // mirroring the same reasoning already applied to
-        // UpdateInFlight::healStaleIfPresent() immediately above (which is
-        // itself the opportunistic half of ITS OWN cron-bound counterpart,
-        // gcSweep() — already covered here via the injected $this->snapshots
-        // call above, so it is deliberately NOT invoked a second time
-        // through a fresh, non-injected SnapshotManager instance, which
-        // would both duplicate that work and bypass any snapshot test double
-        // a caller constructed this command with). Cheap: a bounded,
-        // mostly-no-op scandir() pass over a small, self-contained directory.
-        SnapshotManager::gcExpired();
-
+        // GitHub issue #328 - PARSE THE REQUEST BEFORE DOING ANYTHING THAT
+        // WRITES. This ordering is a bug fix, not a tidy-up. `dry_run` used to
+        // be read AFTER Maintenance::healStaleIfPresent() (which deletes a
+        // file), Maintenance::armShutdownGuard() (which registers a callback
+        // that deletes ANY .maintenance flag it finds at shutdown, including
+        // one a human's wp-admin bulk update legitimately owns),
+        // UpdateInFlight::healStaleIfPresent() (which can perform a FULL
+        // DIRECTORY RESTORE) and SnapshotManager::gcExpired() (which deletes).
+        // Every one of those violated the control-plane contract's hard rule
+        // that a dry run must not mutate the site.
         $dryRun   = isset($params['dry_run']) && (bool) $params['dry_run'];
         $snapshot = isset($params['snapshot']) && (bool) $params['snapshot'];
+        $items    = isset($params['items']) && is_array($params['items']) ? $params['items'] : [];
 
-        $items = isset($params['items']) && is_array($params['items']) ? $params['items'] : [];
+        if ($dryRun) {
+            // A dry run reads and reports. It takes NO site lock either: it
+            // mutates no file, activation state or snapshot, so it needs no
+            // mutual exclusion; taking the lock would let a preview BLOCK a
+            // real apply, and being refused by one would make a preview fail
+            // for no benefit. A dry run running alongside somebody else's
+            // apply may read a mid-swap version, which is a slightly wrong
+            // preview and never a wrong mutation.
+            //
+            // THE ONE HONEST EXCEPTION, named rather than hidden: the
+            // availability lookup below forces exactly one fresh WordPress
+            // update check per run, which deletes and repopulates the
+            // update_* transients. That is a write to WordPress's own cache
+            // and it is required for an accurate answer (GitHub issue #208:
+            // reading the cached transient made a real pending update look
+            // up_to_date). It touches no plugin, theme or snapshot.
+            return $this->runItems($items, true, $snapshot);
+        }
 
+        // --- PIECE 2, per-site serialisation (GitHub issue #328) ----------
+        // ONE update writer per site. Taken here, above every mutating call
+        // below, and released in the `finally` at the end of this method: one
+        // command, one hold, never per item. See SiteUpdateLock's class doc for
+        // why the third outcome (UNAVAILABLE) proceeds rather than refuses.
+        $lock = SiteUpdateLock::acquire();
+        if ($lock === SiteUpdateLock::HELD_BY_OTHER) {
+            // NOTHING below this line runs. No flag is healed, no shutdown
+            // guard is armed, no marker is reconciled, no snapshot is GC'd, no
+            // snapshot is captured and no upgrader is constructed. That is the
+            // whole point of refusing here rather than three calls later.
+            return $this->refuseSiteBusy($items);
+        }
+
+        try {
+            // Heal a `.maintenance` flag left behind by a prior interrupted
+            // update/rollback before starting new work, and arm the shutdown
+            // backstop so a fatal error or a timeout mid-update still clears
+            // whatever flag THIS run may leave set.
+            //
+            // BELOW THE LOCK ON PURPOSE (GitHub issue #328): the shutdown
+            // backstop clears ANY .maintenance file it finds, so arming it in a
+            // command that turns out to have nothing to do would silently strip
+            // a flag another in-flight upgrade legitimately owns.
+            Maintenance::healStaleIfPresent();
+            Maintenance::armShutdownGuard();
+
+            // S4 (adversarial review) — reconcile any update-in-flight marker
+            // left stale by a prior request that was hard-killed severely enough
+            // that UpdateGuard's own shutdown hook never ran (see
+            // UpdateInFlight's class doc). This is the "next agent request" half
+            // of that recovery; HOOK_GC's recurring cron sweep is the other half,
+            // covering the case where no further `update` command ever arrives.
+            //
+            // F2 (final-hardening review) — pass THIS command's own injected
+            // $this->runner, not a fresh ad-hoc UpdateRunner, so the F2
+            // live-directory health check reconcile now performs uses exactly
+            // the same WP-CLI/upgrader-aware runner the rest of this command
+            // does (and so a test that injects a runner double controls this
+            // path too, rather than always hitting a real UpdateRunner).
+            UpdateInFlight::healStaleIfPresent($this->snapshots, $this->runner);
+
+            // C (issue #131 final-hardening review) — invoke the snapshot-store
+            // GC backstop OPPORTUNISTICALLY here too, not cron-only. WP-Cron is
+            // unreliable on `DISABLE_WP_CRON`/dormant sites (no visitor traffic
+            // ever fires the wp-cron.php pseudo-cron request), so an orphaned
+            // snapshot — a since-uninstalled/renamed slug, a crashed capture, or
+            // a stranded restore-failure aside (F4) — could otherwise sit
+            // unreclaimed indefinitely on such a site. Belt-and-suspenders,
+            // mirroring the same reasoning already applied to
+            // UpdateInFlight::healStaleIfPresent() immediately above (which is
+            // itself the opportunistic half of ITS OWN cron-bound counterpart,
+            // gcSweep() — already covered here via the injected $this->snapshots
+            // call above, so it is deliberately NOT invoked a second time
+            // through a fresh, non-injected SnapshotManager instance, which
+            // would both duplicate that work and bypass any snapshot test double
+            // a caller constructed this command with). Cheap: a bounded,
+            // mostly-no-op scandir() pass over a small, self-contained directory.
+            //
+            // Losing this on the dry-run path above costs nothing: Plugin
+            // already binds maybeGcSnapshots() to `plugins_loaded` on every
+            // enrolled request, so the sweep still happens cron-independently.
+            SnapshotManager::gcExpired();
+
+            return $this->runItems($items, false, $snapshot);
+        } finally {
+            SiteUpdateLock::release();
+        }
+    }
+
+    /**
+     * Run every requested item, in order, under whatever locking the caller has
+     * already established.
+     *
+     * @param array<int,mixed> $items    Raw request items.
+     * @param bool             $dryRun   Whether to avoid mutation.
+     * @param bool             $snapshot Whether a `core` item should record its version.
+     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}>}
+     */
+    private function runItems(array $items, bool $dryRun, bool $snapshot): array
+    {
         $results = [];
         $ok      = true;
 
         foreach ($items as $item) {
+            if (!$dryRun) {
+                // ONE COMMAND, ONE HOLD, restamped between items so a
+                // legitimately long multi-item command cannot expire its own
+                // lock mid-run. Effective TTL becomes 900s since the last item
+                // boundary. A no-op when this request does not hold the lock.
+                SiteUpdateLock::renew();
+            }
+
             $result = $this->processItem(is_array($item) ? $item : [], $dryRun, $snapshot);
-            if ($result['status'] === 'failed') {
+            if ($result['status'] === 'failed' || $result['status'] === self::STATUS_SITE_BUSY) {
                 $ok = false;
             }
             $results[] = $result;
         }
 
         return ['ok' => $ok, 'results' => $results];
+    }
+
+    /**
+     * Refuse every item in a command that arrived while another update,
+     * rollback or agent upgrade already holds this site's update lock.
+     *
+     * Writes NOTHING. The whole value of this path is that it is reached before
+     * any snapshot, marker, flag or upgrader exists, so a refused command is
+     * indistinguishable on disk from a command that never arrived.
+     *
+     * @param array<int,mixed> $items Raw request items.
+     * @return array{ok:bool,results:array<int,array{type:string,slug:string,from_version:string,to_version:string,status:string,snapshot_id:string,log:string}>}
+     */
+    private function refuseSiteBusy(array $items): array
+    {
+        $heldUntil = SiteUpdateLock::heldUntil();
+        DebugLog::write(
+            'WPMgr Agent: update command refused, this site is already running another update'
+            . ($heldUntil > 0 ? ' (lock self-expires at ' . $heldUntil . ')' : '') . '.'
+        );
+
+        $results = [];
+        foreach ($items as $item) {
+            $entry = is_array($item) ? $item : [];
+            $type  = isset($entry['type']) && is_string($entry['type']) ? $entry['type'] : '';
+            $slug  = isset($entry['slug']) && is_string($entry['slug']) ? $entry['slug'] : '';
+
+            $results[] = $this->result(
+                $type,
+                $slug,
+                '',
+                '',
+                self::STATUS_SITE_BUSY,
+                '',
+                'Another update, rollback or agent upgrade is already running on this site. '
+                . 'Nothing was attempted and nothing on this site was changed. '
+                . 'This will be retried automatically.'
+            );
+        }
+
+        return ['ok' => false, 'results' => $results];
     }
 
     /**
@@ -639,6 +799,98 @@ final class UpdateCommand implements CommandInterface
                 // isComplete() itself threw (S7; never treated as incomplete).
                 $reasonSuffix = $incompleteReason !== '' ? ' Reason: ' . $incompleteReason . '.' : '';
 
+                // --- PIECE 1, the restore-skip (GitHub issue #328) ---------
+                // Do not restore over a directory WordPress provably never
+                // opened. Two independent conditions must BOTH hold, and each
+                // one alone is deliberately not enough:
+                //   (1) the classification, from core's own error code, says
+                //       the failure happened above install_package()'s first
+                //       destructive line (UpdateOutcome's two-table doc);
+                //   (2) the destination, re-read from disk right now, still
+                //       parses as this exact target at its pre-update version
+                //       (DestinationVerifier).
+                // (1) is an inference about code paths. (2) is an observation.
+                // The skip is irreversible in the only sense that matters -
+                // nothing downstream restores what we decline to restore - so
+                // it requires the observation, not merely the absence of a
+                // contradiction.
+                //
+                // FAIL-SAFE DIRECTION, all four combinations:
+                //   classification null (any verification)   -> RESTORE
+                //   classification false, verification null  -> RESTORE
+                //   classification false, verification false -> RESTORE
+                //   classification false, verification true  -> SKIP  (only)
+                // A missing `destination_touched` key (an older or minimal
+                // runner double) reads as null and therefore restores, which
+                // is exactly the pre-0.61.114 behaviour. This release can only
+                // ever NARROW the set of restores, never widen it.
+                $touched  = $applied['destination_touched'] ?? null;
+                $skip     = false;
+                $verify   = ['verdict' => null, 'detail' => 'not evaluated', 'signals' => []];
+                // Whether the gate was even EVALUATED. Every sentence this
+                // decision can add to the item log is gated on this, so a path
+                // it never looked at (a `core` item, an ok apply that only
+                // failed verification, an unclassified failure) keeps the
+                // previous release's log byte for byte.
+                $gateOpen = $type !== 'core' && ($applied['ok'] ?? null) === false && $touched === false;
+
+                if ($gateOpen) {
+                    $payload = $snapshotId !== '' ? $this->snapshots->payloadDir($snapshotId) : '';
+                    $verify  = DestinationVerifier::verify($type, $slug, $fromVersion, $payload);
+                    $skip    = $verify['verdict'] === true;
+
+                    DebugLog::write(
+                        'WPMgr Agent: restore decision for ' . $type . ':' . $slug
+                        . ' classification=untouched code=' . (string) ($applied['failure_code'] ?? '')
+                        . ' stage=' . (string) ($applied['failure_stage'] ?? '')
+                        . ' verification=' . self::verdictLabel($verify['verdict'])
+                        . ' signals=' . implode(',', $verify['signals'])
+                        . ' action=' . ($skip ? 'skip-restore' : 'restore')
+                        . ' detail=' . $verify['detail']
+                    );
+                }
+
+                if ($skip) {
+                    // NO fire(): stand the shutdown backstop down instead, so
+                    // it cannot restore later in this same request's teardown.
+                    // The null-guard is mandatory: $guard is only constructed
+                    // when a snapshot was captured, and this path is reachable
+                    // on any host where capture() failed.
+                    if ($guard !== null) {
+                        $guard->standDown('pre-install failure, destination verified intact');
+                    }
+
+                    // NEVER markSucceeded() here. Its own doc forbids calling
+                    // it before the update it documents has been independently
+                    // verified complete, and it would flip the snapshot's
+                    // reclaim threshold from 72h to 1h - deleting the one piece
+                    // of evidence that would prove this decision wrong, within
+                    // an hour of a FAILED update. markRestoreSkipped() changes
+                    // no TTL.
+                    if ($snapshotId !== '') {
+                        $this->snapshots->markRestoreSkipped(
+                            $snapshotId,
+                            (string) ($applied['failure_code'] ?? ''),
+                            (string) $verify['detail']
+                        );
+                    }
+
+                    $log .= "\n" . self::skipCopy($type, $applied, $verify, $snapshotId !== '');
+                    $log .= $this->reactivationCopy($type, $slug, $applied);
+
+                    // to_version stays at from_version (nothing moved) and the
+                    // status stays `failed` (the update genuinely did not
+                    // happen). Only the restore is skipped.
+                    return $this->result($type, $slug, $fromVersion, $fromVersion, 'failed', $snapshotId, $log);
+                }
+
+                if ($gateOpen && $verify['verdict'] === false) {
+                    $log .= "\n" . self::restoreBecauseModifiedCopy($type, $applied, $verify);
+                } elseif ($gateOpen) {
+                    // Classified untouched, but this host could not confirm it.
+                    $log .= "\n" . self::restoreBecauseUnverifiedCopy($type, $applied, $verify);
+                }
+
                 // Incomplete or failed apply: roll back synchronously right
                 // now rather than waiting on the shutdown backstop, so the
                 // directory is restored before we even respond to the
@@ -698,6 +950,169 @@ final class UpdateCommand implements CommandInterface
             // Never leak internals; keep the per-item failure contained.
             return $this->result($type, $slug, '', '', 'failed', $snapshotId, 'Update error.');
         }
+    }
+
+    /**
+     * OPERATOR COPY, GitHub issue #328. Four outcomes, four sentences.
+     *
+     * HARD INVARIANT, enforced by a test: the string "Update incomplete;
+     * auto-restored the pre-update snapshot." must NEVER appear in an item log
+     * where UpdateGuard::fire() did not run. That sentence used to be the only
+     * thing an operator saw for this whole class of failure, and on the skip
+     * path it would be a plain lie. None of the sentences below contain it, and
+     * the skip path returns before the restore block that does.
+     *
+     * The existing restore wording (D5 below) is left BYTE-IDENTICAL for every
+     * outcome that does not open the new gate, which is what makes this release
+     * auditable as a strict narrowing rather than a rewrite.
+     *
+     *   D1 skipped, snapshot kept   this method
+     *   D2 skipped, no snapshot     this method
+     *   D3 restored, modified       restoreBecauseModifiedCopy()
+     *   D4 restored, unverifiable   restoreBecauseUnverifiedCopy()
+     *   D5 gate closed              unchanged, see the restore block
+     *   D6 reactivation             reactivationCopy()
+     *   D7 site busy                refuseSiteBusy()
+     *
+     * @param string                    $type        'plugin'|'theme'.
+     * @param array<string,mixed>       $applied     The runner's apply outcome.
+     * @param array{verdict:bool|null,detail:string,signals:array<int,string>} $verify Verification result.
+     * @param bool                      $hasSnapshot Whether a snapshot exists to keep.
+     * @return string
+     */
+    private static function skipCopy(string $type, array $applied, array $verify, bool $hasSnapshot): string
+    {
+        $noun = $type === 'theme' ? 'theme' : 'plugin';
+
+        return 'Update did not start. The ' . $noun . ' directory was re-checked after the failure and is '
+            . 'unchanged, so no restore was ' . ($hasSnapshot ? 'performed' : 'needed') . '. '
+            . 'Reason: ' . self::failureReason($applied) . '. '
+            . 'Check: ' . $verify['detail'] . '.'
+            . ($hasSnapshot ? ' The pre-update snapshot was kept.' : '');
+    }
+
+    /**
+     * D3: the classification said the destination was untouched, but the disk
+     * disagreed. Precedes the unchanged restore wording rather than replacing
+     * it, so the operator learns why a precautionary restore ran.
+     *
+     * @param string                    $type    'plugin'|'theme'.
+     * @param array<string,mixed>       $applied The runner's apply outcome.
+     * @param array{verdict:bool|null,detail:string,signals:array<int,string>} $verify Verification result.
+     * @return string
+     */
+    private static function restoreBecauseModifiedCopy(string $type, array $applied, array $verify): string
+    {
+        $noun = $type === 'theme' ? 'theme' : 'plugin';
+
+        return 'The package failed before installing any file (' . self::failureReason($applied) . '), but the '
+            . $noun . ' directory no longer matches its pre-update state (' . $verify['detail'] . '), so the '
+            . 'pre-update snapshot is being restored as a precaution.';
+    }
+
+    /**
+     * D4: the classification said the destination was untouched and this host
+     * could not confirm it either way. Restoring is the safe direction.
+     *
+     * @param string                    $type    'plugin'|'theme'.
+     * @param array<string,mixed>       $applied The runner's apply outcome.
+     * @param array{verdict:bool|null,detail:string,signals:array<int,string>} $verify Verification result.
+     * @return string
+     */
+    private static function restoreBecauseUnverifiedCopy(string $type, array $applied, array $verify): string
+    {
+        $noun = $type === 'theme' ? 'theme' : 'plugin';
+
+        return 'The package failed before installing any file (' . self::failureReason($applied) . '), but this '
+            . 'host could not verify the ' . $noun . ' directory afterwards (' . $verify['detail'] . '), so the '
+            . 'pre-update snapshot is being restored as a precaution.';
+    }
+
+    /**
+     * D6: core silently deactivated an active plugin at `upgrader_pre_install`
+     * and, on a non-cron request, never puts it back. On the skip path the
+     * directory has just been verified byte-consistent, which is the ONLY
+     * condition under which reactivating is a pure undo rather than a new risk:
+     * activate_plugin() includes the plugin file in this process, so it must
+     * never be pointed at a directory we are not sure about.
+     *
+     * Deliberately NOT applied to the restore path in this release: that path's
+     * wording is byte-identical to the previous version, which is what makes
+     * the narrowing auditable. A restored plugin stays deactivated exactly as
+     * it did before, so nothing regresses.
+     *
+     * @param string              $type    'plugin'|'theme'.
+     * @param string              $slug    Sanitized slug.
+     * @param array<string,mixed> $applied The runner's apply outcome.
+     * @return string Empty string, or a leading-newline sentence.
+     */
+    private function reactivationCopy(string $type, string $slug, array $applied): string
+    {
+        if ($type !== 'plugin' || ($applied['may_have_deactivated'] ?? false) !== true) {
+            return '';
+        }
+
+        $wasActive        = ($applied['was_active'] ?? false) === true;
+        $wasNetworkActive = ($applied['was_network_active'] ?? false) === true;
+        if (!$wasActive && !$wasNetworkActive) {
+            return '';
+        }
+
+        // Only act when the plugin really is off now. Without this check a
+        // plugin the operator deliberately disabled between the capture and
+        // here would be switched back on by a failure path.
+        if (!function_exists('is_plugin_active') || \is_plugin_active($slug)) {
+            return '';
+        }
+
+        $reactivated = $this->runner->reactivateIfCoreDeactivated($slug, $wasActive, $wasNetworkActive);
+        if (!$reactivated['attempted']) {
+            return '';
+        }
+
+        if ($reactivated['ok']) {
+            return "\nThe plugin was active before the update and WordPress deactivated it before failing; "
+                . 'it has been reactivated.';
+        }
+
+        return "\nThe plugin was active before the update and WordPress deactivated it before failing; "
+            . 'reactivation FAILED: ' . $reactivated['message'] . '. Reactivate it from the Plugins screen.';
+    }
+
+    /**
+     * The human reason a failure is reported with: the resolved WordPress error
+     * code plus its data when there is any. Both are already length-bounded and
+     * control-character stripped by UpdateOutcome, because both can originate
+     * inside a downloaded package.
+     *
+     * @param array<string,mixed> $applied The runner's apply outcome.
+     * @return string
+     */
+    private static function failureReason(array $applied): string
+    {
+        $code = (string) ($applied['failure_code'] ?? '');
+        $data = (string) ($applied['failure_data'] ?? '');
+
+        if ($code === '') {
+            return 'the update did not complete';
+        }
+
+        return $code . ($data !== '' ? ' (' . $data . ')' : '');
+    }
+
+    /**
+     * Render a three-valued verification verdict for a debug line.
+     *
+     * @param bool|null $verdict Verification verdict.
+     * @return string
+     */
+    private static function verdictLabel(?bool $verdict): string
+    {
+        if ($verdict === true) {
+            return 'verified_intact';
+        }
+
+        return $verdict === false ? 'modified' : 'unverified';
     }
 
     /**

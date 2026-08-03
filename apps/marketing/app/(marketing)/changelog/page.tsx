@@ -39,6 +39,29 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.114",
+    date: "2026-08-03",
+    summary: "Two updates could run against the same site at once and corrupt each other. Updates, rollbacks and agent upgrades on one site are now serialized, and a busy site retries instead of failing.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Two updates could previously be dispatched to the same site at the same time, for example two plugins in the same bulk run, or an update and a rollback overlapping, running more than one WordPress installer against the same site concurrently. WordPress's own updater is not built for that: a second installer can delete files the first one is still relying on, corrupting the update in progress and, in the reported case, leaving the site briefly returning errors. Updates, rollbacks and agent upgrades against one site are now serialized: only one may run at a time, whichever channel it came from.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site that is busy with another update no longer fails the update that was turned away. It is retried automatically, with the reason shown on the task, for up to 6 hours before being recorded as not attempted rather than failed, and being busy never counts as a failure, so it can never fail a canary or halt a fleet-wide rollout by itself.",
+      },
+      {
+        tag: "Fixed",
+        text: "Separately, when an update fails before it has touched anything on the site (for example a corrupted download), the site no longer runs an automatic restore over a plugin or theme directory it never modified.",
+      },
+      {
+        tag: "Changed",
+        text: "Updating many items on one site is correspondingly slower, since they now run strictly one at a time on that site instead of several in parallel: a 30-plugin update on a single site that previously took roughly 6 to 12 minutes now typically takes 15 to 50 minutes. Updates spread across different sites are unaffected and still run in parallel. A brief window also remains at the moment a plugin or theme's files are swapped in, where a page load could in principle hit a half-updated directory, the same exposure WordPress's own core updater has always had for an admin-initiated single-plugin update; with updates now serialized one at a time, that window is measured in microseconds. A single plugin update started from a site's own WordPress dashboard still does not take part in this lock, so that one collision between a fleet-triggered update and a person using wp-admin at the same moment remains open.",
+      },
+    ],
+  },
+  {
     version: "0.61.113",
     date: "2026-08-02",
     summary: "The fleet Agent column can now show when the upstream release was last confirmed, and superadmins can check for a new release on demand from the admin console instead of waiting up to six hours.",

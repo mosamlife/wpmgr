@@ -102,7 +102,9 @@ func (f *fakeCreateRepo) ListInFlightTargets(_ context.Context, tenantID uuid.UU
 	return out, nil
 }
 
-func (f *fakeCreateRepo) GetRun(context.Context, uuid.UUID, uuid.UUID) (Run, error) { panic("not used") }
+func (f *fakeCreateRepo) GetRun(context.Context, uuid.UUID, uuid.UUID) (Run, error) {
+	panic("not used")
+}
 func (f *fakeCreateRepo) ListRuns(context.Context, uuid.UUID, int32, int32) ([]Run, error) {
 	panic("not used")
 }
@@ -131,6 +133,12 @@ func (f *fakeCreateRepo) CountRunningTasksForTenant(context.Context, uuid.UUID) 
 	panic("not used")
 }
 func (f *fakeCreateRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) ([]Task, error) {
+	panic("not used")
+}
+func (f *fakeCreateRepo) SiteHasRunningTask(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Duration) (bool, error) {
+	panic("not used")
+}
+func (f *fakeCreateRepo) DeferTaskToPending(context.Context, DeferTaskInput) (Task, error) {
 	panic("not used")
 }
 

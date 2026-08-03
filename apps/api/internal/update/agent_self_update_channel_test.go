@@ -2535,3 +2535,114 @@ type reaperFakeRepo struct {
 func (f *reaperFakeRepo) ListStaleUpdateTasks(context.Context, time.Duration, int32) ([]Task, error) {
 	return f.stale, nil
 }
+
+// TestADeferredApplyIsNotAFailure pins the GH #328 rule that a site which was
+// merely BUSY must never be scored as a failed upgrade.
+//
+// The shape: the agent waited out its whole budget for the per-site update
+// lock, gave up without attempting anything, and recorded "deferred" for THIS
+// run. Nothing was downloaded, nothing was swapped, nothing on the site
+// changed, so the version never moves and the confirm poll reaches its
+// deadline. Before this rule that deadline produced TaskFailed, which
+// tallyWave counts as Failed and haltReasonFor turns into a halted fleet
+// rollout on the strength of a site that never tried.
+//
+// The correct verdict is TaskSkipped: this site proved nothing either way.
+// It still stops a wave that confirmed no site at all, which is right, but it
+// stops saying nothing was attempted rather than reporting a failure that did
+// not happen.
+func TestADeferredApplyIsNotAFailure(t *testing.T) {
+	const applyID = "deferred-test-apply-id"
+
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+		CronMode: agentcmd.CronModeLoopback, ApplyID: applyID,
+	}
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	args := h.enq.confirms[0]
+	// The version never moves, because the apply never ran.
+	versions.versions[args.SiteID] = agentPlanFrom
+
+	results := &fakeApplyResults{results: map[uuid.UUID]AgentApplyResult{}}
+	results.results[args.SiteID] = AgentApplyResult{
+		Status:      agentApplyDeferred,
+		FromVersion: agentPlanFrom,
+		ToVersion:   agentPlanTarget,
+		Detail:      "The site was busy with another update for the whole wait, so the agent was not upgraded.",
+		At:          time.Now(),
+		ApplyID:     applyID,
+	}
+	h.withApplyResults(results)
+
+	args.DeadlineAt = time.Now().Add(-time.Second)
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status != TaskSkipped {
+		t.Fatalf("status = %q, want %q: a busy site is not a failed upgrade", task.Status, TaskSkipped)
+	}
+	// The distinct unconfirmed error code must NOT be set: this task did not
+	// fail to confirm, it declined to attempt.
+	if task.Error != "" {
+		t.Fatalf("error = %q, want empty: a deferred apply is not an error", task.Error)
+	}
+	if !strings.Contains(task.Detail, "not attempted") {
+		t.Fatalf("detail = %q, want it to say plainly that nothing was attempted", task.Detail)
+	}
+	if strings.Contains(task.Detail, "unconfirmed") {
+		t.Fatalf("detail = %q, must not reuse the unconfirmed wording for a site that never tried", task.Detail)
+	}
+
+	// And the wave must not count it as a failure.
+	tally := tallyWave([]Task{{Status: TaskSkipped}}, WaveRange{Start: 0, End: 1})
+	if tally.Failed != 0 {
+		t.Fatalf("tally.Failed = %d, want 0: a deferred apply must never be counted against a canary", tally.Failed)
+	}
+}
+
+// TestAnUnattributedDeferredRecordStillFails guards the other direction: the
+// skip is only safe because the record is tied to THIS run. A deferred record
+// carrying a DIFFERENT apply id says nothing about this attempt, so the
+// deadline must still fail honestly rather than excusing itself with someone
+// else's record.
+func TestAnUnattributedDeferredRecordStillFails(t *testing.T) {
+	arm := agentcmd.AgentSelfUpdateResponse{
+		Status: agentcmd.SelfUpdateScheduled, FromVersion: agentPlanFrom, ToVersion: agentPlanTarget,
+		CronMode: agentcmd.CronModeLoopback, ApplyID: "this-run",
+	}
+	versions := &fakeVersions{versions: map[uuid.UUID]string{}}
+	h := newAgentHarness(t, 10, &recordingSelfUpdater{resp: arm}, versions, true)
+	if err := h.work(context.Background(), 0); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	args := h.enq.confirms[0]
+	versions.versions[args.SiteID] = agentPlanFrom
+
+	results := &fakeApplyResults{results: map[uuid.UUID]AgentApplyResult{}}
+	results.results[args.SiteID] = AgentApplyResult{
+		Status:  agentApplyDeferred,
+		At:      time.Now(),
+		ApplyID: "some-other-run",
+	}
+	h.withApplyResults(results)
+
+	args.DeadlineAt = time.Now().Add(-time.Second)
+	cw := NewAgentConfirmWorker(h.w)
+	if err := cw.Work(context.Background(), &river.Job[AgentConfirmArgs]{Args: args}); err != nil {
+		t.Fatalf("confirm Work: %v", err)
+	}
+
+	task := h.store.Task(0)
+	if task.Status != TaskFailed {
+		t.Fatalf("status = %q, want %q: an unattributed record must not excuse this run", task.Status, TaskFailed)
+	}
+}

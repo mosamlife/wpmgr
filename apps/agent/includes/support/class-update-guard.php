@@ -131,6 +131,38 @@ final class UpdateGuard
     }
 
     /**
+     * GitHub issue #328 - disarm this guard because THERE IS NOTHING TO ROLL
+     * BACK, which is a different fact from markClean()'s "the apply was
+     * verified good".
+     *
+     * The one caller is UpdateCommand's restore-skip decision: an update that
+     * failed BEFORE WordPress ever touched the destination (UpdateOutcome said
+     * so from the error code) AND whose destination was then positively
+     * re-read as unchanged (DestinationVerifier said so from the disk). The
+     * shutdown backstop must not fire for such an item, because firing it would
+     * perform a non-atomic restore over a directory nobody modified.
+     *
+     * Deliberately a DISTINCT NAME rather than an extra call to markClean():
+     * an operator reading a debug log must be able to tell "we kept a good
+     * update" apart from "we declined to undo a failure that changed nothing".
+     * The side effects are identical on purpose (clear the in-flight marker so
+     * the out-of-band reconcile does not later restore what this decision just
+     * declined to restore), so any future change to one must consider the other.
+     *
+     * @param string $reason Short, non-secret explanation for the debug log.
+     * @return void
+     */
+    public function standDown(string $reason): void
+    {
+        $this->clean = true;
+        UpdateInFlight::clear($this->type, $this->slug);
+        DebugLog::write(
+            'WPMgr Agent: update guard stood down for ' . $this->type . ':' . $this->slug
+            . ' (no restore performed): ' . $reason
+        );
+    }
+
+    /**
      * Restore the snapshot unless the apply was already confirmed clean, or
      * this guard has already fired once. Safe to call from a real PHP
      * shutdown handler (return value is simply unused there) or

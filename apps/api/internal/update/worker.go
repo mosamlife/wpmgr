@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -103,6 +104,11 @@ type Worker struct {
 	// schedule (probeRetryDelays). Nil uses the default. Tests set this to a
 	// tiny schedule so the retry loop does not actually sleep ~21s.
 	probeDelays []time.Duration
+	// busyBackoff overrides siteBusyBackoff's default jittered schedule. Nil
+	// uses the default. Tests set this to a tiny fixed delay (see
+	// SetSiteBusyBackoff) so a busy-site retry test does not actually sleep
+	// the production 5s-60s window.
+	busyBackoff func(Task) time.Duration
 	// agent holds the agent self-update channel's dependencies and its
 	// fleet-wide kill switch. The ZERO VALUE IS DISABLED: a deployment that
 	// never calls SetAgentSelfUpdate never sends an agent self-update command
@@ -291,6 +297,21 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return w.refuseAgentSelfUpdate(ctx, task)
 	}
 
+	// GH #328 per-site serialisation pre-check (INVARIANT R): is another
+	// command already dispatched and unresolved against this same site? Best
+	// effort — the agent's own site-update lock is the authoritative bound;
+	// this just avoids the wasted HTTP round trip on the common case. Placed
+	// AFTER the agent-plugin re-check (so a mis-targeted task is still
+	// refused outright rather than deferred) and BEFORE MarkTaskRunning (so a
+	// task the gate defers never transitions to 'running' at all — the row is
+	// still 'pending' here, and DeferTaskToPending's status write is then a
+	// no-op that only updates the wait bookkeeping). See
+	// SiteHasRunningUpdateTask's own comment in db/query/updates.sql for the
+	// no-deadlock proof and why agent-target rows are excluded.
+	if busy, gerr := w.repo.SiteHasRunningTask(ctx, a.TenantID, task.SiteID, a.TaskID, siteWriterHoldMax); gerr == nil && busy {
+		return w.deferForBusySite(ctx, task, "another update is running on this site")
+	}
+
 	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID)
 	if err != nil {
 		return err
@@ -334,6 +355,123 @@ func (w *Worker) refuseAgentSelfUpdate(ctx context.Context, task Task) error {
 	return w.finish(ctx, task, TaskSkipped, task.FromVersion, "", "the site agent updates itself over its own signed channel", "")
 }
 
+// ----------------------------------------------------------------------------
+// GH #328 per-site serialisation: the busy-site gate and its one handler.
+// ----------------------------------------------------------------------------
+
+// siteWriterHoldMax bounds how long a 'running' non-agent update_tasks row is
+// trusted as evidence of a live writer by the per-site serialisation gate
+// (SiteHasRunningUpdateTask). A row whose command went out longer ago than
+// this cannot have a live worker behind it, because River cancels the job's
+// context at its own job timeout (see Worker.Timeout / DeriveApplyJobTimeout,
+// about 13m52s on production defaults) whether the site answers or not. 20
+// minutes adds margin over that for scheduling/clock skew and stays
+// comfortably under staleTaskThreshold (45m), so the gate stops trusting a
+// row strictly before the periodic reaper would terminalize it. Ignoring an
+// over-age row only makes the gate MORE PERMISSIVE (it lets a sibling
+// dispatch a command the gate would otherwise have deferred), never less,
+// which is safe: the agent's own site-update lock is the authoritative bound
+// in every case, this gate is only a round-trip optimisation.
+const siteWriterHoldMax = 20 * time.Minute
+
+const (
+	// siteBusyBackoffMin/Max bound the jittered snooze between busy-site
+	// retries. See siteBusyBackoff.
+	siteBusyBackoffMin = 5 * time.Second
+	siteBusyBackoffMax = 60 * time.Second
+
+	// siteBusyMaxWait is the AUTHORITATIVE bound on how long a task may keep
+	// being deferred for a busy site, measured from the task's own CreatedAt
+	// (wall clock, not a retry count — see busyBoundExceeded). A task
+	// deferred continuously for longer than this is terminalized as
+	// TaskSkipped rather than deferred again: nothing was sent, nothing
+	// changed, and the operator is told to re-run when the site is idle.
+	// This is the bound that keeps a permanently busy site from holding a
+	// task, and therefore its (tenant, site, target_type, target_slug)
+	// in-flight dedup slot (m88's partial unique index), open forever.
+	siteBusyMaxWait = 6 * time.Hour
+)
+
+// SetSiteBusyBackoff overrides the busy-site retry backoff schedule. Exposed
+// for tests so a bulk-update test does not actually sleep the production
+// 5s-60s window; production code should leave this unset (nil restores the
+// default, siteBusyBackoff).
+func (w *Worker) SetSiteBusyBackoff(f func(Task) time.Duration) {
+	w.busyBackoff = f
+}
+
+// siteBusyBackoff computes the snooze delay for a task deferred because its
+// site is busy: a jittered delay in [siteBusyBackoffMin, siteBusyBackoffMax).
+// The jitter (crypto-unpredictable, via math/rand/v2's auto-seeded default
+// source) is what keeps many siblings waiting on the same busy site from
+// waking in lockstep and colliding again the moment the current writer
+// releases the lock.
+func (w *Worker) siteBusyBackoff(task Task) time.Duration {
+	if w.busyBackoff != nil {
+		return w.busyBackoff(task)
+	}
+	span := siteBusyBackoffMax - siteBusyBackoffMin
+	return siteBusyBackoffMin + time.Duration(rand.Int64N(int64(span)))
+}
+
+// busyBoundExceeded reports the reason a busy-deferred task must stop being
+// retried and be terminalized instead, or "" when it may still be deferred
+// again. The wall-clock bound (siteBusyMaxWait, measured from CreatedAt) is
+// AUTHORITATIVE; see the constant's own doc comment.
+func busyBoundExceeded(task Task) string {
+	if waited := time.Since(task.CreatedAt); waited > siteBusyMaxWait {
+		return fmt.Sprintf("for over %s", siteBusyMaxWait)
+	}
+	return ""
+}
+
+// deferForBusySite is the ONE path into the waiting state for a task whose
+// site is busy with another update, rollback, or agent upgrade. It ALWAYS
+// exits with the task back in 'pending' (never a terminal status), unless the
+// task has been waiting longer than siteBusyMaxWait, in which case it is
+// terminalized as TaskSkipped — never TaskFailed — because nothing was ever
+// sent to the site for this item and nothing on it changed.
+//
+// A BUSY SITE MUST NEVER PRODUCE A TERMINAL "FAILED" STATUS, and a WAITING
+// TASK MUST NEVER LOOK "RUNNING". Both halves live here so neither can be
+// broken independently: the bound check below only ever chooses between
+// 'pending' (via finish=false) and TaskSkipped, never TaskFailed; and
+// DeferTaskToPending is the only write in this codebase that moves a task
+// from 'running' back to 'pending'.
+func (w *Worker) deferForBusySite(ctx context.Context, task Task, why string) error {
+	if bound := busyBoundExceeded(task); bound != "" {
+		return w.finish(ctx, task, TaskSkipped, task.FromVersion, "",
+			fmt.Sprintf("not attempted: this site was continuously busy with another update, rollback, or agent upgrade %s. "+
+				"Nothing was sent to the site for this item and nothing on the site was changed. Re-run this update when the site is idle.", bound), "")
+	}
+
+	deferred, err := w.repo.DeferTaskToPending(ctx, DeferTaskInput{
+		TenantID: task.TenantID,
+		TaskID:   task.ID,
+		Detail:   "waiting: " + why,
+	})
+	if errors.Is(err, ErrTaskNotOpen) {
+		// A halt (or a concurrent finisher) already terminalized this task
+		// while the site was being asked. The recorded outcome wins; there
+		// is nothing left to wait for.
+		return nil
+	}
+	if err != nil {
+		// Could not record the wait: snooze SHORT and retry the demotion
+		// rather than terminalize a task for a CP-side DB hiccup. Still
+		// bounded even so: the gate's own staleness clause (siteWriterHoldMax)
+		// stops trusting a row left 'running' after that, so a sibling can
+		// still make progress, and the periodic reaper (staleTaskThreshold)
+		// claims this row itself after that regardless of how this branch
+		// resolves.
+		w.logger.Warn("update: failed to defer task for a busy site; snoozing short",
+			slog.String("task_id", task.ID.String()), slog.Any("error", err))
+		return river.JobSnooze(siteBusyBackoffMin)
+	}
+	w.publish(deferred, RunRunning)
+	return river.JobSnooze(w.siteBusyBackoff(deferred))
+}
+
 // runDry asks the agent what WOULD change without mutating the site.
 func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item agentcmd.UpdateItem) error {
 	resp, err := w.cmd.Update(ctx, task.SiteID, siteURL, agentcmd.UpdateRequest{DryRun: true, Snapshot: false, Items: []agentcmd.UpdateItem{item}})
@@ -347,6 +485,15 @@ func (w *Worker) runDry(ctx context.Context, task Task, siteURL string, item age
 	// path below, so an agent that had rejected the command outright was still
 	// recorded as a successful "no change".
 	res := firstResult(resp.Results)
+
+	// GH #328: a busy site refuses BEFORE the resp.OK check below, exactly
+	// like runApply (see that function for why the ordering is load-bearing).
+	// A stock agent takes no lock for a dry run, but a foreign maintenance
+	// window (e.g. a human's wp-admin bulk update in progress) can still
+	// refuse one.
+	if res.Status == agentcmd.ItemSiteBusy {
+		return w.deferForBusySite(ctx, task, detailOr(res.Log, "another update is running on this site"))
+	}
 	if !resp.OK {
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "",
 			"agent rejected the dry-run command", detailOr(res.Log, "agent returned ok=false"))
@@ -373,6 +520,23 @@ func (w *Worker) runApply(ctx context.Context, task Task, siteURL string, item a
 		return w.finish(ctx, task, TaskFailed, task.FromVersion, "", "update command failed", err.Error())
 	}
 	res := firstResult(resp.Results)
+
+	// GH #328: a busy site refuses BEFORE the resp.OK check below and BEFORE
+	// the ItemFailed check further down. Ordering here is LOAD BEARING: the
+	// agent sets ok=false whenever any item reports a non-success status
+	// (site_busy included, same as a failure), so checking resp.OK first
+	// would send this down the generic TaskFailed path and make every busy
+	// refusal a permanent recorded failure instead of a retried wait. See
+	// deferForBusySite for the no-deadlock invariant this preserves
+	// (INVARIANT R) and for why this can never be tallied as Failed or halt a
+	// wave (agent_wave.go's tallyWave/haltReasonFor operate ONLY over
+	// target_type='agent' tasks — see waveOrder's filter — so a plugin/theme/
+	// core task deferred here is never even visible to that code; and the
+	// 'pending' status this produces falls into tallyWave's default case,
+	// InFlight, on the rare occasion a task of any type is inspected there).
+	if res.Status == agentcmd.ItemSiteBusy {
+		return w.deferForBusySite(ctx, task, detailOr(res.Log, "another update is running on this site"))
+	}
 
 	// The agent's own verdict on the command dispatch. An ok=false here means it
 	// never ran the update, so the per-item results below cannot be trusted to
@@ -930,7 +1094,7 @@ const staleTaskReapLimit = 500
 // a task on a site with external cron waits up to
 // agentConfirmDeadlineExternalCron for beat 2 on its own. Reaping either as
 // "stale" would fail a task that is behaving exactly as designed, and, worse
-//, feed a false failure into the wave gate, halting a healthy rollout.
+// , feed a false failure into the wave gate, halting a healthy rollout.
 //
 // It is still finite: a genuinely stuck agent task must eventually release its
 // (tenant, site, target_type, target_slug) slot in the

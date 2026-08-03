@@ -500,6 +500,63 @@ final class SelfUpdateInRequestApplyTest extends TestCase
     }
 
     /**
+     * THE ARM NEVER CONSULTS THE SITE UPDATE LOCK (GitHub issue #328).
+     *
+     * The arm touches nothing on the site's filesystem, and in a canary wave any
+     * terminal non-confirming answer means the rollout halts. Refusing to ARM
+     * because some plugin update happens to be running would turn a routine
+     * collision into a halted fleet rollout, so the lock is consulted by the
+     * APPLY (after the response has been released and waiting costs nobody
+     * anything) and never here.
+     */
+    public function test_the_arm_never_consults_the_site_update_lock(): void
+    {
+        $this->stubSignedOffer();
+
+        // Somebody else holds the site's update lock right now.
+        $this->options['wpmgr_site_update.lock']  = time();
+        $this->options['wpmgr_site_update_owner'] = 'ffffffffffffffffffffffffffffffff';
+
+        $answer = $this->makeChecker()->planSelfUpdate();
+
+        $this->assertSame(
+            'scheduled',
+            $answer['status'],
+            'a busy site must not stop the agent self-update from being armed'
+        );
+    }
+
+    /**
+     * The apply takes the site's update lock before the swap and releases it
+     * afterwards, so a plugin update command arriving mid-swap is refused
+     * rather than allowed to delete this apply's extracted source out of
+     * wp-content/upgrade/.
+     */
+    public function test_the_apply_holds_and_then_releases_the_site_update_lock(): void
+    {
+        $this->stubSignedOffer();
+        $this->siteTransients['update_plugins'] = $this->offerTransient();
+
+        $held = [];
+        \Plugin_Upgrader::$behaviour = function () use (&$held) {
+            // Observed from INSIDE the swap: this is the window a concurrent
+            // update command must be refused in.
+            $held[] = \WPMgr\Agent\Support\SiteUpdateLock::heldByThisRequest();
+
+            return true;
+        };
+
+        $this->runApply();
+
+        $this->assertSame([true], $held, 'the swap itself must run while the site lock is held');
+        $this->assertArrayNotHasKey(
+            'wpmgr_site_update.lock',
+            $this->options,
+            'the apply must not leave the site locked for its full 15-minute TTL'
+        );
+    }
+
+    /**
      * NO AGENT SHUTDOWN CALLBACK MAY SIT BELOW PRIORITY 100.
      *
      * Core registers restore_temp_backup at 10 and delete_temp_backup at 100. A
