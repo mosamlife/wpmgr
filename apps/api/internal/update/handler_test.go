@@ -3,6 +3,7 @@ package update
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/api/gen"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -315,5 +317,66 @@ func TestToAPIRunSummary_PopulatesCountFields(t *testing.T) {
 	// aggregate counts, not per-task rows, in the list view).
 	if len(out.Tasks) != 0 {
 		t.Errorf("Tasks must be empty on list response, got %d tasks", len(out.Tasks))
+	}
+}
+
+// TestCreateHandlerReportsARunWhoseEnqueueFailed is the regression test for the
+// handler discarding a COMMITTED run.
+//
+// CreateRun documents its enqueue as best effort and says "the caller still
+// gets the run". The handler ignored that: it checked err first and returned an
+// error response, throwing away a run that was already in the database with
+// real tasks. The operator was told nothing happened, while pending tasks sat
+// there until the reaper failed them 45 minutes later (6 hours for agent
+// tasks), and a second attempt could then collide with the m88 in-flight
+// unique index.
+//
+// This test FAILS against the pre-fix handler, which is the only reason it is
+// worth having. A test that passes either way proves nothing.
+func TestCreateHandlerReportsARunWhoseEnqueueFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tenant := uuid.New()
+	site := uuid.New()
+
+	info := SiteInfo{
+		ID: site, Enrolled: true,
+		Components: []Component{
+			{Type: TargetPlugin, Slug: "akismet", Version: "1.0.0", UpdateAvailable: true, NewVersion: "1.1.0"},
+		},
+	}
+	svc := NewService(
+		&fakeCreateRepo{tenantID: tenant},
+		&fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{site: info}},
+		&failingEnqueuer{},
+		domain.NewValidator(),
+		domain.SystemClock{},
+	)
+	h := NewHandler(svc, nil, nil)
+
+	body := `{"site_ids":["` + site.String() + `"],"items":[{"type":"plugin","slug":"akismet"}]}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/updates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(domain.WithTenantID(req.Context(), tenant))
+	ctx.Request = req
+
+	h.create(ctx)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: a committed run must be reported, not discarded (body: %s)",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var out gen.UpdateRun
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v (body: %s)", err, rec.Body.String())
+	}
+	if out.ID == uuid.Nil {
+		t.Fatal("response carries no run id, so the operator still cannot find the run that exists")
+	}
+	if len(out.Tasks) == 0 {
+		t.Fatal("response carries no tasks: the committed tasks must be visible")
 	}
 }

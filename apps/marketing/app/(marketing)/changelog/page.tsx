@@ -39,6 +39,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.117",
+    date: "2026-08-04",
+    summary:
+      "Starting an update run could report a server error while the run had actually been created, leaving tasks that nothing would pick up for up to six hours.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Starting an update run could report a server error while the run had in fact been created. If the background job queue was briefly unavailable at the moment the run was saved, the run and its tasks were already written to the database, but the response discarded them and returned a failure. You were told nothing happened, while a real run sat there with tasks nothing would pick up, and they stayed that way until the stale-task sweeper failed them 45 minutes later, or 6 hours later for an agent rollout. Starting the update again could then be refused, because the first run's tasks still counted as in flight, so a brief queue hiccup looked like a broken product. The run is now returned as created and its tasks are visible on the run page.",
+      },
+    ],
+  },
+  {
     version: "0.61.116",
     date: "2026-08-04",
     summary:

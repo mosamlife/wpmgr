@@ -2,6 +2,7 @@ package update
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -74,8 +75,28 @@ func (h *Handler) create(c *gin.Context) {
 
 	run, tasks, err := h.svc.CreateRun(c.Request.Context(), in)
 	if err != nil {
-		httpx.Error(c, err)
-		return
+		// A NON-ZERO run means the run and its tasks were already COMMITTED and
+		// only the background enqueue failed. CreateRun documents that case as
+		// best effort and says the caller still gets the run, but this handler
+		// used to discard both and return an error, so the operator was told
+		// nothing happened while a real run sat in the database with pending
+		// tasks that nothing would move until the reaper failed them (45m for
+		// ordinary tasks, 6h for agent ones). They would then create a second
+		// run, which the m88 in-flight unique index can reject, making a
+		// recoverable hiccup look like a broken product.
+		//
+		// Report the run that exists. The tasks are pending and visible on the
+		// run page, the enqueue failure is logged and audited below, and a
+		// caller that sees fewer tasks than it asked for can act on it.
+		if run.ID == uuid.Nil {
+			httpx.Error(c, err)
+			return
+		}
+		slog.Error("update run created but a task enqueue failed; tasks remain pending",
+			slog.String("run_id", run.ID.String()),
+			slog.String("tenant_id", run.TenantID.String()),
+			slog.Int("task_count", len(tasks)),
+			slog.Any("error", err))
 	}
 
 	h.recordRunCreated(c, run, len(tasks))
