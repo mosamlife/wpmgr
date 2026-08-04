@@ -5,10 +5,16 @@ packages:
   - "packages/*"
 # Force patched versions of transitive dependencies flagged by high-severity
 # advisories (DoS via quadratic/exponential parsing). All are same-major pins,
-# so no API change: brace-expansion 1.1.16 (GHSA-3jxr-9vmj-r5cp), js-yaml 3.15.0
-# for gray-matter and js-yaml 4.3.0 for eslint tooling (GHSA-52cp-r559-cp3m).
+# so no API change: brace-expansion 1.1.18 (GHSA-3jxr-9vmj-r5cp and
+# GHSA-rgw5-rvv9-x895), js-yaml 3.15.0 for gray-matter and js-yaml 4.3.0 for
+# eslint tooling (GHSA-52cp-r559-cp3m).
 overrides:
-  brace-expansion@1: 1.1.16
+  # 1.1.18, not 1.1.16. GHSA-rgw5-rvv9-x895 (published after this block was
+  # first written) is vulnerable below 1.1.18 and, unlike the advisory noted
+  # under brace-expansion@5 below, it DOES have a 1.x backport. Staying on
+  # 1.1.16 reddens the audit on every branch with no code change, which is how
+  # this bump was found.
+  brace-expansion@1: 1.1.18
   # brace-expansion 5.x <=5.0.7 is a DoS via unbounded expansion length
   # (GHSA-mh99-v99m-4gvg). Patched in 5.0.8. The advisory collapses every major
   # into one range, so 1.1.16 is nominally flagged too, but there is no 1.x
