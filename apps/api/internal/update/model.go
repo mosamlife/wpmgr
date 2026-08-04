@@ -96,10 +96,17 @@ type RunSummary struct {
 
 // Task is one unit of work: apply one item on one site.
 type Task struct {
-	ID             uuid.UUID
-	RunID          uuid.UUID
-	TenantID       uuid.UUID
-	SiteID         uuid.UUID
+	ID       uuid.UUID
+	RunID    uuid.UUID
+	TenantID uuid.UUID
+	SiteID   uuid.UUID
+	// SiteName is the site's display name, carried on the task row itself so a
+	// caller never has to join a task list against a separately-fetched (and
+	// therefore paginated) site list to say which site a task belongs to. Only
+	// the DETAIL read populates it (Repo.ListTasks, via
+	// ListUpdateTasksForRunWithSiteName); the wave machine and the per-task
+	// worker paths do not need it and leave it empty.
+	SiteName       string
 	TargetType     string
 	TargetSlug     string
 	DesiredVersion string
@@ -229,5 +236,69 @@ func terminal(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// Retry classes. A task's retry class is the SERVER's answer to "what happened
+// to this task, and what would retrying it mean" (GH #336). It exists so no
+// client has to infer that answer from prose: the two things a retry decision
+// actually turns on, whether the update was ever attempted and whether it was
+// applied and then taken back, are recorded as machine values here and read as
+// machine values everywhere else.
+//
+// It is deliberately NOT the same axis as `status`: `cancelled` and `pending`
+// are different statuses that both mean "nothing was sent to this site", but
+// only one of them is over.
+const (
+	// RetryClassNeverRan: the task reached a terminal state without the control
+	// plane ever sending anything to the site. Today that is exactly
+	// `cancelled` (its run halted first). Nothing on the site changed, which
+	// makes this the LOWEST-risk thing a retry can pick up.
+	RetryClassNeverRan = "never_ran"
+	// RetryClassFailed: the site was contacted and the update did not succeed.
+	// The primary retry case.
+	RetryClassFailed = "failed"
+	// RetryClassReverted: the update APPLIED and was then rolled back, because
+	// the post-update health probe or the wave gate refused it. Retrying walks
+	// the identical path, so it may reproduce the identical break. Offered, but
+	// never part of a default set.
+	RetryClassReverted = "reverted"
+	// RetryClassSkipped: the control plane declined this target (already up to
+	// date, the site stayed busy, the agent's own plugin, an agent build this
+	// channel cannot upgrade). Usually correct, but not always: a stale
+	// WordPress transient can report "already current" when it is not (GH
+	// #211/#212), which is why a skip is selectable rather than hidden.
+	RetryClassSkipped = "skipped"
+	// RetryClassNotApplicable: retrying is not a meaningful action. Either the
+	// task succeeded (a retry would re-touch a working site for nothing) or it
+	// has not finished yet (pending/running), in which case there is nothing to
+	// retry, only something to wait for.
+	RetryClassNotApplicable = "not_applicable"
+)
+
+// retryClassify is the ONE definition of "may this task be retried, and why".
+// Both the read path (the retryable/retry_class fields on every task in the run
+// detail response) and the write path (which requested tasks RetryRun will
+// actually plan) call it, so the button the operator sees and the decision the
+// server makes cannot disagree.
+//
+// It is built on the existing terminal() predicate rather than a second list of
+// statuses: a status that is not final is not retryable, whatever it is, and
+// that stays true for any status added later.
+func retryClassify(status string) (retryable bool, class string) {
+	if !terminal(status) {
+		return false, RetryClassNotApplicable // pending, running
+	}
+	switch status {
+	case TaskCancelled:
+		return true, RetryClassNeverRan
+	case TaskFailed:
+		return true, RetryClassFailed
+	case TaskRolledBack:
+		return true, RetryClassReverted
+	case TaskSkipped:
+		return true, RetryClassSkipped
+	default: // TaskSucceeded
+		return false, RetryClassNotApplicable
 	}
 }

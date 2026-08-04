@@ -18,7 +18,21 @@ import {
   type ApiError,
 } from "@wpmgr/api";
 
-import { isTerminalRunStatus } from "./summarize";
+import { isTerminalRunStatus, isTerminalTaskStatus } from "./summarize";
+
+/**
+ * GH #336: how long to wait after a task settles before re-reading the run.
+ *
+ * An SSE frame carries a task's new status but NOT its retry classification
+ * (`retryable`/`retry_class`), which the control plane computes when it
+ * serialises a task. Patching the frame alone would leave every task that
+ * settled while the page was open carrying the classification it had when the
+ * page loaded, which for a run watched from the start means "pending, not
+ * retryable" for the whole table: the retry affordance would never appear for
+ * the operator most likely to want it. So a settling task schedules one
+ * authoritative re-read, coalesced across a burst of frames.
+ */
+const RECLASSIFY_DEBOUNCE_MS = 3000;
 
 // Server-state hooks for the Updates (bulk update runs) domain. Built on the
 // generated @wpmgr/api SDK; each call returns `{ data, error, response }` which
@@ -155,6 +169,14 @@ export function applyEvent(run: UpdateRun, event: UpdateEvent): UpdateRun {
       detail: event.detail,
       created_at: run.created_at,
       updated_at: new Date().toISOString(),
+      // GH #336: an SSE frame carries no retry classification, and this
+      // client does not invent one. An unclassified row is not selectable;
+      // the reclassifying refetch below replaces it with the server's own
+      // verdict. (The detail GET returns the complete task set, so reaching
+      // this branch at all means a task the last authoritative read did not
+      // describe.)
+      retryable: false,
+      retry_class: "not_applicable",
     });
   }
   return { ...run, status: event.run_status, tasks: nextTasks };
@@ -206,8 +228,23 @@ export function useRunEventStream(
     }
 
     let closed = false;
+    let reclassifyTimer: number | undefined;
     const url = `/api/v1/updates/${encodeURIComponent(runId)}/events`;
     const source = new EventSource(url, { withCredentials: true });
+
+    const reclassify = () => {
+      void queryClient.invalidateQueries({
+        queryKey: updatesKeys.detail(runId),
+      });
+    };
+    // Coalesce a burst of settling tasks into one re-read.
+    const scheduleReclassify = () => {
+      if (reclassifyTimer !== undefined) return;
+      reclassifyTimer = window.setTimeout(() => {
+        reclassifyTimer = undefined;
+        reclassify();
+      }, RECLASSIFY_DEBOUNCE_MS);
+    };
 
     onStateRef.current?.("connecting");
 
@@ -218,7 +255,7 @@ export function useRunEventStream(
     // The CP emits NAMED `event: task` frames (see apps/api/internal/update
     // handler.go writeEvent). `EventSource.onmessage` only fires for the
     // default unnamed `message` event, so a named-event stream silently
-    // delivers nothing — which was the v0.9.0 bug: rows stayed "Queued"
+    // delivers nothing: which was the v0.9.0 bug: rows stayed "Queued"
     // forever even though the run had succeeded server-side. We listen on
     // the named event AND keep onmessage as a defensive fallback in case the
     // wire ever changes back to unnamed frames.
@@ -237,9 +274,20 @@ export function useRunEventStream(
       // wait for events that are never coming.
       if (isTerminalRunStatus(event.run_status)) {
         closed = true;
+        if (reclassifyTimer !== undefined) {
+          window.clearTimeout(reclassifyTimer);
+          reclassifyTimer = undefined;
+        }
         source.close();
         onStateRef.current?.("closed");
+        // Re-read immediately rather than through the debounce: this effect
+        // is about to be torn down (the caller disables the stream on a
+        // terminal run), so a pending timer would never fire and the final
+        // task classifications would stay as they were at page load.
+        reclassify();
+        return;
       }
+      if (isTerminalTaskStatus(event.status)) scheduleReclassify();
     };
     source.addEventListener("task", handleFrame as EventListener);
     source.onmessage = handleFrame;
@@ -255,6 +303,7 @@ export function useRunEventStream(
 
     return () => {
       closed = true;
+      if (reclassifyTimer !== undefined) window.clearTimeout(reclassifyTimer);
       source.removeEventListener("task", handleFrame as EventListener);
       source.close();
     };

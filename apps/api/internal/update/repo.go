@@ -282,16 +282,21 @@ func toRunFromCounts(r sqlc.ListUpdateRunsWithCountsRow) Run {
 	return out
 }
 
+// ListTasks is the DETAIL read: every task of a run, in a stable order, each
+// carrying its site's display name (see ListUpdateTasksForRunWithSiteName).
+// Deliberately unpaginated, as it has always been: a run's task set is the run,
+// and a caller that saw only part of it could not count, select over, or retry
+// the run it is looking at.
 func (r *pgRepo) ListTasks(ctx context.Context, tenantID, runID uuid.UUID) ([]Task, error) {
 	var out []Task
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, err := sqlc.New(tx).ListUpdateTasksForRun(ctx, sqlc.ListUpdateTasksForRunParams{RunID: runID, TenantID: tenantID})
+		rows, err := sqlc.New(tx).ListUpdateTasksForRunWithSiteName(ctx, sqlc.ListUpdateTasksForRunWithSiteNameParams{RunID: runID, TenantID: tenantID})
 		if err != nil {
 			return domain.Internal("update_task_list_failed", "failed to list update tasks").WithCause(err)
 		}
 		out = make([]Task, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, toTask(row))
+			out = append(out, toTaskWithSiteName(row))
 		}
 		return nil
 	})
@@ -540,6 +545,38 @@ func toTask(t sqlc.UpdateTask) Task {
 		RunID:          t.RunID,
 		TenantID:       t.TenantID,
 		SiteID:         t.SiteID,
+		TargetType:     t.TargetType,
+		TargetSlug:     t.TargetSlug,
+		DesiredVersion: t.DesiredVersion,
+		FromVersion:    t.FromVersion,
+		ToVersion:      t.ToVersion,
+		Status:         t.Status,
+		Detail:         t.Detail,
+		Error:          t.Error,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
+	}
+	if t.StartedAt.Valid {
+		s := t.StartedAt.Time
+		out.StartedAt = &s
+	}
+	if t.FinishedAt.Valid {
+		f := t.FinishedAt.Time
+		out.FinishedAt = &f
+	}
+	return out
+}
+
+// toTaskWithSiteName converts the detail-read row (task columns + the joined
+// site name). Same mapping as toTask plus SiteName; kept as its own function
+// because sqlc gives a joined query its own row type.
+func toTaskWithSiteName(t sqlc.ListUpdateTasksForRunWithSiteNameRow) Task {
+	out := Task{
+		ID:             t.ID,
+		RunID:          t.RunID,
+		TenantID:       t.TenantID,
+		SiteID:         t.SiteID,
+		SiteName:       t.SiteName,
 		TargetType:     t.TargetType,
 		TargetSlug:     t.TargetSlug,
 		DesiredVersion: t.DesiredVersion,

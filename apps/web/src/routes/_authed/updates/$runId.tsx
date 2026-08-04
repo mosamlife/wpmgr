@@ -1,7 +1,9 @@
-import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { RotateCcw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -29,7 +31,17 @@ import {
   haltReason,
   isTerminalRunStatus,
 } from "@/features/updates/summarize";
+import {
+  retryActionLabel,
+  retryAvailability,
+  sharedTargetType,
+  type RetryTask,
+} from "@/features/updates/retry-contract";
+import { useRetrySelection } from "@/features/updates/use-retry-selection";
+import { RetryActionBar } from "@/features/updates/retry-action-bar";
+import { RetryRunDialog } from "@/features/updates/retry-dialog";
 import { useSites } from "@/features/sites/use-sites";
+import { useMe, canManage, canOperate } from "@/features/auth/use-auth";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
 
@@ -135,7 +147,11 @@ function RunDetail({
   streamState: RunStreamState;
 }) {
   const { data: sites } = useSites();
-  const tasks = run.tasks ?? [];
+  const { data: me } = useMe();
+  const navigate = useNavigate();
+  // Stable identity so the retry selection's memos (defaults, selectable set)
+  // are not rebuilt on every render of a live run.
+  const tasks: RetryTask[] = useMemo(() => run.tasks ?? [], [run.tasks]);
   const summary = summarizeTasks(tasks);
   const created = relativeTime(run.created_at);
   // `halted` (GH #255 Phase 2) is terminal exactly like `completed`; see
@@ -145,6 +161,33 @@ function RunDetail({
 
   const liveState = toLiveState(streamState);
   const liveLabel = streamState === "polling" ? "Polling" : undefined;
+
+  // ── GH #336 retry ───────────────────────────────────────────────────────
+  //
+  // Every gate here is a SERVER fact or a role, never a reading of task prose
+  // and never the sites cache. The gating rules themselves live in
+  // `retryAvailability` so they are pinned by a test rather than by JSX.
+  const selection = useRetrySelection(tasks);
+  const [retryOpen, setRetryOpen] = useState(false);
+
+  const { available: retryAvailable, note: retryNote } = retryAvailability({
+    tasks,
+    selectableCount: selection.selectableTasks.length,
+    runStatus: run.status,
+    canOperate: canOperate(me),
+    canManageAgents: canManage(me),
+  });
+
+  const selectedTarget = sharedTargetType(selection.selectedTasks);
+  const retryLabel = retryActionLabel({
+    count: selection.count,
+    target: selectedTarget,
+    dryRun: run.dry_run,
+  });
+
+  const openRun = (nextRunId: string) => {
+    void navigate({ to: "/updates/$runId", params: { runId: nextRunId } });
+  };
 
   return (
     <section className="space-y-6">
@@ -177,6 +220,19 @@ function RunDetail({
               ? ` · Scheduled for ${run.scheduled_at}`
               : ""}
           </>
+        }
+        actions={
+          retryAvailable ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => setRetryOpen(true)}
+              disabled={selection.count === 0}
+            >
+              <RotateCcw aria-hidden="true" className="size-4" />
+              {retryLabel}
+            </Button>
+          ) : undefined
         }
       />
 
@@ -217,7 +273,14 @@ function RunDetail({
               { label: "Running", value: summary.counts.running, tabular: true },
               { label: "Pending", value: summary.counts.pending, tabular: true },
               { label: "Skipped", value: summary.counts.skipped, tabular: true },
-              { label: "Cancelled", value: summary.counts.cancelled, tabular: true },
+              // GH #336: nobody cancelled these. The run stopped and the
+              // control plane withheld them, so nothing was ever sent to
+              // those sites. "Not attempted" is what happened.
+              {
+                label: "Not attempted",
+                value: summary.counts.cancelled,
+                tabular: true,
+              },
             ]}
           />
         </CardContent>
@@ -225,8 +288,38 @@ function RunDetail({
 
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">Tasks</h2>
-        <UpdateTasksTable tasks={tasks} siteNames={siteNameMap(sites)} />
+        {retryNote ? (
+          <p className="text-sm text-muted-foreground">{retryNote}</p>
+        ) : null}
+        <UpdateTasksTable
+          tasks={tasks}
+          siteNames={siteNameMap(sites)}
+          selection={retryAvailable ? selection : undefined}
+        />
       </div>
+
+      {retryAvailable ? (
+        <>
+          <RetryActionBar
+            selectedTasks={selection.selectedTasks}
+            target={selectedTarget}
+            dryRun={run.dry_run}
+            onClear={selection.clear}
+            onRetry={() => setRetryOpen(true)}
+          />
+          <RetryRunDialog
+            open={retryOpen}
+            onClose={() => setRetryOpen(false)}
+            runId={run.id}
+            dryRun={run.dry_run}
+            selectedTasks={selection.selectedTasks}
+            allTasks={tasks}
+            siteNames={siteNameMap(sites)}
+            haltReason={haltReason(run)}
+            onOpenRun={openRun}
+          />
+        </>
+      ) : null}
     </section>
   );
 }

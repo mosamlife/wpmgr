@@ -1468,6 +1468,17 @@ export type UpdateTask = {
   run_id: string;
   tenant_id: string;
   site_id: string;
+  /**
+   * The site's display name, resolved by the server on the run DETAIL
+   * read (GET /api/v1/updates/{runId}). Present so a client never has to
+   * join a task list against a separately-fetched site list to say which
+   * site a task belongs to: every site list in this API is paginated, so
+   * that join silently loses site identity on any run wider than one
+   * page, for display AND for selection. Empty only if the site row
+   * could not be read.
+   *
+   */
+  site_name?: string;
   target_type: "plugin" | "theme" | "core" | "agent";
   target_slug: string;
   desired_version?: string;
@@ -1487,6 +1498,47 @@ export type UpdateTask = {
     | "rolled_back"
     | "skipped"
     | "cancelled";
+  /**
+   * Whether this task may be named in a retry request
+   * (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
+   * the task's own terminal-state predicate, so the affordance a client
+   * offers and the decision the server makes cannot disagree. A client
+   * MUST NOT infer this from `detail` or `error`: those carry
+   * agent-authored prose that no client contract covers.
+   *
+   */
+  retryable: boolean;
+  /**
+   * What happened to this task, on the axis a retry decision turns on.
+   * The server computes it; the client renders it.
+   *
+   * * `never_ran` - terminal, but nothing was ever sent to the site
+   * (today: `cancelled`, collateral of a halted run). Nothing on the
+   * site changed, so this is the lowest-risk task to retry.
+   * * `failed` - the site was contacted and the update did not succeed.
+   * * `reverted` - the update applied and was then rolled back, so a
+   * retry walks the identical path and may reproduce the identical
+   * break.
+   * * `skipped` - the control plane declined this target (already up to
+   * date, site busy, agent build not upgradeable by this channel).
+   * Usually correct, but a stale WordPress transient can report
+   * "already current" wrongly, so it stays selectable.
+   * * `not_applicable` - `succeeded` (retrying re-touches a working
+   * site for nothing) or not finished yet (`pending`/`running`).
+   *
+   * The intended client default selection is `failed` + `never_ran`:
+   * both mean "this never succeeded", and `never_ran` additionally means
+   * "and nothing was attempted". `reverted` and `skipped` are
+   * selectable but never default-on. `not_applicable` is never
+   * selectable.
+   *
+   */
+  retry_class:
+    | "never_ran"
+    | "failed"
+    | "reverted"
+    | "skipped"
+    | "not_applicable";
   detail?: string;
   error?: string;
   started_at?: string;
@@ -1532,6 +1584,106 @@ export type UpdateRun = {
 
 export type UpdateRunList = {
   items: Array<UpdateRun>;
+};
+
+/**
+ * The tasks to retry, named explicitly. There is no implicit server-side
+ * default set: the client already knows every task's `retry_class` from
+ * the run detail response, so it names the ones it means. A second policy
+ * on the server could disagree with the checkboxes the operator saw.
+ *
+ */
+export type UpdateRunRetryRequest = {
+  /**
+   * Task ids from the run being retried. Repeats are collapsed, so
+   * `requested` in the response counts DISTINCT ids. An id that is not a
+   * task of this run is reported in `excluded` rather than rejecting the
+   * whole request.
+   *
+   */
+  task_ids: Array<string>;
+};
+
+/**
+ * One requested task that produced no work, and why.
+ */
+export type UpdateRunRetryExclusion = {
+  task_id: string;
+  /**
+   * The machine value, stable and safe to group or count on.
+   *
+   * * `not_in_run` - the id is not a task of this run.
+   * * `not_retryable` - the task succeeded, or has not finished yet.
+   * * `site_not_found` - the site no longer resolves.
+   * * `site_not_enrolled` - the site is no longer enrolled, so no signed
+   * command can be delivered to it.
+   * * `agent_current` - the site already runs the published agent build.
+   * This is what fires when the release was reverted mid-incident.
+   * * `agent_ineligible` - the site runs the plugin-directory build,
+   * which has no self-updater.
+   * * `agent_version_unknown` - a version could not be compared, and an
+   * unreadable version must never become an upgrade.
+   * * `target_in_flight` - this (site, target) already has a pending or
+   * running task in another run.
+   * * `duplicate_target` - another selected task already retries the
+   * same (site, target).
+   *
+   */
+  reason:
+    | "not_in_run"
+    | "not_retryable"
+    | "site_not_found"
+    | "site_not_enrolled"
+    | "agent_current"
+    | "agent_ineligible"
+    | "agent_version_unknown"
+    | "target_in_flight"
+    | "duplicate_target";
+  /**
+   * The server-authored sentence for this exclusion, including the
+   * specifics (which versions, which status). Rendered as-is; a client
+   * does not need its own copy table to explain an exclusion.
+   *
+   */
+  message: string;
+};
+
+/**
+ * Accounts for every requested task: `created` + `len(excluded)` always
+ * equals `requested`. If `created` is lower than `requested`, the
+ * difference is fully itemised in `excluded` and MUST be surfaced to the
+ * operator; a partial commit that looks like a complete one is the failure
+ * mode this shape exists to prevent.
+ *
+ */
+export type UpdateRunRetryResult = {
+  /**
+   * The NEW run. Absent when nothing was created (every requested task
+   * was excluded), which is a legitimate outcome and not an error.
+   *
+   */
+  run_id?: string;
+  /**
+   * Number of DISTINCT task ids in the request.
+   */
+  requested: number;
+  /**
+   * Number of tasks in the new run.
+   */
+  created: number;
+  /**
+   * Every requested task that produced no task in the new run.
+   */
+  excluded: Array<UpdateRunRetryExclusion>;
+  /**
+   * Set when the run exists but a best-effort step after the commit did
+   * not go to plan (today: a background job could not be scheduled, so
+   * some tasks sit pending until the reaper terminalises them). The run
+   * and its tasks are real and visible; surface this alongside them
+   * rather than treating the retry as failed.
+   *
+   */
+  warning?: string;
 };
 
 /**
@@ -5560,6 +5712,9 @@ export type PortalUpdateList = {
 
 export type PortalVitalMetric = {
   metric: "lcp" | "inp" | "cls";
+  /**
+   * 75th percentile, in MILLI-UNITS for every metric. Timing metrics (lcp, inp) are therefore milliseconds. CLS is thousandths of a unit, so a CLS of 0.1 is sent as 100 and a client must divide by 1000 before display. This field carried no unit for a long time and a consumer rendered CLS undivided, showing a good score of 0.1 to an end client as "100.000".
+   */
   p75: number;
   rating: "good" | "needs-improvement" | "poor" | "insufficient-data";
   samples: number;
@@ -13309,6 +13464,60 @@ export type GetUpdateRunResponses = {
 
 export type GetUpdateRunResponse =
   GetUpdateRunResponses[keyof GetUpdateRunResponses];
+
+export type RetryUpdateRunData = {
+  body: UpdateRunRetryRequest;
+  path: {
+    /**
+     * The run whose tasks are being retried.
+     */
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/updates/runs/{id}/retry";
+};
+
+export type RetryUpdateRunErrors = {
+  /**
+   * Update run not found
+   */
+  404: Error;
+  /**
+   * The agent self-update channel is disabled on this control plane
+   * (`agent_self_update_disabled`), or the currently published agent
+   * version could not be determined (`agent_release_unknown`). Only
+   * reachable when the selection is an agent rollout.
+   *
+   */
+  409: Error;
+  /**
+   * Validation failed: no task ids (`task_ids_required`), more than the
+   * per-request maximum (`too_many_tasks`), or a selection mixing the
+   * agent target with plugin/theme/core tasks
+   * (`agent_target_exclusive`).
+   *
+   */
+  422: Error;
+};
+
+export type RetryUpdateRunError =
+  RetryUpdateRunErrors[keyof RetryUpdateRunErrors];
+
+export type RetryUpdateRunResponses = {
+  /**
+   * The retry was processed. This is returned whether or not any task
+   * was created, INCLUDING when every requested task was excluded
+   * (`created: 0`, no `run_id`): that is a complete answer to a
+   * well-formed request, and returning an error there would replace the
+   * per-task reasons with an opaque code. Check `created` against
+   * `requested` and render `excluded`.
+   *
+   */
+  200: UpdateRunRetryResult;
+};
+
+export type RetryUpdateRunResponse =
+  RetryUpdateRunResponses[keyof RetryUpdateRunResponses];
 
 export type StreamUpdateRunEventsData = {
   body?: never;

@@ -47940,6 +47940,184 @@ func (s *Server) handleRestoreSiteVulnerabilityRequest(args [2]string, argsEscap
 	}
 }
 
+// handleRetryUpdateRunRequest handles retryUpdateRun operation.
+//
+// Creates a NEW update run repeating the named tasks of an existing one.
+// The source run is never mutated: the failure it records stays exactly as
+// it happened.
+// The retry is planned from the TASK ROWS, so each new task targets the
+// same (site, target) pair as the task it repeats, with the same desired
+// version. It does not replay the original request's item selection, which
+// would re-expand items across sites and re-intersect them against each
+// site's current pending set.
+// Two things are RE-RESOLVED rather than copied, because they are facts
+// about now and not about the old run:
+// * enrollment - a site unenrolled since the run is excluded;
+// * the published agent version - for an agent rollout, each site is
+// re-classified against the version published RIGHT NOW, so a release
+// reverted mid-incident excludes the sites that are no longer behind
+// instead of silently upgrading them to a target that moved.
+// An agent retry re-runs the whole wave structure with a fresh canary:
+// only the first wave is enqueued, and the claim-time wave gate is
+// authoritative regardless, so a retry cannot dispatch a fleet at once and
+// cannot bypass the gate.
+// The response accounts for EVERY requested task: `created` +
+// `len(excluded)` always equals `requested`. Requires operator+.
+//
+// POST /api/v1/updates/runs/{id}/retry
+func (s *Server) handleRetryUpdateRunRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("retryUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/updates/runs/{id}/retry"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), RetryUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: RetryUpdateRunOperation,
+			ID:   "retryUpdateRun",
+		}
+	)
+	params, err := decodeRetryUpdateRunParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+	request, rawBody, close, err := s.decodeRetryUpdateRunRequest(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
+
+	var response RetryUpdateRunRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    RetryUpdateRunOperation,
+			OperationSummary: "Retry selected tasks of an update run",
+			OperationID:      "retryUpdateRun",
+			Body:             request,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "id",
+					In:   "path",
+				}: params.ID,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = *UpdateRunRetryRequest
+			Params   = RetryUpdateRunParams
+			Response = RetryUpdateRunRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackRetryUpdateRunParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.RetryUpdateRun(ctx, request, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.RetryUpdateRun(ctx, request, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeRetryUpdateRunResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleRevertDbSnapshotRequest handles revertDbSnapshot operation.
 //
 // Replaces the entire live database with the SQL captured in a local

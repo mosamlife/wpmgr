@@ -8,6 +8,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.120] - 2026-08-04
+
+### Added
+
+- An update run can now be retried from the run page itself, for agent, plugin, theme and core updates alike (GH #336). Retrying a run that failed used to mean going back to the sites list and re-selecting every site by hand, which is how a 21-site fleet agent rollout whose canary failed, correctly cancelling the other 20 sites without touching them, turned into 20 checkboxes to find again. The retry is sourced from the run, so the targets do not have to be re-picked.
+- The retry defaults to the updates that never succeeded: the ones that failed, and the ones that were cancelled because an earlier failure stopped the rollout before they were attempted. A skipped update, and one that applied and was then rolled back, can be selected deliberately but is never included by default: a rollback means the update did apply and was taken back, so retrying it walks the same path and may reproduce the same break. An update that succeeded, or that has not finished yet, is never retryable at all.
+- A retry always creates a NEW run and never alters the one it came from, so the failure that prompted it is still there to read afterwards.
+- The retry response now accounts for every task it was asked about. If 20 were selected and 17 became work, the 3 that did not are each named with a reason: the site is no longer enrolled, the site no longer exists, the same target already has an update in progress in another run, or, for an agent rollout, the site is no longer behind the published agent version. Nothing is dropped quietly.
+- Enrollment and the published agent version are re-resolved at retry time rather than copied from the old run. Reverting an agent release mid-incident is exactly what an operator is expected to do, and a retry that copied the old target would have upgraded sites to a build that had deliberately been withdrawn; instead those sites are excluded and say why.
+- Retrying an agent rollout re-runs the whole staged rollout with a fresh canary. A retry has proven nothing about the new attempt, so it starts from one site again rather than dispatching every previously-cancelled site at once, and it cannot bypass that gate.
+- Each task in a run now carries its site's name from the server. The run page used to resolve site names against a separately-fetched site list, which is paginated, so a run wider than one page showed raw ids for the overflow. Site identity for both display and selection now comes from the task itself.
+
 ## [0.61.119] - 2026-08-04
 
 ### Fixed

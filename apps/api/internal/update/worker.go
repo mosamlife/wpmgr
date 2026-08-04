@@ -19,7 +19,11 @@ import (
 
 // Audit action names for the update lifecycle.
 const (
-	ActionRunCreated     = "update.run.created"
+	ActionRunCreated = "update.run.created"
+	// ActionRunRetried records a retry (GH #336) against the SOURCE run, so the
+	// run that failed carries the evidence that someone acted on it. The new run
+	// it produced is in the metadata, alongside the requested/created counts.
+	ActionRunRetried     = "update.run.retried"
 	ActionTaskSucceeded  = "update.task.succeeded"
 	ActionTaskFailed     = "update.task.failed"
 	ActionTaskRolledBack = "update.task.rolled_back"

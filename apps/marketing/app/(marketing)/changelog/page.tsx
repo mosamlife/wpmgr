@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.120",
+    date: "2026-08-04",
+    summary:
+      "Update runs can be retried from the run page, for agent, plugin, theme and core updates alike, and the retry says what it did with every update you selected.",
+    items: [
+      {
+        tag: "Added",
+        text: "An update run can now be retried from the run page itself. Retrying used to mean going back to the sites list and re-selecting every site by hand, which is how a 21-site fleet agent rollout whose canary failed, correctly cancelling the other 20 sites without touching them, turned into 20 checkboxes to find again. The retry is sourced from the run, so nothing has to be re-picked, and it always creates a new run rather than altering the one it came from.",
+      },
+      {
+        tag: "Added",
+        text: "The retry defaults to the updates that never succeeded: the ones that failed, and the ones that were cancelled before they were ever attempted. An update that was skipped, or that applied and was then rolled back, can be selected deliberately but is never included by default, because a rollback means the update did apply and was taken back, so retrying it may reproduce the same break. An update that succeeded, or has not finished yet, is never retryable.",
+      },
+      {
+        tag: "Added",
+        text: "The retry accounts for every update you selected. If 20 were selected and 17 became work, the 3 that did not are each named with a reason: the site is no longer enrolled, the site no longer exists, the same target already has an update in progress in another run, or, for an agent rollout, the site is no longer behind the published agent version. Enrollment and the published agent version are re-checked at retry time rather than copied from the old run, so reverting an agent release mid-incident excludes the sites that are no longer behind instead of quietly upgrading them to a build you withdrew.",
+      },
+      {
+        tag: "Added",
+        text: "Retrying an agent rollout re-runs the whole staged rollout with a fresh canary. A retry has proven nothing about the new attempt, so it starts from one site again rather than dispatching every previously-cancelled site at once.",
+      },
+    ],
+  },
+  {
     version: "0.61.119",
     date: "2026-08-04",
     summary:

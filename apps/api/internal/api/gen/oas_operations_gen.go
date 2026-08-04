@@ -319,6 +319,7 @@ const (
 	RestoreSiteOperation                       OperationName = "RestoreSite"
 	RestoreSiteFileVersionOperation            OperationName = "RestoreSiteFileVersion"
 	RestoreSiteVulnerabilityOperation          OperationName = "RestoreSiteVulnerability"
+	RetryUpdateRunOperation                    OperationName = "RetryUpdateRun"
 	RevertDbSnapshotOperation                  OperationName = "RevertDbSnapshot"
 	RevokeAdminAccountCompOperation            OperationName = "RevokeAdminAccountComp"
 	RevokeAllTrustedDevicesOperation           OperationName = "RevokeAllTrustedDevices"

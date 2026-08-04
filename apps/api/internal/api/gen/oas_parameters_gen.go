@@ -23285,6 +23285,72 @@ func decodeRestoreSiteVulnerabilityParams(args [2]string, argsEscaped bool, r *h
 	return params, nil
 }
 
+// RetryUpdateRunParams is parameters of retryUpdateRun operation.
+type RetryUpdateRunParams struct {
+	// The run whose tasks are being retried.
+	ID uuid.UUID
+}
+
+func unpackRetryUpdateRunParams(packed middleware.Parameters) (params RetryUpdateRunParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "id",
+			In:   "path",
+		}
+		params.ID = packed[key].(uuid.UUID)
+	}
+	return params
+}
+
+func decodeRetryUpdateRunParams(args [1]string, argsEscaped bool, r *http.Request) (params RetryUpdateRunParams, _ error) {
+	// Decode path: id.
+	if err := func() error {
+		param := args[0]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[0])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param:   "id",
+				Value:   param,
+				Style:   uri.PathStyleSimple,
+				Explode: false,
+			})
+
+			if err := func() error {
+				val, err := d.DecodeValue()
+				if err != nil {
+					return err
+				}
+
+				c, err := conv.ToUUID(val)
+				if err != nil {
+					return err
+				}
+
+				params.ID = c
+				return nil
+			}(); err != nil {
+				return err
+			}
+		} else {
+			return validate.ErrFieldRequired
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "id",
+			In:   "path",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // RevertDbSnapshotParams is parameters of revertDbSnapshot operation.
 type RevertDbSnapshotParams struct {
 	SiteId     uuid.UUID

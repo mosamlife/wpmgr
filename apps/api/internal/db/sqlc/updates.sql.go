@@ -762,6 +762,9 @@ type ListUpdateTasksForRunParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 }
 
+// The wave-machine read (loadAgentRunLocked) and any other path that needs the
+// raw task rows and nothing else. Deliberately join-free: it runs inside the
+// per-run advisory lock on every claim, so it stays as narrow as possible.
 func (q *Queries) ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error) {
 	rows, err := q.db.Query(ctx, listUpdateTasksForRun, arg.RunID, arg.TenantID)
 	if err != nil {
@@ -788,6 +791,101 @@ func (q *Queries) ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasks
 			&i.FinishedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUpdateTasksForRunWithSiteName = `-- name: ListUpdateTasksForRunWithSiteName :many
+SELECT t.id, t.run_id, t.tenant_id, t.site_id, t.target_type, t.target_slug, t.desired_version, t.from_version, t.to_version, t.status, t.detail, t.error, t.started_at, t.finished_at, t.created_at, t.updated_at, coalesce(s.name, '')::text AS site_name
+FROM update_tasks t
+LEFT JOIN sites s ON s.id = t.site_id AND s.tenant_id = t.tenant_id
+WHERE t.run_id = $1 AND t.tenant_id = $2
+ORDER BY t.created_at ASC, t.id ASC
+`
+
+type ListUpdateTasksForRunWithSiteNameParams struct {
+	RunID    uuid.UUID `json:"run_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+type ListUpdateTasksForRunWithSiteNameRow struct {
+	ID             uuid.UUID          `json:"id"`
+	RunID          uuid.UUID          `json:"run_id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	SiteID         uuid.UUID          `json:"site_id"`
+	TargetType     string             `json:"target_type"`
+	TargetSlug     string             `json:"target_slug"`
+	DesiredVersion string             `json:"desired_version"`
+	FromVersion    string             `json:"from_version"`
+	ToVersion      string             `json:"to_version"`
+	Status         string             `json:"status"`
+	Detail         string             `json:"detail"`
+	Error          string             `json:"error"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	FinishedAt     pgtype.Timestamptz `json:"finished_at"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	SiteName       string             `json:"site_name"`
+}
+
+// The DETAIL read (GET /api/v1/updates/{runId}): the same tenant-scoped task
+// rows plus each site's display name.
+//
+// The name is resolved HERE, by the database, and not by the caller joining a
+// task list against a separately-fetched site list. A client-side join has to
+// fetch that site list from somewhere, and every list endpoint in this control
+// plane is paginated (site.Service.List defaults to 50 rows), so a run wider
+// than one page silently renders raw UUIDs for the overflow and, worse, gives
+// a selection UI a site identity it cannot resolve. A task row already knows
+// exactly one site; this is the query that says which.
+//
+// LEFT JOIN + coalesce rather than an inner join: sites.id is a FK with ON
+// DELETE CASCADE, so a task whose site is gone is gone too and the join
+// ALWAYS matches today. The left join keeps that an assumption the query does
+// not depend on -- a task row must never vanish from a run's history because
+// its site row could not be read.
+//
+// The `, t.id` tiebreaker is the project ORDER BY convention and is
+// load-bearing here: every task in a run is inserted by ONE transaction and
+// Postgres gives every now() in a transaction the same timestamp, so
+// created_at alone is not a total order and rows could shuffle between two
+// reads of the same run. It also makes this order identical to the wave order
+// (waveOrder sorts by the same pair), so an agent rollout's canary is the
+// first row of the table.
+func (q *Queries) ListUpdateTasksForRunWithSiteName(ctx context.Context, arg ListUpdateTasksForRunWithSiteNameParams) ([]ListUpdateTasksForRunWithSiteNameRow, error) {
+	rows, err := q.db.Query(ctx, listUpdateTasksForRunWithSiteName, arg.RunID, arg.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUpdateTasksForRunWithSiteNameRow
+	for rows.Next() {
+		var i ListUpdateTasksForRunWithSiteNameRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.TargetType,
+			&i.TargetSlug,
+			&i.DesiredVersion,
+			&i.FromVersion,
+			&i.ToVersion,
+			&i.Status,
+			&i.Detail,
+			&i.Error,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SiteName,
 		); err != nil {
 			return nil, err
 		}

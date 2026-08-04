@@ -95440,6 +95440,120 @@ func (s *RestoreSiteVulnerabilityUnauthorized) UnmarshalJSON(data []byte) error 
 	return s.Decode(d)
 }
 
+// Encode encodes RetryUpdateRunConflict as json.
+func (s *RetryUpdateRunConflict) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes RetryUpdateRunConflict from json.
+func (s *RetryUpdateRunConflict) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RetryUpdateRunConflict to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = RetryUpdateRunConflict(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RetryUpdateRunConflict) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RetryUpdateRunConflict) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes RetryUpdateRunNotFound as json.
+func (s *RetryUpdateRunNotFound) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes RetryUpdateRunNotFound from json.
+func (s *RetryUpdateRunNotFound) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RetryUpdateRunNotFound to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = RetryUpdateRunNotFound(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RetryUpdateRunNotFound) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RetryUpdateRunNotFound) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes RetryUpdateRunUnprocessableEntity as json.
+func (s *RetryUpdateRunUnprocessableEntity) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes RetryUpdateRunUnprocessableEntity from json.
+func (s *RetryUpdateRunUnprocessableEntity) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode RetryUpdateRunUnprocessableEntity to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = RetryUpdateRunUnprocessableEntity(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *RetryUpdateRunUnprocessableEntity) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *RetryUpdateRunUnprocessableEntity) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes RevokeAdminAccountCompForbidden as json.
 func (s *RevokeAdminAccountCompForbidden) Encode(e *jx.Encoder) {
 	unwrapped := (*Error)(s)
@@ -118026,6 +118140,470 @@ func (s *UpdateRunList) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode implements json.Marshaler.
+func (s *UpdateRunRetryExclusion) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpdateRunRetryExclusion) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("task_id")
+		json.EncodeUUID(e, s.TaskID)
+	}
+	{
+		e.FieldStart("reason")
+		s.Reason.Encode(e)
+	}
+	{
+		e.FieldStart("message")
+		e.Str(s.Message)
+	}
+}
+
+var jsonFieldsNameOfUpdateRunRetryExclusion = [3]string{
+	0: "task_id",
+	1: "reason",
+	2: "message",
+}
+
+// Decode decodes UpdateRunRetryExclusion from json.
+func (s *UpdateRunRetryExclusion) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateRunRetryExclusion to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "task_id":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := json.DecodeUUID(d)
+				s.TaskID = v
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"task_id\"")
+			}
+		case "reason":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				if err := s.Reason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"reason\"")
+			}
+		case "message":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.Message = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"message\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpdateRunRetryExclusion")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfUpdateRunRetryExclusion) {
+					name = jsonFieldsNameOfUpdateRunRetryExclusion[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpdateRunRetryExclusion) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateRunRetryExclusion) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UpdateRunRetryExclusionReason as json.
+func (s UpdateRunRetryExclusionReason) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes UpdateRunRetryExclusionReason from json.
+func (s *UpdateRunRetryExclusionReason) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateRunRetryExclusionReason to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch UpdateRunRetryExclusionReason(v) {
+	case UpdateRunRetryExclusionReasonNotInRun:
+		*s = UpdateRunRetryExclusionReasonNotInRun
+	case UpdateRunRetryExclusionReasonNotRetryable:
+		*s = UpdateRunRetryExclusionReasonNotRetryable
+	case UpdateRunRetryExclusionReasonSiteNotFound:
+		*s = UpdateRunRetryExclusionReasonSiteNotFound
+	case UpdateRunRetryExclusionReasonSiteNotEnrolled:
+		*s = UpdateRunRetryExclusionReasonSiteNotEnrolled
+	case UpdateRunRetryExclusionReasonAgentCurrent:
+		*s = UpdateRunRetryExclusionReasonAgentCurrent
+	case UpdateRunRetryExclusionReasonAgentIneligible:
+		*s = UpdateRunRetryExclusionReasonAgentIneligible
+	case UpdateRunRetryExclusionReasonAgentVersionUnknown:
+		*s = UpdateRunRetryExclusionReasonAgentVersionUnknown
+	case UpdateRunRetryExclusionReasonTargetInFlight:
+		*s = UpdateRunRetryExclusionReasonTargetInFlight
+	case UpdateRunRetryExclusionReasonDuplicateTarget:
+		*s = UpdateRunRetryExclusionReasonDuplicateTarget
+	default:
+		*s = UpdateRunRetryExclusionReason(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s UpdateRunRetryExclusionReason) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateRunRetryExclusionReason) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpdateRunRetryRequest) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpdateRunRetryRequest) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("task_ids")
+		e.ArrStart()
+		for _, elem := range s.TaskIds {
+			json.EncodeUUID(e, elem)
+		}
+		e.ArrEnd()
+	}
+}
+
+var jsonFieldsNameOfUpdateRunRetryRequest = [1]string{
+	0: "task_ids",
+}
+
+// Decode decodes UpdateRunRetryRequest from json.
+func (s *UpdateRunRetryRequest) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateRunRetryRequest to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "task_ids":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				s.TaskIds = make([]uuid.UUID, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem uuid.UUID
+					v, err := json.DecodeUUID(d)
+					elem = v
+					if err != nil {
+						return err
+					}
+					s.TaskIds = append(s.TaskIds, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"task_ids\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpdateRunRetryRequest")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfUpdateRunRetryRequest) {
+					name = jsonFieldsNameOfUpdateRunRetryRequest[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpdateRunRetryRequest) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateRunRetryRequest) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *UpdateRunRetryResult) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *UpdateRunRetryResult) encodeFields(e *jx.Encoder) {
+	{
+		if s.RunID.Set {
+			e.FieldStart("run_id")
+			s.RunID.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("requested")
+		e.Int(s.Requested)
+	}
+	{
+		e.FieldStart("created")
+		e.Int(s.Created)
+	}
+	{
+		e.FieldStart("excluded")
+		e.ArrStart()
+		for _, elem := range s.Excluded {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+	{
+		if s.Warning.Set {
+			e.FieldStart("warning")
+			s.Warning.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfUpdateRunRetryResult = [5]string{
+	0: "run_id",
+	1: "requested",
+	2: "created",
+	3: "excluded",
+	4: "warning",
+}
+
+// Decode decodes UpdateRunRetryResult from json.
+func (s *UpdateRunRetryResult) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateRunRetryResult to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "run_id":
+			if err := func() error {
+				s.RunID.Reset()
+				if err := s.RunID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"run_id\"")
+			}
+		case "requested":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int()
+				s.Requested = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requested\"")
+			}
+		case "created":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Int()
+				s.Created = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"created\"")
+			}
+		case "excluded":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				s.Excluded = make([]UpdateRunRetryExclusion, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem UpdateRunRetryExclusion
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Excluded = append(s.Excluded, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"excluded\"")
+			}
+		case "warning":
+			if err := func() error {
+				s.Warning.Reset()
+				if err := s.Warning.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"warning\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode UpdateRunRetryResult")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00001110,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfUpdateRunRetryResult) {
+					name = jsonFieldsNameOfUpdateRunRetryResult[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *UpdateRunRetryResult) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateRunRetryResult) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes UpdateRunStatus as json.
 func (s UpdateRunStatus) Encode(e *jx.Encoder) {
 	e.Str(string(s))
@@ -118552,6 +119130,12 @@ func (s *UpdateTask) encodeFields(e *jx.Encoder) {
 		json.EncodeUUID(e, s.SiteID)
 	}
 	{
+		if s.SiteName.Set {
+			e.FieldStart("site_name")
+			s.SiteName.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("target_type")
 		s.TargetType.Encode(e)
 	}
@@ -118580,6 +119164,14 @@ func (s *UpdateTask) encodeFields(e *jx.Encoder) {
 	{
 		e.FieldStart("status")
 		s.Status.Encode(e)
+	}
+	{
+		e.FieldStart("retryable")
+		e.Bool(s.Retryable)
+	}
+	{
+		e.FieldStart("retry_class")
+		s.RetryClass.Encode(e)
 	}
 	{
 		if s.Detail.Set {
@@ -118615,23 +119207,26 @@ func (s *UpdateTask) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfUpdateTask = [16]string{
+var jsonFieldsNameOfUpdateTask = [19]string{
 	0:  "id",
 	1:  "run_id",
 	2:  "tenant_id",
 	3:  "site_id",
-	4:  "target_type",
-	5:  "target_slug",
-	6:  "desired_version",
-	7:  "from_version",
-	8:  "to_version",
-	9:  "status",
-	10: "detail",
-	11: "error",
-	12: "started_at",
-	13: "finished_at",
-	14: "created_at",
-	15: "updated_at",
+	4:  "site_name",
+	5:  "target_type",
+	6:  "target_slug",
+	7:  "desired_version",
+	8:  "from_version",
+	9:  "to_version",
+	10: "status",
+	11: "retryable",
+	12: "retry_class",
+	13: "detail",
+	14: "error",
+	15: "started_at",
+	16: "finished_at",
+	17: "created_at",
+	18: "updated_at",
 }
 
 // Decode decodes UpdateTask from json.
@@ -118639,7 +119234,7 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode UpdateTask to nil")
 	}
-	var requiredBitSet [2]uint8
+	var requiredBitSet [3]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -118691,8 +119286,18 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"site_id\"")
 			}
+		case "site_name":
+			if err := func() error {
+				s.SiteName.Reset()
+				if err := s.SiteName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_name\"")
+			}
 		case "target_type":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				if err := s.TargetType.Decode(d); err != nil {
 					return err
@@ -118702,7 +119307,7 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"target_type\"")
 			}
 		case "target_slug":
-			requiredBitSet[0] |= 1 << 5
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
 				v, err := d.Str()
 				s.TargetSlug = string(v)
@@ -118744,7 +119349,7 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"to_version\"")
 			}
 		case "status":
-			requiredBitSet[1] |= 1 << 1
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				if err := s.Status.Decode(d); err != nil {
 					return err
@@ -118752,6 +119357,28 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"status\"")
+			}
+		case "retryable":
+			requiredBitSet[1] |= 1 << 3
+			if err := func() error {
+				v, err := d.Bool()
+				s.Retryable = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"retryable\"")
+			}
+		case "retry_class":
+			requiredBitSet[1] |= 1 << 4
+			if err := func() error {
+				if err := s.RetryClass.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"retry_class\"")
 			}
 		case "detail":
 			if err := func() error {
@@ -118794,7 +119421,7 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"finished_at\"")
 			}
 		case "created_at":
-			requiredBitSet[1] |= 1 << 6
+			requiredBitSet[2] |= 1 << 1
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -118806,7 +119433,7 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[1] |= 1 << 7
+			requiredBitSet[2] |= 1 << 2
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -118826,9 +119453,10 @@ func (s *UpdateTask) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [2]uint8{
-		0b00111111,
-		0b11000010,
+	for i, mask := range [3]uint8{
+		0b01101111,
+		0b00011100,
+		0b00000110,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -118870,6 +119498,52 @@ func (s *UpdateTask) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *UpdateTask) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes UpdateTaskRetryClass as json.
+func (s UpdateTaskRetryClass) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes UpdateTaskRetryClass from json.
+func (s *UpdateTaskRetryClass) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode UpdateTaskRetryClass to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch UpdateTaskRetryClass(v) {
+	case UpdateTaskRetryClassNeverRan:
+		*s = UpdateTaskRetryClassNeverRan
+	case UpdateTaskRetryClassFailed:
+		*s = UpdateTaskRetryClassFailed
+	case UpdateTaskRetryClassReverted:
+		*s = UpdateTaskRetryClassReverted
+	case UpdateTaskRetryClassSkipped:
+		*s = UpdateTaskRetryClassSkipped
+	case UpdateTaskRetryClassNotApplicable:
+		*s = UpdateTaskRetryClassNotApplicable
+	default:
+		*s = UpdateTaskRetryClass(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s UpdateTaskRetryClass) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *UpdateTaskRetryClass) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

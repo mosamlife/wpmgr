@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { UpdateTask } from "@wpmgr/api";
 
+import { serverRetryFields } from "@/test/update-task-fixtures";
+
 import {
   isSiteDownRecovery,
   isTerminalRunStatus,
@@ -8,7 +10,7 @@ import {
   haltReason,
 } from "./summarize";
 
-// GH #210 — pure-logic coverage for the site-down-recovery detector: the
+// GH #210: pure-logic coverage for the site-down-recovery detector: the
 // worst-case rollback failure (site-wide PHP fatal, undeliverable rollback,
 // automatic filesystem recovery attempted by the agent watchdog). The
 // backend keeps the existing failed/rolled_back status and communicates the
@@ -111,6 +113,7 @@ describe("isAgentNotEligible", () => {
 
 describe("haltReason", () => {
   function task(overrides: Partial<UpdateTask>): UpdateTask {
+    const status = overrides.status ?? "cancelled";
     return {
       id: "task-1",
       run_id: "run-1",
@@ -121,6 +124,9 @@ describe("haltReason", () => {
       status: "cancelled",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
+      // GH #336: the server always writes the retry pair its own
+      // retryClassify would produce for this status.
+      ...serverRetryFields(status),
       ...overrides,
     };
   }

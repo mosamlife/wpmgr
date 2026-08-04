@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.119
+  version: 0.61.120
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -5860,6 +5860,91 @@ paths:
                 $ref: "#/components/schemas/UpdateRun"
         "404":
           description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/updates/runs/{id}/retry:
+    post:
+      operationId: retryUpdateRun
+      summary: Retry selected tasks of an update run
+      description: |
+        Creates a NEW update run repeating the named tasks of an existing one.
+        The source run is never mutated: the failure it records stays exactly as
+        it happened.
+
+        The retry is planned from the TASK ROWS, so each new task targets the
+        same (site, target) pair as the task it repeats, with the same desired
+        version. It does not replay the original request's item selection, which
+        would re-expand items across sites and re-intersect them against each
+        site's current pending set.
+
+        Two things are RE-RESOLVED rather than copied, because they are facts
+        about now and not about the old run:
+
+        * enrollment - a site unenrolled since the run is excluded;
+        * the published agent version - for an agent rollout, each site is
+          re-classified against the version published RIGHT NOW, so a release
+          reverted mid-incident excludes the sites that are no longer behind
+          instead of silently upgrading them to a target that moved.
+
+        An agent retry re-runs the whole wave structure with a fresh canary:
+        only the first wave is enqueued, and the claim-time wave gate is
+        authoritative regardless, so a retry cannot dispatch a fleet at once and
+        cannot bypass the gate.
+
+        The response accounts for EVERY requested task: `created` +
+        `len(excluded)` always equals `requested`. Requires operator+.
+      tags: [updates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The run whose tasks are being retried.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRunRetryRequest"
+      responses:
+        "200":
+          description: |
+            The retry was processed. This is returned whether or not any task
+            was created, INCLUDING when every requested task was excluded
+            (`created: 0`, no `run_id`): that is a complete answer to a
+            well-formed request, and returning an error there would replace the
+            per-task reasons with an opaque code. Check `created` against
+            `requested` and render `excluded`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRunRetryResult"
+        "404":
+          description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            The agent self-update channel is disabled on this control plane
+            (`agent_self_update_disabled`), or the currently published agent
+            version could not be determined (`agent_release_unknown`). Only
+            reachable when the selection is an agent rollout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: |
+            Validation failed: no task ids (`task_ids_required`), more than the
+            per-request maximum (`too_many_tasks`), or a selection mixing the
+            agent target with plugin/theme/core tasks
+            (`agent_target_exclusive`).
           content:
             application/json:
               schema:
@@ -14386,7 +14471,11 @@ components:
           description: Optional time to run; omitted/now means immediately.
     UpdateTask:
       type: object
-      required: [id, run_id, tenant_id, site_id, target_type, target_slug, status, created_at, updated_at]
+      # retryable/retry_class are REQUIRED on purpose: they are the server's
+      # answer to "may this be retried, and what happened to it", and a client
+      # that had to cope with their absence would need a fallback rule, which is
+      # exactly the client-side guessing this pair exists to delete.
+      required: [id, run_id, tenant_id, site_id, target_type, target_slug, status, retryable, retry_class, created_at, updated_at]
       properties:
         id:
           type: string
@@ -14400,6 +14489,16 @@ components:
         site_id:
           type: string
           format: uuid
+        site_name:
+          type: string
+          description: |
+            The site's display name, resolved by the server on the run DETAIL
+            read (GET /api/v1/updates/{runId}). Present so a client never has to
+            join a task list against a separately-fetched site list to say which
+            site a task belongs to: every site list in this API is paginated, so
+            that join silently loses site identity on any run wider than one
+            page, for display AND for selection. Empty only if the site row
+            could not be read.
         target_type:
           type: string
           enum: [plugin, theme, core, agent]
@@ -14418,6 +14517,41 @@ components:
             `cancelled` means the task was never dispatched because its run was
             halted first; nothing was sent to the site. Only agent self-update
             runs can halt.
+        retryable:
+          type: boolean
+          description: |
+            Whether this task may be named in a retry request
+            (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
+            the task's own terminal-state predicate, so the affordance a client
+            offers and the decision the server makes cannot disagree. A client
+            MUST NOT infer this from `detail` or `error`: those carry
+            agent-authored prose that no client contract covers.
+        retry_class:
+          type: string
+          enum: [never_ran, failed, reverted, skipped, not_applicable]
+          description: |
+            What happened to this task, on the axis a retry decision turns on.
+            The server computes it; the client renders it.
+
+            * `never_ran` - terminal, but nothing was ever sent to the site
+              (today: `cancelled`, collateral of a halted run). Nothing on the
+              site changed, so this is the lowest-risk task to retry.
+            * `failed` - the site was contacted and the update did not succeed.
+            * `reverted` - the update applied and was then rolled back, so a
+              retry walks the identical path and may reproduce the identical
+              break.
+            * `skipped` - the control plane declined this target (already up to
+              date, site busy, agent build not upgradeable by this channel).
+              Usually correct, but a stale WordPress transient can report
+              "already current" wrongly, so it stays selectable.
+            * `not_applicable` - `succeeded` (retrying re-touches a working
+              site for nothing) or not finished yet (`pending`/`running`).
+
+            The intended client default selection is `failed` + `never_ran`:
+            both mean "this never succeeded", and `never_ran` additionally means
+            "and nothing was attempted". `reverted` and `skipped` are
+            selectable but never default-on. `not_applicable` is never
+            selectable.
         detail:
           type: string
         error:
@@ -14494,6 +14628,106 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/UpdateRun"
+    UpdateRunRetryRequest:
+      type: object
+      required: [task_ids]
+      description: |
+        The tasks to retry, named explicitly. There is no implicit server-side
+        default set: the client already knows every task's `retry_class` from
+        the run detail response, so it names the ones it means. A second policy
+        on the server could disagree with the checkboxes the operator saw.
+      properties:
+        task_ids:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          description: |
+            Task ids from the run being retried. Repeats are collapsed, so
+            `requested` in the response counts DISTINCT ids. An id that is not a
+            task of this run is reported in `excluded` rather than rejecting the
+            whole request.
+          items:
+            type: string
+            format: uuid
+    UpdateRunRetryExclusion:
+      type: object
+      required: [task_id, reason, message]
+      description: One requested task that produced no work, and why.
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          enum:
+            - not_in_run
+            - not_retryable
+            - site_not_found
+            - site_not_enrolled
+            - agent_current
+            - agent_ineligible
+            - agent_version_unknown
+            - target_in_flight
+            - duplicate_target
+          description: |
+            The machine value, stable and safe to group or count on.
+
+            * `not_in_run` - the id is not a task of this run.
+            * `not_retryable` - the task succeeded, or has not finished yet.
+            * `site_not_found` - the site no longer resolves.
+            * `site_not_enrolled` - the site is no longer enrolled, so no signed
+              command can be delivered to it.
+            * `agent_current` - the site already runs the published agent build.
+              This is what fires when the release was reverted mid-incident.
+            * `agent_ineligible` - the site runs the plugin-directory build,
+              which has no self-updater.
+            * `agent_version_unknown` - a version could not be compared, and an
+              unreadable version must never become an upgrade.
+            * `target_in_flight` - this (site, target) already has a pending or
+              running task in another run.
+            * `duplicate_target` - another selected task already retries the
+              same (site, target).
+        message:
+          type: string
+          description: |
+            The server-authored sentence for this exclusion, including the
+            specifics (which versions, which status). Rendered as-is; a client
+            does not need its own copy table to explain an exclusion.
+    UpdateRunRetryResult:
+      type: object
+      required: [requested, created, excluded]
+      description: |
+        Accounts for every requested task: `created` + `len(excluded)` always
+        equals `requested`. If `created` is lower than `requested`, the
+        difference is fully itemised in `excluded` and MUST be surfaced to the
+        operator; a partial commit that looks like a complete one is the failure
+        mode this shape exists to prevent.
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          description: |
+            The NEW run. Absent when nothing was created (every requested task
+            was excluded), which is a legitimate outcome and not an error.
+        requested:
+          type: integer
+          description: Number of DISTINCT task ids in the request.
+        created:
+          type: integer
+          description: Number of tasks in the new run.
+        excluded:
+          type: array
+          description: Every requested task that produced no task in the new run.
+          items:
+            $ref: "#/components/schemas/UpdateRunRetryExclusion"
+        warning:
+          type: string
+          description: |
+            Set when the run exists but a best-effort step after the commit did
+            not go to plan (today: a background job could not be scheduled, so
+            some tasks sit pending until the reaper terminalises them). The run
+            and its tasks are real and visible; surface this alongside them
+            rather than treating the retry as failed.
     UpdateEvent:
       type: object
       description: One task-status transition streamed over SSE.

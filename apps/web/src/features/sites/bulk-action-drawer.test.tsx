@@ -4,6 +4,7 @@ import type { Site, SiteTag, UpdateRun, UpdateTask } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult, mockMutationResult } from "@/test/query-mocks";
+import { serverRetryFields } from "@/test/update-task-fixtures";
 
 // cmdk's inline TagPicker (rendered by TagEditDrawer) needs the same jsdom
 // shims as tag-picker.test.tsx.
@@ -435,6 +436,9 @@ describe("BulkActionDrawer — update-run branch renders identically after the G
       target_slug: "akismet",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
+      // GH #336: the server always writes the retry pair its own
+      // retryClassify would produce for this status.
+      ...serverRetryFields(overrides.status),
       ...overrides,
     };
   }

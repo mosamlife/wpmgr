@@ -18,8 +18,10 @@ const TASK_TONE: Record<TaskStatus, { tone: StatusTone; label: string; pulse?: b
   running: { tone: "info", label: "Running", pulse: true },
   pending: { tone: "muted", label: "Pending" },
   skipped: { tone: "muted", label: "Skipped" },
-  // GH #255 Phase 2: never dispatched because its run halted first.
-  cancelled: { tone: "muted", label: "Cancelled" },
+  // GH #255 Phase 2: never dispatched because its run halted first. GH #336
+  // relabels it: nobody cancelled this, the control plane withheld it, and
+  // nothing was ever sent to the site.
+  cancelled: { tone: "muted", label: "Not attempted" },
 };
 
 export function TaskStatusBadge({
@@ -27,11 +29,12 @@ export function TaskStatusBadge({
 }: {
   task: Pick<UpdateTask, "status" | "detail" | "error" | "target_type">;
 }) {
-  // GH #210 — the site-wide-fatal + undeliverable-rollback + auto-filesystem-
+  // GH #210: the site-wide-fatal + undeliverable-rollback + auto-filesystem-
   // recovery condition is distinct and more severe than an ordinary failure
   // or rollback. The backend reports it through detail/error text on the
   // existing failed/rolled_back statuses, so surface it as its own chip
-  // instead of the generic "Failed"/"Rolled back" label.
+  // instead of the generic "Failed"/"Rolled back" label. This is a LABEL
+  // choice only; retryability is a server field, never this predicate.
   if (isSiteDownRecovery(task.status, task.detail, task.error)) {
     return <StatusChip tone="destructive" label={SITE_DOWN_RECOVERY_LABEL} />;
   }
