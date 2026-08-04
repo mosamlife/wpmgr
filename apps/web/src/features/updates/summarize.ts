@@ -38,6 +38,21 @@ export function summarizeTasks(tasks: UpdateTask[]): {
 }
 
 /**
+ * Terminal task states, matching the control plane's own `terminal()`
+ * predicate (apps/api/internal/update/model.go). A task in one of these
+ * states has a final outcome and carries the server's retry classification.
+ */
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return (
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "rolled_back" ||
+    status === "skipped" ||
+    status === "cancelled"
+  );
+}
+
+/**
  * Terminal run states. `halted` (GH #255 Phase 2) is specific to the agent
  * self-update channel: a staged-rollout wave failed to prove itself, so the
  * run stopped early and every task not already dispatched was cancelled.
@@ -133,15 +148,22 @@ export function siteNameMap(sites: Site[] | undefined): Map<string, string> {
   return map;
 }
 
-// GH #210 — the worst-case rollback failure: an update causes a site-wide
+// GH #210: the worst-case rollback failure. An update causes a site-wide
 // PHP fatal, so the rollback command is undeliverable (it rides the same
-// WordPress request that's fataling), and an agent-side watchdog attempts
+// WordPress request that is fataling), and an agent-side watchdog attempts
 // automatic filesystem-level recovery. The backend keeps the existing task
 // status enum (failed/rolled_back) and communicates this condition purely
 // through the detail/error text, so callers key off content rather than a
 // new status value. Every surface that renders a task's outcome should use
 // this helper rather than re-deriving the pattern locally, so the condition
 // reads consistently (and never as a generic "rollback failed") everywhere.
+//
+// DISPLAY ONLY, AND DELIBERATELY SO (GH #336). This and `isAgentNotEligible`
+// match prose the AGENT frequently authored, so they pick a badge label and
+// nothing else. No safety or selection decision may read them: whether a task
+// can be retried is the server's `retryable`/`retry_class` fields, which the
+// control plane computes from the machine values it already holds when it
+// writes the row (see features/updates/retry-contract.ts).
 const SITE_DOWN_RECOVERY_STATUSES = new Set(["failed", "rolled_back"]);
 const SITE_DOWN_RECOVERY_PATTERN =
   /site[- ]wide|site is down|not responding|undeliverable|filesystem recovery|automatic recovery|watchdog/i;

@@ -2893,6 +2893,8 @@ export const UpdateTaskSchema = {
     "target_type",
     "target_slug",
     "status",
+    "retryable",
+    "retry_class",
     "created_at",
     "updated_at",
   ],
@@ -2912,6 +2914,11 @@ export const UpdateTaskSchema = {
     site_id: {
       type: "string",
       format: "uuid",
+    },
+    site_name: {
+      type: "string",
+      description:
+        "The site's display name, resolved by the server on the run DETAIL\nread (GET /api/v1/updates/{runId}). Present so a client never has to\njoin a task list against a separately-fetched site list to say which\nsite a task belongs to: every site list in this API is paginated, so\nthat join silently loses site identity on any run wider than one\npage, for display AND for selection. Empty only if the site row\ncould not be read.\n",
     },
     target_type: {
       type: "string",
@@ -2942,6 +2949,17 @@ export const UpdateTaskSchema = {
       ],
       description:
         "`cancelled` means the task was never dispatched because its run was\nhalted first; nothing was sent to the site. Only agent self-update\nruns can halt.\n",
+    },
+    retryable: {
+      type: "boolean",
+      description:
+        "Whether this task may be named in a retry request\n(POST /api/v1/updates/runs/{id}/retry). Computed by the server from\nthe task's own terminal-state predicate, so the affordance a client\noffers and the decision the server makes cannot disagree. A client\nMUST NOT infer this from `detail` or `error`: those carry\nagent-authored prose that no client contract covers.\n",
+    },
+    retry_class: {
+      type: "string",
+      enum: ["never_ran", "failed", "reverted", "skipped", "not_applicable"],
+      description:
+        'What happened to this task, on the axis a retry decision turns on.\nThe server computes it; the client renders it.\n\n* `never_ran` - terminal, but nothing was ever sent to the site\n  (today: `cancelled`, collateral of a halted run). Nothing on the\n  site changed, so this is the lowest-risk task to retry.\n* `failed` - the site was contacted and the update did not succeed.\n* `reverted` - the update applied and was then rolled back, so a\n  retry walks the identical path and may reproduce the identical\n  break.\n* `skipped` - the control plane declined this target (already up to\n  date, site busy, agent build not upgradeable by this channel).\n  Usually correct, but a stale WordPress transient can report\n  "already current" wrongly, so it stays selectable.\n* `not_applicable` - `succeeded` (retrying re-touches a working\n  site for nothing) or not finished yet (`pending`/`running`).\n\nThe intended client default selection is `failed` + `never_ran`:\nboth mean "this never succeeded", and `never_ran` additionally means\n"and nothing was attempted". `reverted` and `skipped` are\nselectable but never default-on. `not_applicable` is never\nselectable.\n',
     },
     detail: {
       type: "string",
@@ -3052,6 +3070,94 @@ export const UpdateRunListSchema = {
       items: {
         $ref: "#/components/schemas/UpdateRun",
       },
+    },
+  },
+} as const;
+
+export const UpdateRunRetryRequestSchema = {
+  type: "object",
+  required: ["task_ids"],
+  description:
+    "The tasks to retry, named explicitly. There is no implicit server-side\ndefault set: the client already knows every task's `retry_class` from\nthe run detail response, so it names the ones it means. A second policy\non the server could disagree with the checkboxes the operator saw.\n",
+  properties: {
+    task_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 5000,
+      description:
+        "Task ids from the run being retried. Repeats are collapsed, so\n`requested` in the response counts DISTINCT ids. An id that is not a\ntask of this run is reported in `excluded` rather than rejecting the\nwhole request.\n",
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+  },
+} as const;
+
+export const UpdateRunRetryExclusionSchema = {
+  type: "object",
+  required: ["task_id", "reason", "message"],
+  description: "One requested task that produced no work, and why.",
+  properties: {
+    task_id: {
+      type: "string",
+      format: "uuid",
+    },
+    reason: {
+      type: "string",
+      enum: [
+        "not_in_run",
+        "not_retryable",
+        "site_not_found",
+        "site_not_enrolled",
+        "agent_current",
+        "agent_ineligible",
+        "agent_version_unknown",
+        "target_in_flight",
+        "duplicate_target",
+      ],
+      description:
+        "The machine value, stable and safe to group or count on.\n\n* `not_in_run` - the id is not a task of this run.\n* `not_retryable` - the task succeeded, or has not finished yet.\n* `site_not_found` - the site no longer resolves.\n* `site_not_enrolled` - the site is no longer enrolled, so no signed\n  command can be delivered to it.\n* `agent_current` - the site already runs the published agent build.\n  This is what fires when the release was reverted mid-incident.\n* `agent_ineligible` - the site runs the plugin-directory build,\n  which has no self-updater.\n* `agent_version_unknown` - a version could not be compared, and an\n  unreadable version must never become an upgrade.\n* `target_in_flight` - this (site, target) already has a pending or\n  running task in another run.\n* `duplicate_target` - another selected task already retries the\n  same (site, target).\n",
+    },
+    message: {
+      type: "string",
+      description:
+        "The server-authored sentence for this exclusion, including the\nspecifics (which versions, which status). Rendered as-is; a client\ndoes not need its own copy table to explain an exclusion.\n",
+    },
+  },
+} as const;
+
+export const UpdateRunRetryResultSchema = {
+  type: "object",
+  required: ["requested", "created", "excluded"],
+  description:
+    "Accounts for every requested task: `created` + `len(excluded)` always\nequals `requested`. If `created` is lower than `requested`, the\ndifference is fully itemised in `excluded` and MUST be surfaced to the\noperator; a partial commit that looks like a complete one is the failure\nmode this shape exists to prevent.\n",
+  properties: {
+    run_id: {
+      type: "string",
+      format: "uuid",
+      description:
+        "The NEW run. Absent when nothing was created (every requested task\nwas excluded), which is a legitimate outcome and not an error.\n",
+    },
+    requested: {
+      type: "integer",
+      description: "Number of DISTINCT task ids in the request.",
+    },
+    created: {
+      type: "integer",
+      description: "Number of tasks in the new run.",
+    },
+    excluded: {
+      type: "array",
+      description: "Every requested task that produced no task in the new run.",
+      items: {
+        $ref: "#/components/schemas/UpdateRunRetryExclusion",
+      },
+    },
+    warning: {
+      type: "string",
+      description:
+        "Set when the run exists but a best-effort step after the commit did\nnot go to plan (today: a background job could not be scheduled, so\nsome tasks sit pending until the reaper terminalises them). The run\nand its tasks are real and visible; surface this alongside them\nrather than treating the retry as failed.\n",
     },
   },
 } as const;
@@ -9867,6 +9973,9 @@ export const PortalVitalMetricSchema = {
     p75: {
       type: "number",
       format: "float",
+      description:
+        '75th percentile, in MILLI-UNITS for every metric. Timing metrics (lcp, inp) are therefore milliseconds. CLS is thousandths of a unit, so a CLS of 0.1 is sent as 100 and a client must divide by 1000 before display. This field carried no unit for a long time and a consumer rendered CLS undivided, showing a good score of 0.1 to an end client as "100.000".',
+      example: 2450,
     },
     rating: {
       type: "string",

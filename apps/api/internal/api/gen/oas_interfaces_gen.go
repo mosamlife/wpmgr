@@ -1041,6 +1041,10 @@ type RestoreSiteVulnerabilityRes interface {
 	restoreSiteVulnerabilityRes()
 }
 
+type RetryUpdateRunRes interface {
+	retryUpdateRunRes()
+}
+
 type RevokeAdminAccountCompRes interface {
 	revokeAdminAccountCompRes()
 }

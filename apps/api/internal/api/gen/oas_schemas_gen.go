@@ -36490,7 +36490,11 @@ func (*PortalUptimeSummary) getPortalSiteUptimeRes() {}
 
 // Ref: #/components/schemas/PortalVitalMetric
 type PortalVitalMetric struct {
-	Metric  PortalVitalMetricMetric `json:"metric"`
+	Metric PortalVitalMetricMetric `json:"metric"`
+	// 75th percentile, in MILLI-UNITS for every metric. Timing metrics (lcp, inp) are therefore
+	// milliseconds. CLS is thousandths of a unit, so a CLS of 0.1 is sent as 100 and a client must
+	// divide by 1000 before display. This field carried no unit for a long time and a consumer rendered
+	// CLS undivided, showing a good score of 0.1 to an end client as "100.000".
 	P75     float32                 `json:"p75"`
 	Rating  PortalVitalMetricRating `json:"rating"`
 	Samples int64                   `json:"samples"`
@@ -39413,6 +39417,18 @@ func (*RestoreSiteVulnerabilityNotFound) restoreSiteVulnerabilityRes() {}
 type RestoreSiteVulnerabilityUnauthorized Error
 
 func (*RestoreSiteVulnerabilityUnauthorized) restoreSiteVulnerabilityRes() {}
+
+type RetryUpdateRunConflict Error
+
+func (*RetryUpdateRunConflict) retryUpdateRunRes() {}
+
+type RetryUpdateRunNotFound Error
+
+func (*RetryUpdateRunNotFound) retryUpdateRunRes() {}
+
+type RetryUpdateRunUnprocessableEntity Error
+
+func (*RetryUpdateRunUnprocessableEntity) retryUpdateRunRes() {}
 
 type RevokeAdminAccountCompForbidden Error
 
@@ -49021,6 +49037,268 @@ func (s *UpdateRunList) SetItems(val []UpdateRun) {
 	s.Items = val
 }
 
+// One requested task that produced no work, and why.
+// Ref: #/components/schemas/UpdateRunRetryExclusion
+type UpdateRunRetryExclusion struct {
+	TaskID uuid.UUID `json:"task_id"`
+	// The machine value, stable and safe to group or count on.
+	// * `not_in_run` - the id is not a task of this run.
+	// * `not_retryable` - the task succeeded, or has not finished yet.
+	// * `site_not_found` - the site no longer resolves.
+	// * `site_not_enrolled` - the site is no longer enrolled, so no signed
+	// command can be delivered to it.
+	// * `agent_current` - the site already runs the published agent build.
+	// This is what fires when the release was reverted mid-incident.
+	// * `agent_ineligible` - the site runs the plugin-directory build,
+	// which has no self-updater.
+	// * `agent_version_unknown` - a version could not be compared, and an
+	// unreadable version must never become an upgrade.
+	// * `target_in_flight` - this (site, target) already has a pending or
+	// running task in another run.
+	// * `duplicate_target` - another selected task already retries the
+	// same (site, target).
+	Reason UpdateRunRetryExclusionReason `json:"reason"`
+	// The server-authored sentence for this exclusion, including the
+	// specifics (which versions, which status). Rendered as-is; a client
+	// does not need its own copy table to explain an exclusion.
+	Message string `json:"message"`
+}
+
+// GetTaskID returns the value of TaskID.
+func (s *UpdateRunRetryExclusion) GetTaskID() uuid.UUID {
+	return s.TaskID
+}
+
+// GetReason returns the value of Reason.
+func (s *UpdateRunRetryExclusion) GetReason() UpdateRunRetryExclusionReason {
+	return s.Reason
+}
+
+// GetMessage returns the value of Message.
+func (s *UpdateRunRetryExclusion) GetMessage() string {
+	return s.Message
+}
+
+// SetTaskID sets the value of TaskID.
+func (s *UpdateRunRetryExclusion) SetTaskID(val uuid.UUID) {
+	s.TaskID = val
+}
+
+// SetReason sets the value of Reason.
+func (s *UpdateRunRetryExclusion) SetReason(val UpdateRunRetryExclusionReason) {
+	s.Reason = val
+}
+
+// SetMessage sets the value of Message.
+func (s *UpdateRunRetryExclusion) SetMessage(val string) {
+	s.Message = val
+}
+
+// The machine value, stable and safe to group or count on.
+// * `not_in_run` - the id is not a task of this run.
+// * `not_retryable` - the task succeeded, or has not finished yet.
+// * `site_not_found` - the site no longer resolves.
+// * `site_not_enrolled` - the site is no longer enrolled, so no signed
+// command can be delivered to it.
+// * `agent_current` - the site already runs the published agent build.
+// This is what fires when the release was reverted mid-incident.
+// * `agent_ineligible` - the site runs the plugin-directory build,
+// which has no self-updater.
+// * `agent_version_unknown` - a version could not be compared, and an
+// unreadable version must never become an upgrade.
+// * `target_in_flight` - this (site, target) already has a pending or
+// running task in another run.
+// * `duplicate_target` - another selected task already retries the
+// same (site, target).
+type UpdateRunRetryExclusionReason string
+
+const (
+	UpdateRunRetryExclusionReasonNotInRun            UpdateRunRetryExclusionReason = "not_in_run"
+	UpdateRunRetryExclusionReasonNotRetryable        UpdateRunRetryExclusionReason = "not_retryable"
+	UpdateRunRetryExclusionReasonSiteNotFound        UpdateRunRetryExclusionReason = "site_not_found"
+	UpdateRunRetryExclusionReasonSiteNotEnrolled     UpdateRunRetryExclusionReason = "site_not_enrolled"
+	UpdateRunRetryExclusionReasonAgentCurrent        UpdateRunRetryExclusionReason = "agent_current"
+	UpdateRunRetryExclusionReasonAgentIneligible     UpdateRunRetryExclusionReason = "agent_ineligible"
+	UpdateRunRetryExclusionReasonAgentVersionUnknown UpdateRunRetryExclusionReason = "agent_version_unknown"
+	UpdateRunRetryExclusionReasonTargetInFlight      UpdateRunRetryExclusionReason = "target_in_flight"
+	UpdateRunRetryExclusionReasonDuplicateTarget     UpdateRunRetryExclusionReason = "duplicate_target"
+)
+
+// AllValues returns all UpdateRunRetryExclusionReason values.
+func (UpdateRunRetryExclusionReason) AllValues() []UpdateRunRetryExclusionReason {
+	return []UpdateRunRetryExclusionReason{
+		UpdateRunRetryExclusionReasonNotInRun,
+		UpdateRunRetryExclusionReasonNotRetryable,
+		UpdateRunRetryExclusionReasonSiteNotFound,
+		UpdateRunRetryExclusionReasonSiteNotEnrolled,
+		UpdateRunRetryExclusionReasonAgentCurrent,
+		UpdateRunRetryExclusionReasonAgentIneligible,
+		UpdateRunRetryExclusionReasonAgentVersionUnknown,
+		UpdateRunRetryExclusionReasonTargetInFlight,
+		UpdateRunRetryExclusionReasonDuplicateTarget,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateRunRetryExclusionReason) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateRunRetryExclusionReasonNotInRun:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonNotRetryable:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonSiteNotFound:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonSiteNotEnrolled:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonAgentCurrent:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonAgentIneligible:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonAgentVersionUnknown:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonTargetInFlight:
+		return []byte(s), nil
+	case UpdateRunRetryExclusionReasonDuplicateTarget:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateRunRetryExclusionReason) UnmarshalText(data []byte) error {
+	switch UpdateRunRetryExclusionReason(data) {
+	case UpdateRunRetryExclusionReasonNotInRun:
+		*s = UpdateRunRetryExclusionReasonNotInRun
+		return nil
+	case UpdateRunRetryExclusionReasonNotRetryable:
+		*s = UpdateRunRetryExclusionReasonNotRetryable
+		return nil
+	case UpdateRunRetryExclusionReasonSiteNotFound:
+		*s = UpdateRunRetryExclusionReasonSiteNotFound
+		return nil
+	case UpdateRunRetryExclusionReasonSiteNotEnrolled:
+		*s = UpdateRunRetryExclusionReasonSiteNotEnrolled
+		return nil
+	case UpdateRunRetryExclusionReasonAgentCurrent:
+		*s = UpdateRunRetryExclusionReasonAgentCurrent
+		return nil
+	case UpdateRunRetryExclusionReasonAgentIneligible:
+		*s = UpdateRunRetryExclusionReasonAgentIneligible
+		return nil
+	case UpdateRunRetryExclusionReasonAgentVersionUnknown:
+		*s = UpdateRunRetryExclusionReasonAgentVersionUnknown
+		return nil
+	case UpdateRunRetryExclusionReasonTargetInFlight:
+		*s = UpdateRunRetryExclusionReasonTargetInFlight
+		return nil
+	case UpdateRunRetryExclusionReasonDuplicateTarget:
+		*s = UpdateRunRetryExclusionReasonDuplicateTarget
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// The tasks to retry, named explicitly. There is no implicit server-side
+// default set: the client already knows every task's `retry_class` from
+// the run detail response, so it names the ones it means. A second policy
+// on the server could disagree with the checkboxes the operator saw.
+// Ref: #/components/schemas/UpdateRunRetryRequest
+type UpdateRunRetryRequest struct {
+	// Task ids from the run being retried. Repeats are collapsed, so
+	// `requested` in the response counts DISTINCT ids. An id that is not a
+	// task of this run is reported in `excluded` rather than rejecting the
+	// whole request.
+	TaskIds []uuid.UUID `json:"task_ids"`
+}
+
+// GetTaskIds returns the value of TaskIds.
+func (s *UpdateRunRetryRequest) GetTaskIds() []uuid.UUID {
+	return s.TaskIds
+}
+
+// SetTaskIds sets the value of TaskIds.
+func (s *UpdateRunRetryRequest) SetTaskIds(val []uuid.UUID) {
+	s.TaskIds = val
+}
+
+// Accounts for every requested task: `created` + `len(excluded)` always
+// equals `requested`. If `created` is lower than `requested`, the
+// difference is fully itemised in `excluded` and MUST be surfaced to the
+// operator; a partial commit that looks like a complete one is the failure
+// mode this shape exists to prevent.
+// Ref: #/components/schemas/UpdateRunRetryResult
+type UpdateRunRetryResult struct {
+	// The NEW run. Absent when nothing was created (every requested task
+	// was excluded), which is a legitimate outcome and not an error.
+	RunID OptUUID `json:"run_id"`
+	// Number of DISTINCT task ids in the request.
+	Requested int `json:"requested"`
+	// Number of tasks in the new run.
+	Created int `json:"created"`
+	// Every requested task that produced no task in the new run.
+	Excluded []UpdateRunRetryExclusion `json:"excluded"`
+	// Set when the run exists but a best-effort step after the commit did
+	// not go to plan (today: a background job could not be scheduled, so
+	// some tasks sit pending until the reaper terminalises them). The run
+	// and its tasks are real and visible; surface this alongside them
+	// rather than treating the retry as failed.
+	Warning OptString `json:"warning"`
+}
+
+// GetRunID returns the value of RunID.
+func (s *UpdateRunRetryResult) GetRunID() OptUUID {
+	return s.RunID
+}
+
+// GetRequested returns the value of Requested.
+func (s *UpdateRunRetryResult) GetRequested() int {
+	return s.Requested
+}
+
+// GetCreated returns the value of Created.
+func (s *UpdateRunRetryResult) GetCreated() int {
+	return s.Created
+}
+
+// GetExcluded returns the value of Excluded.
+func (s *UpdateRunRetryResult) GetExcluded() []UpdateRunRetryExclusion {
+	return s.Excluded
+}
+
+// GetWarning returns the value of Warning.
+func (s *UpdateRunRetryResult) GetWarning() OptString {
+	return s.Warning
+}
+
+// SetRunID sets the value of RunID.
+func (s *UpdateRunRetryResult) SetRunID(val OptUUID) {
+	s.RunID = val
+}
+
+// SetRequested sets the value of Requested.
+func (s *UpdateRunRetryResult) SetRequested(val int) {
+	s.Requested = val
+}
+
+// SetCreated sets the value of Created.
+func (s *UpdateRunRetryResult) SetCreated(val int) {
+	s.Created = val
+}
+
+// SetExcluded sets the value of Excluded.
+func (s *UpdateRunRetryResult) SetExcluded(val []UpdateRunRetryExclusion) {
+	s.Excluded = val
+}
+
+// SetWarning sets the value of Warning.
+func (s *UpdateRunRetryResult) SetWarning(val OptString) {
+	s.Warning = val
+}
+
+func (*UpdateRunRetryResult) retryUpdateRunRes() {}
+
 // `halted` is terminal and specific to an agent self-update run: a
 // staged-rollout wave failed to prove itself, so every task the run
 // had not already dispatched was cancelled. It is distinct from
@@ -49130,10 +49408,18 @@ func (*UpdateTagUnprocessableEntity) updateTagRes() {}
 
 // Ref: #/components/schemas/UpdateTask
 type UpdateTask struct {
-	ID             uuid.UUID            `json:"id"`
-	RunID          uuid.UUID            `json:"run_id"`
-	TenantID       uuid.UUID            `json:"tenant_id"`
-	SiteID         uuid.UUID            `json:"site_id"`
+	ID       uuid.UUID `json:"id"`
+	RunID    uuid.UUID `json:"run_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	SiteID   uuid.UUID `json:"site_id"`
+	// The site's display name, resolved by the server on the run DETAIL
+	// read (GET /api/v1/updates/{runId}). Present so a client never has to
+	// join a task list against a separately-fetched site list to say which
+	// site a task belongs to: every site list in this API is paginated, so
+	// that join silently loses site identity on any run wider than one
+	// page, for display AND for selection. Empty only if the site row
+	// could not be read.
+	SiteName       OptString            `json:"site_name"`
 	TargetType     UpdateTaskTargetType `json:"target_type"`
 	TargetSlug     string               `json:"target_slug"`
 	DesiredVersion OptString            `json:"desired_version"`
@@ -49142,13 +49428,41 @@ type UpdateTask struct {
 	// `cancelled` means the task was never dispatched because its run was
 	// halted first; nothing was sent to the site. Only agent self-update
 	// runs can halt.
-	Status     UpdateTaskStatus `json:"status"`
-	Detail     OptString        `json:"detail"`
-	Error      OptString        `json:"error"`
-	StartedAt  OptDateTime      `json:"started_at"`
-	FinishedAt OptDateTime      `json:"finished_at"`
-	CreatedAt  time.Time        `json:"created_at"`
-	UpdatedAt  time.Time        `json:"updated_at"`
+	Status UpdateTaskStatus `json:"status"`
+	// Whether this task may be named in a retry request
+	// (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
+	// the task's own terminal-state predicate, so the affordance a client
+	// offers and the decision the server makes cannot disagree. A client
+	// MUST NOT infer this from `detail` or `error`: those carry
+	// agent-authored prose that no client contract covers.
+	Retryable bool `json:"retryable"`
+	// What happened to this task, on the axis a retry decision turns on.
+	// The server computes it; the client renders it.
+	// * `never_ran` - terminal, but nothing was ever sent to the site
+	// (today: `cancelled`, collateral of a halted run). Nothing on the
+	// site changed, so this is the lowest-risk task to retry.
+	// * `failed` - the site was contacted and the update did not succeed.
+	// * `reverted` - the update applied and was then rolled back, so a
+	// retry walks the identical path and may reproduce the identical
+	// break.
+	// * `skipped` - the control plane declined this target (already up to
+	// date, site busy, agent build not upgradeable by this channel).
+	// Usually correct, but a stale WordPress transient can report
+	// "already current" wrongly, so it stays selectable.
+	// * `not_applicable` - `succeeded` (retrying re-touches a working
+	// site for nothing) or not finished yet (`pending`/`running`).
+	// The intended client default selection is `failed` + `never_ran`:
+	// both mean "this never succeeded", and `never_ran` additionally means
+	// "and nothing was attempted". `reverted` and `skipped` are
+	// selectable but never default-on. `not_applicable` is never
+	// selectable.
+	RetryClass UpdateTaskRetryClass `json:"retry_class"`
+	Detail     OptString            `json:"detail"`
+	Error      OptString            `json:"error"`
+	StartedAt  OptDateTime          `json:"started_at"`
+	FinishedAt OptDateTime          `json:"finished_at"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -49169,6 +49483,11 @@ func (s *UpdateTask) GetTenantID() uuid.UUID {
 // GetSiteID returns the value of SiteID.
 func (s *UpdateTask) GetSiteID() uuid.UUID {
 	return s.SiteID
+}
+
+// GetSiteName returns the value of SiteName.
+func (s *UpdateTask) GetSiteName() OptString {
+	return s.SiteName
 }
 
 // GetTargetType returns the value of TargetType.
@@ -49199,6 +49518,16 @@ func (s *UpdateTask) GetToVersion() OptString {
 // GetStatus returns the value of Status.
 func (s *UpdateTask) GetStatus() UpdateTaskStatus {
 	return s.Status
+}
+
+// GetRetryable returns the value of Retryable.
+func (s *UpdateTask) GetRetryable() bool {
+	return s.Retryable
+}
+
+// GetRetryClass returns the value of RetryClass.
+func (s *UpdateTask) GetRetryClass() UpdateTaskRetryClass {
+	return s.RetryClass
 }
 
 // GetDetail returns the value of Detail.
@@ -49251,6 +49580,11 @@ func (s *UpdateTask) SetSiteID(val uuid.UUID) {
 	s.SiteID = val
 }
 
+// SetSiteName sets the value of SiteName.
+func (s *UpdateTask) SetSiteName(val OptString) {
+	s.SiteName = val
+}
+
 // SetTargetType sets the value of TargetType.
 func (s *UpdateTask) SetTargetType(val UpdateTaskTargetType) {
 	s.TargetType = val
@@ -49281,6 +49615,16 @@ func (s *UpdateTask) SetStatus(val UpdateTaskStatus) {
 	s.Status = val
 }
 
+// SetRetryable sets the value of Retryable.
+func (s *UpdateTask) SetRetryable(val bool) {
+	s.Retryable = val
+}
+
+// SetRetryClass sets the value of RetryClass.
+func (s *UpdateTask) SetRetryClass(val UpdateTaskRetryClass) {
+	s.RetryClass = val
+}
+
 // SetDetail sets the value of Detail.
 func (s *UpdateTask) SetDetail(val OptString) {
 	s.Detail = val
@@ -49309,6 +49653,88 @@ func (s *UpdateTask) SetCreatedAt(val time.Time) {
 // SetUpdatedAt sets the value of UpdatedAt.
 func (s *UpdateTask) SetUpdatedAt(val time.Time) {
 	s.UpdatedAt = val
+}
+
+// What happened to this task, on the axis a retry decision turns on.
+// The server computes it; the client renders it.
+// * `never_ran` - terminal, but nothing was ever sent to the site
+// (today: `cancelled`, collateral of a halted run). Nothing on the
+// site changed, so this is the lowest-risk task to retry.
+// * `failed` - the site was contacted and the update did not succeed.
+// * `reverted` - the update applied and was then rolled back, so a
+// retry walks the identical path and may reproduce the identical
+// break.
+// * `skipped` - the control plane declined this target (already up to
+// date, site busy, agent build not upgradeable by this channel).
+// Usually correct, but a stale WordPress transient can report
+// "already current" wrongly, so it stays selectable.
+// * `not_applicable` - `succeeded` (retrying re-touches a working
+// site for nothing) or not finished yet (`pending`/`running`).
+// The intended client default selection is `failed` + `never_ran`:
+// both mean "this never succeeded", and `never_ran` additionally means
+// "and nothing was attempted". `reverted` and `skipped` are
+// selectable but never default-on. `not_applicable` is never
+// selectable.
+type UpdateTaskRetryClass string
+
+const (
+	UpdateTaskRetryClassNeverRan      UpdateTaskRetryClass = "never_ran"
+	UpdateTaskRetryClassFailed        UpdateTaskRetryClass = "failed"
+	UpdateTaskRetryClassReverted      UpdateTaskRetryClass = "reverted"
+	UpdateTaskRetryClassSkipped       UpdateTaskRetryClass = "skipped"
+	UpdateTaskRetryClassNotApplicable UpdateTaskRetryClass = "not_applicable"
+)
+
+// AllValues returns all UpdateTaskRetryClass values.
+func (UpdateTaskRetryClass) AllValues() []UpdateTaskRetryClass {
+	return []UpdateTaskRetryClass{
+		UpdateTaskRetryClassNeverRan,
+		UpdateTaskRetryClassFailed,
+		UpdateTaskRetryClassReverted,
+		UpdateTaskRetryClassSkipped,
+		UpdateTaskRetryClassNotApplicable,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateTaskRetryClass) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateTaskRetryClassNeverRan:
+		return []byte(s), nil
+	case UpdateTaskRetryClassFailed:
+		return []byte(s), nil
+	case UpdateTaskRetryClassReverted:
+		return []byte(s), nil
+	case UpdateTaskRetryClassSkipped:
+		return []byte(s), nil
+	case UpdateTaskRetryClassNotApplicable:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateTaskRetryClass) UnmarshalText(data []byte) error {
+	switch UpdateTaskRetryClass(data) {
+	case UpdateTaskRetryClassNeverRan:
+		*s = UpdateTaskRetryClassNeverRan
+		return nil
+	case UpdateTaskRetryClassFailed:
+		*s = UpdateTaskRetryClassFailed
+		return nil
+	case UpdateTaskRetryClassReverted:
+		*s = UpdateTaskRetryClassReverted
+		return nil
+	case UpdateTaskRetryClassSkipped:
+		*s = UpdateTaskRetryClassSkipped
+		return nil
+	case UpdateTaskRetryClassNotApplicable:
+		*s = UpdateTaskRetryClassNotApplicable
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // `cancelled` means the task was never dispatched because its run was

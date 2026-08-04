@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type { UpdateEvent, UpdateRun, UpdateTask } from "@wpmgr/api";
 
+import { serverRetryFields } from "@/test/update-task-fixtures";
+
 import { applyEvent } from "./use-updates";
 
-// Unit coverage for `applyEvent` — the pure reducer the SSE handler calls to
+// Unit coverage for `applyEvent`: the pure reducer the SSE handler calls to
 // patch the run-detail cache. Pinning its contract here decouples the cache
 // shape from the React tree, which is the layer that the v0.9.0 "stuck at
 // Queued" bug actually surfaced through (the named-event mis-listen happened
@@ -35,6 +37,9 @@ function makeRun(taskStatus: UpdateTask["status"]): UpdateRun {
         status: taskStatus,
         created_at: "2026-05-29T00:00:00Z",
         updated_at: "2026-05-29T00:00:00Z",
+        // GH #336: the server writes the retry pair its own retryClassify
+        // would produce for this status.
+        ...serverRetryFields(taskStatus),
       },
     ],
   };

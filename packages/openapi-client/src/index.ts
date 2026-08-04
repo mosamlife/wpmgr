@@ -54,6 +54,7 @@ export {
   createUpdateRun,
   listUpdateRuns,
   getUpdateRun,
+  retryUpdateRun,
   // backups
   createBackup,
   listBackups,
@@ -255,6 +256,9 @@ export type {
   UpdateRun,
   UpdateRunCreate,
   UpdateRunList,
+  UpdateRunRetryRequest,
+  UpdateRunRetryResult,
+  UpdateRunRetryExclusion,
   UpdateTask,
   UpdateEvent,
   Tenant,
@@ -322,6 +326,8 @@ export type {
   ListUpdateRunsResponse,
   GetUpdateRunData,
   GetUpdateRunResponse,
+  RetryUpdateRunData,
+  RetryUpdateRunResponse,
   // backups
   BackupCreate,
   BackupSnapshot,

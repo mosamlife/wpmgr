@@ -14335,6 +14335,125 @@ func (s *UpdateRunList) Validate() error {
 	return nil
 }
 
+func (s *UpdateRunRetryExclusion) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Reason.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "reason",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s UpdateRunRetryExclusionReason) Validate() error {
+	switch s {
+	case "not_in_run":
+		return nil
+	case "not_retryable":
+		return nil
+	case "site_not_found":
+		return nil
+	case "site_not_enrolled":
+		return nil
+	case "agent_current":
+		return nil
+	case "agent_ineligible":
+		return nil
+	case "agent_version_unknown":
+		return nil
+	case "target_in_flight":
+		return nil
+	case "duplicate_target":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
+func (s *UpdateRunRetryRequest) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if s.TaskIds == nil {
+			return errors.New("nil is invalid value")
+		}
+		if err := (validate.Array{
+			MinLength:    1,
+			MinLengthSet: true,
+			MaxLength:    5000,
+			MaxLengthSet: true,
+		}).ValidateLength(len(s.TaskIds)); err != nil {
+			return errors.Wrap(err, "array")
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "task_ids",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s *UpdateRunRetryResult) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if s.Excluded == nil {
+			return errors.New("nil is invalid value")
+		}
+		var failures []validate.FieldError
+		for i, elem := range s.Excluded {
+			if err := func() error {
+				if err := elem.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				failures = append(failures, validate.FieldError{
+					Name:  fmt.Sprintf("[%d]", i),
+					Error: err,
+				})
+			}
+		}
+		if len(failures) > 0 {
+			return &validate.Error{Fields: failures}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "excluded",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
 func (s UpdateRunStatus) Validate() error {
 	switch s {
 	case "pending":
@@ -14378,10 +14497,38 @@ func (s *UpdateTask) Validate() error {
 			Error: err,
 		})
 	}
+	if err := func() error {
+		if err := s.RetryClass.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "retry_class",
+			Error: err,
+		})
+	}
 	if len(failures) > 0 {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s UpdateTaskRetryClass) Validate() error {
+	switch s {
+	case "never_ran":
+		return nil
+	case "failed":
+		return nil
+	case "reverted":
+		return nil
+	case "skipped":
+		return nil
+	case "not_applicable":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s UpdateTaskStatus) Validate() error {

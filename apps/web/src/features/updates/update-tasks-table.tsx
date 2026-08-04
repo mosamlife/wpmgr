@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
-import type { UpdateTask } from "@wpmgr/api";
 
 import {
   Table,
@@ -11,29 +10,55 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { VersionArrow } from "@/components/shared/version-arrow";
 import { TaskStatusBadge } from "@/features/updates/update-status";
 import {
   isSiteDownRecovery,
   SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
 } from "@/features/updates/summarize";
+import {
+  isRetrySelectable,
+  notRetryableReason,
+  taskSelectLabel,
+  taskSiteLabel,
+  type RetryTask,
+} from "@/features/updates/retry-contract";
 
 // Re-export siteNameMap so existing callers (e.g. $runId.tsx) don't need an
 // import path change. Surface C agents may update their imports to ./summarize.
 // eslint-disable-next-line react-refresh/only-export-components -- intentional re-export bridge; callers that own this import will move to ./summarize in Surface C
 export { siteNameMap } from "./summarize";
 
-const TASK_COLUMN_COUNT = 5;
+const BASE_COLUMN_COUNT = 5;
+
+/**
+ * GH #336: the retry selection this table renders, or undefined for a purely
+ * read-only table (which is exactly how it renders when the control plane does
+ * not speak the retry contract, or the operator may not start runs).
+ */
+export interface TaskTableSelection {
+  isSelected: (taskId: string) => boolean;
+  toggle: (taskId: string) => void;
+  setAllSelectable: (next: boolean) => void;
+  allSelectableSelected: boolean;
+  someSelectableSelected: boolean;
+}
 
 // Live table of per-(site, target) update tasks. Rows reflect whatever is in
 // the run-detail query cache, which the SSE stream patches in place.
 export function UpdateTasksTable({
   tasks,
   siteNames,
+  selection,
 }: {
-  tasks: UpdateTask[];
-  // Optional lookup of site id -> friendly name (from the sites cache).
+  tasks: RetryTask[];
+  // Legacy lookup of site id -> friendly name, used only when the control
+  // plane does not send `site_name` on the task row. It is built from the
+  // sites list, which the control plane caps at 50 rows, so it must never be
+  // the primary source of site identity and never drives selection.
   siteNames?: Map<string, string>;
+  selection?: TaskTableSelection;
 }) {
   if (tasks.length === 0) {
     return (
@@ -50,6 +75,24 @@ export function UpdateTasksTable({
           <caption className="sr-only">Update tasks</caption>
           <TableHeader>
             <TableRow>
+              {selection ? (
+                <TableHead className="w-10">
+                  <Checkbox
+                    aria-label={
+                      selection.allSelectableSelected
+                        ? "Clear selection"
+                        : "Select all retryable updates"
+                    }
+                    checked={selection.allSelectableSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selection.someSelectableSelected;
+                    }}
+                    onChange={(e) =>
+                      selection.setAllSelectable(e.currentTarget.checked)
+                    }
+                  />
+                </TableHead>
+              ) : null}
               <TableHead>Site</TableHead>
               <TableHead>Target</TableHead>
               <TableHead>Version</TableHead>
@@ -62,7 +105,8 @@ export function UpdateTasksTable({
               <UpdateTaskRow
                 key={task.id}
                 task={task}
-                siteName={siteNames?.get(task.site_id)}
+                siteNames={siteNames}
+                selection={selection}
               />
             ))}
           </TableBody>
@@ -75,19 +119,27 @@ export function UpdateTasksTable({
 // One task row plus, when the agent reported a non-empty error/log, a
 // disclosure toggle that reveals a second full-width row with the full text.
 // `task.error` carries the agent's complete diagnostic (e.g. why a rollback
-// was triggered), while `task.detail` stays the short generic status string
-// — both are surfaced, but the full log is one click away instead of only
-// ever being available truncated in the Detail cell.
+// was triggered), while `task.detail` stays the short generic status string.
+// Both are surfaced, but the full log is one click away instead of only ever
+// being available truncated in the Detail cell.
 function UpdateTaskRow({
   task,
-  siteName,
+  siteNames,
+  selection,
 }: {
-  task: UpdateTask;
-  siteName?: string;
+  task: RetryTask;
+  siteNames?: Map<string, string>;
+  selection?: TaskTableSelection;
 }) {
   const [open, setOpen] = useState(false);
   const hasLog = Boolean(task.error && task.error.trim().length > 0);
   const logId = `update-task-log-${task.id}`;
+  const columnCount = BASE_COLUMN_COUNT + (selection ? 1 : 0);
+  const selectable = isRetrySelectable(task);
+  const checked = selection?.isSelected(task.id) ?? false;
+  // GH #210 display treatment only. This reads the agent's own prose and is
+  // NEVER a safety or selection authority: whether a task may be retried is
+  // the server's `retryable` field and nothing else.
   const siteDown = isSiteDownRecovery(task.status, task.detail, task.error);
   // GH #255 Phase 2: an armed agent task has no detail text until beat 3
   // resolves it (nothing has happened on the site yet beyond scheduling the
@@ -98,9 +150,31 @@ function UpdateTaskRow({
 
   return (
     <>
-      <TableRow data-testid="update-task-row">
+      <TableRow
+        data-testid="update-task-row"
+        data-state={selection && checked ? "selected" : undefined}
+      >
+        {selection ? (
+          <TableCell className="w-10">
+            {selectable ? (
+              <Checkbox
+                aria-label={taskSelectLabel(task, siteNames)}
+                checked={checked}
+                onChange={() => selection.toggle(task.id)}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              // No dead control: a disabled checkbox with no stated cause is
+              // worse than none, and some screen-reader modes skip disabled
+              // controls entirely. The visible cause is in the Status column;
+              // this states it for assistive technology in place of the
+              // control that is deliberately absent.
+              <span className="sr-only">{notRetryableReason(task)}</span>
+            )}
+          </TableCell>
+        ) : null}
         <TableCell className="font-medium">
-          {siteName ?? short(task.site_id)}
+          {taskSiteLabel(task, siteNames)}
         </TableCell>
         <TableCell>
           <span className="font-mono text-xs text-muted-foreground capitalize">
@@ -119,7 +193,11 @@ function UpdateTaskRow({
           {task.from_version && task.to_version ? (
             <VersionArrow from={task.from_version} to={task.to_version} />
           ) : (
-            <span className="text-muted-foreground text-xs">{"–"}</span>
+            // No version pair to show yet. An aria-hidden placeholder keeps the
+            // cell from collapsing without reading anything out.
+            <span aria-hidden="true" className="text-muted-foreground text-xs">
+              {"..."}
+            </span>
           )}
         </TableCell>
         <TableCell>
@@ -128,7 +206,7 @@ function UpdateTaskRow({
         <TableCell className="max-w-[220px] text-xs text-muted-foreground">
           <div className="flex flex-col items-start gap-1">
             {siteDown ? (
-              // GH #210 — never truncate this: it's the worst-case rollback
+              // GH #210: never truncate this. It is the worst-case rollback
               // failure (site-wide fatal, undeliverable rollback, automatic
               // filesystem recovery attempted) and needs to read as its own
               // actionable condition, not a generic status string.
@@ -152,7 +230,7 @@ function UpdateTaskRow({
                     ? "Waiting for the upgraded agent to report back"
                     : hasLog
                       ? "See log for details"
-                      : <span aria-hidden="true">{","}</span>)}
+                      : null)}
               </span>
             )}
             {hasLog ? (
@@ -178,7 +256,7 @@ function UpdateTaskRow({
       </TableRow>
       {hasLog && open ? (
         <TableRow data-testid="update-task-log-row">
-          <TableCell colSpan={TASK_COLUMN_COUNT} className="bg-muted/20 p-0">
+          <TableCell colSpan={columnCount} className="bg-muted/20 p-0">
             {/* task.error is a defined non-empty string here; hasLog narrows it. */}
             <TaskLogPanel id={logId} error={task.error ?? ""} />
           </TableCell>
@@ -232,8 +310,4 @@ function TaskLogPanel({ id, error }: { id: string; error: string }) {
       </pre>
     </div>
   );
-}
-
-function short(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }

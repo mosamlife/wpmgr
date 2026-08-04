@@ -7,6 +7,8 @@ import type {
   PhpError,
 } from "@wpmgr/api";
 
+import { serverRetryFields } from "@/test/update-task-fixtures";
+
 import {
   updateTasksToTimeline,
   backupsToTimeline,
@@ -22,6 +24,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function makeUpdateTask(overrides: Partial<UpdateTask> = {}): UpdateTask {
+  const status = overrides.status ?? "succeeded";
   return {
     id: "task-1",
     run_id: "run-1",
@@ -32,6 +35,9 @@ function makeUpdateTask(overrides: Partial<UpdateTask> = {}): UpdateTask {
     status: "succeeded",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    // GH #336: the server always writes these, and always as the pair its own
+    // retryClassify would produce for this status.
+    ...serverRetryFields(status),
     ...overrides,
   };
 }

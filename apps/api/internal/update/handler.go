@@ -43,6 +43,11 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/updates", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.create)
 	r.GET("/updates", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.list)
 	r.GET("/updates/:runId", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.get)
+	// Retrying a run creates a new run, so it carries exactly the authorization
+	// creating one does. It sits under /updates/runs/... rather than
+	// /updates/:runId/retry because :runId is a GET-tree parameter here and a
+	// sibling static segment on the same tree would be ambiguous.
+	r.POST("/updates/runs/:id/retry", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.retry)
 	r.GET("/updates/:runId/events", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.events)
 }
 
@@ -139,6 +144,56 @@ func (h *Handler) get(c *gin.Context) {
 		return
 	}
 	out := toAPIRun(run, tasks)
+	c.JSON(http.StatusOK, &out)
+}
+
+// retry creates a NEW run repeating the selected tasks of an existing one (GH
+// #336). It answers with a complete account of every requested task rather than
+// a bare success: see RetryResult.
+func (h *Handler) retry(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_run_id", "the run id is not a valid UUID"))
+		return
+	}
+	var req gen.UpdateRunRetryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+		return
+	}
+
+	in := RetryRunInput{TenantID: tenantID, RunID: runID, TaskIDs: req.TaskIds}
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
+		in.CreatedBy = p.UserID
+	}
+
+	res, err := h.svc.RetryRun(c.Request.Context(), in)
+	if err != nil {
+		// Same discriminator the create path uses: a non-zero run id means the
+		// new run and its tasks are ALREADY COMMITTED and only a best-effort
+		// step after the commit failed. Reporting an error there would tell the
+		// operator nothing happened while a real run sat in the database with
+		// pending tasks, which is the defect fixed in 0.61.117 for create; a
+		// retry button on top of it would make that worse, not better.
+		if res.RunID == uuid.Nil {
+			httpx.Error(c, err)
+			return
+		}
+		slog.Error("update retry run created but a task enqueue failed; tasks remain pending",
+			slog.String("run_id", res.RunID.String()),
+			slog.String("source_run_id", runID.String()),
+			slog.String("tenant_id", tenantID.String()),
+			slog.Int("created", res.Created),
+			slog.Any("error", err))
+	}
+
+	h.recordRunRetried(c, tenantID, runID, res)
+	out := toAPIRetryResult(res)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -272,6 +327,70 @@ func (h *Handler) recordRunCreated(c *gin.Context, run Run, taskCount int) {
 	})
 }
 
+// recordRunRetried audits a retry against the SOURCE run, with the full
+// accounting in the metadata: an audit row that recorded only "retried" would
+// lose the one fact worth keeping, which is how much of the selection actually
+// became work.
+func (h *Handler) recordRunRetried(c *gin.Context, tenantID, sourceRunID uuid.UUID, res RetryResult) {
+	if h.audit == nil {
+		return
+	}
+	actorType := audit.ActorSystem
+	actorID := ""
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
+		actorType = audit.ActorUser
+		if p.Type == domain.PrincipalAPIKey {
+			actorType = audit.ActorAPIKey
+		}
+		actorID = p.ActorID()
+	}
+	meta := map[string]any{
+		"source_run_id": sourceRunID.String(),
+		"requested":     res.Requested,
+		"created":       res.Created,
+		"excluded":      len(res.Excluded),
+	}
+	if res.RunID != uuid.Nil {
+		meta["run_id"] = res.RunID.String()
+	}
+	if res.Warning != "" {
+		meta["warning"] = res.Warning
+	}
+	_, _ = h.audit.Record(c.Request.Context(), audit.Event{
+		TenantID:   tenantID,
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     ActionRunRetried,
+		TargetType: "update_run",
+		TargetID:   sourceRunID.String(),
+		Metadata:   meta,
+	})
+}
+
+func toAPIRetryResult(res RetryResult) gen.UpdateRunRetryResult {
+	out := gen.UpdateRunRetryResult{
+		Requested: res.Requested,
+		Created:   res.Created,
+		// Never nil: an empty JSON array is "nothing was excluded", whereas a
+		// null would make a client choose what that meant.
+		Excluded: make([]gen.UpdateRunRetryExclusion, 0, len(res.Excluded)),
+	}
+	if res.RunID != uuid.Nil {
+		out.RunID = gen.NewOptUUID(res.RunID)
+	}
+	if res.Warning != "" {
+		out.Warning = gen.NewOptString(res.Warning)
+	}
+	for _, ex := range res.Excluded {
+		out.Excluded = append(out.Excluded, gen.UpdateRunRetryExclusion{
+			TaskID:  ex.TaskID,
+			Reason:  gen.UpdateRunRetryExclusionReason(ex.Reason),
+			Message: ex.Message,
+		})
+	}
+	return out
+}
+
 func fromAPIItems(items []gen.UpdateItem) []Item {
 	out := make([]Item, 0, len(items))
 	for _, it := range items {
@@ -322,6 +441,11 @@ func toAPIRun(r Run, tasks []Task) gen.UpdateRun {
 }
 
 func toAPITask(t Task) gen.UpdateTask {
+	// The retry decision is computed HERE, by the server, from the task's own
+	// recorded status. It is never left for a client to infer from detail/error
+	// prose: those fields carry text the AGENT wrote, which no contract covers,
+	// so a rule built on them is a safety decision resting on a regex.
+	retryable, class := retryClassify(t.Status)
 	out := gen.UpdateTask{
 		ID:         t.ID,
 		RunID:      t.RunID,
@@ -330,8 +454,16 @@ func toAPITask(t Task) gen.UpdateTask {
 		TargetType: gen.UpdateTaskTargetType(t.TargetType),
 		TargetSlug: t.TargetSlug,
 		Status:     gen.UpdateTaskStatus(t.Status),
+		Retryable:  retryable,
+		RetryClass: gen.UpdateTaskRetryClass(class),
 		CreatedAt:  t.CreatedAt,
 		UpdatedAt:  t.UpdatedAt,
+	}
+	// Populated on the run DETAIL read (see ListUpdateTasksForRunWithSiteName);
+	// the create response's freshly-inserted rows carry no join, so the field is
+	// omitted there rather than sent as an empty string pretending to be a name.
+	if t.SiteName != "" {
+		out.SiteName = gen.NewOptString(t.SiteName)
 	}
 	if t.DesiredVersion != "" {
 		out.DesiredVersion = gen.NewOptString(t.DesiredVersion)

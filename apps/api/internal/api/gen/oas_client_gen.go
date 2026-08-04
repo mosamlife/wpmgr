@@ -2915,6 +2915,32 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
 	RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (RestoreSiteVulnerabilityRes, error)
+	// RetryUpdateRun invokes retryUpdateRun operation.
+	//
+	// Creates a NEW update run repeating the named tasks of an existing one.
+	// The source run is never mutated: the failure it records stays exactly as
+	// it happened.
+	// The retry is planned from the TASK ROWS, so each new task targets the
+	// same (site, target) pair as the task it repeats, with the same desired
+	// version. It does not replay the original request's item selection, which
+	// would re-expand items across sites and re-intersect them against each
+	// site's current pending set.
+	// Two things are RE-RESOLVED rather than copied, because they are facts
+	// about now and not about the old run:
+	// * enrollment - a site unenrolled since the run is excluded;
+	// * the published agent version - for an agent rollout, each site is
+	// re-classified against the version published RIGHT NOW, so a release
+	// reverted mid-incident excludes the sites that are no longer behind
+	// instead of silently upgrading them to a target that moved.
+	// An agent retry re-runs the whole wave structure with a fresh canary:
+	// only the first wave is enqueued, and the claim-time wave gate is
+	// authoritative regardless, so a retry cannot dispatch a fleet at once and
+	// cannot bypass the gate.
+	// The response accounts for EVERY requested task: `created` +
+	// `len(excluded)` always equals `requested`. Requires operator+.
+	//
+	// POST /api/v1/updates/runs/{id}/retry
+	RetryUpdateRun(ctx context.Context, request *UpdateRunRetryRequest, params RetryUpdateRunParams) (RetryUpdateRunRes, error)
 	// RevertDbSnapshot invokes revertDbSnapshot operation.
 	//
 	// Replaces the entire live database with the SQL captured in a local
@@ -35607,6 +35633,122 @@ func (c *Client) sendRestoreSiteVulnerability(ctx context.Context, params Restor
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteVulnerabilityResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RetryUpdateRun invokes retryUpdateRun operation.
+//
+// Creates a NEW update run repeating the named tasks of an existing one.
+// The source run is never mutated: the failure it records stays exactly as
+// it happened.
+// The retry is planned from the TASK ROWS, so each new task targets the
+// same (site, target) pair as the task it repeats, with the same desired
+// version. It does not replay the original request's item selection, which
+// would re-expand items across sites and re-intersect them against each
+// site's current pending set.
+// Two things are RE-RESOLVED rather than copied, because they are facts
+// about now and not about the old run:
+// * enrollment - a site unenrolled since the run is excluded;
+// * the published agent version - for an agent rollout, each site is
+// re-classified against the version published RIGHT NOW, so a release
+// reverted mid-incident excludes the sites that are no longer behind
+// instead of silently upgrading them to a target that moved.
+// An agent retry re-runs the whole wave structure with a fresh canary:
+// only the first wave is enqueued, and the claim-time wave gate is
+// authoritative regardless, so a retry cannot dispatch a fleet at once and
+// cannot bypass the gate.
+// The response accounts for EVERY requested task: `created` +
+// `len(excluded)` always equals `requested`. Requires operator+.
+//
+// POST /api/v1/updates/runs/{id}/retry
+func (c *Client) RetryUpdateRun(ctx context.Context, request *UpdateRunRetryRequest, params RetryUpdateRunParams) (RetryUpdateRunRes, error) {
+	res, err := c.sendRetryUpdateRun(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendRetryUpdateRun(ctx context.Context, request *UpdateRunRetryRequest, params RetryUpdateRunParams) (res RetryUpdateRunRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("retryUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/updates/runs/{id}/retry"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RetryUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/updates/runs/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/retry"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeRetryUpdateRunRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeRetryUpdateRunResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

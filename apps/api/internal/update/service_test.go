@@ -46,12 +46,23 @@ func (f *fakeSiteLookup) ListSiteInfoByTag(_ context.Context, _ uuid.UUID, _ str
 type fakeCreateRepo struct {
 	tenantID uuid.UUID
 	tasks    []Task
+	// runs mirrors update_runs so GetRun/ListTasks can serve the run-detail
+	// reads the retry path (GH #336) makes before it plans anything.
+	runs []Run
+	// dropOnInsert simulates the update_tasks_inflight_target_idx partial unique
+	// index rejecting an insert as a no-op (ON CONFLICT ... DO NOTHING): the
+	// target went in flight in another run between the service's pre-check and
+	// this transaction. The real repo `continue`s over exactly this case.
+	dropOnInsert map[InFlightKey]struct{}
 }
 
 func (f *fakeCreateRepo) CreateRunWithTasks(_ context.Context, in CreateRunInput, tasks []NewTask) (Run, []Task, error) {
 	run := Run{ID: uuid.New(), TenantID: in.TenantID, Status: RunPending, DryRun: in.DryRun}
 	out := make([]Task, 0, len(tasks))
 	for _, nt := range tasks {
+		if _, drop := f.dropOnInsert[(InFlightKey{SiteID: nt.SiteID, TargetType: nt.TargetType, TargetSlug: nt.TargetSlug})]; drop {
+			continue
+		}
 		t := Task{
 			ID:             uuid.New(),
 			RunID:          run.ID,
@@ -66,7 +77,28 @@ func (f *fakeCreateRepo) CreateRunWithTasks(_ context.Context, in CreateRunInput
 		out = append(out, t)
 		f.tasks = append(f.tasks, t)
 	}
+	if len(out) == 0 {
+		// Mirrors the real repo: a run with zero tasks is never committed.
+		return Run{}, nil, domain.Conflict("targets_in_flight", "the selected updates already have an update in progress in another run")
+	}
+	f.runs = append(f.runs, run)
 	return run, out, nil
+}
+
+// seedRun records a run and its tasks as if a previous run had produced them,
+// so a retry test can start from any mix of terminal states.
+func (f *fakeCreateRepo) seedRun(tenantID uuid.UUID, dryRun bool, tasks []Task) Run {
+	run := Run{ID: uuid.New(), TenantID: tenantID, Status: RunCompleted, DryRun: dryRun}
+	for i := range tasks {
+		if tasks[i].ID == uuid.Nil {
+			tasks[i].ID = uuid.New()
+		}
+		tasks[i].RunID = run.ID
+		tasks[i].TenantID = tenantID
+		f.tasks = append(f.tasks, tasks[i])
+	}
+	f.runs = append(f.runs, run)
+	return run
 }
 
 // completeTask marks every tracked task for (siteID, targetType, targetSlug)
@@ -103,8 +135,13 @@ func (f *fakeCreateRepo) ListInFlightTargets(_ context.Context, tenantID uuid.UU
 	return out, nil
 }
 
-func (f *fakeCreateRepo) GetRun(context.Context, uuid.UUID, uuid.UUID) (Run, error) {
-	panic("not used")
+func (f *fakeCreateRepo) GetRun(_ context.Context, tenantID, runID uuid.UUID) (Run, error) {
+	for _, r := range f.runs {
+		if r.ID == runID && r.TenantID == tenantID {
+			return r, nil
+		}
+	}
+	return Run{}, domain.NotFound("update_run_not_found", "update run not found")
 }
 func (f *fakeCreateRepo) ListRuns(context.Context, uuid.UUID, int32, int32) ([]Run, error) {
 	panic("not used")
@@ -112,8 +149,14 @@ func (f *fakeCreateRepo) ListRuns(context.Context, uuid.UUID, int32, int32) ([]R
 func (f *fakeCreateRepo) ListRunSummaries(context.Context, uuid.UUID, int32, int32) ([]RunSummary, error) {
 	panic("not used")
 }
-func (f *fakeCreateRepo) ListTasks(context.Context, uuid.UUID, uuid.UUID) ([]Task, error) {
-	panic("not used")
+func (f *fakeCreateRepo) ListTasks(_ context.Context, tenantID, runID uuid.UUID) ([]Task, error) {
+	out := make([]Task, 0, len(f.tasks))
+	for _, t := range f.tasks {
+		if t.RunID == runID && t.TenantID == tenantID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 func (f *fakeCreateRepo) GetTask(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
 	panic("not used")

@@ -1,12 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { fireEvent, screen, within } from "@testing-library/react";
 import type { UpdateTask } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
+import {
+  parseWireTask,
+  serverRetryFields,
+} from "@/test/update-task-fixtures";
 
-import { UpdateTasksTable } from "./update-tasks-table";
+import {
+  UpdateTasksTable,
+  type TaskTableSelection,
+} from "./update-tasks-table";
 
-// Outcome test — visibility gap fix: a failed/rolled_back update task carries
+// Outcome test: visibility gap fix: a failed/rolled_back update task carries
 // the agent's full diagnostic log in `task.error`, but the run-detail Tasks
 // table used to render only the short `task.detail` string, truncated. This
 // pins the fix: the full `task.error` text must be reachable in one click via
@@ -25,7 +32,11 @@ const FULL_LOG =
   "snapshot restored from: pre-update-2026-07-08T00-00-00Z";
 
 function buildTask(overrides: Partial<UpdateTask>): UpdateTask {
-  return {
+  // parseWireTask round-trips the literal through JSON and the application's
+  // own wire guard, so a fixture that is not a shape the control plane emits
+  // fails here rather than silently proving nothing (GH #322).
+  const status = overrides.status ?? "failed";
+  return parseWireTask({
     id: "task-1",
     run_id: RUN_ID,
     tenant_id: TENANT_ID,
@@ -35,11 +46,12 @@ function buildTask(overrides: Partial<UpdateTask>): UpdateTask {
     status: "failed",
     created_at: "2026-07-08T00:00:00Z",
     updated_at: "2026-07-08T00:00:00Z",
+    ...serverRetryFields(status),
     ...overrides,
-  };
+  });
 }
 
-describe("UpdateTasksTable — failed task log disclosure", () => {
+describe("UpdateTasksTable: failed task log disclosure", () => {
   it("reveals the full agent log + copy affordance for a task with a non-empty error, and renders no disclosure for a task with an empty error", () => {
     const failedTask = buildTask({
       id: "task-failed",
@@ -102,14 +114,14 @@ describe("UpdateTasksTable — failed task log disclosure", () => {
   });
 });
 
-// GH #210 — the worst-case rollback failure: an update causes a site-wide
+// GH #210: the worst-case rollback failure: an update causes a site-wide
 // PHP fatal, so the rollback command is undeliverable (it rides the same
 // WordPress request that's fataling), and an agent-side watchdog attempts
 // automatic filesystem recovery. The backend keeps the existing
 // failed/rolled_back status and communicates this purely through the
 // detail/error text, so this MUST read as its own distinct, actionable
 // condition (never the generic "Rolled back"/"Failed" copy).
-describe("UpdateTasksTable — GH #210 site-down-recovery condition", () => {
+describe("UpdateTasksTable: GH #210 site-down-recovery condition", () => {
   it("renders the distinct site-down badge + non-truncated alert callout for a rolled_back task whose detail names the condition, instead of the generic 'Rolled back' copy", () => {
     const task = buildTask({
       id: "task-site-down",
@@ -178,5 +190,174 @@ describe("UpdateTasksTable — GH #210 site-down-recovery condition", () => {
     expect(within(rows[0]!).getByText("Rolled back")).toBeInTheDocument();
     expect(within(rows[1]!).getByText("Failed")).toBeInTheDocument();
     expect(screen.queryByText("Site down, recovery attempted")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GH #336 - per-task retry selection
+//
+// The table is the only place an operator can compose a retry set, so these
+// pin the three things that make the selection honest: a control is offered
+// only where the SERVER said the task may be retried, a row that has none
+// still says why, and adding the column does not misalign the log row.
+// ---------------------------------------------------------------------------
+
+function makeSelection(
+  overrides: Partial<TaskTableSelection> = {},
+): TaskTableSelection {
+  return {
+    isSelected: () => false,
+    toggle: vi.fn(),
+    setAllSelectable: vi.fn(),
+    allSelectableSelected: false,
+    someSelectableSelected: false,
+    ...overrides,
+  };
+}
+
+describe("UpdateTasksTable - retry selection column", () => {
+  const failed = buildTask({
+    id: "task-failed",
+    site_id: "site-a",
+    site_name: "shop.example.com",
+    target_slug: "akismet/akismet.php",
+    status: "failed",
+  });
+  const succeeded = buildTask({
+    id: "task-succeeded",
+    site_id: "site-b",
+    site_name: "blog.example.com",
+    target_slug: "akismet/akismet.php",
+    status: "succeeded",
+  });
+  const running = buildTask({
+    id: "task-running",
+    site_id: "site-c",
+    site_name: "news.example.com",
+    target_slug: "akismet/akismet.php",
+    status: "running",
+  });
+
+  it("offers a checkbox only for a task the server marked retryable, names the target and the site, and states the reason on rows that have none", () => {
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[failed, succeeded, running]}
+        selection={makeSelection()}
+      />,
+    );
+
+    // One header checkbox plus exactly one row checkbox: succeeded and
+    // running are not selectable, and get no dead control.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select akismet/akismet.php update on shop.example.com",
+      }),
+    ).toBeInTheDocument();
+
+    const rows = screen.getAllByTestId("update-task-row");
+    expect(within(rows[1]!).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(
+      within(rows[1]!).getByText("Cannot be retried: this update succeeded."),
+    ).toBeInTheDocument();
+    expect(
+      within(rows[2]!).getByText(
+        "Cannot be retried: this update has not finished yet.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("toggles by task id and selects every selectable task from the header", () => {
+    const selection = makeSelection();
+    renderWithProviders(
+      <UpdateTasksTable tasks={[failed, succeeded]} selection={selection} />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Select akismet/akismet.php update on shop.example.com",
+      }),
+    );
+    expect(selection.toggle).toHaveBeenCalledWith("task-failed");
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select all retryable updates" }),
+    );
+    expect(selection.setAllSelectable).toHaveBeenCalledWith(true);
+  });
+
+  it("marks the header checkbox indeterminate for a partial selection and flips its label when everything is selected", () => {
+    const { unmount } = renderWithProviders(
+      <UpdateTasksTable
+        tasks={[failed, succeeded]}
+        selection={makeSelection({ someSelectableSelected: true })}
+      />,
+    );
+    const partial = screen.getByRole("checkbox", {
+      name: "Select all retryable updates",
+    });
+    expect((partial as HTMLInputElement).indeterminate).toBe(true);
+    unmount();
+
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[failed, succeeded]}
+        selection={makeSelection({
+          allSelectableSelected: true,
+          isSelected: (id) => id === "task-failed",
+        })}
+      />,
+    );
+    const all = screen.getByRole("checkbox", { name: "Clear selection" });
+    expect((all as HTMLInputElement).checked).toBe(true);
+    expect((all as HTMLInputElement).indeterminate).toBe(false);
+  });
+
+  it("keeps the expanded log row spanning the full table once the select column exists", () => {
+    const withLog = buildTask({
+      id: "task-log",
+      site_name: "shop.example.com",
+      status: "failed",
+      error: FULL_LOG,
+    });
+
+    const { unmount } = renderWithProviders(
+      <UpdateTasksTable tasks={[withLog]} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /view log/i }));
+    expect(
+      screen
+        .getByTestId("update-task-log-row")
+        .querySelector("td")
+        ?.getAttribute("colspan"),
+    ).toBe("5");
+    unmount();
+
+    renderWithProviders(
+      <UpdateTasksTable tasks={[withLog]} selection={makeSelection()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /view log/i }));
+    expect(
+      screen
+        .getByTestId("update-task-log-row")
+        .querySelector("td")
+        ?.getAttribute("colspan"),
+    ).toBe("6");
+  });
+
+  it("names the site from the task row, not from the sites cache, which does not contain it on a run wider than one page", () => {
+    // The sites list is paginated by the control plane; a 300 task run's
+    // sites simply are not all in that cache. The task row always carries
+    // the name, so both display and the checkbox label stay correct.
+    renderWithProviders(
+      <UpdateTasksTable
+        tasks={[failed]}
+        siteNames={new Map()}
+        selection={makeSelection()}
+      />,
+    );
+    const row = screen.getByTestId("update-task-row");
+    expect(within(row).getByText("shop.example.com")).toBeInTheDocument();
+    expect(within(row).queryByText(/^site-a/)).not.toBeInTheDocument();
   });
 });

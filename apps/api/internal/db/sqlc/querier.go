@@ -1678,7 +1678,35 @@ type Querier interface {
 	// site_count: distinct site_id values across all tasks.
 	// `, id` tiebreaker follows the project ORDER BY convention.
 	ListUpdateRunsWithCounts(ctx context.Context, arg ListUpdateRunsWithCountsParams) ([]ListUpdateRunsWithCountsRow, error)
+	// The wave-machine read (loadAgentRunLocked) and any other path that needs the
+	// raw task rows and nothing else. Deliberately join-free: it runs inside the
+	// per-run advisory lock on every claim, so it stays as narrow as possible.
 	ListUpdateTasksForRun(ctx context.Context, arg ListUpdateTasksForRunParams) ([]UpdateTask, error)
+	// The DETAIL read (GET /api/v1/updates/{runId}): the same tenant-scoped task
+	// rows plus each site's display name.
+	//
+	// The name is resolved HERE, by the database, and not by the caller joining a
+	// task list against a separately-fetched site list. A client-side join has to
+	// fetch that site list from somewhere, and every list endpoint in this control
+	// plane is paginated (site.Service.List defaults to 50 rows), so a run wider
+	// than one page silently renders raw UUIDs for the overflow and, worse, gives
+	// a selection UI a site identity it cannot resolve. A task row already knows
+	// exactly one site; this is the query that says which.
+	//
+	// LEFT JOIN + coalesce rather than an inner join: sites.id is a FK with ON
+	// DELETE CASCADE, so a task whose site is gone is gone too and the join
+	// ALWAYS matches today. The left join keeps that an assumption the query does
+	// not depend on -- a task row must never vanish from a run's history because
+	// its site row could not be read.
+	//
+	// The `, t.id` tiebreaker is the project ORDER BY convention and is
+	// load-bearing here: every task in a run is inserted by ONE transaction and
+	// Postgres gives every now() in a transaction the same timestamp, so
+	// created_at alone is not a total order and rows could shuffle between two
+	// reads of the same run. It also makes this order identical to the wave order
+	// (waveOrder sorts by the same pair), so an agent rollout's canary is the
+	// first row of the table.
+	ListUpdateTasksForRunWithSiteName(ctx context.Context, arg ListUpdateTasksForRunWithSiteNameParams) ([]ListUpdateTasksForRunWithSiteNameRow, error)
 	// All registered credentials for a user (for the Security settings list).
 	// Ordered by created_at DESC, id DESC.
 	ListWebAuthnCredentialsForUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)

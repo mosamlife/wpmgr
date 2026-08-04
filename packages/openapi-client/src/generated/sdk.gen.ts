@@ -893,6 +893,9 @@ import type {
   RestoreSiteVulnerabilityData,
   RestoreSiteVulnerabilityErrors,
   RestoreSiteVulnerabilityResponses,
+  RetryUpdateRunData,
+  RetryUpdateRunErrors,
+  RetryUpdateRunResponses,
   RevertDbSnapshotData,
   RevertDbSnapshotResponses,
   RevokeAdminAccountCompData,
@@ -4454,6 +4457,53 @@ export const getUpdateRun = <ThrowOnError extends boolean = false>(
     GetUpdateRunErrors,
     ThrowOnError
   >({ url: "/api/v1/updates/{runId}", ...options });
+
+/**
+ * Retry selected tasks of an update run
+ *
+ * Creates a NEW update run repeating the named tasks of an existing one.
+ * The source run is never mutated: the failure it records stays exactly as
+ * it happened.
+ *
+ * The retry is planned from the TASK ROWS, so each new task targets the
+ * same (site, target) pair as the task it repeats, with the same desired
+ * version. It does not replay the original request's item selection, which
+ * would re-expand items across sites and re-intersect them against each
+ * site's current pending set.
+ *
+ * Two things are RE-RESOLVED rather than copied, because they are facts
+ * about now and not about the old run:
+ *
+ * * enrollment - a site unenrolled since the run is excluded;
+ * * the published agent version - for an agent rollout, each site is
+ * re-classified against the version published RIGHT NOW, so a release
+ * reverted mid-incident excludes the sites that are no longer behind
+ * instead of silently upgrading them to a target that moved.
+ *
+ * An agent retry re-runs the whole wave structure with a fresh canary:
+ * only the first wave is enqueued, and the claim-time wave gate is
+ * authoritative regardless, so a retry cannot dispatch a fleet at once and
+ * cannot bypass the gate.
+ *
+ * The response accounts for EVERY requested task: `created` +
+ * `len(excluded)` always equals `requested`. Requires operator+.
+ *
+ */
+export const retryUpdateRun = <ThrowOnError extends boolean = false>(
+  options: Options<RetryUpdateRunData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RetryUpdateRunResponses,
+    RetryUpdateRunErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/updates/runs/{id}/retry",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * Stream live update-task status changes (SSE)
