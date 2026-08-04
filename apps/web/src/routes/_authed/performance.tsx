@@ -1,4 +1,4 @@
-// /performance — fleet-wide performance dashboard.
+// /performance, the fleet-wide performance dashboard.
 //
 // Scope selector: "All sites" shows the fleet aggregate; selecting a specific
 // site shows the full per-site RUM detail (CWV cards + trend + URL breakdown).
@@ -6,7 +6,7 @@
 // ?window, so links are shareable and survive refresh.
 //
 // Fleet scope layout:
-//   1. Headline strip — sites reporting / fleet CWV pass-rate
+//   1. Headline strip: sites reporting / fleet CWV pass-rate
 //   2. Sites by Core Web Vitals FleetTable (all reporting sites, sorted LCP p75
 //      worst-first). Rows are clickable: click sets ?site=<id>.
 //   3. Fleet 28-day CWV trend (recharts, threshold reference lines)
@@ -14,8 +14,8 @@
 //
 // Per-site scope layout (composes existing components unchanged):
 //   1. Back breadcrumb / "Viewing: <site name>" sub-header
-//   2. FleetRumPanel — CWV p75 cards + distribution bars + trend charts (reused)
-//   3. RumResultsTable — per-URL/device breakdown table (reused)
+//   2. FleetRumPanel: CWV p75 cards + distribution bars + trend charts (reused)
+//   3. RumResultsTable: per-URL/device breakdown table (reused)
 //
 // Device and window are URL search params (shareable links). The device tab
 // also feeds the per-site RUM views (FleetRumPanel manages its own device state
@@ -62,10 +62,15 @@ import {
   type DeviceFilter,
 } from "@/features/fleet/use-fleet-rum";
 import { useSites } from "@/features/sites/use-sites";
+import {
+  cwvDataMax,
+  cwvThresholdLabel,
+  cwvYAxis,
+} from "@/features/perf/cwv-axis";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
-// Route — validate search params so device + window + site are shareable
+// Route: validate search params so device + window + site are shareable
 // ---------------------------------------------------------------------------
 
 const searchSchema = z.object({
@@ -98,14 +103,10 @@ const METRIC_LABELS: Record<string, string> = {
   ttfb: "TTFB",
 };
 
-// Official CWV thresholds in display units for reference lines.
-const THRESHOLDS: Record<string, { good: number; ni: number }> = {
-  lcp: { good: 2500, ni: 4000 },
-  inp: { good: 200, ni: 500 },
-  cls: { good: 0.1, ni: 0.25 }, // already display units
-  fcp: { good: 1800, ni: 3000 },
-  ttfb: { good: 800, ni: 1800 },
-};
+// Thresholds, the Y domain, the ticks and the unit all come from
+// features/perf/cwv-axis.ts (GH #329). Do not reintroduce a local copy: the
+// duplicated formatter is exactly how this chart and RumTrendChart drifted
+// into stating two different Web Vitals targets.
 
 const CHART_TOKEN: Record<string, string> = {
   lcp: "var(--color-chart-1)",
@@ -434,7 +435,6 @@ function FleetCwvTrendChart({ trend, metric, windowDays }: FleetCwvTrendChartPro
     cls: "cls_p75",
   };
   const key = keyMap[metric];
-  const thresholds = THRESHOLDS[metric]!;
   const stroke = CHART_TOKEN[metric]!;
   const isCls = metric === "cls";
 
@@ -443,6 +443,12 @@ function FleetCwvTrendChart({ trend, metric, windowDays }: FleetCwvTrendChartPro
     const display = raw === null ? null : isCls ? raw / 1000 : raw;
     return { date: p.date, value: display };
   });
+
+  // One scale, one explicit domain, one owner of the unit string. The explicit
+  // domain is what keeps the Good line on screen: with the recharts default,
+  // ReferenceLines outside the auto domain are silently discarded, so a
+  // passing site saw no thresholds at all.
+  const axis = cwvYAxis(metric, cwvDataMax(chartData.map((p) => p.value)));
 
   const hasData = chartData.some((p) => p.value !== null);
   if (!hasData) {
@@ -482,14 +488,16 @@ function FleetCwvTrendChart({ trend, metric, windowDays }: FleetCwvTrendChartPro
             axisLine={false}
             interval="preserveStartEnd"
           />
+          {/* No `unit` prop, ever: recharts appends it to the formatter's own
+              output. See components/charts/no-axis-unit.test.ts. */}
           <YAxis
             tick={{ fontSize: 10, fill: "var(--color-muted-foreground)" }}
             tickLine={false}
             axisLine={false}
-            width={40}
-            tickFormatter={(v: number) =>
-              isCls ? v.toFixed(2) : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}`
-            }
+            width={axis.width}
+            domain={axis.domain}
+            ticks={axis.ticks}
+            tickFormatter={axis.tick}
           />
           <Tooltip
             contentStyle={{
@@ -499,6 +507,10 @@ function FleetCwvTrendChart({ trend, metric, windowDays }: FleetCwvTrendChartPro
               fontSize: 12,
               color: "var(--color-foreground)",
             }}
+            // Per-value precision, NOT the axis scale. A tooltip shows one
+            // number and must show it at the precision that number deserves;
+            // the axis is permanently on the seconds scale for LCP, so sharing
+            // it would round every reading to 100 ms. See cwv-axis.ts.
             formatter={(value: unknown) => {
               const v = typeof value === "number" ? value : 0;
               return isCls ? v.toFixed(3) : `${Math.round(v)} ms`;
@@ -509,19 +521,29 @@ function FleetCwvTrendChart({ trend, metric, windowDays }: FleetCwvTrendChartPro
           />
           {/* Good threshold */}
           <ReferenceLine
-            y={thresholds.good}
+            y={axis.thresholds.good}
             stroke="var(--color-success)"
             strokeDasharray="4 2"
             strokeWidth={1}
-            label={{ value: "Good", fontSize: 9, fill: "var(--color-success-subtle-fg)", position: "insideTopRight" }}
+            label={{
+              value: cwvThresholdLabel(axis, "good"),
+              fontSize: 9,
+              fill: "var(--color-success-subtle-fg)",
+              position: "insideTopRight",
+            }}
           />
           {/* Needs-improvement threshold */}
           <ReferenceLine
-            y={thresholds.ni}
+            y={axis.thresholds.ni}
             stroke="var(--color-warning)"
             strokeDasharray="4 2"
             strokeWidth={1}
-            label={{ value: "NI", fontSize: 9, fill: "var(--color-warning-subtle-fg)", position: "insideTopRight" }}
+            label={{
+              value: cwvThresholdLabel(axis, "ni"),
+              fontSize: 9,
+              fill: "var(--color-warning-subtle-fg)",
+              position: "insideTopRight",
+            }}
           />
           <Area
             type="monotone"
@@ -671,7 +693,7 @@ function FleetRumView({ device, windowDays, onDrillSite }: FleetRumViewProps) {
           />
         )}
 
-        {/* 28-day trend — small multiples for LCP / INP / CLS */}
+        {/* 28-day trend, small multiples for LCP / INP / CLS */}
         {!isPending && !isError && (data.trend ?? []).length >= 2 && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {TREND_METRICS.map((m) => (
