@@ -8,6 +8,19 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.118] - 2026-08-04
+
+### Fixed
+
+- A fleet agent update could report "the plugin update transient carried no entry for this plugin" and install nothing, on one site, while the same rollout installed cleanly everywhere else (GH #334). The apply looked up the build it was about to install in WordPress's shared plugin update cache, and that cache is one any other plugin on the site is allowed to answer for, rewrite or delete. A security or "disable updates" plugin that answers that read first, a managed host's own must-use plugin doing the same, or simply an ordinary plugin update finishing on that site at that moment, was enough to leave WordPress's installer with nothing to install, after which the rollout stopped at the canary and no other site was touched. The apply no longer looks anything up: it carries the build it verified moments earlier and hands that straight to the installer, so no cache and no other plugin sits between the check and the install. What actually gets installed is unchanged, and is still re-verified from scratch against the signed manifest before a single byte is written.
+- The previous release had made this more likely, not less. 0.61.114 correctly made an agent update wait for any other update on the same site to finish first, and the process it waits for is exactly the one that clears the cache the apply was standing on, which widened the window from milliseconds to as much as four minutes. That window is now closed, because the apply no longer depends on that cache at all.
+- The update offer shown on a site's own WordPress dashboard is now self correcting. An offer naming a build the fleet has since moved past is rewritten from the fresh signed manifest at the moment an install starts; an offer for a release that has since been withdrawn is retired the first time anything acts on it; and an offer the site has already overtaken, for example because its files were replaced out of band by a deploy or a restore, is retired by the first page load that sees it instead of standing for up to twelve hours. A control plane that is briefly unreachable retires nothing, so an outage can never blank a fleet's update offers.
+- When a commanded agent update does fail, the site's own dashboard is now left holding a verified offer for the same build. The one-click update inside wp-admin is the recovery route for a build whose fleet update is broken, and it is now available immediately, without the site having to reach the control plane to rediscover what it was already told.
+
+### Changed
+
+- As with every fix to the agent's own update path, this one cannot be delivered by the path it fixes: a site still running an affected build applies updates using its own installed copy of the old step. A site whose fleet agent update is failing this way needs one update from its own WordPress dashboard, after which fleet updates work normally again.
+
 ## [0.61.117] - 2026-08-04
 
 ### Fixed

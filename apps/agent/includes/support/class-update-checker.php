@@ -209,6 +209,24 @@ final class UpdateChecker
     private const RESTORE_GUARD_PRIORITY = 101;
 
     /**
+     * Shutdown priority of clearForcedOffer(), the backstop that takes the
+     * apply's forced update offer back out of circulation.
+     *
+     * ONE ABOVE THE RESTORE GUARD, and the ordering is the whole point. A fatal
+     * inside the upgrade skips runUpgrade()'s `finally`, so the forced offer
+     * would otherwise still be installed for the rest of the request. Placing
+     * the clear here means core's own restore (10), core's cleanup (100) and
+     * this class's restore guard (101) have all run first, and everything
+     * AFTER it, in particular pushOutcomeNow() at OUTCOME_PUSH_PRIORITY and the
+     * metadata push it triggers, reads an unforced transient again.
+     *
+     * It cannot sit below 100: a Throwable escaping a shutdown callback
+     * abandons the rest of the queue, and nothing of this agent's may be
+     * placed ahead of core's rollback. See RESTORE_GUARD_PRIORITY.
+     */
+    private const FORCED_OFFER_CLEAR_PRIORITY = 102;
+
+    /**
      * Shutdown priority of pushOutcomeNow(). Sits after the restore guard, so
      * what it pushes is the post-rollback truth rather than a mid-flight guess.
      */
@@ -338,9 +356,54 @@ final class UpdateChecker
      * has been released to the control plane. Nulled as it is read, so a second
      * dispatch of the filter can never start a second apply.
      *
-     * @var array{apply_id:string,from:string,to:string}|null
+     * CARRIES THE VERIFIED CLAIMS IN MEMORY, and that is what makes the apply
+     * independent of every cache (GitHub issue #334). The arm has just verified
+     * this exact build in this exact request; handing the claims straight to
+     * the apply means no site transient, no negative sentinel and no
+     * control-plane round trip sits between the verification and the offer the
+     * upgrader reads.
+     *
+     * @var array{apply_id:string,from:string,to:string,claims:array<string,mixed>}|null
      */
     private ?array $pendingApply = null;
+
+    /**
+     * The update offer runUpgrade() is forcing, or null when no apply is
+     * running.
+     *
+     * Read by forceApplyOffer() on the pre_site_transient_update_plugins
+     * filter. Installed and removed inside one apply and never outside one.
+     *
+     * @var object|null
+     */
+    private ?object $forcedOffer = null;
+
+    /**
+     * True once verifyDownload() has settled the cached manifest claims in THIS
+     * request, either by rewriting them from a fresh verified fetch or by
+     * retiring them on a definitive no_update.
+     *
+     * It exists to stop primeRecoveryOffer() undoing that work. Both run inside
+     * one apply, verifyDownload() first and primeRecoveryOffer() from the
+     * finally milliseconds later, and primeRecoveryOffer() writes whenever the
+     * arm's claims are still newer than what is on disk, which after a FAILED
+     * apply is always true. Without this flag the sequence is:
+     *
+     *   operator withdraws the release -> verifyDownload retires the dead
+     *   claims -> primeRecoveryOffer writes them straight back for 12h
+     *
+     *   control plane moves forward during the #328 site-lock wait ->
+     *   verifyDownload caches the fresh correct version -> primeRecoveryOffer
+     *   downgrades it back to the arm's older one
+     *
+     * Both were reproduced by execution, not argued. verifyDownload() is the
+     * authority here: it is the only path that re-fetches and re-verifies the
+     * signed manifest from scratch, so whatever it decided outranks the claims
+     * this request happened to start with.
+     *
+     * @var bool
+     */
+    private bool $claimsSettledByDownload = false;
 
     /**
      * The Plugin_Upgrader instance of the apply that is running, or null.
@@ -823,6 +886,14 @@ final class UpdateChecker
      * before caching — it is a short-lived bearer credential). On cache miss,
      * calls fetchManifest() and caches the result.
      *
+     * THIS IS THE OFFER THE OTHER TWO INSTALLERS READ. The CP-commanded apply
+     * carries its claims in memory and forces its own offer (see runUpgrade),
+     * but the dashboard's "Update now" and core's auto-updater have nothing but
+     * this filter, and a dashboard-initiated update is the documented recovery
+     * path for a build whose commanded apply is broken. So a cached entry that
+     * the on-disk build has since overtaken is DROPPED here rather than answered
+     * from, which caps that lie at a single page load instead of 12 hours.
+     *
      * @param mixed $transient The current site transient value.
      * @return mixed Modified transient.
      */
@@ -831,6 +902,8 @@ final class UpdateChecker
         if (!is_object($transient)) {
             return $transient;
         }
+
+        $onDisk = $this->onDiskVersion();
 
         // Read the 12h-cached verified claims.
         $claims = function_exists('get_site_transient')
@@ -862,32 +935,44 @@ final class UpdateChecker
                 }
                 $claims = null;
             }
+        } elseif (!$this->claimsOfferNewerThan($claims, $onDisk)) {
+            // OVERTAKEN POSITIVE ENTRY, and it is dropped rather than answered
+            // from (GitHub issue #334). Nothing can CACHE a claims array that is
+            // not newer than the on-disk build, because verifyManifest()'s
+            // downgrade guard refuses one, so reaching this branch means the
+            // build on disk moved after the entry was written. Every install
+            // route that moves it clears this cache (the apply's own
+            // flushCache(), and core's upgrader_process_complete binding through
+            // wp_clean_plugins_cache), so what is left here is an out-of-band
+            // change: a file copy, a deploy, a restore.
+            //
+            // Answering "no update" from it would be this file's own recurring
+            // defect, a cache in front of an authoritative read that is allowed
+            // to keep answering after it stopped being true, and it would hold
+            // the recovery path shut for the remainder of the 12h window.
+            // Deleting it costs one control-plane fetch on the NEXT read, which
+            // then writes either fresh claims or the negative sentinel, so the
+            // steady state is the ordinary hourly recheck every up-to-date site
+            // already performs, and never a fetch per page load.
+            //
+            // A negative is NOT asserted here. This path knows one thing, that
+            // the cached entry is false; it does not know what is true, so it
+            // destroys the false answer and leaves the finding to the next read.
+            if (function_exists('delete_site_transient')) {
+                delete_site_transient(self::TRANSIENT_MANIFEST);
+            }
+            $claims = null;
         }
 
-        $onDisk = $this->onDiskVersion();
-
-        // Normalize BOTH sides, exactly as the verifyManifest() downgrade guard
-        // does. This comparison used to be made on the raw strings, which meant
-        // the two gates could disagree: PHP version_compare() reads
-        // '0.10.5-cron-selfheal' as a PRE-RELEASE of (lower than) '0.10.5', so a
-        // manifest 'version: 0.10.5' was refused by verifyManifest() but still
-        // offered here whenever a cached claims array reached injectUpdate(),
-        // surfacing a dashboard update entry for a build that the security chain
-        // would then refuse to install. One normalization rule, both gates.
-        if (is_array($claims) && isset($claims['version']) && is_string($claims['version'])
-            && version_compare($this->normalizeVersion($claims['version']), $this->normalizeVersion($onDisk), '>')
-        ) {
+        if (is_array($claims) && $this->claimsOfferNewerThan($claims, $onDisk)) {
             // Inject the update entry. Package is the SENTINEL (not a presigned
             // URL): the real URL is fetched fresh inside verifyDownload().
-            $entry = new \stdClass();
-            $entry->slug        = self::PLUGIN_SLUG;
-            $entry->plugin      = self::PLUGIN_KEY;
-            $entry->new_version = $claims['version'];
-            $entry->package     = self::PACKAGE_SENTINEL;
-            $entry->url         = '';
-            $entry->tested      = isset($claims['tested'])       && is_string($claims['tested'])       ? $claims['tested']       : '';
-            $entry->requires    = isset($claims['requires'])     && is_string($claims['requires'])     ? $claims['requires']     : '';
-            $entry->requires_php = isset($claims['requires_php']) && is_string($claims['requires_php']) ? $claims['requires_php'] : '';
+            //
+            // ONE BUILDER, TWO CALLERS. The apply forces this same entry from
+            // the claims it verified in-request (see runUpgrade), and the two
+            // constructions drifting apart is exactly how an offer that looks
+            // right here reaches the upgrader in a shape it will not install.
+            $entry = $this->offerEntryFromClaims($claims, (string) $claims['version']);
 
             if (!isset($transient->response) || !is_array($transient->response)) {
                 $transient->response = [];
@@ -910,6 +995,69 @@ final class UpdateChecker
         }
 
         return $transient;
+    }
+
+    /**
+     * Does this set of cached claims still offer a build newer than the one on
+     * disk?
+     *
+     * THE ONE PLACE THIS COMPARISON IS MADE, and it normalizes BOTH sides
+     * exactly as verifyManifest()'s downgrade guard does. The comparison used to
+     * be written out inline on the raw strings, which meant the two gates could
+     * disagree: PHP version_compare() reads '0.10.5-cron-selfheal' as a
+     * PRE-RELEASE of (lower than) '0.10.5', so a manifest claiming version
+     * '0.10.5' was refused by verifyManifest() and yet still offered in the
+     * dashboard, surfacing an update entry for a build the security chain would
+     * then refuse to install. One normalization rule, every gate.
+     *
+     * @param mixed  $claims Cached claims array, or anything else.
+     * @param string $onDisk The on-disk plugin version.
+     * @return bool True when $claims names a build strictly newer than $onDisk.
+     */
+    private function claimsOfferNewerThan($claims, string $onDisk): bool
+    {
+        if (!is_array($claims) || !isset($claims['version']) || !is_string($claims['version'])) {
+            return false;
+        }
+
+        return version_compare(
+            $this->normalizeVersion($claims['version']),
+            $this->normalizeVersion($onDisk),
+            '>'
+        );
+    }
+
+    /**
+     * Build the update-transient entry for one set of verified manifest claims.
+     *
+     * THE ONE PLACE THIS SHAPE IS DEFINED. injectUpdate() offers it to the
+     * dashboard and to core's auto-updater; runUpgrade() forces the identical
+     * entry from the claims the arm verified in-request. Two hand-built copies
+     * of this shape is how the apply ends up reading an offer the dashboard
+     * would have got right, so there is one builder and no second copy.
+     *
+     * package is the SENTINEL, never a presigned URL: the real URL is fetched
+     * fresh inside verifyDownload(), which re-verifies the whole signed
+     * manifest before a single byte is written. This entry is a ROUTING HINT
+     * and nothing else trusts it.
+     *
+     * @param array<string,mixed> $claims  Verified claims (package_url stripped).
+     * @param string              $version The version this entry offers.
+     * @return \stdClass
+     */
+    private function offerEntryFromClaims(array $claims, string $version): \stdClass
+    {
+        $entry               = new \stdClass();
+        $entry->slug         = self::PLUGIN_SLUG;
+        $entry->plugin       = self::PLUGIN_KEY;
+        $entry->new_version  = $version;
+        $entry->package      = self::PACKAGE_SENTINEL;
+        $entry->url          = '';
+        $entry->tested       = isset($claims['tested'])       && is_string($claims['tested'])       ? $claims['tested']       : '';
+        $entry->requires     = isset($claims['requires'])     && is_string($claims['requires'])     ? $claims['requires']     : '';
+        $entry->requires_php = isset($claims['requires_php']) && is_string($claims['requires_php']) ? $claims['requires_php'] : '';
+
+        return $entry;
     }
 
     // -------------------------------------------------------------------------
@@ -1034,10 +1182,53 @@ final class UpdateChecker
         // Fetch a FRESH manifest (new presigned URL, fully re-verified).
         $claims = $this->fetchManifest();
         if (!is_array($claims)) {
+            // A DEFINITIVE REFUSAL RETIRES THE CACHED OFFER THAT LED HERE
+            // (GitHub issue #334). Something read a cached update entry and
+            // acted on it, and the control plane has just answered that there is
+            // nothing to install: the release was withdrawn, or the on-disk
+            // build has caught up with it. Leaving those claims in place would
+            // keep the dashboard offering a button that cannot work for the rest
+            // of the 12h window.
+            //
+            // ONLY on those two outcomes. 'unavailable', 'invalid' and
+            // 'rejected' mean the answer did not arrive or could not be trusted,
+            // which teaches nothing about what is published, and a control-plane
+            // outage must never be able to blank a fleet's update offers.
+            if (function_exists('delete_site_transient')
+                && ($this->lastManifestOutcome === 'no_update' || $this->lastManifestOutcome === 'up_to_date')
+            ) {
+                delete_site_transient(self::TRANSIENT_MANIFEST);
+                // Settled: primeRecoveryOffer() must not write the retired
+                // claims back from the finally a few milliseconds from now.
+                $this->claimsSettledByDownload = true;
+            }
+
             return new \WP_Error(
                 'wpmgr_update_manifest_failed',
                 'WPMgr agent update: could not fetch or verify the update manifest from the control plane.'
             );
+        }
+
+        // THE POSITIVE CACHE IS CORRECTED HERE, at the only moment the truth is
+        // in hand for free (GitHub issue #334). injectUpdate() caches verified
+        // claims for 12h so it does not round-trip the control plane on every
+        // wp-admin load, which means the dashboard and core's auto-updater can
+        // name a build the control plane has since moved past. It never
+        // INSTALLS the wrong build, because this method is the authority and it
+        // has just re-fetched and re-verified from scratch; what it can do is
+        // print a stale version number beside the button. Rewriting the cache
+        // from these fresh claims makes any install attempt self-correcting,
+        // and costs no extra request. package_url is stripped: it is a
+        // short-lived bearer credential and is never cached.
+        if (function_exists('set_site_transient') && defined('HOUR_IN_SECONDS')) {
+            $refreshed = $claims;
+            unset($refreshed['package_url']);
+            set_site_transient(self::TRANSIENT_MANIFEST, $refreshed, 12 * HOUR_IN_SECONDS);
+            // Settled: these claims were re-fetched and re-verified just now, so
+            // they outrank the ones this request started with. Without this,
+            // primeRecoveryOffer() downgrades them back to the arm's older
+            // version from the finally.
+            $this->claimsSettledByDownload = true;
         }
 
         $packageUrl  = isset($claims['package_url'])    && is_string($claims['package_url'])    ? $claims['package_url']    : '';
@@ -1427,10 +1618,19 @@ final class UpdateChecker
             return $this->stageAnswer('error', $onDisk, '', 'WordPress filter API unavailable; the apply has no seam to run from.');
         }
 
+        // THE CLAIMS TRAVEL IN MEMORY, not through the transient written above
+        // (GitHub issue #334). The transient is written for the DASHBOARD's
+        // benefit and for the next request; between this line and the swap sits
+        // awaitSiteUpdateLock(), which can wait up to SITE_LOCK_WAIT_SECONDS on
+        // exactly the process that calls delete_site_transient('update_plugins')
+        // and so deletes TRANSIENT_MANIFEST out from under us through
+        // flushCache(). Anything the apply needs must therefore be carried, not
+        // looked up.
         $this->pendingApply = [
             'apply_id' => $applyId,
             'from'     => $onDisk,
             'to'       => $toVersion,
+            'claims'   => $toCache,
         ];
 
         add_filter('rest_pre_serve_request', [$this, 'serveThenApply'], 999, 4);
@@ -1502,6 +1702,7 @@ final class UpdateChecker
         $applyId = (string) $pending['apply_id'];
         $from    = (string) $pending['from'];
         $to      = (string) $pending['to'];
+        $claims  = isset($pending['claims']) && is_array($pending['claims']) ? $pending['claims'] : [];
 
         try {
             $this->emitAck((bool) $served, $result, $server);
@@ -1532,7 +1733,7 @@ final class UpdateChecker
             DebugLog::write('WPMgr Agent: self-update could not release the connection: ' . $e->getMessage());
         }
 
-        $this->applyPendingUpdate($rung, $applyId, $from, $to);
+        $this->applyPendingUpdate($rung, $applyId, $from, $to, $claims);
 
         return true;
     }
@@ -1563,15 +1764,23 @@ final class UpdateChecker
      * attached connection, and on the last rung the reason this host has no
      * detaching one is written to the debug log in the same breath.
      *
-     * @param string $rung    The rung ConnectionFinisher reported.
-     * @param string $applyId Opaque id of this apply.
-     * @param string $from    On-disk version at arm time.
-     * @param string $to      Verified target version.
+     * @param string              $rung    The rung ConnectionFinisher reported.
+     * @param string              $applyId Opaque id of this apply.
+     * @param string              $from    On-disk version at arm time.
+     * @param string              $to      Verified target version.
+     * @param array<string,mixed> $claims  The claims the arm verified in this
+     *                                     request, carried in memory so the
+     *                                     apply depends on no cache.
      * @return void
      */
-    private function applyPendingUpdate(string $rung, string $applyId, string $from, string $to): void
+    private function applyPendingUpdate(string $rung, string $applyId, string $from, string $to, array $claims): void
     {
         $this->applyRung = $rung;
+        // Scope the flag to THIS apply. It is only ever read by
+        // primeRecoveryOffer() in the finally below, so a value left over from
+        // an earlier apply in the same process would silently suppress the
+        // recovery offer for an apply whose verifyDownload never ran.
+        $this->claimsSettledByDownload = false;
 
         try {
             if (!in_array($rung, ConnectionFinisher::DETACHING_RUNGS, true)) {
@@ -1616,13 +1825,68 @@ final class UpdateChecker
 
             self::warmPostSwapClasses();
 
-            $this->runUpgrade($applyId, $from, $to);
+            $this->runUpgrade($applyId, $from, $to, $claims);
         } catch (\Throwable $e) {
             $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Self-update apply threw: ' . $e->getMessage());
         } finally {
             SiteUpdateLock::release();
             $this->releaseApplyLock();
+            $this->primeRecoveryOffer($claims);
         }
+    }
+
+    /**
+     * Leave the dashboard holding a working offer when the commanded apply did
+     * not land.
+     *
+     * A dashboard-initiated update is the recovery path for a build whose
+     * commanded apply is broken, and it is the one route that this fix does not
+     * carry claims into: it reads whatever injectUpdate() can build from the
+     * shared cache. That cache can have been deleted by a sibling process while
+     * this apply waited for the site lock, and the next read to find it empty
+     * pays a control-plane round trip that, if it fails, writes a one-hour "no
+     * update" and hides the recovery path exactly when it is needed.
+     *
+     * So the apply hands the recovery path the claims it verified in this same
+     * request, for free and over no network.
+     *
+     * SELF-GUARDING, which is why it needs no outcome plumbing and can sit in
+     * one `finally`: it writes only while the verified build is still newer than
+     * what is on disk. A successful apply moves the on-disk version to the
+     * target, so the condition is false and nothing is written over the
+     * flushCache() that success already performed.
+     *
+     * @param array<string,mixed> $claims The claims the arm verified in this request.
+     * @return void
+     */
+    private function primeRecoveryOffer(array $claims): void
+    {
+        if ($claims === [] || !function_exists('set_site_transient') || !defined('HOUR_IN_SECONDS')) {
+            return;
+        }
+
+        // STAND DOWN if verifyDownload() already settled the cache in this
+        // request. It re-fetched and re-verified the signed manifest from
+        // scratch, so its answer outranks the claims the arm started with, and
+        // writing over it turns two correct decisions into a wrong one:
+        // retired claims come back from the dead, and a freshly corrected
+        // version gets downgraded to the arm's older one. Both were reproduced
+        // by execution before this guard existed.
+        if ($this->claimsSettledByDownload) {
+            return;
+        }
+
+        // The plugin directory may have been replaced by this very method a
+        // moment ago, so the header is read past the stat cache.
+        clearstatcache();
+        if (!$this->claimsOfferNewerThan($claims, $this->onDiskVersion())) {
+            return;
+        }
+
+        // Belt and braces: package_url is stripped before the arm ever hands
+        // these over, and a presigned bearer credential is never cached.
+        unset($claims['package_url']);
+        set_site_transient(self::TRANSIENT_MANIFEST, $claims, 12 * HOUR_IN_SECONDS);
     }
 
     /**
@@ -1781,61 +2045,111 @@ final class UpdateChecker
      * deactivated, and active_before()/active_after() put maintenance mode over
      * the destructive window and take it off again.
      *
-     * @param string $applyId Opaque id of this apply, stamped into the outcome.
-     * @param string $from    On-disk version at arm time.
-     * @param string $to      Verified target version.
+     * @param string              $applyId Opaque id of this apply, stamped into the outcome.
+     * @param string              $from    On-disk version at arm time.
+     * @param string              $to      Verified target version.
+     * @param array<string,mixed> $claims  The claims the arm verified in this
+     *                                     very request. THE ONLY INPUT TO THE
+     *                                     OFFER, by design; see below.
      * @return void
      */
-    private function runUpgrade(string $applyId, string $from, string $to): void
+    private function runUpgrade(string $applyId, string $from, string $to, array $claims): void
     {
         if (!$this->loadUpgraderApi() || !class_exists('\Plugin_Upgrader') || !class_exists('\Automatic_Upgrader_Skin')) {
             $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Upgrader API unavailable.');
             return;
         }
 
-        // Plugin_Upgrader::upgrade() reads the plugin update transient to find
-        // the package and bails to its up_to_date branch when the entry is
-        // absent, returning a bare false with nothing else said. THIS PATH USED
-        // TO DELETE THAT TRANSIENT A FEW LINES ABOVE THE CALL, which is why the
-        // CP-commanded self-update never applied on any site. Rebuild it the way
-        // core's own background updater does. wp_update_plugins() writes the
-        // transient BEFORE it calls api.wordpress.org, so a site that cannot
-        // reach wordpress.org still ends up with an object here, and reading it
-        // back runs our own site_transient_update_plugins filter, which is what
-        // offers the build this arm just verified.
-        $offer = function_exists('get_site_transient') ? get_site_transient('update_plugins') : null;
-        if (!is_object($offer) && function_exists('wp_update_plugins')) {
-            wp_update_plugins();
-            $offer = get_site_transient('update_plugins');
+        // BENIGN CASE FIRST, so no offer is ever forced for a build that is
+        // already on disk. The plugin directory may have been replaced inside
+        // this very process tree while the wait above was running, and
+        // onDiskVersion() reads the header through get_plugin_data(), which is
+        // stat-cached, so the cache is dropped before the read rather than
+        // trusted after a wait of up to SITE_LOCK_WAIT_SECONDS.
+        clearstatcache();
+        $onDiskNow = $this->onDiskVersion();
+        if ($to !== '' && !version_compare($this->normalizeVersion($to), $this->normalizeVersion($onDiskNow), '>')) {
+            $this->recordSelfUpdateResult(
+                $applyId,
+                'already_applied',
+                $from,
+                $to,
+                'On-disk version is already at or past the verified target.'
+            );
+            return;
         }
 
-        if (!is_object($offer) || !isset($offer->response[self::PLUGIN_KEY])) {
-            // At or past the target already: the build landed some other way
-            // between the arm and this line. Benign, and it must not be reported
-            // as a failure.
-            if (
-                is_object($offer)
-                && isset($offer->no_update[self::PLUGIN_KEY])
-                && !version_compare($this->normalizeVersion($to), $this->normalizeVersion($this->onDiskVersion()), '>')
-            ) {
-                $this->recordSelfUpdateResult(
-                    $applyId,
-                    'already_applied',
-                    $from,
-                    $to,
-                    'On-disk version is already at or past the verified target.'
-                );
-                return;
-            }
-
+        // THE INVARIANT THIS PATH MUST ASSERT, and the one 0.61.108 got wrong
+        // (GitHub issues #334, #212 class):
+        //
+        //   THE OFFER THE UPGRADER READS CONTAINS OUR ENTRY,
+        //   naming the build THIS arm verified.
+        //
+        // NOT "the update_plugins transient exists". 0.61.108 guarded the
+        // container and rebuilt it when it was absent, so a transient that was
+        // present but carried no entry of ours fell straight through to a named
+        // failure. Worse, the container is not something this path can reason
+        // about at all: get_site_transient() applies
+        // pre_site_transient_update_plugins FIRST and returns immediately when
+        // that filter answers anything but false (wp-includes/option.php:2580
+        // to :2584), never reaching the site_transient_update_plugins filter at
+        // :2620 that injectUpdate() is bound to. One "disable updates" plugin,
+        // security plugin or managed-host mu-plugin short-circuiting there and
+        // our entry never reaches the upgrader on that site, on every attempt,
+        // for ever.
+        //
+        // So the apply stops asking and starts answering. The claims below were
+        // verified by the ARM, in this request, milliseconds ago, through the
+        // full signature chain, and they are carried here in memory. The entry
+        // is built from them and returned from the pre-filter at PHP_INT_MAX,
+        // which is the only construction that wins over both a foreign
+        // pre-filter short-circuit and every foreign site_transient filter:
+        // apply_filters runs every callback, so the last registration at the
+        // highest priority answers.
+        //
+        // Repairing a local $offer variable is NOT enough and never was:
+        // Plugin_Upgrader::upgrade() re-reads the transient itself
+        // (wp-admin/includes/class-plugin-upgrader.php:199) and bails at :200
+        // to :206 on a missing entry, returning a bare false.
+        //
+        // NOTHING IS READ AND NOTHING IS DELETED HERE. Not the transient, whose
+        // read would run injectUpdate() and, on a manifest cache miss, block
+        // this apply on a control-plane round trip and then negative-cache
+        // "no update" for NO_UPDATE_TTL. Not wp_update_plugins(), for the same
+        // reason plus a call to api.wordpress.org. And never
+        // delete_site_transient('update_plugins'), which fires
+        // do_action("delete_site_transient_update_plugins") as its FIRST act
+        // (wp-includes/option.php:2520) and is bound to flushCache(), so it
+        // would destroy the verified manifest this apply was standing on.
+        $offerVersion = isset($claims['version']) && is_string($claims['version']) ? $claims['version'] : '';
+        if ($offerVersion === '' || $to === '') {
             $this->recordSelfUpdateResult(
                 $applyId,
                 'failed',
                 $from,
                 $to,
-                'No update offer reached the upgrader: the plugin update transient carried no entry for this plugin.'
+                'No update offer reached the upgrader: the arm carried no verified claims into the apply.'
             );
             return;
+        }
+
+        // A COMPLETE object, not a bare one carrying only ->response.
+        // upgrader_process_complete fires while this is what every reader sees
+        // (class-plugin-upgrader.php:220), and third-party listeners routinely
+        // read ->no_update, ->checked and ->last_checked. Under PHP 8 a missing
+        // property is a warning, and a listener that promotes warnings to
+        // exceptions would turn the agent's own self-update into a fatal at the
+        // single most dangerous moment in the request.
+        $forced               = new \stdClass();
+        $forced->last_checked = time();
+        $forced->checked      = [self::PLUGIN_KEY => $onDiskNow];
+        $forced->response     = [self::PLUGIN_KEY => $this->offerEntryFromClaims($claims, $offerVersion)];
+        $forced->no_update    = [];
+        $forced->translations = [];
+
+        $this->forcedOffer = $forced;
+        if (function_exists('add_filter')) {
+            add_filter('pre_site_transient_update_plugins', [$this, 'forceApplyOffer'], PHP_INT_MAX);
         }
 
         // A fatal skips every try/finally, so maintenance mode gets a shutdown
@@ -1847,6 +2161,9 @@ final class UpdateChecker
 
         if (function_exists('add_action')) {
             add_action('shutdown', [$this, 'restoreAgentIfDirectoryMissing'], self::RESTORE_GUARD_PRIORITY);
+            // The forced offer must not outlive the apply even when a fatal
+            // skips the finally below. See FORCED_OFFER_CLEAR_PRIORITY.
+            add_action('shutdown', [$this, 'clearForcedOffer'], self::FORCED_OFFER_CLEAR_PRIORITY);
         }
 
         $result = null;
@@ -1863,6 +2180,11 @@ final class UpdateChecker
             if (function_exists('remove_filter')) {
                 remove_filter('wp_doing_cron', '__return_true', 9999);
             }
+            // GUARANTEE: the forced offer is withdrawn on every terminal path
+            // of this upgrade. It exists to serve ONE call to
+            // Plugin_Upgrader::upgrade() and must never be readable by another
+            // plugin's update, another request, or anything after this line.
+            $this->clearForcedOffer();
             // GUARANTEE: maintenance mode is cleared on every terminal path of
             // this upgrade, whether it succeeded, returned a WP_Error, or threw.
             Maintenance::clear($upgrader);
@@ -1938,6 +2260,56 @@ final class UpdateChecker
         // upgrader_process_complete binding, so nothing is deleted here.
         $this->flushCache();
         $this->recordSelfUpdateResult($applyId, 'applied', $from, $to, $this->installNotes());
+    }
+
+    /**
+     * Answer every get_site_transient('update_plugins') made while an apply is
+     * running with the offer that apply verified.
+     *
+     * Bound at PHP_INT_MAX on pre_site_transient_update_plugins, and only for
+     * the duration of one Plugin_Upgrader::upgrade() call. That position is
+     * deliberate and is the whole mechanism: get_site_transient() applies the
+     * pre-filter first and returns the moment it is handed anything but false
+     * (wp-includes/option.php:2580 to :2584), so this answer cannot be
+     * suppressed by another plugin's pre-filter, by a foreign
+     * site_transient_update_plugins filter at any priority, or by the stored
+     * transient being absent, stale, or missing our entry.
+     *
+     * It is a big hammer and it is scoped like one: installed inside
+     * runUpgrade(), removed in that method's `finally`, and cleared again from
+     * shutdown in case a fatal skipped the finally.
+     *
+     * Public so WordPress can call it as a named hook callback.
+     *
+     * @param mixed $pre The short-circuit value so far (false = no short-circuit).
+     * @return mixed The forced offer while an apply is running, else $pre.
+     */
+    public function forceApplyOffer($pre)
+    {
+        $forced = $this->forcedOffer;
+
+        return is_object($forced) ? $forced : $pre;
+    }
+
+    /**
+     * Withdraw the forced offer and unbind the filter that serves it.
+     *
+     * Idempotent, and safe to call when nothing was ever forced. Called from
+     * runUpgrade()'s `finally` on every terminal path, and again from shutdown
+     * at FORCED_OFFER_CLEAR_PRIORITY because a fatal inside the upgrade skips
+     * the finally entirely.
+     *
+     * Public so WordPress can call it as a named hook callback. Never throws.
+     *
+     * @return void
+     */
+    public function clearForcedOffer(): void
+    {
+        $this->forcedOffer = null;
+
+        if (function_exists('remove_filter')) {
+            remove_filter('pre_site_transient_update_plugins', [$this, 'forceApplyOffer'], PHP_INT_MAX);
+        }
     }
 
     /**
