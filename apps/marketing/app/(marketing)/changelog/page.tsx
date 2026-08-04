@@ -39,6 +39,22 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.116",
+    date: "2026-08-04",
+    summary:
+      "The client portal showed Cumulative Layout Shift a thousand times too large. A good CLS of 0.1 was shown to clients as 100.000, next to a badge that correctly said Good.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The Core Web Vitals card in the client portal displayed Cumulative Layout Shift multiplied by a thousand. A perfectly good CLS of 0.1 appeared to your clients as \"100.000\", directly beside a rating badge that correctly read \"Good\", so the score contradicted its own rating and showed a number that no CLS can take. It now reads 0.100, the same as on the operator dashboard and in every other report. This was client facing, so it was visible to the people you send portal links to.",
+      },
+      {
+        tag: "Fixed",
+        text: "Timing metrics in the client portal now switch to seconds above one second, so a client and an operator looking at the same site read the same figure. Previously the portal showed \"4200ms\" where the dashboard showed \"4.20 s\".",
+      },
+    ],
+  },
+  {
     version: "0.61.115",
     date: "2026-08-04",
     summary:

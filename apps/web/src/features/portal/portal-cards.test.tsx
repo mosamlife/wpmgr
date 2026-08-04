@@ -194,11 +194,16 @@ describe("PortalVitalsCard — shows the real Core Web Vitals p75s", () => {
   const onRetry = vi.fn();
 
   it("renders the real p75 values and ratings, not a placeholder", () => {
+    // WIRE VALUES, not display values. The API sends milli-units for EVERY
+    // metric, so a CLS of 0.18 arrives as 180. The previous version of this
+    // test passed `p75: 0.18` here, which no server ever sends, and so it
+    // agreed with a component that also forgot to divide. Two wrongs
+    // cancelling is why a client-facing bug shipped with a green test.
     const data: PortalVitalsSummary = {
       range: "28d",
       metrics: [
         { metric: "lcp", p75: 2100, rating: "good", samples: 5000 },
-        { metric: "cls", p75: 0.18, rating: "needs-improvement", samples: 4200 },
+        { metric: "cls", p75: 180, rating: "needs-improvement", samples: 4200 },
       ],
     };
 
@@ -213,10 +218,58 @@ describe("PortalVitalsCard — shows the real Core Web Vitals p75s", () => {
       />,
     );
 
-    expect(screen.getByText("2100ms")).toBeInTheDocument();
+    expect(screen.getByText("2.10 s")).toBeInTheDocument();
     expect(screen.getByText("0.180")).toBeInTheDocument();
     expect(screen.getByText("Good")).toBeInTheDocument();
     expect(screen.getByText("Needs improvement")).toBeInTheDocument();
+  });
+
+  it("never shows a client a CLS scaled by 1000", () => {
+    // The exact reported shape: a GOOD CLS of 0.1, which the API sends as 100.
+    // It rendered as "100.000" beside a badge reading "Good", which is a
+    // number no CLS can take and which contradicts its own rating.
+    const data: PortalVitalsSummary = {
+      range: "28d",
+      metrics: [
+        { metric: "cls", p75: 100, rating: "good", samples: 3000 },
+      ],
+    };
+
+    renderWithProviders(
+      <PortalVitalsCard
+        data={data}
+        isLoading={false}
+        isError={false}
+        error={null}
+        onRetry={onRetry}
+        isRetrying={false}
+      />,
+    );
+
+    expect(screen.getByText("0.100")).toBeInTheDocument();
+    expect(screen.queryByText("100.000")).not.toBeInTheDocument();
+  });
+
+  it("formats a sub-second timing metric in milliseconds", () => {
+    // formatLcpP75 switches at 1000, so this pins the other side of the
+    // branch and proves the portal did not simply become a seconds-only view.
+    const data: PortalVitalsSummary = {
+      range: "28d",
+      metrics: [{ metric: "inp", p75: 180, rating: "good", samples: 900 }],
+    };
+
+    renderWithProviders(
+      <PortalVitalsCard
+        data={data}
+        isLoading={false}
+        isError={false}
+        error={null}
+        onRetry={onRetry}
+        isRetrying={false}
+      />,
+    );
+
+    expect(screen.getByText("180 ms")).toBeInTheDocument();
   });
 
   it("shows the 'no field data' empty state for a customer with no RUM samples yet", () => {

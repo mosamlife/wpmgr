@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/feedback";
+import { formatLcpP75 } from "@/features/perf/rum-tile";
 import type { PortalVitalsSummary, PortalVitalMetric } from "./use-portal";
 
 // ---------------------------------------------------------------------------
@@ -24,15 +25,21 @@ const METRIC_LABELS: Record<string, string> = {
   cls: "Cumulative Layout Shift",
 };
 
-const METRIC_UNITS: Record<string, string> = {
-  lcp: "ms",
-  inp: "ms",
-  cls: "",
-};
-
+// The API sends p75 in MILLI-UNITS for every metric, including CLS. That is
+// the server's own contract: portal/handler.go rates CLS "good" at p75 < 100,
+// meaning a CLS of 0.1 arrives here as 100. Every other surface in the product
+// divides before display (see FleetRumPanel and RumTrendChart); this card did
+// not, so it showed a perfectly good CLS of 0.1 to a CLIENT as "100.000",
+// directly beside a badge that correctly read "Good".
+//
+// Timing metrics reuse formatLcpP75 rather than a third local formatter, so a
+// client and an operator looking at the same site read the same number. It
+// keeps two decimals of seconds on purpose: that is the precision that still
+// separates 2460 ms from 2540 ms, which sit on opposite sides of the LCP good
+// threshold and are shown in different colours.
 function formatMetricValue(metric: string, p75: number): string {
-  if (metric === "cls") return p75.toFixed(3);
-  return `${Math.round(p75)}${METRIC_UNITS[metric] ?? ""}`;
+  if (metric === "cls") return (p75 / 1000).toFixed(3);
+  return formatLcpP75(p75);
 }
 
 function ratingVariant(

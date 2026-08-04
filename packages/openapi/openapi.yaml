@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.115
+  version: 0.61.116
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -19439,6 +19439,14 @@ components:
         p75:
           type: number
           format: float
+          description: >-
+            75th percentile, in MILLI-UNITS for every metric. Timing metrics
+            (lcp, inp) are therefore milliseconds. CLS is thousandths of a
+            unit, so a CLS of 0.1 is sent as 100 and a client must divide by
+            1000 before display. This field carried no unit for a long time
+            and a consumer rendered CLS undivided, showing a good score of 0.1
+            to an end client as "100.000".
+          example: 2450
         rating:
           type: string
           enum: [good, needs-improvement, poor, insufficient-data]
