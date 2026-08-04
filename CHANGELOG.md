@@ -8,6 +8,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.121] - 2026-08-04
+
+### Fixed
+
+- A site's Updates tab said "All up to date", with a green check, while that same site's own WordPress dashboard was offering a WPMgr agent update (GH #314). The tab only ever knew about the components WPMgr updates for you: plugins, themes and WordPress core. The agent itself is deliberately not one of them, so its update was never in the count, and the tab claimed everything was current when all it actually knew was that the managed components were.
+- The tab now says "All managed components are up to date", and the badge beside the heading says "No managed updates", so neither one speaks for anything WPMgr does not update.
+- The agent is now shown on that tab as its own line, whether or not anything else needs updating, with what this install actually knows about it: behind, current, or not determinable. It is deliberately not selectable and has no update button, because an agent update applied the way a plugin update is applied means the plugin overwriting its own running files inside the request that has to report the result, with no rollback armed for its own directory. Where the fleet agent update channel is turned on and you can use it, the line links straight to it. Where it is not, the line says to update the agent from that site's own Plugins screen instead. A site running the build from the WordPress plugin directory is never sent to the fleet channel at all, because that build ships without a self-updater and updates through the directory.
+- When this install has no published agent release to compare against, the line says so rather than guessing. It never reports a site as behind on a comparison that did not happen, and where the comparison fell back to the newest agent version this fleet has reported, it says that too, in the same words the Sites list already uses.
+
 ## [0.61.120] - 2026-08-04
 
 ### Added

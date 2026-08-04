@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.121",
+    date: "2026-08-04",
+    summary:
+      "A site's Updates tab said everything was up to date when all it knew was that the managed components were. The WPMgr agent is now stated on that tab as its own line.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A site's Updates tab said \"All up to date\", with a green check, while that same site's own WordPress dashboard was offering a WPMgr agent update. The tab only ever knew about the components WPMgr updates for you: plugins, themes and WordPress core. The agent itself is deliberately not one of them, so its update was never in the count. The tab now says \"All managed components are up to date\", so it no longer speaks for anything WPMgr does not update.",
+      },
+      {
+        tag: "Fixed",
+        text: "The agent is now shown on that tab as its own line, whether or not anything else needs updating. It is deliberately not selectable and has no update button, because an agent update applied the way a plugin update is applied means the plugin overwriting its own running files inside the request that has to report the result, with no rollback armed for its own directory. Where the fleet agent update channel is turned on and you can use it, the line links straight to it; where it is not, it says to update the agent from that site's own Plugins screen instead.",
+      },
+      {
+        tag: "Fixed",
+        text: "When an install has no published agent release to compare against, the line says so rather than guessing, and never reports a site as behind on a comparison that did not happen.",
+      },
+    ],
+  },
+  {
     version: "0.61.120",
     date: "2026-08-04",
     summary:

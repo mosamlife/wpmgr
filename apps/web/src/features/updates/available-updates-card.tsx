@@ -38,6 +38,11 @@ import {
   type CoreUpdate,
   type SiteAvailableUpdates,
 } from "@/features/updates/types";
+import { AgentUpdateNotice } from "@/features/updates/agent-update-notice";
+import {
+  useSiteAgentUpdate,
+  type SiteAgentUpdate,
+} from "@/features/updates/use-site-agent-update";
 import {
   isSiteDownRecovery,
   SITE_DOWN_RECOVERY_FALLBACK_DETAIL,
@@ -53,9 +58,20 @@ import { wpOrgSlug } from "@/features/updates/wp-org-slug";
 //   - SSE-driven live state per row (idle | starting | pending | running |
 //     succeeded | failed | rolled_back | skipped)
 //   - Refresh button (POST /updates/refresh) + relative "as of" timestamp
+//   - A separate, non-selectable WPMgr agent line (GH #314, AgentUpdateNotice)
 //
 // Wire-level behavior all lives in `useAvailableUpdates`, `useRefreshSiteUpdates`,
 // and `useRowUpdate` — this file is pure presentation + selection state.
+//
+// SCOPE OF EVERY "up to date" CLAIM IN THIS FILE (GH #314). `data.items` and
+// `data.core_update` are the components WPMgr MANAGES. The WPMgr agent is
+// stripped from that projection on the control plane on purpose (shipped
+// 0.61.97), so `total === 0` means "nothing WPMgr manages needs updating", and
+// it has never meant "this site has no updates waiting". The card said "All up
+// to date" for that state, which an operator reasonably read as including the
+// agent, while the same site's wp-admin was offering an agent update. Every
+// claim here is now scoped to the managed set in words, and the agent is
+// stated separately by AgentUpdateNotice.
 
 const WP_RELEASES = "https://wordpress.org/news/category/releases/";
 const CORE_SELECTION_KEY = "core:core";
@@ -74,6 +90,11 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
   const { data, isPending, isError, error, refetch, isFetching } =
     useAvailableUpdates(siteId);
   const refresh = useRefreshSiteUpdates(siteId);
+  // GH #314. Resolved once here and passed down, so the header badge and the
+  // body cannot disagree about what this tab knows. `null` while the fleet
+  // rollup is loading, refused (a site-scoped collaborator's 403) or missing
+  // this site, in which case no agent line renders at all.
+  const agent = useSiteAgentUpdate(siteId);
 
   // Multi-selection state. Keys: "core:core", "plugin:<slug>", "theme:<slug>".
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -137,8 +158,16 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
                 }
               />
             ) : data && total === 0 ? (
+              // GH #314: "Up to date" here carried the same half truth as the
+              // body's "All up to date" did, so it is scoped in words too.
+              // Unconditional rather than conditional on the agent's state:
+              // the agent classification arrives from a second, independently
+              // loading query that a site-scoped collaborator never gets at
+              // all, and a badge whose claim flips once that lands would be
+              // both jumpy and, for the moment before it lands, the same half
+              // truth again.
               <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-[var(--color-muted-foreground)] bg-[var(--color-muted)]">
-                Up to date
+                No managed updates
               </span>
             ) : null}
           </div>
@@ -175,6 +204,7 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
           <UpdatesBody
             siteId={siteId}
             data={data}
+            agent={agent}
             selected={selected}
             onToggle={toggle}
             onClearSelection={clearSelection}
@@ -201,67 +231,89 @@ function SkeletonRows() {
 function UpdatesBody({
   siteId,
   data,
+  agent,
   selected,
   onToggle,
   onClearSelection,
 }: {
   siteId: string;
   data: SiteAvailableUpdates;
+  agent: SiteAgentUpdate | null;
   selected: Set<string>;
   onToggle: (key: string) => void;
   onClearSelection: () => void;
 }) {
   const total = (data.core_update ? 1 : 0) + data.items.length;
 
-  if (total === 0) {
-    return (
-      <div
-        role="status"
-        className="flex flex-col items-center gap-2 py-6 text-center"
-      >
-        <CheckCircle2
-          aria-hidden="true"
-          className="size-8 text-[var(--color-success)]"
-        />
-        <p className="text-sm font-medium text-[var(--color-foreground)]">
-          All up to date
-        </p>
-        <FreshnessBadge collectedAt={data.as_of ?? null} />
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-3">
-      <ul
-        aria-label="Updates available"
-        className="divide-y divide-[var(--color-border)] rounded-md border border-[var(--color-border)]"
-      >
-        {data.core_update ? (
-          <CoreRow
-            siteId={siteId}
-            coreUpdate={data.core_update}
-            checked={selected.has(CORE_SELECTION_KEY)}
-            onToggle={() => onToggle(CORE_SELECTION_KEY)}
+    <div className="space-y-4">
+      {total === 0 ? (
+        <div
+          role="status"
+          className="flex flex-col items-center gap-2 py-6 text-center"
+        >
+          <CheckCircle2
+            aria-hidden="true"
+            className="size-8 text-[var(--color-success)]"
           />
-        ) : null}
-        {data.items.map((item) => (
-          <ComponentRow
-            key={itemKey(item)}
-            siteId={siteId}
-            item={item}
-            checked={selected.has(itemKey(item))}
-            onToggle={() => onToggle(itemKey(item))}
-          />
-        ))}
-      </ul>
+          {/* GH #314. QUALIFIED rather than suppressed, and qualified
+              unconditionally.
+              Suppressing the up-to-date state whenever the agent is behind
+              would have made the most common, entirely healthy case (nothing
+              to update, agent current) render as an absence, and it would
+              have made the sentence depend on a second query that a
+              site-scoped collaborator is refused outright, so the same site
+              would say different things to two operators.
+              "Managed components" is the honest scope and it is the only
+              scope this data has ever described: the control plane strips the
+              agent from this projection before it is sent. The agent is then
+              stated separately, below, in exactly the terms the
+              classification supports. */}
+          <p className="text-sm font-medium text-[var(--color-foreground)]">
+            All managed components are up to date
+          </p>
+          <FreshnessBadge collectedAt={data.as_of ?? null} />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <ul
+            aria-label="Updates available"
+            className="divide-y divide-[var(--color-border)] rounded-md border border-[var(--color-border)]"
+          >
+            {data.core_update ? (
+              <CoreRow
+                siteId={siteId}
+                coreUpdate={data.core_update}
+                checked={selected.has(CORE_SELECTION_KEY)}
+                onToggle={() => onToggle(CORE_SELECTION_KEY)}
+              />
+            ) : null}
+            {data.items.map((item) => (
+              <ComponentRow
+                key={itemKey(item)}
+                siteId={siteId}
+                item={item}
+                checked={selected.has(itemKey(item))}
+                onToggle={() => onToggle(itemKey(item))}
+              />
+            ))}
+          </ul>
 
-      <BulkFooter
-        siteId={siteId}
-        data={data}
-        selected={selected}
-        onCleared={onClearSelection}
-      />
+          <BulkFooter
+            siteId={siteId}
+            data={data}
+            selected={selected}
+            onCleared={onClearSelection}
+          />
+        </div>
+      )}
+
+      {/* Rendered in BOTH states, and always AFTER the selectable list and
+          its bulk footer. The agent is a fact about this site whether or not
+          anything else needs updating, and its position outside the <ul> the
+          footer acts on is the structural half of "not selectable": there is
+          no row for it to be a row of. */}
+      <AgentUpdateNotice agent={agent} />
     </div>
   );
 }
