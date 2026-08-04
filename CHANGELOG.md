@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.117] - 2026-08-04
+
+### Fixed
+
+- Starting an update run could report a server error while the run had in fact been created. If the background job queue was briefly unavailable at the moment a run was saved, the run and its tasks were already written to the database, but the response threw them away and returned a failure. You were told nothing happened, while a real run sat there with tasks that nothing would pick up, and they stayed that way until the stale-task sweeper failed them 45 minutes later, or 6 hours later for an agent rollout. Starting the update again could then be refused, because the first run's tasks were still counted as in flight, so a brief queue hiccup looked like a broken product. The run is now returned as created, its tasks are visible on the run page, and the queue failure is logged for the operator.
+
 ## [0.61.116] - 2026-08-04
 
 ### Fixed

@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -502,5 +503,93 @@ func TestCreateRunSkipsDuplicateInFlightTarget(t *testing.T) {
 	}
 	if run2.ID == run1.ID {
 		t.Fatal("the post-completion run must be a distinct run from the first")
+	}
+}
+
+// failingEnqueuer fails every enqueue, standing in for River being unreachable
+// at exactly the moment a run has already been committed.
+type failingEnqueuer struct{ n int }
+
+func (e *failingEnqueuer) EnqueueTask(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, bool) error {
+	e.n++
+	return errors.New("river unavailable")
+}
+
+// TestCreateRunReturnsTheCommittedRunWhenEnqueueFails pins the contract
+// CreateRun documents in its own comment: "a failure here leaves the task
+// pending (the caller still gets the run)".
+//
+// This matters because the run and its tasks are ALREADY COMMITTED by the time
+// the enqueue runs. A caller that treats the error as "nothing happened" leaves
+// a real run in the database with pending tasks that nothing will move until
+// the reaper fails them, 45 minutes later for ordinary tasks and 6 hours for
+// agent ones. The operator, told it failed, creates a second run, which the m88
+// in-flight unique index can then reject. A recoverable hiccup becomes a
+// product that looks broken.
+func TestCreateRunReturnsTheCommittedRunWhenEnqueueFails(t *testing.T) {
+	tenant := uuid.New()
+	site := uuid.New()
+
+	info := SiteInfo{
+		ID: site, Enrolled: true,
+		Components: []Component{
+			{Type: TargetPlugin, Slug: "akismet", Version: "1.0.0", UpdateAvailable: true, NewVersion: "1.1.0"},
+		},
+	}
+	lookup := &fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{site: info}}
+	repo := &fakeCreateRepo{tenantID: tenant}
+	enq := &failingEnqueuer{}
+	svc := NewService(repo, lookup, enq, domain.NewValidator(), domain.SystemClock{})
+
+	run, tasks, err := svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant,
+		SiteIDs:  []uuid.UUID{site},
+		Items:    []Item{{Type: TargetPlugin, Slug: "akismet"}},
+	})
+
+	if err == nil {
+		t.Fatal("want the enqueue error surfaced, got nil")
+	}
+	// The whole point: the run and its tasks come back ANYWAY.
+	if run.ID == uuid.Nil {
+		t.Fatal("run.ID is nil: a committed run was thrown away with its error")
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("len(tasks) = %d, want 1: the committed tasks must come back too", len(tasks))
+	}
+	if enq.n == 0 {
+		t.Fatal("the enqueuer was never called, so this test proves nothing")
+	}
+}
+
+// TestCreateRunReturnsNoRunWhenItWasNeverCommitted is the other side of the
+// discriminator the handler relies on. A failure BEFORE the commit must return
+// a zero run, so "run.ID != uuid.Nil" is a sound test for "this actually
+// exists in the database".
+func TestCreateRunReturnsNoRunWhenItWasNeverCommitted(t *testing.T) {
+	tenant := uuid.New()
+	site := uuid.New()
+
+	// Nothing pending anywhere, so planning yields no tasks and CreateRun
+	// fails before it ever writes a run.
+	info := SiteInfo{
+		ID: site, Enrolled: true,
+		Components: []Component{{Type: TargetPlugin, Slug: "akismet", Version: "1.0.0"}},
+	}
+	lookup := &fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{site: info}}
+	svc := NewService(&fakeCreateRepo{tenantID: tenant}, lookup, &failingEnqueuer{},
+		domain.NewValidator(), domain.SystemClock{})
+
+	run, _, err := svc.CreateRun(context.Background(), CreateRunInput{
+		TenantID: tenant,
+		SiteIDs:  []uuid.UUID{site},
+		Items:    []Item{{Type: TargetPlugin, Slug: "akismet"}},
+	})
+
+	if err == nil {
+		t.Fatal("want an error when nothing is pending")
+	}
+	if run.ID != uuid.Nil {
+		t.Fatalf("run.ID = %s, want nil: nothing was committed, so nothing may be reported", run.ID)
 	}
 }
