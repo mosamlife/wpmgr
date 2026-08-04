@@ -8,6 +8,20 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.115] - 2026-08-04
+
+### Fixed
+
+- The Core Web Vitals trend charts (Performance, and a site's Optimize tab) stated the wrong Good threshold (GH #329). The dashed "Good" line on the LCP chart was labelled 3 seconds. The real Web Vitals Good threshold for LCP is 2.5 seconds, and the line was always drawn in the right place; only the label was wrong, because the number was rounded to whole seconds before it was printed. Anyone who read that label and treated 3 seconds as the target was working to a threshold that does not exist. The same rounding mislabelled the FCP Good line as 2 seconds (it is 1.8) and the TTFB needs-improvement line as 2 seconds (it is 1.8). Every threshold label now shows its true value.
+- The same charts printed the unit twice, so an axis label read "5sms" and "3sms" instead of "5s" and "3s", and the threshold labels read "Good 3sms" and "NI 4sms". This is the symptom that was reported.
+- A single vertical axis could mix two different scales at once, showing "650ms" and "2sms" as neighbouring labels on the same axis, which made the values impossible to compare by eye. Worse, because the seconds labels were rounded to whole seconds, four different heights on one LCP axis could all print the same text. Each axis now picks one scale for all of its labels, and no two labels on an axis can read the same.
+- On a site comfortably inside the Good band, neither threshold line was drawn at all, so there was no way to tell "this site is passing" from "no thresholds are configured on this chart". The Good line is now always in frame.
+- The threshold lines were drawn in the same colour as the data line on the LCP and INP charts, so on those two charts the target was indistinguishable from the measurement. They now use the standard pass and warning colours, matching the fleet chart on the Performance page, and those colours are defined for dark mode (the previous ones were not).
+
+### Changed
+
+- The small trend sparklines in the fleet tables (Sites, Uptime, Backups, Email) are drawn directly rather than through the charting library. A fleet table showing 100 sites was building 100 full chart engines to draw 100 tiny decorations that have no axes, no tooltips and nothing to interact with; the tables now render an order of magnitude faster and the Uptime and Backups pages no longer download the charting engine at all. They look the same.
+
 ## [0.61.114] - 2026-08-03
 
 ### Fixed

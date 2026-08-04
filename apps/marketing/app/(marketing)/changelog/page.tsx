@@ -39,6 +39,34 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.115",
+    date: "2026-08-04",
+    summary:
+      "The Core Web Vitals charts stated the wrong Good threshold. LCP's Good line was labelled 3 seconds; the real threshold is 2.5 seconds. Threshold labels, axis units and axis scales are all fixed.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The Core Web Vitals trend charts stated the wrong Good threshold. The dashed Good line on the LCP chart was labelled 3 seconds. The real Web Vitals Good threshold for LCP is 2.5 seconds, and the line was always drawn in the right place; only the label was wrong, because the number was rounded to whole seconds before it was printed. Anyone who read that label and treated 3 seconds as the target was working to a threshold that does not exist. The same rounding mislabelled the FCP Good line as 2 seconds (it is 1.8) and the TTFB needs-improvement line as 2 seconds (it is 1.8). Every threshold label now shows its true value.",
+      },
+      {
+        tag: "Fixed",
+        text: "The same charts printed the unit twice, so an axis label read \"5sms\" and \"3sms\" instead of \"5s\" and \"3s\", and the threshold labels read \"Good 3sms\" and \"NI 4sms\".",
+      },
+      {
+        tag: "Fixed",
+        text: "A single vertical axis could mix two scales at once, showing \"650ms\" and \"2sms\" as neighbouring labels, which made the values impossible to compare by eye, and rounding to whole seconds meant four different heights on one LCP axis could print the same text. Each axis now picks one scale for all of its labels, and no two labels on an axis can read the same.",
+      },
+      {
+        tag: "Fixed",
+        text: "On a site comfortably inside the Good band, neither threshold line was drawn at all, so there was no way to tell \"this site is passing\" from \"no thresholds are configured\". The Good line is now always in frame. The threshold lines also shared a colour with the data line on the LCP and INP charts, making the target indistinguishable from the measurement; they now use the standard pass and warning colours, which are defined for dark mode.",
+      },
+      {
+        tag: "Changed",
+        text: "The small trend sparklines in the fleet tables are drawn directly rather than through the charting library. A fleet table showing 100 sites was building 100 full chart engines to draw 100 tiny decorations with no axes, no tooltips and nothing to interact with; the tables now render an order of magnitude faster and the Uptime and Backups pages no longer download the charting engine at all. They look the same.",
+      },
+    ],
+  },
+  {
     version: "0.61.114",
     date: "2026-08-03",
     summary: "Two updates could run against the same site at once and corrupt each other. Updates, rollbacks and agent upgrades on one site are now serialized, and a busy site retries instead of failing.",

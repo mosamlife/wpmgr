@@ -121,6 +121,19 @@ describe("formatLcpP75", () => {
   it("formats zero as 0 ms (never shown for a suppressed row by the caller, but the formatter itself is total)", () => {
     expect(formatLcpP75(0)).toBe("0 ms");
   });
+
+  it("keeps the two decimals that straddle the Good boundary (GH #329)", () => {
+    // The Health tab prints this number colour-coded by its rating band
+    // (routes/_authed/sites/$siteId.health.tsx). Dropping to one decimal, as an
+    // earlier attempt at the #329 fix proposed, would render 2460 ms (Good,
+    // green) and 2540 ms (Needs work, amber) both as "2.5 s", so the number
+    // would contradict the colour it is printed in. Do not reduce precision
+    // here to match the chart axis: an axis and a single reading have
+    // different jobs. See features/perf/cwv-axis.ts.
+    expect(formatLcpP75(2460)).toBe("2.46 s");
+    expect(formatLcpP75(2540)).toBe("2.54 s");
+    expect(formatLcpP75(2460)).not.toBe(formatLcpP75(2540));
+  });
 });
 
 // ---------------------------------------------------------------------------
