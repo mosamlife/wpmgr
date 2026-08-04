@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.116] - 2026-08-04
+
+### Fixed
+
+- The client portal showed Cumulative Layout Shift multiplied by a thousand. A perfectly good CLS of 0.1 was displayed to your clients as "100.000", directly beside a badge that correctly read "Good", so the number and its own rating contradicted each other. The score now reads 0.100, matching what you see on the operator dashboard and what every other report in the product shows. Timing metrics in the portal also now switch to seconds above one second, so a client and an operator looking at the same site read the same figure rather than "4200ms" in one place and "4.20 s" in the other.
+
 ## [0.61.115] - 2026-08-04
 
 ### Fixed
