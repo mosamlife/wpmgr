@@ -9,6 +9,7 @@ import {
   Globe,
   Key,
   LogOut,
+  PackageCheck,
   RefreshCw,
   Search,
   Settings as SettingsIcon,
@@ -17,7 +18,8 @@ import { type ReactNode, useCallback, useMemo } from "react";
 
 import { useCommandPalette } from "@/features/command/use-command-palette";
 import { useRecentSites } from "@/features/command/use-recent-sites";
-import { useLogout } from "@/features/auth/use-auth";
+import { canManage, useLogout, useMe } from "@/features/auth/use-auth";
+import { useFleetAgentVersions } from "@/features/fleet/use-fleet-agents";
 import { useSitesSelection } from "@/features/sites/use-sites-selection";
 import { useSites } from "@/features/sites/use-sites";
 import { useBulkBackup } from "@/features/backups/use-bulk-backup";
@@ -70,6 +72,18 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   // Query cache (no extra network call) and gives us the enrolled site IDs for
   // "Run backup on all sites".
   const { data: allSites } = useSites();
+
+  // GH #322: is the fleet agent rollout actually usable by THIS viewer?
+  //
+  // Both halves, matching the gate on the bulk action itself
+  // (routes/_authed/sites/index.tsx:907). self_update_enabled is the control
+  // plane's kill switch, and an absent value reads as off rather than on.
+  // canManage is owner or admin: the channel is infrastructure, so a viewer
+  // who cannot run it must not be offered a shortcut to it.
+  const { data: me } = useMe();
+  const { data: fleetAgents } = useFleetAgentVersions();
+  const agentRolloutAvailable =
+    fleetAgents?.self_update_enabled === true && canManage(me);
 
   // Wrap navigate-and-close in one callback per command so onSelect stays
   // declarative below.
@@ -285,6 +299,32 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             >
               Sync metadata on all sites
             </PaletteItem>
+            {/*
+              GH #322. The fleet agent rollout is the third action with this
+              exact shape and audience, and it was the only one that still
+              needed selecting sites plus opening a dropdown to reach.
+
+              It NAVIGATES rather than firing, unlike "Run backup on all
+              sites". A wave-gated rollout that touches every agent in the
+              fleet is not something to start from a fuzzy match on a
+              keystroke, and the Sites page is where the canary and wave
+              structure are explained before it runs. That is the same choice
+              "Sync metadata on all sites" already makes.
+
+              Rendered only when the channel is actually usable, on the same
+              pair the bulk action itself is gated on
+              (routes/_authed/sites/index.tsx:907): the control plane's
+              self-update switch AND owner or admin. Offering it otherwise
+              would point at an action that is not there when you arrive.
+            */}
+            {agentRolloutAvailable ? (
+              <PaletteItem
+                onSelect={go("/sites?agentStatus=Outdated")}
+                icon={<PackageCheck className="size-4" aria-hidden="true" />}
+              >
+                Update agent on all sites
+              </PaletteItem>
+            ) : null}
           </PaletteGroup>
 
           {/* ── Settings ───────────────────────────────────────────────── */}

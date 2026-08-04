@@ -142,11 +142,26 @@ export function AgentColumnFleetNote({
                 {checkMessage.lead}
               </p>
             ) : null}
+            {/*
+              warning-SUBTLE-FG, not warning-foreground (GH #322).
+
+              --warning-foreground is the text colour for content sitting ON a
+              --warning background, so it is near-black in BOTH themes and its
+              dark override is darker still (L 20% light, L 15% dark). Used
+              here, on the popover's own surface, it rendered this heading
+              almost invisible in dark mode while the body text below it was
+              fine.
+
+              --warning-subtle-fg is the token for warning-tinted text on an
+              ordinary surface, and it inverts properly (L 38% light, L 86%
+              dark). It is what the Core Web Vitals threshold labels already
+              use for the same job.
+            */}
             <p
               className={cn(
                 "font-medium",
                 warn
-                  ? "text-[var(--color-warning-foreground)]"
+                  ? "text-[var(--color-warning-subtle-fg)]"
                   : "text-[var(--color-foreground)]",
               )}
             >
