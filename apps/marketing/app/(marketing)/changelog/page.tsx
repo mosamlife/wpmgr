@@ -39,6 +39,22 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.122",
+    date: "2026-08-05",
+    summary:
+      "A warning heading in the Agent column popover was unreadable in dark mode, and the fleet agent rollout is now reachable from the command palette.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The warning heading inside the Agent column's information popover was almost unreadable in dark mode, rendering near black on the dark panel while the explanatory text below it was fine. It was using the text colour meant for content sitting on an amber background, which is deliberately near black in both themes, rather than the one for amber-tinted text on an ordinary surface.",
+      },
+      {
+        tag: "Added",
+        text: "\"Update agent on all sites\" is now in the command palette, alongside \"Run backup on all sites\" and \"Sync metadata on all sites\". The fleet agent rollout had the same shape and audience as those two but was the only one that still needed selecting sites and opening a menu to reach. It opens the Sites page filtered to outdated agents rather than starting the rollout outright, because a wave-gated update touching every agent in a fleet should not begin from a single keystroke, and it appears only for an owner or admin on an install where the rollout is enabled.",
+      },
+    ],
+  },
+  {
     version: "0.61.121",
     date: "2026-08-04",
     summary:

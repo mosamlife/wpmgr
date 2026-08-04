@@ -180,3 +180,45 @@ describe("AgentColumnFleetNote", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("AgentColumnFleetNote - the warn heading is legible in dark mode", () => {
+  // GH #322, reported with a screenshot: the popover heading rendered
+  // near-black on the dark popover surface while the body text below it was
+  // fine.
+  //
+  // It was not a missing dark override. The heading used
+  // --warning-foreground, which is the text colour for content sitting ON a
+  // --warning background, so it is near-black in BOTH themes and its dark
+  // value is darker still (L 20% light, L 15% dark). The right token for
+  // warning-tinted text on an ordinary surface is --warning-subtle-fg, which
+  // inverts properly (L 38% light, L 86% dark).
+  //
+  // Asserting the token rather than a rendered colour is deliberate: jsdom
+  // does not resolve CSS custom properties, so a computed-style assertion
+  // here would pass against either token and prove nothing.
+  it("uses the surface-text warning token, not the on-warning-background one", () => {
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({
+          status: "never_succeeded",
+          last_success_at: null,
+          last_success_outcome: null,
+          last_success_version: null,
+        })}
+      />,
+    );
+    // In the warn state the trigger's accessible name appends the title
+    // (agent-column-header.tsx:95-96), so match the prefix.
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: new RegExp(`^${AGENT_FLEET_NOTE_LABEL}`),
+      }),
+    );
+
+    const heading = screen.getByText("No check has ever succeeded");
+    expect(heading.className).toContain("--color-warning-subtle-fg");
+    // The token that made it invisible must not come back.
+    expect(heading.className).not.toContain("--color-warning-foreground");
+  });
+});
