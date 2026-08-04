@@ -482,12 +482,31 @@ if (!class_exists('WP_Upgrader')) {
     class WP_Upgrader
     {
         /**
+         * Make create_lock() fail the way core's own helper can fail for an
+         * INFRASTRUCTURE reason rather than because the lock is held: its
+         * `INSERT IGNORE` is MySQL syntax, so on a rewritten database backend
+         * or an options table that refuses the write, $wpdb->query() returns
+         * false and no lock row is ever created. Core then conflates that with
+         * "locked" (class-wp-upgrader.php:1067 to :1072). SiteUpdateLock must
+         * report UNAVAILABLE, not HELD_BY_OTHER, for that case; this switch is
+         * the only way to reach it. Tests MUST reset it in tear-down, since
+         * statics are process-global across this non-isolated suite.
+         *
+         * @var bool
+         */
+        public static bool $failCreateLock = false;
+
+        /**
          * @param string   $lock_name       Lock name.
          * @param int|null $release_timeout Seconds the lock is respected.
          * @return bool True when this caller now owns the lock.
          */
         public static function create_lock($lock_name, $release_timeout = null): bool
         {
+            if (self::$failCreateLock) {
+                return false;
+            }
+
             $releaseTimeout = (int) ($release_timeout ?: 3600);
             $option         = $lock_name . '.lock';
             $existing       = (int) get_option($option, 0);

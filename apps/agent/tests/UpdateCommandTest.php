@@ -713,7 +713,22 @@ final class UpdateCommandTest extends TestCase
         );
     }
 
-    public function test_stale_maintenance_flag_is_healed_before_a_dry_run_starts(): void
+    /**
+     * GitHub issue #328 - DELIBERATE BEHAVIOUR CHANGE, and the old expectation
+     * is what was wrong.
+     *
+     * This test previously asserted that a DRY RUN heals a stale `.maintenance`
+     * flag. Deleting a file is a mutation, and the control-plane contract's
+     * hard rule is that `dry_run` must not mutate the site at all. The heal was
+     * one of four writes a dry run performed before `dry_run` was even parsed
+     * (the others: arming a shutdown callback that deletes any `.maintenance`
+     * it later finds, an in-flight reconcile that can perform a FULL DIRECTORY
+     * RESTORE, and a snapshot GC sweep that deletes). The heal itself is not
+     * lost: it now happens on every REAL run, under the site lock, which is the
+     * only kind of run that can have left a flag behind in the first place. The
+     * companion test below pins that.
+     */
+    public function test_a_dry_run_never_heals_a_stale_maintenance_flag(): void
     {
         file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
         // Well past Maintenance's staleness threshold.
@@ -723,11 +738,29 @@ final class UpdateCommandTest extends TestCase
         $runner->versions['plugin:hello/hello.php'] = '1.7.2';
         $cmd = new UpdateCommand($this->spySnapshots(), $runner);
 
-        // dry_run never calls Maintenance::clear() — this isolates the
-        // start-of-run healStaleIfPresent() proactive heal.
         $cmd->execute([], [
             'dry_run' => true,
             'items'   => [['type' => 'plugin', 'slug' => 'hello/hello.php', 'version' => 'latest']],
+        ]);
+
+        $this->assertFileExists(
+            $this->maintenanceFile,
+            'a dry run must not delete anything, including a stale flag it would be entitled to heal on a real run'
+        );
+    }
+
+    /** The heal a dry run no longer performs still happens on a real run. */
+    public function test_stale_maintenance_flag_is_healed_before_a_real_run_starts(): void
+    {
+        file_put_contents($this->maintenanceFile, '<?php $upgrading = ' . time() . '; ?>');
+        touch($this->maintenanceFile, time() - 200);
+
+        $runner = $this->spyRunner();
+        $runner->versions['plugin:hello/hello.php'] = '1.7.2';
+        $cmd = new UpdateCommand($this->spySnapshots(), $runner);
+
+        $cmd->execute([], [
+            'items' => [['type' => 'plugin', 'slug' => 'hello/hello.php', 'version' => 'latest']],
         ]);
 
         $this->assertFileDoesNotExist(

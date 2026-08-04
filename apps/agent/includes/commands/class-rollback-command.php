@@ -28,6 +28,7 @@ declare(strict_types=1);
 namespace WPMgr\Agent\Commands;
 
 use WPMgr\Agent\Support\Maintenance;
+use WPMgr\Agent\Support\SiteUpdateLock;
 use WPMgr\Agent\Support\SnapshotManager;
 use WPMgr\Agent\Support\UpdateInFlight;
 use WPMgr\Agent\Support\UpdateRunner;
@@ -71,13 +72,60 @@ final class RollbackCommand implements CommandInterface
      */
     public function execute(array $claims, array $params): array
     {
-        // Heal a `.maintenance` flag left behind by a prior interrupted
-        // update/rollback before starting new work, and arm the shutdown
-        // backstop so a fatal error or a timeout mid-rollback still clears
-        // whatever flag THIS run may leave set.
-        Maintenance::healStaleIfPresent();
-        Maintenance::armShutdownGuard();
+        // --- Per-site serialisation (GitHub issue #328) -------------------
+        // A rollback replaces the live directory wholesale, so it is the same
+        // class of writer as an update and must take the SAME per-site lock:
+        // restoring a plugin directory while another request is running
+        // WordPress's upgrader against wp-content/upgrade/ is exactly the
+        // concurrency this lock exists to remove. Taken FIRST, above the
+        // maintenance heal and the shutdown guard, so a refused rollback
+        // writes nothing at all.
+        //
+        // A REFUSED ROLLBACK DOES NOT WAIT. RollbackCommand answers on the
+        // control plane's own HTTP connection (it does not hand the response
+        // back early the way the self-update channel does), so polling here
+        // would pin a PHP worker for the whole of somebody else's apply. It
+        // refuses honestly instead, with ok=false and a log line the operator
+        // can act on, using the response's existing fields.
+        $lock = SiteUpdateLock::acquire();
+        if ($lock === SiteUpdateLock::HELD_BY_OTHER) {
+            return $this->fail(
+                'Another update, rollback or agent upgrade is already running on this site. '
+                . 'Nothing was attempted and nothing on this site was changed. Try again once it has finished.'
+            );
+        }
 
+        try {
+            // Heal a `.maintenance` flag left behind by a prior interrupted
+            // update/rollback before starting new work, and arm the shutdown
+            // backstop so a fatal error or a timeout mid-rollback still clears
+            // whatever flag THIS run may leave set.
+            //
+            // These sit INSIDE the try, not above it, so that a throw from
+            // either one still reaches the finally and releases the site lock.
+            // Above the try, a throw here would strand the lock for its whole
+            // 900s TTL and wedge every update and rollback on this site for
+            // fifteen minutes. Both are effectively non-throwing today, so this
+            // is latent rather than live, but the lock's release must not
+            // depend on that staying true. UpdateCommand::execute() already
+            // orders it this way; this removes the asymmetry.
+            Maintenance::healStaleIfPresent();
+            Maintenance::armShutdownGuard();
+
+            return $this->run($params);
+        } finally {
+            SiteUpdateLock::release();
+        }
+    }
+
+    /**
+     * The rollback proper, with the site lock already held by execute().
+     *
+     * @param array<string,mixed> $params Request parameters.
+     * @return array{ok:bool,restored_version:string,log:string}
+     */
+    private function run(array $params): array
+    {
         $type       = isset($params['type']) && is_string($params['type']) ? $params['type'] : '';
         $rawSlug    = isset($params['slug']) && is_string($params['slug']) ? $params['slug'] : '';
         $snapshotId = isset($params['snapshot_id']) && is_string($params['snapshot_id']) ? $params['snapshot_id'] : '';

@@ -2,12 +2,14 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 )
@@ -20,6 +22,15 @@ import (
 // events-handler tests and has different fake behaviour.)
 type probeFakeRepo struct {
 	finished []FinishTaskInput
+	deferred []DeferTaskInput
+	// busy/busyErr control SiteHasRunningTask's return; zero values (not
+	// busy, no error) keep every pre-existing test that never touches the
+	// GH #328 gate unaffected.
+	busy    bool
+	busyErr error
+	// deferErr, when set, makes DeferTaskToPending return it instead of
+	// recording the defer (used to test deferForBusySite's error branch).
+	deferErr error
 }
 
 func (f *probeFakeRepo) CreateRunWithTasks(context.Context, CreateRunInput, []NewTask) (Run, []Task, error) {
@@ -79,6 +90,18 @@ func (f *probeFakeRepo) ListStaleUpdateTasks(context.Context, time.Duration, int
 	panic("not implemented")
 }
 
+func (f *probeFakeRepo) SiteHasRunningTask(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Duration) (bool, error) {
+	return f.busy, f.busyErr
+}
+
+func (f *probeFakeRepo) DeferTaskToPending(_ context.Context, in DeferTaskInput) (Task, error) {
+	if f.deferErr != nil {
+		return Task{}, f.deferErr
+	}
+	f.deferred = append(f.deferred, in)
+	return Task{ID: in.TaskID, TenantID: in.TenantID, Status: TaskPending, Detail: in.Detail}, nil
+}
+
 // fakeCommander records Rollback calls and never actually contacts an agent.
 type fakeCommander struct {
 	rollbackCalled bool
@@ -123,6 +146,30 @@ func (c *applyOnlyCommander) Rollback(context.Context, uuid.UUID, string, agentc
 		return agentcmd.RollbackResponse{}, c.rollbackErr
 	}
 	return agentcmd.RollbackResponse{OK: true, RestoredVersion: "1.9.9"}, nil
+}
+
+// siteBusyCommander is a Commander test double whose Update always answers
+// with a single ItemSiteBusy result (GH #328), mirroring a real agent
+// refusing because its own site-update lock is held. OK is false, matching
+// the same "nothing was attempted" shape ItemFailed carries (see the
+// ordering comment on runApply/runDry: the site_busy check must run BEFORE
+// the resp.OK check for exactly this reason). Rollback panics: nothing under
+// test here should ever reach it.
+type siteBusyCommander struct {
+	log         string
+	updateCalls int
+}
+
+func (c *siteBusyCommander) Update(_ context.Context, _ uuid.UUID, _ string, req agentcmd.UpdateRequest) (agentcmd.UpdateResponse, error) {
+	c.updateCalls++
+	item := req.Items[0]
+	return agentcmd.UpdateResponse{OK: false, Results: []agentcmd.ItemResult{{
+		Type: item.Type, Slug: item.Slug, Status: agentcmd.ItemSiteBusy, Log: c.log,
+	}}}, nil
+}
+
+func (c *siteBusyCommander) Rollback(context.Context, uuid.UUID, string, agentcmd.RollbackRequest) (agentcmd.RollbackResponse, error) {
+	panic("rollback must never be reached on a site_busy result")
 }
 
 // verifyingCommander embeds applyOnlyCommander's Update/Rollback behaviour and
@@ -254,6 +301,11 @@ func testTask() Task {
 		TargetSlug:  "suremail",
 		FromVersion: "1.9.9",
 		Status:      TaskRunning,
+		// CreatedAt matters for the GH #328 busy-defer bound
+		// (busyBoundExceeded measures time.Since(task.CreatedAt)); the zero
+		// value would make every busy-deferred test task look like it had
+		// already waited millennia.
+		CreatedAt: time.Now(),
 	}
 }
 
@@ -918,4 +970,259 @@ func TestDeriveApplyJobTimeout(t *testing.T) {
 			t.Fatalf("DeriveApplyJobTimeout(5m, 0) = %v, want > 5m (probeHTTPTimeout=0 should fall back internally, not collapse the probe ladder to 0)", got)
 		}
 	})
+}
+
+// ----------------------------------------------------------------------------
+// GH #328: per-site serialisation, the busy-site defer path.
+// ----------------------------------------------------------------------------
+
+// snoozeDuration extracts the snooze duration from a river.JobSnooze return
+// value, failing the test if err is not a *rivertype.JobSnoozeError.
+func snoozeDuration(t *testing.T, err error) time.Duration {
+	t.Helper()
+	var snooze *rivertype.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("expected a JobSnoozeError, got %v (%T)", err, err)
+	}
+	return snooze.Duration
+}
+
+// TestRunApply_SiteBusy_DefersRatherThanFails pins the ordering that makes
+// GH #328's busy handling safe: the site_busy check in runApply runs BEFORE
+// the resp.OK check (the agent sets ok=false for a busy refusal, the same
+// shape ItemFailed carries), so a busy site is deferred to 'pending', never
+// recorded as a terminal TaskFailed.
+func TestRunApply_SiteBusy_DefersRatherThanFails(t *testing.T) {
+	repo := &probeFakeRepo{}
+	cmd := &siteBusyCommander{log: "another update is running on this site"}
+	w := newApplyTestWorker(repo, cmd, &scriptedProber{})
+
+	task := testTask()
+	item := updateItem()
+	err := w.runApply(context.Background(), task, "https://example.test", item)
+
+	if len(repo.finished) != 0 {
+		t.Fatalf("a busy site must never reach a terminal status, got %+v", repo.finished)
+	}
+	if len(repo.deferred) != 1 {
+		t.Fatalf("expected exactly one defer, got %d", len(repo.deferred))
+	}
+	if !strings.Contains(repo.deferred[0].Detail, "waiting:") {
+		t.Fatalf("expected a 'waiting: ...' detail, got %q", repo.deferred[0].Detail)
+	}
+	if !strings.Contains(repo.deferred[0].Detail, cmd.log) {
+		t.Fatalf("expected the agent's log to be carried into the wait detail, got %q", repo.deferred[0].Detail)
+	}
+	if d := snoozeDuration(t, err); d < siteBusyBackoffMin || d >= siteBusyBackoffMax {
+		t.Fatalf("snooze duration %v out of bounds [%v, %v)", d, siteBusyBackoffMin, siteBusyBackoffMax)
+	}
+}
+
+// TestRunDry_SiteBusy_DefersRatherThanFails is runDry's mirror of the above:
+// a dry run takes no lock on the agent, but a foreign maintenance window can
+// still refuse one, and it must defer exactly like a real apply.
+func TestRunDry_SiteBusy_DefersRatherThanFails(t *testing.T) {
+	repo := &probeFakeRepo{}
+	cmd := &siteBusyCommander{log: "site is in maintenance mode"}
+	w := newApplyTestWorker(repo, cmd, &scriptedProber{})
+
+	task := testTask()
+	item := updateItem()
+	err := w.runDry(context.Background(), task, "https://example.test", item)
+
+	if len(repo.finished) != 0 {
+		t.Fatalf("a busy site must never reach a terminal status on a dry run, got %+v", repo.finished)
+	}
+	if len(repo.deferred) != 1 {
+		t.Fatalf("expected exactly one defer, got %d", len(repo.deferred))
+	}
+	if _, ok := asSnooze(err); !ok {
+		t.Fatalf("expected a snooze, got %v", err)
+	}
+}
+
+func asSnooze(err error) (*rivertype.JobSnoozeError, bool) {
+	var snooze *rivertype.JobSnoozeError
+	ok := errors.As(err, &snooze)
+	return snooze, ok
+}
+
+// TestDeferForBusySite_BoundExceeded_TerminalizesSkippedNeverFailed proves
+// the AUTHORITATIVE wall-clock bound (siteBusyMaxWait): a task that has been
+// waiting on a busy site for longer than that is terminalized as
+// TaskSkipped, and ONLY TaskSkipped — never TaskFailed, and never deferred
+// again.
+func TestDeferForBusySite_BoundExceeded_TerminalizesSkippedNeverFailed(t *testing.T) {
+	repo := &probeFakeRepo{}
+	w := newApplyTestWorker(repo, &siteBusyCommander{}, &scriptedProber{})
+
+	task := testTask()
+	task.CreatedAt = time.Now().Add(-siteBusyMaxWait - time.Minute)
+
+	if err := w.deferForBusySite(context.Background(), task, "another update is running on this site"); err != nil {
+		t.Fatalf("expected a terminal finish (nil error), got %v", err)
+	}
+	if len(repo.deferred) != 0 {
+		t.Fatalf("a bound-exceeded task must never be deferred again, got %+v", repo.deferred)
+	}
+	if len(repo.finished) != 1 {
+		t.Fatalf("expected exactly one terminal finish, got %d", len(repo.finished))
+	}
+	got := repo.finished[0]
+	if got.Status != TaskSkipped {
+		t.Fatalf("expected TaskSkipped, got %s (a bound-exceeded busy task must never be recorded as TaskFailed)", got.Status)
+	}
+	if !strings.Contains(got.Detail, "not attempted") || !strings.Contains(got.Detail, "Nothing was sent to the site") {
+		t.Fatalf("expected the 'not attempted / nothing was sent' detail, got %q", got.Detail)
+	}
+}
+
+// TestDeferForBusySite_WithinBound_KeepsDeferring proves the flip side: a
+// task well within siteBusyMaxWait is deferred, not terminalized.
+func TestDeferForBusySite_WithinBound_KeepsDeferring(t *testing.T) {
+	repo := &probeFakeRepo{}
+	w := newApplyTestWorker(repo, &siteBusyCommander{}, &scriptedProber{})
+
+	task := testTask()
+	task.CreatedAt = time.Now().Add(-5 * time.Minute) // well under siteBusyMaxWait (6h)
+
+	err := w.deferForBusySite(context.Background(), task, "another update is running on this site")
+	if len(repo.finished) != 0 {
+		t.Fatalf("a task within its bound must not be terminalized, got %+v", repo.finished)
+	}
+	if len(repo.deferred) != 1 {
+		t.Fatalf("expected exactly one defer, got %d", len(repo.deferred))
+	}
+	if _, ok := asSnooze(err); !ok {
+		t.Fatalf("expected a snooze, got %v", err)
+	}
+}
+
+// TestDeferForBusySite_ErrTaskNotOpen_StopsWithoutSnoozing proves the race
+// with a halt: when DeferTaskToPending reports ErrTaskNotOpen (something else
+// already terminalized the task, e.g. a halt cancelled it while this worker
+// was mid-flight), deferForBusySite must return nil — no snooze, no retry —
+// and must leave the recorded outcome alone.
+func TestDeferForBusySite_ErrTaskNotOpen_StopsWithoutSnoozing(t *testing.T) {
+	repo := &probeFakeRepo{deferErr: ErrTaskNotOpen}
+	w := newApplyTestWorker(repo, &siteBusyCommander{}, &scriptedProber{})
+
+	task := testTask()
+	err := w.deferForBusySite(context.Background(), task, "another update is running on this site")
+	if err != nil {
+		t.Fatalf("expected nil (the recorded terminal outcome wins), got %v", err)
+	}
+	if len(repo.finished) != 0 {
+		t.Fatalf("deferForBusySite must never itself call finish on ErrTaskNotOpen, got %+v", repo.finished)
+	}
+}
+
+// TestDeferForBusySite_RepoErrorSnoozesShortWithoutTerminalizing proves a
+// CP-side DB hiccup while recording the wait never terminalizes the task: it
+// snoozes at the SHORT (minimum) backoff and retries the demotion, rather
+// than giving up and failing a task purely because of infrastructure noise.
+func TestDeferForBusySite_RepoErrorSnoozesShortWithoutTerminalizing(t *testing.T) {
+	repo := &probeFakeRepo{deferErr: fmt.Errorf("db: connection reset")}
+	w := newApplyTestWorker(repo, &siteBusyCommander{}, &scriptedProber{})
+
+	task := testTask()
+	err := w.deferForBusySite(context.Background(), task, "another update is running on this site")
+	if len(repo.finished) != 0 {
+		t.Fatalf("a repo error recording the wait must never terminalize the task, got %+v", repo.finished)
+	}
+	if d := snoozeDuration(t, err); d != siteBusyBackoffMin {
+		t.Fatalf("expected the short snooze (siteBusyBackoffMin=%v) on a repo error, got %v", siteBusyBackoffMin, d)
+	}
+}
+
+// TestSiteBusyBackoff_DefaultWithinBounds proves the default jittered
+// schedule always lands in [siteBusyBackoffMin, siteBusyBackoffMax).
+func TestSiteBusyBackoff_DefaultWithinBounds(t *testing.T) {
+	w := newApplyTestWorker(&probeFakeRepo{}, &siteBusyCommander{}, &scriptedProber{})
+	task := testTask()
+	for i := 0; i < 200; i++ {
+		d := w.siteBusyBackoff(task)
+		if d < siteBusyBackoffMin || d >= siteBusyBackoffMax {
+			t.Fatalf("siteBusyBackoff() = %v, want in [%v, %v)", d, siteBusyBackoffMin, siteBusyBackoffMax)
+		}
+	}
+}
+
+// TestSetSiteBusyBackoff_Override proves the test-only override actually
+// replaces the schedule (used by the bulk-update integration test so it does
+// not sleep the production 5s-60s window).
+func TestSetSiteBusyBackoff_Override(t *testing.T) {
+	repo := &probeFakeRepo{}
+	w := newApplyTestWorker(repo, &siteBusyCommander{}, &scriptedProber{})
+	w.SetSiteBusyBackoff(func(Task) time.Duration { return time.Millisecond })
+
+	task := testTask()
+	err := w.deferForBusySite(context.Background(), task, "busy")
+	if d := snoozeDuration(t, err); d != time.Millisecond {
+		t.Fatalf("expected the overridden 1ms backoff, got %v", d)
+	}
+}
+
+// TestBusyBoundExceeded_Wording proves busyBoundExceeded's reason string is
+// only produced once the wall clock actually exceeds siteBusyMaxWait, and is
+// empty (task may still be deferred) right up to that boundary.
+func TestBusyBoundExceeded_Wording(t *testing.T) {
+	task := testTask()
+
+	task.CreatedAt = time.Now().Add(-1 * time.Minute)
+	if got := busyBoundExceeded(task); got != "" {
+		t.Fatalf("a freshly-deferred task must not be bound-exceeded, got %q", got)
+	}
+
+	task.CreatedAt = time.Now().Add(-siteBusyMaxWait - time.Second)
+	if got := busyBoundExceeded(task); got == "" {
+		t.Fatalf("a task past siteBusyMaxWait must be bound-exceeded")
+	}
+}
+
+// TestDeferredTaskTalliesAsInFlightNeverFailed is the GH #328 proof required
+// alongside the busy-defer path: a task the gate/handler above put back to
+// 'pending' (that is what DeferTaskToPending writes, and what a
+// bound-not-yet-exceeded deferForBusySite always leaves behind) must never be
+// countable as a wave failure. tallyWave's switch has exactly three terminal
+// buckets (Confirmed/Failed/Other) and a default that catches everything
+// else, including 'pending' and 'running', as InFlight. This also covers the
+// FULL proof the task's item 3 asks for: agent_wave.go's tallyWave and
+// haltReasonFor are reached ONLY for target_type='agent' tasks (see
+// waveOrder's filter), so a plugin/theme/core task deferred by
+// deferForBusySite is not merely counted safely if it ever reached this
+// code, it structurally never does.
+func TestDeferredTaskTalliesAsInFlightNeverFailed(t *testing.T) {
+	pending := Task{ID: uuid.New(), TargetType: TargetAgent, Status: TaskPending, CreatedAt: time.Now()}
+	tally := tallyWave([]Task{pending}, WaveRange{Start: 0, End: 1})
+	if tally.Failed != 0 {
+		t.Fatalf("a 'pending' (deferred) task must never tally as Failed, got Failed=%d", tally.Failed)
+	}
+	if tally.InFlight != 1 {
+		t.Fatalf("a 'pending' (deferred) task must tally as InFlight, got InFlight=%d", tally.InFlight)
+	}
+
+	// And the wave state machine itself never even reaches haltReasonFor while
+	// a wave has an in-flight task: DeriveAgentWaveState returns as soon as
+	// t.InFlight > 0, before the halt verdict is judged at all.
+	st := DeriveAgentWaveState([]Task{pending})
+	if st.Halt {
+		t.Fatalf("a wave with an in-flight (deferred) task must never halt, got HaltReason=%q", st.HaltReason)
+	}
+}
+
+// TestSiteWriterHoldMax_UnderStaleTaskThreshold pins the timing relationships
+// the GH #328 gate depends on for safety.
+func TestSiteWriterHoldMax_UnderStaleTaskThreshold(t *testing.T) {
+	// This is the relationship a future tuning pass could silently break: the
+	// gate must stop trusting a 'running' row strictly before the reaper
+	// would terminalize it, and comfortably after the worst-case apply job
+	// can legitimately still be running (DeriveApplyJobTimeout).
+	if siteWriterHoldMax >= staleTaskThreshold {
+		t.Fatalf("siteWriterHoldMax (%v) must be < staleTaskThreshold (%v)", siteWriterHoldMax, staleTaskThreshold)
+	}
+	maxApply := DeriveApplyJobTimeout(8*time.Minute, 30*time.Second)
+	if siteWriterHoldMax <= maxApply {
+		t.Fatalf("siteWriterHoldMax (%v) must be > the worst-case apply job budget (%v)", siteWriterHoldMax, maxApply)
+	}
 }

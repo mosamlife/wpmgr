@@ -445,6 +445,92 @@ class SnapshotManager
     }
 
     /**
+     * GitHub issue #328 - the snapshot's payload directory, for a caller that
+     * needs to COMPARE the live tree against the pre-update copy rather than
+     * restore it (see DestinationVerifier's R5/R6 signals).
+     *
+     * Deliberately NOT resolvedRestorePaths(): that method returns an empty
+     * pair whenever liveDir() fails, which is exactly the open_basedir /
+     * relocated-wp-content population the verifier exists to serve, and it
+     * resolves a live path this caller has already resolved for itself.
+     *
+     * @param string $snapshotId Snapshot identifier.
+     * @return string Absolute payload path, or '' when it cannot be resolved
+     *                 or does not exist (a core snapshot has no payload).
+     */
+    public function payloadDir(string $snapshotId): string
+    {
+        $base = $this->snapshotBaseDir();
+        if ($base === '') {
+            return '';
+        }
+
+        $snapshotDir = $this->resolveSnapshotDir($base, $snapshotId);
+        if ($snapshotDir === '') {
+            return '';
+        }
+
+        $payload = $snapshotDir . '/payload';
+
+        return is_dir($payload) ? $payload : '';
+    }
+
+    /**
+     * GitHub issue #328 - label a snapshot whose restore was deliberately
+     * SKIPPED because the destination was verified unchanged after a failure
+     * that happened before WordPress ever touched it.
+     *
+     * THIS IS NOT markSucceeded() AND MUST NEVER BECOME IT. markSucceeded()
+     * flips the reclaim threshold from GC_BACKSTOP_TTL_SECONDS (72h) to
+     * SUCCESS_RECLAIM_TTL_SECONDS (1h) via shouldReclaim(), and its own doc
+     * forbids calling it before the update it documents has been independently
+     * verified complete. On this path the update FAILED. The snapshot's entire
+     * value here is the case where both the classification and the verification
+     * were wrong, so any policy that shortens its life in proportion to our
+     * confidence destroys exactly the evidence that would prove the decision
+     * wrong. This marker therefore changes NO TTL: `restore_skipped_at` is not
+     * read by shouldReclaim() or isMarkedSucceeded() (which keys on
+     * `succeeded_at` only), so the snapshot stays on the unchanged 72h tier,
+     * which is the tier already documented as "kept for manual recovery".
+     * Disk stays bounded by machinery that already exists: MAX_SNAPSHOTS_PER_SLUG
+     * plus pruneForSlug() at the top of capture(), so the next attempt on this
+     * slug reclaims it.
+     *
+     * Best-effort and never throws, exactly like markSucceeded(): a failed
+     * write simply leaves an unlabelled snapshot on the same 72h tier, which is
+     * where it was going anyway.
+     *
+     * @param string $snapshotId   Snapshot captured for the apply that failed.
+     * @param string $failureCode  Resolved WP error code behind the failure.
+     * @param string $verification The verifier's own one-line detail.
+     * @return void
+     */
+    public function markRestoreSkipped(string $snapshotId, string $failureCode, string $verification): void
+    {
+        try {
+            $base = $this->snapshotBaseDir();
+            if ($base === '') {
+                return;
+            }
+            $dir = $this->resolveSnapshotDir($base, $snapshotId);
+            if ($dir === '') {
+                return;
+            }
+            $meta = $this->readMeta($dir);
+            if ($meta === null) {
+                return;
+            }
+            $meta['restore_skipped_at']        = time();
+            $meta['restore_skip_code']         = $failureCode;
+            $meta['restore_skip_verification'] = $verification;
+            @file_put_contents($dir . '/meta.json', (string) json_encode($meta));
+        } catch (\Throwable $e) {
+            // Labelling is diagnostics, never correctness - see this method's
+            // doc for why the snapshot's retention is deliberately unaffected.
+        }
+    }
+
+    /**
      * Remove a snapshot directory and its contents.
      *
      * @param string $snapshotId Snapshot identifier.

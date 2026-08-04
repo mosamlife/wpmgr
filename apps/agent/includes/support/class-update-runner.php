@@ -219,6 +219,61 @@ class UpdateRunner
     }
 
     /**
+     * GitHub issue #328 - the enriched shape every apply path now returns.
+     *
+     * `ok` and `log` are UNCHANGED in both name and value; the extra keys are
+     * additive so a caller (or a test double) that only knows the old two-key
+     * shape keeps working. UpdateCommand reads `destination_touched` with a
+     * `?? null` so an ABSENT key means "unclassified", which is exactly the
+     * pre-0.61.114 behaviour of always restoring.
+     *
+     *   destination_touched  true  core may already have altered the live
+     *                              directory; false  it provably has not;
+     *                              null   unknown, so the caller must restore.
+     *   failure_code/stage   diagnostic labels; NEVER a safety predicate on
+     *                        their own (see UpdateOutcome's two-table doc).
+     *   may_have_deactivated core silently deactivated an active plugin at
+     *                        `upgrader_pre_install` and will not put it back.
+     *   was_active/was_network_active  the plugin's activation state BEFORE
+     *                        the apply, which is computed inside
+     *                        applyViaUpgrader() and is otherwise invisible to
+     *                        the caller that has to decide whether reactivating
+     *                        is an undo or an unwanted state change.
+     *
+     * @param bool        $ok                 Whether the apply reported success.
+     * @param string      $log                CP-visible log text, unchanged.
+     * @param bool|null   $touched            Destination verdict.
+     * @param string      $code               Failure code label.
+     * @param string      $stage              Failure stage label.
+     * @param bool        $mayHaveDeactivated Whether core may have deactivated the plugin.
+     * @param bool        $wasActive          Plugin active before the apply.
+     * @param bool        $wasNetworkActive   Plugin network-active before the apply.
+     * @return array{ok:bool,log:string,destination_touched:bool|null,failure_code:string,failure_data:string,failure_stage:string,may_have_deactivated:bool,was_active:bool,was_network_active:bool}
+     */
+    private static function outcome(
+        bool $ok,
+        string $log,
+        ?bool $touched = null,
+        string $code = '',
+        string $stage = '',
+        bool $mayHaveDeactivated = false,
+        bool $wasActive = false,
+        bool $wasNetworkActive = false
+    ): array {
+        return [
+            'ok'                   => $ok,
+            'log'                  => $log,
+            'destination_touched'  => $touched,
+            'failure_code'         => $code,
+            'failure_data'         => '',
+            'failure_stage'        => $stage,
+            'may_have_deactivated' => $mayHaveDeactivated,
+            'was_active'           => $wasActive,
+            'was_network_active'   => $wasNetworkActive,
+        ];
+    }
+
+    /**
      * Apply the update. Prefers WP-CLI; falls back to the upgrader APIs.
      *
      * @param string $type    plugin|theme|core.
@@ -229,7 +284,9 @@ class UpdateRunner
     public function apply(string $type, string $slug, string $version): array
     {
         if (!self::isValidVersion($version)) {
-            return ['ok' => false, 'log' => 'Rejected unsafe version string.'];
+            // Refused before anything ran, so the destination is provably
+            // untouched (GitHub issue #328).
+            return self::outcome(false, 'Rejected unsafe version string.', false, 'wpmgr_invalid_version', 'preflight');
         }
 
         // Last-resort backstop for the self-target refusal that
@@ -241,7 +298,13 @@ class UpdateRunner
         // NOT the place the operator-facing `skipped` decision is made: this
         // layer only reports an apply it will not perform.
         if (UpdateCommand::isSelfTarget($type, $slug)) {
-            return ['ok' => false, 'log' => 'Refused: the management agent does not update itself through a plugin update task.'];
+            return self::outcome(
+                false,
+                'Refused: the management agent does not update itself through a plugin update task.',
+                false,
+                'wpmgr_self_target_refused',
+                'preflight'
+            );
         }
 
         if ($this->wpCliAvailable()) {
@@ -686,7 +749,7 @@ class UpdateRunner
         // forceCore always targets an explicit version; "latest" is not a valid
         // rollback target and the literal must never reach the offer URL / argv.
         if ($version === 'latest' || !self::isValidVersion($version)) {
-            return ['ok' => false, 'log' => 'Rejected unsafe version string.'];
+            return self::outcome(false, 'Rejected unsafe version string.', false, 'wpmgr_invalid_version', 'preflight');
         }
 
         if ($this->wpCliAvailable()) {
@@ -714,7 +777,7 @@ class UpdateRunner
         $this->loadUpgraderApi();
 
         if (!class_exists('\Core_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
-            return ['ok' => false, 'log' => 'Core upgrader API unavailable.'];
+            return self::outcome(false, 'Core upgrader API unavailable.', false, 'wpmgr_upgrader_api_unavailable', 'preflight');
         }
 
         $locale = function_exists('get_locale') ? (string) get_locale() : 'en_US';
@@ -787,7 +850,7 @@ class UpdateRunner
         };
 
         if ($args === []) {
-            return ['ok' => false, 'log' => 'Unsupported type for WP-CLI update.'];
+            return self::outcome(false, 'Unsupported type for WP-CLI update.', false, 'wpmgr_unsupported_type', 'preflight');
         }
 
         if ($type !== 'core' && $version !== 'latest') {
@@ -807,7 +870,7 @@ class UpdateRunner
     protected function runWpCli(array $args): array
     {
         if (!class_exists('\WP_CLI')) {
-            return ['ok' => false, 'log' => 'WP-CLI not loadable.'];
+            return self::outcome(false, 'WP-CLI not loadable.', false, 'wpmgr_wpcli_unavailable', 'preflight');
         }
 
         $command = implode(' ', $args);
@@ -823,12 +886,24 @@ class UpdateRunner
             $stdout = isset($res['stdout']) ? (string) $res['stdout'] : '';
             $stderr = isset($res['stderr']) ? (string) $res['stderr'] : '';
 
-            return [
-                'ok'  => $code === 0,
-                'log' => trim($stdout . "\n" . $stderr),
-            ];
+            // GitHub issue #328 - a WP-CLI failure is classified NULL, never
+            // false. WP-CLI runs the same upgrader in a separate process and
+            // reports only an exit code; the only way to recover a stage from
+            // it would be to text-match its stdout, which is a translated,
+            // version-dependent string and exactly the kind of inference this
+            // work exists to replace. Null means the caller restores, which is
+            // the pre-0.61.114 behaviour. In production wpCliAvailable() is
+            // false inside PHP-FPM, so this only affects a self-hoster driving
+            // the agent from `wp eval`.
+            return self::outcome(
+                $code === 0,
+                trim($stdout . "\n" . $stderr),
+                $code === 0 ? true : null,
+                $code === 0 ? '' : 'wpmgr_wpcli_nonzero_exit',
+                $code === 0 ? '' : 'unknown'
+            );
         } catch (\Throwable $e) {
-            return ['ok' => false, 'log' => 'WP-CLI execution error.'];
+            return self::outcome(false, 'WP-CLI execution error.', null, 'wpmgr_wpcli_threw', 'unknown');
         }
     }
 
@@ -893,7 +968,7 @@ class UpdateRunner
             switch ($type) {
                 case 'plugin':
                     if (!class_exists('\Plugin_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
-                        return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
+                        return self::outcome(false, 'Upgrader API unavailable.', false, 'wpmgr_upgrader_api_unavailable', 'preflight');
                     }
 
                     // Capture active state BEFORE upgrade. WordPress's
@@ -918,19 +993,23 @@ class UpdateRunner
                     }
                     $outcome  = $this->upgraderOutcome($result, $upgrader);
 
-                    if ($outcome['ok'] && ($wasActive || $wasNetworkActive) && function_exists('activate_plugin')) {
-                        // Refresh plugin caches before reactivating: the upgrade
-                        // may have changed the main plugin file (slug stays the
-                        // same but the metadata cache is stale).
-                        if (function_exists('wp_clean_plugins_cache')) {
-                            \wp_clean_plugins_cache(true);
-                        }
-                        $activated = \activate_plugin($slug, '', $wasNetworkActive, true);
-                        if (\is_wp_error($activated)) {
+                    // GitHub issue #328 - carry the PRE-apply activation state
+                    // out of this method. It is computed here and nowhere else,
+                    // and UpdateCommand's restore-skip decision needs it: core
+                    // silently deactivates an active plugin at
+                    // `upgrader_pre_install` and never puts it back on a
+                    // non-cron request, so a skipped restore can otherwise
+                    // leave the directory byte-identical and the plugin OFF.
+                    // Reactivating must be gated on it having been ON, or we
+                    // would enable a plugin the operator deliberately disabled.
+                    $outcome['was_active']         = $wasActive;
+                    $outcome['was_network_active'] = $wasNetworkActive;
+
+                    if ($outcome['ok']) {
+                        $reactivated = $this->reactivateIfCoreDeactivated($slug, $wasActive, $wasNetworkActive);
+                        if ($reactivated['attempted'] && !$reactivated['ok']) {
                             $outcome['log'] .= "\n[wpmgr] upgrade succeeded but reactivation failed: "
-                                . $activated->get_error_message();
-                            \WPMgr\Agent\Support\DebugLog::write('WPMgr Agent: post-upgrade reactivation failed for '
-                                . $slug . ': ' . $activated->get_error_message());
+                                . $reactivated['message'];
                         }
                     }
 
@@ -938,7 +1017,7 @@ class UpdateRunner
 
                 case 'theme':
                     if (!class_exists('\Theme_Upgrader') || !class_exists('\WP_Ajax_Upgrader_Skin')) {
-                        return ['ok' => false, 'log' => 'Upgrader API unavailable.'];
+                        return self::outcome(false, 'Upgrader API unavailable.', false, 'wpmgr_upgrader_api_unavailable', 'preflight');
                     }
                     $upgrader = new \Theme_Upgrader(new \WP_Ajax_Upgrader_Skin());
                     try {
@@ -956,7 +1035,7 @@ class UpdateRunner
             }
 
             if ($outcome === null) {
-                return ['ok' => false, 'log' => 'Unsupported type.'];
+                return self::outcome(false, 'Unsupported type.', false, 'wpmgr_unsupported_type', 'preflight');
             }
 
             // Agent-only, 0.61.20 — surface the temp-dir decision in the
@@ -972,6 +1051,65 @@ class UpdateRunner
         } finally {
             remove_filter('upgrader_package_options', $forceCleanWorking);
         }
+    }
+
+    /**
+     * Put a plugin back the way core found it, after core silently turned it
+     * off and declined to turn it back on.
+     *
+     * WordPress's Plugin_Upgrader hooks deactivate_plugin_before_upgrade() on
+     * `upgrader_pre_install` (registered at class-plugin-upgrader.php:211) and
+     * calls deactivate_plugins( $plugin, true ) at :578 to :580 whenever
+     * wp_doing_cron() is false, which is always true on the agent's REST path.
+     * Its counterpart active_after() is cron-gated at :639, so on OUR path core
+     * never restores the state it removed. WP-CLI's `wp plugin update`
+     * preserves active state; this mirrors that.
+     *
+     * THE $wasActive GATE IS NOT OPTIONAL. activate_plugin() calls
+     * validate_plugin() and then plugin_sandbox_scrape(), which INCLUDES the
+     * plugin file in this process. Activating on the strength of "core probably
+     * deactivated something" would (a) enable a plugin the operator
+     * deliberately disabled and (b) execute a possibly half-written file on a
+     * failure path. Core gates its own deactivation on state, so the undo is
+     * gated on state too. The CALLER additionally decides whether the directory
+     * is trustworthy enough to activate from at all (see UpdateCommand's
+     * restore-skip decision, which only reactivates from a directory it has
+     * just verified byte-consistent).
+     *
+     * $silent = true mirrors core's own silent deactivate_plugins( $plugin,
+     * true ), so no activation hooks fire and this stays a pure undo of the
+     * option write. A WP_Error is REPORTED, never swallowed, and never turns a
+     * failed item into a thrown one.
+     *
+     * @param string $slug             Sanitized plugin basename or folder.
+     * @param bool   $wasActive        Whether the plugin was active before the apply.
+     * @param bool   $wasNetworkActive Whether it was network-active before the apply.
+     * @return array{attempted:bool,ok:bool,message:string}
+     */
+    public function reactivateIfCoreDeactivated(string $slug, bool $wasActive, bool $wasNetworkActive): array
+    {
+        if ((!$wasActive && !$wasNetworkActive) || !function_exists('activate_plugin')) {
+            return ['attempted' => false, 'ok' => true, 'message' => ''];
+        }
+
+        // Refresh plugin caches before reactivating: the upgrade may have
+        // changed the main plugin file (slug stays the same but the metadata
+        // cache is stale).
+        if (function_exists('wp_clean_plugins_cache')) {
+            \wp_clean_plugins_cache(true);
+        }
+
+        $activated = \activate_plugin($slug, '', $wasNetworkActive, true);
+        if (function_exists('is_wp_error') && \is_wp_error($activated)) {
+            $message = method_exists($activated, 'get_error_message')
+                ? (string) $activated->get_error_message()
+                : 'unknown error';
+            DebugLog::write('WPMgr Agent: post-upgrade reactivation failed for ' . $slug . ': ' . $message);
+
+            return ['attempted' => true, 'ok' => false, 'message' => $message];
+        }
+
+        return ['attempted' => true, 'ok' => true, 'message' => ''];
     }
 
     /**
@@ -1307,12 +1445,12 @@ class UpdateRunner
         }
 
         if (!class_exists('\Core_Upgrader') || !function_exists('get_core_updates')) {
-            return ['ok' => false, 'log' => 'Core upgrader API unavailable.'];
+            return self::outcome(false, 'Core upgrader API unavailable.', false, 'wpmgr_upgrader_api_unavailable', 'preflight');
         }
 
         $updates = get_core_updates();
         if (!is_array($updates) || $updates === []) {
-            return ['ok' => false, 'log' => 'No core update offer available.'];
+            return self::outcome(false, 'No core update offer available.', false, 'wpmgr_no_update_offered', 'preflight');
         }
 
         $offer = null;
@@ -1328,11 +1466,11 @@ class UpdateRunner
         }
 
         if ($offer === null) {
-            return ['ok' => false, 'log' => 'Requested core version not offered.'];
+            return self::outcome(false, 'Requested core version not offered.', false, 'wpmgr_no_update_offered', 'preflight');
         }
 
         if (!class_exists('\WP_Ajax_Upgrader_Skin')) {
-            return ['ok' => false, 'log' => 'Upgrader skin unavailable.'];
+            return self::outcome(false, 'Upgrader skin unavailable.', false, 'wpmgr_upgrader_api_unavailable', 'preflight');
         }
 
         $upgrader = new \Core_Upgrader(new \WP_Ajax_Upgrader_Skin());
@@ -1387,6 +1525,15 @@ class UpdateRunner
     {
         $skinMessages = $this->collectSkinMessages($upgrader);
 
+        // GitHub issue #328 - the SINGLE place UpdateOutcome::classify() is
+        // called, because it is the only place that holds both $result and the
+        // $upgrader whose skin carries the error codes. Every `log` string
+        // below is BYTE-IDENTICAL to 0.61.113 on purpose: the classification
+        // travels as extra ARRAY KEYS, never by changing text an operator or a
+        // test may already depend on, and the restore-skip's operator copy is
+        // written at the decision site instead.
+        $classified = UpdateOutcome::classify($result, $upgrader);
+
         if (is_object($result) && method_exists($result, 'get_error_message')) {
             /** @var \WP_Error $result */
             $code = method_exists($result, 'get_error_code') ? (string) $result->get_error_code() : '';
@@ -1395,16 +1542,41 @@ class UpdateRunner
                 $log .= "\n" . $skinMessages;
             }
 
-            return ['ok' => false, 'log' => $log];
+            return self::fromClassification(false, $log, $classified);
         }
 
         if ($result === false || $result === null) {
             $log = $skinMessages !== '' ? 'Update failed: ' . $skinMessages : 'Update failed.';
 
-            return ['ok' => false, 'log' => $log];
+            return self::fromClassification(false, $log, $classified);
         }
 
-        return ['ok' => true, 'log' => 'Update applied via upgrader.'];
+        // A truthy, non-error result means install_package() ran to completion,
+        // so the destination was certainly touched.
+        return self::outcome(true, 'Update applied via upgrader.', true);
+    }
+
+    /**
+     * Fold a UpdateOutcome::classify() verdict into the apply outcome shape.
+     *
+     * @param bool                                                                                                     $ok         Whether the apply reported success.
+     * @param string                                                                                                   $log        CP-visible log text, unchanged.
+     * @param array{codes:array<int,string>,code:string,data:string,stage:string,destination_touched:bool|null,may_have_deactivated:bool} $classified Classifier verdict.
+     * @return array{ok:bool,log:string,destination_touched:bool|null,failure_code:string,failure_data:string,failure_stage:string,may_have_deactivated:bool,was_active:bool,was_network_active:bool}
+     */
+    private static function fromClassification(bool $ok, string $log, array $classified): array
+    {
+        $out                 = self::outcome(
+            $ok,
+            $log,
+            $classified['destination_touched'],
+            $classified['code'],
+            $classified['stage'],
+            $classified['may_have_deactivated']
+        );
+        $out['failure_data'] = $classified['data'];
+
+        return $out;
     }
 
     /**

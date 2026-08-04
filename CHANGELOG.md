@@ -8,6 +8,19 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.114] - 2026-08-03
+
+### Fixed
+
+- Two updates could previously be dispatched to the same site at the same time, for example two plugins updated in the same bulk run, or an update and a rollback overlapping, running more than one WordPress installer against the same site concurrently (GH #328). WordPress's own updater is not built for that: a second installer can delete files the first one is still relying on, corrupting the update in progress and, in the reported case, leaving the site briefly returning errors. Updates, rollbacks and agent upgrades against one site are now serialized: only one may run at a time, whichever channel it came from.
+- A site that is busy with another update no longer fails the update that was turned away. It is retried automatically, with the reason shown on the task ("waiting: another update is running on this site"), for up to 6 hours before being recorded as not attempted rather than failed, and being busy never counts as a failure, so it can never fail a canary. If a whole wave was turned away for being busy, the rollout does still stop, because a site that never attempted the upgrade proves nothing about it; the difference is that it now stops saying nothing was attempted rather than reporting a failure that did not happen.
+- Separately, when an update fails before it has touched anything on the site (for example a corrupted download), the site no longer runs an automatic restore over a plugin or theme directory it never modified.
+
+### Changed
+
+- Updating many items on one site is correspondingly slower, since they now run strictly one at a time on that site instead of several in parallel: a 30-plugin update on a single site that previously took roughly 6 to 12 minutes now typically takes 15 to 50 minutes. Updates spread across different sites are unaffected and still run in parallel.
+- A brief window remains, at the moment a plugin or theme's files are actually swapped in, where a page load could in principle hit a half-updated directory. This is the same exposure WordPress's own core updater has always had for an admin-initiated single-plugin update, and this release does not add a maintenance-mode window to close it: with updates now serialized one at a time, that window is measured in microseconds, not seconds. A single plugin update started from a site's own WordPress dashboard still does not take part in this lock, so that one collision between a fleet-triggered update and a person using wp-admin at the same moment remains open.
+
 ## [0.61.113] - 2026-08-02
 
 ### Added

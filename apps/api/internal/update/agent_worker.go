@@ -914,6 +914,22 @@ func (c *AgentConfirmWorker) Work(ctx context.Context, job *river.Job[AgentConfi
 		// either way, so a failed read only means the failure explanation is
 		// less detailed, never that the failure itself was wrongly declared.
 		res, _ := w.agentApplyResult(ctx, a.TenantID, a.SiteID)
+
+		// A DEFERRED apply is not a failure. The agent held off because the
+		// site was busy with another update for its whole wait, and it says so
+		// in its own record for THIS run, so we know nothing was attempted and
+		// nothing changed. Scoring that as failed would let a busy site halt a
+		// fleet rollout. Skipped is the honest verdict: this site proved
+		// nothing either way, which is exactly what tallyWave treats it as.
+		// The attribution check is what makes this safe to trust: an unrelated
+		// or stale deferred record cannot reach here.
+		if agentApplyAttributed(a, res) && res.Status == agentApplyDeferred {
+			return w.finishAgentTask(ctx, task, TaskSkipped, a.FromVersion, "",
+				fmt.Sprintf("not attempted: the site was busy with another update for this run's whole wait, so the agent "+
+					"was never upgraded and nothing on the site was changed. Its own record for %s says so. "+
+					"Re-run this rollout when the site is idle.", shortApplyID(a.ApplyID)), "")
+		}
+
 		return w.finishAgentTask(ctx, task, TaskFailed, a.FromVersion, a.ExpectVersion,
 			unconfirmedDetail(a, reported, res), "agent_self_update_unconfirmed")
 	}
@@ -1167,4 +1183,11 @@ const (
 	agentApplyFailed         = "failed"
 	agentApplyExpired        = "expired"
 	agentApplyAlreadyApplied = "already_applied"
+	// agentApplyDeferred: the agent waited out its whole budget for the site
+	// update lock and gave up WITHOUT attempting anything. Nothing was
+	// downloaded, nothing was swapped, nothing on the site changed. This is a
+	// BUSY answer, not a broken one, so it must never be scored as a failure:
+	// an ordinary busy site would otherwise fail a wave-0 canary and halt a
+	// whole fleet rollout. Introduced with the per-site update lock (GH #328).
+	agentApplyDeferred = "deferred"
 )

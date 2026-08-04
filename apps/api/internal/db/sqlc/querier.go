@@ -238,6 +238,13 @@ type Querier interface {
 	// operator hit the kill switch and most needs to know. Running tasks are left
 	// to be resolved by their own confirmation job; the run is halted, so no
 	// further wave can open behind them.
+	//
+	// GH #328: a task DeferUpdateTaskToPending moved back to 'pending' MAY have
+	// had one earlier command sent that the site refused before touching
+	// anything (or one that never reached the agent at all), so 'pending' here
+	// means "nothing was ever APPLIED to this site", not literally "never
+	// contacted". That is still exactly what 'cancelled' is allowed to mean:
+	// nothing on the site changed as a result, whichever of those two it was.
 	CancelPendingUpdateTask(ctx context.Context, arg CancelPendingUpdateTaskParams) (UpdateTask, error)
 	// Advance next_digest_at to the next period as a conditional claim.
 	// Returns the updated row if the claim succeeds (next_digest_at still <= now(),
@@ -406,6 +413,30 @@ type Querier interface {
 	// is NEVER consulted for a delete. Retained only so the generated querier keeps
 	// compiling; the GC delete path no longer calls it.
 	DecrementChunkRefcount(ctx context.Context, arg DecrementChunkRefcountParams) (DecrementChunkRefcountRow, error)
+	// GH #328. Records that this task is WAITING for its site (busy with
+	// another update) and is NOT talking to it right now. The status write is
+	// the whole point: a waiting task must not look 'running' to
+	// SiteHasRunningUpdateTask above, to CountRunningTasksForTenant (so one busy
+	// site consumes ONE of the tenant's parallelism slots rather than one per
+	// deferred sibling), or to an operator watching the run.
+	//
+	// started_at is cleared because it would otherwise be a lie (the task is not
+	// currently running); MarkUpdateTaskRunning sets it again on the next real
+	// dispatch. updated_at = now() is what keeps ListStaleUpdateTasks off a row a
+	// live worker is actively minding: this statement is only ever issued from
+	// inside Worker.Work, so a fresh updated_at is EVIDENCE a River job is still
+	// behind the row, not merely an assertion. When the job is lost (a crashed
+	// worker, a dropped queue) the watermark freezes and the periodic reaper
+	// (ListStaleUpdateTasks) claims the row after its own threshold, exactly as
+	// it would for any other stuck task — a busy task never becomes immortal.
+	//
+	// The status precondition mirrors FinishUpdateTask's: a task a halt already
+	// terminalized matches no row, and the caller (Worker.deferForBusySite) must
+	// stop rather than snooze — the recorded terminal outcome wins. IN
+	// ('pending','running') rather than = 'running' so a task that is ALREADY
+	// pending (the pre-dispatch gate case: nothing was ever sent) can still
+	// record the wait detail idempotently.
+	DeferUpdateTaskToPending(ctx context.Context, arg DeferUpdateTaskToPendingParams) (UpdateTask, error)
 	// Purge all recovery codes for a user (before inserting a regenerated batch).
 	DeleteAllRecoveryCodes(ctx context.Context, userID uuid.UUID) error
 	DeleteBackupSnapshot(ctx context.Context, arg DeleteBackupSnapshotParams) (int64, error)
@@ -1886,6 +1917,46 @@ type Querier interface {
 	// Toggle two_factor_enabled without touching the secret (disable path).
 	// The secret and confirmed_at are intentionally retained for audit purposes.
 	SetUserTwoFactorEnabled(ctx context.Context, arg SetUserTwoFactorEnabledParams) error
+	// GH #328 per-site serialisation pre-check (INVARIANT R). Is a command
+	// CURRENTLY IN FLIGHT to this site? Deliberately best-effort and read-only:
+	// the AGENT's own site-update lock is the authoritative bound (WP_Upgrader::
+	// create_lock, see the agent lane). A missed collision here costs one HTTP
+	// round trip the agent itself refuses, which the worker then defers; it is
+	// not a correctness gap. Do NOT "fix" this with an advisory lock or a
+	// conditional claim across the round trip — the guarantee is not here.
+	//
+	// status = 'running' means exactly "dispatched and not yet resolved"
+	// (INVARIANT R). DeferUpdateTaskToPending is what keeps that true: a task
+	// WAITING for this site is 'pending' and therefore can never itself match
+	// this predicate. That is why a waiter can never block a sibling waiter:
+	// waiters depend only on runners, and runners depend on nothing (every River
+	// job for this worker exits within its own job timeout, whether the site
+	// answers or not), so the wait-for graph has no cycle.
+	//
+	// target_type <> 'agent' is NOT an optimisation. An agent self-update task
+	// stays 'running' for its whole confirmation window (20m, or 90m on external
+	// cron; see agentConfirmDeadline/agentConfirmDeadlineExternalCron), during
+	// which the site's writer is NOT held: the apply happens after the ARM's
+	// HTTP response has already been released, and from then on the agent polls
+	// its OWN site lock directly. Counting a running agent-task row here would
+	// block every plugin/theme/core update on that site for up to 90 minutes for
+	// no reason; the agent's own lock is what serialises the two channels in
+	// both directions.
+	//
+	// The staleness clause bounds a crashed worker: a row whose command went out
+	// longer ago than @hold_max cannot have a live worker behind it (River
+	// cancels the job's context at its own job timeout regardless of whether the
+	// site answers). Ignoring such a row only makes the gate MORE permissive
+	// (lets a sibling dispatch it would otherwise have deferred), never less,
+	// which is safe — the agent's own lock is still the backstop either way.
+	// coalesce(started_at, updated_at) covers a row observed between
+	// MarkUpdateTaskRunning (which sets both) and any later touch.
+	//
+	// Rides the existing update_tasks_site_id_idx (m3). No new column and no new
+	// index: every predicate here reads columns update_tasks already has, and
+	// the row is bounded to one site at a time by that existing index, so no
+	// schema migration is needed for this gate.
+	SiteHasRunningUpdateTask(ctx context.Context, arg SiteHasRunningUpdateTaskParams) (bool, error)
 	// SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
 	// path filters above (plus ListMembershipsForUser / GetAPIKeyByPrefix) hide the
 	// org everywhere the instant this commits. The WHERE guard makes a concurrent

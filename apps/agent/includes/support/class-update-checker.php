@@ -146,6 +146,15 @@ final class UpdateChecker
     private const OPTION_APPLY_ID = 'wpmgr_agent_self_update_apply_id';
 
     /**
+     * How long the apply waits for the site's own update lock before giving up
+     * without applying anything (GitHub issue #328). See awaitSiteUpdateLock().
+     */
+    private const SITE_LOCK_WAIT_SECONDS = 240;
+
+    /** Poll interval while waiting for the site's update lock. */
+    private const SITE_LOCK_POLL_SECONDS = 3;
+
+    /**
      * Every agent class that can still be reached AFTER the plugin directory
      * has been swapped. warmPostSwapClasses() loads each one before the swap
      * starts, so the code that runs between the swap and the end of the request
@@ -167,6 +176,13 @@ final class UpdateChecker
         'WPMgr\\Agent\\Support\\LongRunningJob',
         'WPMgr\\Agent\\Support\\ErrorMonitor',
         'WPMgr\\Agent\\Support\\UpdateGuard',
+        // GitHub issue #328 - the apply takes the per-site update lock before
+        // the swap and releases it in applyPendingUpdate()'s `finally`, which
+        // runs AFTER runUpgrade() has replaced the agent's own plugin
+        // directory. Without warming, that release would try to autoload a
+        // class off a path that no longer exists, in the one code path this
+        // project's history records as having bricked sites.
+        'WPMgr\\Agent\\Support\\SiteUpdateLock',
         'WPMgr\\Agent\\Support\\ConnectionFinisher',
         'WPMgr\\Agent\\Support\\UpdateChecker',
         'WPMgr\\Agent\\Commands\\AgentSelfUpdateCommand',
@@ -1580,13 +1596,116 @@ final class UpdateChecker
                 @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- bounded-but-generous cap so a hung self-update apply hits a recoverable max_execution_time fatal rather than only an unrecoverable hard-kill; @-guarded, no-op when disabled
             }
 
+            // --- Per-site serialisation (GitHub issue #328) ---------------
+            // This apply runs Plugin_Upgrader over the agent's own directory,
+            // and unpack_package() deletes EVERY entry under
+            // wp-content/upgrade/ as its first act. Running it beside a plugin
+            // update command therefore destroys that command's extracted
+            // source mid-flight, and vice versa. Wait for the site's update
+            // lock rather than barging in.
+            //
+            // WAITING HERE IS FREE, which is the reason the wait lives at this
+            // exact point and nowhere else: the control-plane connection has
+            // already been released by the ack above, so nobody is holding a
+            // socket open for us. The ARM, by contrast, must NEVER consult
+            // this lock: it touches nothing on disk, and a terminal
+            // non-confirming answer from a canary halts a whole rollout.
+            if (!$this->awaitSiteUpdateLock($applyId, $from, $to)) {
+                return;
+            }
+
             self::warmPostSwapClasses();
 
             $this->runUpgrade($applyId, $from, $to);
         } catch (\Throwable $e) {
             $this->recordSelfUpdateResult($applyId, 'failed', $from, $to, 'Self-update apply threw: ' . $e->getMessage());
         } finally {
+            SiteUpdateLock::release();
             $this->releaseApplyLock();
+        }
+    }
+
+    /**
+     * Poll for the site's update lock before swapping the agent's own plugin
+     * directory. See applyPendingUpdate()'s call site for why this cannot live
+     * in the arm.
+     *
+     * LOCK ORDER, fixed and cycle-free: APPLY_LOCK (already held by the arm)
+     * and then the site lock. Nothing that holds the site lock ever asks for
+     * APPLY_LOCK, so no cycle is representable.
+     *
+     * 240 SECONDS, NOT LONGER. The poll holds a PHP worker; on a shared host
+     * with two of them, a ten-minute hold is half the site's capacity. 240s
+     * comfortably covers a normal plugin apply plus queueing, and the site
+     * lock's own TTL (900s) deliberately EXCEEDS the poll, so a legitimately
+     * long apply outlives the wait rather than being barged past.
+     *
+     * ON EXHAUSTION NOTHING IS APPLIED. The result is recorded as `failed`
+     * because that is the vocabulary the control plane already understands for
+     * "the agent was not upgraded"; the message says plainly that nothing was
+     * attempted and nothing on the site changed, and the rollout can be re-run
+     * when the site is idle. An UNAVAILABLE lock (see SiteUpdateLock) proceeds,
+     * exactly as an update command does, because refusing an upgrade over a
+     * lock core itself does not check would be worse than the race it prevents.
+     *
+     * @param string $applyId Opaque id of this apply.
+     * @param string $from    On-disk version at arm time.
+     * @param string $to      Verified target version.
+     * @return bool Whether the swap may proceed.
+     */
+    private function awaitSiteUpdateLock(string $applyId, string $from, string $to): bool
+    {
+        $deadline = time() + self::SITE_LOCK_WAIT_SECONDS;
+
+        while (true) {
+            $state = SiteUpdateLock::acquire();
+            if ($state !== SiteUpdateLock::HELD_BY_OTHER) {
+                if ($state === SiteUpdateLock::UNAVAILABLE) {
+                    DebugLog::write(
+                        'WPMgr Agent: self-update apply proceeding without the per-site update lock; '
+                        . 'see SiteUpdateLock for why this is not a refusal.'
+                    );
+                }
+
+                // The wait must not eat the apply's own execution budget:
+                // set_time_limit() restarts the counter on every call.
+                if (function_exists('set_time_limit')) {
+                    @set_time_limit(LongRunningJob::TIME_LIMIT_SECONDS); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,Squiz.PHP.DiscouragedFunctions.Discouraged -- re-arms the apply's own bounded budget after the wait; @-guarded, no-op when disabled
+                }
+
+                return true;
+            }
+
+            if (time() >= $deadline) {
+                DebugLog::write(
+                    'WPMgr Agent: self-update apply gave up waiting for the per-site update lock after '
+                    . self::SITE_LOCK_WAIT_SECONDS . 's; nothing was applied.'
+                );
+                // 'deferred', NOT 'failed'. Nothing was attempted and nothing
+                // on this site changed, so this is a BUSY answer, not a broken
+                // one. Recording 'failed' here would let an ordinary busy site
+                // fail a wave-0 canary and halt a whole fleet rollout, which is
+                // exactly what this release promises cannot happen. The control
+                // plane finishes a deferred apply as skipped; see
+                // agentApplyDeferred in apps/api/internal/update/agent_worker.go.
+                // An older control plane that does not know this status surfaces
+                // it verbatim through applyResultSentence's default arm and
+                // still fails the task at its deadline, which is exactly the
+                // behaviour before this change: never worse.
+                $this->recordSelfUpdateResult(
+                    $applyId,
+                    'deferred',
+                    $from,
+                    $to,
+                    'The site was busy with another update for the whole wait, so the agent was not upgraded. '
+                    . 'Nothing was attempted and nothing on this site was changed. Re-run this rollout when the '
+                    . 'site is idle.'
+                );
+
+                return false;
+            }
+
+            sleep(self::SITE_LOCK_POLL_SECONDS);
         }
     }
 
