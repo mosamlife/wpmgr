@@ -68,6 +68,39 @@ lint: ## Lint everything
 	cd apps/api && go vet ./...
 	pnpm run lint
 
+# reproducible_zip: package $2 (a directory) inside $1 into $3, byte for byte
+# identically every time the same tree is packaged.
+#
+# WHY THIS EXISTS (GitHub issue #322). A plain `zip -r` records each entry's
+# mtime and walks the tree in filesystem order, so the same source produced a
+# DIFFERENT archive on every build. agent-vendor deletes and reinstalls vendor/
+# each time, which restamps thousands of files, so the drift was guaranteed
+# rather than occasional.
+#
+# That mattered because the agent version deliberately does NOT track the repo
+# version (it only changes when the agent changes), so a web-only release
+# republished the SAME version string with different bytes. A self-hoster
+# mirroring our releases correctly refused it: "upstream republished the same
+# version with different bytes". Four artifacts on GitHub claimed 0.61.114,
+# each with a different sha256, and every mirror kept refusing until the
+# version moved.
+#
+# The mirror's assumption, that one version string means one set of bytes
+# forever, is right. This makes it true.
+#
+#   touch  pins every mtime to a fixed instant. It must be >= 1980 because the
+#          zip format cannot store anything earlier, and on an even second
+#          because DOS timestamps have two-second granularity.
+#   sort   fixes entry order independent of how the filesystem enumerates.
+#   -X     drops platform extra fields (uid, gid, and the macOS-only ones), so
+#          a Linux CI runner and a macOS workstation agree.
+#
+# $(1) working dir, $(2) directory to package, $(3) output archive name.
+define reproducible_zip
+	find $(1)/$(2) -exec touch -h -t 200001010000.00 {} +
+	cd $(1) && find $(2) -print | LC_ALL=C sort | zip -X -q -@ $(3)
+endef
+
 .PHONY: agent-vendor
 agent-vendor: ## Build a clean prod-only vendor/ for the agent (no-dev, stripped)
 	# ADR-033 / M5.6: agent has ZERO production composer deps (we dropped phpbu
@@ -142,7 +175,7 @@ agent-zip: agent-vendor ## Package the WordPress agent plugin as a zip (with ifs
 		sed -i.bak -E "s/^(define\('WPMGR_AGENT_VERSION', *')[^']+(')/\1$$_v_esc\2/" release/wpmgr-agent/wpmgr-agent.php; \
 		rm -f release/wpmgr-agent/wpmgr-agent.php.bak; \
 	fi
-	cd release && zip -r wpmgr-agent.zip wpmgr-agent
+	$(call reproducible_zip,release,wpmgr-agent,wpmgr-agent.zip)
 	rm -rf release/wpmgr-agent
 	@echo "agent zip: $$(du -sh release/wpmgr-agent.zip | cut -f1)"
 
@@ -279,7 +312,7 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	# assertion above. tools/ is excluded from the staged tree, so the checker is
 	# invoked from the source tree.
 	php apps/agent/tools/assert-wporg-updatechecker-guard.php release/fleet-agent-site-manager
-	cd release && zip -r fleet-agent-site-manager.zip fleet-agent-site-manager
+	$(call reproducible_zip,release,fleet-agent-site-manager,fleet-agent-site-manager.zip)
 	rm -rf release/fleet-agent-site-manager
 	@echo "agent wporg zip: $$(du -sh release/fleet-agent-site-manager.zip | cut -f1)"
 

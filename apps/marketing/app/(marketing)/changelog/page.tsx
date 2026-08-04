@@ -39,6 +39,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.119",
+    date: "2026-08-04",
+    summary:
+      "Self-hosted installs mirroring our agent releases were correctly refusing them, because the same agent version was being republished with different bytes.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "If you run a self-hosted install that mirrors our agent releases, it was refusing them with \"upstream republished the same version with different bytes\". That refusal was correct. The agent's version only changes when the agent itself changes, which is deliberate, because a release that only touches the dashboard should not push a new agent to every site in your fleet. But the archive was rebuilt on every release and was not byte-reproducible, since it recorded file modification times and the packaging step reinstalls the vendored libraries from scratch each run. A dashboard-only release therefore republished the same agent version with different bytes, which a mirror cannot tell apart from tampering. Packaging is now deterministic, verified by building twice and comparing, and a release-time check refuses to publish an archive whose bytes differ from an already-published release carrying the same agent version.",
+      },
+    ],
+  },
+  {
     version: "0.61.118",
     date: "2026-08-04",
     summary:

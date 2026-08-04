@@ -8,6 +8,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.119] - 2026-08-04
+
+### Fixed
+
+- Self-hosted installs that mirror our agent releases were refusing them, correctly, with "upstream republished the same version with different bytes". The agent's version only changes when the agent itself changes, which is deliberate: a release that only touches the dashboard should not push a new agent to every site in your fleet. But the archive was rebuilt on every release and was not byte-reproducible, because it recorded each file's modification time and the packaging step reinstalls the vendored libraries from scratch each run. So a dashboard-only release republished the same agent version with different bytes, and a mirror holding the previous copy of that version had no way to tell that apart from tampering. Four published releases carried four different archives all naming the same agent version. Packaging is now deterministic: the same source produces a byte-identical archive every time, verified by building it twice and comparing. A release-time check now also refuses to publish an archive whose bytes differ from an already-published release carrying the same agent version, so this cannot return quietly.
+
 ## [0.61.118] - 2026-08-04
 
 ### Fixed
