@@ -396,13 +396,23 @@ final class SelfUpdateInRequestApplyTest extends TestCase
         $checker = $this->makeChecker();
         $answer  = $checker->planSelfUpdate();
 
+        // The verified claims travel from the arm to the apply IN MEMORY
+        // (GitHub issue #334). They are read off the same handoff
+        // serveThenApply() reads, rather than reconstructed here, so this
+        // fixture exercises the threading instead of faking it.
+        $pending = (new \ReflectionProperty($checker, 'pendingApply'))->getValue($checker);
+        $claims  = is_array($pending) && isset($pending['claims']) && is_array($pending['claims'])
+            ? $pending['claims']
+            : [];
+
         $method = new \ReflectionMethod($checker, 'applyPendingUpdate');
         $method->invoke(
             $checker,
             $this->rung,
             (string) $answer['apply_id'],
             (string) $answer['from_version'],
-            (string) $answer['to_version']
+            (string) $answer['to_version'],
+            $claims
         );
 
         if ($replayShutdown) {
@@ -801,28 +811,63 @@ final class SelfUpdateInRequestApplyTest extends TestCase
     // =========================================================================
 
     /**
-     * THE P1 REGRESSION TEST.
+     * THE #334 REGRESSION TEST, AND THE NEGATION OF THE ONE THIS FILE USED TO
+     * CARRY.
      *
-     * Plugin_Upgrader::upgrade() reads the plugin update transient to find the
-     * package and bails to its up_to_date branch, returning a bare false, when
-     * there is no entry for the plugin. This path used to DELETE that transient
-     * a few lines above the call, so core took that bail on every site, every
-     * time, and answered false with nothing said. A missing offer is now one
-     * named, control-plane-visible failure instead of a silent one.
+     * This exact state, an update_plugins transient that is a perfectly valid
+     * object carrying no entry of ours, was reported from a live fleet and USED
+     * TO BE PINNED HERE AS CORRECT BEHAVIOUR: the old
+     * test_a_missing_update_offer_is_recorded_as_a_named_failure asserted that
+     * the upgrade was skipped and a failure recorded. It was the defect, wearing
+     * a test as a certificate.
+     *
+     * The apply no longer reads that transient at all. It carries the claims the
+     * arm verified in this same request and forces the offer from them, so the
+     * stored object's contents cannot decide whether the agent upgrades.
+     *
+     * That the offer reaching the upgrader is genuinely ours, through the real
+     * filter chain and past a hostile pre-filter, is asserted in
+     * SelfUpdateOfferInvariantTest.
      */
-    public function test_a_missing_update_offer_is_recorded_as_a_named_failure(): void
+    public function test_a_stale_transient_with_no_entry_of_ours_no_longer_blocks_the_apply(): void
     {
         $this->stubSignedOffer();
         $this->siteTransients['update_plugins'] = (object) ['response' => [], 'no_update' => []];
 
         $this->runApply();
 
-        $this->assertSame([], \Plugin_Upgrader::$calls, 'the upgrade must not be attempted without an offer');
+        $this->assertSame(
+            [UpdateChecker::PLUGIN_KEY],
+            \Plugin_Upgrader::$calls,
+            'a stale-but-valid transient must not be able to withhold the upgrade'
+        );
+        $this->assertSame('applied', (string) ($this->record()['status'] ?? ''));
+    }
+
+    /**
+     * The named failure survives, for the ONE state it can still describe: an
+     * apply reached with no verified claims at all.
+     *
+     * That is not a cache miss and never was. Every reachable route into this
+     * method carries the claims the arm verified milliseconds earlier, so an
+     * empty set means the handoff itself broke, and the record says exactly
+     * that rather than blaming a transient the apply no longer reads.
+     */
+    public function test_an_apply_carrying_no_verified_claims_records_a_named_failure(): void
+    {
+        $this->stubSignedOffer();
+        $this->siteTransients['update_plugins'] = $this->offerTransient();
+
+        $checker = $this->makeChecker();
+        $method  = new \ReflectionMethod($checker, 'runUpgrade');
+        $method->invoke($checker, 'apply-id', $this->onDiskVersion, $this->targetVersion, []);
+
+        $this->assertSame([], \Plugin_Upgrader::$calls, 'nothing may be swapped on claims the arm never verified');
 
         $record = $this->record();
         $this->assertIsArray($record);
         $this->assertSame('failed', $record['status']);
-        $this->assertStringContainsString('no entry for this plugin', (string) $record['detail']);
+        $this->assertStringContainsString('carried no verified claims', (string) $record['detail']);
     }
 
     /**
@@ -830,6 +875,14 @@ final class SelfUpdateInRequestApplyTest extends TestCase
      * benign, not a failure. Reporting it as failed would give the control
      * plane an attributed record whose status is not "applied", which halts a
      * rollout wave over a site that is running exactly the build it should.
+     *
+     * DECIDED FIRST, BEFORE ANY OFFER IS BUILT (GitHub issue #334). The apply
+     * forces the offer it needs, so this branch has to be settled before the
+     * forcing starts or the agent would happily force an offer for a build
+     * already on disk. The no_update corroboration this used to require is gone
+     * with the transient read that produced it; the disk is read instead, with
+     * the stat cache dropped first because the directory can have moved inside
+     * this very process while the apply waited for the site lock.
      */
     public function test_a_site_already_at_the_target_records_already_applied(): void
     {
@@ -843,7 +896,7 @@ final class SelfUpdateInRequestApplyTest extends TestCase
         // other way between the arm and this line.
         $checker = $this->makeChecker();
         $method  = new \ReflectionMethod($checker, 'runUpgrade');
-        $method->invoke($checker, 'apply-id', '0.10.4', $this->onDiskVersion);
+        $method->invoke($checker, 'apply-id', '0.10.4', $this->onDiskVersion, []);
 
         $this->assertSame([], \Plugin_Upgrader::$calls);
         $this->assertSame('already_applied', (string) ($this->record()['status'] ?? ''));

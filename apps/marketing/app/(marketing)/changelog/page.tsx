@@ -39,6 +39,34 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.118",
+    date: "2026-08-04",
+    summary:
+      "A fleet agent update could install nothing on one site while the same rollout succeeded everywhere else. The apply now carries the build it verified instead of looking it up in a cache any other plugin can answer for.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A fleet agent update could report \"the plugin update transient carried no entry for this plugin\" and install nothing, on one site, while the same rollout installed cleanly everywhere else. The apply looked up the build it was about to install in WordPress's shared plugin update cache, and that cache is one any other plugin on the site is allowed to answer for, rewrite or delete. A security or \"disable updates\" plugin answering that read first, a managed host's own must-use plugin doing the same, or simply an ordinary plugin update finishing on that site at that moment, was enough to leave WordPress's installer with nothing to install, after which the rollout stopped at the canary and no other site was touched. The apply no longer looks anything up: it carries the build it verified moments earlier and hands that straight to the installer. What gets installed is unchanged, and is still re-verified from scratch against the signed manifest before a single byte is written.",
+      },
+      {
+        tag: "Fixed",
+        text: "The previous release had made this more likely, not less. 0.61.114 correctly made an agent update wait for any other update on the same site to finish first, and the process it waits for is exactly the one that clears the cache the apply was standing on, which widened the window from milliseconds to as much as four minutes. That window is now closed, because the apply no longer depends on that cache at all.",
+      },
+      {
+        tag: "Fixed",
+        text: "The update offer shown on a site's own WordPress dashboard is now self correcting. An offer naming a build the fleet has since moved past is rewritten from the fresh signed manifest at the moment an install starts; an offer for a withdrawn release is retired the first time anything acts on it; and an offer the site has already overtaken, for example because its files were replaced by a deploy or a restore, is retired by the first page load that sees it instead of standing for up to twelve hours. A control plane that is briefly unreachable retires nothing, so an outage can never blank a fleet's update offers.",
+      },
+      {
+        tag: "Fixed",
+        text: "When a commanded agent update does fail, the site's own dashboard is now left holding a verified offer for the same build, so the one-click update inside wp-admin, which is the recovery route for a build whose fleet update is broken, is available immediately.",
+      },
+      {
+        tag: "Changed",
+        text: "As with every fix to the agent's own update path, this one cannot be delivered by the path it fixes. A site whose fleet agent update is failing this way needs one update from its own WordPress dashboard, after which fleet updates work normally again.",
+      },
+    ],
+  },
+  {
     version: "0.61.117",
     date: "2026-08-04",
     summary:
