@@ -152,6 +152,56 @@ jobs:
           WPMGR_AGENT_TESTED: ${{ vars.WPMGR_AGENT_TESTED }}
         run: scripts/release-agent.sh --dry-run --out release/agent-release.json
 
+      # ONE AGENT VERSION MEANS ONE SET OF BYTES, FOREVER (GitHub issue #322).
+      #
+      # The agent version deliberately does not track the repo version: it only
+      # moves when the agent itself changes, so a web-only release must not push
+      # a new agent to every site in a fleet. The consequence is that a web-only
+      # release RE-PUBLISHES an agent version that already exists upstream, and
+      # that is only safe if the archive is byte-identical. `make agent-zip` is
+      # now deterministic so it is, but nothing enforced it, and four releases
+      # shipped four different artifacts all claiming 0.61.114. Every mirroring
+      # self-hoster correctly refused them.
+      #
+      # This turns a regression in that determinism into a failed build for us
+      # rather than a refused mirror for them. It compares against the newest
+      # PUBLISHED release carrying the same agent version, and stays silent when
+      # the version has moved (a genuinely new build) or when there is nothing
+      # to compare against.
+      - name: Assert the agent archive is unchanged for an unchanged version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v=$(sed -n "s/^define('WPMGR_AGENT_VERSION', *'\([^']*\)').*/\1/p" apps/agent/wpmgr-agent.php)
+          [ -n "$v" ] || { echo "could not read WPMGR_AGENT_VERSION"; exit 1; }
+          ours=$(sha256sum release/wpmgr-agent.zip | cut -d' ' -f1)
+          echo "agent version $v, sha256 $ours"
+
+          prev=""
+          for tag in $(gh release list --limit 40 --json tagName --jq '.[].tagName'); do
+            [ "$tag" = "${{ steps.vars.outputs.version }}" ] && continue
+            if gh release download "$tag" -p agent-release.json -D /tmp/prev --clobber >/dev/null 2>&1; then
+              pv=$(python3 -c "import json;print(json.load(open('/tmp/prev/agent-release.json')).get('version',''))" 2>/dev/null || echo "")
+              if [ "$pv" = "$v" ]; then prev="$tag"; break; fi
+            fi
+          done
+
+          if [ -z "$prev" ]; then
+            echo "no published release carries agent $v yet, nothing to compare"
+            exit 0
+          fi
+
+          gh release download "$prev" -p wpmgr-agent.zip -D /tmp/prevzip --clobber
+          theirs=$(sha256sum /tmp/prevzip/wpmgr-agent.zip | cut -d' ' -f1)
+          if [ "$ours" != "$theirs" ]; then
+            echo "::error::agent $v was already published in $prev with sha256 $theirs, but this build produced $ours."
+            echo "::error::Same version string, different bytes. Every mirroring self-hoster will refuse this."
+            echo "::error::Either the packaging stopped being deterministic, or the agent changed without its version being bumped."
+            exit 1
+          fi
+          echo "matches $prev byte for byte"
+
       - name: Publish GitHub Release with the agent zip + manifest
         uses: softprops/action-gh-release@v2
         with:
