@@ -39,6 +39,34 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.125",
+    date: "2026-08-05",
+    summary:
+      "A site's Uptime card could take up to thirty seconds to load the first time it was opened after a quiet period. It now reads the same running per-day totals the fleet views have used for a while, and reports the same numbers.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A site's Uptime card could take up to thirty seconds to load the first time it was opened after a quiet period, then load in half a second on every attempt after that. Measured over a week of production requests, the same page's fleet summary answered in a fifth of a second every time, including on the page loads where the per-site card took four seconds or more. The cause was not the amount of history, a missing index, a busy database or a cold container: the per-site view was still adding up every individual probe in the window by hand, about forty three thousand of them for a thirty day view, every time it was asked.",
+      },
+      {
+        tag: "Fixed",
+        text: "The fleet-wide view stopped doing that some time ago: it reads a running per-day total kept up to date as each probe lands, and only looks at individual probes for the two part days at the very edges of the window. The per-site view predates that work and never received it. It does now, using the same code to decide which days are complete rather than a second copy that could quietly disagree, so a site's Uptime card and that same site's row in the fleet views cannot drift apart.",
+      },
+      {
+        tag: "Fixed",
+        text: "The reported uptime percentage is unchanged, to the decimal. A day that falls only partly inside the window is still counted only for the part that is inside it, so an outage starting an hour before a thirty day window opens counts for exactly the minutes within it, not for the whole day and not for none of it. The three lookups behind the card also now happen at the same time as each other rather than one after another, since none of them ever needed another's result.",
+      },
+      {
+        tag: "Changed",
+        text: "The uptime chart on a site draws one point per day for any window of a day or longer, rather than a hundred points of whatever width divides the window evenly. For a thirty day view that is about thirty points instead of a hundred points seven hours wide, which is the same information at a resolution the chart can actually show. Windows shorter than a day are untouched and still show every minute.",
+      },
+      {
+        tag: "Changed",
+        text: "The average response time on a site's Uptime card is now the average across successful checks only, matching what the Sites list and the fleet dashboards have always shown for the same site. It previously also included the response times of failed checks, so a site with a spell of server errors had two different average response times depending on which screen it was read from. The uptime percentage was never affected by this.",
+      },
+    ],
+  },
+  {
     version: "0.61.124",
     date: "2026-08-05",
     summary:

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/metrics"
@@ -65,7 +66,28 @@ func NewService(repo Repo, store metrics.Store, verifier SiteVerifier) *Service 
 
 // Uptime returns the windowed uptime report for a site. It first verifies the
 // site belongs to tenantID (Postgres/RLS) — a foreign site yields a 404 — then
-// queries ClickHouse scoped by tenant_id+site_id.
+// queries the metrics store scoped by tenant_id+site_id.
+//
+// VerifySite stays STRICTLY BEFORE the fan-out below: it is the authorisation
+// check, and a foreign siteID must be refused without any metrics query being
+// issued on its behalf.
+//
+// The three store reads are then issued CONCURRENTLY (0.61.125). Each one
+// opens its own transaction in the Postgres backend (InAgentTx: BEGIN,
+// set_config, the query, COMMIT), so running them in sequence cost roughly
+// nine round trips where the fleet summary endpoint costs one, a large part
+// of why this endpoint was so much slower than /uptime/summary on the same
+// page load. They are fully independent of each other and none feeds another,
+// so the whole set is one wall-clock wait instead of three.
+//
+// Error handling deliberately keeps the OLD, deterministic outcome: each read
+// keeps its own domain.Internal wrapping, and when more than one fails the
+// error returned is the one the sequential version would have returned first
+// (aggregate, then latest, then series). A plain errgroup.Group is used rather
+// than errgroup.WithContext for the same reason: cancelling the siblings on
+// the first failure would let a losing goroutine report a context error
+// instead of its real one, and all three are single short reads with nothing
+// to save by aborting them.
 func (s *Service) Uptime(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, seriesBuckets int) (UptimeReport, error) {
 	if _, ok, err := s.verifier.VerifySite(ctx, tenantID, siteID); err != nil {
 		return UptimeReport{}, err
@@ -73,19 +95,55 @@ func (s *Service) Uptime(ctx context.Context, tenantID, siteID uuid.UUID, window
 		return UptimeReport{}, domain.NotFound("site_not_found", "site not found")
 	}
 
-	rep := UptimeReport{SiteID: siteID, Window: window}
-	agg, err := s.store.QueryAggregate(ctx, tenantID, siteID, window)
-	if err != nil {
-		return UptimeReport{}, domain.Internal("uptime_query_failed", "failed to query uptime metrics").WithCause(err)
+	var (
+		agg    metrics.Aggregate
+		latest metrics.Latest
+		series []metrics.Point
+
+		aggErr    error
+		latestErr error
+		seriesErr error
+	)
+
+	g := new(errgroup.Group)
+	g.Go(func() error {
+		var err error
+		if agg, err = s.store.QueryAggregate(ctx, tenantID, siteID, window); err != nil {
+			aggErr = domain.Internal("uptime_query_failed", "failed to query uptime metrics").WithCause(err)
+		}
+		return aggErr
+	})
+	g.Go(func() error {
+		var err error
+		if latest, err = s.store.QueryLatest(ctx, tenantID, siteID); err != nil {
+			latestErr = domain.Internal("uptime_query_failed", "failed to query latest uptime").WithCause(err)
+		}
+		return latestErr
+	})
+	g.Go(func() error {
+		var err error
+		if series, err = s.store.QuerySeries(ctx, tenantID, siteID, window, seriesBuckets); err != nil {
+			seriesErr = domain.Internal("uptime_query_failed", "failed to query uptime series").WithCause(err)
+		}
+		return seriesErr
+	})
+
+	// Wait establishes the happens-before edge for every variable written
+	// above, so the reads below (and the per-query error slots) are race-free.
+	if err := g.Wait(); err != nil {
+		for _, e := range []error{aggErr, latestErr, seriesErr} {
+			if e != nil {
+				return UptimeReport{}, e
+			}
+		}
+		return UptimeReport{}, err
 	}
+
+	rep := UptimeReport{SiteID: siteID, Window: window}
 	rep.UptimePct = agg.UptimePct
 	rep.AvgLatencyMs = agg.AvgLatencyMs
 	rep.Checks = agg.Checks
 
-	latest, err := s.store.QueryLatest(ctx, tenantID, siteID)
-	if err != nil {
-		return UptimeReport{}, domain.Internal("uptime_query_failed", "failed to query latest uptime").WithCause(err)
-	}
 	if latest.Found {
 		rep.Up = latest.Up
 		lc := latest.CheckedAt
@@ -98,10 +156,6 @@ func (s *Service) Uptime(ctx context.Context, tenantID, siteID uuid.UUID, window
 		rep.TLSSubject = latest.TLSSubject
 	}
 
-	series, err := s.store.QuerySeries(ctx, tenantID, siteID, window, seriesBuckets)
-	if err != nil {
-		return UptimeReport{}, domain.Internal("uptime_query_failed", "failed to query uptime series").WithCause(err)
-	}
 	rep.Series = series
 	return rep, nil
 }

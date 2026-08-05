@@ -354,7 +354,18 @@ func buildPerfSection(ctx context.Context, src Sources, tenantID, siteID uuid.UU
 // Helper functions
 // ---------------------------------------------------------------------------
 
-// aggregateDailyBuckets collapses hourly Points into daily UptimeDay buckets.
+// aggregateDailyBuckets collapses Points into daily UptimeDay buckets.
+//
+// The day is taken in UTC, deliberately and explicitly. Point.Bucket is a
+// timestamptz the driver hands back in the process's local zone, and every
+// bucket the metrics store produces is keyed to a UTC day boundary: from
+// 0.61.125 a window of a day or more comes back as one point sitting exactly
+// on UTC midnight (metrics.pgStore.querySeriesDaily, drawn from
+// site_uptime_daily, whose day column is a UTC date). Reading .Day() off the
+// local-zone value would put every one of those points in the PREVIOUS
+// calendar day on any deployment running west of UTC, shifting a whole
+// report's daily labels by one. Grouping in UTC keeps the report's days
+// identical to the days the rollup itself is keyed by, on every deployment.
 func aggregateDailyBuckets(points []metrics.Point) []UptimeDay {
 	type dayKey struct{ y, m, d int }
 	type dayAcc struct {
@@ -365,7 +376,8 @@ func aggregateDailyBuckets(points []metrics.Point) []UptimeDay {
 	days := make(map[dayKey]*dayAcc)
 	var order []dayKey
 	for _, p := range points {
-		k := dayKey{p.Bucket.Year(), int(p.Bucket.Month()), p.Bucket.Day()}
+		b := p.Bucket.UTC()
+		k := dayKey{b.Year(), int(b.Month()), b.Day()}
 		if _, ok := days[k]; !ok {
 			days[k] = &dayAcc{}
 			order = append(order, k)
