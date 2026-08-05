@@ -10623,7 +10623,8 @@ export type CheckAgentMirrorNowErrors = {
    */
   401: Error;
   /**
-   * superadmin_required
+   * superadmin_required - the caller is neither a superadmin nor the owner of the only organisation on this install. The code and message are identical for both, on purpose: a refusal must not reveal how many organisations this install has.
+   *
    */
   403: Error;
   /**

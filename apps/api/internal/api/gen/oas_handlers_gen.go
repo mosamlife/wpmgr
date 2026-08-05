@@ -9190,14 +9190,25 @@ func (s *Server) handleChangeMyPasswordRequest(args [0]string, argsEscaped bool,
 // Queues one immediate run of the upstream agent-release mirror
 // (internal/agentupstream), instead of waiting up to six hours for the
 // next scheduled run (GH #322).
-// Superadmin only, and deliberately NOT under /api/v1/fleet. The mirror
-// is ONE PER INSTALL: it fetches one public GitHub release and writes
-// one pair of objects into one bucket. A tenant-scoped trigger would let
-// any org admin on a shared install spend the install's shared
-// unauthenticated GitHub request budget (60 per hour per IP) and
-// rewrite the install's shared release pointer. Mirrors
-// POST /api/v1/admin/vuln-feed/sync, gated for the identical reason (a
-// shared feed, a shared rate limit).
+// Deliberately NOT under /api/v1/fleet. The mirror is ONE PER INSTALL:
+// it fetches one public GitHub release and writes one pair of objects
+// into one bucket. A tenant-scoped trigger would let any org admin on a
+// shared install spend the install's shared unauthenticated GitHub
+// request budget (60 per hour per IP) and rewrite the install's shared
+// release pointer.
+// Who may call it: a superadmin (is_superadmin=true), OR the owner of the
+// only organisation on this install. The second arm exists because the
+// first arm's whole purpose is to stop one tenant spending another
+// tenant's share of that budget, and on an install with exactly one
+// organisation there is no other tenant for it to protect. It requires
+// the memberships role 'owner' exactly, on the one organisation whose
+// tenants.deleted_at is null; admin, operator and viewer are refused, as
+// is an API-key principal. The count is read on every request and never
+// cached, so a second organisation appearing closes this path again on
+// the very next call, and the owner never becomes a superadmin: nothing
+// else on /api/v1/admin admits them. Multi-organisation installs are
+// unchanged and stay superadmin-only. Compare
+// POST /api/v1/admin/vuln-feed/sync, which remains superadmin-only.
 // A 202 means the run was QUEUED, not that anything was checked. The
 // run may still end rate limited, refused or unavailable; the real
 // outcome appears as agent_mirror.last_attempt_outcome on
@@ -9282,7 +9293,7 @@ func (s *Server) handleCheckAgentMirrorNowRequest(args [0]string, argsEscaped bo
 		mreq := middleware.Request{
 			Context:          ctx,
 			OperationName:    CheckAgentMirrorNowOperation,
-			OperationSummary: "Check the upstream agent release now (superadmin)",
+			OperationSummary: "Check the upstream agent release now (superadmin, or the owner of a single-organisation install)",
 			OperationID:      "checkAgentMirrorNow",
 			Body:             nil,
 			RawBody:          rawBody,

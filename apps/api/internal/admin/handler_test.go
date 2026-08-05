@@ -12,9 +12,10 @@ import (
 )
 
 // The requireSuperadmin middleware rejects on the principal check BEFORE it ever
-// touches the DB pool, so the unauthenticated + wrong-principal-type branches
-// are testable hermetically with a nil pool. The is_superadmin DB lookup branch
-// requires an integration DB and is covered there.
+// reads its adminGateStore, so the unauthenticated + wrong-principal-type
+// branches are testable hermetically with a nil store. The is_superadmin lookup
+// branch is covered with a fake store in gate_test.go and against real rows in
+// gate_integration_test.go.
 
 func init() { gin.SetMode(gin.TestMode) }
 
