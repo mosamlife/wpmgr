@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -339,6 +340,17 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 	if in.ClientID != nil {
 		clientIDParam = pgtype.UUID{Bytes: [16]byte(*in.ClientID), Valid: true}
 	}
+	// GH #349 free-text search. nil (SQL NULL) disables the predicate entirely;
+	// a blank search must not become a filter that matches nothing.
+	var qParam *string
+	if q := strings.TrimSpace(in.Query); q != "" {
+		qParam = &q
+	}
+	// GH #349 ordering. The value is bound as a query PARAMETER and compared
+	// against fixed literals in the SQL; it is never concatenated into the
+	// statement. normalizeListSort is the backstop for callers that bypass
+	// Service.List (which is where an unrecognised value becomes a 422).
+	sortParam := string(normalizeListSort(in.Sort))
 
 	err := runTx(func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
@@ -349,6 +361,8 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 			Limit:    in.Limit,
 			Offset:   in.Offset,
 			ClientID: clientIDParam,
+			Q:        qParam,
+			Sort:     sortParam,
 		})
 		if err != nil {
 			return domain.Internal("site_list_failed", "failed to list sites").WithCause(err)

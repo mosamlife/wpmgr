@@ -110,12 +110,51 @@ const DropdownMenuCheckboxItem = React.forwardRef<
 DropdownMenuCheckboxItem.displayName =
   DropdownMenuPrimitive.CheckboxItem.displayName;
 
+// Single-select sibling of the checkbox item, for a menu where exactly one
+// option is applied at a time (the Sites "Order by" control, GH #349). Radix
+// gives the group role="radiogroup" and each item role="menuitemradio" with a
+// real checked state, so a screen reader announces which order is applied
+// without the label having to repeat it.
+const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
+
+const DropdownMenuRadioItem = React.forwardRef<
+  React.ComponentRef<typeof DropdownMenuPrimitive.RadioItem>,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
+>(({ className, children, ...props }, ref) => (
+  <DropdownMenuPrimitive.RadioItem
+    ref={ref}
+    className={cn(
+      "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 pl-8 text-sm outline-none transition-colors",
+      "focus:bg-[var(--color-accent)] focus:text-[var(--color-accent-foreground)]",
+      "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      // The applied option carries its own weight so it reads as chosen even
+      // while another row is keyboard-focused.
+      "data-[state=checked]:font-medium",
+      className,
+    )}
+    {...props}
+  >
+    <span className="absolute left-2 flex size-3.5 items-center justify-center">
+      <DropdownMenuPrimitive.ItemIndicator>
+        <span
+          aria-hidden="true"
+          className="block size-1.5 rounded-full bg-[var(--color-primary)]"
+        />
+      </DropdownMenuPrimitive.ItemIndicator>
+    </span>
+    {children}
+  </DropdownMenuPrimitive.RadioItem>
+));
+DropdownMenuRadioItem.displayName = DropdownMenuPrimitive.RadioItem.displayName;
+
 export {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuLabel,
 };

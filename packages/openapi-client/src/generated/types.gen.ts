@@ -11210,6 +11210,46 @@ export type ListSitesData = {
     limit?: number;
     offset?: number;
     /**
+     * Free-text search (GH #349). Case-insensitive SUBSTRING match against
+     * the site name, the site url, or any of the site's tags (the same
+     * `tags` array this endpoint returns, so any tag an operator can see
+     * on a site is a tag they can find that site by).
+     *
+     * Matched literally, not as a pattern: `%` and `_` are ordinary
+     * characters. An empty or whitespace-only value behaves exactly as if
+     * the parameter were absent. No match returns an empty `items` array,
+     * not an error.
+     *
+     */
+    q?: string;
+    /**
+     * Ordering (GH #349). A leading `-` means DESCENDING. When omitted the
+     * order is `-created_at`, which is the ordering this endpoint has
+     * always had.
+     *
+     * Every ordering is total and stable: it is tiebroken on the site id,
+     * so two sites that share a name (or a created_at) keep a fixed
+     * relative position and `limit`/`offset` paging cannot drop or repeat
+     * a row.
+     *
+     * `name` sorts case-insensitively. For `last_seen`, a site that has
+     * never checked in (null last_seen) sorts LAST in BOTH directions: it
+     * stays in the result, and it never occupies the top of a "most
+     * recently seen" list.
+     *
+     * An unrecognised value is a 422. It is never silently ignored,
+     * because a dropped sort would show the operator a list ordered
+     * differently from the control they just set.
+     *
+     */
+    sort?:
+      | "name"
+      | "-name"
+      | "created_at"
+      | "-created_at"
+      | "last_seen"
+      | "-last_seen";
+    /**
      * Deprecated alias for `tags` with a single value (any-match semantics). Prefer `tags`.
      *
      * @deprecated
@@ -11245,6 +11285,17 @@ export type ListSitesData = {
   };
   url: "/api/v1/sites";
 };
+
+export type ListSitesErrors = {
+  /**
+   * Validation failed. Returned when `sort` is not one of the accepted
+   * values (code `invalid_sort`).
+   *
+   */
+  422: Error;
+};
+
+export type ListSitesError = ListSitesErrors[keyof ListSitesErrors];
 
 export type ListSitesResponses = {
   /**

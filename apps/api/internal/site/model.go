@@ -9,9 +9,12 @@ package site
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // Site is a managed WordPress site.
@@ -157,6 +160,102 @@ type ListInput struct {
 	Principal ScopedPrincipal // optional; nil → plain InTenantTx (org-scoped)
 	// ClientID, when set, filters to sites assigned to that client (m63).
 	ClientID *uuid.UUID
+	// Query (GH #349) is the operator's free-text search. When non-blank the
+	// list is filtered, IN THE DATABASE, to sites whose name, url or any tag
+	// contains it (case-insensitive substring). Blank or whitespace-only means
+	// "no search" and is indistinguishable from absent.
+	//
+	// This is deliberately server side. The web previously filtered a page it
+	// had already fetched, so a tenant with more sites than one page searched
+	// only the newest page's worth and was told "no results" for sites it owns.
+	Query string
+	// Sort (GH #349) is the requested ordering, as the raw wire value
+	// ("name", "-name", "created_at", "-created_at", "last_seen",
+	// "-last_seen"; leading "-" is descending). Empty means the historical
+	// default, DefaultListSort. Service.List validates it via ParseListSort and
+	// returns a 422 for anything else: an ignored sort would show the operator
+	// a list ordered differently from the control they just set.
+	Sort string
+}
+
+// ListSort is the closed set of orderings GET /sites accepts (GH #349).
+//
+// Keeping this a closed set in Go is what makes the ordering safe: the value
+// is bound into the query as a PARAMETER and compared against fixed literals
+// inside CASE expressions (see db/query/sites.sql), so no request text ever
+// reaches the SQL string, and an unknown value is rejected rather than
+// silently ignored.
+type ListSort string
+
+const (
+	// SortNameAsc orders by site name, A to Z, case-insensitively.
+	SortNameAsc ListSort = "name"
+	// SortNameDesc orders by site name, Z to A, case-insensitively.
+	SortNameDesc ListSort = "-name"
+	// SortCreatedAsc orders by date added, oldest first.
+	SortCreatedAsc ListSort = "created_at"
+	// SortCreatedDesc orders by date added, newest first. This is the
+	// historical (and default) ordering of GET /sites.
+	SortCreatedDesc ListSort = "-created_at"
+	// SortLastSeenAsc orders by last agent check-in, oldest first. Sites that
+	// have never checked in sort LAST (see DefaultListSort's doc for why).
+	SortLastSeenAsc ListSort = "last_seen"
+	// SortLastSeenDesc orders by last agent check-in, most recent first. Sites
+	// that have never checked in sort LAST here too.
+	SortLastSeenDesc ListSort = "-last_seen"
+)
+
+// DefaultListSort is the ordering used when the client sends no sort. It is
+// the ordering GET /sites has always had, so adding the parameter cannot
+// change what an existing client sees.
+//
+// NULL last_seen_at (a site enrolled but never checked in) sorts LAST in BOTH
+// last_seen directions. Ascending, that reads as "oldest contact first, and
+// the ones we have never heard from at the very end"; descending, it keeps
+// never-seen sites from occupying the top of a "most recently seen" list.
+// Either way they stay in the result and stay findable.
+const DefaultListSort = SortCreatedDesc
+
+// listSorts is the accept-set. Order here is the order quoted back in the
+// validation message.
+var listSorts = []ListSort{
+	SortNameAsc, SortNameDesc,
+	SortCreatedAsc, SortCreatedDesc,
+	SortLastSeenAsc, SortLastSeenDesc,
+}
+
+// ParseListSort maps a raw ?sort= value to a ListSort. An empty (or
+// whitespace-only) value yields DefaultListSort. Anything else that is not in
+// the accept-set is a validation error (HTTP 422), never a silent fallback.
+func ParseListSort(raw string) (ListSort, error) {
+	s := ListSort(strings.TrimSpace(raw))
+	if s == "" {
+		return DefaultListSort, nil
+	}
+	for _, allowed := range listSorts {
+		if s == allowed {
+			return s, nil
+		}
+	}
+	names := make([]string, 0, len(listSorts))
+	for _, allowed := range listSorts {
+		names = append(names, string(allowed))
+	}
+	return "", domain.Validation("invalid_sort",
+		"sort must be one of: "+strings.Join(names, ", "))
+}
+
+// normalizeListSort is the repo-side backstop for callers that reach the repo
+// without going through Service.List (health jobs, tests). It never errors:
+// the 422 for a bad value belongs to the service, and a repo that received a
+// value it does not recognise should still produce a deterministic order
+// rather than an arbitrary one.
+func normalizeListSort(raw string) ListSort {
+	s, err := ParseListSort(raw)
+	if err != nil {
+		return DefaultListSort
+	}
+	return s
 }
 
 // SetTagsInput sets the full tag set on a tenant-scoped site.

@@ -14,17 +14,19 @@ import {
   Search,
   Settings as SettingsIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useMemo } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { useCommandPalette } from "@/features/command/use-command-palette";
-import { useRecentSites } from "@/features/command/use-recent-sites";
+import { hostnameFromUrl, useRecentSites } from "@/features/command/use-recent-sites";
 import { canManage, useLogout, useMe } from "@/features/auth/use-auth";
 import { useFleetAgentVersions } from "@/features/fleet/use-fleet-agents";
 import { useSitesSelection } from "@/features/sites/use-sites-selection";
 import { useSites } from "@/features/sites/use-sites";
 import { useBulkBackup } from "@/features/backups/use-bulk-backup";
 import { toast } from "@/components/toast";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { cn } from "@/lib/utils";
+import type { Site } from "@wpmgr/api";
 
 // Sprint 3 surface 4.4 — Command palette.
 //
@@ -61,6 +63,14 @@ interface CommandPaletteProps {
   onClose: () => void;
 }
 
+/**
+ * GH #349. How many site results one search shows. The panel is 24rem tall;
+ * past a screenful the operator refines the term rather than scrolls, and the
+ * whole point of the server search is that refining now reaches every site in
+ * the organisation instead of a preloaded page.
+ */
+const PALETTE_SEARCH_LIMIT = 20;
+
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate();
   const recentSites = useRecentSites();
@@ -72,6 +82,34 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   // Query cache (no extra network call) and gives us the enrolled site IDs for
   // "Run backup on all sites".
   const { data: allSites } = useSites();
+
+  // ── Site search (GH #349) ─────────────────────────────────────────────────
+  //
+  // The palette used to offer ONLY `recentSites`, a localStorage list of sites
+  // this browser had already opened. An agency with 24 enrolled sites and none
+  // visited got "No matches." for every one of them, which was the honest
+  // answer to the wrong question.
+  //
+  // The term now goes to the server, so a search reaches every site in the
+  // organisation. Recents stay as the ZERO-QUERY default: with an empty box
+  // the useful thing to show is where the operator just was.
+  const [term, setTerm] = useState("");
+  const trimmedTerm = term.trim();
+  const hasTerm = trimmedTerm.length > 0;
+  const searchTerm = useDebouncedValue(trimmedTerm, 200);
+  const siteSearch = useSites({
+    q: searchTerm,
+    limit: PALETTE_SEARCH_LIMIT,
+    enabled: searchTerm.length > 0,
+  });
+  const results = hasTerm ? (siteSearch.data ?? []) : [];
+  // A disabled query reports `isPending` forever, so `isFetching` is what
+  // actually means "a request is in flight". The window between the keystroke
+  // and the debounce firing counts as searching too: that is exactly the
+  // moment the old palette would have said "No matches."
+  const isSearching =
+    hasTerm && (siteSearch.isFetching || trimmedTerm !== searchTerm);
+  const searchFailed = hasTerm && !isSearching && siteSearch.isError;
 
   // GH #322: is the fleet agent rollout actually usable by THIS viewer?
   //
@@ -172,7 +210,13 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     <Command.Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) onClose();
+        if (!next) {
+          // Reset the term on close so the next ⌘K opens on recents rather
+          // than on a stale search. Done in the event handler, never an
+          // effect.
+          setTerm("");
+          onClose();
+        }
       }}
       label="Command palette"
       // cmdk forwards `overlayClassName` and `contentClassName` to its inner
@@ -210,6 +254,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             className="size-4 shrink-0 text-muted-foreground"
           />
           <Command.Input
+            value={term}
+            onValueChange={setTerm}
             placeholder="Search sites, runs, snapshots"
             className={cn(
               "h-12 flex-1 bg-transparent text-base outline-none",
@@ -225,11 +271,30 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             // empty state aligns visually with the input.
           )}
         >
-          <Command.Empty
-            className="px-3 py-6 text-center text-sm text-muted-foreground"
-          >
-            No matches.
-          </Command.Empty>
+          {/*
+            With a term typed, the Sites section below owns the whole story
+            for that term (searching / failed / nothing found), so cmdk's own
+            "No matches." must not also render: two verdicts on one screen,
+            one of them written before the request came back, is the bug this
+            issue reported.
+          */}
+          {hasTerm ? null : (
+            <Command.Empty className="px-3 py-6 text-center text-sm text-muted-foreground">
+              No matches.
+            </Command.Empty>
+          )}
+
+          {/* ── Sites (server search, GH #349) ──────────────────────────── */}
+          {hasTerm ? (
+            <SiteSearchSection
+              term={trimmedTerm}
+              results={results}
+              isSearching={isSearching}
+              hasFailed={searchFailed}
+              onRetry={() => void siteSearch.refetch()}
+              onOpen={(siteId) => go(`/sites/${siteId}`)()}
+            />
+          ) : null}
 
           {/* ── Navigate ────────────────────────────────────────────────── */}
           <PaletteGroup heading="Navigate">
@@ -248,23 +313,31 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             >
               Go to Backups
             </PaletteItem>
-            {recentSites.map((site) => (
-              <PaletteItem
-                key={`recent-${site.id}`}
-                onSelect={go(`/sites/${site.id}`)}
-                icon={<Globe className="size-4" aria-hidden="true" />}
-                // The hostname is the user-facing identifier — keep it mono so
-                // it reads as a fixed-width URL fragment per DESIGN.md ("use
-                // mono for every hostname").
-                trailing={
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {site.hostname}
-                  </span>
-                }
-              >
-                Go to {site.hostname}
-              </PaletteItem>
-            ))}
+            {/*
+              Recents are the ZERO-QUERY default only. Once something is
+              typed, the Sites section above answers from the server across the
+              whole organisation, and a second list of the same sites drawn
+              from this browser's history would just compete with it.
+            */}
+            {hasTerm
+              ? null
+              : recentSites.map((site) => (
+                  <PaletteItem
+                    key={`recent-${site.id}`}
+                    onSelect={go(`/sites/${site.id}`)}
+                    icon={<Globe className="size-4" aria-hidden="true" />}
+                    // The hostname is the user-facing identifier, so keep it mono
+                    // so it reads as a fixed-width URL fragment per DESIGN.md
+                    // ("use mono for every hostname").
+                    trailing={
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {site.hostname}
+                      </span>
+                    }
+                  >
+                    Go to {site.hostname}
+                  </PaletteItem>
+                ))}
           </PaletteGroup>
 
           {/* ── Run on selected (only when there IS a selection) ───────── */}
@@ -395,17 +468,132 @@ export function MountedCommandPalette() {
   return <CommandPalette open={open} onClose={() => setOpen(false)} />;
 }
 
+// ── Site search results (GH #349) ───────────────────────────────────────────
+
+interface SiteSearchSectionProps {
+  /** The trimmed term, echoed back in the no-results line. */
+  term: string;
+  results: readonly Site[];
+  isSearching: boolean;
+  hasFailed: boolean;
+  onRetry: () => void;
+  onOpen: (siteId: string) => void;
+}
+
+/**
+ * The three states a search can be in, told apart on screen.
+ *
+ * The reported bug was a palette that said "No matches." whatever was
+ * happening, so the operator could not tell "your organisation has no site
+ * called that" from "we have not asked yet" or "the request failed". Each
+ * gets its own line here, and only the settled, empty, successful case is
+ * allowed to say nothing was found.
+ *
+ * The status and error lines are plain elements rather than Command.Items:
+ * cmdk filters items against the typed term, and a status line that vanished
+ * because it did not fuzzy-match "iacop" would be its own small lie. Site
+ * rows use `forceMount` for the same reason. The SERVER decided these sites
+ * match; the client must not quietly overrule it with a second, weaker filter,
+ * which is the shape of the defect this whole change is undoing.
+ */
+function SiteSearchSection({
+  term,
+  results,
+  isSearching,
+  hasFailed,
+  onRetry,
+  onOpen,
+}: SiteSearchSectionProps) {
+  if (hasFailed) {
+    return (
+      <div
+        role="alert"
+        className="flex flex-wrap items-center justify-center gap-2 px-3 py-6 text-center text-sm text-muted-foreground"
+      >
+        <span>Could not search sites.</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className={cn(
+            "rounded-sm font-medium text-primary underline-offset-4 hover:underline",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (results.length === 0) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="px-3 py-6 text-center text-sm text-muted-foreground"
+      >
+        {isSearching ? "Searching sites..." : `No sites match "${term}".`}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <PaletteGroup heading="Sites" forceMount>
+        {results.map((site) => {
+          const hostname = hostnameFromUrl(site.url);
+          return (
+            <PaletteItem
+              key={`site-${site.id}`}
+              forceMount
+              // Unique per site, and stable across renders, so cmdk's
+              // selection does not jump as results come and go.
+              value={`site-${site.id}`}
+              // The same three fields the server matched on. cmdk scores
+              // against these to order the results sensibly; `forceMount`
+              // above is what guarantees they are SHOWN either way, so a
+              // scoring disagreement can never hide a real match.
+              keywords={[site.name, site.url, ...site.tags]}
+              onSelect={() => onOpen(site.id)}
+              icon={<Globe className="size-4" aria-hidden="true" />}
+              trailing={
+                <span className="font-mono text-xs text-muted-foreground">
+                  {hostname}
+                </span>
+              }
+            >
+              Go to {site.name || hostname}
+            </PaletteItem>
+          );
+        })}
+      </PaletteGroup>
+      {isSearching ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="px-3 pb-2 text-center text-xs text-muted-foreground"
+        >
+          Searching sites...
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 // ── Internal building blocks ────────────────────────────────────────────────
 
 interface PaletteGroupProps {
   heading: string;
   children: ReactNode;
+  /** Render even when no child item matches the typed term (GH #349). */
+  forceMount?: boolean;
 }
 
-function PaletteGroup({ heading, children }: PaletteGroupProps) {
+function PaletteGroup({ heading, children, forceMount }: PaletteGroupProps) {
   return (
     <Command.Group
       heading={heading}
+      forceMount={forceMount}
       // The heading slot is wrapped by cmdk in a `[cmdk-group-heading]` div.
       // We style that via a child selector so the visual is the spec-stated
       // "uppercase, tracking-wide, muted" caption — no extra wrapper.
@@ -426,12 +614,29 @@ interface PaletteItemProps {
   icon?: ReactNode;
   trailing?: ReactNode;
   children: ReactNode;
+  /** Stable identity for cmdk; defaults to the rendered text. */
+  value?: string;
+  /** Extra text cmdk scores the term against (name, url, tags). */
+  keywords?: string[];
+  /** Render regardless of cmdk's own filter (GH #349 server results). */
+  forceMount?: boolean;
 }
 
-function PaletteItem({ onSelect, icon, trailing, children }: PaletteItemProps) {
+function PaletteItem({
+  onSelect,
+  icon,
+  trailing,
+  children,
+  value,
+  keywords,
+  forceMount,
+}: PaletteItemProps) {
   return (
     <Command.Item
       onSelect={onSelect}
+      value={value}
+      keywords={keywords}
+      forceMount={forceMount}
       className={cn(
         // 6px radius, 12/8 padding, body-sm sizing — matches DESIGN.md item
         // shape ("rectangles with 6px radius", "8/12 padding").

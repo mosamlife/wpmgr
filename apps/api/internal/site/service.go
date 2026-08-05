@@ -130,6 +130,27 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]Site, error) {
 		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
 	in.Limit, in.Offset = normalizePage(in.Limit, in.Offset)
+	// GH #349. Validate the ordering BEFORE touching the database: an
+	// unrecognised sort is a 422, not a quiet fall back to the default, because
+	// a silently ignored sort shows the operator a list ordered differently
+	// from the control they just set. Empty means DefaultListSort, so existing
+	// clients that send no sort are unaffected.
+	sortKey, err := ParseListSort(in.Sort)
+	if err != nil {
+		return nil, err
+	}
+	in.Sort = string(sortKey)
+	// Whitespace-only search is the same as no search.
+	in.Query = strings.TrimSpace(in.Query)
+	// A NUL byte cannot occur in any Postgres text value, so a search
+	// containing one matches nothing by definition. Answer that directly:
+	// passing it down would make the driver fail the whole statement
+	// ("invalid byte sequence for encoding UTF8"), turning a client-supplied
+	// search string into a 500. An unmatchable search is an empty list, which
+	// is what any other unmatched search returns.
+	if strings.ContainsRune(in.Query, 0) {
+		return []Site{}, nil
+	}
 
 	t0 := time.Now()
 

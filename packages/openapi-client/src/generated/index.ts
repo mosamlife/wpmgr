@@ -1735,6 +1735,8 @@ export {
   type ListSitePolicyGroupsResponse,
   type ListSitePolicyGroupsResponses,
   type ListSitesData,
+  type ListSitesError,
+  type ListSitesErrors,
   type ListSiteSharesData,
   type ListSiteSharesError,
   type ListSiteSharesErrors,

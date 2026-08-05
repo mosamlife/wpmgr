@@ -1552,6 +1552,37 @@ type Querier interface {
 	// above. Both LEFT JOINs are PK lookups (site_id), so this stays O(sites) per
 	// page (an index-only nested-loop per row) and does not regress the
 	// optimized /sites path.
+	//
+	// GH #349 free-text search + ordering. Both moved SERVER side on purpose: the
+	// web used to filter an already-fetched page client side, which silently
+	// searched only the first page (50 newest sites by default) and told an agency
+	// with more sites than that "no results" for a site it owns. A filter applied
+	// after the server truncated the list is wrong at any page size.
+	//
+	//   sqlc.narg('q') substring-matches, case-insensitively, the site NAME, the
+	//   site URL, or ANY of the site's tags. The tag arm reads s.tags, the very
+	//   array this query returns, so any tag the operator can see on a site is a
+	//   tag they can find that site by. strpos(lower(..), lower(..)) is used
+	//   rather than ILIKE because the operator typed a search string, not a
+	//   pattern: with ILIKE a literal % or _ in the query would silently become a
+	//   wildcard. NULL (absent) disables the whole predicate.
+	//
+	//   sqlc.arg('sort') selects the order. It is BOUND AS A PARAMETER and
+	//   compared against fixed literals; no SQL text is ever concatenated, and the
+	//   set of accepted values is closed in Go (site.ParseListSort, which 422s an
+	//   unrecognised value rather than silently falling back). Every branch that
+	//   is not the selected sort evaluates to NULL for every row, which makes that
+	//   ORDER BY term a constant and therefore a no-op, so one query serves all
+	//   six orders.
+	//     - lower(s.name) sorts names case-insensitively, so "acme" and "Acme"
+	//       sit together regardless of the server's collation.
+	//     - NULLS LAST on BOTH last_seen directions: last_seen_at is NULL for a
+	//       site that has never reported in. Never-seen sites therefore land at
+	//       the END of the list in either direction, never crowding the top of a
+	//       descending "most recently seen" sort, and never vanishing.
+	//     - s.id DESC is the TOTAL-ORDER tiebreak. Two sites can share a name and
+	//       two can share a created_at; without a final unique key, LIMIT/OFFSET
+	//       paging is free to drop one row and repeat another across pages.
 	ListSites(ctx context.Context, arg ListSitesParams) ([]ListSitesRow, error)
 	// Tenant-scoped site_id/name/agent_version rollup for the read-only agent
 	// fleet-version dashboard (internal/agentrelease): "how many of my sites are

@@ -2303,9 +2303,19 @@ type Invoker interface {
 	// Pass `?state=<connection_state>` to filter to exactly one state (e.g.
 	// `?state=archived` for the archived chip), or `?include_archived=true` as
 	// a convenience alias that returns only the archived sites.
+	// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
+	// DATABASE, before `limit`/`offset`. That is the point of them: a client
+	// that fetches one page and filters it locally is searching only that
+	// page, so an agency with more sites than the page size gets "no results"
+	// for a site it owns. With `q` on the server, the rows returned are the
+	// best matches in the requested order rather than the newest page filtered
+	// afterwards.
+	// `q` and `sort` compose with every other parameter here (`tags`,
+	// `tags_match`, `state`, `include_archived`, `clientId`) rather than
+	// replacing any of them.
 	//
 	// GET /api/v1/sites
-	ListSites(ctx context.Context, params ListSitesParams) (*SiteList, error)
+	ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error)
 	// ListTags invokes listTags operation.
 	//
 	// Lists every tag in the tenant's registry (m100), sorted
@@ -29288,14 +29298,24 @@ func (c *Client) sendListSiteVulnerabilities(ctx context.Context, params ListSit
 // Pass `?state=<connection_state>` to filter to exactly one state (e.g.
 // `?state=archived` for the archived chip), or `?include_archived=true` as
 // a convenience alias that returns only the archived sites.
+// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
+// DATABASE, before `limit`/`offset`. That is the point of them: a client
+// that fetches one page and filters it locally is searching only that
+// page, so an agency with more sites than the page size gets "no results"
+// for a site it owns. With `q` on the server, the rows returned are the
+// best matches in the requested order rather than the newest page filtered
+// afterwards.
+// `q` and `sort` compose with every other parameter here (`tags`,
+// `tags_match`, `state`, `include_archived`, `clientId`) rather than
+// replacing any of them.
 //
 // GET /api/v1/sites
-func (c *Client) ListSites(ctx context.Context, params ListSitesParams) (*SiteList, error) {
+func (c *Client) ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error) {
 	res, err := c.sendListSites(ctx, params)
 	return res, err
 }
 
-func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res *SiteList, err error) {
+func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res ListSitesRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("listSites"),
 		semconv.HTTPRequestMethodKey.String("GET"),
@@ -29366,6 +29386,40 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
 			if val, ok := params.Offset.Get(); ok {
 				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "q" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "q",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Q.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "sort" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Sort.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
 			}
 			return nil
 		}); err != nil {

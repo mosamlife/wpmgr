@@ -16,8 +16,11 @@ import {
   useSites,
   useDeleteSite,
   sitesQueryOptions,
+  DEFAULT_SITES_LIMIT,
   type TagMatchMode,
 } from "@/features/sites/use-sites";
+import { SITE_SORT_VALUES, type SiteSort } from "@/features/sites/sites-sort";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { useTags } from "@/features/tags/use-tags";
 import { useTagColorMap } from "@/features/tags/use-tag-color-map";
 import { TagChip } from "@/features/sites/tag-chip";
@@ -77,6 +80,12 @@ const searchSchema = z.object({
   // Agent-freshness classification (agent-releases visibility). Stores
   // display labels, matching the `status` axis above; see AGENT_STATUS_LABEL.
   agentStatus: z.array(z.string()).optional(),
+  // GH #349. The order the SERVER returns sites in. On the URL like every
+  // other axis so a link carries it. `.catch(undefined)` rather than a hard
+  // parse failure: a hand-edited or stale URL should fall back to the default
+  // order, not break the page, and it guarantees only a contract-legal value
+  // is ever forwarded to the request (the server 422s the rest).
+  sort: z.enum(SITE_SORT_VALUES).optional().catch(undefined),
 });
 
 type SitesSearch = z.infer<typeof searchSchema>;
@@ -160,6 +169,30 @@ function SitesPage() {
     [navigate],
   );
 
+  // GH #349. The term the SERVER is asked for. The URL write above stays
+  // synchronous (the input must never lag a keystroke); only the request is
+  // debounced, so a 24-character search is one request rather than 24. The
+  // first value is adopted with no delay, so opening /sites?q=acme searches
+  // on the first paint.
+  const serverQuery = useDebouncedValue(search.q ?? "", 250);
+
+  // GH #349. The order. Undefined means "the server default", which is
+  // -created_at (newest first), exactly what the list did before this axis
+  // existed.
+  const sort: SiteSort | undefined = search.sort;
+
+  const handleSortChange = useCallback(
+    (next: SiteSort) => {
+      // Written out in full, including the default, so the URL always states
+      // the order the operator chose and a shared link reproduces it.
+      void navigate({
+        search: (prev: SitesSearch) => ({ ...prev, sort: next }),
+        replace: true,
+      });
+    },
+    [navigate],
+  );
+
   // Memoize the fallback arrays so their stable references don't force useMemo
   // hooks downstream to re-compute on every render (the ?. [] fallback creates a
   // new array reference each time when status/tags are absent from the URL).
@@ -193,13 +226,16 @@ function SitesPage() {
 
   const [setClientOpen, setSetClientOpen] = useState(false);
 
-  // GH #230 "rich tags" — tag filtering is now SERVER-SIDE (?tags=&tags_match=).
+  // GH #230 "rich tags": tag filtering is SERVER-SIDE (?tags=&tags_match=).
+  // GH #349: free-text search (?q=) and order (?sort=) are too.
   const { data: sites, isPending, isError, error, refetch, isFetching } =
     useSites({
       view: showArchived ? "archived" : "active",
       clientId: appliedClientId ?? undefined,
       tags: selectedTags,
       tagsMatch: tagMode,
+      q: serverQuery,
+      sort,
     });
 
   const { data: tagsRegistry } = useTags();
@@ -303,6 +339,30 @@ function SitesPage() {
 
   // ── visibleSites — pure derive over the query cache ───────────────────────
   //
+  // WHICH AXIS RUNS WHERE (GH #349. Read this before adding another one):
+  //
+  //   SERVER-SIDE, in the `useSites` call above, so the answer covers the
+  //   whole organisation rather than whatever happened to be on the first
+  //   page:
+  //     - free-text search  (?q=)        name, url, any tag
+  //     - order             (?sort=)
+  //     - tags + match mode (?tags=, ?tags_match=)   GH #230
+  //     - client            (?clientId=)
+  //     - archived bucket   (?state=archived)
+  //
+  //   CLIENT-SIDE, in the filter below, over the rows the server returned:
+  //     - connection status   derived from connection_state, which the list
+  //                           endpoint can only filter to ONE value at a time
+  //                           (?state=) while this axis is multi-select
+  //     - agent freshness     derived from a SEPARATE fleet rollup
+  //                           (useFleetAgentVersions), so the sites endpoint
+  //                           has nothing to filter on
+  //
+  // A client-side axis over a server-truncated page is only honest while the
+  // page is the whole set. That is why DEFAULT_SITES_LIMIT is the contract
+  // maximum and why moving one of these two axes to the server means moving
+  // it to the request, never widening this filter.
+  //
   // CRITICAL INVARIANTS (preserve and do not refactor without re-reading):
   //
   // 1. `selectedSites` reads the FULL `sites` array, NOT `visibleSites`.
@@ -315,34 +375,21 @@ function SitesPage() {
   // 3. The header "select all" / grid "select all" must scope to the VISIBLE
   //    (filtered) rows only — handled via visibleIds passed to the toolbar.
   //
-  // 4. useSitesLiveSync is untouched here; filters are a pure client-side
-  //    derive over the TanStack Query cache, not a re-fetch trigger.
-  //
-  // GH #230 "rich tags": the TAGS axis moved server-side (see the `useSites`
-  // call above) — `sites` already reflects the tags/tagMode filter. Text
-  // search still matches tag values (a tag is part of a site's searchable
-  // text), but no longer independently FILTERS by tag client-side.
+  // 4. useSitesLiveSync is untouched here; the two remaining filters are a
+  //    pure client-side derive over the TanStack Query cache, not a re-fetch
+  //    trigger. Search and order ARE re-fetch triggers, by design: they change
+  //    the query key.
 
   const visibleSites = useMemo(() => {
     if (!sites) return [];
 
-    const q = (search.q ?? "").trim().toLowerCase();
-    const hasQ = q.length > 0;
     const hasStatus = selectedStatuses.length > 0;
     const hasAgentStatus = selectedAgentStatuses.length > 0;
 
     // Fast path: no active client-side filters.
-    if (!hasQ && !hasStatus && !hasAgentStatus) return sites;
+    if (!hasStatus && !hasAgentStatus) return sites;
 
     return sites.filter((s) => {
-      // Text search — matches name, url, or any tag.
-      if (hasQ) {
-        const haystack = [s.name, s.url, ...(s.tags ?? [])]
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-
       // Status filter — OR within selected statuses.
       // We compare against the display label (same value stored in the URL).
       if (hasStatus) {
@@ -362,7 +409,7 @@ function SitesPage() {
 
       return true;
     });
-  }, [sites, search.q, selectedStatuses, selectedAgentStatuses, agentStatusById]);
+  }, [sites, selectedStatuses, selectedAgentStatuses, agentStatusById]);
 
   // INVARIANT: read from the FULL sites array, not visibleSites.
   const selectedSites: Site[] = (sites ?? []).filter((s) =>
@@ -448,6 +495,27 @@ function SitesPage() {
   // than `sites.length > 0`.
   const showFilterEmpty =
     !isPending && !isError && hasActiveFilters && visibleSites.length === 0;
+
+  // ── Page subline ──────────────────────────────────────────────────────────
+  //
+  // GH #349. Search is a server-side axis now, so `sites` is the set of
+  // MATCHES, not the tenant's roster: "3 sites enrolled" while searching for
+  // "acme" would be false. And once a tenant is past DEFAULT_SITES_LIMIT the
+  // count is a page size, not a total, so it must not be presented as one.
+  const sitesSubline = useMemo(() => {
+    if (isPending || isError || sites === undefined) return undefined;
+    if (sites.length >= DEFAULT_SITES_LIMIT) {
+      return hasActiveFilters
+        ? `Showing the first ${DEFAULT_SITES_LIMIT} matches`
+        : `Showing the first ${DEFAULT_SITES_LIMIT} sites`;
+    }
+    if (hasActiveFilters) {
+      const shown = visibleSites.length;
+      return `${shown} matching site${shown === 1 ? "" : "s"}`;
+    }
+    if (sites.length === 0) return undefined;
+    return `${sites.length} site${sites.length === 1 ? "" : "s"} enrolled`;
+  }, [isPending, isError, sites, hasActiveFilters, visibleSites.length]);
 
   // ── Auto-login ─────────────────────────────────────────────────────────────
 
@@ -755,13 +823,7 @@ function SitesPage() {
     <section aria-labelledby="sites-heading" className="space-y-4">
       <PageHeader
         title="Sites"
-        subline={
-          isPending
-            ? undefined
-            : sites !== undefined && sites.length > 0
-              ? `${sites.length} site${sites.length === 1 ? "" : "s"} enrolled`
-              : undefined
-        }
+        subline={sitesSubline}
         actions={operate ? <AddSiteDialog /> : undefined}
       />
 
@@ -886,6 +948,11 @@ function SitesPage() {
             }}
             activeFilterCount={activeFilterCount}
             onClearAllFilters={handleClearAllFilters}
+            // GH #349. The order axis is not counted in activeFilterCount and
+            // not reset by "Clear filters": an order is how the operator
+            // reads the list, not a narrowing of it.
+            sort={sort}
+            onSortChange={handleSortChange}
             view={view}
             onViewChange={setView}
             cardSize={cardSize}
@@ -946,11 +1013,14 @@ function SitesPage() {
 
           {showFilterEmpty ? (
             // The tag-specific empty state applies only when the (server-
-            // side) tags filter is the reason `sites` itself came back
-            // empty. If `sites` has rows but a client-side axis (search or
-            // status) narrowed them to zero, the generic FilterEmpty is the
-            // accurate message even when tags are also selected.
-            hasTagsFilter && (sites?.length ?? 0) === 0 ? (
+            // side) tags filter is the ONLY reason `sites` itself came back
+            // empty. GH #349: search is now a server-side axis too, so an
+            // empty `sites` no longer implies the tags did it: with a term
+            // typed, "No sites match these tags" would name the wrong
+            // culprit and offer the wrong fix ("Clear tag filters"). If a
+            // client-side axis (status, agent) narrowed a non-empty result to
+            // zero, the generic FilterEmpty is likewise the accurate message.
+            hasTagsFilter && !search.q?.trim() && (sites?.length ?? 0) === 0 ? (
               <TagsFilterEmpty tags={selectedTags} onClear={handleClearTagFilters} />
             ) : (
               <FilterEmpty

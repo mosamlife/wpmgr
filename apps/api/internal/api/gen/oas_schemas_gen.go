@@ -17832,6 +17832,7 @@ func (*Error) listOrgsRes()                       {}
 func (*Error) listRestoreRunsRes()                {}
 func (*Error) listScheduleRunsRes()               {}
 func (*Error) listSharedWithMeRes()               {}
+func (*Error) listSitesRes()                      {}
 func (*Error) listTrustedDevicesRes()             {}
 func (*Error) listWebAuthnCredentialsRes()        {}
 func (*Error) logoutRes()                         {}
@@ -22936,6 +22937,75 @@ func (*ListSiteVulnerabilitiesForbidden) listSiteVulnerabilitiesRes() {}
 type ListSiteVulnerabilitiesUnauthorized Error
 
 func (*ListSiteVulnerabilitiesUnauthorized) listSiteVulnerabilitiesRes() {}
+
+type ListSitesSort string
+
+const (
+	ListSitesSortName           ListSitesSort = "name"
+	ListSitesSortMinusName      ListSitesSort = "-name"
+	ListSitesSortCreatedAt      ListSitesSort = "created_at"
+	ListSitesSortMinusCreatedAt ListSitesSort = "-created_at"
+	ListSitesSortLastSeen       ListSitesSort = "last_seen"
+	ListSitesSortMinusLastSeen  ListSitesSort = "-last_seen"
+)
+
+// AllValues returns all ListSitesSort values.
+func (ListSitesSort) AllValues() []ListSitesSort {
+	return []ListSitesSort{
+		ListSitesSortName,
+		ListSitesSortMinusName,
+		ListSitesSortCreatedAt,
+		ListSitesSortMinusCreatedAt,
+		ListSitesSortLastSeen,
+		ListSitesSortMinusLastSeen,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSitesSort) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSitesSortName:
+		return []byte(s), nil
+	case ListSitesSortMinusName:
+		return []byte(s), nil
+	case ListSitesSortCreatedAt:
+		return []byte(s), nil
+	case ListSitesSortMinusCreatedAt:
+		return []byte(s), nil
+	case ListSitesSortLastSeen:
+		return []byte(s), nil
+	case ListSitesSortMinusLastSeen:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSitesSort) UnmarshalText(data []byte) error {
+	switch ListSitesSort(data) {
+	case ListSitesSortName:
+		*s = ListSitesSortName
+		return nil
+	case ListSitesSortMinusName:
+		*s = ListSitesSortMinusName
+		return nil
+	case ListSitesSortCreatedAt:
+		*s = ListSitesSortCreatedAt
+		return nil
+	case ListSitesSortMinusCreatedAt:
+		*s = ListSitesSortMinusCreatedAt
+		return nil
+	case ListSitesSortLastSeen:
+		*s = ListSitesSortLastSeen
+		return nil
+	case ListSitesSortMinusLastSeen:
+		*s = ListSitesSortMinusLastSeen
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 type ListSitesState string
 
@@ -29579,6 +29649,52 @@ func (o OptListSitePHPErrorsSilenced) Get() (v ListSitePHPErrorsSilenced, ok boo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptListSitePHPErrorsSilenced) Or(d ListSitePHPErrorsSilenced) ListSitePHPErrorsSilenced {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListSitesSort returns new OptListSitesSort with value set to v.
+func NewOptListSitesSort(v ListSitesSort) OptListSitesSort {
+	return OptListSitesSort{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListSitesSort is optional ListSitesSort.
+type OptListSitesSort struct {
+	Value ListSitesSort
+	Set   bool
+}
+
+// IsSet returns true if OptListSitesSort was set.
+func (o OptListSitesSort) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListSitesSort) Reset() {
+	var v ListSitesSort
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListSitesSort) SetTo(v ListSitesSort) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListSitesSort) Get() (v ListSitesSort, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListSitesSort) Or(d ListSitesSort) ListSitesSort {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -46076,6 +46192,8 @@ func (s *SiteList) GetItems() []Site {
 func (s *SiteList) SetItems(val []Site) {
 	s.Items = val
 }
+
+func (*SiteList) listSitesRes() {}
 
 // Ref: #/components/schemas/SiteLoginBrand
 type SiteLoginBrand struct {

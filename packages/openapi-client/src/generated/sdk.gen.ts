@@ -706,6 +706,7 @@ import type {
   ListSitePolicyGroupsErrors,
   ListSitePolicyGroupsResponses,
   ListSitesData,
+  ListSitesErrors,
   ListSiteSharesData,
   ListSiteSharesErrors,
   ListSiteSharesResponses,
@@ -2815,14 +2816,27 @@ export const getTenant = <ThrowOnError extends boolean = false>(
  * `?state=archived` for the archived chip), or `?include_archived=true` as
  * a convenience alias that returns only the archived sites.
  *
+ * GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
+ * DATABASE, before `limit`/`offset`. That is the point of them: a client
+ * that fetches one page and filters it locally is searching only that
+ * page, so an agency with more sites than the page size gets "no results"
+ * for a site it owns. With `q` on the server, the rows returned are the
+ * best matches in the requested order rather than the newest page filtered
+ * afterwards.
+ *
+ * `q` and `sort` compose with every other parameter here (`tags`,
+ * `tags_match`, `state`, `include_archived`, `clientId`) rather than
+ * replacing any of them.
+ *
  */
 export const listSites = <ThrowOnError extends boolean = false>(
   options?: Options<ListSitesData, ThrowOnError>,
 ) =>
-  (options?.client ?? client).get<ListSitesResponses, unknown, ThrowOnError>({
-    url: "/api/v1/sites",
-    ...options,
-  });
+  (options?.client ?? client).get<
+    ListSitesResponses,
+    ListSitesErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites", ...options });
 
 /**
  * Create a site (site-first enrollment)

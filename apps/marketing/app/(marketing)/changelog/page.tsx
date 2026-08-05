@@ -39,6 +39,42 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.126",
+    date: "2026-08-05",
+    summary:
+      "Searching the Sites list only searched the fifty most recently added sites, so a larger fleet was told \"no results\" for a site it owns. Search and ordering now run across the whole organisation, and sites can be ordered by name, date added or last check-in.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Searching the Sites list only ever searched the sites that page had already loaded, and that page is the fifty most recently added. An agency with more than fifty sites was told \"no results\" for a site it owns and can reach in two clicks, with nothing on screen to say the search had looked at part of the fleet rather than all of it. Reported by an agency running twenty four sites. Searching now happens in the control plane, across every site in the organisation, so a page of results is the best matches rather than the newest fifty filtered after the fact.",
+      },
+      {
+        tag: "Fixed",
+        text: "This is why raising the number of sites fetched was not the fix. Filtering a list the server has already cut short is wrong at any size: it only moves the point at which the product starts quietly lying about what it searched. The filter and the cut now happen in the same place, in the right order.",
+      },
+      {
+        tag: "Fixed",
+        text: "A search still matches a site's name, its address and its tags, the same three things it matched before, and still ignores case. It is a plain substring search: a percent sign or an underscore in the search box now looks for that character instead of behaving as a wildcard. Tags are searched from the same list of tags shown on the site, so a tag an operator can see is always a tag that finds it.",
+      },
+      {
+        tag: "Added",
+        text: "Sites can be ordered by name, by date added, or by last check-in, in either direction. The order is applied across the whole organisation before the page is cut, so the first page is genuinely the first page of that order and not the newest fifty rearranged among themselves. Ordering by name ignores case, so \"Acme\" and \"acme client\" sit next to each other.",
+      },
+      {
+        tag: "Added",
+        text: "A site that has never checked in has no last check-in time to order by. Those sites sit at the end of the list in both directions of the last check-in order: they never take the top of a \"most recently seen\" list, and they never vanish from one either.",
+      },
+      {
+        tag: "Added",
+        text: "Every order is settled down to the last row. Two sites that share a name, or that were added in the same second, keep a fixed position relative to each other, because paging through a list whose order is undecided between equal rows can show one site twice and skip another entirely. Nothing changes for anyone who does not ask for an order: the list is still newest first.",
+      },
+      {
+        tag: "Added",
+        text: "For self-hosted installs and API users, GET /api/v1/sites now takes q and sort, documented in the OpenAPI specification. They combine with the existing tag, status and client filters rather than replacing any of them. An order the control plane does not recognise is refused rather than quietly ignored.",
+      },
+    ],
+  },
+  {
     version: "0.61.125",
     date: "2026-08-05",
     summary:

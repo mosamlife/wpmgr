@@ -7666,6 +7666,25 @@ func (s *ListSitePolicyGroupsOK) Validate() error {
 	return nil
 }
 
+func (s ListSitesSort) Validate() error {
+	switch s {
+	case "name":
+		return nil
+	case "-name":
+		return nil
+	case "created_at":
+		return nil
+	case "-created_at":
+		return nil
+	case "last_seen":
+		return nil
+	case "-last_seen":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s ListSitesState) Validate() error {
 	switch s {
 	case "pending_enrollment":

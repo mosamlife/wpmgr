@@ -38157,6 +38157,16 @@ func (s *Server) handleListSiteVulnerabilitiesRequest(args [1]string, argsEscape
 // Pass `?state=<connection_state>` to filter to exactly one state (e.g.
 // `?state=archived` for the archived chip), or `?include_archived=true` as
 // a convenience alias that returns only the archived sites.
+// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
+// DATABASE, before `limit`/`offset`. That is the point of them: a client
+// that fetches one page and filters it locally is searching only that
+// page, so an agency with more sites than the page size gets "no results"
+// for a site it owns. With `q` on the server, the rows returned are the
+// best matches in the requested order rather than the newest page filtered
+// afterwards.
+// `q` and `sort` compose with every other parameter here (`tags`,
+// `tags_match`, `state`, `include_archived`, `clientId`) rather than
+// replacing any of them.
 //
 // GET /api/v1/sites
 func (s *Server) handleListSitesRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -38243,7 +38253,7 @@ func (s *Server) handleListSitesRequest(args [0]string, argsEscaped bool, w http
 
 	var rawBody []byte
 
-	var response *SiteList
+	var response ListSitesRes
 	if m := s.cfg.Middleware; m != nil {
 		mreq := middleware.Request{
 			Context:          ctx,
@@ -38261,6 +38271,14 @@ func (s *Server) handleListSitesRequest(args [0]string, argsEscaped bool, w http
 					Name: "offset",
 					In:   "query",
 				}: params.Offset,
+				{
+					Name: "q",
+					In:   "query",
+				}: params.Q,
+				{
+					Name: "sort",
+					In:   "query",
+				}: params.Sort,
 				{
 					Name: "tag",
 					In:   "query",
@@ -38288,7 +38306,7 @@ func (s *Server) handleListSitesRequest(args [0]string, argsEscaped bool, w http
 		type (
 			Request  = struct{}
 			Params   = ListSitesParams
-			Response = *SiteList
+			Response = ListSitesRes
 		)
 		response, err = middleware.HookMiddleware[
 			Request,
