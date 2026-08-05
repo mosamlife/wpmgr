@@ -10,7 +10,6 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import {
-  client,
   listSites,
   getSite,
   deleteSite,
@@ -18,13 +17,14 @@ import {
   setSiteTags,
   refreshSiteScreenshot,
   type Site,
-  type SiteList,
   type PairingCode,
   type PairingCodeCreate,
   type ApiError,
+  type ListSitesData,
 } from "@wpmgr/api";
 
 import { toast } from "@/components/toast";
+import type { SiteSort } from "@/features/sites/sites-sort";
 
 // Server-state hooks for the Sites domain. Built on the generated @wpmgr/api
 // SDK (Hey API). Each SDK call returns `{ data, error, response }`; we unwrap
@@ -38,13 +38,65 @@ export type SitesView = "active" | "archived";
  *  the selected `tags` filter. Mirrors the OpenAPI `tags_match` param. */
 export type TagMatchMode = "any" | "all";
 
-export interface UseSitesOptions {
+/**
+ * How many sites one list request asks for.
+ *
+ * GH #349. The control plane defaults to 50 and caps at 200. Leaving the
+ * default in place while the toolbar tells the operator they are looking at a
+ * searched, ordered list of their whole organisation is the defect this issue
+ * is about: they would be looking at the 50 newest. 200 is the highest a
+ * single request can honestly express, and it is the number every bare
+ * `useSites()` caller depends on too, since several of them speak for the
+ * whole fleet ("Run backup on all sites" in the command palette, the sidebar
+ * site count, the fleet performance and audit pickers).
+ *
+ * Above 200 sites this is still a cap, but it is now a HONEST one: with `q`
+ * and `sort` applied server-side, the rows returned are the top 200 matches in
+ * the requested order rather than an arbitrary newest-50 that a client-side
+ * filter then searched. Going beyond it needs real pagination on the list,
+ * which is a separate change.
+ */
+export const DEFAULT_SITES_LIMIT = 200;
+
+/**
+ * Search and order that the SERVER applies (GH #349), as opposed to the axes
+ * the Sites page still narrows client-side. See the comment above
+ * `visibleSites` in routes/_authed/sites/index.tsx for the full split.
+ */
+export interface SitesQueryOptions {
+  /**
+   * Case-insensitive substring match against site NAME, URL and any TAG.
+   * Empty or whitespace-only behaves as absent. Semantics are deliberately
+   * identical to the client-side filter this replaced, so moving it to the
+   * server did not change which sites match, only how many of them were ever
+   * considered.
+   */
+  q?: string;
+  /** Ordering. Absent behaves as the server default, `-created_at`. */
+  sort?: SiteSort;
+  /** Page size. Defaults to DEFAULT_SITES_LIMIT. */
+  limit?: number;
+}
+
+export interface UseSitesOptions extends SitesQueryOptions {
   view?: SitesView;
   clientId?: string;
   /** Filter to sites carrying these tags (server-side, GH #230). */
   tags?: readonly string[];
   /** `any` (OR) or `all` (AND). Only meaningful with 2+ tags; defaults `any`. */
   tagsMatch?: TagMatchMode;
+  /**
+   * When false the query does not run. Used by the command palette, whose
+   * zero-query state shows recently-viewed sites and must not fire a
+   * search request until something is typed.
+   */
+  enabled?: boolean;
+}
+
+/** Trimmed search term, or null when there is nothing to search for. */
+function normalizeQ(q: string | undefined): string | null {
+  const trimmed = q?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export const sitesKeys = {
@@ -55,6 +107,11 @@ export const sitesKeys = {
     clientId?: string,
     tags?: readonly string[],
     tagsMatch: TagMatchMode = "any",
+    // GH #349. Folded into the SAME key object rather than added as further
+    // positional arguments so that `sitesKeys.list("active")` keeps producing
+    // the exact key a default `useSites()` subscribes to (the route loader's
+    // prefetch depends on that identity).
+    query?: SitesQueryOptions,
   ) =>
     [
       ...sitesKeys.lists(),
@@ -63,6 +120,9 @@ export const sitesKeys = {
         clientId: clientId ?? null,
         tags: tags && tags.length > 0 ? [...tags].sort() : null,
         tagsMatch,
+        q: normalizeQ(query?.q),
+        sort: query?.sort ?? null,
+        limit: query?.limit ?? DEFAULT_SITES_LIMIT,
       },
     ] as const,
   detail: (id: string) => [...sitesKeys.all, "detail", id] as const,
@@ -90,15 +150,52 @@ export const sitesQueryOptions = () =>
   queryOptions({
     queryKey: sitesKeys.list("active"),
     queryFn: async () => {
-      const { data, error } = await listSites({});
+      const { data, error } = await listSites({
+        query: { limit: DEFAULT_SITES_LIMIT },
+      });
       if (error) throw toError(error);
       return data?.items ?? [];
     },
   });
 
 /**
- * List sites, optionally filtered by tags (server-side, GH #230 "rich tags")
- * and/or a client UUID (?clientId=).
+ * Build the `GET /api/v1/sites` query string for one list request.
+ *
+ * Annotated with the GENERATED query type so every parameter name and value is
+ * checked against the contract rather than trusted: a `sort` outside the
+ * contract's enum, which the server answers with a 422, cannot compile.
+ *
+ * `clientId` is the one exception. It is a long-standing parameter the control
+ * plane honours but the OpenAPI document has never described, so it is spread
+ * in (TypeScript applies no excess-property check to spread members) with this
+ * note rather than silently cast. Specifying it is an API-lane change.
+ */
+function buildSitesQuery(
+  view: SitesView,
+  clientId: string | undefined,
+  tags: readonly string[] | undefined,
+  tagsMatch: TagMatchMode,
+  q: string | null,
+  sort: SiteSort | undefined,
+  limit: number,
+): NonNullable<ListSitesData["query"]> {
+  const query: NonNullable<ListSitesData["query"]> = { limit };
+  if (view === "archived") query.state = "archived";
+  if (tags) {
+    query.tags = [...tags];
+    if (tags.length > 1) query.tags_match = tagsMatch;
+  }
+  if (q) query.q = q;
+  if (sort) query.sort = sort;
+  return { ...query, ...(clientId ? { clientId } : {}) };
+}
+
+/**
+ * List sites for the current tenant.
+ *
+ * SERVER-SIDE axes (the request decides which rows come back):
+ *   view/state, clientId, tags + tagsMatch (GH #230), q and sort (GH #349),
+ *   limit.
  *
  * The default ("active") view hides archived sites (the CP omits them unless
  * asked). Pass `view: "archived"` to fetch the archived bucket via
@@ -109,37 +206,25 @@ export function useSites(options?: UseSitesOptions): UseQueryResult<Site[], Erro
   const clientId = options?.clientId || undefined;
   const tags = options?.tags && options.tags.length > 0 ? options.tags : undefined;
   const tagsMatch: TagMatchMode = options?.tagsMatch ?? "any";
+  const q = normalizeQ(options?.q);
+  const sort = options?.sort;
+  const limit = options?.limit ?? DEFAULT_SITES_LIMIT;
   return useQuery({
-    queryKey: sitesKeys.list(view, clientId, tags, tagsMatch),
-    // GH #230 "rich tags" — toggling a tag filter changes the query key (the
-    // filter is now server-side); without this, the table would flash empty
+    queryKey: sitesKeys.list(view, clientId, tags, tagsMatch, {
+      q: q ?? undefined,
+      sort,
+      limit,
+    }),
+    enabled: options?.enabled ?? true,
+    // GH #230 "rich tags" and GH #349 search + order: changing any server-side
+    // axis changes the query key; without this the table would flash empty
     // between the old and new result instead of holding the previous rows
-    // until the new ones land.
+    // until the new ones land. It also keeps `isPending` false across a
+    // keystroke, so the list never drops back to its skeleton mid-search.
     placeholderData: keepPreviousData,
     queryFn: async () => {
-      // The archived view passes `?state=archived`. For views that need extra
-      // params we call the typed `listSites` with the full query object.
-      if (view === "archived") {
-        const query: Record<string, string | string[]> = { state: "archived" };
-        if (clientId) query.clientId = clientId;
-        if (tags) {
-          query.tags = [...tags];
-          if (tags.length > 1) query.tags_match = tagsMatch;
-        }
-        // The client's response-style generics unwrap a responses-map.
-        const { data, error } = await client.get<{ 200: SiteList }>({
-          url: "/api/v1/sites",
-          query,
-        });
-        if (error) throw toError(error);
-        return data?.items ?? [];
-      }
       const { data, error } = await listSites({
-        query: {
-          ...(clientId ? { clientId } : {}),
-          ...(tags ? { tags: [...tags] } : {}),
-          ...(tags && tags.length > 1 ? { tags_match: tagsMatch } : {}),
-        },
+        query: buildSitesQuery(view, clientId, tags, tagsMatch, q, sort, limit),
       });
       if (error) throw toError(error);
       return data?.items ?? [];

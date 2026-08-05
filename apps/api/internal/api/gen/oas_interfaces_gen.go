@@ -821,6 +821,10 @@ type ListSiteVulnerabilitiesRes interface {
 	listSiteVulnerabilitiesRes()
 }
 
+type ListSitesRes interface {
+	listSitesRes()
+}
+
 type ListTrustedDevicesRes interface {
 	listTrustedDevicesRes()
 }

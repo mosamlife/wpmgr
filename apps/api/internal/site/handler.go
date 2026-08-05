@@ -275,6 +275,12 @@ func (h *Handler) list(c *gin.Context) {
 			in.ClientID = &cid
 		}
 	}
+	// GH #349: ?q= free-text search and ?sort= ordering. Both are handed to
+	// the service raw: it trims q (whitespace-only is "no search") and
+	// validates sort against a closed set, 422ing an unknown value. They
+	// compose with every filter above rather than replacing any of them.
+	in.Query = c.Query("q")
+	in.Sort = c.Query("sort")
 	ss, err := h.svc.List(c.Request.Context(), in)
 	if err != nil {
 		httpx.Error(c, err)

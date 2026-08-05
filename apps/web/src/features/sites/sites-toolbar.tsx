@@ -6,6 +6,7 @@ import {
 } from "react";
 import { Link } from "@tanstack/react-router";
 import {
+  ArrowDownUp,
   ChevronDown,
   Download,
   ExternalLink,
@@ -35,10 +36,21 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TagChip } from "@/features/sites/tag-chip";
+import {
+  DEFAULT_SITE_SORT,
+  NEVER_SEEN_HINT,
+  SITE_SORT_LABELS,
+  SITE_SORT_MENU,
+  isSiteSort,
+  siteSortLabel,
+  type SiteSort,
+} from "@/features/sites/sites-sort";
 import { resolveTagDot } from "@/lib/tag-color";
 import { cn } from "@/lib/utils";
 import { dur, ease } from "@/lib/motion-presets";
@@ -136,6 +148,16 @@ export interface SitesToolbarProps {
   activeFilterCount?: number;
   /** Called to clear ALL filters across all axes. */
   onClearAllFilters?: () => void;
+  /**
+   * GH #349. The applied order (server-side). Undefined shows the default,
+   * "Newest first". This is an ORDER, not a filter: it is deliberately absent
+   * from `activeFilterCount` and untouched by "Clear filters", because
+   * clearing a search should not also throw away how the operator asked to
+   * read the list.
+   */
+  sort?: SiteSort;
+  /** Called when a different order is chosen. */
+  onSortChange?: (next: SiteSort) => void;
 
   // ---- P2 view mode wiring --------------------------------------------------
   /** Current view mode (list | grid). */
@@ -235,6 +257,8 @@ function IdleMode({
   agentStatusHint,
   activeFilterCount = 0,
   onClearAllFilters,
+  sort,
+  onSortChange,
   densityState,
   view = "list",
   onViewChange,
@@ -361,8 +385,17 @@ function IdleMode({
         ) : null}
       </div>
 
-      {/* Right cluster: view toggle + density/card-size + select-all-grid + add site */}
+      {/* Right cluster: order + view toggle + density/card-size + select-all-grid + add site */}
       <div className="flex items-center gap-2">
+        {/* GH #349 "Order by". It sits with the presentation controls rather
+            than inside the filter cluster on the left because it does not
+            narrow the list, and because the filter cluster's width swings with
+            the active tag chips, which would move this control around under
+            the operator's cursor. */}
+        {onSortChange ? (
+          <OrderByDropdown sort={sort} onChange={onSortChange} />
+        ) : null}
+
         {/* Grid "Select all (N)" control — only in grid view (table has header checkbox). */}
         {view === "grid" && visibleIds.length > 0 ? (
           <GridSelectAll
@@ -787,6 +820,84 @@ function ClientFilterDropdown({
             </DropdownMenuItem>
           ))
         )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OrderByDropdown: the Sites list order (GH #349)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-select order control, built on the same outline-button + dropdown
+ * idiom as the Client / Status / Agent / Tags filters, with
+ * DropdownMenuRadioGroup instead of checkbox items because exactly one order
+ * is applied at a time.
+ *
+ * The trigger shows the applied order in words ("Newest first"), so the
+ * operator never has to open the menu to find out how the list is sorted.
+ *
+ * The order is applied by the SERVER: it decides which sites come back, not
+ * just how the loaded ones are arranged. Sorting a table column header still
+ * rearranges only the rows already on screen, which is why this control lives
+ * in the toolbar and says so in the menu footer.
+ */
+function OrderByDropdown({
+  sort,
+  onChange,
+}: {
+  sort: SiteSort | undefined;
+  onChange: (next: SiteSort) => void;
+}) {
+  const applied = sort ?? DEFAULT_SITE_SORT;
+  const showsActivityHint = applied === "last_seen" || applied === "-last_seen";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Order sites, currently ${siteSortLabel(sort)}`}
+          className={cn(
+            "h-9 gap-1.5",
+            // Any non-default order is a deliberate choice; mark it the same
+            // way an applied filter is marked.
+            sort && sort !== DEFAULT_SITE_SORT && "border-primary/50 bg-primary/5",
+          )}
+        >
+          <ArrowDownUp aria-hidden="true" className="size-3.5" />
+          {siteSortLabel(sort)}
+          <ChevronDown aria-hidden="true" className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[14rem]" collisionPadding={8}>
+        <DropdownMenuLabel>Order by</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={applied}
+          onValueChange={(next) => {
+            // Radix hands back a bare string; only a value the contract
+            // accepts is allowed through, so an unrecognised order can never
+            // reach the request (the server 422s those rather than falling
+            // back).
+            if (isSiteSort(next)) onChange(next);
+          }}
+        >
+          {SITE_SORT_MENU.map((value) => (
+            <DropdownMenuRadioItem key={value} value={value} className="text-xs">
+              {SITE_SORT_LABELS[value]}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        {showsActivityHint ? (
+          <>
+            <DropdownMenuSeparator />
+            <div className="max-w-[18rem] px-2 pb-1 pt-0.5 text-xs text-muted-foreground">
+              {NEVER_SEEN_HINT}
+            </div>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

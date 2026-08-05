@@ -18831,6 +18831,30 @@ func decodeListSiteVulnerabilitiesParams(args [1]string, argsEscaped bool, r *ht
 type ListSitesParams struct {
 	Limit  OptInt32 `json:",omitempty,omitzero"`
 	Offset OptInt32 `json:",omitempty,omitzero"`
+	// Free-text search (GH #349). Case-insensitive SUBSTRING match against
+	// the site name, the site url, or any of the site's tags (the same
+	// `tags` array this endpoint returns, so any tag an operator can see
+	// on a site is a tag they can find that site by).
+	// Matched literally, not as a pattern: `%` and `_` are ordinary
+	// characters. An empty or whitespace-only value behaves exactly as if
+	// the parameter were absent. No match returns an empty `items` array,
+	// not an error.
+	Q OptString `json:",omitempty,omitzero"`
+	// Ordering (GH #349). A leading `-` means DESCENDING. When omitted the
+	// order is `-created_at`, which is the ordering this endpoint has
+	// always had.
+	// Every ordering is total and stable: it is tiebroken on the site id,
+	// so two sites that share a name (or a created_at) keep a fixed
+	// relative position and `limit`/`offset` paging cannot drop or repeat
+	// a row.
+	// `name` sorts case-insensitively. For `last_seen`, a site that has
+	// never checked in (null last_seen) sorts LAST in BOTH directions: it
+	// stays in the result, and it never occupies the top of a "most
+	// recently seen" list.
+	// An unrecognised value is a 422. It is never silently ignored,
+	// because a dropped sort would show the operator a list ordered
+	// differently from the control they just set.
+	Sort OptListSitesSort `json:",omitempty,omitzero"`
 	// Deprecated alias for `tags` with a single value (any-match semantics). Prefer `tags`.
 	//
 	// Deprecated: schema marks this parameter as deprecated.
@@ -18865,6 +18889,24 @@ func unpackListSitesParams(packed middleware.Parameters) (params ListSitesParams
 		}
 		if v, ok := packed[key]; ok {
 			params.Offset = v.(OptInt32)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "q",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Q = v.(OptString)
+		}
+	}
+	{
+		key := middleware.ParameterKey{
+			Name: "sort",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Sort = v.(OptListSitesSort)
 		}
 	}
 	{
@@ -19055,6 +19097,108 @@ func decodeListSitesParams(args [0]string, argsEscaped bool, r *http.Request) (p
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
 			Name: "offset",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Decode query: q.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "q",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotQVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotQVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Q.SetTo(paramsDotQVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "q",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	// Set default value for query: sort.
+	{
+		val := ListSitesSort("-created_at")
+		params.Sort.SetTo(val)
+	}
+	// Decode query: sort.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotSortVal ListSitesSort
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotSortVal = ListSitesSort(c)
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Sort.SetTo(paramsDotSortVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Sort.Get(); ok {
+					if err := func() error {
+						if err := value.Validate(); err != nil {
+							return err
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "sort",
 			In:   "query",
 			Err:  err,
 		}
