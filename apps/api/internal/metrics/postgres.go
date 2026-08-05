@@ -239,33 +239,137 @@ func appProbedAt(checkedAt time.Time, reason string) any {
 
 var _ RollupWriter = (*pgStore)(nil)
 
+// ---------------------------------------------------------------------------
+// Per-site windowed reads (0.61.125): the same hybrid decomposition the
+// fleet-wide read has used since m99.
+// ---------------------------------------------------------------------------
+//
+// QueryAggregate and QuerySeries below used to scan site_uptime_probes RAW
+// across the whole window, which is what made GET /sites/{siteId}/uptime cost
+// 0.5s to 32.5s (measured, 7 days of Cloud Run httpRequest.latency) against a
+// cold Postgres buffer cache, while GET /uptime/summary on the same page load
+// stayed at 0.13s to 0.28s. The fleet read was rewritten onto the
+// site_uptime_daily rollup in m99; the per-site read predates that work and
+// never got it, so this is the same fix applied to the same window on the same
+// two tables: the rollup serves the complete UTC days in the middle of the
+// window and only the two partial edge days are ever read raw.
+//
+// Both queries below take their window boundaries from fleetUptimeParams,
+// the SAME function QueryFleetUptime uses, deliberately not a second copy of
+// the "which days are complete" math. Two implementations of that question
+// that can disagree is precisely the defect class this decomposition exists to
+// avoid, and it would show up as the per-site card and the fleet card
+// disagreeing about the same site on the same screen.
+//
+// LATENCY SEMANTICS (a deliberate, documented change): the old per-site
+// queries averaged NULLIF(total_ms, 0) over EVERY probe in the window,
+// including DOWN ones. A 5xx or WordPress-fatal-page probe is classified down
+// but still records a real total_ms (see uptime.Prober.Probe: res.TotalMs is
+// filled after the up/down verdict), so those response times used to be folded
+// into the per-site average. The rollup stores sum_latency_ms/latency_samples
+// only for probes that were UP with a non-zero reading, so the average is now
+// "mean response time of successful probes", exactly the definition
+// QueryFleetUptime already reports for the same site on the Sites list and the
+// fleet dashboards. This makes the per-site Uptime card agree with the fleet
+// number instead of quietly computing a different one; it cannot be preserved
+// from the rollup without a new column that would be NULL for all existing
+// history. The uptime PERCENTAGE is untouched: up_checks/total_checks carry
+// exactly the old count(*) FILTER (WHERE up) / count(*) semantics.
+
+// siteAggregateQuery sums the three window parts (see fleetUptimeQuery's doc
+// comment for what each part is and why the decomposition is gap-free and
+// non-overlapping) into a single row for ONE site.
+const siteAggregateQuery = `
+SELECT
+    COALESCE(SUM(parts.up_checks), 0)::bigint       AS up_checks,
+    COALESCE(SUM(parts.total_checks), 0)::bigint    AS total_checks,
+    COALESCE(SUM(parts.sum_latency_ms), 0)          AS sum_latency_ms,
+    COALESCE(SUM(parts.latency_samples), 0)::bigint AS latency_samples
+FROM (
+    -- 1. ROLLUP middle: complete UTC days strictly inside the window.
+    SELECT
+        COALESCE(SUM(up_checks), 0)       AS up_checks,
+        COALESCE(SUM(total_checks), 0)    AS total_checks,
+        COALESCE(SUM(sum_latency_ms), 0)  AS sum_latency_ms,
+        COALESCE(SUM(latency_samples), 0) AS latency_samples
+    FROM site_uptime_daily
+    WHERE site_id = $2 AND tenant_id = $1
+      AND day > $3::date AND day < $4::date
+
+    UNION ALL
+
+    -- 2. RAW boundary tail: in-window slice of the oldest partial day.
+    SELECT
+        count(*) FILTER (WHERE up) AS up_checks,
+        count(*)                   AS total_checks,
+        COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
+        count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
+    FROM site_uptime_probes
+    WHERE site_id = $2 AND tenant_id = $1
+      AND probed_at >= $5::timestamptz AND probed_at < $6::timestamptz
+
+    UNION ALL
+
+    -- 3. RAW today: today's head, read live.
+    SELECT
+        count(*) FILTER (WHERE up) AS up_checks,
+        count(*)                   AS total_checks,
+        COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
+        count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
+    FROM site_uptime_probes
+    WHERE site_id = $2 AND tenant_id = $1
+      AND probed_at >= $7::timestamptz AND probed_at <= $8::timestamptz
+) parts`
+
+// siteWindowArgs builds the eight bound parameters siteAggregateQuery (and the
+// first eight of siteDailySeriesQuery) expect, in order:
+//
+//	$1 tenant_id  $2 site_id
+//	$3 boundaryDay::date        $4 today::date
+//	$5 tailLower  $6 tailUpper  $7 todayLower  $8 now
+//
+// Every value comes from fleetUptimeParams, computed in Go from now.UTC() and
+// bound with an explicit ::date / ::timestamptz cast in the SQL, so the UTC-day
+// boundaries that key site_uptime_daily are identical regardless of the
+// Postgres session's TimeZone GUC (see fleetUptimeQuery's doc comment).
+// retentionCutoff is discarded here: it guards the site_uptime_status
+// latest-probe join, which the per-site path does not use (QueryLatest reads
+// the raw table directly and is already a cheap indexed LIMIT 1).
+func siteWindowArgs(tenantID, siteID uuid.UUID, now time.Time, window time.Duration) []any {
+	boundaryDay, today, tailLower, tailUpper, _, todayLower, nowParam := fleetUptimeParams(now, window)
+	return []any{tenantID, siteID, boundaryDay, today, tailLower, tailUpper, todayLower, nowParam}
+}
+
 // QueryAggregate returns the windowed uptime % and average latency for one
-// site, filtered by tenant_id + site_id.
+// site, filtered by tenant_id + site_id. Served by the m99 rollup for the
+// complete days in the middle of the window and by two bounded raw reads for
+// the two partial edge days; see the block comment above for the full
+// rationale and the one documented semantic change (average latency is now
+// over successful probes only).
 func (s *pgStore) QueryAggregate(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration) (Aggregate, error) {
 	var agg Aggregate
-	since := time.Now().Add(-window)
+	args := siteWindowArgs(tenantID, siteID, time.Now(), window)
 	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `
-SELECT COUNT(*)                                     AS checks,
-       COUNT(*) FILTER (WHERE up)                   AS up_checks,
-       COALESCE(AVG(NULLIF(total_ms, 0))::float8, 0) AS avg_latency
-FROM site_uptime_probes
-WHERE tenant_id = $1 AND site_id = $2 AND probed_at >= $3`,
-			tenantID, siteID, since)
-		var checks, upChecks int64
-		var avgLatency float64
-		if err := row.Scan(&checks, &upChecks, &avgLatency); err != nil {
+		row := tx.QueryRow(ctx, siteAggregateQuery, args...)
+		var upChecks, totalChecks, latencySamples int64
+		var sumLatencyMs float64
+		if err := row.Scan(&upChecks, &totalChecks, &sumLatencyMs, &latencySamples); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
 			return fmt.Errorf("postgres aggregate scan: %w", err)
 		}
-		agg.Checks = uint64(checks)
+		agg.Checks = uint64(totalChecks)
 		agg.UpChecks = uint64(upChecks)
-		if checks > 0 {
-			agg.UptimePct = float64(upChecks) / float64(checks) * 100
+		if totalChecks > 0 {
+			agg.UptimePct = float64(upChecks) / float64(totalChecks) * 100
 		}
-		agg.AvgLatencyMs = avgLatency
+		// sum_latency_ms / NULLIF(latency_samples, 0), done in Go exactly as
+		// QueryFleetUptime does it, so both read paths derive the average from
+		// the rollup counters the same way.
+		if latencySamples > 0 {
+			agg.AvgLatencyMs = sumLatencyMs / float64(latencySamples)
+		}
 		return nil
 	})
 	return agg, err
@@ -610,11 +714,165 @@ LIMIT $5`, tenantID, siteID, from, to, limitN)
 	return out, err
 }
 
+// dailySeriesMinWindow is the EXACT threshold at which QuerySeries switches
+// from raw per-minute probe buckets to one point per UTC day drawn from the
+// site_uptime_daily rollup: a window of 24 hours OR MORE takes the daily path,
+// anything shorter keeps reading raw probes unchanged.
+//
+// Why exactly 24h, and not "7d" or "whatever the endpoint happens to ask for":
+//
+//  1. It is the smallest window a one-point-per-day series can describe with
+//     more than a single point. Below it the daily path would collapse a whole
+//     chart to one bar, and minute granularity is the entire point of a 1h or
+//     24h view.
+//  2. It is exactly the window length at or above which the decomposition is
+//     GUARANTEED to place boundaryDay strictly before today: with
+//     now = today + t (0 <= t < 24h) and window >= 24h, tailLower = now-window
+//     <= today + t - 24h < today, so boundaryDay <= today - 24h. That makes
+//     the boundary-tail day, the rollup middle days and today three DISJOINT
+//     sets of days, which is what lets each day contribute exactly one point
+//     and be counted exactly once. Below 24h that guarantee does not hold
+//     (boundaryDay can equal today), so the daily path is not merely
+//     low-resolution there, it is not well formed.
+//
+// The visible consequence at the sizes the product actually asks for: a 30d
+// chart goes from ~100 buckets of 7.2h to ~31 daily points, and a 90d chart
+// from ~100 buckets of 21.6h to ~91 daily points. That is a deliberate
+// improvement, not a compromise: the consuming sparkline is a fixed-height
+// inline SVG, ~100 buckets were never individually distinguishable in it, and
+// the report aggregator that also consumes this series (report.buildUptimeSection)
+// immediately regroups the points into daily buckets anyway.
+const dailySeriesMinWindow = 24 * time.Hour
+
+// siteDailySeriesQuery returns ONE row per UTC day covered by the window,
+// using the same three-part decomposition as siteAggregateQuery: the rollup
+// supplies every complete day in the middle, and the two partial edge days
+// (the oldest, in-window slice only, and today, read live) are aggregated from
+// raw probes and labelled with their own UTC midnight.
+//
+// $9/$10 are the SAME instants as $3/$4 (built by appending args[2], args[3] in
+// querySeriesDaily, so a bucket label can never drift from the predicate that
+// selects the rows it labels) but bound as timestamptz rather than date: a
+// single parameter cannot be used as both $n::date and $n::timestamptz, and
+// the bucket column must be timestamptz to union with nothing TZ-dependent.
+// The rollup's own date column is converted with an explicit AT TIME ZONE
+// 'UTC' for the same reason every other boundary here is computed in UTC: a
+// bare day::timestamptz would be resolved against the session's TimeZone GUC
+// and shift the bucket by the server's offset on a non-UTC self-host.
+//
+// Days with no probes produce no point, matching the raw path's GROUP BY
+// (which can only emit a bucket that has rows), hence the total_checks > 0
+// filter, which also drops the two edge parts when their bounded range is
+// empty (count(*) over an empty range still returns a row, with 0).
+const siteDailySeriesQuery = `
+SELECT bucket, total_checks, up_checks, sum_latency_ms, latency_samples
+FROM (
+    -- 1. ROLLUP middle: one point per complete UTC day inside the window.
+    SELECT
+        (day::timestamp AT TIME ZONE 'UTC') AS bucket,
+        total_checks::bigint                AS total_checks,
+        up_checks::bigint                   AS up_checks,
+        sum_latency_ms                      AS sum_latency_ms,
+        latency_samples::bigint             AS latency_samples
+    FROM site_uptime_daily
+    WHERE site_id = $2 AND tenant_id = $1
+      AND day > $3::date AND day < $4::date
+
+    UNION ALL
+
+    -- 2. RAW boundary tail: in-window slice of the oldest partial day.
+    SELECT
+        $9::timestamptz            AS bucket,
+        count(*)                   AS total_checks,
+        count(*) FILTER (WHERE up) AS up_checks,
+        COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
+        count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
+    FROM site_uptime_probes
+    WHERE site_id = $2 AND tenant_id = $1
+      AND probed_at >= $5::timestamptz AND probed_at < $6::timestamptz
+
+    UNION ALL
+
+    -- 3. RAW today: today's head, read live.
+    SELECT
+        $10::timestamptz           AS bucket,
+        count(*)                   AS total_checks,
+        count(*) FILTER (WHERE up) AS up_checks,
+        COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
+        count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
+    FROM site_uptime_probes
+    WHERE site_id = $2 AND tenant_id = $1
+      AND probed_at >= $7::timestamptz AND probed_at <= $8::timestamptz
+) points
+WHERE total_checks > 0
+ORDER BY bucket ASC`
+
 // QuerySeries returns a downsampled per-bucket series for one site over the
-// window. Buckets are date_trunc-aligned: width = window/buckets rounded to
-// whole seconds (min 60s). We use to_timestamp(floor(extract(epoch))/W*W) to
-// avoid date_trunc's fixed-width restriction.
+// window.
+//
+// Windows of dailySeriesMinWindow (24h) or more are served at DAILY
+// granularity from the m99 rollup plus today's live tail (see
+// siteDailySeriesQuery); the buckets argument is ignored there, because the
+// bucket width is fixed by the rollup's own grain. Shorter windows keep the
+// original raw-probe path unchanged, where minute granularity is the point.
+//
+// The Point shape is identical on both paths, so the API contract does not
+// change; the one difference is AvgLatencyMs, which on the daily path is the
+// mean over SUCCESSFUL probes only (see the semantics note above
+// siteAggregateQuery).
 func (s *pgStore) QuerySeries(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, buckets int) ([]Point, error) {
+	if window >= dailySeriesMinWindow {
+		return s.querySeriesDaily(ctx, tenantID, siteID, window)
+	}
+	return s.querySeriesRaw(ctx, tenantID, siteID, window, buckets)
+}
+
+// querySeriesDaily serves a >= 24h window from the rollup, one point per UTC
+// day, with the two partial edge days read raw so they cover exactly the
+// in-window slice rather than a whole day.
+func (s *pgStore) querySeriesDaily(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration) ([]Point, error) {
+	args := siteWindowArgs(tenantID, siteID, time.Now(), window)
+	// $9/$10: the boundary day and today again, as timestamptz bucket labels.
+	args = append(args, args[2], args[3])
+
+	var out []Point
+	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, siteDailySeriesQuery, args...)
+		if err != nil {
+			return fmt.Errorf("postgres daily series query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				bucket                           time.Time
+				checks, upChecks, latencySamples int64
+				sumLatencyMs                     float64
+			)
+			if err := rows.Scan(&bucket, &checks, &upChecks, &sumLatencyMs, &latencySamples); err != nil {
+				return fmt.Errorf("postgres daily series scan: %w", err)
+			}
+			p := Point{
+				Bucket:   bucket,
+				Checks:   uint64(checks),
+				UpChecks: uint64(upChecks),
+			}
+			// sum_latency_ms / NULLIF(latency_samples, 0): same derivation as
+			// QueryAggregate and QueryFleetUptime.
+			if latencySamples > 0 {
+				p.AvgLatencyMs = sumLatencyMs / float64(latencySamples)
+			}
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// querySeriesRaw is the original sub-day path, unchanged: buckets are
+// epoch-floor aligned, width = window/buckets rounded to whole seconds
+// (min 60s). We use to_timestamp(floor(extract(epoch))/W*W) to avoid
+// date_trunc's fixed-width restriction.
+func (s *pgStore) querySeriesRaw(ctx context.Context, tenantID, siteID uuid.UUID, window time.Duration, buckets int) ([]Point, error) {
 	if buckets <= 0 {
 		buckets = 100
 	}

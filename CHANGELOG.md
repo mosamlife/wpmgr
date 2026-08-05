@@ -8,6 +8,20 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.125] - 2026-08-05
+
+### Fixed
+
+- A site's Uptime card could take up to thirty seconds to load the first time it was opened after a quiet period, and then load in half a second on every attempt after that. Measured over a week of production requests, the same page's fleet summary answered in a fifth of a second every single time, including on the page loads where the per-site card took four seconds or more. The cause was not the amount of history, an absent index, a busy database or a cold container: it was that the per-site view was still adding up every individual probe in the window by hand, about forty three thousand of them for a thirty day view, every time it was asked.
+- The fleet-wide view stopped doing that some time ago. It reads a running per-day total that is kept up to date as each probe lands, and only looks at individual probes for the two part days at the very edges of the window, which is at most a couple of days' worth. The per-site view predates that work and never received it. It does now, using the same code to decide which days are complete rather than a second copy that could quietly disagree with the first, so the number on a site's Uptime card and the number next to that same site in the fleet views cannot drift apart.
+- The reported uptime percentage is unchanged, to the decimal. A day that falls only partly inside the window is still counted only for the part that is inside it, so an outage that started an hour before a thirty day window opens still counts for exactly the minutes that fall within it, not for the whole day and not for none of it.
+- The three separate lookups behind the card, the totals, the latest check and the chart, now happen at the same time as each other instead of one after another. They never depended on each other's results, so waiting for them in turn was simply waiting three times.
+
+### Changed
+
+- The uptime chart on a site now draws one point per day for any window of a day or longer, rather than a hundred points of whatever width divides the window evenly. For a thirty day view that is about thirty points instead of a hundred points seven hours wide each, which is the same information at a resolution the chart can actually show: at the size it is drawn, a hundred points were never individually distinguishable. Windows shorter than a day are untouched and still show every minute, because that is the entire purpose of looking at an hour.
+- The average response time shown on a site's Uptime card is now the average across successful checks only, which is what the Sites list and the fleet dashboards have always shown for the same site. It previously also included the response times of failed checks, so a site with a spell of server errors had two different average response times in the product depending on which screen it was read from. The uptime percentage was never affected by this and is not affected now.
+
 ## [0.61.124] - 2026-08-05
 
 ### Added
