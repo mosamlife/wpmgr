@@ -17291,6 +17291,10 @@ func (s *AgentMirrorStatus) encodeFields(e *jx.Encoder) {
 		e.Int32(s.StaleAfterSeconds)
 	}
 	{
+		e.FieldStart("can_check_now")
+		e.Bool(s.CanCheckNow)
+	}
+	{
 		e.FieldStart("last_success_at")
 		s.LastSuccessAt.Encode(e, json.EncodeDateTime)
 	}
@@ -17328,19 +17332,20 @@ func (s *AgentMirrorStatus) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAgentMirrorStatus = [12]string{
+var jsonFieldsNameOfAgentMirrorStatus = [13]string{
 	0:  "enabled",
 	1:  "status",
 	2:  "stale_after_seconds",
-	3:  "last_success_at",
-	4:  "last_success_outcome",
-	5:  "last_success_version",
-	6:  "last_attempt_at",
-	7:  "last_attempt_outcome",
-	8:  "last_attempt_detail",
-	9:  "last_attempt_trigger",
-	10: "last_mirrored_at",
-	11: "last_mirrored_version",
+	3:  "can_check_now",
+	4:  "last_success_at",
+	5:  "last_success_outcome",
+	6:  "last_success_version",
+	7:  "last_attempt_at",
+	8:  "last_attempt_outcome",
+	9:  "last_attempt_detail",
+	10: "last_attempt_trigger",
+	11: "last_mirrored_at",
+	12: "last_mirrored_version",
 }
 
 // Decode decodes AgentMirrorStatus from json.
@@ -17386,8 +17391,20 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"stale_after_seconds\"")
 			}
-		case "last_success_at":
+		case "can_check_now":
 			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Bool()
+				s.CanCheckNow = bool(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"can_check_now\"")
+			}
+		case "last_success_at":
+			requiredBitSet[0] |= 1 << 4
 			if err := func() error {
 				if err := s.LastSuccessAt.Decode(d, json.DecodeDateTime); err != nil {
 					return err
@@ -17397,7 +17414,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_success_at\"")
 			}
 		case "last_success_outcome":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				if err := s.LastSuccessOutcome.Decode(d); err != nil {
 					return err
@@ -17407,7 +17424,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_success_outcome\"")
 			}
 		case "last_success_version":
-			requiredBitSet[0] |= 1 << 5
+			requiredBitSet[0] |= 1 << 6
 			if err := func() error {
 				if err := s.LastSuccessVersion.Decode(d); err != nil {
 					return err
@@ -17417,7 +17434,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_success_version\"")
 			}
 		case "last_attempt_at":
-			requiredBitSet[0] |= 1 << 6
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
 				if err := s.LastAttemptAt.Decode(d, json.DecodeDateTime); err != nil {
 					return err
@@ -17427,7 +17444,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_attempt_at\"")
 			}
 		case "last_attempt_outcome":
-			requiredBitSet[0] |= 1 << 7
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
 				if err := s.LastAttemptOutcome.Decode(d); err != nil {
 					return err
@@ -17437,7 +17454,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_attempt_outcome\"")
 			}
 		case "last_attempt_detail":
-			requiredBitSet[1] |= 1 << 0
+			requiredBitSet[1] |= 1 << 1
 			if err := func() error {
 				if err := s.LastAttemptDetail.Decode(d); err != nil {
 					return err
@@ -17447,7 +17464,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_attempt_detail\"")
 			}
 		case "last_attempt_trigger":
-			requiredBitSet[1] |= 1 << 1
+			requiredBitSet[1] |= 1 << 2
 			if err := func() error {
 				if err := s.LastAttemptTrigger.Decode(d); err != nil {
 					return err
@@ -17457,7 +17474,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_attempt_trigger\"")
 			}
 		case "last_mirrored_at":
-			requiredBitSet[1] |= 1 << 2
+			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
 				if err := s.LastMirroredAt.Decode(d, json.DecodeDateTime); err != nil {
 					return err
@@ -17467,7 +17484,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"last_mirrored_at\"")
 			}
 		case "last_mirrored_version":
-			requiredBitSet[1] |= 1 << 3
+			requiredBitSet[1] |= 1 << 4
 			if err := func() error {
 				if err := s.LastMirroredVersion.Decode(d); err != nil {
 					return err
@@ -17487,7 +17504,7 @@ func (s *AgentMirrorStatus) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b11111111,
-		0b00001111,
+		0b00011111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

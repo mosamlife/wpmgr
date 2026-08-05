@@ -139,6 +139,11 @@ export interface SitesTableProps {
    * HEADER's popover (AgentColumnFleetNote): it is a property of the
    * install-wide comparison, not of any row, so it is never passed to the
    * per-row AgentStatusChip. Omit while the rollup is loading.
+   *
+   * It also carries `can_check_now`, the control plane's answer for THIS
+   * viewer, which is what reveals the popover's "Check now" action. That is a
+   * property of the caller rather than of a row too, so it rides the same
+   * single object rather than being resolved separately.
    */
   agentReferenceCheck?: AgentMirrorStatus;
   /** Optional click handler for the inline "Log in" (Zap) action. */

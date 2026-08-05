@@ -2,11 +2,18 @@
 // Endpoints: GET /api/v1/agent/latest, GET /api/v1/fleet/agents.
 //
 // The manual "check now" trigger for the upstream agent-release mirror
-// (GH #322, POST /api/v1/admin/agent-mirror/check) is a superadmin,
-// install-level admin-console action, not a tenant-scoped fleet read; its
-// hook lives in features/admin/use-admin-agent-mirror.ts, alongside the
-// admin console page that renders it
-// (routes/_authed/admin/agent-mirror.tsx).
+// (GH #322, POST /api/v1/admin/agent-mirror/check) is an install-level
+// action, not a tenant-scoped fleet read, so its hook lives in
+// features/admin/use-admin-agent-mirror.ts next to the endpoint's own admin
+// prefix. It now has two renderers: the admin console page
+// (routes/_authed/admin/agent-mirror.tsx) and the Sites page Agent column
+// popover (features/sites/agent-column-header.tsx).
+//
+// WHO SEES THE TRIGGER IS DECIDED BY THIS QUERY'S OWN RESPONSE, not by a
+// role check in the browser: FleetAgentVersions.agent_mirror.can_check_now is
+// the control plane's answer for the calling viewer, computed by the same
+// code that gates the endpoint. Reading it from here rather than inferring it
+// locally is what keeps the button and the 403 in agreement.
 
 import {
   useQuery,
