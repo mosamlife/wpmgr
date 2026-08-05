@@ -12171,7 +12171,7 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 										switch method {
 										case "POST":
 											r.name = CheckAgentMirrorNowOperation
-											r.summary = "Check the upstream agent release now (superadmin)"
+											r.summary = "Check the upstream agent release now (superadmin, or the owner of a single-organisation install)"
 											r.operationID = "checkAgentMirrorNow"
 											r.operationGroup = ""
 											r.pathPattern = "/api/v1/admin/agent-mirror/check"

@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.123] - 2026-08-05
+
+### Changed
+
+- On an install with exactly one organisation, the owner of that organisation can now use "Check now" for the agent release reference (Admin > Agent mirror) without being made a superadmin first. Reported by a self-hoster who had to set `WPMGR_SUPERADMIN_EMAILS` and restart the control plane to click what is, for them, a monthly refresh of their own fleet's data, and then found that the seeding only ever adds the flag and never removes it, so getting back out again meant an `UPDATE` against the users table and a second restart. The permission on this action exists so that one organisation cannot spend another organisation's share of the install's shared, unauthenticated GitHub request budget. On an install with exactly one organisation there is no other organisation for that to protect, so what was left was the ceremony without the reason.
+- The owner does not become a superadmin as a result. No environment variable, no restart, no flag written anywhere, and none of the side effects: every other admin action still refuses them, including the vulnerability feed sync, which stays superadmin only, and they are not redirected away from the Sites page the way a real superadmin is. This grants one action and nothing else.
+- Nothing changes on an install with more than one organisation, which is every hosted account: the action stays superadmin only there, for exactly the reason it always has. The organisation count is read fresh on every request and is never cached, so creating a second organisation closes this path again on the very next call, with no migration to run and nothing to clean up.
+- An organisation that has been deleted but is still inside its restore window does not count towards the total. Nobody can act as one: it is hidden from the organisation switcher, its API keys stop working, and its members cannot switch into it, so it has no share of the budget to protect. Restoring it makes the install a two-organisation install again and closes the path immediately.
+- Only the owner role passes. An admin, operator or viewer in that single organisation is refused, as is an API key, including one belonging to the owner, because this is an install-level action and the audit record should name a person. A refusal reads identically whichever way it was reached, so it cannot be used to work out how many organisations an install has.
+
 ## [0.61.122] - 2026-08-05
 
 ### Fixed

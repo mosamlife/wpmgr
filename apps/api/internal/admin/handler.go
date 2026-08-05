@@ -17,6 +17,7 @@ import (
 type Handler struct {
 	svc          *Service
 	pool         *db.Pool
+	gate         adminGateStore // reads the two facts the route gates need; see gate.go
 	auditRec     *audit.Recorder
 	vulnFeedH    *vulnFeedAdminHandler    // wired via SetVulnFeed; nil until wired
 	agentMirrorH *agentMirrorAdminHandler // wired via SetAgentMirror; nil until wired
@@ -24,7 +25,7 @@ type Handler struct {
 
 // NewHandler builds an admin Handler.
 func NewHandler(svc *Service, pool *db.Pool) *Handler {
-	return &Handler{svc: svc, pool: pool}
+	return &Handler{svc: svc, pool: pool, gate: newPoolGateStore(pool)}
 }
 
 // SetAuditRecorder wires the audit recorder into the handler. Called once at boot.
@@ -32,8 +33,12 @@ func (h *Handler) SetAuditRecorder(rec *audit.Recorder) { h.auditRec = rec }
 
 // Register mounts the admin routes on the auth-gated (not tenant-gated)
 // v1Auth group. The requireSuperadmin middleware gates the entire sub-group.
+//
+// One route, POST /admin/agent-mirror/check, carries a WIDER gate and is
+// therefore mounted on its own group at the bottom of this function rather
+// than on g. Everything mounted on g below is superadmin-only, unchanged.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/admin", requireSuperadmin(h.pool))
+	g := r.Group("/admin", requireSuperadmin(h.gate))
 	g.GET("/stats", h.stats)
 	g.GET("/users", h.listUsers)
 	g.DELETE("/users/:userId", h.deleteUser)
@@ -66,8 +71,19 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	}
 	// GH #322: manual "check now" for the upstream agent-release mirror
 	// (optional; wired via SetAgentMirror after boot).
+	//
+	// This ONE route has a wider gate than the rest of /admin: superadmin, OR
+	// the owner of the only live organisation on this install (see
+	// requireSuperadminOrSoleTenantOwner in gate.go for why, and for what it
+	// deliberately does not grant). Gin composes middleware with AND, not OR,
+	// so the route cannot be mounted on g above and then widened per-route:
+	// g's requireSuperadmin would refuse the owner before the wider gate ever
+	// ran. It gets its own group carrying only the wider gate, and nothing
+	// else is ever mounted on that group, so no other admin route can pick the
+	// wider path up by accident.
 	if h.agentMirrorH != nil {
-		g.POST("/agent-mirror/check", h.agentMirrorCheck)
+		wide := r.Group("/admin", requireSuperadminOrSoleTenantOwner(h.gate))
+		wide.POST("/agent-mirror/check", h.agentMirrorCheck)
 	}
 }
 
@@ -202,31 +218,6 @@ func (h *Handler) userSites(c *gin.Context) {
 		"user_id": userID,
 		"sites":   items,
 	})
-}
-
-// requireSuperadmin is a Gin middleware that returns 403 unless the
-// authenticated principal has is_superadmin=true. It does a targeted
-// single-column DB read (no joins) against the users table, which has no RLS,
-// so it runs on the bare pool without any tenant context.
-func requireSuperadmin(pool *db.Pool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		p, ok := domain.PrincipalFromContext(c.Request.Context())
-		if !ok || p.Type != domain.PrincipalUser {
-			httpx.Error(c, domain.Forbidden("superadmin_required", "superadmin access required"))
-			c.Abort()
-			return
-		}
-		var isSA bool
-		err := pool.QueryRow(c.Request.Context(),
-			`SELECT is_superadmin FROM users WHERE id = $1`, p.UserID,
-		).Scan(&isSA)
-		if err != nil || !isSA {
-			httpx.Error(c, domain.Forbidden("superadmin_required", "superadmin access required"))
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
 }
 
 func (h *Handler) stats(c *gin.Context) {

@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.123",
+    date: "2026-08-05",
+    summary:
+      "On a single-organisation install, the owner can now check the agent release reference without being made a superadmin. Multi-organisation installs are unchanged.",
+    items: [
+      {
+        tag: "Changed",
+        text: "On an install with exactly one organisation, the owner of that organisation can now use \"Check now\" for the agent release reference (Admin > Agent mirror) without being made a superadmin first. Reported by a self-hoster who had to set WPMGR_SUPERADMIN_EMAILS and restart the control plane to click what is, for them, a monthly refresh of their own fleet's data, then found the seeding only ever adds the flag and never removes it. The permission exists so one organisation cannot spend another organisation's share of the install's shared, unauthenticated GitHub request budget, and on an install with exactly one organisation there is no other organisation for that to protect.",
+      },
+      {
+        tag: "Changed",
+        text: "The owner does not become a superadmin as a result. No environment variable, no restart, no flag written anywhere, and none of the side effects: every other admin action still refuses them, including the vulnerability feed sync, and they are not redirected away from the Sites page the way a real superadmin is. Only the owner role passes; an admin, operator or viewer in that organisation is refused, as is an API key.",
+      },
+      {
+        tag: "Changed",
+        text: "Nothing changes on an install with more than one organisation, which is every hosted account: the action stays superadmin only there. The organisation count is read fresh on every request and never cached, so creating a second organisation closes this path again on the very next call. An organisation that has been deleted but is still inside its restore window does not count towards the total, because nobody can act as one; restoring it closes the path immediately.",
+      },
+    ],
+  },
+  {
     version: "0.61.122",
     date: "2026-08-05",
     summary:
