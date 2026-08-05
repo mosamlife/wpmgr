@@ -4,8 +4,8 @@ import { checkAgentMirrorNow, type ApiError } from "@wpmgr/api";
 import { toast } from "@/components/toast";
 import { toError } from "@/features/auth/use-auth";
 
-// GH #322: superadmin, install-level manual trigger for the upstream
-// agent-release mirror.
+// GH #322: install-level manual trigger for the upstream agent-release
+// mirror.
 //
 // POST /api/v1/admin/agent-mirror/check is a generated SDK operation
 // (checkAgentMirrorNow, from @wpmgr/api), so the URL, the 202 body shape,
@@ -15,14 +15,30 @@ import { toError } from "@/features/auth/use-auth";
 // Deliberately install-level, not tenant-scoped (internal/admin/agent_
 // mirror.go: the mirror is ONE PER INSTALL, fetches one public GitHub
 // release, and spends this install's SHARED unauthenticated GitHub request
-// budget), so this hook lives here, next to the admin console page that
-// renders it (routes/_authed/admin/agent-mirror.tsx), not in
-// features/fleet (the tenant-scoped fleet rollup).
+// budget), so this hook lives under the same /admin prefix its endpoint does,
+// not in features/fleet (the tenant-scoped fleet rollup).
+//
+// IT IS NO LONGER SUPERADMIN ONLY, and it no longer has one renderer. The
+// endpoint also admits the owner of the only live organisation on an install
+// (the single-tenant self-hosted case, where the multi-tenant protection the
+// gate exists for has no other tenant to protect), so this hook is shared by:
+//
+//	routes/_authed/admin/agent-mirror.tsx       the admin console page
+//	features/sites/agent-column-header.tsx      the Sites page Agent column popover
+//
+// Shared rather than reimplemented on purpose. The three ordinary outcomes
+// below are the whole vocabulary of this action, and two surfaces answering
+// the same 409 differently would be a worse bug than either answer.
 //
 // None of the three ordinary outcomes (queued / already running / rate
 // limited) are failures. In particular a 429 must NEVER read as an error:
 // it is the mirror truthfully reporting that nothing was checked yet, which
 // is the entire point of GH #322.
+//
+// Neither renderer decides for itself who may click. The Sites popover reads
+// FleetAgentVersions.agent_mirror.can_check_now, which the control plane
+// computes with the same code that gates the endpoint, so the button and the
+// 403 can never disagree.
 
 export type CheckAgentMirrorOutcome =
   | { kind: "queued"; message: string }

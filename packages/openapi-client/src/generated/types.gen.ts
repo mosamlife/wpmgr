@@ -6986,8 +6986,9 @@ export type FleetAgentVersions = {
 };
 
 /**
- * Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream, WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps agent-releases/latest.json, and therefore latest_version, up to date (GH #322).
- * This object describes the MIRROR JOB, never the reference version itself. When reference_source is "fleet" or "none" there is no published reference, and these timestamps say nothing about latest_version. When enabled is false there is no mirror at all: on the hosted service the release pipeline writes the manifest directly, so every field here is null and no freshness age should be shown to a user.
+ * Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream, WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps agent-releases/latest.json, and therefore latest_version, up to date (GH #322), together with one capability: whether the CALLING VIEWER may trigger a check on that mirror right now (can_check_now).
+ * Every field except can_check_now describes the MIRROR JOB, never the reference version itself. When reference_source is "fleet" or "none" there is no published reference, and these timestamps say nothing about latest_version. When enabled is false there is no mirror at all: on the hosted service the release pipeline writes the manifest directly, so every timestamp here is null, no freshness age should be shown to a user, and can_check_now is false for everyone.
+ * can_check_now is the one field that is a property of the CALLER rather than of the install, so it is not cacheable across users: two people looking at the same fleet can legitimately receive different values.
  *
  */
 export type AgentMirrorStatus = {
@@ -7012,6 +7013,13 @@ export type AgentMirrorStatus = {
    *
    */
   stale_after_seconds: number;
+  /**
+   * Whether the CALLING VIEWER may trigger a mirror check on this install right now, i.e. whether POST /api/v1/admin/agent-mirror/check would admit this caller rather than answer 403. The dashboard renders its "Check now" action in the Sites page Agent column popover exactly when this is true, so an operator is never offered a button that refuses them, and the operator who may act is never left without one.
+   * The control plane computes this from the SAME decision the endpoint's own gate runs, not a second copy of the rule: superadmin (users.is_superadmin), OR the owner of the only live organisation on this install (GH #322, the single-tenant self-hosted case, where the multi-tenant protection the gate exists for has no other tenant to protect). An API-key principal is always false, since this is an install-level action against a shared upstream request budget and the audit record wants a human.
+   * False whenever enabled is false: no caller may trigger a run that does not exist. False for every non-superadmin on an install with more than one live organisation, which leaves the hosted, multi-tenant case exactly as it was. A second organisation appearing closes the path again on the very next request, because nothing about this answer is cached.
+   *
+   */
+  can_check_now: boolean;
   /**
    * When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago must never be reported as "checked ten minutes ago".
    *

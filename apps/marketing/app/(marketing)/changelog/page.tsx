@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.124",
+    date: "2026-08-05",
+    summary:
+      "\"Check now\" for the agent release reference is now on the Sites page, under the freshness text, for the viewers who may actually use it. Hosted multi-organisation installs are unchanged.",
+    items: [
+      {
+        tag: "Added",
+        text: "\"Check now\" for the agent release reference is now in the Agent column popover on the Sites page, directly under the freshness text, where the reporter asked for it. Reading \"may be stale, last confirmed 14h ago\" is exactly the moment an operator wants to act, and until now acting meant leaving the page for the admin console. The previous release granted the permission to the owner of a single-organisation install but left the only button behind a console that same owner cannot open, so the feature was unreachable for the person it was built for.",
+      },
+      {
+        tag: "Added",
+        text: "The button appears only for a viewer who may actually use it, and the dashboard does not work that out for itself. The fleet agent response now carries the control plane's own answer for the asking viewer, computed by the same code that decides whether the endpoint would accept the request. There is one decision, so a button that always refuses and a permission nobody is offered are both impossible rather than merely unlikely.",
+      },
+      {
+        tag: "Added",
+        text: "Nothing appears on an install with more than one organisation, which is every hosted account: the answer is false there for everyone except a superadmin, and a superadmin is redirected away from the Sites page anyway, so the admin console remains their route to the same action. The answer is also false whenever release mirroring is switched off, since there is no run to trigger at all then.",
+      },
+      {
+        tag: "Added",
+        text: "The three outcomes read the same here as in the admin console, because both use the same code. Queued is a success, and neither \"a check is already running\" nor \"the mirror must wait before its next request\" is shown as an error: being skipped by the thirty minute spacing is the system working as designed. The button also does not claim the check has happened, because the control plane answers that a run was queued, not that anything was confirmed.",
+      },
+    ],
+  },
+  {
     version: "0.61.123",
     date: "2026-08-05",
     summary:

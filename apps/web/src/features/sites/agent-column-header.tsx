@@ -1,11 +1,21 @@
-import { AlertTriangle, Info } from "lucide-react";
+import { AlertTriangle, Info, RefreshCw } from "lucide-react";
 import type { AgentMirrorStatus, FleetAgentVersions } from "@wpmgr/api";
 
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+// The manual trigger's mutation, reused verbatim from the admin console page
+// that already renders it (routes/_authed/admin/agent-mirror.tsx). It lives in
+// features/admin because the endpoint it calls is POST /api/v1/admin/agent-
+// mirror/check, and it is shared rather than reimplemented so that the two
+// surfaces cannot drift into two vocabularies for the same three outcomes: 202
+// queued is a success toast, 409 already running and 429 rate limited are INFO
+// (being skipped by the 30 minute spacing is the system working as designed,
+// not a failure), and everything else is a real error.
+import { useCheckAgentMirrorNow } from "@/features/admin/use-admin-agent-mirror";
 import { cn } from "@/lib/utils";
 
 import { describeReferenceCheck } from "./agent-reference-check";
@@ -39,13 +49,29 @@ export const AGENT_FLEET_NOTE_LABEL = "About the Agent column comparison";
 // where that signal lives: see agent-reference-check.ts for the exact copy
 // per state.
 //
-// This is an INFORMATION surface only. Triggering an immediate mirror check
-// is a superadmin, install-level operation (POST /api/v1/admin/agent-mirror
-// /check), and lives in the admin console
-// (routes/_authed/admin/agent-mirror.tsx), not here: a superadmin cannot
-// open the tenant-scoped Sites page at all (see routes/_authed.tsx's
-// isSuperadminAllowedPath guard), so a trigger on this page would be
-// reachable by no one who could ever use it.
+// It also carries the manual "Check now" trigger, but only for a viewer the
+// control plane says may actually use it (agent_mirror.can_check_now).
+//
+// This popover used to be an information surface only, and the reason given
+// here was that triggering a check is a superadmin operation while a
+// superadmin cannot open the tenant-scoped Sites page at all (see
+// routes/_authed.tsx's isSuperadminAllowedPath guard), so a button here would
+// have been reachable by nobody who could use it. THAT REASONING NO LONGER
+// HOLDS for the case it now serves. The endpoint admits the owner of the only
+// live organisation on an install as well as a superadmin, and an ordinary
+// owner is never redirected off this page. The reporter asked for it exactly
+// here, and they are right: reading "may be stale, last confirmed 14h ago" is
+// the moment an operator wants to act, so the action sits with the
+// information rather than a navigation away from it.
+//
+// Two things that did NOT change. A superadmin still cannot see this button,
+// because they still cannot open this page, so the admin console remains
+// their route to the same action. And on any install with more than one live
+// organisation can_check_now is false for every non-superadmin, so nothing
+// appears here on the hosted service. The visibility rule is never guessed
+// from a role in the browser: it is the server's own answer, computed by the
+// same code that gates the endpoint, so this button cannot be shown to
+// someone who would receive a 403.
 //
 // Deliberately does NOT change the per-site "Current" badge. That badge's
 // claim ("this site matches the reference") stays true regardless of the
@@ -71,6 +97,10 @@ export interface AgentColumnFleetNoteProps {
    * guessed or empty value (see describeReferenceCheck's own doc for the
    * full state table, including why a hosted/direct reference renders
    * nothing here).
+   *
+   * Its `can_check_now` is what reveals the "Check now" action below. That
+   * boolean is the control plane's own answer for THIS viewer, so it is read
+   * verbatim and never combined with a locally guessed role.
    */
   referenceCheck?: AgentMirrorStatus;
   className?: string;
@@ -84,7 +114,17 @@ export function AgentColumnFleetNote({
 }: AgentColumnFleetNoteProps) {
   const showFleetNote = referenceSource === "fleet";
   const checkMessage = describeReferenceCheck(referenceCheck, referenceSource);
-  if (!showFleetNote && !checkMessage) return null;
+  // === true, not a truthiness check: the generated type is a plain boolean,
+  // but an older control plane that predates the field sends nothing at all,
+  // and "absent" must read as "not permitted" rather than reveal a button
+  // whose endpoint would refuse it.
+  const canCheckNow = referenceCheck?.can_check_now === true;
+  // canCheckNow is part of the condition rather than assumed to imply
+  // checkMessage. The server only sets it while the mirror is enabled, which
+  // is also the condition under which describeReferenceCheck always returns a
+  // message, so the two agree today; keeping it explicit means a future change
+  // to either one cannot silently hide the action.
+  if (!showFleetNote && !checkMessage && !canCheckNow) return null;
 
   const warn = checkMessage?.tone === "warn";
   const Icon = warn ? AlertTriangle : Info;
@@ -130,14 +170,14 @@ export function AgentColumnFleetNote({
           </div>
         ) : null}
 
-        {checkMessage ? (
+        {checkMessage || canCheckNow ? (
           <div
             className={cn(
               "space-y-1",
               showFleetNote && "border-t border-[var(--color-border)] pt-3",
             )}
           >
-            {checkMessage.lead ? (
+            {checkMessage?.lead ? (
               <p className="leading-relaxed text-[var(--color-muted-foreground)]">
                 {checkMessage.lead}
               </p>
@@ -157,22 +197,84 @@ export function AgentColumnFleetNote({
               dark). It is what the Core Web Vitals threshold labels already
               use for the same job.
             */}
-            <p
-              className={cn(
-                "font-medium",
-                warn
-                  ? "text-[var(--color-warning-subtle-fg)]"
-                  : "text-[var(--color-foreground)]",
-              )}
-            >
-              {checkMessage.title}
-            </p>
-            <p className="leading-relaxed text-[var(--color-muted-foreground)]">
-              {checkMessage.body}
-            </p>
+            {checkMessage ? (
+              <>
+                <p
+                  className={cn(
+                    "font-medium",
+                    warn
+                      ? "text-[var(--color-warning-subtle-fg)]"
+                      : "text-[var(--color-foreground)]",
+                  )}
+                >
+                  {checkMessage.title}
+                </p>
+                <p className="leading-relaxed text-[var(--color-muted-foreground)]">
+                  {checkMessage.body}
+                </p>
+              </>
+            ) : null}
+            {canCheckNow ? <CheckNowAction /> : null}
           </div>
         ) : null}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * The manual trigger, rendered directly under the freshness text so the action
+ * sits where the information that prompts it already is.
+ *
+ * Its own component only so the mutation hook is not instantiated on every
+ * render of a popover that will never show it: the vast majority of viewers,
+ * on every hosted install and on every self-hosted install with more than one
+ * organisation, have can_check_now false.
+ *
+ * All colours come from Button's own variant tokens, which already carry
+ * light and dark values; nothing here introduces a new colour.
+ */
+function CheckNowAction() {
+  const check = useCheckAgentMirrorNow();
+
+  return (
+    <div className="pt-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={check.isPending}
+        // The popover lives inside the Sites table header, whose cells have
+        // their own click handling; the trigger icon stops propagation for the
+        // same reason.
+        onClick={(e) => {
+          e.stopPropagation();
+          check.mutate();
+        }}
+        // Starts with the visible label on purpose. An accessible name that
+        // does not contain the words on the button breaks voice control ("click
+        // Check now") and WCAG 2.5.3; the rest is the context the two words
+        // alone do not carry, and it stays put while the label swaps to
+        // "Checking..." so the control keeps one stable name.
+        aria-label="Check now for a newer agent release upstream"
+      >
+        <RefreshCw
+          aria-hidden="true"
+          className={cn("mr-1.5 size-3.5", check.isPending && "animate-spin")}
+        />
+        {check.isPending ? "Checking..." : "Check now"}
+      </Button>
+      {/*
+        Deliberately not a promise of a result. The endpoint answers 202
+        "queued", the run has not happened yet, and the outcome lands in this
+        very popover only once the fleet rollup refetches. Saying so here stops
+        the button from reading as "confirmed just now", which is the exact
+        class of overclaim this whole feature exists to remove.
+      */}
+      <p className="pt-1.5 leading-relaxed text-[var(--color-muted-foreground)]">
+        Queues one immediate check instead of waiting for the next scheduled
+        run. The result appears here once this view refreshes.
+      </p>
+    </div>
   );
 }

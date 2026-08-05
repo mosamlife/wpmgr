@@ -8,6 +8,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.124] - 2026-08-05
+
+### Added
+
+- "Check now" for the agent release reference is now in the Agent column popover on the Sites page, directly under the freshness text, where the reporter asked for it. That is the moment it is wanted: reading "may be stale, last confirmed 14h ago" is exactly when an operator wants to act on it, and until now acting meant leaving the page for the admin console. 0.61.123 granted the permission to the owner of a single-organisation install but left the only button behind a console that same owner cannot open, so the feature was unreachable for the person it was built for.
+- The button appears only for a viewer who may actually use it, and the dashboard does not work that out for itself. The fleet agent response now carries the control plane's own answer for the asking viewer, computed by the same code that decides whether the endpoint would accept the request. There is one decision, so a button that always refuses and a permission nobody is offered are both impossible, rather than merely unlikely.
+- Nothing appears on an install with more than one organisation, which is every hosted account: the answer is false there for everyone except a superadmin, and a superadmin is redirected away from the Sites page anyway, so the admin console remains their route to the same action. The answer is also false whenever release mirroring is switched off, since there is no run to trigger at all then.
+- The three outcomes read the same here as in the admin console, because both use the same code. Queued is a success, and neither "a check is already running" nor "the mirror must wait before its next request" is shown as an error: being skipped by the thirty minute spacing is the system working as designed, and dressing that up as a failure would be the same overclaim in the opposite direction.
+- The button does not claim the check has happened. The control plane answers that a run was queued, not that anything was confirmed, so the wording says the result appears once the view refreshes.
+
 ## [0.61.123] - 2026-08-05
 
 ### Changed

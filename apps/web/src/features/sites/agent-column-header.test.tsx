@@ -1,14 +1,48 @@
-import { describe, it, expect } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import type { AgentMirrorStatus } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
+
+// The popover's "Check now" action calls the SHARED mutation hook, so these
+// tests mock the generated SDK operation and the toast surface rather than the
+// hook: what must be proven is that this surface produces the SAME outcome
+// vocabulary as the admin console page, not that it calls something named
+// correctly.
+const { checkAgentMirrorNowMock, toastSuccess, toastError, toastInfo } =
+  vi.hoisted(() => ({
+    checkAgentMirrorNowMock: vi.fn(),
+    toastSuccess: vi.fn(),
+    toastError: vi.fn(),
+    toastInfo: vi.fn(),
+  }));
+
+vi.mock("@wpmgr/api", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  checkAgentMirrorNow: checkAgentMirrorNowMock,
+}));
+
+vi.mock("@/components/toast", () => ({
+  toast: {
+    success: toastSuccess,
+    error: toastError,
+    info: toastInfo,
+    warning: vi.fn(),
+  },
+}));
 
 import {
   AgentColumnFleetNote,
   AGENT_FLEET_NOTE_LABEL,
   AGENT_FLEET_NOTE_TITLE,
 } from "./agent-column-header";
+
+beforeEach(() => {
+  checkAgentMirrorNowMock.mockReset();
+  toastSuccess.mockReset();
+  toastError.mockReset();
+  toastInfo.mockReset();
+});
 
 // GH #255 follow-up. The "in fleet" qualifier used to be appended to every
 // row's Agent chip, which was honest but wrapped the cell onto two lines and
@@ -25,12 +59,15 @@ import {
 // fleet-derived reference AND a stale mirror), so the tests below cover
 // them both together and separately.
 //
-// The manual "Check now" trigger is NOT part of this component: it is a
-// superadmin, install-level admin-console action
-// (routes/_authed/admin/agent-mirror.tsx), not a Sites-page affordance (a
-// superadmin cannot open the tenant-scoped Sites page at all, see
-// routes/_authed.tsx's isSuperadminAllowedPath guard), so this popover is
-// informational only.
+// The manual "Check now" trigger IS now part of this component, but only for a
+// viewer the control plane says may use it. This file used to assert the
+// opposite, on the grounds that the action was superadmin only while a
+// superadmin cannot open the Sites page at all; the endpoint has since been
+// widened to the owner of the only live organisation on an install, and an
+// owner is never redirected off this page. What must not be lost is that the
+// visibility is the SERVER's answer (agent_mirror.can_check_now) and never a
+// role guessed in the browser, so the button cannot appear for someone the
+// endpoint would answer 403.
 
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
 
@@ -39,6 +76,7 @@ function mirror(overrides: Partial<Record<string, unknown>> = {}): AgentMirrorSt
     enabled: true,
     status: "ok",
     stale_after_seconds: 46_800,
+    can_check_now: false,
     last_success_at: hoursAgo(3),
     last_success_outcome: "unchanged",
     last_success_version: "0.61.112",
@@ -167,17 +205,217 @@ describe("AgentColumnFleetNote", () => {
     expect(trigger).toBeInTheDocument();
   });
 
-  it("never renders a Check now button: the manual trigger lives in the admin console, not on this page", () => {
+});
+
+// ---------------------------------------------------------------------------
+// GH #322 follow-up: the "Check now" action
+// ---------------------------------------------------------------------------
+//
+// WHICH OF THESE FAIL AGAINST THE PRE-CHANGE CODE:
+//
+//	"renders a Check now action when can_check_now is true"   FAILS (no button existed)
+//	"stale, warn-tier state still offers the action"          FAILS (no button existed)
+//	"clicking it queues a check ..."                          FAILS (nothing to click)
+//	"409 ... INFO" / "429 ... INFO" / "403 ... error"         FAIL (nothing to click)
+//	the three ABSENCE cases                                   pass either way, and are
+//	  kept precisely because they are the containment half: they are what would
+//	  catch the button being shown to someone the endpoint refuses. The
+//	  pre-change file asserted the FIRST of them unconditionally.
+
+const CHECK_NOW = { name: /check now/i } as const;
+
+/** Opens the popover, whatever tier its trigger is currently in. */
+function openPopover() {
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: new RegExp(`^${AGENT_FLEET_NOTE_LABEL}`),
+    }),
+  );
+}
+
+describe("AgentColumnFleetNote - the Check now action", () => {
+  // --- T6: present only when the server says so -----------------------------
+
+  it("renders a Check now action when can_check_now is true", () => {
     renderWithProviders(
       <AgentColumnFleetNote
         referenceSource="published"
-        referenceCheck={mirror({ status: "stale" })}
+        referenceCheck={mirror({ can_check_now: true })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Reference checked/i }));
+    openPopover();
+    expect(screen.getByRole("button", CHECK_NOW)).toBeInTheDocument();
+  });
+
+  it("renders no Check now action when can_check_now is false", () => {
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ can_check_now: false })}
+      />,
+    );
+    openPopover();
+    expect(screen.queryByRole("button", CHECK_NOW)).not.toBeInTheDocument();
+  });
+
+  // An install running an older control plane sends no can_check_now at all.
+  // Absent must read as "not permitted", never as a button whose endpoint
+  // would refuse it.
+  it("renders no Check now action when the field is missing entirely", () => {
+    const legacy = mirror();
+    delete (legacy as unknown as Record<string, unknown>).can_check_now;
+    renderWithProviders(
+      <AgentColumnFleetNote referenceSource="published" referenceCheck={legacy} />,
+    );
+    openPopover();
+    expect(screen.queryByRole("button", CHECK_NOW)).not.toBeInTheDocument();
+  });
+
+  // The mirror being off is the server's business (it forces can_check_now
+  // false), but this pins the client half: a disabled mirror with a published
+  // reference renders nothing at all, so there is no popover to put a button
+  // in even if the flag were wrong.
+  it("renders nothing at all, button included, when the mirror is disabled and the reference is published", () => {
+    const { container } = renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ enabled: false, status: "disabled", can_check_now: false })}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  // The reporter's exact scenario: the moment an operator reads "may be stale"
+  // is the moment they want to act, so the action must survive the warn tier.
+  it("offers the action in the stale, warn-tier state the reporter described", () => {
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ status: "stale", can_check_now: true })}
+      />,
+    );
+    openPopover();
+    expect(screen.getByText(/^Reference checked /)).toBeInTheDocument();
+    expect(screen.getByRole("button", CHECK_NOW)).toBeInTheDocument();
+  });
+
+  // --- T7: the outcome vocabulary is the admin console's, not a second one --
+
+  it("clicking it queues a check and reports the control plane's own message", async () => {
+    checkAgentMirrorNowMock.mockResolvedValue({
+      data: {
+        status: "queued",
+        queued_at: "2026-08-05T10:00:00Z",
+        message: "A mirror run has been queued.",
+      },
+      error: undefined,
+      response: { status: 202 },
+    });
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ can_check_now: true })}
+      />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByRole("button", CHECK_NOW));
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("A mirror run has been queued."),
+    );
+    expect(checkAgentMirrorNowMock).toHaveBeenCalledTimes(1);
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("409 already running is an INFO toast here too, never an error", async () => {
+    checkAgentMirrorNowMock.mockResolvedValue({
+      data: undefined,
+      error: {
+        code: "agent_mirror_check_in_flight",
+        message: "a mirror check is already queued or running",
+      },
+      response: { status: 409 },
+    });
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ can_check_now: true })}
+      />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByRole("button", CHECK_NOW));
+
+    await waitFor(() =>
+      expect(toastInfo).toHaveBeenCalledWith(
+        "A check is already running. Its result will appear on the fleet agent view when it finishes.",
+      ),
+    );
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("429 rate limited is an INFO toast here too: being skipped by the 30 minute spacing is the system working", async () => {
+    checkAgentMirrorNowMock.mockResolvedValue({
+      data: undefined,
+      error: {
+        code: "agent_mirror_rate_limited",
+        message: "the upstream release was last requested 12m ago",
+        details: { retry_after_seconds: 480 },
+      },
+      response: { status: 429 },
+    });
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ status: "stale", can_check_now: true })}
+      />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByRole("button", CHECK_NOW));
+
+    await waitFor(() =>
+      expect(toastInfo).toHaveBeenCalledWith(
+        "Not checked. The mirror must wait 8 minutes before its next upstream request. The scheduled check still runs.",
+      ),
+    );
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  // The one case that IS an error, so the three above are not merely "this
+  // surface never shows an error toast".
+  it("a 403 is a real error toast, so the INFO cases above are a distinction and not a blanket rule", async () => {
+    checkAgentMirrorNowMock.mockResolvedValue({
+      data: undefined,
+      error: { code: "superadmin_required", message: "superadmin access required" },
+      response: { status: 403 },
+    });
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ can_check_now: true })}
+      />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByRole("button", CHECK_NOW));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("superadmin access required"),
+    );
+    expect(toastInfo).not.toHaveBeenCalled();
+  });
+
+  // The action must not promise a result it has not got: the endpoint answers
+  // 202 queued, and the run has not happened yet.
+  it("says the result appears on refresh rather than implying the check already ran", () => {
+    renderWithProviders(
+      <AgentColumnFleetNote
+        referenceSource="published"
+        referenceCheck={mirror({ can_check_now: true })}
+      />,
+    );
+    openPopover();
     expect(
-      screen.queryByRole("button", { name: /check now/i }),
-    ).not.toBeInTheDocument();
+      screen.getByText(/result appears here once this view refreshes/i),
+    ).toBeInTheDocument();
   });
 });
 

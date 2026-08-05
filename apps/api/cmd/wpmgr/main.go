@@ -29,6 +29,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/activity"
 	"github.com/mosamlife/wpmgr/apps/api/internal/admin"
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agent"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
@@ -2466,6 +2467,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// so the fleet response and the worker agree on whether a mirror job
 	// exists on this install at all.
 	agentReleaseH.SetMirror(agentMirrorRepo, cfg.Update.AgentMirrorEnabled)
+	// GH #322: agent_mirror.can_check_now, the capability behind the Sites
+	// page's "Check now" button. Deliberately the SAME admingate.Store the
+	// admin handler's route gate is built from (admin.NewHandler calls
+	// admingate.NewPoolStore over this same pool), read by the SAME
+	// admingate.CanRunAgentMirrorCheck. There is one decision, so the button
+	// cannot appear for a caller POST /admin/agent-mirror/check would refuse.
+	agentReleaseH.SetMirrorCheckGate(admingate.NewPoolStore(pool))
 
 	// The agent's OWN upgrade channel (three-beat arm/apply/confirm, staged in
 	// gated waves). SHIPS DARK: cfg.Update.AgentSelfUpdateEnabled defaults to

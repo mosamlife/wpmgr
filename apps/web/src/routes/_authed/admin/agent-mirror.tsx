@@ -20,16 +20,23 @@ export const Route = createFileRoute("/_authed/admin/agent-mirror")({
 // Page
 // ---------------------------------------------------------------------------
 //
-// GH #322. Triggering an immediate upstream agent-release mirror check is a
-// superadmin, install-level operation (POST /api/v1/admin/agent-mirror/
-// check): the mirror is ONE PER INSTALL, so this lives here rather than on
-// the tenant-scoped Sites page, which a superadmin cannot even open (see
-// routes/_authed.tsx's isSuperadminAllowedPath guard). The freshness of the
-// mirror itself (last confirmed, last attempted, stale/misconfigured/
-// standing down) is shown to every tenant that CAN see the Sites page, in
-// the Agent column header's popover (features/sites/agent-column-header.tsx).
-// This page only has the action, since there is no install-level read
-// endpoint for that state.
+// GH #322. Triggering an immediate upstream agent-release mirror check is an
+// install-level operation (POST /api/v1/admin/agent-mirror/check): the mirror
+// is ONE PER INSTALL. This page is the SUPERADMIN's route to it, and remains
+// the only one, because a superadmin cannot open the tenant-scoped Sites page
+// at all (see routes/_authed.tsx's isSuperadminAllowedPath guard).
+//
+// The same action is now also offered on the Sites page, in the Agent column
+// header's popover, to a viewer the control plane says may use it
+// (agent_mirror.can_check_now: the owner of the only live organisation on the
+// install). Same endpoint, same mutation hook, same outcome vocabulary. That
+// path is unreachable here and this one is unreachable there, so neither
+// duplicates the other for any single person.
+//
+// The freshness of the mirror itself (last confirmed, last attempted,
+// stale/misconfigured/standing down) is shown to every tenant that CAN see
+// the Sites page, in that same popover. This page only has the action, since
+// there is no install-level read endpoint for that state.
 
 function AgentMirrorAdminPage() {
   return (

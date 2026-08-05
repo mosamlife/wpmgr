@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/admingate"
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentmirror"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -41,6 +42,16 @@ type Handler struct {
 	// disabled mirroring would: status "disabled", every timestamp null.
 	mirrorReader  MirrorStateReader
 	mirrorEnabled bool
+
+	// mirrorCheckGate answers agent_mirror.can_check_now (GH #322), wired via
+	// SetMirrorCheckGate. It is the SAME store, read by the SAME function,
+	// that gates POST /api/v1/admin/agent-mirror/check itself
+	// (admingate.CanRunAgentMirrorCheck; internal/admin/gate.go mounts it as
+	// middleware). Nothing about the permission is recomputed here, so the
+	// button this field reveals can never be offered to a caller the route
+	// would refuse, nor hidden from one it would admit. Nil until wired,
+	// which reports false, the safe direction for a capability flag.
+	mirrorCheckGate admingate.Store
 }
 
 // MirrorStateReader reads the persisted upstream-mirror freshness sentinel
@@ -70,6 +81,18 @@ func NewHandler(svc *Service, selfUpdateEnabled bool) *Handler {
 func (h *Handler) SetMirror(reader MirrorStateReader, enabled bool) {
 	h.mirrorReader = reader
 	h.mirrorEnabled = enabled
+}
+
+// SetMirrorCheckGate wires the permission behind agent_mirror.can_check_now
+// (GH #322). Called once at boot with the SAME admingate.Store the admin
+// handler's route gate uses, so the dashboard's button and the endpoint's 403
+// are two readings of one decision rather than two decisions.
+//
+// Deliberately a separate setter from SetMirror: freshness and permission are
+// independent facts with independent wiring, and an install that has one
+// without the other must degrade rather than fail.
+func (h *Handler) SetMirrorCheckGate(store admingate.Store) {
+	h.mirrorCheckGate = store
 }
 
 // Register mounts the routes on the authenticated /api/v1 group.
@@ -151,11 +174,13 @@ type fleetAgentsResponseDTO struct {
 }
 
 // agentMirrorDTO reports the freshness of the UPSTREAM AGENT-RELEASE MIRROR
-// (internal/agentupstream), GH #322. This describes the MIRROR JOB, never
-// latest_version/reference_source directly: when reference_source is "fleet"
-// or "none", or when enabled is false, these timestamps say nothing about
-// latest_version and no freshness age should be presented to an operator as
-// the age of the reference, see each field's own doc and Status's doc.
+// (internal/agentupstream), GH #322, and one capability: whether the CALLER
+// may trigger a check on it right now (CanCheckNow). Everything else here
+// describes the MIRROR JOB, never latest_version/reference_source directly:
+// when reference_source is "fleet" or "none", or when enabled is false, these
+// timestamps say nothing about latest_version and no freshness age should be
+// presented to an operator as the age of the reference, see each field's own
+// doc and Status's doc.
 //
 // Always emitted, never omitted, for the same reason self_update_enabled is:
 // a caller must never have to treat "absent" and "off" as the same undefined
@@ -176,6 +201,21 @@ type agentMirrorDTO struct {
 	// (agentmirror.StalenessThreshold), emitted so nothing downstream has to
 	// duplicate the constant.
 	StaleAfterSeconds int `json:"stale_after_seconds"`
+
+	// CanCheckNow says whether THE CALLER OF THIS REQUEST may trigger a mirror
+	// check right now (GH #322). It is a property of the viewer, not of the
+	// install, so it is not cacheable across users and two people looking at
+	// the same fleet can legitimately get different values.
+	//
+	// False whenever Enabled is false: there is no run to trigger then, so no
+	// caller may trigger one regardless of who they are.
+	//
+	// Otherwise it is exactly admingate.CanRunAgentMirrorCheck, the same call
+	// that gates POST /api/v1/admin/agent-mirror/check. On a hosted,
+	// multi-tenant install that means false for every non-superadmin, and a
+	// superadmin never sees this response's dashboard anyway (the web app
+	// redirects them off tenant pages), so the admin console stays their route.
+	CanCheckNow bool `json:"can_check_now"`
 
 	// LastSuccessAt/LastSuccessOutcome/LastSuccessVersion: the LAST time this
 	// install CONFIRMED what upstream publishes. LastSuccessAt is the ONLY
@@ -274,9 +314,15 @@ func (h *Handler) buildAgentMirrorDTO(ctx context.Context) agentMirrorDTO {
 		StaleAfterSeconds: int(agentmirror.StalenessThreshold / time.Second),
 	}
 	if !h.mirrorEnabled {
+		// Returned with CanCheckNow still false, and WITHOUT consulting the
+		// gate store: a check cannot be run at all when the mirror is off, so
+		// there is nothing for a permission to permit, and the hosted service
+		// (where mirroring is off by default) pays no extra query for this
+		// field on any request.
 		dto.Status = string(agentmirror.StatusDisabled)
 		return dto
 	}
+	dto.CanCheckNow = admingate.CanRunAgentMirrorCheck(ctx, h.mirrorCheckGate)
 
 	var st agentmirror.State
 	if h.mirrorReader != nil {
