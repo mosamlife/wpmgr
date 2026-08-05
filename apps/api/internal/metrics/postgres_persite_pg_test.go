@@ -58,6 +58,40 @@ func oldStyleAvgLatency(checks []Check, start, upTo time.Time) float64 {
 // utcDay is the UTC midnight the instant belongs to (the site_uptime_daily key).
 func utcDay(t time.Time) time.Time { return t.UTC().Truncate(24 * time.Hour) }
 
+// inBoundaryDay returns n distinct instants spread strictly inside
+// [lower, upper), and boundaryDayBefore returns n strictly inside
+// [dayStart, lower).
+//
+// WHY THESE EXIST, because getting this wrong cost a day of investigation.
+//
+// For a whole-day window, timeOfDay(tailLower) == timeOfDay(now), since
+// tailLower is now minus a whole number of days. So a seed written as
+// tailLower.Add(90 * time.Minute) leaves the boundary day entirely whenever
+// the suite runs at or after 22:30 UTC, and a seed at tailLower.Add(-4 *
+// time.Hour) leaves it in the other direction before 04:00 UTC.
+//
+// That made two tests here fail for a 90-minute band every day while passing
+// in CI, which had simply never run inside the band. The production query was
+// correct throughout: it reported the boundary day's in-window slice exactly,
+// and put the crossed probe on the day it actually belongs to. The fixtures
+// were asserting a day membership they had assumed rather than computed.
+//
+// Placing seeds proportionally inside the real interval makes the fixture
+// independent of the wall clock, which is the only way a boundary test is
+// worth anything as a regression guard.
+func inBoundaryDay(lower, upper time.Time, n int) []time.Time {
+	span := upper.Sub(lower)
+	out := make([]time.Time, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, lower.Add(span*time.Duration(i)/time.Duration(n+1)))
+	}
+	return out
+}
+
+func boundaryDayBefore(dayStart, lower time.Time, n int) []time.Time {
+	return inBoundaryDay(dayStart, lower, n)
+}
+
 // seedWithRollup writes checks through BOTH production write paths, exactly as
 // a live sweep does: the raw probe insert first, then the best-effort rollup
 // upsert.
@@ -268,7 +302,7 @@ func TestQuerySeries_ThirtyDayWindowReturnsDailyUTCPoints(t *testing.T) {
 
 	const window = 30 * 24 * time.Hour
 	now := time.Now()
-	boundaryDay, today, tailLower, _, _, _, nowUTC := fleetUptimeParams(now, window)
+	boundaryDay, today, tailLower, tailUpper, _, _, nowUTC := fleetUptimeParams(now, window)
 
 	tenant := metricsSeedTenant(t, admin, "persite-series-"+uuid.NewString()[:8])
 	siteID := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
@@ -279,9 +313,15 @@ func TestQuerySeries_ThirtyDayWindowReturnsDailyUTCPoints(t *testing.T) {
 	}
 	// Boundary day: one probe before the window start (must not appear in the
 	// boundary point) and two inside it.
-	add(tailLower.Add(-time.Hour), true, 500)
-	add(tailLower.Add(time.Minute), true, 100)
-	add(tailLower.Add(90*time.Minute), false, 700)
+	//
+	// Positioned PROPORTIONALLY inside the real intervals, never at a fixed
+	// offset from tailLower: see inBoundaryDay for why a fixed 90 minutes
+	// silently leaves the boundary day for part of every day.
+	before1 := boundaryDayBefore(boundaryDay, tailLower, 1)
+	inWin1 := inBoundaryDay(tailLower, tailUpper, 2)
+	add(before1[0], true, 500)
+	add(inWin1[0], true, 100)
+	add(inWin1[1], false, 700)
 	// Every complete day in between.
 	for d := boundaryDay.Add(24 * time.Hour); d.Before(today); d = d.Add(24 * time.Hour) {
 		add(d.Add(3*time.Hour), true, 120)
@@ -432,7 +472,7 @@ func TestPerSiteWindow_BoundaryDayCountedExactlyOnce(t *testing.T) {
 
 	const window = 7 * 24 * time.Hour
 	now := time.Now()
-	boundaryDay, today, tailLower, _, _, _, nowUTC := fleetUptimeParams(now, window)
+	boundaryDay, today, tailLower, tailUpper, _, _, nowUTC := fleetUptimeParams(now, window)
 
 	tenant := metricsSeedTenant(t, admin, "persite-boundary-"+uuid.NewString()[:8])
 	siteID := metricsSeedSite(t, admin, tenant, "https://"+uuid.NewString()+".example.com")
@@ -443,12 +483,19 @@ func TestPerSiteWindow_BoundaryDayCountedExactlyOnce(t *testing.T) {
 	}
 	// Boundary day, BEFORE the window start: 3 probes, all up. Present in that
 	// day's rollup row, and must never reach the answer.
-	add(tailLower.Add(-4*time.Hour), true, 300)
-	add(tailLower.Add(-2*time.Hour), true, 310)
-	add(tailLower.Add(-time.Minute), true, 320)
+	// Positioned PROPORTIONALLY inside the real intervals, never at fixed
+	// offsets from tailLower: see inBoundaryDay. A fixed -4h leaves the
+	// boundary day before 04:00 UTC and a fixed +2h leaves it after 22:00,
+	// either of which breaks the "whole day is 5 probes" premise below while
+	// the query under test is behaving correctly.
+	pre := boundaryDayBefore(boundaryDay, tailLower, 3)
+	post := inBoundaryDay(tailLower, tailUpper, 2)
+	add(pre[0], true, 300)
+	add(pre[1], true, 310)
+	add(pre[2], true, 320)
 	// Boundary day, AFTER the window start: 2 probes, one down.
-	add(tailLower.Add(time.Minute), false, 800)
-	add(tailLower.Add(2*time.Hour), true, 130)
+	add(post[0], false, 800)
+	add(post[1], true, 130)
 	// One complete mid-window day and today, so the other two parts are
 	// non-empty and a mistake in the boundary part cannot hide.
 	midDay := boundaryDay.Add(2 * 24 * time.Hour)
