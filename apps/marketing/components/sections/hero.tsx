@@ -4,7 +4,7 @@ import { Badge, Container } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import type { Cta } from "@/lib/content/types";
 
-type HeroTrust = { icon: string; title: string; desc: string };
+type HeroTrust = { icon: string; title: string; desc: string; href?: string };
 
 type HeroProps = {
   badge?: string;
@@ -80,20 +80,49 @@ export function Hero({ badge, heading, subhead, ctas, trust }: HeroProps) {
         {/* Trust chips */}
         {trust && trust.length > 0 && (
           <div className="mt-14 grid gap-4 sm:grid-cols-3 mx-auto max-w-3xl">
-            {trust.map((t) => (
-              <div
-                key={t.title}
-                className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-card p-4"
-              >
-                <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--primary-subtle)] text-[var(--primary-pressed)]">
-                  <Icon name={t.icon} size={16} />
-                </span>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-semibold text-foreground">{t.title}</span>
-                  <span className="text-xs text-[var(--muted-foreground)] leading-relaxed">{t.desc}</span>
+            {trust.map((t) => {
+              const chipClass = "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-card p-4";
+              const inner = (
+                <>
+                  <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--primary-subtle)] text-[var(--primary-pressed)]">
+                    <Icon name={t.icon} size={16} />
+                  </span>
+                  <div className="flex flex-col gap-0.5">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                      {t.title}
+                      {/* Persistent affordance. Hover does not exist on touch, and the
+                          two neighbouring chips are inert, so without this the linked
+                          chip is indistinguishable from them on a phone. */}
+                      {t.href && (
+                        <Icon
+                          name="ArrowRight"
+                          size={12}
+                          className="text-[var(--muted-foreground)]"
+                          aria-hidden
+                        />
+                      )}
+                    </span>
+                    <span className="text-xs text-[var(--muted-foreground)] leading-relaxed">{t.desc}</span>
+                  </div>
+                </>
+              );
+              return t.href ? (
+                <a
+                  key={t.title}
+                  href={t.href}
+                  className={cn(
+                    chipClass,
+                    "transition-colors duration-[var(--duration-fast)] hover:bg-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+                  )}
+                >
+                  {inner}
+                </a>
+              ) : (
+                <div key={t.title} className={chipClass}>
+                  {inner}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Container>

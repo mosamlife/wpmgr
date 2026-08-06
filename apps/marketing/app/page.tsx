@@ -5,6 +5,7 @@ import { FeatureGrid } from "@/components/sections/feature-grid";
 import { MediaShowcase } from "@/components/sections/media-showcase";
 import { Steps } from "@/components/sections/steps";
 import { ProofStrip } from "@/components/sections/proof-strip";
+import { Provenance } from "@/components/sections/provenance";
 import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { SiteHeader } from "@/components/sections/header";
@@ -23,6 +24,7 @@ import {
   HOME_MEDIA,
   HOME_MEDIA_STEPS,
   HOME_STATS,
+  HOME_PROVENANCE,
   HOME_ENROLL,
   HOME_FAQ,
   HOME_FINAL_CTA,
@@ -94,7 +96,18 @@ export default function HomePage() {
           clusters={HOME_FEATURES.clusters}
         />
 
-        {/* 7. Enroll steps */}
+        {/* 7. Provenance: the WordPress.org listing and the public repository */}
+        <Provenance
+          eyebrow={HOME_PROVENANCE.eyebrow}
+          heading={HOME_PROVENANCE.heading}
+          subhead={HOME_PROVENANCE.subhead}
+          directory={HOME_PROVENANCE.directory}
+          facts={HOME_PROVENANCE.facts}
+          repository={HOME_PROVENANCE.repository}
+          checks={HOME_PROVENANCE.checks}
+        />
+
+        {/* 8. Enroll steps */}
         <Steps
           id="enroll"
           eyebrow={HOME_ENROLL.eyebrow}
@@ -105,7 +118,7 @@ export default function HomePage() {
           tone="muted"
         />
 
-        {/* 8. FAQ */}
+        {/* 9. FAQ */}
         <FAQ
           eyebrow="FAQ"
           heading="Questions, answered straight"
@@ -113,7 +126,7 @@ export default function HomePage() {
           items={HOME_FAQ}
         />
 
-        {/* 9. Final CTA band */}
+        {/* 10. Final CTA band */}
         <CTABand
           heading={HOME_FINAL_CTA.heading}
           subhead={HOME_FINAL_CTA.subhead}
