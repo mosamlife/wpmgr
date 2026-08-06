@@ -1,7 +1,7 @@
 // Two-factor authentication feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const TWO_FACTOR_AUTH_PAGE: FeaturePageData = {
   slug: "two-factor-auth",
@@ -14,7 +14,7 @@ export const TWO_FACTOR_AUTH_PAGE: FeaturePageData = {
     heading: "WordPress two-factor authentication for site users, enforced per role",
     subhead:
       "Require TOTP authenticator codes, email codes, or backup codes for chosen WordPress user roles, enforced at the login screen. Grace logins, remember-device windows, and wp-config recovery constants mean operators are never locked out.",
-    primaryCta: { label: "Enable 2FA for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Enable 2FA for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

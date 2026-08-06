@@ -3,7 +3,7 @@
 // no competitor plugin names.
 
 import type { Cta, Chip, Step, FaqItem, FeatureCluster } from "./types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 // Bumped by hand on every agent release, alongside the /changelog RELEASES list.
 // Source of truth is the wordpress.org listing. One constant so the hero badge and
@@ -25,7 +25,7 @@ export const HOME_HERO = {
     { icon: "FileSearch", title: "Reviewed on WordPress.org", desc: "Listed in the plugin directory, install straight from wp-admin", href: "#provenance" },
   ],
   ctas: [
-    { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary" as const, icon: "ArrowRight" },
+    { label: "Get started for free", href: signupHref("hero"), variant: "primary" as const, icon: "ArrowRight" },
     { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary" as const, icon: "Github" },
   ] satisfies Cta[],
 } as const;
@@ -554,7 +554,7 @@ export const HOME_FINAL_CTA = {
     "Bring up the full stack with a few commands, enroll your first site with a one-time code, and run your whole fleet from a dashboard that lives on infrastructure you control. Or fork it and build what you need.",
   body: "Free, open source, no per-site fee. Read every line before you run it.",
   ctas: [
-    { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary" as const, icon: "ArrowRight" },
+    { label: "Get started for free", href: signupHref("hero"), variant: "primary" as const, icon: "ArrowRight" },
     { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary" as const, icon: "Github" },
   ] satisfies Cta[],
 };

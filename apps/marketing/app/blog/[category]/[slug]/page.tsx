@@ -14,7 +14,7 @@ import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 import { ScrollProgress } from "@/components/motion/scroll-progress";
 import { CTABand } from "@/components/sections/cta-band";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const revalidate = 3600;
 
@@ -199,7 +199,7 @@ export default async function BlogPostPage({ params }: Props) {
           heading="Manage your WordPress fleet with one open-source dashboard."
           subhead="Free, self-hostable, no per-site fee. Read every line before you run it."
           ctas={[
-            { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+            { label: "Get started for free", href: signupHref("blog-post"), variant: "primary", icon: "ArrowRight" },
             { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
           ]}
         />

@@ -1,7 +1,7 @@
 // Client reports feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const CLIENT_REPORTS_PAGE: FeaturePageData = {
   slug: "client-reports",
@@ -14,7 +14,7 @@ export const CLIENT_REPORTS_PAGE: FeaturePageData = {
     heading: "White-label WordPress maintenance reports for clients",
     subhead:
       "Branded maintenance reports delivered by email or available as a PDF on a schedule or on demand. Uptime, backups, updates, Core Web Vitals, and email deliverability in one report, with your logo, your colour, and your sign-off.",
-    primaryCta: { label: "Start sending reports for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start sending reports for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

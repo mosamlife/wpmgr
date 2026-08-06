@@ -14,7 +14,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { buildMetadata, buildFAQPageLd, buildBreadcrumbLd, buildSoftwareApplicationLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 import { PRICING_TIERS, PRICING_NOTE, PRICING_FAQ, PRICING_CTAS, resolveTierPrices } from "@/lib/content/pricing";
 import { fetchLivePricing } from "@/lib/pricing-live";
 import { PricingTierCards } from "./pricing-tiers";
@@ -101,7 +101,7 @@ export default async function PricingPage() {
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link
-                href={SITE_CONFIG.signup}
+                href={signupHref("pricing-free")}
                 target="_blank"
                 rel="noreferrer noopener"
                 className="inline-flex items-center gap-2 rounded-[var(--radius)] bg-primary px-6 py-3 text-base font-medium text-[var(--primary-foreground)] shadow-sm transition-colors hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"

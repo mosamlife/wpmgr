@@ -11,7 +11,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 import type { SolutionPageData } from "@/lib/content/types";
 
 // ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ export function SolutionPage({ data }: { data: SolutionPageData }) {
         ctas={[
           {
             label: "Get started for free",
-            href: SITE_CONFIG.signup,
+            href: signupHref("solution-cta"),
             variant: "primary",
             icon: "ArrowRight",
           },

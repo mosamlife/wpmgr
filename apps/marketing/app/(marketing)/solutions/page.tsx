@@ -9,7 +9,7 @@ import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { CTABand } from "@/components/sections/cta-band";
 import { cn } from "@/lib/utils";
 import { SOLUTION_HUB_CARDS } from "@/lib/content/solutions";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: "WordPress Management Solutions | WPMgr",
@@ -195,7 +195,7 @@ export default function SolutionsHubPage() {
         ctas={[
           {
             label: "Get started for free",
-            href: SITE_CONFIG.signup,
+            href: signupHref("solutions-index"),
             variant: "primary",
             icon: "ArrowRight",
           },

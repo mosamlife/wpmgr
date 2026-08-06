@@ -1,7 +1,7 @@
 // Solution page: WordPress backup.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const WORDPRESS_BACKUPS_SOLUTION: SolutionPageData = {
   slug: "wordpress-backups",
@@ -15,7 +15,7 @@ export const WORDPRESS_BACKUPS_SOLUTION: SolutionPageData = {
     eyebrow: "Backups and restore",
     subhead:
       "Incremental backups on a schedule you control, stored where you choose, with point-in-time restore that keeps the site online. One dashboard shows backup health across every site so nothing falls through the cracks.",
-    primaryCta: { label: "Start backing up for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start backing up for free", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "How backups work", href: "/features/backups", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {

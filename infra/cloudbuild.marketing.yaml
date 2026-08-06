@@ -10,9 +10,22 @@
 #
 # Then deploy the built tag (image-only update preserves env/scaling/config):
 #   gcloud run deploy wpmgr-marketing --image <registry>/marketing:<version> --region <run-region>
+# Analytics identifiers are passed as build args because Next inlines
+# NEXT_PUBLIC_ values at build time. All four are PUBLIC identifiers that end up
+# in the page source; none is a secret and none belongs in Secret Manager.
+# Leaving them empty (the default) builds an image with no analytics at all,
+# which is what any build other than ours should produce. Pass them like this:
+#
+#   --substitutions=_IMAGE=...,_VERSION=...,\
+#     _GA_MEASUREMENT_ID=G-XXXXXXXXXX,_POSTHOG_KEY=phc_xxx,\
+#     _POSTHOG_HOST=https://eu.i.posthog.com,_GSC_VERIFICATION=xxxx
 substitutions:
   _IMAGE: 'marketing'
   _VERSION: '0.0.0-dev'
+  _GA_MEASUREMENT_ID: ''
+  _POSTHOG_KEY: ''
+  _POSTHOG_HOST: ''
+  _GSC_VERIFICATION: ''
 steps:
   # DOCKER_BUILDKIT=1 is required: the Dockerfile uses BuildKit cache mounts
   # (RUN --mount=type=cache), which the legacy builder rejects.
@@ -23,6 +36,14 @@ steps:
       - 'build'
       - '-f'
       - 'infra/Dockerfile.marketing'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_GA_MEASUREMENT_ID=${_GA_MEASUREMENT_ID}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_POSTHOG_KEY=${_POSTHOG_KEY}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_POSTHOG_HOST=${_POSTHOG_HOST}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_GSC_VERIFICATION=${_GSC_VERIFICATION}'
       - '-t'
       - '${_IMAGE}:${_VERSION}'
       - '-t'

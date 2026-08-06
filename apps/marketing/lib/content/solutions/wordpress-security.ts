@@ -1,7 +1,7 @@
 // Solution page: WordPress security.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const WORDPRESS_SECURITY_SOLUTION: SolutionPageData = {
   slug: "wordpress-security",
@@ -15,7 +15,7 @@ export const WORDPRESS_SECURITY_SOLUTION: SolutionPageData = {
     eyebrow: "Security suite",
     subhead:
       "Harden every site in your fleet, scan for known vulnerabilities, enforce two-factor authentication for site users, and maintain a tamper-evident audit trail, all from one self-hosted dashboard with no per-site security plugin sprawl.",
-    primaryCta: { label: "Start securing your fleet", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start securing your fleet", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   outcomes: {

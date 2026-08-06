@@ -13,7 +13,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 import {
   NAV_ITEMS,
   FEATURES_COLUMNS,
@@ -407,7 +407,7 @@ export function MobileNav() {
                   crammed into the header bar) */}
               <div className="shrink-0 border-t border-[var(--border)] p-4 flex flex-col gap-2.5">
                 <a
-                  href={SITE_CONFIG.signup}
+                  href={signupHref("mobile-nav")}
                   onClick={close}
                   className={cn(
                     "flex min-h-[48px] items-center justify-center rounded-[var(--radius)]",

@@ -153,6 +153,13 @@ export default function PrivacyPage() {
                     its own privacy policy.
                   </li>
                   <li>A transactional email provider, used solely to deliver account emails.</li>
+                  <li>
+                    <strong className="font-semibold text-foreground">Google Analytics</strong> and{" "}
+                    <strong className="font-semibold text-foreground">PostHog</strong> receive
+                    anonymous usage statistics from this marketing website only. They are not used
+                    in the dashboard and they receive no data about the WordPress sites you manage.
+                    See section 8.
+                  </li>
                 </ul>
                 <p>Self-hosted deployments of the WPMgr control plane involve no sub-processors at all.</p>
               </>
@@ -213,14 +220,29 @@ export default function PrivacyPage() {
             ),
           },
           {
-            heading: "8. Cookies",
+            heading: "8. Cookies and website analytics",
             body: (
-              <p>
-                The hosted dashboard uses a minimal set of cookies: a session cookie required to
-                keep you signed in, and, where enabled, a cookie that remembers a trusted device for
-                two-factor authentication. We do not use advertising or cross-site tracking cookies
-                on the dashboard. Real User Monitoring, described above, does not use cookies.
-              </p>
+              <>
+                <p>
+                  The hosted dashboard uses a minimal set of cookies: a session cookie required to
+                  keep you signed in, and, where enabled, a cookie that remembers a trusted device
+                  for two-factor authentication. We do not use advertising or cross-site tracking
+                  cookies on the dashboard. Real User Monitoring, described above, does not use
+                  cookies.
+                </p>
+                <p>
+                  This marketing website, wpmgr.app, uses Google Analytics and PostHog to measure
+                  which pages people find useful and which of them lead to someone starting an
+                  account. Both set cookies in your browser. We use them to answer questions about
+                  pages, not about people: no account is created or identified from this website,
+                  we do not build advertising profiles, and we do not sell or share this data.
+                </p>
+                <p>
+                  If your browser sends a Do Not Track signal, PostHog is disabled for your visit.
+                  You can also block both with any content blocker, and the site works normally
+                  without them.
+                </p>
+              </>
             ),
           },
           {

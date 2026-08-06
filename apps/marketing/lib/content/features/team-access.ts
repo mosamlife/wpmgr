@@ -1,7 +1,7 @@
 // Team access feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const TEAM_ACCESS_PAGE: FeaturePageData = {
   slug: "team-access",
@@ -14,7 +14,7 @@ export const TEAM_ACCESS_PAGE: FeaturePageData = {
     heading: "WordPress team access control with a tamper-evident audit log",
     subhead:
       "Four roles from owner to viewer, per-site sharing, OIDC SSO, and a hash-chained audit log of every action across the fleet. Share a single site with a collaborator without exposing the rest of the portfolio.",
-    primaryCta: { label: "Set up team access for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Set up team access for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

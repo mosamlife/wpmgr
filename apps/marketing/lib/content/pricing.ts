@@ -6,7 +6,7 @@
 // app/(marketing)/pricing/page.tsx via lib/pricing-live.ts) override each
 // paid tier's `price` fallback below, per currency -- see resolveTierPrices.
 import type { Cta, FaqItem } from "./types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 import type { LivePricingResponse, LiveTier } from "@/lib/pricing-live";
 
 export type PricingTier = {
@@ -40,7 +40,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Get started for free",
-      href: SITE_CONFIG.signup,
+      href: signupHref("pricing-free"),
       variant: "secondary",
       icon: "ArrowRight",
     },
@@ -58,7 +58,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Starter",
-      href: `${SITE_CONFIG.signup}?plan=starter`,
+      href: signupHref("pricing-starter", { plan: "starter" }),
       variant: "secondary",
       icon: "ArrowRight",
     },
@@ -77,7 +77,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Agency",
-      href: `${SITE_CONFIG.signup}?plan=agency`,
+      href: signupHref("pricing-agency", { plan: "agency" }),
       variant: "primary",
       icon: "ArrowRight",
     },
@@ -95,7 +95,7 @@ export const PRICING_TIERS: PricingTier[] = [
     ],
     cta: {
       label: "Start with Scale",
-      href: `${SITE_CONFIG.signup}?plan=scale`,
+      href: signupHref("pricing-scale", { plan: "scale" }),
       variant: "secondary",
       icon: "ArrowRight",
     },
@@ -133,7 +133,7 @@ export const PRICING_FAQ: FaqItem[] = [
 ];
 
 export const PRICING_CTAS: Cta[] = [
-  { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+  { label: "Get started for free", href: signupHref("cta-band"), variant: "primary", icon: "ArrowRight" },
   { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
 ];
 

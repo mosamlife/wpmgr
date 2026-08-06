@@ -6,7 +6,7 @@ import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: "WPMgr on Product Hunt",
@@ -92,7 +92,7 @@ export default function ProductHuntPage() {
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <a
-                  href={SITE_CONFIG.signup}
+                  href={signupHref("product-hunt")}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-7 text-base font-medium text-[var(--primary-foreground)] shadow-sm hover:bg-[var(--primary-hover)] transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   Get started for free
@@ -221,7 +221,7 @@ export default function ProductHuntPage() {
                 </p>
                 <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                   <a
-                    href={SITE_CONFIG.signup}
+                    href={signupHref("product-hunt")}
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-7 text-base font-medium text-[var(--primary-foreground)] shadow-sm hover:bg-[var(--primary-hover)] transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                   >
                     Get started for free

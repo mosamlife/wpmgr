@@ -1,7 +1,7 @@
 // Performance feature page content. Seeded from apps/landing PERFORMANCE + PERFORMANCE_STEPS.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const PERFORMANCE_PAGE: FeaturePageData = {
   slug: "performance",
@@ -14,7 +14,7 @@ export const PERFORMANCE_PAGE: FeaturePageData = {
     heading: "Speed up WordPress with full-page caching and asset optimization",
     subhead:
       "Turn on full-page caching and asset optimization and WPMgr serves your anonymous pages from disk and ships only the assets each page needs. Every layer is per site or across your whole portfolio, and a failed optimization always falls back to the original.",
-    primaryCta: { label: "Get faster pages for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Get faster pages for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

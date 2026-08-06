@@ -1,7 +1,7 @@
 // Solution page: WordPress tools for freelancers.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const FREELANCERS_SOLUTION: SolutionPageData = {
   slug: "freelancers",
@@ -15,7 +15,7 @@ export const FREELANCERS_SOLUTION: SolutionPageData = {
     eyebrow: "Freelancer toolkit",
     subhead:
       "Manage all your client sites from a single dashboard without SSH access, shared passwords, or per-site logins. Automated backups run before every update, and you get alerts the moment a site goes down, before your client notices.",
-    primaryCta: { label: "Start free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start free", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   outcomes: {

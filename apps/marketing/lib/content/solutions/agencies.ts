@@ -1,7 +1,7 @@
 // Solution page: WordPress management for agencies.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const AGENCIES_SOLUTION: SolutionPageData = {
   slug: "agencies",
@@ -15,7 +15,7 @@ export const AGENCIES_SOLUTION: SolutionPageData = {
     eyebrow: "Agency operations",
     subhead:
       "Run every client site from one dashboard. Deliver white-label maintenance reports, automate backups before every update, and give each team member exactly the access they need, without sharing passwords or switching accounts.",
-    primaryCta: { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Get started for free", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "See the features", href: "/features", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {
