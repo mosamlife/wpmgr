@@ -2,7 +2,7 @@
 // Seeded from apps/landing MEDIA + MEDIA_STEPS.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const MEDIA_OPTIMIZER_PAGE: FeaturePageData = {
   slug: "media-optimizer",
@@ -15,7 +15,7 @@ export const MEDIA_OPTIMIZER_PAGE: FeaturePageData = {
     heading: "Convert WordPress images to AVIF and WebP, fully reversible",
     subhead:
       "Turn on Media Optimization and WPMgr re-encodes your library to AVIF and WebP in the cloud. Every browser gets the format it supports, your originals stay safely archived on the site, and you can revert any image with one click.",
-    primaryCta: { label: "Optimize your media library free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Optimize your media library free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

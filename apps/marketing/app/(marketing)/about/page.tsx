@@ -9,7 +9,7 @@ import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { CTABand } from "@/components/sections/cta-band";
 import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: "About WPMgr | Open-Source WordPress Fleet Management",
@@ -319,7 +319,7 @@ export default function AboutPage() {
         heading="Run it yourself. Read every line."
         subhead="Self-host the complete control plane on your own infrastructure. No per-site fee, no data sent to a third party, and no features behind a paywall."
         ctas={[
-          { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+          { label: "Get started for free", href: signupHref("about"), variant: "primary", icon: "ArrowRight" },
           { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
         ]}
       />

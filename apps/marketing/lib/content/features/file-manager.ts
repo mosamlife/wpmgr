@@ -1,7 +1,7 @@
 // File Manager feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const FILE_MANAGER_PAGE: FeaturePageData = {
   slug: "file-manager",
@@ -14,7 +14,7 @@ export const FILE_MANAGER_PAGE: FeaturePageData = {
     heading: "Manage WordPress site files from the dashboard, no SFTP needed",
     subhead:
       "Browse the full file tree, edit files inline, upload by drag-and-drop, zip and extract archives, search by name or content, and restore prior versions from an encrypted history panel. Off by default, restricted to owner and admin, and every action is written to the audit log.",
-    primaryCta: { label: "Try it for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Try it for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

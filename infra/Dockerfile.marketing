@@ -27,6 +27,26 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 # Copy the marketing app source and build.
 COPY apps/marketing ./apps/marketing
 
+# Analytics identifiers. These are NEXT_PUBLIC_ values, so Next inlines them at
+# BUILD time and they end up visible in the page source. That is expected: a GA4
+# measurement ID, a PostHog project key and a Search Console verification token
+# are public identifiers, not secrets, and nothing here should ever hold a
+# secret.
+#
+# They are build ARGs rather than committed constants because this repository is
+# public and self-hostable. Hardcoding them would make every fork report into
+# our analytics property, so the numbers we make decisions from would be
+# somebody else's traffic. Absent (the default) means no analytics script is
+# loaded at all, which is the correct behaviour for any build but ours.
+ARG NEXT_PUBLIC_GA_MEASUREMENT_ID=""
+ARG NEXT_PUBLIC_POSTHOG_KEY=""
+ARG NEXT_PUBLIC_POSTHOG_HOST=""
+ARG NEXT_PUBLIC_GSC_VERIFICATION=""
+ENV NEXT_PUBLIC_GA_MEASUREMENT_ID=$NEXT_PUBLIC_GA_MEASUREMENT_ID \
+    NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY \
+    NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST \
+    NEXT_PUBLIC_GSC_VERIFICATION=$NEXT_PUBLIC_GSC_VERIFICATION
+
 RUN pnpm --filter @wpmgr/marketing build
 
 # ---- runner stage ----

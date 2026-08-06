@@ -1,7 +1,7 @@
 // Solution page: speed up WordPress / improve Core Web Vitals.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const WORDPRESS_PERFORMANCE_SOLUTION: SolutionPageData = {
   slug: "wordpress-performance",
@@ -15,7 +15,7 @@ export const WORDPRESS_PERFORMANCE_SOLUTION: SolutionPageData = {
     eyebrow: "Performance suite",
     subhead:
       "Four independent acceleration layers that compound: full-page caching cuts server response time, the Media Optimizer converts your image library to AVIF and WebP, Redis object cache reduces database load, and Real User Monitoring proves the improvement with real visitor data.",
-    primaryCta: { label: "Start optimising for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start optimising for free", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "See Media Optimizer", href: "/features/media-optimizer", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {

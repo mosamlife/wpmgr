@@ -1,7 +1,7 @@
 // Updates feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const UPDATES_PAGE: FeaturePageData = {
   slug: "updates",
@@ -14,7 +14,7 @@ export const UPDATES_PAGE: FeaturePageData = {
     heading: "Bulk update WordPress plugins safely with auto-revert",
     subhead:
       "Preview version changes, snapshot first, then update across the whole fleet. If a health check fails after the update, WPMgr reverts the site automatically.",
-    primaryCta: { label: "Start managing updates for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start managing updates for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

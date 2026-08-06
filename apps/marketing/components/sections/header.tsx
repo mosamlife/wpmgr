@@ -6,7 +6,7 @@ import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
 import { Container } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 import { MegaMenu } from "@/components/nav/mega-menu";
 import { MobileNav } from "@/components/nav/mobile-nav";
 
@@ -87,7 +87,7 @@ export function SiteHeader() {
           >
             Self-host it
           </Button>
-          <Button href={SITE_CONFIG.signup} className="hidden md:inline-flex">
+          <Button href={signupHref("header")} className="hidden md:inline-flex">
             Get started free
           </Button>
 

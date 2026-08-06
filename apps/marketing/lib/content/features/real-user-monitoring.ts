@@ -1,7 +1,7 @@
 // Real User Monitoring feature page content. Seeded from apps/landing RUM.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const RUM_PAGE: FeaturePageData = {
   slug: "real-user-monitoring",
@@ -14,7 +14,7 @@ export const RUM_PAGE: FeaturePageData = {
     heading: "WordPress Core Web Vitals monitoring from real visitor data",
     subhead:
       "See how your pages actually perform in the field. All five Core Web Vitals at the p75 percentile Google uses for ranking, sourced from real browsers on your live site, anonymous by design.",
-    primaryCta: { label: "Start monitoring Core Web Vitals free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start monitoring Core Web Vitals free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

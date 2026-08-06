@@ -50,6 +50,12 @@ auditConfig:
     # minimatch@3 chain.
     - GHSA-mh99-v99m-4gvg
 allowBuilds:
+  # Pulled in by posthog-js (marketing analytics). Its postinstall script only
+  # prints a funding message; core-js needs no build step to work as a runtime
+  # dependency. pnpm 11 writes a "set this to true or false" placeholder here on
+  # first install, which is not a valid value and fails every subsequent
+  # `pnpm install`, so this must be answered rather than left.
+  core-js: false
   esbuild: true
   # Puppeteer's postinstall downloads ~100 MB of Chromium. Disabled because
   # nothing in our pipeline launches a headless browser; impeccable's critique

@@ -1,7 +1,7 @@
 // Database cleaner feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const DATABASE_CLEANER_PAGE: FeaturePageData = {
   slug: "database-cleaner",
@@ -14,7 +14,7 @@ export const DATABASE_CLEANER_PAGE: FeaturePageData = {
     heading: "WordPress database cleanup that scans first and never guesses",
     subhead:
       "Scan the WordPress database, see a per-table inventory with owner labels, classify orphans against a signature corpus, then clean in batches. The 90-day health trend shows whether the database is shrinking or growing back.",
-    primaryCta: { label: "Start cleaning for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start cleaning for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

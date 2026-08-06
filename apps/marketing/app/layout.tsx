@@ -8,6 +8,10 @@ import {
 } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { SITE_CONFIG } from "@/lib/site";
+import { GoogleAnalytics } from "@next/third-parties/google";
+import { PostHogPageViews } from "@/components/analytics/posthog-provider";
+import { TrackSignupClicks } from "@/components/analytics/track-signup-clicks";
+import { GA_MEASUREMENT_ID, GSC_VERIFICATION, analyticsEnabled } from "@/lib/analytics";
 
 const ibmPlexSans = IBM_Plex_Sans({
   weight: ["400", "500", "600", "700"],
@@ -60,6 +64,10 @@ export const metadata: Metadata = {
   },
   robots: { index: true, follow: true },
   alternates: { canonical: SITE_CONFIG.baseUrl },
+  // Search Console HTML-tag verification. Emitted only when the token is
+  // configured, so a fork does not ship our verification tag. Removing it after
+  // verification succeeds would un-verify the property, so it stays.
+  ...(GSC_VERIFICATION ? { verification: { google: GSC_VERIFICATION } } : {}),
 };
 
 // Pre-paint theme script: runs synchronously before first paint to apply
@@ -86,9 +94,15 @@ export default function RootLayout({
         <MotionConfig reducedMotion="user">
           {children}
         </MotionConfig>
+        <PostHogPageViews />
+        <TrackSignupClicks />
         {/* Root JSON-LD: Organization + WebSite */}
         <JsonLd data={buildOrganizationLd()} />
         <JsonLd data={buildWebSiteLd()} />
+        {/* Loads nothing when the measurement ID is absent, which is the case
+            for every build except ours. next/third-parties handles App Router
+            client-side navigation, which a raw gtag snippet does not. */}
+        {analyticsEnabled.ga && <GoogleAnalytics gaId={GA_MEASUREMENT_ID} />}
       </body>
     </html>
   );

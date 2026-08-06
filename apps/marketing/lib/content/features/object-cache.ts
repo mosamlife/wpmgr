@@ -1,7 +1,7 @@
 // Object cache feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const OBJECT_CACHE_PAGE: FeaturePageData = {
   slug: "object-cache",
@@ -14,7 +14,7 @@ export const OBJECT_CACHE_PAGE: FeaturePageData = {
     heading: "Redis object cache for WordPress, managed per site from the dashboard",
     subhead:
       "Persistent object cache that accelerates logged-in users, admin screens, and every uncacheable database round-trip. Per-site key prefix, TLS, ACL, and a debug header that proves the cache is working.",
-    primaryCta: { label: "Enable object caching for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Enable object caching for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

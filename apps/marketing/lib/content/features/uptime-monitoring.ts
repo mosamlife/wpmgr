@@ -1,7 +1,7 @@
 // Uptime monitoring feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const UPTIME_MONITORING_PAGE: FeaturePageData = {
   slug: "uptime-monitoring",
@@ -14,7 +14,7 @@ export const UPTIME_MONITORING_PAGE: FeaturePageData = {
     heading: "WordPress uptime monitoring for every site in the fleet",
     subhead:
       "A fleet status matrix shows which sites are up, degraded, or down in real time. Response-time trends, TLS expiry warnings, and instant alerts mean you know before your clients do.",
-    primaryCta: { label: "Start monitoring for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start monitoring for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

@@ -1,7 +1,7 @@
 // Email deliverability feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const EMAIL_DELIVERABILITY_PAGE: FeaturePageData = {
   slug: "email-deliverability",
@@ -14,7 +14,7 @@ export const EMAIL_DELIVERABILITY_PAGE: FeaturePageData = {
     heading: "WordPress SMTP per site with a central email delivery log",
     subhead:
       "Configure outgoing email per site with SES, SendGrid, Mailgun, Postmark, or any SMTP server. Named connections, automatic failover, and a central searchable delivery log across your whole fleet.",
-    primaryCta: { label: "Configure email delivery for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Configure email delivery for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

@@ -1,7 +1,7 @@
 // Backups feature page content.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const BACKUPS_PAGE: FeaturePageData = {
   slug: "backups",
@@ -14,7 +14,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
     heading: "Incremental WordPress backups with point-in-time restore",
     subhead:
       "Schedule full and incremental backups for every site in your fleet. Restore to any snapshot with the site staying online, all without touching a shared password.",
-    primaryCta: { label: "Start backing up for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Start backing up for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {

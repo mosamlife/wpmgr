@@ -9,7 +9,7 @@ import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 import { ScrollProgress } from "@/components/motion/scroll-progress";
 import { CTABand } from "@/components/sections/cta-band";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const revalidate = 3600;
 
@@ -167,7 +167,7 @@ export default async function GuidePage({ params }: Props) {
           heading="Put this into practice with WPMgr."
           subhead="Free, self-hostable, open-source WordPress fleet management. No per-site fee."
           ctas={[
-            { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+            { label: "Get started for free", href: signupHref("guide"), variant: "primary", icon: "ArrowRight" },
             { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
           ]}
         />

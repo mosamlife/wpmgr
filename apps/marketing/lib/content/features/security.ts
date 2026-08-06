@@ -1,7 +1,7 @@
 // Security feature page content. Seeded from apps/landing SECURITY.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { FeaturePageData } from "@/lib/content/types";
-import { SITE_CONFIG } from "@/lib/site";
+import { SITE_CONFIG, signupHref } from "@/lib/site";
 
 export const SECURITY_PAGE: FeaturePageData = {
   slug: "security",
@@ -14,7 +14,7 @@ export const SECURITY_PAGE: FeaturePageData = {
     heading: "WordPress security hardening and vulnerability scanning in one dashboard",
     subhead:
       "Per-site hardening, IP ban lists, file integrity monitoring, vulnerability scanning via Wordfence Intelligence, and site-user 2FA, all opt-in and default-off, built so a mistake can never lock you out of your own sites.",
-    primaryCta: { label: "Harden your sites for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
+    primaryCta: { label: "Harden your sites for free", href: signupHref("feature-hero"), variant: "primary", icon: "ArrowRight" },
     secondaryCta: { label: "Read the code", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
   },
   problem: {
