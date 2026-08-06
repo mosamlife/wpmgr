@@ -17,7 +17,7 @@ export const HOME_HERO = {
   trust: [
     { icon: "GitFork", title: "Fork and contribute", desc: "AGPL control plane, MIT agent, PRs welcome" },
     { icon: "ServerCog", title: "Your infrastructure", desc: "Fleet data never leaves your server" },
-    { icon: "FileSearch", title: "Auditable agent", desc: "Read every line before you run it" },
+    { icon: "BadgeCheck", title: "On WordPress.org", desc: "Reviewed and listed in the plugin directory" },
   ],
   ctas: [
     { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary" as const, icon: "ArrowRight" },
@@ -433,7 +433,7 @@ export const HOME_ENROLL = {
   heading: "From zero to managed in under a minute",
   subhead:
     "No SSH, no FTP, no shared admin passwords. Three steps and the site is live on your dashboard.",
-  body: "The agent is a lightweight PHP plugin that needs only PHP 8.1+ and WordPress 6.0+. Backups use a pure-PHP streaming dump and archiver, so they work even on managed hosts that lock down shell access and the mysqldump binary.",
+  body: "The agent is a lightweight PHP plugin that needs only PHP 8.1+ and WordPress 6.2+. It is listed in the WordPress.org plugin directory as Fleet Agent Site Manager, so you can install it from your own wp-admin. Backups use a pure-PHP streaming dump and archiver, so they work even on managed hosts that lock down shell access and the mysqldump binary.",
   steps: [
     {
       n: "1",
@@ -445,7 +445,7 @@ export const HOME_ENROLL = {
       n: "2",
       icon: "KeyRound",
       title: "Push the one-time code",
-      desc: "Install the MIT-licensed agent plugin and paste the one-time code. The agent registers its signing key and the site flips from Awaiting to Connected with no page refresh.",
+      desc: "Search your Plugins screen for Fleet Agent Site Manager, install it, and paste the one-time code. The agent registers its signing key and the site flips from Awaiting to Connected with no page refresh.",
     },
     {
       n: "3",
@@ -472,7 +472,15 @@ export const HOME_FAQ: FaqItem[] = [
   },
   {
     q: "Does it work on managed or locked-down WordPress hosts?",
-    a: "Yes. The agent is a lightweight PHP plugin that needs PHP 8.1+ and WordPress 6.0+, nothing more. Backups use a pure-PHP streaming dump and archiver with no shell access and no mysqldump binary, so they work even on hosts that lock those down.",
+    a: "Yes. The agent is a lightweight PHP plugin that needs PHP 8.1+ and WordPress 6.2+, nothing more. Backups use a pure-PHP streaming dump and archiver with no shell access and no mysqldump binary, so they work even on hosts that lock those down.",
+  },
+  {
+    q: "Why is the plugin called Fleet Agent Site Manager on WordPress.org?",
+    a: "That is its listing name in the WordPress.org plugin directory, where it was reviewed and published. The project is WPMgr and the plugin is the WPMgr Agent, which is the name you will see in wp-admin once it is installed from a self-hosted build. Search the plugin directory for Fleet Agent Site Manager and you have the right one.",
+  },
+  {
+    q: "Can I install the agent with Composer?",
+    a: "Yes. The directory listing is mirrored by both Composer repositories that serve WordPress.org, so require wpackagist-plugin/fleet-agent-site-manager if your project points at wpackagist.org, or wp-plugin/fleet-agent-site-manager if it points at repo.wp-packages.org, which is what current Bedrock ships. Composer installs the directory build, which updates through composer update rather than writing to your plugins folder on its own.",
   },
   {
     q: "Is my data private?",
