@@ -12,7 +12,10 @@ import {
   useUpdateSiteSecurityPolicy,
   validateHideBackendSlug,
   validateHideBackendRedirect,
+  buildRoleOptions,
   TFA_ENABLE_NUDGE,
+  type RoleOption,
+  type SiteRole,
   type SiteSecurityPolicy,
 } from "./use-policy";
 
@@ -31,18 +34,23 @@ import {
 // mirroring the HardeningPanel pattern (no partial save confusion).
 
 // ---------------------------------------------------------------------------
-// Known WP roles available for selection
+// Roles available for selection (GH #350)
 // ---------------------------------------------------------------------------
+//
+// The role pickers offer the roles the SITE reports, not a hardcoded list of
+// the five WordPress defaults. That list was the bug: a WooCommerce site's
+// shop_manager, or a membership plugin's own tiers, could never be given a
+// password policy because they could never be selected, even though the agent
+// has always enforced the policy against whatever slug a user really holds.
+//
+// When a site has not reported its roles yet the defaults still appear, but
+// with an explicit notice saying so. See RoleCheckboxGroup.
 
-const WP_ROLES = [
-  { value: "administrator", label: "Administrator" },
-  { value: "editor", label: "Editor" },
-  { value: "author", label: "Author" },
-  { value: "contributor", label: "Contributor" },
-  { value: "subscriber", label: "Subscriber" },
-] as const;
-
-type WpRole = (typeof WP_ROLES)[number]["value"];
+// Above this many roles the picker grows a filter box. Membership and LMS
+// plugins can register dozens; the chips stay the same, they just become
+// findable. The list is also scroll-bounded so it can never push the Save
+// button off the page.
+const ROLE_FILTER_THRESHOLD = 12;
 
 const TFA_METHODS = [
   { value: "totp", label: "Authenticator app (TOTP)" },
@@ -111,6 +119,9 @@ export function PolicyPanel({
     data.hide_backend_enabled,
     data.hide_backend_slug,
     data.hide_backend_redirect,
+    // A background refetch that brings NEW site roles (the agent was upgraded,
+    // or a plugin added a role) must re-key the form so the chips rebuild.
+    (data.site_roles ?? []).map((r) => r.slug).join(","),
   ].join("|");
 
   return (
@@ -288,11 +299,11 @@ function PolicyLoaded({ siteId, initialPolicy, canWrite, section }: LoadedProps)
             />
 
             {/* Required roles */}
-            <CheckboxGroup
+            <RoleCheckboxGroup
               id="2fa-required-roles"
               legend="Required roles"
               help="Roles that must complete 2FA setup. Empty means 2FA is optional for all users."
-              options={WP_ROLES as unknown as { value: string; label: string }[]}
+              siteRoles={initialPolicy.site_roles}
               selected={policy.two_factor_required_roles}
               onChange={(role) =>
                 toggleStringInList("two_factor_required_roles", role)
@@ -384,11 +395,11 @@ function PolicyLoaded({ siteId, initialPolicy, canWrite, section }: LoadedProps)
           </div>
 
           {policy.password_min_zxcvbn_score > 0 ? (
-            <CheckboxGroup
+            <RoleCheckboxGroup
               id="pw-strength-roles"
               legend="Apply strength rule to"
               help="Roles the strength requirement applies to. Empty means all roles."
-              options={WP_ROLES as unknown as { value: string; label: string }[]}
+              siteRoles={initialPolicy.site_roles}
               selected={policy.password_min_zxcvbn_roles}
               onChange={(role) =>
                 toggleStringInList("password_min_zxcvbn_roles", role)
@@ -433,11 +444,11 @@ function PolicyLoaded({ siteId, initialPolicy, canWrite, section }: LoadedProps)
         />
 
         {policy.password_max_age_days > 0 ? (
-          <CheckboxGroup
+          <RoleCheckboxGroup
             id="pw-expiry-roles"
             legend="Apply expiry to"
             help="Roles the expiry rule applies to. Empty means all roles."
-            options={WP_ROLES as unknown as { value: string; label: string }[]}
+            siteRoles={initialPolicy.site_roles}
             selected={policy.password_expiry_roles}
             onChange={(role) =>
               toggleStringInList("password_expiry_roles", role)
@@ -754,6 +765,188 @@ function CheckboxGroup({
 }
 
 // ---------------------------------------------------------------------------
+// RoleCheckboxGroup: role chips built from the roles the SITE reports
+// ---------------------------------------------------------------------------
+
+function RoleCheckboxGroup({
+  id,
+  legend,
+  help,
+  siteRoles,
+  selected,
+  onChange,
+  disabled,
+  className = "",
+}: {
+  id: string;
+  legend: string;
+  help: string;
+  /** Roles the site reported; undefined/empty means it has not reported any. */
+  siteRoles: SiteRole[] | undefined;
+  selected: string[];
+  onChange: (slug: string) => void;
+  disabled: boolean;
+  className?: string;
+}) {
+  const [filter, setFilter] = useState("");
+  const { options, usingFallback } = buildRoleOptions(siteRoles, selected);
+
+  const needle = filter.trim().toLowerCase();
+  const visible = needle
+    ? options.filter(
+        (opt) =>
+          opt.label.toLowerCase().includes(needle) ||
+          opt.value.toLowerCase().includes(needle),
+      )
+    : options;
+
+  const helpId = `${id}-help`;
+  const noticeId = `${id}-notice`;
+  const filterId = `${id}-filter`;
+  const showFilter = options.length > ROLE_FILTER_THRESHOLD;
+
+  return (
+    <fieldset className={className}>
+      <legend className="text-sm font-medium text-[var(--color-foreground)]">
+        {legend}
+      </legend>
+      <p id={helpId} className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
+        {help}
+      </p>
+
+      {/* Honest fallback: never let the five defaults masquerade as this
+          site's real role list. */}
+      {usingFallback ? (
+        <p
+          id={noticeId}
+          role="note"
+          className="mt-2 flex items-start gap-2 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/8 px-3 py-2 text-xs text-[var(--color-foreground)]"
+        >
+          <AlertTriangle
+            aria-hidden="true"
+            className="mt-px size-3.5 shrink-0 text-[var(--color-warning)]"
+          />
+          <span>
+            This site has not reported its WordPress roles yet, so the standard
+            WordPress roles are shown below. Custom roles added by plugins, such
+            as a shop manager, are missing from this list. Update the WPMgr agent
+            on this site, or re-check the site, to load its real roles.
+          </span>
+        </p>
+      ) : null}
+
+      {showFilter ? (
+        <div className="mt-3">
+          <label htmlFor={filterId} className="sr-only">
+            Filter {legend.toLowerCase()}
+          </label>
+          <input
+            id={filterId}
+            type="search"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            disabled={disabled}
+            placeholder={`Filter ${options.length} roles by name or slug`}
+            className={[
+              "block h-8 w-full max-w-sm rounded-md border px-3 text-sm",
+              "border-[var(--color-border)] bg-[var(--color-background)]",
+              "text-[var(--color-foreground)] placeholder:text-[var(--color-muted-foreground)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+              disabled ? "cursor-not-allowed opacity-50" : "",
+            ].join(" ")}
+          />
+        </div>
+      ) : null}
+
+      <div
+        className={[
+          "mt-2 flex flex-wrap gap-2",
+          // A site with dozens of roles must not push Save off the screen.
+          showFilter ? "max-h-56 overflow-y-auto pr-1" : "",
+        ].join(" ")}
+      >
+        {visible.map((opt) => (
+          <RoleChip
+            key={opt.value}
+            groupId={id}
+            option={opt}
+            checked={selected.includes(opt.value)}
+            onChange={() => onChange(opt.value)}
+            disabled={disabled}
+            describedBy={usingFallback ? `${helpId} ${noticeId}` : helpId}
+          />
+        ))}
+        {visible.length === 0 ? (
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            No role matches that filter.
+          </p>
+        ) : null}
+      </div>
+    </fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RoleChip: one role checkbox, rendered as a chip
+// ---------------------------------------------------------------------------
+
+function RoleChip({
+  groupId,
+  option,
+  checked,
+  onChange,
+  disabled,
+  describedBy,
+}: {
+  groupId: string;
+  option: RoleOption;
+  checked: boolean;
+  onChange: () => void;
+  disabled: boolean;
+  describedBy: string;
+}) {
+  const inputId = `${groupId}-${option.value}`;
+  return (
+    <label
+      htmlFor={inputId}
+      className={[
+        "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition-colors",
+        "focus-within:ring-2 focus-within:ring-[var(--color-ring)] focus-within:ring-offset-2",
+        disabled ? "cursor-not-allowed opacity-50" : "",
+        checked
+          ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+          : "border-[var(--color-border)] bg-[var(--color-background)] text-[var(--color-foreground)] hover:bg-[var(--color-muted)]/40",
+      ].join(" ")}
+    >
+      <input
+        id={inputId}
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        className="sr-only"
+      />
+      <span>{option.label}</span>
+      {/* Two plugins can register roles with similar names, so the slug is
+          shown whenever the name alone cannot identify the role. */}
+      {option.showSlug ? (
+        <span className="font-mono text-[11px] font-normal text-[var(--color-muted-foreground)]">
+          {option.value}
+        </span>
+      ) : null}
+      {/* A role the policy still names but the site no longer has. Visible so
+          the operator can see why the rule is not applying, and removable. */}
+      {option.missing ? (
+        <span className="rounded-sm bg-[var(--color-warning-subtle)] px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--color-warning-subtle-fg)]">
+          not on this site
+        </span>
+      ) : null}
+    </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // NumberField — a compact numeric input row
 // ---------------------------------------------------------------------------
 
@@ -862,7 +1055,7 @@ function PolicySkeleton() {
 }
 
 // ---------------------------------------------------------------------------
-// WpRole export for tests
+// Type export for tests
 // ---------------------------------------------------------------------------
 
-export type { WpRole, TfaMethod };
+export type { TfaMethod };

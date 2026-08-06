@@ -39,6 +39,34 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.127",
+    date: "2026-08-06",
+    summary:
+      "The password policy on a site's Security page only offered the five roles a stock WordPress install ships with, so a WooCommerce shop manager or a membership plugin's own roles could not be given a password rule at all. The policy now offers the roles the site actually has.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The password policy on a site's Security page only ever offered administrator, editor, author, contributor and subscriber. On a WooCommerce store the roles that matter are the ones the store added: a shop manager can edit orders, refund customers and see every buyer's address, and there was no way to require a strong password of them, because there was no way to select them. Reported by an agency running a WooCommerce site whose roles are a shop manager, a translator, two customer tiers and a staff role, none of which appeared. The policy now offers the roles the site actually has, which covers membership, LMS and booking plugins too, and any role an agency created by hand for its own staff.",
+      },
+      {
+        tag: "Fixed",
+        text: "Enforcement was never the problem and has not changed. The agent has always applied a policy to whatever role a user really holds, so a rule naming a shop manager would have worked from the day it was written. What was missing was any way to write it.",
+      },
+      {
+        tag: "Fixed",
+        text: "Role names now read the way they read on the site itself. An Italian site shows \"Amministratore\" and \"Gestore negozio\", so those are the names in the policy, not their English originals. The rule itself is still stored against the underlying role identifier, so renaming or translating a role never changes who a policy covers. Where a name alone cannot identify a role, because two plugins can each add a role called \"Staff\", the identifier is shown next to it.",
+      },
+      {
+        tag: "Fixed",
+        text: "A rule that names a role the site no longer has, because the plugin that created it was deactivated, keeps that role on screen and marks it as no longer present rather than dropping it. An operator can now see why a rule stopped applying, and can remove it.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site whose agent has not yet reported its roles still shows the standard WordPress roles, but says on screen that it is doing so and that plugin-added roles are missing from the list. The silent version of that fallback is what hid this problem. Updating the agent on the site, or re-checking the site from its page, loads the real list. Sites with a large number of roles stay workable: the list is scroll-bounded, gains a filter box, and the number of roles carried per site is capped.",
+      },
+    ],
+  },
+  {
     version: "0.61.126",
     date: "2026-08-05",
     summary:

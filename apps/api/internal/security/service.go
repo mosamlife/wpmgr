@@ -57,6 +57,32 @@ type SiteLookup interface {
 	GetSiteURL(ctx context.Context, tenantID, siteID uuid.UUID) (string, error)
 }
 
+// SiteRoleLookup reads the WordPress role registry the agent last reported for
+// a site (GH #350). Implemented in main by a narrow site-service adapter that
+// reads the stored inventory document, keeping this package free of the site
+// import.
+//
+// It is DELIBERATELY a separate interface from SiteLookup rather than a method
+// added to it: the roles are read from stored inventory and never require the
+// site to be reachable, so a control plane with no agent commander wired still
+// serves them.
+//
+// A nil slice means the site has not reported its roles (the agent predates the
+// feature, or has not pushed metadata since it was installed). That is NOT the
+// same as "this site has no roles" and the policy endpoint reports it as such
+// so the dashboard can say so out loud.
+type SiteRoleLookup interface {
+	GetSiteRoles(ctx context.Context, tenantID, siteID uuid.UUID) ([]SiteRole, error)
+}
+
+// SiteRole is one WordPress role that exists on a site: the slug the policy is
+// written in, plus the display name the site shows for it (already localized by
+// the agent, so an Italian site reports "Amministratore" for `administrator`).
+type SiteRole struct {
+	Slug string
+	Name string
+}
+
 // ManagedFileRecorder persists the set of CP-managed files for a site so the
 // file-integrity scanner can suppress false-positive findings for paths that
 // WPMgr itself writes (.htaccess blocks, object-cache.php, advanced-cache.php,
@@ -108,6 +134,7 @@ type Service struct {
 	hardeningClient    AgentHardeningClient
 	policyClient       AgentPolicyClient
 	siteLookup         SiteLookup
+	siteRoleLookup     SiteRoleLookup
 	managedFileRec     ManagedFileRecorder
 	hibpDoer           HIBPDoer
 }
@@ -154,6 +181,14 @@ func (s *Service) SetPolicyClient(client AgentPolicyClient, sites SiteLookup) {
 	if s.siteLookup == nil {
 		s.siteLookup = sites
 	}
+}
+
+// SetSiteRoleLookup wires the reader for the site's WordPress role registry
+// (GH #350). Optional: when unset, GetSiteRoles reports no roles and the
+// dashboard falls back to the default WordPress roles WITH a visible notice,
+// rather than pretending the list is complete.
+func (s *Service) SetSiteRoleLookup(l SiteRoleLookup) {
+	s.siteRoleLookup = l
 }
 
 // SetHIBPDoer wires the SSRF-safe HTTP client used by the HIBP proxy. If not
@@ -812,6 +847,29 @@ func (s *Service) GetSiteSecurityPolicy(ctx context.Context, tenantID, siteID uu
 		return DefaultSiteSecurityPolicy(tenantID, siteID), nil
 	}
 	return p, nil
+}
+
+// GetSiteRoles returns the WordPress roles the site last reported.
+//
+// Returns an empty slice (never an error) when the lookup is not wired, the
+// site has never reported, or the read fails: the role list is DISCOVERY data
+// for the policy editor, and failing the whole policy read because the site's
+// inventory could not be consulted would be a worse outcome than showing the
+// operator the labelled fallback. The stored policy and its enforcement are
+// entirely independent of this call.
+//
+// No capability beyond the caller's existing site read is involved: role
+// definitions are site configuration, not user data, and this reads the same
+// stored inventory document the site detail page already serves.
+func (s *Service) GetSiteRoles(ctx context.Context, tenantID, siteID uuid.UUID) []SiteRole {
+	if s.siteRoleLookup == nil {
+		return nil
+	}
+	roles, err := s.siteRoleLookup.GetSiteRoles(ctx, tenantID, siteID)
+	if err != nil {
+		return nil
+	}
+	return roles
 }
 
 // SaveSiteSecurityPolicy validates the incoming policy, upserts it, and pushes

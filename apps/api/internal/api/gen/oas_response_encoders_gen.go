@@ -8527,7 +8527,7 @@ func encodeGetSiteLoginProtectionResponse(response *SiteLoginProtectionConfig, w
 
 func encodeGetSiteSecurityPolicyResponse(response GetSiteSecurityPolicyRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
-	case *SiteSecurityPolicy:
+	case *SiteSecurityPolicyWithRoles:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
 		span.SetStatus(codes.Ok, http.StatusText(200))
@@ -12608,7 +12608,7 @@ func encodePutSitePolicyGroupResponse(response PutSitePolicyGroupRes, w http.Res
 
 func encodePutSiteSecurityPolicyResponse(response PutSiteSecurityPolicyRes, w http.ResponseWriter, span trace.Span) error {
 	switch response := response.(type) {
-	case *SiteSecurityPolicy:
+	case *SiteSecurityPolicyWithRoles:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
 		span.SetStatus(codes.Ok, http.StatusText(200))

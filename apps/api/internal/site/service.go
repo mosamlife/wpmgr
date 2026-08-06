@@ -430,12 +430,13 @@ func fromAgentComponents(cs []agentpkg.Component) []Component {
 // sent nothing (old agent; the sink does not overwrite previously-stored
 // values in that case — see ApplyMetadata).
 func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
-	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 {
+	if m.HostFlags == nil && m.Disk == nil && m.UserCount == 0 && m.AdminCount == 0 && len(m.Roles) == 0 {
 		return nil
 	}
 	x := &MetadataExtras{
 		UserCount:  m.UserCount,
 		AdminCount: m.AdminCount,
+		Roles:      fromAgentSiteRoles(m.Roles),
 	}
 	if m.HostFlags != nil {
 		x.HostFlags = &HostFlags{
@@ -457,6 +458,52 @@ func fromAgentMetadataExtras(m agentpkg.Metadata) *MetadataExtras {
 		}
 	}
 	return x
+}
+
+// maxSiteRoles bounds how many WordPress roles are persisted for one site.
+// Membership and LMS plugins can register dozens; the agent already caps its
+// own report, and this is the control plane's independent floor so a forged or
+// corrupted push cannot grow the inventory document without limit.
+const maxSiteRoles = 200
+
+// maxSiteRoleField bounds the length of a role's slug and display name.
+const maxSiteRoleField = 100
+
+// fromAgentSiteRoles lifts and bounds the agent's WordPress role registry
+// (GH #350). Entries with no slug are dropped (the slug is the only part the
+// policy enforces against); a slug longer than the bound is dropped too, since
+// truncating it would produce something that matches nothing. Names are
+// truncated rather than dropped: they are presentational.
+//
+// Duplicate slugs are collapsed, keeping the first occurrence.
+func fromAgentSiteRoles(in []agentpkg.SiteRole) []SiteRole {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SiteRole, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, r := range in {
+		if len(out) >= maxSiteRoles {
+			break
+		}
+		slug := strings.TrimSpace(r.Slug)
+		if slug == "" || len(slug) > maxSiteRoleField {
+			continue
+		}
+		if _, dup := seen[slug]; dup {
+			continue
+		}
+		seen[slug] = struct{}{}
+		name := truncateRunes(strings.TrimSpace(r.Name), maxSiteRoleField)
+		if name == "" {
+			name = slug
+		}
+		out = append(out, SiteRole{Slug: slug, Name: name})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // fromAgentSelfUpdateResult lifts the agent's apply-beat record from the agent
@@ -667,6 +714,18 @@ func sanitizeMetadata(m Metadata) Metadata {
 // fields (the column is JSONB).
 func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID, m Metadata) (Site, error) {
 	m = sanitizeMetadata(m)
+	components, err := json.Marshal(buildInventoryPayload(m))
+	if err != nil {
+		return Site{}, domain.Internal("components_marshal_failed", "failed to encode site components").WithCause(err)
+	}
+	return s.repo.UpdateMetadata(ctx, tenantID, siteID, m, components)
+}
+
+// buildInventoryPayload assembles the JSONB inventory document a metadata push
+// stores. Split out of ApplyMetadata so the exact key set is directly testable:
+// every push REWRITES the whole document, so a key that is not added here is a
+// key the site loses.
+func buildInventoryPayload(m Metadata) map[string]any {
 	payload := map[string]any{
 		"plugins": orEmptyComponents(m.Plugins),
 		"themes":  orEmptyComponents(m.Themes),
@@ -690,6 +749,13 @@ func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID,
 		if m.Extras.AdminCount > 0 {
 			payload["admin_count"] = m.Extras.AdminCount
 		}
+		// GH #350 — the site's WordPress role registry, a sibling key to
+		// plugins/themes. Absent when the agent did not report it, which the
+		// security policy endpoint reads as "not reported yet" rather than
+		// substituting the five default roles behind the operator's back.
+		if len(m.Extras.Roles) > 0 {
+			payload["roles"] = m.Extras.Roles
+		}
 	}
 	// The agent's account of its last self-update apply beat, stored as a
 	// sibling key to plugins/themes. Absent when the agent sent nothing, exactly
@@ -698,11 +764,7 @@ func (s *Service) ApplyMetadata(ctx context.Context, tenantID, siteID uuid.UUID,
 	if m.AgentSelfUpdate != nil {
 		payload["agent_self_update"] = m.AgentSelfUpdate
 	}
-	components, err := json.Marshal(payload)
-	if err != nil {
-		return Site{}, domain.Internal("components_marshal_failed", "failed to encode site components").WithCause(err)
-	}
-	return s.repo.UpdateMetadata(ctx, tenantID, siteID, m, components)
+	return payload
 }
 
 // Heartbeat updates only liveness/health for a site.

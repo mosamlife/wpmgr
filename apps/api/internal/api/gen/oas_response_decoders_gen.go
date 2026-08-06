@@ -21346,7 +21346,7 @@ func decodeGetSiteSecurityPolicyResponse(resp *http.Response) (res GetSiteSecuri
 			}
 			d := jx.DecodeBytes(buf)
 
-			var response SiteSecurityPolicy
+			var response SiteSecurityPolicyWithRoles
 			if err := func() error {
 				if err := response.Decode(d); err != nil {
 					return err
@@ -21362,6 +21362,15 @@ func decodeGetSiteSecurityPolicyResponse(resp *http.Response) (res GetSiteSecuri
 					Err:         err,
 				}
 				return res, err
+			}
+			// Validate response.
+			if err := func() error {
+				if err := response.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return res, errors.Wrap(err, "validate")
 			}
 			return &response, nil
 		default:
@@ -31903,7 +31912,7 @@ func decodePutSiteSecurityPolicyResponse(resp *http.Response) (res PutSiteSecuri
 			}
 			d := jx.DecodeBytes(buf)
 
-			var response SiteSecurityPolicy
+			var response SiteSecurityPolicyWithRoles
 			if err := func() error {
 				if err := response.Decode(d); err != nil {
 					return err
@@ -31919,6 +31928,15 @@ func decodePutSiteSecurityPolicyResponse(resp *http.Response) (res PutSiteSecuri
 					Err:         err,
 				}
 				return res, err
+			}
+			// Validate response.
+			if err := func() error {
+				if err := response.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return res, errors.Wrap(err, "validate")
 			}
 			return &response, nil
 		default:

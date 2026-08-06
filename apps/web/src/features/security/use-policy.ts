@@ -36,6 +36,18 @@ import { toError } from "@/features/auth/use-auth";
 // Domain types — matched EXACTLY to Go policyDTO json tags (handler.go:644-661)
 // ---------------------------------------------------------------------------
 
+/**
+ * One WordPress role that actually exists on the site (GH #350).
+ *
+ * `slug` is what the policy stores and what the agent enforces against.
+ * `name` is what the site itself displays, already localized by the agent, so
+ * an Italian site sends "Amministratore" for the `administrator` slug.
+ */
+export interface SiteRole {
+  slug: string;
+  name: string;
+}
+
 /** Flat policy shape returned by GET /security/policy and sent by PUT. */
 export interface SiteSecurityPolicy {
   two_factor_enabled: boolean;
@@ -54,6 +66,16 @@ export interface SiteSecurityPolicy {
   hide_backend_slug: string;
   hide_backend_redirect: string;
   updated_at?: string;
+  /**
+   * The WordPress roles this site reported, read-only (GH #350). Sent on GET
+   * and on the PUT response so saving never collapses the role list.
+   *
+   * An empty array or an absent field means the site has NOT reported its
+   * roles: its agent predates role reporting, or it has not pushed metadata
+   * since. It does NOT mean the site has no roles, and the panel must say so
+   * rather than quietly offering only the five WordPress defaults.
+   */
+  site_roles?: SiteRole[];
 }
 
 /** The default policy a newly-created site gets (all features off). */
@@ -84,6 +106,127 @@ export const TFA_ENABLE_NUDGE = {
   two_factor_required_roles: ["administrator"],
   two_factor_methods: ["totp", "backup"],
 } as const;
+
+// ---------------------------------------------------------------------------
+// Role choices for the policy editor (GH #350)
+// ---------------------------------------------------------------------------
+
+/**
+ * The five roles a stock WordPress install ships with. Used ONLY as a labelled
+ * stand-in when a site has not reported its own roles.
+ *
+ * This list used to be the whole story, which was the bug: a WooCommerce site
+ * has shop_manager, a membership plugin adds its own tiers, and none of them
+ * could be given a password policy because none of them could be selected.
+ * Keep it as a visible fallback, never as a silent answer.
+ */
+export const DEFAULT_WP_ROLES: SiteRole[] = [
+  { slug: "administrator", name: "Administrator" },
+  { slug: "editor", name: "Editor" },
+  { slug: "author", name: "Author" },
+  { slug: "contributor", name: "Contributor" },
+  { slug: "subscriber", name: "Subscriber" },
+];
+
+/** One selectable role chip. */
+export interface RoleOption {
+  /** The role slug: what the policy stores and what the agent enforces. */
+  value: string;
+  /** The display name to render. */
+  label: string;
+  /**
+   * Render the slug alongside the name. True when the name alone cannot
+   * identify the role: it does not obviously correspond to the slug, or two
+   * roles on this site share the name.
+   */
+  showSlug: boolean;
+  /**
+   * The policy names this role but the site does not have it (any more).
+   * Kept in the list so the operator can see why a policy is not applying and
+   * can remove it. Never dropped silently.
+   */
+  missing: boolean;
+}
+
+/** The full set of choices for one role picker. */
+export interface RoleChoices {
+  options: RoleOption[];
+  /**
+   * True when the site reported no roles and DEFAULT_WP_ROLES is standing in.
+   * The panel MUST surface this; an unlabelled fallback is what hid the
+   * missing roles in the first place.
+   */
+  usingFallback: boolean;
+}
+
+/**
+ * Reduce a display name or slug to a comparable core: lowercase, letters and
+ * digits only. "Shop manager" and "shop_manager" collapse to the same value;
+ * "Amministratore" and "administrator" do not.
+ */
+function roleNameKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Build the chip options for one role picker.
+ *
+ * @param reported Roles the site reported, or undefined/empty when it has not.
+ * @param selected Role slugs the saved policy currently names.
+ */
+export function buildRoleOptions(
+  reported: SiteRole[] | undefined,
+  selected: string[],
+): RoleChoices {
+  const known = (reported ?? []).filter((r) => r.slug.trim() !== "");
+  const usingFallback = known.length === 0;
+  const base = usingFallback ? DEFAULT_WP_ROLES : known;
+
+  // Count display names so an ambiguous one can be disambiguated by its slug.
+  const nameCounts = new Map<string, number>();
+  for (const role of base) {
+    const key = roleNameKey(role.name || role.slug);
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+
+  const seen = new Set<string>();
+  const options: RoleOption[] = [];
+
+  for (const role of base) {
+    if (seen.has(role.slug)) continue;
+    seen.add(role.slug);
+    const label = role.name.trim() || role.slug;
+    const nameKey = roleNameKey(label);
+    options.push({
+      value: role.slug,
+      label,
+      showSlug: nameKey !== roleNameKey(role.slug) || (nameCounts.get(nameKey) ?? 0) > 1,
+      missing: false,
+    });
+  }
+
+  // A role the policy names that is not in the list above. It stays visible and
+  // removable: dropping it would leave an operator with a policy that quietly
+  // does nothing and no way to see why.
+  //
+  // It is only marked `missing` when the site actually told us its roles. Under
+  // the fallback we do not know the site's role set, so calling a role "not on
+  // this site" would be a guess dressed up as a fact; the fallback notice
+  // already says the list is incomplete.
+  for (const slug of selected) {
+    const trimmed = slug.trim();
+    if (trimmed === "" || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    options.push({
+      value: trimmed,
+      label: trimmed,
+      showSlug: false,
+      missing: !usingFallback,
+    });
+  }
+
+  return { options, usingFallback };
+}
 
 /** Per-role group override. Maps to policyGroupDTO in handler.go:735-743. */
 export interface PolicyGroup {

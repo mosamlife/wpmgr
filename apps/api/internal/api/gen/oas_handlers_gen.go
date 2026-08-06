@@ -29204,6 +29204,9 @@ func (s *Server) handleGetSiteLoginProtectionRequest(args [1]string, argsEscaped
 // Site-user auth policy governs 2FA and password requirements for the
 // WordPress users of this site (distinct from dashboard operator 2FA,
 // which is per-CP-user — see the two-factor-auth tag).
+// The response also carries `site_roles`, the WordPress roles that
+// actually exist on the site, so the policy editor can offer roles such
+// as WooCommerce's `shop_manager` instead of only the five defaults.
 //
 // GET /api/v1/sites/{siteId}/security/policy
 func (s *Server) handleGetSiteSecurityPolicyRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {

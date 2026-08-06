@@ -255,3 +255,74 @@ func TestMetadataDTOToleratesAnAbsentOrEmptyAgentSelfUpdateAdvisory(t *testing.T
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GH #350 — the site's WordPress role registry
+// ---------------------------------------------------------------------------
+
+// TestMetadataDTORolesDecode proves the agent's reported role registry reaches
+// the site domain with slug AND localized display name. FAILS against the
+// pre-change decoder, which had no Roles field and dropped `roles` entirely.
+func TestMetadataDTORolesDecode(t *testing.T) {
+	body := []byte(`{
+		"wp_version":"6.8",
+		"roles":[
+			{"slug":"administrator","name":"Amministratore"},
+			{"slug":"shop_manager","name":"Gestore negozio"},
+			{"slug":"customer","name":"Cliente"}
+		]
+	}`)
+	var dto metadataDTO
+	if err := json.Unmarshal(body, &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	m := dto.toMetadata()
+	if len(m.Roles) != 3 {
+		t.Fatalf("want 3 roles, got %d (%+v)", len(m.Roles), m.Roles)
+	}
+	if m.Roles[1].Slug != "shop_manager" || m.Roles[1].Name != "Gestore negozio" {
+		t.Fatalf("custom role not carried through: %+v", m.Roles[1])
+	}
+	if m.Roles[0].Name != "Amministratore" {
+		t.Fatalf("localized name must survive verbatim, got %q", m.Roles[0].Name)
+	}
+}
+
+// TestMetadataDTORolesAbsentMeansUnknown proves an agent that predates role
+// reporting yields NIL roles, not an empty slice. The distinction is the whole
+// point: nil means "this site has not told us", which the dashboard says out
+// loud instead of quietly offering only the five default roles.
+func TestMetadataDTORolesAbsentMeansUnknown(t *testing.T) {
+	var dto metadataDTO
+	if err := json.Unmarshal([]byte(`{"wp_version":"6.8"}`), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m := dto.toMetadata(); m.Roles != nil {
+		t.Fatalf("absent roles must decode as nil, got %+v", m.Roles)
+	}
+}
+
+// TestMetadataDTORolesTolerateJunk proves a slugless entry is dropped (the slug
+// is the only part the policy can enforce against) and a nameless one falls
+// back to its slug so the dashboard always has something to render.
+func TestMetadataDTORolesTolerateJunk(t *testing.T) {
+	body := []byte(`{"roles":[
+		{"slug":"","name":"No slug at all"},
+		{"slug":"  shop_manager  ","name":"  Gestore negozio  "},
+		{"slug":"nameless"}
+	]}`)
+	var dto metadataDTO
+	if err := json.Unmarshal(body, &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	m := dto.toMetadata()
+	if len(m.Roles) != 2 {
+		t.Fatalf("want 2 usable roles, got %+v", m.Roles)
+	}
+	if m.Roles[0].Slug != "shop_manager" || m.Roles[0].Name != "Gestore negozio" {
+		t.Fatalf("whitespace not trimmed: %+v", m.Roles[0])
+	}
+	if m.Roles[1].Slug != "nameless" || m.Roles[1].Name != "nameless" {
+		t.Fatalf("nameless role must fall back to its slug: %+v", m.Roles[1])
+	}
+}

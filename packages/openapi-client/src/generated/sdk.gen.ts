@@ -5715,6 +5715,10 @@ export const deleteSiteBan = <ThrowOnError extends boolean = false>(
  * WordPress users of this site (distinct from dashboard operator 2FA,
  * which is per-CP-user — see the two-factor-auth tag).
  *
+ * The response also carries `site_roles`, the WordPress roles that
+ * actually exist on the site, so the policy editor can offer roles such
+ * as WooCommerce's `shop_manager` instead of only the five defaults.
+ *
  */
 export const getSiteSecurityPolicy = <ThrowOnError extends boolean = false>(
   options: Options<GetSiteSecurityPolicyData, ThrowOnError>,
