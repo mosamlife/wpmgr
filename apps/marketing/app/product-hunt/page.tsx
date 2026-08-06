@@ -64,6 +64,11 @@ const OPEN_SOURCE_POINTS = [
     title: "Ed25519-signed agent releases",
     desc: "Every agent release is cryptographically signed. The control plane verifies the signature before trusting any agent payload.",
   },
+  {
+    icon: "BadgeCheck",
+    title: "Reviewed and listed on WordPress.org",
+    desc: "The agent passed the WordPress.org plugin review and is published in the official directory as Fleet Agent Site Manager, so you can install it from your own wp-admin.",
+  },
 ] as const;
 
 // Product Hunt landing. noindex per spec (PH thank-you variant).
