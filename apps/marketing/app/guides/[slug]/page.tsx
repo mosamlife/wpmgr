@@ -55,7 +55,7 @@ export default async function GuidePage({ params }: Props) {
     { name: "Home", href: "/" },
     { name: "Resources", href: "/resources" },
     { name: "Guides", href: "/guides" },
-    { name: fm.title, href: `/guides/${slug}/` },
+    { name: fm.title, href: `/guides/${slug}` },
   ]);
 
   const articleLd = buildArticleLd({

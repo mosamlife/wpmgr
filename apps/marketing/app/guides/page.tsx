@@ -52,7 +52,7 @@ export default function GuidesIndexPage() {
     GUIDES.map((g) => ({
       name: g.title,
       description: g.description,
-      url: `/guides/${g.slug}/`,
+      url: `/guides/${g.slug}`,
     })),
   );
 

@@ -104,7 +104,7 @@ export default function FeaturesHubPage() {
     c.features.map((f) => ({
       name: f.title,
       description: f.summary,
-      url: `/features/${f.slug}/`,
+      url: `/features/${f.slug}`,
     })),
   );
 

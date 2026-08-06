@@ -37,7 +37,7 @@ export const FEATURES_COLUMNS: FeaturesColumn[] = HUB_CLUSTERS.map(
     name: cluster.name,
     tagline: cluster.tagline,
     rows: cluster.features.map((f) => ({
-      href: `/features/${f.slug}/`,
+      href: `/features/${f.slug}`,
       icon: f.icon,
       title: f.title,
       summary: f.summary,
@@ -58,7 +58,7 @@ export const SOLUTIONS_COLUMNS: SolutionsColumn[] = [
   {
     label: "By audience",
     rows: SOLUTION_HUB_CARDS.filter((c: SolutionHubCard) => c.group === "audience").map((c) => ({
-      href: `/solutions/${c.slug}/`,
+      href: `/solutions/${c.slug}`,
       icon: c.icon,
       title: c.title,
       summary: c.summary,
@@ -67,7 +67,7 @@ export const SOLUTIONS_COLUMNS: SolutionsColumn[] = [
   {
     label: "By job to be done",
     rows: SOLUTION_HUB_CARDS.filter((c: SolutionHubCard) => c.group === "jtbd").map((c) => ({
-      href: `/solutions/${c.slug}/`,
+      href: `/solutions/${c.slug}`,
       icon: c.icon,
       title: c.title,
       summary: c.summary,

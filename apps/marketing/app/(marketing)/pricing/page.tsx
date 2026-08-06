@@ -48,7 +48,7 @@ export default async function PricingPage() {
           price: String(tierPrice.usd.amountMajor),
           priceCurrency: "USD",
           description: tier.audience,
-          url: `${SITE_CONFIG.baseUrl}/pricing/`,
+          url: `${SITE_CONFIG.baseUrl}/pricing`,
         },
       ];
       if (tierPrice.inr) {
@@ -58,7 +58,7 @@ export default async function PricingPage() {
           price: String(tierPrice.inr.amountMajor),
           priceCurrency: "INR",
           description: tier.audience,
-          url: `${SITE_CONFIG.baseUrl}/pricing/`,
+          url: `${SITE_CONFIG.baseUrl}/pricing`,
         });
       }
       return offers;
