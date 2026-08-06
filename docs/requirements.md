@@ -5,7 +5,7 @@ These are the system requirements for running the WPMgr control plane
 are architecture-derived estimates, not load-tested benchmarks; see
 [Caveats](#caveats) before you provision hardware. They do not cover the
 managed WordPress hosts themselves: the agent plugin only needs PHP 8.1+ and
-WordPress 6.0+, see [agent.md](./agent.md).
+WordPress 6.2+, see [agent.md](./agent.md).
 
 ## Host prerequisites
 

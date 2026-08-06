@@ -16,11 +16,10 @@ The original Phase 0-6 plan is complete and in production:
 - **Security suite** — hardening + login bans, file integrity, site-user 2FA + password policy, vulnerability scanner (Wordfence Intelligence feed), File Manager (jailed, audited, off by default).
 - **Agency** — white-label client reports, branded client portal, client invites.
 - **Email** — instance SMTP, alert/digest cadences, fleet deliverability dashboard.
-- **Distribution** — OSS releases (GHCR images + agent zip), marketing site (wpmgr.app), WordPress.org agent submission (in review).
+- **Distribution** — OSS releases (GHCR images + agent zip), marketing site (wpmgr.app), WordPress.org plugin directory listing (`fleet-agent-site-manager`, live since 2026-08-06).
 
 ## In flight
 
-- [ ] **WordPress.org listing** — agent submitted as "Fleet Agent Site Manager"; passed the automated scans' real finding (2FA resume binding, fixed 0.61.9); awaiting human review. Crux item: autologin (established management-plugin precedent). Fallback if rejected: strip autologin + file-write from the wp.org build only.
 - [ ] **Patchstack decision** — research complete (docs/security/ internal). Recommended: Phase 0 provider abstraction + Phase 1a BYO App-API-key co-existence; paid feed/vPatch only via a for-Hosts contract. Awaiting go/no-go.
 
 ## Next up (priority order)
