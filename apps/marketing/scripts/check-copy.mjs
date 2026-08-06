@@ -25,9 +25,19 @@
 // log strings. Those are machine-to-machine and are not part of the shipped
 // listing or of any screen a site owner reads.
 //
-// Run at build time via the "check-copy" and "build" scripts in package.json,
-// and in ci.yml (Security audit job) so a PR that never builds the marketing
-// site still cannot land a violation.
+// WHERE THIS RUNS, and one place it deliberately does NOT.
+//
+// It runs in ci.yml (Security audit job) against a full repo checkout, and on
+// demand via the "check-copy" script in package.json. It is NOT part of the
+// marketing "build" script, and must not be added back to it. Scope (2) reads
+// apps/agent, while Dockerfile.marketing copies only apps/marketing, packages
+// and the root manifests, so inside the production image build those files are
+// absent and the gate fails on every one of them. That is the correct answer
+// to the question it was asked, which is exactly why the question is wrong
+// there: a repo-wide copy lint is not a step in one app's image build.
+//
+// CI is also the stronger placement. It sees all 366 files; the Docker build
+// could never see the agent at all.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
