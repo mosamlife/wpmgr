@@ -41,7 +41,7 @@ export function LegalPage({
               Home
             </Link>
             <span aria-hidden>/</span>
-            <Link href="/legal/" className="hover:text-foreground transition-colors">
+            <Link href="/legal" className="hover:text-foreground transition-colors">
               Legal
             </Link>
             <span aria-hidden>/</span>
@@ -93,7 +93,7 @@ export function LegalPage({
                 </p>
               </div>
               <Link
-                href="/contact/"
+                href="/contact"
                 className="inline-flex items-center justify-center gap-2 rounded-[var(--radius)] bg-primary px-5 py-2.5 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] whitespace-nowrap"
               >
                 <Icon name="Mail" size={15} />

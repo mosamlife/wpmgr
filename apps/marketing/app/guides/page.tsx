@@ -44,8 +44,8 @@ const GUIDES = [
 export default function GuidesIndexPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Resources", href: "/resources/" },
-    { name: "Guides", href: "/guides/" },
+    { name: "Resources", href: "/resources" },
+    { name: "Guides", href: "/guides" },
   ]);
 
   const itemList = buildItemListLd(
@@ -73,7 +73,7 @@ export default function GuidesIndexPage() {
                 Home
               </Link>
               <span aria-hidden>/</span>
-              <Link href="/resources/" className="hover:text-foreground transition-colors">
+              <Link href="/resources" className="hover:text-foreground transition-colors">
                 Resources
               </Link>
               <span aria-hidden>/</span>
@@ -101,7 +101,7 @@ export default function GuidesIndexPage() {
               {GUIDES.map((guide) => (
                 <li key={guide.slug}>
                   <Link
-                    href={`/guides/${guide.slug}/`}
+                    href={`/guides/${guide.slug}`}
                     className="group flex h-full flex-col rounded-xl border border-[var(--border)] bg-card p-7 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                   >
                     {/* Icon */}
@@ -168,19 +168,19 @@ export default function GuidesIndexPage() {
                   icon: "DatabaseBackup",
                   title: "Automated backups",
                   desc: "Scheduled incremental backups with point-in-time restore across your whole fleet.",
-                  href: "/features/backups/",
+                  href: "/features/backups",
                 },
                 {
                   icon: "ShieldCheck",
                   title: "Security suite",
                   desc: "Hardening rules, file integrity scanning, vulnerability detection, and IP ban lists.",
-                  href: "/features/security/",
+                  href: "/features/security",
                 },
                 {
                   icon: "Gauge",
                   title: "Performance and caching",
                   desc: "Full-page caching, AVIF and WebP media, Redis object cache, and Core Web Vitals from real visitors.",
-                  href: "/features/performance/",
+                  href: "/features/performance",
                 },
               ].map((item) => (
                 <Link

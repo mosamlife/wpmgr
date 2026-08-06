@@ -45,7 +45,7 @@ export default async function SolutionSlugPage({
 
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Solutions", href: "/solutions/" },
+    { name: "Solutions", href: "/solutions" },
     { name: solution.title, href: `/solutions/${slug}/` },
   ]);
 

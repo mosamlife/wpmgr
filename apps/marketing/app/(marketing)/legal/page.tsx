@@ -19,7 +19,7 @@ const LEGAL_ITEMS = [
     title: "Security Policy",
     description:
       "Responsible disclosure scope and process, our security posture (Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups), and how to report a vulnerability.",
-    href: "/legal/security-policy/",
+    href: "/legal/security-policy",
     external: false,
     cta: "Read the security policy",
   },
@@ -28,7 +28,7 @@ const LEGAL_ITEMS = [
     title: "Terms of Service",
     description:
       "Terms governing use of the WPMgr hosted service at manage.wpmgr.app, including subscription billing through your chosen provider. The self-hosted control plane and MIT-licensed agent are governed by their respective open-source licenses (AGPL-3.0 / MIT).",
-    href: "/terms/",
+    href: "/terms",
     external: false,
     cta: "View terms",
   },
@@ -37,7 +37,7 @@ const LEGAL_ITEMS = [
     title: "Privacy Policy",
     description:
       "How WPMgr collects, uses, and stores data from hosted service users, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle. The agent is privacy-first and off-by-default.",
-    href: "/privacy/",
+    href: "/privacy",
     external: false,
     cta: "View privacy policy",
   },
@@ -46,7 +46,7 @@ const LEGAL_ITEMS = [
     title: "Refund Policy",
     description:
       "Cancel a monthly subscription anytime. First-time subscribers are covered by a 14-day money-back guarantee, refunded through your original payment provider.",
-    href: "/refunds/",
+    href: "/refunds",
     external: false,
     cta: "View refund policy",
   },
@@ -64,7 +64,7 @@ const LEGAL_ITEMS = [
 export default function LegalPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Legal", href: "/legal/" },
+    { name: "Legal", href: "/legal" },
   ]);
 
   return (

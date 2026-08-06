@@ -40,7 +40,7 @@ function FeatureCard({ slug, icon, title, summary }: {
 }) {
   return (
     <Link
-      href={`/features/${slug}/`}
+      href={`/features/${slug}`}
       className={cn(
         "group flex h-full flex-col gap-3 rounded-xl border border-[var(--border)] bg-card p-5 shadow-sm",
         "transition-all duration-[var(--duration-base)] hover:shadow-md hover:scale-[1.02] hover:border-[var(--primary)]/30",
@@ -110,7 +110,7 @@ export default function FeaturesHubPage() {
 
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Features", href: "/features/" },
+    { name: "Features", href: "/features" },
   ]);
 
   const itemListLd = buildItemListLd(allFeatures);

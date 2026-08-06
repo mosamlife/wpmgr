@@ -16,7 +16,7 @@ export const HOSTING_PROVIDERS_SOLUTION: SolutionPageData = {
     subhead:
       "Offer your customers a self-service WordPress management layer without building it from scratch. Open-source, AGPL-licensed, and designed to run on the infrastructure you already operate.",
     primaryCta: { label: "Explore the code", href: SITE_CONFIG.github, variant: "primary", icon: "Github" },
-    secondaryCta: { label: "See all features", href: "/features/", variant: "secondary", icon: "ArrowRight" },
+    secondaryCta: { label: "See all features", href: "/features", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {
     heading: "A managed-WordPress layer without the engineering cost",
@@ -28,21 +28,21 @@ export const HOSTING_PROVIDERS_SOLUTION: SolutionPageData = {
       icon: "Users",
       title: "Team and access control",
       summary: "Four permission roles, per-site sharing, OIDC SSO, and a tamper-evident audit log so your support team can operate safely.",
-      href: "/features/team-access/",
+      href: "/features/team-access",
     },
     {
       featureSlug: "security",
       icon: "ShieldCheck",
       title: "Security hardening suite",
       summary: "Hardening rules, file integrity monitoring, vulnerability scanning powered by Wordfence Intelligence, and IP ban lists across the fleet.",
-      href: "/features/security/",
+      href: "/features/security",
     },
     {
       featureSlug: "uptime-monitoring",
       icon: "Activity",
       title: "Uptime and health monitoring",
       summary: "Per-site uptime checks, TLS expiry alerts, and a fleet status matrix that gives your support team an instant overview.",
-      href: "/features/uptime-monitoring/",
+      href: "/features/uptime-monitoring",
     },
   ],
   stats: [

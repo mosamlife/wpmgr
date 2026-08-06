@@ -98,10 +98,10 @@ export const TWO_FACTOR_AUTH_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Security suite", href: "/features/security/" },
-    { label: "Team and access control", href: "/features/team-access/" },
+    { label: "Security suite", href: "/features/security" },
+    { label: "Team and access control", href: "/features/team-access" },
   ],
   solutionLinks: [
-    { label: "WordPress security solutions", href: "/solutions/wordpress-security/" },
+    { label: "WordPress security solutions", href: "/solutions/wordpress-security" },
   ],
 };

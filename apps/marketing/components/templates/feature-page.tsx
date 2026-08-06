@@ -66,7 +66,7 @@ function Breadcrumb({ title }: { title: string }) {
           </li>
           <li aria-hidden className="select-none">/</li>
           <li>
-            <Link href="/features/" className="transition-colors hover:text-foreground">
+            <Link href="/features" className="transition-colors hover:text-foreground">
               Features
             </Link>
           </li>

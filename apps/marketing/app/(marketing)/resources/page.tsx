@@ -19,7 +19,7 @@ const RESOURCES = [
     title: "Blog",
     description:
       "Practical articles on WordPress security, performance, backups, and agency operations.",
-    href: "/blog/",
+    href: "/blog",
     external: false,
     cta: "Browse articles",
   },
@@ -28,7 +28,7 @@ const RESOURCES = [
     title: "Guides",
     description:
       "Cornerstone long-form guides: WordPress maintenance from start to finish, and Core Web Vitals optimisation.",
-    href: "/guides/wordpress-maintenance/",
+    href: "/guides/wordpress-maintenance",
     external: false,
     cta: "Read the guides",
   },
@@ -37,7 +37,7 @@ const RESOURCES = [
     title: "Changelog",
     description:
       "Every release, every fix, every new feature, newest first. See what shipped and when.",
-    href: "/changelog/",
+    href: "/changelog",
     external: false,
     cta: "View changelog",
   },
@@ -55,7 +55,7 @@ const RESOURCES = [
 export default function ResourcesPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Resources", href: "/resources/" },
+    { name: "Resources", href: "/resources" },
   ]);
 
   return (
@@ -167,7 +167,7 @@ export default function ResourcesPage() {
             ].map((item) => (
               <li key={item.cat}>
                 <Link
-                  href={`/blog/${item.cat}/`}
+                  href={`/blog/${item.cat}`}
                   className="flex h-full flex-col gap-3 rounded-xl border border-[var(--border)] bg-card p-5 transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-[var(--primary)]/10 text-[var(--primary)]">

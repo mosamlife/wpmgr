@@ -98,10 +98,10 @@ export const EMAIL_DELIVERABILITY_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "White-label reports", href: "/features/client-reports/" },
-    { label: "Uptime and health monitoring", href: "/features/uptime-monitoring/" },
+    { label: "White-label reports", href: "/features/client-reports" },
+    { label: "Uptime and health monitoring", href: "/features/uptime-monitoring" },
   ],
   solutionLinks: [
-    { label: "WPMgr for agencies", href: "/solutions/agencies/" },
+    { label: "WPMgr for agencies", href: "/solutions/agencies" },
   ],
 };

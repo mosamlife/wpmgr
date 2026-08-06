@@ -98,10 +98,10 @@ export const CLIENT_REPORTS_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Per-site email and deliverability", href: "/features/email-deliverability/" },
-    { label: "Team and access control", href: "/features/team-access/" },
+    { label: "Per-site email and deliverability", href: "/features/email-deliverability" },
+    { label: "Team and access control", href: "/features/team-access" },
   ],
   solutionLinks: [
-    { label: "WPMgr for agencies", href: "/solutions/agencies/" },
+    { label: "WPMgr for agencies", href: "/solutions/agencies" },
   ],
 };

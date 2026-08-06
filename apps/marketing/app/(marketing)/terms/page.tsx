@@ -68,8 +68,8 @@ const razorpayLink = (
 export default function TermsPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Legal", href: "/legal/" },
-    { name: "Terms of Service", href: "/terms/" },
+    { name: "Legal", href: "/legal" },
+    { name: "Terms of Service", href: "/terms" },
   ]);
 
   return (

@@ -98,10 +98,10 @@ export const DATABASE_CLEANER_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Backups and restore", href: "/features/backups/" },
-    { label: "Performance and page caching", href: "/features/performance/" },
+    { label: "Backups and restore", href: "/features/backups" },
+    { label: "Performance and page caching", href: "/features/performance" },
   ],
   solutionLinks: [
-    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites/" },
+    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites" },
   ],
 };

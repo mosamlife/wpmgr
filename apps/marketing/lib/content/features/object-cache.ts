@@ -98,10 +98,10 @@ export const OBJECT_CACHE_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Performance and page caching", href: "/features/performance/" },
-    { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
+    { label: "Performance and page caching", href: "/features/performance" },
+    { label: "Real User Monitoring", href: "/features/real-user-monitoring" },
   ],
   solutionLinks: [
-    { label: "Speed up WordPress", href: "/solutions/wordpress-performance/" },
+    { label: "Speed up WordPress", href: "/solutions/wordpress-performance" },
   ],
 };

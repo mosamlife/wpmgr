@@ -106,11 +106,11 @@ export const FILE_MANAGER_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Security suite", href: "/features/security/" },
-    { label: "Backups and restore", href: "/features/backups/" },
-    { label: "Team and access control", href: "/features/team-access/" },
+    { label: "Security suite", href: "/features/security" },
+    { label: "Backups and restore", href: "/features/backups" },
+    { label: "Team and access control", href: "/features/team-access" },
   ],
   solutionLinks: [
-    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites/" },
+    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites" },
   ],
 };

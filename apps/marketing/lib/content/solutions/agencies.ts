@@ -16,7 +16,7 @@ export const AGENCIES_SOLUTION: SolutionPageData = {
     subhead:
       "Run every client site from one dashboard. Deliver white-label maintenance reports, automate backups before every update, and give each team member exactly the access they need, without sharing passwords or switching accounts.",
     primaryCta: { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
-    secondaryCta: { label: "See the features", href: "/features/", variant: "secondary", icon: "ArrowRight" },
+    secondaryCta: { label: "See the features", href: "/features", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {
     heading: "From reactive support to proactive client service",
@@ -28,28 +28,28 @@ export const AGENCIES_SOLUTION: SolutionPageData = {
       icon: "ScrollText",
       title: "White-label reports",
       summary: "Branded maintenance reports by email or PDF, on a schedule or on demand, with your logo and your client's domain front and centre.",
-      href: "/features/client-reports/",
+      href: "/features/client-reports",
     },
     {
       featureSlug: "email-deliverability",
       icon: "MailCheck",
       title: "Per-site email and delivery log",
       summary: "Route each client site through SES, SendGrid, Mailgun, Postmark, or SMTP, with a central delivery log so you can audit every sent message.",
-      href: "/features/email-deliverability/",
+      href: "/features/email-deliverability",
     },
     {
       featureSlug: "team-access",
       icon: "Users",
       title: "Team and access control",
       summary: "Four roles, per-site sharing, OIDC SSO, and a tamper-evident audit log that shows who changed what and when.",
-      href: "/features/team-access/",
+      href: "/features/team-access",
     },
     {
       featureSlug: "backups",
       icon: "DatabaseBackup",
       title: "Automated backups",
       summary: "Scheduled incremental backups with fleet-wide backup health. Restore any client site to any snapshot without taking it offline.",
-      href: "/features/backups/",
+      href: "/features/backups",
     },
   ],
   stats: [

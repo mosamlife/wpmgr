@@ -44,7 +44,7 @@ export default function BlogIndexPage() {
 
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Blog", href: "/blog/" },
+    { name: "Blog", href: "/blog" },
   ]);
 
   return (
@@ -80,7 +80,7 @@ export default function BlogIndexPage() {
                 return (
                   <Link
                     key={cat}
-                    href={`/blog/${cat}/`}
+                    href={`/blog/${cat}`}
                     className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-card px-4 py-1.5 text-sm font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                   >
                     {meta.label}
@@ -109,7 +109,7 @@ export default function BlogIndexPage() {
                   return (
                     <li key={`${frontmatter.category}/${frontmatter.slug}`}>
                       <Link
-                        href={`/blog/${frontmatter.category}/${frontmatter.slug}/`}
+                        href={`/blog/${frontmatter.category}/${frontmatter.slug}`}
                         className="group flex h-full flex-col rounded-xl border border-[var(--border)] bg-card p-6 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                       >
                         <div className="mb-4 flex items-center gap-3">

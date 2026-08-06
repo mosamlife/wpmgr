@@ -102,11 +102,11 @@ export const BACKUPS_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Database Cleaner", href: "/features/database-cleaner/" },
-    { label: "Safe Fleet Updates", href: "/features/updates/" },
+    { label: "Database Cleaner", href: "/features/database-cleaner" },
+    { label: "Safe Fleet Updates", href: "/features/updates" },
   ],
   solutionLinks: [
-    { label: "WordPress backup solutions", href: "/solutions/wordpress-backups/" },
-    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites/" },
+    { label: "WordPress backup solutions", href: "/solutions/wordpress-backups" },
+    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites" },
   ],
 };

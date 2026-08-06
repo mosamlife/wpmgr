@@ -16,7 +16,7 @@ export const WORDPRESS_BACKUPS_SOLUTION: SolutionPageData = {
     subhead:
       "Incremental backups on a schedule you control, stored where you choose, with point-in-time restore that keeps the site online. One dashboard shows backup health across every site so nothing falls through the cracks.",
     primaryCta: { label: "Start backing up for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
-    secondaryCta: { label: "How backups work", href: "/features/backups/", variant: "secondary", icon: "ArrowRight" },
+    secondaryCta: { label: "How backups work", href: "/features/backups", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {
     heading: "A clean backup on record before every change",
@@ -28,14 +28,14 @@ export const WORDPRESS_BACKUPS_SOLUTION: SolutionPageData = {
       icon: "DatabaseBackup",
       title: "Incremental backups and restore",
       summary: "Content-addressed incremental backups with fleet-wide health view, automatic pre-update snapshots, and point-in-time restore without downtime.",
-      href: "/features/backups/",
+      href: "/features/backups",
     },
     {
       featureSlug: "database-cleaner",
       icon: "DatabaseZap",
       title: "Database cleaner",
       summary: "Per-table scan with orphan classification, 90-day size trend, and fleet-wide view so your backups stay lean and restore faster.",
-      href: "/features/database-cleaner/",
+      href: "/features/database-cleaner",
     },
   ],
   stats: [

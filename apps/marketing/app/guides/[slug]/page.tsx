@@ -48,8 +48,8 @@ export default async function GuidePage({ params }: Props) {
 
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Resources", href: "/resources/" },
-    { name: "Guides", href: "/guides/" },
+    { name: "Resources", href: "/resources" },
+    { name: "Guides", href: "/guides" },
     { name: fm.title, href: `/guides/${slug}/` },
   ]);
 
@@ -88,7 +88,7 @@ export default async function GuidePage({ params }: Props) {
             >
               <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
               <span aria-hidden>/</span>
-              <Link href="/resources/" className="hover:text-foreground transition-colors">Resources</Link>
+              <Link href="/resources" className="hover:text-foreground transition-colors">Resources</Link>
               <span aria-hidden>/</span>
               <span className="text-foreground line-clamp-1 max-w-[200px] sm:max-w-none">
                 {fm.title}
@@ -132,7 +132,7 @@ export default async function GuidePage({ params }: Props) {
               <div>
                 <p className="text-sm text-[var(--muted-foreground)]">More guides</p>
                 <Link
-                  href="/resources/"
+                  href="/resources"
                   className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                 >
                   Back to Resources
@@ -142,7 +142,7 @@ export default async function GuidePage({ params }: Props) {
                 <div>
                   <p className="text-sm text-[var(--muted-foreground)]">Related feature</p>
                   <Link
-                    href={`/features/${fm.featureSlug}/`}
+                    href={`/features/${fm.featureSlug}`}
                     className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                   >
                     Explore the feature
@@ -152,7 +152,7 @@ export default async function GuidePage({ params }: Props) {
               <div>
                 <p className="text-sm text-[var(--muted-foreground)]">Browse all features</p>
                 <Link
-                  href="/features/"
+                  href="/features"
                   className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                 >
                   Feature overview

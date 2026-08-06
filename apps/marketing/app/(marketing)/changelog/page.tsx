@@ -424,7 +424,7 @@ const RELEASES: ChangeEntry[] = [
         text: "A rollout's halt banner could read \"The rollout was halted before any site could be contacted\" for a site that was, in fact, contacted and answered, when all that actually happened was the site politely declining the update rather than failing or never receiving it at all. The summary now counts a declined site as contacted and says so plainly.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.109",
@@ -467,7 +467,7 @@ const RELEASES: ChangeEntry[] = [
         text: "When a confirmation times out, the explanation the dashboard shows now holds the agent's leftover apply record to the same standard: a record that cannot be tied to the run that timed out is still shown in full, but it is no longer described as an account of what happened in this run.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.107",
@@ -498,7 +498,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Some situations where the install step decided not to proceed used to leave no record at all. Every outcome is now recorded and reported back, so the dashboard can say why, and only one install can ever run at a time even if two requests start together.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.105",
@@ -514,7 +514,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Nothing raised PHP's execution time limit while an update was being applied, so on hosts that stop scripts after 30 seconds by default, an update could be cut off even within its own download budget. The apply step now raises it to 900 seconds, the same bound the ordinary plugin update path uses, before the download starts.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.104",
@@ -534,7 +534,7 @@ const RELEASES: ChangeEntry[] = [
         text: "More broadly, the control plane checked only whether a command reached a site, not whether the agent accepted it. A refused rollback could be recorded as \"rolled back\", an update dry run was always recorded as successful, and some jobs would wait forever for a result a refusal never sends. All of these now treat a refusal as a failure. If you're reviewing past update history, a task marked rolled back may not have been, for this reason.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.103",
@@ -558,7 +558,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Downloading the agent package no longer fails partway through on a slow connection; a download that genuinely stops making progress is still ended. Shutting down the control plane now waits for in-progress agent downloads to finish.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.102",
@@ -631,7 +631,7 @@ const RELEASES: ChangeEntry[] = [
         text: "The switch that turns on the fleet-wide agent update from 0.61.98 wasn't reported to the dashboard, so the action stayed hidden even once an operator enabled it. It's now reported correctly; the feature still ships off by default.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.98",
@@ -655,7 +655,7 @@ const RELEASES: ChangeEntry[] = [
         text: "A rollout whose target version stopped being published partway through now stops instead of reporting success.",
       },
     ],
-    featureLinks: [{ label: "Updates", href: "/features/updates/" }],
+    featureLinks: [{ label: "Updates", href: "/features/updates" }],
   },
   {
     version: "0.61.97",
@@ -698,7 +698,7 @@ const RELEASES: ChangeEntry[] = [
         text: "The backup delete dialog said deleting a backup reclaims the site's storage, which was not true since the site's own temporary files stayed on the host; the wording now says what actually happens.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.93",
@@ -1030,7 +1030,7 @@ const RELEASES: ChangeEntry[] = [
         text: "The RUM beacon key could get permanently stuck: if the one-time delivery of the key to a site was ever lost, the site kept showing RUM as enabled while silently collecting nothing. The control plane now tracks whether the site has actually confirmed it holds a key and automatically reissues one when it is missing. A manual \"Rotate beacon key\" action was added, and the dashboard now warns when RUM is on but unconfirmed.",
       },
     ],
-    featureLinks: [{ label: "Real User Monitoring", href: "/features/real-user-monitoring/" }],
+    featureLinks: [{ label: "Real User Monitoring", href: "/features/real-user-monitoring" }],
   },
   {
     version: "0.61.37",
@@ -1042,7 +1042,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Turning on \"hide login\" showed a harmless but alarming \"policy stored but agent push failed\" error even though it saved and applied correctly. More seriously, the secret login URL did not show a login form at all (it bounced to the home page), which could leave you unable to sign in through the browser. The secret URL now serves the login form correctly while the default wp-login.php stays hidden. Review also closed two smaller gaps: the secret URL is no longer exposed in page links to logged-out visitors, and the access cookie is now signed so it cannot be forged.",
       },
     ],
-    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
+    featureLinks: [{ label: "Security suite", href: "/features/security" }],
   },
   {
     version: "0.61.36",
@@ -1054,7 +1054,7 @@ const RELEASES: ChangeEntry[] = [
         text: "An incremental backup could fail with a \"stalled\" error because retention cleanup had deleted a parent snapshot's file-list data while it was still needed, permanently breaking the chain. Retention now always protects the completed snapshot at each chain position and, as a ground-truth safety net, never deletes data that any surviving snapshot still references. A broken chain now fails fast with a clear \"run a full backup\" message instead of stalling silently.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.35",
@@ -1067,8 +1067,8 @@ const RELEASES: ChangeEntry[] = [
       },
     ],
     featureLinks: [
-      { label: "Security suite", href: "/features/security/" },
-      { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
+      { label: "Security suite", href: "/features/security" },
+      { label: "Real User Monitoring", href: "/features/real-user-monitoring" },
     ],
   },
   {
@@ -1089,7 +1089,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Hosted service only: managed backup storage is now a paid-plan feature. On the free plan, backups target your own storage (a local folder or your own S3-compatible bucket) instead. Self-hosted installs are unaffected and always keep managed storage, and restoring an existing backup is never restricted.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.31",
@@ -1105,7 +1105,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Restore could also silently drop plugin or theme files whose path happened to contain a reserved drop-in name (for example a plugin's own class-db.php), leaving the site broken while the restore reported success. Restore now matches its protected-file exclusions by exact path instead of substring, so only genuine WordPress root drop-ins and config files are held back. Sites affected by an earlier restore can recover by re-restoring from the same snapshot.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.30",
@@ -1121,7 +1121,7 @@ const RELEASES: ChangeEntry[] = [
         text: "An ongoing incident previously showed the wrong severity (\"Degraded\" for a site that was down), a duration that read \"NaNh\", and a blank site name; incidents now show the correct severity, read \"ongoing\" while open, and always show the site name. Also fixed: unreadable dropdown menus in dark mode, two dead breadcrumb links, and an \"Open site\" action that did nothing.",
       },
     ],
-    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring/" }],
+    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring" }],
   },
   {
     version: "0.61.26",
@@ -1141,7 +1141,7 @@ const RELEASES: ChangeEntry[] = [
         text: "The audit log recorded \"Emailed: Yes\" for a downtime alert whenever recipients were configured, even when the send was skipped or failed. It now records the true outcome (Sent, Skipped, or Failed) with the reason, for both email and webhook delivery.",
       },
     ],
-    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring/" }],
+    featureLinks: [{ label: "Uptime monitoring", href: "/features/uptime-monitoring" }],
   },
   {
     version: "0.61.17",
@@ -1157,7 +1157,7 @@ const RELEASES: ChangeEntry[] = [
         text: "A batch of failed or zero-byte runs needs one plain confirmation; a batch containing any completed backup asks you to type one phrase for the whole batch. Deleting a snapshot, single or bulk, now also refuses while a restore that reads it is in progress.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.15",
@@ -1177,7 +1177,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Owners can now acknowledge a \"Chain break\" that predates an older fix, since the audit log is append-only and its rows can never be altered. Acknowledging moves the integrity anchor to the current point so verification runs forward cleanly; new tampering is still detected, and the acknowledgment itself is recorded in the audit log.",
       },
     ],
-    featureLinks: [{ label: "Team and access control", href: "/features/team-access/" }],
+    featureLinks: [{ label: "Team and access control", href: "/features/team-access" }],
   },
   {
     version: "0.61.10",
@@ -1238,7 +1238,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Closing any dialog no longer leaves the page unclickable, and bulk plugin and theme updates now default to only the items that actually have an update available.",
       },
     ],
-    featureLinks: [{ label: "Backups", href: "/features/backups/" }],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
   },
   {
     version: "0.61.0",
@@ -1254,7 +1254,7 @@ const RELEASES: ChangeEntry[] = [
         text: "CloudPanel sites now get integrated cache purging: WPMgr clears its own page cache and CloudPanel's Varnish cache together, no separate plugin needed.",
       },
     ],
-    featureLinks: [{ label: "File Manager", href: "/features/file-manager/" }],
+    featureLinks: [{ label: "File Manager", href: "/features/file-manager" }],
   },
   {
     version: "0.57.7",
@@ -1277,7 +1277,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Instance administrators can configure the Wordfence Intelligence API key from a new admin page instead of an environment variable. The page shows live connection status, lets you save or remove the key, and provides a Sync now action. The key is encrypted at rest.",
       },
     ],
-    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
+    featureLinks: [{ label: "Security suite", href: "/features/security" }],
   },
   {
     version: "0.56.0",
@@ -1289,7 +1289,7 @@ const RELEASES: ChangeEntry[] = [
         text: "WPMgr now checks every managed site's plugins, themes, and WordPress core against the Wordfence Intelligence vulnerability feed. Each finding shows severity, affected version range, fixed version, and CVE references. One-click remediation updates the vulnerable item using the existing update flow. Findings appear per-site on the Security tab and fleet-wide on the Vulnerabilities page.",
       },
     ],
-    featureLinks: [{ label: "Security suite", href: "/features/security/" }],
+    featureLinks: [{ label: "Security suite", href: "/features/security" }],
   },
   {
     version: "0.55.0",
@@ -1306,8 +1306,8 @@ const RELEASES: ChangeEntry[] = [
       },
     ],
     featureLinks: [
-      { label: "Two-factor auth", href: "/features/two-factor-auth/" },
-      { label: "Security suite", href: "/features/security/" },
+      { label: "Two-factor auth", href: "/features/two-factor-auth" },
+      { label: "Security suite", href: "/features/security" },
     ],
   },
   {
@@ -1328,7 +1328,7 @@ const RELEASES: ChangeEntry[] = [
         text: "Hide login page: move wp-login.php to a secret address per site. All three controls are per-site, opt-in, and off by default.",
       },
     ],
-    featureLinks: [{ label: "Two-factor auth", href: "/features/two-factor-auth/" }],
+    featureLinks: [{ label: "Two-factor auth", href: "/features/two-factor-auth" }],
   },
 ];
 
@@ -1343,7 +1343,7 @@ function formatDate(iso: string) {
 export default function ChangelogPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Changelog", href: "/changelog/" },
+    { name: "Changelog", href: "/changelog" },
   ]);
 
   return (

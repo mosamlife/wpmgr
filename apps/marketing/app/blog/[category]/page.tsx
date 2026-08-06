@@ -90,7 +90,7 @@ export default async function BlogCategoryPage({ params }: Props) {
 
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Blog", href: "/blog/" },
+    { name: "Blog", href: "/blog" },
     { name: meta.label, href: `/blog/${cat}/` },
   ]);
 
@@ -105,7 +105,7 @@ export default async function BlogCategoryPage({ params }: Props) {
             <nav aria-label="Breadcrumb" className="mb-5 flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
               <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
               <span aria-hidden>/</span>
-              <Link href="/blog/" className="hover:text-foreground transition-colors">Blog</Link>
+              <Link href="/blog" className="hover:text-foreground transition-colors">Blog</Link>
               <span aria-hidden>/</span>
               <span className="text-foreground">{meta.label}</span>
             </nav>
@@ -150,7 +150,7 @@ export default async function BlogCategoryPage({ params }: Props) {
                   return (
                     <li key={frontmatter.slug}>
                       <Link
-                        href={`/blog/${cat}/${frontmatter.slug}/`}
+                        href={`/blog/${cat}/${frontmatter.slug}`}
                         className="group flex h-full flex-col rounded-xl border border-[var(--border)] bg-card p-6 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                       >
                         <div className="mb-4 flex items-center gap-3">

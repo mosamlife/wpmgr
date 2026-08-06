@@ -98,10 +98,10 @@ export const UPDATES_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Backups and restore", href: "/features/backups/" },
-    { label: "Uptime and health monitoring", href: "/features/uptime-monitoring/" },
+    { label: "Backups and restore", href: "/features/backups" },
+    { label: "Uptime and health monitoring", href: "/features/uptime-monitoring" },
   ],
   solutionLinks: [
-    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites/" },
+    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites" },
   ],
 };

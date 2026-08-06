@@ -32,7 +32,7 @@ export default async function PricingPage() {
 
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Pricing", href: "/pricing/" },
+    { name: "Pricing", href: "/pricing" },
   ]);
 
   const appLd = {
@@ -156,12 +156,12 @@ export default async function PricingPage() {
           </Reveal>
           <Stagger className="mt-10 flex flex-wrap justify-center gap-4">
             {[
-              { label: "All 13 features", href: "/features/" },
-              { label: "For agencies", href: "/solutions/agencies/" },
-              { label: "For freelancers", href: "/solutions/freelancers/" },
-              { label: "WordPress security", href: "/solutions/wordpress-security/" },
-              { label: "WordPress backups", href: "/solutions/wordpress-backups/" },
-              { label: "Speed up WordPress", href: "/solutions/wordpress-performance/" },
+              { label: "All 13 features", href: "/features" },
+              { label: "For agencies", href: "/solutions/agencies" },
+              { label: "For freelancers", href: "/solutions/freelancers" },
+              { label: "WordPress security", href: "/solutions/wordpress-security" },
+              { label: "WordPress backups", href: "/solutions/wordpress-backups" },
+              { label: "Speed up WordPress", href: "/solutions/wordpress-performance" },
             ].map((link) => (
               <StaggerItem key={link.href}>
                 <Link

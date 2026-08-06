@@ -71,8 +71,8 @@ const REFUND_FAQ = [
 export default function RefundsPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Legal", href: "/legal/" },
-    { name: "Refund Policy", href: "/refunds/" },
+    { name: "Legal", href: "/legal" },
+    { name: "Refund Policy", href: "/refunds" },
   ]);
   const faqLd = buildFAQPageLd(REFUND_FAQ);
 
