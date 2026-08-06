@@ -354,6 +354,27 @@ func (s Site) ParsedAgentSelfUpdate() *AgentSelfUpdateResult {
 	return comp.AgentSelfUpdate
 }
 
+// ParsedRoles decodes the site's JSONB inventory and returns the WordPress role
+// registry the agent last reported (GH #350).
+//
+// nil means UNKNOWN, not "no roles": either the agent predates role reporting
+// or its registry was unreadable. Callers must render that as an explicit
+// "not reported yet" state rather than silently substituting a guess, which is
+// exactly the failure this feature exists to fix. A malformed inventory also
+// yields nil.
+func (s Site) ParsedRoles() []SiteRole {
+	if len(s.Components) == 0 {
+		return nil
+	}
+	var comp struct {
+		Roles []SiteRole `json:"roles"`
+	}
+	if json.Unmarshal(s.Components, &comp) != nil {
+		return nil
+	}
+	return comp.Roles
+}
+
 // Metadata is the site inventory an authenticated agent pushes.
 type Metadata struct {
 	WPVersion   string `json:"wp_version" validate:"max=32"`
@@ -432,6 +453,19 @@ type MetadataExtras struct {
 	Disk       *Disk      `json:"disk,omitempty"`
 	UserCount  int        `json:"user_count,omitempty"`
 	AdminCount int        `json:"admin_count,omitempty"`
+	// Roles is the site's WordPress role registry (GH #350), stored under the
+	// `roles` key of the same JSONB inventory document. nil when the agent did
+	// not report it; readers must treat nil as "unknown", never as "none".
+	Roles []SiteRole `json:"roles,omitempty"`
+}
+
+// SiteRole is one WordPress role that exists on a site: the slug the security
+// policy is written in, plus the display name that site shows for it. The agent
+// localizes the name through translate_user_role() before reporting, so an
+// Italian site sends "Amministratore" for the `administrator` slug.
+type SiteRole struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
 }
 
 // HostFlags is the hosting-platform fingerprint surfaced from the agent's

@@ -664,6 +664,30 @@ export type AgentMetadata = {
   user_count?: number;
   admin_count?: number;
   /**
+   * The WordPress roles that exist on the site, read from the site's own
+   * unfiltered role registry. This is what lets the security policy
+   * editor offer roles such as WooCommerce's `shop_manager` instead of
+   * only the five WordPress defaults.
+   *
+   * Optional and additive: an agent older than 0.61.127 omits it, and
+   * the control plane then reports the site's roles as "not reported"
+   * rather than guessing them. Bounded to 200 entries by the agent and
+   * again by the control plane.
+   *
+   */
+  roles?: Array<{
+    /**
+     * WordPress role slug, e.g. shop_manager.
+     */
+    slug?: string;
+    /**
+     * Display name in the site's own locale, resolved exactly as
+     * WordPress resolves it for its own role dropdown.
+     *
+     */
+    name?: string;
+  }>;
+  /**
    * Present only when WordPress core has an update available.
    */
   core_update?: {
@@ -6793,6 +6817,40 @@ export type SiteSecurityPolicy = {
   hide_backend_slug?: string;
   hide_backend_redirect?: string;
   updated_at?: string;
+};
+
+/**
+ * One WordPress role that exists on the site. `slug` is what the policy
+ * stores and what the agent enforces against; `name` is what the site
+ * itself displays for that role, already localized (an Italian site
+ * reports "Amministratore" for the `administrator` slug).
+ *
+ */
+export type SiteRole = {
+  /**
+   * WordPress role slug, e.g. shop_manager.
+   */
+  slug: string;
+  /**
+   * Display name shown on the site, in the site locale.
+   */
+  name: string;
+};
+
+/**
+ * The stored site-user auth policy plus the site's real WordPress role
+ * registry, as returned by GET and PUT /security/policy.
+ *
+ * `site_roles` is READ-ONLY: the agent is its only writer, it is reported
+ * with the site inventory, and it is deliberately absent from the write
+ * schema. An EMPTY array means the site has not reported its roles yet
+ * (an agent older than 0.61.127, or one that has not pushed metadata
+ * since). Clients must present that as an explicit fallback rather than
+ * silently offering only the five default WordPress roles.
+ *
+ */
+export type SiteSecurityPolicyWithRoles = SiteSecurityPolicy & {
+  site_roles: Array<SiteRole>;
 };
 
 /**
@@ -15383,9 +15441,9 @@ export type GetSiteSecurityPolicyError =
 
 export type GetSiteSecurityPolicyResponses = {
   /**
-   * Current policy
+   * Current policy, plus the site's reported WordPress roles
    */
-  200: SiteSecurityPolicy;
+  200: SiteSecurityPolicyWithRoles;
 };
 
 export type GetSiteSecurityPolicyResponse =
@@ -15422,7 +15480,7 @@ export type PutSiteSecurityPolicyResponses = {
   /**
    * Policy saved (see `X-Agent-Push-Warning` header for a non-fatal push failure)
    */
-  200: SiteSecurityPolicy;
+  200: SiteSecurityPolicyWithRoles;
 };
 
 export type PutSiteSecurityPolicyResponse =

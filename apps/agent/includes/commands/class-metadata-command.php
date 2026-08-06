@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace WPMgr\Agent\Commands;
 
+use WPMgr\Agent\Security\SiteRoles;
 use WPMgr\Agent\Support\AgeIdentity;
 
 /**
@@ -71,6 +72,7 @@ final class MetadataCommand implements CommandInterface
      *     plugins:array<int,array{slug:string,name:string,version:string,active:bool,available_update:?array{new_version:string,package:?string,tested:?string,requires_php:?string}}>,
      *     themes:array<int,array{slug:string,name:string,version:string,active:bool,available_update:?array{new_version:string,package:?string,tested:?string,requires_php:?string}}>,
      *     core_update:?array{new_version:string,current_version:string},
+     *     roles:list<array{slug:string,name:string}>,
      *     age_recipient?:string
      * }
      */
@@ -95,6 +97,15 @@ final class MetadataCommand implements CommandInterface
             'disk'         => $this->diskUsage(),
             'user_count'   => $this->userCount(),
             'admin_count'  => $this->adminCount(),
+            // The site's real WordPress role registry (slug + localized display
+            // name). Metadata is the READ path: it is collected on the agent's
+            // periodic push AND on the control plane's synchronous re-check
+            // pull, so the dashboard knows a site's roles before an operator
+            // has saved any policy. Without this the security policy could only
+            // offer the five default roles, leaving elevated custom roles such
+            // as WooCommerce's shop_manager with no password policy at all.
+            // Always present (an empty list when the registry is unreadable).
+            'roles'        => SiteRoles::collect(),
         ];
         // Surface the agent's age PUBLIC recipient so the CP can register it on
         // sites.age_recipient (M4 backups refuse otherwise). Best-effort: a

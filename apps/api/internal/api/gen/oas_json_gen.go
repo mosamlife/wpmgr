@@ -16244,6 +16244,16 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.Roles != nil {
+			e.FieldStart("roles")
+			e.ArrStart()
+			for _, elem := range s.Roles {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.CoreUpdate.Set {
 			e.FieldStart("core_update")
 			s.CoreUpdate.Encode(e)
@@ -16289,7 +16299,7 @@ func (s *AgentMetadata) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAgentMetadata = [15]string{
+var jsonFieldsNameOfAgentMetadata = [16]string{
 	0:  "wp_version",
 	1:  "php_version",
 	2:  "server_info",
@@ -16299,12 +16309,13 @@ var jsonFieldsNameOfAgentMetadata = [15]string{
 	6:  "age_recipient",
 	7:  "user_count",
 	8:  "admin_count",
-	9:  "core_update",
-	10: "host_flags",
-	11: "disk",
-	12: "agent_self_update",
-	13: "plugins",
-	14: "themes",
+	9:  "roles",
+	10: "core_update",
+	11: "host_flags",
+	12: "disk",
+	13: "agent_self_update",
+	14: "plugins",
+	15: "themes",
 }
 
 // Decode decodes AgentMetadata from json.
@@ -16404,6 +16415,23 @@ func (s *AgentMetadata) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"admin_count\"")
+			}
+		case "roles":
+			if err := func() error {
+				s.Roles = make([]AgentMetadataRolesItem, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AgentMetadataRolesItem
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Roles = append(s.Roles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"roles\"")
 			}
 		case "core_update":
 			if err := func() error {
@@ -17023,6 +17051,86 @@ func (s *AgentMetadataHostFlags) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *AgentMetadataHostFlags) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AgentMetadataRolesItem) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AgentMetadataRolesItem) encodeFields(e *jx.Encoder) {
+	{
+		if s.Slug.Set {
+			e.FieldStart("slug")
+			s.Slug.Encode(e)
+		}
+	}
+	{
+		if s.Name.Set {
+			e.FieldStart("name")
+			s.Name.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAgentMetadataRolesItem = [2]string{
+	0: "slug",
+	1: "name",
+}
+
+// Decode decodes AgentMetadataRolesItem from json.
+func (s *AgentMetadataRolesItem) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AgentMetadataRolesItem to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "slug":
+			if err := func() error {
+				s.Slug.Reset()
+				if err := s.Slug.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"slug\"")
+			}
+		case "name":
+			if err := func() error {
+				s.Name.Reset()
+				if err := s.Name.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"name\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AgentMetadataRolesItem")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AgentMetadataRolesItem) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AgentMetadataRolesItem) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -111095,6 +111203,119 @@ func (s *SitePolicyGroup) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode implements json.Marshaler.
+func (s *SiteRole) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *SiteRole) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("slug")
+		e.Str(s.Slug)
+	}
+	{
+		e.FieldStart("name")
+		e.Str(s.Name)
+	}
+}
+
+var jsonFieldsNameOfSiteRole = [2]string{
+	0: "slug",
+	1: "name",
+}
+
+// Decode decodes SiteRole from json.
+func (s *SiteRole) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SiteRole to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "slug":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Str()
+				s.Slug = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"slug\"")
+			}
+		case "name":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Name = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"name\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode SiteRole")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfSiteRole) {
+					name = jsonFieldsNameOfSiteRole[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *SiteRole) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SiteRole) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes SiteScreenshotStatus as json.
 func (s SiteScreenshotStatus) Encode(e *jx.Encoder) {
 	e.Str(string(s))
@@ -111503,6 +111724,438 @@ func (s *SiteSecurityPolicy) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *SiteSecurityPolicy) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *SiteSecurityPolicyWithRoles) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *SiteSecurityPolicyWithRoles) encodeFields(e *jx.Encoder) {
+	{
+		if s.TwoFactorEnabled.Set {
+			e.FieldStart("two_factor_enabled")
+			s.TwoFactorEnabled.Encode(e)
+		}
+	}
+	{
+		if s.TwoFactorMethods != nil {
+			e.FieldStart("two_factor_methods")
+			e.ArrStart()
+			for _, elem := range s.TwoFactorMethods {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.TwoFactorRequiredRoles != nil {
+			e.FieldStart("two_factor_required_roles")
+			e.ArrStart()
+			for _, elem := range s.TwoFactorRequiredRoles {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.TwoFactorGraceLogins.Set {
+			e.FieldStart("two_factor_grace_logins")
+			s.TwoFactorGraceLogins.Encode(e)
+		}
+	}
+	{
+		if s.TwoFactorRememberDeviceDays.Set {
+			e.FieldStart("two_factor_remember_device_days")
+			s.TwoFactorRememberDeviceDays.Encode(e)
+		}
+	}
+	{
+		if s.BlockXmlrpcFor2FAUsers.Set {
+			e.FieldStart("block_xmlrpc_for_2fa_users")
+			s.BlockXmlrpcFor2FAUsers.Encode(e)
+		}
+	}
+	{
+		if s.PasswordMinZxcvbnScore.Set {
+			e.FieldStart("password_min_zxcvbn_score")
+			s.PasswordMinZxcvbnScore.Encode(e)
+		}
+	}
+	{
+		if s.PasswordMinZxcvbnRoles != nil {
+			e.FieldStart("password_min_zxcvbn_roles")
+			e.ArrStart()
+			for _, elem := range s.PasswordMinZxcvbnRoles {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.PasswordBlockCompromised.Set {
+			e.FieldStart("password_block_compromised")
+			s.PasswordBlockCompromised.Encode(e)
+		}
+	}
+	{
+		if s.PasswordReuseBlockCount.Set {
+			e.FieldStart("password_reuse_block_count")
+			s.PasswordReuseBlockCount.Encode(e)
+		}
+	}
+	{
+		if s.PasswordMaxAgeDays.Set {
+			e.FieldStart("password_max_age_days")
+			s.PasswordMaxAgeDays.Encode(e)
+		}
+	}
+	{
+		if s.PasswordExpiryRoles != nil {
+			e.FieldStart("password_expiry_roles")
+			e.ArrStart()
+			for _, elem := range s.PasswordExpiryRoles {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.HideBackendEnabled.Set {
+			e.FieldStart("hide_backend_enabled")
+			s.HideBackendEnabled.Encode(e)
+		}
+	}
+	{
+		if s.HideBackendSlug.Set {
+			e.FieldStart("hide_backend_slug")
+			s.HideBackendSlug.Encode(e)
+		}
+	}
+	{
+		if s.HideBackendRedirect.Set {
+			e.FieldStart("hide_backend_redirect")
+			s.HideBackendRedirect.Encode(e)
+		}
+	}
+	{
+		if s.UpdatedAt.Set {
+			e.FieldStart("updated_at")
+			s.UpdatedAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		e.FieldStart("site_roles")
+		e.ArrStart()
+		for _, elem := range s.SiteRoles {
+			elem.Encode(e)
+		}
+		e.ArrEnd()
+	}
+}
+
+var jsonFieldsNameOfSiteSecurityPolicyWithRoles = [17]string{
+	0:  "two_factor_enabled",
+	1:  "two_factor_methods",
+	2:  "two_factor_required_roles",
+	3:  "two_factor_grace_logins",
+	4:  "two_factor_remember_device_days",
+	5:  "block_xmlrpc_for_2fa_users",
+	6:  "password_min_zxcvbn_score",
+	7:  "password_min_zxcvbn_roles",
+	8:  "password_block_compromised",
+	9:  "password_reuse_block_count",
+	10: "password_max_age_days",
+	11: "password_expiry_roles",
+	12: "hide_backend_enabled",
+	13: "hide_backend_slug",
+	14: "hide_backend_redirect",
+	15: "updated_at",
+	16: "site_roles",
+}
+
+// Decode decodes SiteSecurityPolicyWithRoles from json.
+func (s *SiteSecurityPolicyWithRoles) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode SiteSecurityPolicyWithRoles to nil")
+	}
+	var requiredBitSet [3]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "two_factor_enabled":
+			if err := func() error {
+				s.TwoFactorEnabled.Reset()
+				if err := s.TwoFactorEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"two_factor_enabled\"")
+			}
+		case "two_factor_methods":
+			if err := func() error {
+				s.TwoFactorMethods = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.TwoFactorMethods = append(s.TwoFactorMethods, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"two_factor_methods\"")
+			}
+		case "two_factor_required_roles":
+			if err := func() error {
+				s.TwoFactorRequiredRoles = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.TwoFactorRequiredRoles = append(s.TwoFactorRequiredRoles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"two_factor_required_roles\"")
+			}
+		case "two_factor_grace_logins":
+			if err := func() error {
+				s.TwoFactorGraceLogins.Reset()
+				if err := s.TwoFactorGraceLogins.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"two_factor_grace_logins\"")
+			}
+		case "two_factor_remember_device_days":
+			if err := func() error {
+				s.TwoFactorRememberDeviceDays.Reset()
+				if err := s.TwoFactorRememberDeviceDays.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"two_factor_remember_device_days\"")
+			}
+		case "block_xmlrpc_for_2fa_users":
+			if err := func() error {
+				s.BlockXmlrpcFor2FAUsers.Reset()
+				if err := s.BlockXmlrpcFor2FAUsers.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"block_xmlrpc_for_2fa_users\"")
+			}
+		case "password_min_zxcvbn_score":
+			if err := func() error {
+				s.PasswordMinZxcvbnScore.Reset()
+				if err := s.PasswordMinZxcvbnScore.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_min_zxcvbn_score\"")
+			}
+		case "password_min_zxcvbn_roles":
+			if err := func() error {
+				s.PasswordMinZxcvbnRoles = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.PasswordMinZxcvbnRoles = append(s.PasswordMinZxcvbnRoles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_min_zxcvbn_roles\"")
+			}
+		case "password_block_compromised":
+			if err := func() error {
+				s.PasswordBlockCompromised.Reset()
+				if err := s.PasswordBlockCompromised.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_block_compromised\"")
+			}
+		case "password_reuse_block_count":
+			if err := func() error {
+				s.PasswordReuseBlockCount.Reset()
+				if err := s.PasswordReuseBlockCount.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_reuse_block_count\"")
+			}
+		case "password_max_age_days":
+			if err := func() error {
+				s.PasswordMaxAgeDays.Reset()
+				if err := s.PasswordMaxAgeDays.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_max_age_days\"")
+			}
+		case "password_expiry_roles":
+			if err := func() error {
+				s.PasswordExpiryRoles = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.PasswordExpiryRoles = append(s.PasswordExpiryRoles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"password_expiry_roles\"")
+			}
+		case "hide_backend_enabled":
+			if err := func() error {
+				s.HideBackendEnabled.Reset()
+				if err := s.HideBackendEnabled.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"hide_backend_enabled\"")
+			}
+		case "hide_backend_slug":
+			if err := func() error {
+				s.HideBackendSlug.Reset()
+				if err := s.HideBackendSlug.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"hide_backend_slug\"")
+			}
+		case "hide_backend_redirect":
+			if err := func() error {
+				s.HideBackendRedirect.Reset()
+				if err := s.HideBackendRedirect.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"hide_backend_redirect\"")
+			}
+		case "updated_at":
+			if err := func() error {
+				s.UpdatedAt.Reset()
+				if err := s.UpdatedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"updated_at\"")
+			}
+		case "site_roles":
+			requiredBitSet[2] |= 1 << 0
+			if err := func() error {
+				s.SiteRoles = make([]SiteRole, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem SiteRole
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.SiteRoles = append(s.SiteRoles, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"site_roles\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode SiteSecurityPolicyWithRoles")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [3]uint8{
+		0b00000000,
+		0b00000000,
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfSiteSecurityPolicyWithRoles) {
+					name = jsonFieldsNameOfSiteSecurityPolicyWithRoles[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *SiteSecurityPolicyWithRoles) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *SiteSecurityPolicyWithRoles) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

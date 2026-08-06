@@ -295,7 +295,28 @@ func (a *securitySiteAdapter) GetSiteURL(ctx context.Context, tenantID, siteID u
 	return s.URL, nil
 }
 
+// GetSiteRoles reads the WordPress role registry the agent last reported for
+// this site out of the stored inventory document (GH #350). No agent round trip
+// and no extra capability: it is the same site record the detail page already
+// serves, and role definitions are site configuration rather than user data.
+func (a *securitySiteAdapter) GetSiteRoles(ctx context.Context, tenantID, siteID uuid.UUID) ([]security.SiteRole, error) {
+	s, err := a.svc.Get(ctx, tenantID, siteID)
+	if err != nil {
+		return nil, err
+	}
+	reported := s.ParsedRoles()
+	if len(reported) == 0 {
+		return nil, nil
+	}
+	out := make([]security.SiteRole, 0, len(reported))
+	for _, r := range reported {
+		out = append(out, security.SiteRole{Slug: r.Slug, Name: r.Name})
+	}
+	return out, nil
+}
+
 var _ security.SiteLookup = (*securitySiteAdapter)(nil)
+var _ security.SiteRoleLookup = (*securitySiteAdapter)(nil)
 
 // loginBrandSiteAdapter resolves a site's agent URL for the loginbrand service
 // (M14 Login Whitelabel). Keeps the loginbrand package free of a site import.

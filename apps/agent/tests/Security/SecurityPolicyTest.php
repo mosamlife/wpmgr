@@ -334,6 +334,77 @@ final class SecurityPolicyTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // GH #350 — enforcement against CUSTOM role slugs is unchanged
+    //
+    // Role discovery was the gap, not enforcement: the agent has always matched
+    // a policy against whatever slugs a user really holds. These pin that the
+    // discovery work did not narrow it back to the five default roles.
+    // -------------------------------------------------------------------------
+
+    public function test_custom_role_slug_is_gated_by_the_site_level_strength_rule(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'password_min_zxcvbn_score' => 3,
+                'password_min_zxcvbn_roles' => ['shop_manager'],
+            ],
+        ]);
+        $shopManager = $this->makeUser(1, ['shop_manager']);
+        $subscriber  = $this->makeUser(2, ['subscriber']);
+
+        $this->assertSame(3, $policy->effectiveMinZxcvbnScore($shopManager), 'a named custom role is gated');
+        $this->assertSame(0, $policy->effectiveMinZxcvbnScore($subscriber), 'an unnamed role is not');
+    }
+
+    public function test_custom_role_slug_is_gated_by_expiry_and_2fa_and_group_overrides(): void
+    {
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'two_factor_enabled'        => true,
+                'two_factor_required_roles' => ['shop_manager'],
+                'password_max_age_days'     => 90,
+                'password_expiry_roles'     => ['shop_manager'],
+            ],
+            'groups' => [
+                ['role' => 'membership_tier_3', 'min_zxcvbn_score' => 4, 'block_compromised' => true],
+            ],
+        ]);
+        $shopManager = $this->makeUser(1, ['shop_manager']);
+        $tier3       = $this->makeUser(2, ['membership_tier_3']);
+        $editor      = $this->makeUser(3, ['editor']);
+
+        $this->assertTrue($policy->requires2fa($shopManager));
+        $this->assertSame(90, $policy->effectiveMaxAgeDays($shopManager));
+        $this->assertSame(4, $policy->effectiveMinZxcvbnScore($tier3), 'per-role group overrides use the same slug vocabulary');
+        $this->assertTrue($policy->blockCompromisedFor($tier3));
+        $this->assertFalse($policy->requires2fa($editor));
+        $this->assertSame(0, $policy->effectiveMaxAgeDays($editor));
+    }
+
+    public function test_a_policy_naming_a_role_the_site_no_longer_has_round_trips_and_gates_nobody(): void
+    {
+        // T3, agent half: an operator can keep a stale role in the stored policy
+        // (the plugin that created it was deactivated) without it being dropped
+        // on the way through, and without it silently gating anyone else.
+        $policy = SecurityPolicy::fromArray([
+            'policy' => [
+                'password_min_zxcvbn_score' => 3,
+                'password_min_zxcvbn_roles' => ['deactivated_plugin_role'],
+            ],
+        ]);
+
+        $stored = $policy->toArray();
+        $this->assertSame(
+            ['deactivated_plugin_role'],
+            $stored['policy']['password_min_zxcvbn_roles'],
+            'the slug survives the round trip so the operator can still see and remove it'
+        );
+
+        $admin = $this->makeUser(1, ['administrator']);
+        $this->assertSame(0, $policy->effectiveMinZxcvbnScore($admin), 'a role nobody holds gates nobody');
+    }
+
+    // -------------------------------------------------------------------------
     // SAFETY: default policy challenges nobody
     // -------------------------------------------------------------------------
 

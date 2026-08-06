@@ -6124,6 +6124,15 @@ type AgentMetadata struct {
 	AgeRecipient OptString `json:"age_recipient"`
 	UserCount    OptInt    `json:"user_count"`
 	AdminCount   OptInt    `json:"admin_count"`
+	// The WordPress roles that exist on the site, read from the site's own
+	// unfiltered role registry. This is what lets the security policy
+	// editor offer roles such as WooCommerce's `shop_manager` instead of
+	// only the five WordPress defaults.
+	// Optional and additive: an agent older than 0.61.127 omits it, and
+	// the control plane then reports the site's roles as "not reported"
+	// rather than guessing them. Bounded to 200 entries by the agent and
+	// again by the control plane.
+	Roles []AgentMetadataRolesItem `json:"roles"`
 	// Present only when WordPress core has an update available.
 	CoreUpdate OptNilAgentMetadataCoreUpdate `json:"core_update"`
 	// The agent's defined()-based hosting fingerprint.
@@ -6183,6 +6192,11 @@ func (s *AgentMetadata) GetUserCount() OptInt {
 // GetAdminCount returns the value of AdminCount.
 func (s *AgentMetadata) GetAdminCount() OptInt {
 	return s.AdminCount
+}
+
+// GetRoles returns the value of Roles.
+func (s *AgentMetadata) GetRoles() []AgentMetadataRolesItem {
+	return s.Roles
 }
 
 // GetCoreUpdate returns the value of CoreUpdate.
@@ -6258,6 +6272,11 @@ func (s *AgentMetadata) SetUserCount(val OptInt) {
 // SetAdminCount sets the value of AdminCount.
 func (s *AgentMetadata) SetAdminCount(val OptInt) {
 	s.AdminCount = val
+}
+
+// SetRoles sets the value of Roles.
+func (s *AgentMetadata) SetRoles(val []AgentMetadataRolesItem) {
+	s.Roles = val
 }
 
 // SetCoreUpdate sets the value of CoreUpdate.
@@ -6543,6 +6562,34 @@ func (s *AgentMetadataHostFlags) SetIsRuncloud(val OptBool) {
 // SetIsCloudways sets the value of IsCloudways.
 func (s *AgentMetadataHostFlags) SetIsCloudways(val OptBool) {
 	s.IsCloudways = val
+}
+
+type AgentMetadataRolesItem struct {
+	// WordPress role slug, e.g. shop_manager.
+	Slug OptString `json:"slug"`
+	// Display name in the site's own locale, resolved exactly as
+	// WordPress resolves it for its own role dropdown.
+	Name OptString `json:"name"`
+}
+
+// GetSlug returns the value of Slug.
+func (s *AgentMetadataRolesItem) GetSlug() OptString {
+	return s.Slug
+}
+
+// GetName returns the value of Name.
+func (s *AgentMetadataRolesItem) GetName() OptString {
+	return s.Name
+}
+
+// SetSlug sets the value of Slug.
+func (s *AgentMetadataRolesItem) SetSlug(val OptString) {
+	s.Slug = val
+}
+
+// SetName sets the value of Name.
+func (s *AgentMetadataRolesItem) SetName(val OptString) {
+	s.Name = val
 }
 
 type AgentMetadataUnauthorized Error
@@ -46766,6 +46813,38 @@ func (s *SitePolicyGroup) SetCreatedAt(val OptDateTime) {
 
 func (*SitePolicyGroup) putSitePolicyGroupRes() {}
 
+// One WordPress role that exists on the site. `slug` is what the policy
+// stores and what the agent enforces against; `name` is what the site
+// itself displays for that role, already localized (an Italian site
+// reports "Amministratore" for the `administrator` slug).
+// Ref: #/components/schemas/SiteRole
+type SiteRole struct {
+	// WordPress role slug, e.g. shop_manager.
+	Slug string `json:"slug"`
+	// Display name shown on the site, in the site locale.
+	Name string `json:"name"`
+}
+
+// GetSlug returns the value of Slug.
+func (s *SiteRole) GetSlug() string {
+	return s.Slug
+}
+
+// GetName returns the value of Name.
+func (s *SiteRole) GetName() string {
+	return s.Name
+}
+
+// SetSlug sets the value of Slug.
+func (s *SiteRole) SetSlug(val string) {
+	s.Slug = val
+}
+
+// SetName sets the value of Name.
+func (s *SiteRole) SetName(val string) {
+	s.Name = val
+}
+
 // M72 — Current screenshot capture status. Absent/null means "never captured" (treat as no
 // screenshot).
 // pending = capture job is enqueued or running.
@@ -47000,8 +47079,200 @@ func (s *SiteSecurityPolicy) SetUpdatedAt(val OptDateTime) {
 	s.UpdatedAt = val
 }
 
-func (*SiteSecurityPolicy) getSiteSecurityPolicyRes() {}
-func (*SiteSecurityPolicy) putSiteSecurityPolicyRes() {}
+// Merged schema.
+// Ref: #/components/schemas/SiteSecurityPolicyWithRoles
+type SiteSecurityPolicyWithRoles struct {
+	TwoFactorEnabled            OptBool     `json:"two_factor_enabled"`
+	TwoFactorMethods            []string    `json:"two_factor_methods"`
+	TwoFactorRequiredRoles      []string    `json:"two_factor_required_roles"`
+	TwoFactorGraceLogins        OptInt      `json:"two_factor_grace_logins"`
+	TwoFactorRememberDeviceDays OptInt      `json:"two_factor_remember_device_days"`
+	BlockXmlrpcFor2FAUsers      OptBool     `json:"block_xmlrpc_for_2fa_users"`
+	PasswordMinZxcvbnScore      OptInt      `json:"password_min_zxcvbn_score"`
+	PasswordMinZxcvbnRoles      []string    `json:"password_min_zxcvbn_roles"`
+	PasswordBlockCompromised    OptBool     `json:"password_block_compromised"`
+	PasswordReuseBlockCount     OptInt      `json:"password_reuse_block_count"`
+	PasswordMaxAgeDays          OptInt      `json:"password_max_age_days"`
+	PasswordExpiryRoles         []string    `json:"password_expiry_roles"`
+	HideBackendEnabled          OptBool     `json:"hide_backend_enabled"`
+	HideBackendSlug             OptString   `json:"hide_backend_slug"`
+	HideBackendRedirect         OptString   `json:"hide_backend_redirect"`
+	UpdatedAt                   OptDateTime `json:"updated_at"`
+	SiteRoles                   []SiteRole  `json:"site_roles"`
+}
+
+// GetTwoFactorEnabled returns the value of TwoFactorEnabled.
+func (s *SiteSecurityPolicyWithRoles) GetTwoFactorEnabled() OptBool {
+	return s.TwoFactorEnabled
+}
+
+// GetTwoFactorMethods returns the value of TwoFactorMethods.
+func (s *SiteSecurityPolicyWithRoles) GetTwoFactorMethods() []string {
+	return s.TwoFactorMethods
+}
+
+// GetTwoFactorRequiredRoles returns the value of TwoFactorRequiredRoles.
+func (s *SiteSecurityPolicyWithRoles) GetTwoFactorRequiredRoles() []string {
+	return s.TwoFactorRequiredRoles
+}
+
+// GetTwoFactorGraceLogins returns the value of TwoFactorGraceLogins.
+func (s *SiteSecurityPolicyWithRoles) GetTwoFactorGraceLogins() OptInt {
+	return s.TwoFactorGraceLogins
+}
+
+// GetTwoFactorRememberDeviceDays returns the value of TwoFactorRememberDeviceDays.
+func (s *SiteSecurityPolicyWithRoles) GetTwoFactorRememberDeviceDays() OptInt {
+	return s.TwoFactorRememberDeviceDays
+}
+
+// GetBlockXmlrpcFor2FAUsers returns the value of BlockXmlrpcFor2FAUsers.
+func (s *SiteSecurityPolicyWithRoles) GetBlockXmlrpcFor2FAUsers() OptBool {
+	return s.BlockXmlrpcFor2FAUsers
+}
+
+// GetPasswordMinZxcvbnScore returns the value of PasswordMinZxcvbnScore.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordMinZxcvbnScore() OptInt {
+	return s.PasswordMinZxcvbnScore
+}
+
+// GetPasswordMinZxcvbnRoles returns the value of PasswordMinZxcvbnRoles.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordMinZxcvbnRoles() []string {
+	return s.PasswordMinZxcvbnRoles
+}
+
+// GetPasswordBlockCompromised returns the value of PasswordBlockCompromised.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordBlockCompromised() OptBool {
+	return s.PasswordBlockCompromised
+}
+
+// GetPasswordReuseBlockCount returns the value of PasswordReuseBlockCount.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordReuseBlockCount() OptInt {
+	return s.PasswordReuseBlockCount
+}
+
+// GetPasswordMaxAgeDays returns the value of PasswordMaxAgeDays.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordMaxAgeDays() OptInt {
+	return s.PasswordMaxAgeDays
+}
+
+// GetPasswordExpiryRoles returns the value of PasswordExpiryRoles.
+func (s *SiteSecurityPolicyWithRoles) GetPasswordExpiryRoles() []string {
+	return s.PasswordExpiryRoles
+}
+
+// GetHideBackendEnabled returns the value of HideBackendEnabled.
+func (s *SiteSecurityPolicyWithRoles) GetHideBackendEnabled() OptBool {
+	return s.HideBackendEnabled
+}
+
+// GetHideBackendSlug returns the value of HideBackendSlug.
+func (s *SiteSecurityPolicyWithRoles) GetHideBackendSlug() OptString {
+	return s.HideBackendSlug
+}
+
+// GetHideBackendRedirect returns the value of HideBackendRedirect.
+func (s *SiteSecurityPolicyWithRoles) GetHideBackendRedirect() OptString {
+	return s.HideBackendRedirect
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *SiteSecurityPolicyWithRoles) GetUpdatedAt() OptDateTime {
+	return s.UpdatedAt
+}
+
+// GetSiteRoles returns the value of SiteRoles.
+func (s *SiteSecurityPolicyWithRoles) GetSiteRoles() []SiteRole {
+	return s.SiteRoles
+}
+
+// SetTwoFactorEnabled sets the value of TwoFactorEnabled.
+func (s *SiteSecurityPolicyWithRoles) SetTwoFactorEnabled(val OptBool) {
+	s.TwoFactorEnabled = val
+}
+
+// SetTwoFactorMethods sets the value of TwoFactorMethods.
+func (s *SiteSecurityPolicyWithRoles) SetTwoFactorMethods(val []string) {
+	s.TwoFactorMethods = val
+}
+
+// SetTwoFactorRequiredRoles sets the value of TwoFactorRequiredRoles.
+func (s *SiteSecurityPolicyWithRoles) SetTwoFactorRequiredRoles(val []string) {
+	s.TwoFactorRequiredRoles = val
+}
+
+// SetTwoFactorGraceLogins sets the value of TwoFactorGraceLogins.
+func (s *SiteSecurityPolicyWithRoles) SetTwoFactorGraceLogins(val OptInt) {
+	s.TwoFactorGraceLogins = val
+}
+
+// SetTwoFactorRememberDeviceDays sets the value of TwoFactorRememberDeviceDays.
+func (s *SiteSecurityPolicyWithRoles) SetTwoFactorRememberDeviceDays(val OptInt) {
+	s.TwoFactorRememberDeviceDays = val
+}
+
+// SetBlockXmlrpcFor2FAUsers sets the value of BlockXmlrpcFor2FAUsers.
+func (s *SiteSecurityPolicyWithRoles) SetBlockXmlrpcFor2FAUsers(val OptBool) {
+	s.BlockXmlrpcFor2FAUsers = val
+}
+
+// SetPasswordMinZxcvbnScore sets the value of PasswordMinZxcvbnScore.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordMinZxcvbnScore(val OptInt) {
+	s.PasswordMinZxcvbnScore = val
+}
+
+// SetPasswordMinZxcvbnRoles sets the value of PasswordMinZxcvbnRoles.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordMinZxcvbnRoles(val []string) {
+	s.PasswordMinZxcvbnRoles = val
+}
+
+// SetPasswordBlockCompromised sets the value of PasswordBlockCompromised.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordBlockCompromised(val OptBool) {
+	s.PasswordBlockCompromised = val
+}
+
+// SetPasswordReuseBlockCount sets the value of PasswordReuseBlockCount.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordReuseBlockCount(val OptInt) {
+	s.PasswordReuseBlockCount = val
+}
+
+// SetPasswordMaxAgeDays sets the value of PasswordMaxAgeDays.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordMaxAgeDays(val OptInt) {
+	s.PasswordMaxAgeDays = val
+}
+
+// SetPasswordExpiryRoles sets the value of PasswordExpiryRoles.
+func (s *SiteSecurityPolicyWithRoles) SetPasswordExpiryRoles(val []string) {
+	s.PasswordExpiryRoles = val
+}
+
+// SetHideBackendEnabled sets the value of HideBackendEnabled.
+func (s *SiteSecurityPolicyWithRoles) SetHideBackendEnabled(val OptBool) {
+	s.HideBackendEnabled = val
+}
+
+// SetHideBackendSlug sets the value of HideBackendSlug.
+func (s *SiteSecurityPolicyWithRoles) SetHideBackendSlug(val OptString) {
+	s.HideBackendSlug = val
+}
+
+// SetHideBackendRedirect sets the value of HideBackendRedirect.
+func (s *SiteSecurityPolicyWithRoles) SetHideBackendRedirect(val OptString) {
+	s.HideBackendRedirect = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *SiteSecurityPolicyWithRoles) SetUpdatedAt(val OptDateTime) {
+	s.UpdatedAt = val
+}
+
+// SetSiteRoles sets the value of SiteRoles.
+func (s *SiteSecurityPolicyWithRoles) SetSiteRoles(val []SiteRole) {
+	s.SiteRoles = val
+}
+
+func (*SiteSecurityPolicyWithRoles) getSiteSecurityPolicyRes() {}
+func (*SiteSecurityPolicyWithRoles) putSiteSecurityPolicyRes() {}
 
 // Ref: #/components/schemas/SiteShare
 type SiteShare struct {

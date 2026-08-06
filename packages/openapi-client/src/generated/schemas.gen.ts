@@ -1154,6 +1154,25 @@ export const AgentMetadataSchema = {
     admin_count: {
       type: "integer",
     },
+    roles: {
+      type: "array",
+      description:
+        "The WordPress roles that exist on the site, read from the site's own\nunfiltered role registry. This is what lets the security policy\neditor offer roles such as WooCommerce's `shop_manager` instead of\nonly the five WordPress defaults.\n\nOptional and additive: an agent older than 0.61.127 omits it, and\nthe control plane then reports the site's roles as \"not reported\"\nrather than guessing them. Bounded to 200 entries by the agent and\nagain by the control plane.\n",
+      items: {
+        type: "object",
+        properties: {
+          slug: {
+            type: "string",
+            description: "WordPress role slug, e.g. shop_manager.",
+          },
+          name: {
+            type: "string",
+            description:
+              "Display name in the site's own locale, resolved exactly as\nWordPress resolves it for its own role dropdown.\n",
+          },
+        },
+      },
+    },
     core_update: {
       type: "object",
       nullable: true,
@@ -11934,6 +11953,45 @@ export const SiteSecurityPolicySchema = {
       format: "date-time",
     },
   },
+} as const;
+
+export const SiteRoleSchema = {
+  type: "object",
+  required: ["slug", "name"],
+  description:
+    'One WordPress role that exists on the site. `slug` is what the policy\nstores and what the agent enforces against; `name` is what the site\nitself displays for that role, already localized (an Italian site\nreports "Amministratore" for the `administrator` slug).\n',
+  properties: {
+    slug: {
+      type: "string",
+      description: "WordPress role slug, e.g. shop_manager.",
+    },
+    name: {
+      type: "string",
+      description: "Display name shown on the site, in the site locale.",
+    },
+  },
+} as const;
+
+export const SiteSecurityPolicyWithRolesSchema = {
+  description:
+    "The stored site-user auth policy plus the site's real WordPress role\nregistry, as returned by GET and PUT /security/policy.\n\n`site_roles` is READ-ONLY: the agent is its only writer, it is reported\nwith the site inventory, and it is deliberately absent from the write\nschema. An EMPTY array means the site has not reported its roles yet\n(an agent older than 0.61.127, or one that has not pushed metadata\nsince). Clients must present that as an explicit fallback rather than\nsilently offering only the five default WordPress roles.\n",
+  allOf: [
+    {
+      $ref: "#/components/schemas/SiteSecurityPolicy",
+    },
+    {
+      type: "object",
+      required: ["site_roles"],
+      properties: {
+        site_roles: {
+          type: "array",
+          items: {
+            $ref: "#/components/schemas/SiteRole",
+          },
+        },
+      },
+    },
+  ],
 } as const;
 
 export const SitePolicyGroupSchema = {

@@ -2227,6 +2227,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	securityH := security.NewHandler(securitySvc, auditRec)
 	securityAgentH := agent.NewSecurityLoginEventsHandler(securitySvc)
 	secSiteAdapter := newSecuritySiteAdapter(siteSvc)
+	// GH #350 — the site's real WordPress role registry rides on GET
+	// /security/policy so the password/2FA policy editor can offer the roles a
+	// site actually has (shop_manager, membership tiers) rather than only the
+	// five WordPress defaults. Wired unconditionally: it reads stored inventory,
+	// so it works even when no CP->agent commander is available.
+	securitySvc.SetSiteRoleLookup(secSiteAdapter)
 	if secCmd, ok := commander.(security.AgentSecurityClient); ok {
 		securitySvc.SetAgentClient(secCmd, secSiteAdapter)
 		logger.Info("security agent client wired")

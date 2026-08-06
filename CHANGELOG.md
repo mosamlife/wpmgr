@@ -8,6 +8,19 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.127] - 2026-08-06
+
+### Fixed
+
+- The password policy on a site's Security page only ever offered the five roles a stock WordPress install ships with: administrator, editor, author, contributor and subscriber. On a WooCommerce store the roles that matter are the ones the store added. A shop manager can edit orders, refund customers and see every buyer's address, and there was no way to require a strong password of them, because there was no way to select them. Reported by an agency running a WooCommerce site whose roles are a shop manager, a translator, two customer tiers and a staff role, none of which appeared. The policy now offers the roles the site actually has.
+- The same applies to membership, LMS and booking plugins, which routinely add their own roles, and to any role an agency created by hand for its own staff.
+- Enforcement was never the problem and has not changed. The agent has always applied a policy to whatever role a user really holds, so a rule naming a shop manager would have worked from the day it was written. What was missing was any way to write it.
+- Role names now read the way they read on the site itself. An Italian site shows "Amministratore" and "Gestore negozio", so those are the names in the policy, not their English originals. The rule itself is still stored against the underlying role identifier, so renaming or translating a role never changes who a policy covers.
+- Where a name alone cannot identify a role, the role's identifier is shown next to it. Two plugins can each add a role called "Staff", and picking the wrong one is a silent mistake that leaves people ungoverned.
+- A rule that names a role the site no longer has, because the plugin that created it was deactivated, keeps that role on screen and marks it as no longer present. It is not dropped. An operator can now see why a rule stopped applying, and can remove it.
+- A site whose agent has not yet reported its roles still shows the standard WordPress roles, but says on screen that it is doing so and that plugin-added roles are missing from the list. The silent version of that fallback is what hid this problem. Updating the agent on the site, or re-checking the site from its page, loads the real list.
+- Sites with a large number of roles stay workable: the list of roles is scroll-bounded and gains a filter box, and the number of roles carried per site is capped.
+
 ## [0.61.126] - 2026-08-05
 
 ### Fixed

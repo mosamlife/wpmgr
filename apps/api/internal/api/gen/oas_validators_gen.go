@@ -13414,6 +13414,29 @@ func (s SiteScreenshotStatus) Validate() error {
 	}
 }
 
+func (s *SiteSecurityPolicyWithRoles) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if s.SiteRoles == nil {
+			return errors.New("nil is invalid value")
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "site_roles",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
 func (s *SiteShare) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

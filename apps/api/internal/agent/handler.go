@@ -109,6 +109,17 @@ type metadataDTO struct {
 	UserCount  *int          `json:"user_count,omitempty"`
 	AdminCount *int          `json:"admin_count,omitempty"`
 
+	// Roles is the site's real WordPress role registry (GH #350): every role
+	// slug that can authenticate, with the display name the site itself shows.
+	// The security policy is written in role slugs, so without this the
+	// dashboard could only offer the five default roles and an elevated custom
+	// role such as WooCommerce's shop_manager could never be governed.
+	//
+	// Optional and additive: an agent older than 0.61.127 sends nothing and the
+	// key is simply absent from the stored inventory, which the policy endpoint
+	// reports as "roles not reported" rather than pretending it knows them.
+	Roles []siteRoleDTO `json:"roles,omitempty"`
+
 	// AgentSelfUpdate is the agent's own account of its last self-update APPLY
 	// beat. Optional; only ever present on a site that actually staged one, and
 	// never sent by an agent old enough to predate the channel.
@@ -198,6 +209,14 @@ type availableUpdateDTO struct {
 	RequiresPHP *flexString `json:"requires_php,omitempty"`
 }
 
+// siteRoleDTO is one WordPress role the site reports. Both fields are
+// flex-decoded because agent telemetry comes from arbitrary real sites and a
+// role name is whatever a plugin author registered.
+type siteRoleDTO struct {
+	Slug flexString `json:"slug"`
+	Name flexString `json:"name"`
+}
+
 // coreUpdateDTO is the WordPress core update advisory. Both versions are
 // reported as strings; flex decoding tolerates the agent reporting them as
 // numbers.
@@ -282,6 +301,25 @@ func (d metadataDTO) toMetadata() Metadata {
 	if d.AdminCount != nil {
 		m.AdminCount = *d.AdminCount
 	}
+	// GH #350 — the site's role registry. A role with no slug is dropped: the
+	// slug is the only part the policy can enforce against, so a nameless entry
+	// is unusable. The display name falls back to the slug so the dashboard
+	// always has something to render.
+	if len(d.Roles) > 0 {
+		roles := make([]SiteRole, 0, len(d.Roles))
+		for _, r := range d.Roles {
+			slug := strings.TrimSpace(string(r.Slug))
+			if slug == "" {
+				continue
+			}
+			name := strings.TrimSpace(string(r.Name))
+			if name == "" {
+				name = slug
+			}
+			roles = append(roles, SiteRole{Slug: slug, Name: name})
+		}
+		m.Roles = roles
+	}
 	// The agent's account of its last apply beat. A record with no status says
 	// nothing, so it is dropped here rather than persisted as an empty shell.
 	if d.AgentSelfUpdate != nil && strings.TrimSpace(string(d.AgentSelfUpdate.Status)) != "" {
@@ -351,6 +389,10 @@ type Metadata struct {
 	Disk       *Disk
 	UserCount  int
 	AdminCount int
+	// Roles is the site's WordPress role registry (GH #350). nil when the agent
+	// did not report it (too old, or an unreadable registry) — which is NOT the
+	// same as "this site has no roles" and is surfaced to the operator as such.
+	Roles []SiteRole
 	// AgentSelfUpdate is the agent's own account of its last self-update apply
 	// beat. nil when the site never staged one, or when the agent predates the
 	// channel entirely.
@@ -379,6 +421,15 @@ type AgentSelfUpdateResult struct {
 	// the portable fallback that could not release the response. Diagnostic
 	// only; it gates nothing. "" for every agent before 0.61.110.
 	Rung string
+}
+
+// SiteRole is one WordPress role that exists on the site: the slug the policy
+// is written in, and the display name the site itself shows for it (localized
+// by the agent through translate_user_role, so an Italian site reports
+// "Amministratore" for `administrator`).
+type SiteRole struct {
+	Slug string
+	Name string
 }
 
 // Component is one installed plugin/theme. AvailableUpdate is set when the

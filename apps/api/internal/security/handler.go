@@ -660,6 +660,49 @@ type policyDTO struct {
 	UpdatedAt                   string   `json:"updated_at,omitempty"`
 }
 
+// siteRoleDTO is one WordPress role that exists on the site.
+//
+//	slug — what the policy stores and what the agent enforces against.
+//	name — what the site itself displays for that role, in the site's own
+//	       locale (an Italian site reports "Amministratore" for administrator).
+//
+// Both are always present; name falls back to slug when the site reported none.
+type siteRoleDTO struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+// policyWithRolesDTO is the GET /security/policy response: the stored policy
+// plus the site's real WordPress role registry (GH #350).
+//
+// site_roles is READ-ONLY discovery data and is deliberately NOT part of the
+// PUT request body: the write path must stay a pure policy write, and the agent
+// is the only writer of the role registry.
+//
+// An EMPTY site_roles array means the site has not reported its roles (an agent
+// older than 0.61.127, or one that has not pushed metadata yet). The dashboard
+// renders the default WordPress roles in that case WITH a visible notice, since
+// silently offering only those five is the defect this field exists to fix.
+type policyWithRolesDTO struct {
+	policyDTO
+	SiteRoles []siteRoleDTO `json:"site_roles"`
+}
+
+func toPolicyWithRolesDTO(p SiteSecurityPolicy, roles []SiteRole) policyWithRolesDTO {
+	items := make([]siteRoleDTO, 0, len(roles))
+	for _, r := range roles {
+		if r.Slug == "" {
+			continue
+		}
+		name := r.Name
+		if name == "" {
+			name = r.Slug
+		}
+		items = append(items, siteRoleDTO{Slug: r.Slug, Name: name})
+	}
+	return policyWithRolesDTO{policyDTO: toPolicyDTO(p), SiteRoles: items}
+}
+
 func toPolicyDTO(p SiteSecurityPolicy) policyDTO {
 	dto := policyDTO{
 		TwoFactorEnabled:            p.TwoFactorEnabled,
@@ -773,7 +816,12 @@ func (h *Handler) getPolicy(c *gin.Context) {
 		httpx.Error(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toPolicyDTO(pol))
+	// The site's real role registry rides along on the policy read so the
+	// dashboard knows which roles it may offer BEFORE the operator has saved
+	// anything. Never fails the read: an unavailable registry yields an empty
+	// list, which the dashboard labels rather than papers over.
+	roles := h.svc.GetSiteRoles(c.Request.Context(), p.TenantID, siteID)
+	c.JSON(http.StatusOK, toPolicyWithRolesDTO(pol, roles))
 }
 
 func (h *Handler) putPolicy(c *gin.Context) {
@@ -796,12 +844,14 @@ func (h *Handler) putPolicy(c *gin.Context) {
 	)
 	if saveErr != nil {
 		if _, ok := domain.AsDomain(saveErr); ok {
+			// A rejected policy returns no body, so there is nothing for the
+			// role registry to ride on. Bail before looking it up.
 			httpx.Error(c, saveErr)
 			return
 		}
 		// Non-domain = agent push failed after successful store.
 		c.Header("X-Agent-Push-Warning", saveErr.Error())
-		c.JSON(http.StatusOK, toPolicyDTO(saved))
+		c.JSON(http.StatusOK, toPolicyWithRolesDTO(saved, h.svc.GetSiteRoles(c.Request.Context(), p.TenantID, siteID)))
 		return
 	}
 
@@ -819,7 +869,11 @@ func (h *Handler) putPolicy(c *gin.Context) {
 		},
 	})
 
-	c.JSON(http.StatusOK, toPolicyDTO(saved))
+	// The save response carries site_roles too. The dashboard writes this body
+	// straight into its policy cache, so omitting the registry here would make
+	// the role chips collapse back to the five defaults the moment an operator
+	// pressed Save.
+	c.JSON(http.StatusOK, toPolicyWithRolesDTO(saved, h.svc.GetSiteRoles(c.Request.Context(), p.TenantID, siteID)))
 }
 
 func (h *Handler) listPolicyGroups(c *gin.Context) {

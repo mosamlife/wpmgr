@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.126
+  version: 0.61.127
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -7821,16 +7821,20 @@ paths:
         Site-user auth policy governs 2FA and password requirements for the
         WordPress users of this site (distinct from dashboard operator 2FA,
         which is per-CP-user — see the two-factor-auth tag).
+
+        The response also carries `site_roles`, the WordPress roles that
+        actually exist on the site, so the policy editor can offer roles such
+        as WooCommerce's `shop_manager` instead of only the five defaults.
       tags: [security]
       parameters:
         - $ref: "#/components/parameters/SiteId"
       responses:
         "200":
-          description: Current policy
+          description: Current policy, plus the site's reported WordPress roles
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SiteSecurityPolicy"
+                $ref: "#/components/schemas/SiteSecurityPolicyWithRoles"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -7857,7 +7861,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SiteSecurityPolicy"
+                $ref: "#/components/schemas/SiteSecurityPolicyWithRoles"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -13460,6 +13464,29 @@ components:
           type: integer
         admin_count:
           type: integer
+        roles:
+          type: array
+          description: |
+            The WordPress roles that exist on the site, read from the site's own
+            unfiltered role registry. This is what lets the security policy
+            editor offer roles such as WooCommerce's `shop_manager` instead of
+            only the five WordPress defaults.
+
+            Optional and additive: an agent older than 0.61.127 omits it, and
+            the control plane then reports the site's roles as "not reported"
+            rather than guessing them. Bounded to 200 entries by the agent and
+            again by the control plane.
+          items:
+            type: object
+            properties:
+              slug:
+                type: string
+                description: WordPress role slug, e.g. shop_manager.
+              name:
+                type: string
+                description: |
+                  Display name in the site's own locale, resolved exactly as
+                  WordPress resolves it for its own role dropdown.
         core_update:
           type: object
           nullable: true
@@ -21124,6 +21151,36 @@ components:
         hide_backend_slug: { type: string }
         hide_backend_redirect: { type: string }
         updated_at: { type: string, format: date-time }
+    SiteRole:
+      type: object
+      required: [slug, name]
+      description: |
+        One WordPress role that exists on the site. `slug` is what the policy
+        stores and what the agent enforces against; `name` is what the site
+        itself displays for that role, already localized (an Italian site
+        reports "Amministratore" for the `administrator` slug).
+      properties:
+        slug: { type: string, description: "WordPress role slug, e.g. shop_manager." }
+        name: { type: string, description: "Display name shown on the site, in the site locale." }
+    SiteSecurityPolicyWithRoles:
+      description: |
+        The stored site-user auth policy plus the site's real WordPress role
+        registry, as returned by GET and PUT /security/policy.
+
+        `site_roles` is READ-ONLY: the agent is its only writer, it is reported
+        with the site inventory, and it is deliberately absent from the write
+        schema. An EMPTY array means the site has not reported its roles yet
+        (an agent older than 0.61.127, or one that has not pushed metadata
+        since). Clients must present that as an explicit fallback rather than
+        silently offering only the five default WordPress roles.
+      allOf:
+        - $ref: "#/components/schemas/SiteSecurityPolicy"
+        - type: object
+          required: [site_roles]
+          properties:
+            site_roles:
+              type: array
+              items: { $ref: "#/components/schemas/SiteRole" }
     SitePolicyGroup:
       type: object
       description: A per-role override of the site-user auth policy.
