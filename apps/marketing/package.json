@@ -39,6 +39,7 @@
     "@wpmgr/eslint-config": "workspace:*",
     "@wpmgr/tsconfig": "workspace:*",
     "impeccable": "^2.1.9",
+    "remark-frontmatter": "^5.0.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.0",
     "yaml": "^2.7.1"

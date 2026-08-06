@@ -107,6 +107,9 @@ importers:
       impeccable:
         specifier: ^2.1.9
         version: 2.1.9(typescript@5.9.3)
+      remark-frontmatter:
+        specifier: ^5.0.0
+        version: 5.0.0
       tailwindcss:
         specifier: ^4.3.0
         version: 4.3.1
@@ -3714,6 +3717,9 @@ packages:
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
 
+  fault@2.0.1:
+    resolution: {integrity: sha512-WtySTkS4OKev5JtpHXnib4Gxiurzh5NCGvWrFaZ34m6JehfTUhKZvn9njTfw48t6JumVQOmrKqpmGcdwxnhqBQ==}
+
   fd-slicer@1.1.0:
     resolution: {integrity: sha512-cE1qsB/VwyQozZ+q1dGxR8LBYNZeofhEdUNGSMbQD3Gw2lAzX9Zb3uIU6Ebc/Fmyjo9AWWfnn0AUCHqtevs/8g==}
 
@@ -3750,6 +3756,10 @@ packages:
 
   focus-trap@7.8.0:
     resolution: {integrity: sha512-/yNdlIkpWbM0ptxno3ONTuf+2g318kh2ez3KSeZN5dZ8YC6AAmgeWz+GasYYiBJPFaYcSAPeu4GfhUaChzIJXA==}
+
+  format@0.2.2:
+    resolution: {integrity: sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==}
+    engines: {node: '>=0.4.x'}
 
   framer-motion@12.40.0:
     resolution: {integrity: sha512-uaBd3qC1v3KQqBEjwTUd183K6PbS+j0yR9w9VmEOLWA/tnUcSn8Xa3uck7t4dgpDoUss8xQTcj8W2L07lrnLFg==}
@@ -4272,6 +4282,9 @@ packages:
   mdast-util-from-markdown@2.0.3:
     resolution: {integrity: sha512-W4mAWTvSlKvf8L6J+VN9yLSqQ9AOAAvHuoDAmPkz4dHf553m5gVj2ejadHJhoJmcmxEnOv6Pa8XJhpxE93kb8Q==}
 
+  mdast-util-frontmatter@2.0.1:
+    resolution: {integrity: sha512-LRqI9+wdgC25P0URIJY9vwocIzCcksduHQ9OF2joxQoyTNVduwLAFUzjoopuRJbJAReaKrNQKAZKL3uCMugWJA==}
+
   mdast-util-gfm-autolink-literal@2.0.1:
     resolution: {integrity: sha512-5HVP2MKaP6L+G6YaxPNjuL0BPrq9orG3TsrZ9YXbA3vDw/ACI4MEsnoDpn6ZNm7GnZgtAcONJyPhOP8tNJQavQ==}
 
@@ -4322,6 +4335,9 @@ packages:
 
   micromark-core-commonmark@2.0.3:
     resolution: {integrity: sha512-RDBrHEMSxVFLg6xvnXmb1Ayr2WzLAWjeSATAoxwKYJV94TeNavgoIdA0a9ytzDSVzBy2YKFK+emCPOEibLeCrg==}
+
+  micromark-extension-frontmatter@2.0.0:
+    resolution: {integrity: sha512-C4AkuM3dA58cgZha7zVnuVxBhDsbttIMiytjgsM2XbHAB2faRVaHRle40558FBN+DJcrLNCoqG5mlrpdU4cRtg==}
 
   micromark-extension-gfm-autolink-literal@2.1.0:
     resolution: {integrity: sha512-oOg7knzhicgQ3t4QCjCWgTmfNhvQbDDnJeVu9v81r7NltNCVmhPy1fJRX27pISafdjL+SVc4d3l48Gb6pbRypw==}
@@ -4847,6 +4863,9 @@ packages:
 
   rehype-stringify@10.0.1:
     resolution: {integrity: sha512-k9ecfXHmIPuFVI61B9DeLPN0qFHfawM6RsuX48hoqlaKSF61RskNjSm1lI8PhBEM0MRdLxVVm4WmTqJQccH9mA==}
+
+  remark-frontmatter@5.0.0:
+    resolution: {integrity: sha512-XTFYvNASMe5iPN0719nPrdItC9aU0ssC4v14mH1BCi1u0n1gAocqcujWUrByftZTbLhRtiKRyjYTSIOcr69UVQ==}
 
   remark-gfm@4.0.1:
     resolution: {integrity: sha512-1quofZ2RQ9EWdeN34S79+KExV1764+wCUGop5CPL1WGdD0ocPpu91lzPGbwWMECpEpd42kJGQwzRfyov9j4yNg==}
@@ -8988,6 +9007,10 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
+  fault@2.0.1:
+    dependencies:
+      format: 0.2.2
+
   fd-slicer@1.1.0:
     dependencies:
       pend: 1.2.0
@@ -9022,6 +9045,8 @@ snapshots:
   focus-trap@7.8.0:
     dependencies:
       tabbable: 6.5.0
+
+  format@0.2.2: {}
 
   framer-motion@12.40.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6):
     dependencies:
@@ -9606,6 +9631,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  mdast-util-frontmatter@2.0.1:
+    dependencies:
+      '@types/mdast': 4.0.4
+      devlop: 1.1.0
+      escape-string-regexp: 5.0.0
+      mdast-util-from-markdown: 2.0.3
+      mdast-util-to-markdown: 2.1.2
+      micromark-extension-frontmatter: 2.0.0
+    transitivePeerDependencies:
+      - supports-color
+
   mdast-util-gfm-autolink-literal@2.0.1:
     dependencies:
       '@types/mdast': 4.0.4
@@ -9765,6 +9801,13 @@ snapshots:
       micromark-util-normalize-identifier: 2.0.1
       micromark-util-resolve-all: 2.0.1
       micromark-util-subtokenize: 2.1.0
+      micromark-util-symbol: 2.0.1
+      micromark-util-types: 2.0.2
+
+  micromark-extension-frontmatter@2.0.0:
+    dependencies:
+      fault: 2.0.1
+      micromark-util-character: 2.1.1
       micromark-util-symbol: 2.0.1
       micromark-util-types: 2.0.2
 
@@ -10530,6 +10573,15 @@ snapshots:
       '@types/hast': 3.0.4
       hast-util-to-html: 9.0.5
       unified: 11.0.5
+
+  remark-frontmatter@5.0.0:
+    dependencies:
+      '@types/mdast': 4.0.4
+      mdast-util-frontmatter: 2.0.1
+      micromark-extension-frontmatter: 2.0.0
+      unified: 11.0.5
+    transitivePeerDependencies:
+      - supports-color
 
   remark-gfm@4.0.1:
     dependencies:
