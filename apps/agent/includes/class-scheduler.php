@@ -8,7 +8,7 @@
  *                              fired on enrollment and on plugin/theme changes.
  *   - wpmgr_agent_safety     : one-shot ~30 min after first activation; if the
  *                              site is still NOT enrolled, the plugin
- *                              self-deactivates (MainWP-style safety). Disabled
+ *                              self-deactivates. Disabled
  *                              by defining WPMGR_AGENT_DISABLE_AUTO_DEACTIVATE.
  *
  * Everything is guarded so nothing runs (or reaches the network) until enrolled.

@@ -188,8 +188,10 @@ final class Admin
                 ? '<strong style="color:#1a7f37;">' . esc_html__('Enrolled', 'wpmgr-agent') . '</strong>'
                 : '<strong style="color:#b32d2e;">' . esc_html__('Not enrolled', 'wpmgr-agent') . '</strong>')
             . '</td></tr>';
-        echo '<tr><th>' . esc_html__('Site ID', 'wpmgr-agent') . '</th><td>' . esc_html($siteId !== '' ? $siteId : '—') . '</td></tr>';
-        echo '<tr><th>' . esc_html__('Tenant ID', 'wpmgr-agent') . '</th><td>' . esc_html($tenantId !== '' ? $tenantId : '—') . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Site ID', 'wpmgr-agent') . '</th><td>'
+            . ($siteId !== '' ? esc_html($siteId) : esc_html__('Not set', 'wpmgr-agent')) . '</td></tr>';
+        echo '<tr><th>' . esc_html__('Tenant ID', 'wpmgr-agent') . '</th><td>'
+            . ($tenantId !== '' ? esc_html($tenantId) : esc_html__('Not set', 'wpmgr-agent')) . '</td></tr>';
         echo '<tr><th>' . esc_html__('Last heartbeat', 'wpmgr-agent') . '</th><td>' . esc_html($this->formatTime($lastBeat)) . '</td></tr>';
         echo '<tr><th>' . esc_html__('Last metadata sync', 'wpmgr-agent') . '</th><td>' . esc_html($this->formatTime($lastMeta)) . '</td></tr>';
         echo '</tbody></table>';

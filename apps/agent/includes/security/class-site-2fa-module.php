@@ -2021,7 +2021,7 @@ final class Site2faModule
 
         $html  = '<h3>' . esc_html__('Save your backup codes', 'wpmgr-agent') . '</h3>';
         $html .= '<p style="color:#d63638;font-weight:bold">';
-        $html .= esc_html__('These codes are shown ONCE. Save them now — you cannot view them again.', 'wpmgr-agent');
+        $html .= esc_html__('These codes are shown ONCE. Save them now. You cannot view them again.', 'wpmgr-agent');
         $html .= '</p>';
 
         if ($codes !== []) {
