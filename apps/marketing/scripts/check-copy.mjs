@@ -94,6 +94,74 @@ const BANNED_WORDS = [
   "WPRemote",
 ];
 
+// Disparagement vocabulary, banned on the comparison pages.
+//
+// This is the sharper rule that replaced the blunt one. Marketing may now name
+// competitors, but the ORIGINAL purpose of the naming ban was never "pretend
+// rivals do not exist", it was "do not sound like the sneering-competitor
+// content that fills this niche". Dropping the naming ban without encoding
+// that purpose would have thrown away the reason it existed.
+//
+// Comparison pages are also where a careless adjective does the most damage:
+// they are the one surface whose entire value is being trusted about somebody
+// else's product.
+const DISPARAGEMENT = [
+  "bloated",
+  "outdated",
+  "ripoff",
+  "rip-off",
+  "scam",
+  "garbage",
+  "abandoned",
+  "inferior",
+  "overpriced",
+  "clunky",
+  "crippled",
+];
+
+// Blanks out verbatim quotations so the style rules cannot reach inside them.
+//
+// THIS IS NOT A LOOPHOLE, IT IS THE POINT. Comparison pages quote vendors
+// exactly, and both of our rules were rewriting those quotes:
+//
+//   The DASH rule fired on ManageWP's own sentence, "Security Check is a
+//   messenger, not a cleaner-it alerts you, but does not remove malware",
+//   which uses an em dash. An earlier draft "fixed" it by swapping the dash
+//   for a comma, which silently altered a quotation and produced a comma
+//   splice. A style rule that edits somebody else's words is a correctness
+//   bug wearing a linter's clothes.
+//
+//   The DISPARAGEMENT rule fired on "Check for abandoned plugins & themes",
+//   which is MainWP's own feature name, and on ManageWP's own bullet listing
+//   "outdated software". Neither is us being rude about a competitor. Both are
+//   us reporting what the vendor calls their own product.
+//
+// Applied only where we actually quote vendors verbatim, so the dash rule
+// stays absolute on ordinary marketing copy, where a quoted span is far more
+// likely to be scare quotes than a citation.
+function stripQuotedSpans(text) {
+  // Inner quotes inside a TS string literal are escaped, so a vendor quotation
+  // reads as \"...\" in the raw source.
+  return text.replace(/\\"[\s\S]*?\\"/g, " [quoted] ");
+}
+
+function checkDisparagement(file, line, text) {
+  const lower = text.toLowerCase();
+  for (const w of DISPARAGEMENT) {
+    // Word-boundary match: "abandoned" must not fire on "abandonedCartPlugin",
+    // and this file is itself scanned, so a naive includes() would flag the
+    // list above.
+    if (new RegExp(`\\b${w}\\b`).test(lower)) {
+      report(
+        file,
+        line,
+        `disparagement "${w}" on a comparison page. Describe what a product does, ` +
+          `not how you feel about it: ${text.replace(/\s+/g, " ").trim().slice(0, 80)}`,
+      );
+    }
+  }
+}
+
 function walk(dir, match) {
   let out = [];
   let entries;
@@ -150,14 +218,15 @@ function checkText(file, line, text, label, { names = true } = {}) {
 // ---------------------------------------------------------------------------
 // Scope 1 + readme.txt: whole-file, line by line.
 // ---------------------------------------------------------------------------
-function scanWholeFile(file, opts) {
+function scanWholeFile(file, opts = {}) {
   let text;
   try {
     text = readFileSync(file, "utf8");
   } catch {
     return;
   }
-  text.split("\n").forEach((line, i) => checkText(file, i + 1, line, ":", opts));
+  const prep = opts.quotesExempt ? stripQuotedSpans : (t) => t;
+  text.split("\n").forEach((line, i) => checkText(file, i + 1, prep(line), ":", opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +403,27 @@ const marketingFiles = SCAN_DIRS.flatMap((d) =>
 // is about CODE PROVENANCE (do not credit a competitor as the source of a
 // technique we implemented), and it still binds everywhere it matters: agent
 // PHP below, plus docs/ and root *.md via ci.yml's docs vocabulary check.
-for (const file of marketingFiles) scanWholeFile(file, { names: false });
+const isCompareFile = (f) => f.includes("/content/compare/") || f.includes("/compare/");
+for (const file of marketingFiles) {
+  scanWholeFile(file, { names: false, quotesExempt: isCompareFile(file) });
+}
+
+// Comparison surfaces get the extra disparagement rule. Scoped by path rather
+// than applied everywhere, because words like "outdated" are perfectly ordinary
+// when a security article is describing a stale plugin on your own site, and
+// only become a problem when the subject is somebody else's product.
+const compareFiles = marketingFiles.filter(isCompareFile);
+let compareScanned = 0;
+for (const file of compareFiles) {
+  compareScanned += 1;
+  try {
+    readFileSync(file, "utf8")
+      .split("\n")
+      .forEach((line, i) => checkDisparagement(file, i + 1, stripQuotedSpans(line)));
+  } catch {
+    // unreadable file already reported by the whole-file pass above
+  }
+}
 
 // 2a. The wordpress.org listing. KEEPS the competitor rule even though
 // marketing dropped it: this file IS the directory listing page, and naming
@@ -419,5 +508,6 @@ console.log(
   `check-copy passed: no em dashes, en dashes, or competitor names across ${scanned} files ` +
     `(${marketingFiles.length} marketing, ${agentReadmeScanned} agent readme, ` +
     `${agentHeaderScanned} plugin header, ${agentPhp.length} agent PHP of which ` +
-    `${agentCopyFiles.length} carry copy).`,
+    `${agentCopyFiles.length} carry copy, ${compareScanned} comparison files also ` +
+    `checked for disparagement).`,
 );
