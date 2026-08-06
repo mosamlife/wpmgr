@@ -11,7 +11,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "WPMgr on Product Hunt",
   description: "WPMgr is live on Product Hunt. Open-source, self-hostable WordPress fleet management.",
-  canonical: "/product-hunt/",
+  canonical: "/product-hunt",
   noindex: true,
 });
 

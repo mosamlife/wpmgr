@@ -13,7 +13,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Blog: WordPress Operations, Security, and Performance",
   description:
     "Practical articles on WordPress security, performance, backups, and agency operations. Written for site operators, developers, and agencies who run WordPress at scale.",
-  canonical: "/blog/",
+  canonical: "/blog",
 });
 
 const CATEGORY_META: Record<string, { label: string; description: string; color: string }> = {

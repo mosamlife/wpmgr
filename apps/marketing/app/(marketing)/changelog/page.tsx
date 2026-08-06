@@ -11,7 +11,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Changelog: WPMgr Release Notes",
   description:
     "Every WPMgr release, newest first. See what shipped, when, and which features were added, changed, or fixed.",
-  canonical: "/changelog/",
+  canonical: "/changelog",
 });
 
 // ---------------------------------------------------------------------------

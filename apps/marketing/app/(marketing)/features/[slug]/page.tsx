@@ -27,7 +27,7 @@ export async function generateMetadata({
   return buildMetadata({
     title: feature.metaTitle,
     description: feature.metaDescription,
-    canonical: `/features/${slug}/`,
+    canonical: `/features/${slug}`,
   });
 }
 

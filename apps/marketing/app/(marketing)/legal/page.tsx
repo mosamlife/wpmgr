@@ -10,7 +10,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Legal: Terms, Privacy, Security Policy",
   description:
     "WPMgr legal information: responsible disclosure and security policy, terms of service, and privacy policy.",
-  canonical: "/legal/",
+  canonical: "/legal",
 });
 
 const LEGAL_ITEMS = [

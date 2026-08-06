@@ -8,7 +8,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Refund Policy | WPMgr",
   description:
     "WPMgr refund policy: cancel a monthly subscription anytime, plus a 14-day money-back guarantee on your first paid payment, refunded through your original payment provider.",
-  canonical: "/refunds/",
+  canonical: "/refunds",
 });
 
 const mail = (

@@ -27,7 +27,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return buildMetadata({
     title: fm.title,
     description: fm.description,
-    canonical: `/guides/${slug}/`,
+    canonical: `/guides/${slug}`,
     ogImage: `${SITE_CONFIG.baseUrl}/opengraph-image`,
   });
 }

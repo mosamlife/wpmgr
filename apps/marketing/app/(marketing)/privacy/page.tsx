@@ -9,7 +9,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Privacy Policy | WPMgr",
   description:
     "How WPMgr collects, uses, and protects data for the hosted service at manage.wpmgr.app, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle.",
-  canonical: "/privacy/",
+  canonical: "/privacy",
 });
 
 const mail = (

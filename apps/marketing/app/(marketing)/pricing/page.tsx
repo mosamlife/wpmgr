@@ -23,7 +23,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Pricing | WPMgr",
   description:
     "WPMgr pricing: a permanent free tier for 3 sites, and hosted plans from $15/mo with managed backup storage and more frequent backups. Self-hosting stays free and unlimited forever.",
-  canonical: "/pricing/",
+  canonical: "/pricing",
 });
 
 export default async function PricingPage() {
