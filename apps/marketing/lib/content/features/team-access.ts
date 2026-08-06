@@ -98,11 +98,11 @@ export const TEAM_ACCESS_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Security suite", href: "/features/security/" },
-    { label: "White-label reports", href: "/features/client-reports/" },
+    { label: "Security suite", href: "/features/security" },
+    { label: "White-label reports", href: "/features/client-reports" },
   ],
   solutionLinks: [
-    { label: "WPMgr for agencies", href: "/solutions/agencies/" },
-    { label: "WordPress security solutions", href: "/solutions/wordpress-security/" },
+    { label: "WPMgr for agencies", href: "/solutions/agencies" },
+    { label: "WordPress security solutions", href: "/solutions/wordpress-security" },
   ],
 };

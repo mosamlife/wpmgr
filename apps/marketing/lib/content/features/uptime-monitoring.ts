@@ -98,10 +98,10 @@ export const UPTIME_MONITORING_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Safe fleet updates", href: "/features/updates/" },
-    { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
+    { label: "Safe fleet updates", href: "/features/updates" },
+    { label: "Real User Monitoring", href: "/features/real-user-monitoring" },
   ],
   solutionLinks: [
-    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites/" },
+    { label: "Manage multiple WordPress sites", href: "/solutions/manage-multiple-sites" },
   ],
 };

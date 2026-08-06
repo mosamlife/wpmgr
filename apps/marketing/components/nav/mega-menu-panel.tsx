@@ -109,7 +109,7 @@ function FeaturesPanel({
       {/* Footer link */}
       <div className="mt-6 border-t border-[var(--border)] pt-3.5">
         <a
-          href="/features/"
+          href="/features"
           onClick={onClose}
           className={cn(
             "inline-flex items-center gap-1.5 text-sm font-medium text-[var(--primary)]",
@@ -157,7 +157,7 @@ function SolutionsPanel({
       {/* Footer link */}
       <div className="mx-auto mt-5 max-w-4xl border-t border-[var(--border)] pt-3">
         <a
-          href="/solutions/"
+          href="/solutions"
           onClick={onClose}
           className={cn(
             "inline-flex items-center gap-1.5 text-sm font-medium text-[var(--primary)]",

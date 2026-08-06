@@ -102,11 +102,11 @@ export const PERFORMANCE_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Redis Object Cache", href: "/features/object-cache/" },
-    { label: "Media Optimizer", href: "/features/media-optimizer/" },
-    { label: "Real User Monitoring", href: "/features/real-user-monitoring/" },
+    { label: "Redis Object Cache", href: "/features/object-cache" },
+    { label: "Media Optimizer", href: "/features/media-optimizer" },
+    { label: "Real User Monitoring", href: "/features/real-user-monitoring" },
   ],
   solutionLinks: [
-    { label: "Speed up WordPress", href: "/solutions/wordpress-performance/" },
+    { label: "Speed up WordPress", href: "/solutions/wordpress-performance" },
   ],
 };

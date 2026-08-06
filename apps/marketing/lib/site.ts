@@ -26,10 +26,10 @@ export type NavGroup = {
 };
 
 export const HEADER_NAV: NavItem[] = [
-  { label: "Features", href: "/features/" },
-  { label: "Solutions", href: "/solutions/" },
-  { label: "Pricing", href: "/pricing/" },
-  { label: "Resources", href: "/resources/" },
+  { label: "Features", href: "/features" },
+  { label: "Solutions", href: "/solutions" },
+  { label: "Pricing", href: "/pricing" },
+  { label: "Resources", href: "/resources" },
   { label: "Docs", href: SITE_CONFIG.docs },
 ];
 
@@ -37,31 +37,31 @@ export const FOOTER_NAV: NavGroup[] = [
   {
     label: "Product",
     items: [
-      { label: "Features", href: "/features/" },
-      { label: "Media Optimizer", href: "/features/media-optimizer/" },
-      { label: "Backups", href: "/features/backups/" },
-      { label: "Performance", href: "/features/performance/" },
-      { label: "Security", href: "/features/security/" },
-      { label: "Pricing", href: "/pricing/" },
+      { label: "Features", href: "/features" },
+      { label: "Media Optimizer", href: "/features/media-optimizer" },
+      { label: "Backups", href: "/features/backups" },
+      { label: "Performance", href: "/features/performance" },
+      { label: "Security", href: "/features/security" },
+      { label: "Pricing", href: "/pricing" },
     ],
   },
   {
     label: "Solutions",
     items: [
-      { label: "For agencies", href: "/solutions/agencies/" },
-      { label: "For freelancers", href: "/solutions/freelancers/" },
-      { label: "WordPress backups", href: "/solutions/wordpress-backups/" },
-      { label: "Speed up WordPress", href: "/solutions/wordpress-performance/" },
-      { label: "WordPress security", href: "/solutions/wordpress-security/" },
-      { label: "Manage multiple sites", href: "/solutions/manage-multiple-sites/" },
+      { label: "For agencies", href: "/solutions/agencies" },
+      { label: "For freelancers", href: "/solutions/freelancers" },
+      { label: "WordPress backups", href: "/solutions/wordpress-backups" },
+      { label: "Speed up WordPress", href: "/solutions/wordpress-performance" },
+      { label: "WordPress security", href: "/solutions/wordpress-security" },
+      { label: "Manage multiple sites", href: "/solutions/manage-multiple-sites" },
     ],
   },
   {
     label: "Resources",
     items: [
-      { label: "Changelog", href: "/changelog/" },
-      { label: "Blog", href: "/blog/" },
-      { label: "Guides", href: "/guides/" },
+      { label: "Changelog", href: "/changelog" },
+      { label: "Blog", href: "/blog" },
+      { label: "Guides", href: "/guides" },
       { label: "API reference", href: SITE_CONFIG.docs },
       { label: "GitHub", href: SITE_CONFIG.github, external: true },
       { label: "WordPress.org listing", href: SITE_CONFIG.wordpressOrg, external: true },
@@ -71,19 +71,19 @@ export const FOOTER_NAV: NavGroup[] = [
   {
     label: "Company",
     items: [
-      { label: "About", href: "/about/" },
-      { label: "Pricing", href: "/pricing/" },
-      { label: "Contact", href: "/contact/" },
+      { label: "About", href: "/about" },
+      { label: "Pricing", href: "/pricing" },
+      { label: "Contact", href: "/contact" },
     ],
   },
   {
     label: "Legal",
     items: [
-      { label: "Legal hub", href: "/legal/" },
-      { label: "Security policy", href: "/legal/security-policy/" },
-      { label: "Terms", href: "/terms/" },
-      { label: "Privacy", href: "/privacy/" },
-      { label: "Refund policy", href: "/refunds/" },
+      { label: "Legal hub", href: "/legal" },
+      { label: "Security policy", href: "/legal/security-policy" },
+      { label: "Terms", href: "/terms" },
+      { label: "Privacy", href: "/privacy" },
+      { label: "Refund policy", href: "/refunds" },
       { label: "License", href: `${SITE_CONFIG.github}/blob/main/LICENSE`, external: true },
     ],
   },

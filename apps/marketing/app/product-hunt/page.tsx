@@ -108,7 +108,7 @@ export default function ProductHuntPage() {
                   Star on GitHub
                 </a>
                 <a
-                  href="/features/"
+                  href="/features"
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-7 text-base font-medium text-foreground hover:bg-[var(--accent)] transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   See features
@@ -237,7 +237,7 @@ export default function ProductHuntPage() {
                     Star on GitHub
                   </a>
                   <a
-                    href="/features/"
+                    href="/features"
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-7 text-base font-medium text-foreground hover:bg-[var(--accent)] transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                   >
                     See all features

@@ -51,7 +51,7 @@ function SolutionCard({
 }) {
   return (
     <Link
-      href={`/solutions/${slug}/`}
+      href={`/solutions/${slug}`}
       className={cn(
         "group relative flex flex-col gap-4 rounded-2xl border border-[var(--border)] bg-card p-7 shadow-sm",
         "transition-all duration-[var(--duration-base)] hover:shadow-lg hover:border-[var(--primary)]/40",
@@ -87,7 +87,7 @@ export default function SolutionsHubPage() {
 
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Solutions", href: "/solutions/" },
+    { name: "Solutions", href: "/solutions" },
   ]);
 
   const itemListLd = buildItemListLd(allSolutionsForLd);
@@ -170,14 +170,14 @@ export default function SolutionsHubPage() {
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Link
-                  href="/features/"
+                  href="/features"
                   className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   Browse all 13 features
                   <Icon name="ArrowRight" size={14} />
                 </Link>
                 <Link
-                  href="/pricing/"
+                  href="/pricing"
                   className="inline-flex items-center gap-2 rounded-[var(--radius)] bg-primary px-5 py-2.5 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   See pricing

@@ -66,7 +66,7 @@ export default async function BlogPostPage({ params }: Props) {
 
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Blog", href: "/blog/" },
+    { name: "Blog", href: "/blog" },
     { name: catLabel, href: `/blog/${category}/` },
     { name: fm.title, href: `/blog/${category}/${slug}/` },
   ]);
@@ -108,9 +108,9 @@ export default async function BlogPostPage({ params }: Props) {
             <nav aria-label="Breadcrumb" className="mb-6 flex flex-wrap items-center gap-2 text-sm text-[var(--muted-foreground)]">
               <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
               <span aria-hidden>/</span>
-              <Link href="/blog/" className="hover:text-foreground transition-colors">Blog</Link>
+              <Link href="/blog" className="hover:text-foreground transition-colors">Blog</Link>
               <span aria-hidden>/</span>
-              <Link href={`/blog/${category}/`} className="hover:text-foreground transition-colors">
+              <Link href={`/blog/${category}`} className="hover:text-foreground transition-colors">
                 {catLabel}
               </Link>
               <span aria-hidden>/</span>
@@ -121,7 +121,7 @@ export default async function BlogPostPage({ params }: Props) {
 
             <div className="mb-4 flex flex-wrap items-center gap-3">
               <Link
-                href={`/blog/${category}/`}
+                href={`/blog/${category}`}
                 className="inline-flex items-center rounded-full border border-[var(--border)] bg-card px-3 py-1 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)]"
               >
                 {catLabel}
@@ -162,7 +162,7 @@ export default async function BlogPostPage({ params }: Props) {
               <div>
                 <p className="text-sm text-[var(--muted-foreground)]">More in this category</p>
                 <Link
-                  href={`/blog/${category}/`}
+                  href={`/blog/${category}`}
                   className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                 >
                   All {catLabel} articles
@@ -172,7 +172,7 @@ export default async function BlogPostPage({ params }: Props) {
                 <div>
                   <p className="text-sm text-[var(--muted-foreground)]">Related feature</p>
                   <Link
-                    href={`/features/${fm.featureSlug}/`}
+                    href={`/features/${fm.featureSlug}`}
                     className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                   >
                     Explore the feature
@@ -183,7 +183,7 @@ export default async function BlogPostPage({ params }: Props) {
                 <div>
                   <p className="text-sm text-[var(--muted-foreground)]">Solution guide</p>
                   <Link
-                    href={`/solutions/${solutionSlug}/`}
+                    href={`/solutions/${solutionSlug}`}
                     className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                   >
                     See the full solution

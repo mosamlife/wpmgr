@@ -46,7 +46,7 @@ const TOPICS = [
 export default function ContactPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Contact", href: "/contact/" },
+    { name: "Contact", href: "/contact" },
   ]);
 
   const contactLd = buildContactPageLd();

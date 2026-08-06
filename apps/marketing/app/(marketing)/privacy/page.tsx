@@ -35,8 +35,8 @@ const githubLink = (
 export default function PrivacyPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Legal", href: "/legal/" },
-    { name: "Privacy Policy", href: "/privacy/" },
+    { name: "Legal", href: "/legal" },
+    { name: "Privacy Policy", href: "/privacy" },
   ]);
 
   return (

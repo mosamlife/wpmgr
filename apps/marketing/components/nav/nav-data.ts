@@ -112,7 +112,7 @@ export const NAV_ITEMS: NavTopItem[] = [
 
 // Callout cell in the features panel right rail (one only).
 export const FEATURES_CALLOUT = {
-  href: "/features/security/",
+  href: "/features/security",
   icon: "ShieldCheck",
   title: "Security suite",
   description:

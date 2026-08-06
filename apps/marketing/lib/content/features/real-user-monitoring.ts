@@ -102,11 +102,11 @@ export const RUM_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Performance and page caching", href: "/features/performance/" },
-    { label: "Media Optimizer", href: "/features/media-optimizer/" },
+    { label: "Performance and page caching", href: "/features/performance" },
+    { label: "Media Optimizer", href: "/features/media-optimizer" },
   ],
   solutionLinks: [
-    { label: "Speed up WordPress", href: "/solutions/wordpress-performance/" },
+    { label: "Speed up WordPress", href: "/solutions/wordpress-performance" },
   ],
 };
 

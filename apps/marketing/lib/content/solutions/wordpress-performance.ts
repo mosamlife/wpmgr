@@ -16,7 +16,7 @@ export const WORDPRESS_PERFORMANCE_SOLUTION: SolutionPageData = {
     subhead:
       "Four independent acceleration layers that compound: full-page caching cuts server response time, the Media Optimizer converts your image library to AVIF and WebP, Redis object cache reduces database load, and Real User Monitoring proves the improvement with real visitor data.",
     primaryCta: { label: "Start optimising for free", href: SITE_CONFIG.signup, variant: "primary", icon: "ArrowRight" },
-    secondaryCta: { label: "See Media Optimizer", href: "/features/media-optimizer/", variant: "secondary", icon: "ArrowRight" },
+    secondaryCta: { label: "See Media Optimizer", href: "/features/media-optimizer", variant: "secondary", icon: "ArrowRight" },
   },
   outcomes: {
     heading: "Every acceleration layer works together",
@@ -28,28 +28,28 @@ export const WORDPRESS_PERFORMANCE_SOLUTION: SolutionPageData = {
       icon: "Zap",
       title: "Full-page caching",
       summary: "Full-page cache, unused CSS removal, WOFF2 font subsetting, and WooCommerce-aware cache bypasses built into the agent.",
-      href: "/features/performance/",
+      href: "/features/performance",
     },
     {
       featureSlug: "object-cache",
       icon: "HardDrive",
       title: "Redis object cache",
       summary: "Per-site Redis object cache with hit ratio, memory pressure, and latency tracked in the fleet dashboard.",
-      href: "/features/object-cache/",
+      href: "/features/object-cache",
     },
     {
       featureSlug: "media-optimizer",
       icon: "ImageDown",
       title: "Media Optimizer",
       summary: "Convert your entire WordPress media library to AVIF and WebP. Originals are archived and the conversion is fully reversible.",
-      href: "/features/media-optimizer/",
+      href: "/features/media-optimizer",
     },
     {
       featureSlug: "real-user-monitoring",
       icon: "BarChart2",
       title: "Real User Monitoring",
       summary: "Core Web Vitals at p75 from real visitors, with 28-day trends, per-URL breakdown, and per-device segmentation.",
-      href: "/features/real-user-monitoring/",
+      href: "/features/real-user-monitoring",
     },
   ],
   stats: [

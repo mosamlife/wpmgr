@@ -102,10 +102,10 @@ export const SECURITY_PAGE: FeaturePageData = {
     },
   ],
   siblingLinks: [
-    { label: "Two-factor authentication", href: "/features/two-factor-auth/" },
-    { label: "Team and access control", href: "/features/team-access/" },
+    { label: "Two-factor authentication", href: "/features/two-factor-auth" },
+    { label: "Team and access control", href: "/features/team-access" },
   ],
   solutionLinks: [
-    { label: "WordPress security solutions", href: "/solutions/wordpress-security/" },
+    { label: "WordPress security solutions", href: "/solutions/wordpress-security" },
   ],
 };

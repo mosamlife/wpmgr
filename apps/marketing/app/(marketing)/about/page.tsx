@@ -75,7 +75,7 @@ const LICENSING = [
 export default function AboutPage() {
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "About", href: "/about/" },
+    { name: "About", href: "/about" },
   ]);
 
   return (
@@ -124,7 +124,7 @@ export default function AboutPage() {
                 Read the code on GitHub
               </Link>
               <Link
-                href="/features/"
+                href="/features"
                 className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-6 py-3 text-base font-medium text-foreground transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
               >
                 See what it does
@@ -294,7 +294,7 @@ export default function AboutPage() {
               </div>
               <div className="shrink-0 flex flex-col gap-3">
                 <Link
-                  href="/changelog/"
+                  href="/changelog"
                   className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-5 py-3 text-sm font-medium text-foreground transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   Read the changelog

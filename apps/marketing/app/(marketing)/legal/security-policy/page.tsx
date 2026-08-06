@@ -55,8 +55,8 @@ const SECURITY_POSTURE = [
 export default function SecurityPolicyPage() {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
-    { name: "Legal", href: "/legal/" },
-    { name: "Security Policy", href: "/legal/security-policy/" },
+    { name: "Legal", href: "/legal" },
+    { name: "Security Policy", href: "/legal/security-policy" },
   ]);
 
   return (
@@ -72,7 +72,7 @@ export default function SecurityPolicyPage() {
           >
             <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
             <span aria-hidden>/</span>
-            <Link href="/legal/" className="hover:text-foreground transition-colors">Legal</Link>
+            <Link href="/legal" className="hover:text-foreground transition-colors">Legal</Link>
             <span aria-hidden>/</span>
             <span className="text-foreground">Security Policy</span>
           </nav>
@@ -311,7 +311,7 @@ export default function SecurityPolicyPage() {
                 </p>
               </div>
               <Link
-                href="/contact/"
+                href="/contact"
                 className="inline-flex items-center justify-center rounded-[var(--radius)] bg-primary px-5 py-2.5 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] whitespace-nowrap"
               >
                 Contact us
