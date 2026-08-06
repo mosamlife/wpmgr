@@ -35,6 +35,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     description: fm.description,
     canonical: `/blog/${category}/${slug}`,
     ogImage: ogImageUrl,
+    article: {
+      published: fm.date,
+      ...(fm.updated ? { modified: fm.updated } : {}),
+      authors: [fm.author ?? "WPMgr Team"],
+      section: CATEGORY_LABELS[category] ?? category,
+      ...(fm.tags ? { tags: fm.tags } : {}),
+    },
   });
 }
 
@@ -74,8 +81,9 @@ export default async function BlogPostPage({ params }: Props) {
   const articleLd = buildArticleLd({
     title: fm.title,
     description: fm.description,
-    slug: `/blog/${category}/${slug}/`,
+    slug: `/blog/${category}/${slug}`,
     datePublished: fm.date,
+    ...(fm.updated ? { dateModified: fm.updated } : {}),
     authorName: fm.author ?? "WPMgr Team",
     image: `${SITE_CONFIG.baseUrl}/blog/${category}/${slug}/opengraph-image`,
   });

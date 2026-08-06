@@ -11,6 +11,23 @@ type BuildMetadataOptions = {
   canonical?: string;
   noindex?: boolean;
   ogImage?: string;
+  /**
+   * Set on blog posts and guides. Emits og:type=article plus
+   * article:published_time and article:modified_time.
+   *
+   * Without this every article shipped og:type=website with no dates at all,
+   * so nothing downstream could tell an article from a landing page, and a
+   * rewrite could not be signalled as a rewrite. `modified` is what makes
+   * refreshing old posts a legible act rather than a silent edit.
+   */
+  article?: {
+    published: string;
+    /** ISO date. Omit when a post has never been revised. */
+    modified?: string;
+    authors?: string[];
+    section?: string;
+    tags?: string[];
+  };
 };
 
 export function buildMetadata({
@@ -19,6 +36,7 @@ export function buildMetadata({
   canonical,
   noindex = false,
   ogImage,
+  article,
 }: BuildMetadataOptions): Metadata {
   const url = canonical
     ? `${SITE_CONFIG.baseUrl}${canonical}`
@@ -33,7 +51,20 @@ export function buildMetadata({
       description,
       url,
       siteName: SITE_CONFIG.name,
-      type: "website",
+      ...(article
+        ? {
+            type: "article" as const,
+            publishedTime: article.published,
+            // Only emit modifiedTime when the piece has actually been revised.
+            // Defaulting it to publishedTime, which the JSON-LD builder used to
+            // do, makes every article claim it was updated the day it shipped
+            // and makes a genuine refresh indistinguishable from no refresh.
+            ...(article.modified ? { modifiedTime: article.modified } : {}),
+            ...(article.authors ? { authors: article.authors } : {}),
+            ...(article.section ? { section: article.section } : {}),
+            ...(article.tags ? { tags: article.tags } : {}),
+          }
+        : { type: "website" as const }),
       images: ogImage
         ? [{ url: ogImage, width: 1200, height: 630, alt: title }]
         : [
@@ -187,7 +218,13 @@ export function buildArticleLd({
     description,
     url,
     datePublished,
-    dateModified: dateModified ?? datePublished,
+    // Emitted ONLY when the piece has actually been revised. This used to fall
+    // back to datePublished, which made every article assert it was last
+    // modified on the day it was written. That is not a harmless default: it
+    // is a claim, it is usually false the moment a post is edited, and it
+    // makes a real refresh indistinguishable from no refresh, which is exactly
+    // the signal a content-refresh cycle depends on.
+    ...(dateModified ? { dateModified } : {}),
     author: {
       "@type": "Organization",
       name: authorName,
