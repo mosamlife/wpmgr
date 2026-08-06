@@ -1,0 +1,720 @@
+name: wp.org deploy
+
+# Publishes the approved WordPress.org build of the agent plugin to
+#   https://plugins.svn.wordpress.org/fleet-agent-site-manager
+#
+# MANUAL ONLY, deliberately. A wp.org release is irreversible. Once tags/X.Y.Z
+# exists and trunk/readme.txt names it as the Stable tag, every installed site
+# is offered that build, and there is no unpublish and no reuse of a version
+# number. This repo tags roughly five times a week and about one repo tag in
+# four does not move the agent version at all (v0.61.119 through v0.61.126 all
+# carried agent 0.61.119), so a tag-triggered publish would be firing wrongly
+# most of the time on the one channel where being wrong is permanent.
+#
+# The build steps below are lifted from .github/workflows/plugincheck.yml,
+# which is already proven against this exact artifact.
+#
+# ONE-TIME SETUP, before first use. All three live on the SAME page:
+# Settings > Environments > wordpress-org.
+#
+#   - ENVIRONMENT named "wordpress-org" with the maintainer as a REQUIRED
+#     REVIEWER. That is the whole safety property: the publish job pauses for
+#     an explicit human approval AFTER Plugin Check has gone green.
+#   - ENVIRONMENT VARIABLE  WPORG_SVN_USERNAME  = Mosamlife
+#     A variable rather than a secret so SVN log lines stay readable on the one
+#     run where you most need to read them. The username is public anyway.
+#   - ENVIRONMENT SECRET    WPORG_SVN_PASSWORD  = the wordpress.org SVN password
+#
+# ENVIRONMENT scope, not repository scope, and the difference is the point.
+# A repository secret is readable by EVERY workflow in the repo, including one
+# with no approval gate. An environment secret is readable only by a job that
+# declares `environment: wordpress-org`, and declaring it is precisely what
+# forces the job to stop and wait for a human. The credential and the gate
+# therefore cannot be separated: nothing can reach the wp.org password without
+# also passing the approval that protects it.
+#
+# Only the `publish` job below declares the environment, and only `publish`
+# reads these. The `build` job runs Plugin Check with no credentials at all.
+#     The build job verifies the environment is armed and fails if it is not,
+#     because a missing environment does not fail, it silently runs ungated.
+#
+# THE FOOTGUN THIS WORKFLOW EXISTS TO KILL: committing tags/X.Y.Z without
+# updating trunk/readme.txt Stable tag means nobody receives the release, and
+# nothing anywhere reports an error. Three independent defences:
+#   1. STRUCTURAL. make agent-zip-wporg stamps readme.txt Stable tag from the
+#      staged plugin header, so the two values cannot disagree, and the tag is
+#      created with `svn cp trunk tags/$V` against the working copy, so trunk
+#      and the tag land in ONE atomic revision. There is no revision in which
+#      one exists without the other.
+#   2. PRE-COMMIT ASSERTIONS. The built zip, the staged trunk and the staged
+#      tag are each checked to name exactly the version being published.
+#   3. POST-COMMIT VERIFICATION. After the commit the workflow re-reads the
+#      SERVER, not the working copy, and fails loudly if trunk's Stable tag
+#      does not resolve to the tag just published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Agent version to publish, e.g. 0.61.127 (no leading v). Must equal WPMGR_AGENT_VERSION on the selected ref."
+        required: true
+        type: string
+      mode:
+        description: "release = trunk + tags/VERSION. assets-only = icons/banners/screenshots. readme-only = listing copy fix at the already-published version."
+        required: true
+        type: choice
+        default: release
+        options:
+          - release
+          - assets-only
+          - readme-only
+      dry_run:
+        description: "true rehearses everything and commits nothing. Set to false only when you mean to publish."
+        required: true
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  actions: read
+
+# Never let two SVN commits race. cancel-in-progress stays false on purpose:
+# a cancelled run that has already committed cannot be undone.
+concurrency:
+  group: wporg-deploy
+  cancel-in-progress: false
+
+env:
+  SVN_URL: https://plugins.svn.wordpress.org/fleet-agent-site-manager
+  SLUG: fleet-agent-site-manager
+  # Listing assets live at the REPO ROOT and are rsynced into SVN's top-level
+  # assets/, a sibling of trunk/ and tags/. They never enter the plugin zip:
+  # agent-zip-wporg only rsyncs apps/agent/, and this directory is outside it.
+  ASSETS_SRC: .wordpress-org
+
+jobs:
+  build:
+    name: build + verify the wp.org zip
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      mode: ${{ steps.vars.outputs.mode }}
+      dry_run: ${{ steps.vars.outputs.dry_run }}
+      zip_sha256: ${{ steps.assert.outputs.zip_sha256 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Subversion is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v svn >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq subversion
+          fi
+          svn --version --quiet
+
+      - name: Validate inputs and resolve the version from source
+        id: vars
+        shell: bash
+        # Dispatch inputs reach the shell through env, never by string
+        # interpolation into the script body. `version` is free text, and an
+        # interpolated value is substituted before bash ever sees it, so a
+        # quote in it would rewrite the script rather than fail validation.
+        env:
+          IN_MODE: ${{ inputs.mode }}
+          IN_DRY: ${{ inputs.dry_run }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mode="$IN_MODE"
+          case "$mode" in
+            release|assets-only|readme-only) ;;
+            *) echo "::error::mode must be release, assets-only or readme-only"; exit 1 ;;
+          esac
+
+          dry="$IN_DRY"
+          case "$dry" in
+            true|false) ;;
+            *) echo "::error::dry_run must be true or false"; exit 1 ;;
+          esac
+
+          want="$IN_VERSION"
+          case "$want" in
+            v*) echo "::error::drop the leading v. wp.org tags are bare versions."; exit 1 ;;
+          esac
+          if ! printf '%s' "$want" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be MAJOR.MINOR.PATCH, got '$want'"
+            exit 1
+          fi
+
+          # The version PUBLISHED must be the version this ref's source carries.
+          # agent-zip-wporg accepts a VERSION override that stamps only the
+          # staged copy. Using it here would publish a number that no commit
+          # corresponds to, so the override is never passed and a mismatch is
+          # refused instead.
+          have=$(sed -n "s/^define('WPMGR_AGENT_VERSION', *'\([^']*\)').*/\1/p" apps/agent/wpmgr-agent.php | head -1)
+          if [ -z "$have" ]; then
+            echo "::error::could not read WPMGR_AGENT_VERSION from apps/agent/wpmgr-agent.php"
+            exit 1
+          fi
+          if [ "$want" != "$have" ]; then
+            echo "::error::this ref carries agent $have, not $want. Re-run the workflow against the ref that carries $want."
+            exit 1
+          fi
+
+          echo "version=$have" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
+          {
+            echo "### wp.org deploy"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| version | \`$have\` |"
+            echo "| mode | \`$mode\` |"
+            echo "| dry run | \`$dry\` |"
+            echo "| ref | \`$IN_REF\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the approval gate is armed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A GitHub Environment that does not exist does NOT fail a job that
+          # names it. The job simply runs with no approval gate, silently
+          # removing the entire safety property of this workflow. So check.
+          status=$(curl -sS -o /tmp/env.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/wordpress-org" || echo "000")
+          case "$status" in
+            200)
+              if jq -e '.protection_rules[]? | select(.type == "required_reviewers")' /tmp/env.json >/dev/null; then
+                echo "approval gate armed: the wordpress-org environment has required reviewers"
+              else
+                echo "::error::the wordpress-org environment exists but has NO required reviewers, so the publish job would commit without human approval. Add a required reviewer in Settings > Environments."
+                exit 1
+              fi
+              ;;
+            404)
+              echo "::error::there is no GitHub Environment named wordpress-org. The publish job would run UNGATED. Create it in Settings > Environments and add yourself as a required reviewer."
+              exit 1
+              ;;
+            *)
+              echo "::warning::could not verify the wordpress-org approval gate (HTTP $status). Confirm by hand that the publish job pauses for approval before you approve it."
+              ;;
+          esac
+
+      - name: Upstream preflight against wp.org SVN
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ steps.vars.outputs.version }}"
+          mode="${{ steps.vars.outputs.mode }}"
+
+          tag_exists=no
+          if svn ls --non-interactive "$SVN_URL/tags/$v" >/dev/null 2>&1; then
+            tag_exists=yes
+          fi
+          echo "tags/$v exists upstream: $tag_exists"
+
+          # trunk/readme.txt is absent before the very first publish.
+          trunk_stable=""
+          if svn cat --non-interactive "$SVN_URL/trunk/readme.txt" > /tmp/trunk-readme.txt 2>/dev/null; then
+            trunk_stable=$(sed -n 's/^Stable tag:[[:space:]]*//p' /tmp/trunk-readme.txt | head -1 | tr -d '[:space:]')
+          fi
+          echo "trunk Stable tag upstream: '${trunk_stable:-<trunk is empty>}'"
+
+          case "$mode" in
+            release)
+              if [ "$tag_exists" = yes ]; then
+                echo "::error::tags/$v already exists on wp.org. A published version can never be replaced, edited or reused. Bump WPMGR_AGENT_VERSION and publish the next number."
+                exit 1
+              fi
+              # Refuse a downgrade. Pointing trunk's Stable tag at an older
+              # version offers every installed site a rollback, which is the
+              # other half of the wrong-Stable-tag footgun.
+              if [ -n "$trunk_stable" ]; then
+                if [ "$trunk_stable" = "$v" ]; then
+                  echo "::error::trunk already names Stable tag $v but tags/$v does not exist, so the listing is currently broken. Fix that by hand before publishing anything new."
+                  exit 1
+                fi
+                newest=$(printf '%s\n%s\n' "$trunk_stable" "$v" | sort -V | tail -1)
+                if [ "$newest" != "$v" ]; then
+                  echo "::error::trunk is currently at Stable tag $trunk_stable and you asked to publish $v. That would downgrade every installed site. Publish a version greater than $trunk_stable."
+                  exit 1
+                fi
+              else
+                echo "trunk is empty: this is the FIRST publish of this plugin."
+              fi
+              ;;
+            readme-only)
+              if [ "$tag_exists" != yes ]; then
+                echo "::error::readme-only edits the listing copy of an ALREADY PUBLISHED version, but tags/$v does not exist. Use mode=release to publish $v."
+                exit 1
+              fi
+              if [ "$trunk_stable" != "$v" ]; then
+                echo "::error::trunk's Stable tag is '$trunk_stable', not $v. readme-only must target the version the listing is actually serving, or the public page will not change."
+                exit 1
+              fi
+              ;;
+            assets-only)
+              echo "assets-only touches no code, no tag and no Stable tag."
+              ;;
+          esac
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: zip, sodium, openssl, mysqli
+          coverage: none
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: apps/agent/vendor
+          key: composer-agent-${{ hashFiles('apps/agent/composer.lock') }}
+          restore-keys: composer-agent-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+        working-directory: apps/agent
+
+      - name: Build wp.org zip
+        # No VERSION override on purpose. The staged copy keeps the source
+        # version, and the Makefile stamps readme.txt Stable tag from the staged
+        # plugin header, so trunk and the tag can never name different versions.
+        # Built unconditionally, including for assets-only: one code path is
+        # worth more than ten saved minutes on an irreversible operation.
+        run: make agent-zip-wporg
+
+      - name: Run Plugin Check
+        # The authoritative WordPress.org check, on a real WordPress in Docker.
+        # run.sh exits non-zero on any ERROR row. shell: bash enables pipefail
+        # so the tee cannot mask a failing check. There is deliberately no skip
+        # input: nothing gets published that has not passed the check in the
+        # same run that publishes it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x tools/plugincheck/run.sh
+          PLUGIN_ZIP="$PWD/release/${SLUG}.zip" ./tools/plugincheck/run.sh | tee plugincheck-report.txt
+
+      - name: Assert the built tree names exactly this version
+        id: assert
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ steps.vars.outputs.version }}"
+          rm -rf build && mkdir -p build
+          unzip -q "release/${SLUG}.zip" -d build
+          root="build/${SLUG}"
+          [ -d "$root" ] || { echo "::error::unexpected zip layout: no top-level ${SLUG}/ directory"; exit 1; }
+          [ -f "$root/${SLUG}.php" ] || { echo "::error::entry file ${SLUG}.php is missing from the built tree"; exit 1; }
+          [ -f "$root/readme.txt" ] || { echo "::error::readme.txt is missing from the built tree"; exit 1; }
+
+          stable=$(sed -n 's/^Stable tag:[[:space:]]*//p' "$root/readme.txt" | head -1 | tr -d '[:space:]')
+          header=$(sed -n 's/^ \* Version:[[:space:]]*//p' "$root/${SLUG}.php" | head -1 | tr -d '[:space:]')
+          constant=$(sed -n "s/^define('WPMGR_AGENT_VERSION', *'\([^']*\)').*/\1/p" "$root/${SLUG}.php" | head -1)
+          echo "readme Stable tag=$stable  header Version=$header  WPMGR_AGENT_VERSION=$constant  wanted=$v"
+          [ "$stable" = "$v" ]   || { echo "::error::readme Stable tag is '$stable', not $v"; exit 1; }
+          [ "$header" = "$v" ]   || { echo "::error::plugin header Version is '$header', not $v"; exit 1; }
+          [ "$constant" = "$v" ] || { echo "::error::WPMGR_AGENT_VERSION is '$constant', not $v"; exit 1; }
+
+          # The identity the reviewer approved.
+          grep -q '^ \* Plugin Name:[[:space:]]*Fleet Agent Site Manager$' "$root/${SLUG}.php" \
+            || { echo "::error::Plugin Name in the built tree is not 'Fleet Agent Site Manager'"; exit 1; }
+          grep -q "^ \* Text Domain:[[:space:]]*${SLUG}\$" "$root/${SLUG}.php" \
+            || { echo "::error::Text Domain in the built tree is not ${SLUG}"; exit 1; }
+
+          # wp.org forbids self-updating plugins. The updater is physically
+          # excluded by the Makefile and the build-time constant guards the
+          # boot hook. Both are checked here against the artifact that ships.
+          if [ -e "$root/includes/support/class-update-checker.php" ]; then
+            echo "::error::the self-updater is present in the wp.org build"
+            exit 1
+          fi
+          grep -q "^define('WPMGR_WPORG_BUILD', true);\$" "$root/${SLUG}.php" \
+            || { echo "::error::WPMGR_WPORG_BUILD is not defined in the built tree"; exit 1; }
+
+          # Carried into the publish job so the bytes that get committed are
+          # provably the bytes Plugin Check just approved.
+          sha=$(sha256sum "release/${SLUG}.zip" | cut -d' ' -f1)
+          echo "zip_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "built tree verified for $v (sha256 $sha)"
+
+      - name: Verify the listing assets that will be published
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "$ASSETS_SRC" ]; then
+            # assets-only exists to publish assets. Running it with none is
+            # always a mistake, and without this it "succeeds" having done
+            # nothing at all.
+            if [ "${{ inputs.mode }}" = "assets-only" ]; then
+              echo "::error::mode=assets-only but $ASSETS_SRC does not exist on this ref, so there is nothing to publish. Stage the assets first (see release/wporg-assets/README.md)."
+              exit 1
+            fi
+            echo "::warning::$ASSETS_SRC does not exist on this ref, so no icons, banners or screenshots will be published. The listing will show a generated placeholder icon and no banner. Already-published assets are left untouched."
+            exit 0
+          fi
+
+          echo "listing assets in $ASSETS_SRC:"
+          ls -l "$ASSETS_SRC"
+
+          # Uppercase names and unsupported extensions fail SILENTLY on
+          # wp.org: no error, the asset simply never appears.
+          #
+          # LC_ALL=C is load-bearing, not decoration. Under a UTF-8 collation
+          # locale the range [A-Z] follows dictionary order (aAbBcC...) and so
+          # matches LOWERCASE letters too, which turns this into a false
+          # positive on every correctly-named file. Measured: under
+          # en_US.UTF-8 the pattern matches `screenshot-1.png`; under C it
+          # matches only genuine uppercase. Runners default to C.UTF-8 today,
+          # where it behaves, so this would sit dormant until a runner image
+          # changed and then fail a publish while naming a file that is fine.
+          bad=$(LC_ALL=C find "$ASSETS_SRC" -maxdepth 1 -type f -name '*[A-Z]*' | sort || true)
+          if [ -n "$bad" ]; then
+            echo "::error::wp.org asset filenames must be lowercase. Offenders:"
+            echo "$bad"
+            exit 1
+          fi
+          for f in "$ASSETS_SRC"/*; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.png|*.jpg|*.gif|*.svg) ;;
+              *) echo "::error::$f: wp.org accepts only .png, .jpg, .gif (and icon.svg). No .jpeg, .webp or .avif."; exit 1 ;;
+            esac
+          done
+
+          # Names and extensions are only half of it. Wrong DIMENSIONS, an
+          # oversize file and a transparent icon each fail the same silent way:
+          # wp.org accepts the commit and omits or mangles the asset. verify.py
+          # is the same checker used to produce these files locally, so what
+          # gates the publish is what validated the render.
+          #
+          # It also insists all four icons and banners are present, which
+          # matters more than it looks: the publish step mirrors this directory
+          # with `rsync --delete`, so staging a PARTIAL set (screenshots only,
+          # say) does not add screenshots, it DELETES the published icon and
+          # banner. Absent is safe and leaves the listing alone; half-present
+          # is destructive.
+          python3 -m pip install --quiet --disable-pip-version-check Pillow
+          python3 tools/wporg-assets/verify.py "$ASSETS_SRC"
+
+      - name: Upload zip and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wporg-${{ steps.vars.outputs.version }}-${{ github.run_id }}
+          path: |
+            release/fleet-agent-site-manager.zip
+            plugincheck-report.txt
+          if-no-files-found: warn
+
+  publish:
+    name: commit to wp.org SVN
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # THE HUMAN GATE. This job cannot start until a required reviewer on the
+    # wordpress-org environment approves it, and it only becomes approvable
+    # after the build job above has gone green, so the approval is given with
+    # the Plugin Check result already on screen.
+    environment: wordpress-org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Subversion is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v svn >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq subversion
+          fi
+          svn --version --quiet
+
+      - name: Download the verified zip
+        uses: actions/download-artifact@v4
+        with:
+          name: wporg-${{ needs.build.outputs.version }}-${{ github.run_id }}
+          path: artifact
+
+      - name: Verify the artifact is the zip Plugin Check approved
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip=$(find artifact -type f -name "${SLUG}.zip" | head -1)
+          [ -n "$zip" ] || { echo "::error::${SLUG}.zip is not in the downloaded artifact"; exit 1; }
+          have=$(sha256sum "$zip" | cut -d' ' -f1)
+          want="${{ needs.build.outputs.zip_sha256 }}"
+          [ -n "$want" ] || { echo "::error::the build job did not publish a zip checksum"; exit 1; }
+          if [ "$have" != "$want" ]; then
+            echo "::error::artifact checksum mismatch. built $want, downloaded $have. Refusing to publish bytes that Plugin Check did not see."
+            exit 1
+          fi
+          echo "PLUGIN_ZIP=$PWD/$zip" >> "$GITHUB_ENV"
+          echo "artifact verified: $zip ($have)"
+
+      - name: Prepare the SVN working copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --depth immediates fetches trunk/, tags/, assets/ and branches/ as
+          # directories without pulling every historical tag, which on a busy
+          # plugin is gigabytes. Only what is being written is then deepened.
+          svn checkout --non-interactive --depth immediates "$SVN_URL" svn
+          svn update --non-interactive --set-depth infinity svn/trunk
+
+          if [ -d svn/assets ]; then
+            svn update --non-interactive --set-depth infinity svn/assets
+          else
+            # Some plugin repositories are created without assets/.
+            ( cd svn && svn mkdir assets )
+            echo "created assets/ (it did not exist upstream)"
+          fi
+
+          if [ "${{ needs.build.outputs.mode }}" = "readme-only" ]; then
+            v="${{ needs.build.outputs.version }}"
+            svn update --non-interactive --set-depth immediates svn/tags
+            svn update --non-interactive --set-depth infinity "svn/tags/$v"
+          fi
+
+          echo "working copy ready"
+
+      - name: Stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ needs.build.outputs.version }}"
+          mode="${{ needs.build.outputs.mode }}"
+
+          rm -rf build && mkdir -p build
+          unzip -q "$PLUGIN_ZIP" -d build
+          src="build/${SLUG}"
+          [ -d "$src" ] || { echo "::error::the downloaded artifact did not unpack to ${SLUG}/"; exit 1; }
+
+          case "$mode" in
+            release)
+              # -c compares by checksum, so an identical file is not rewritten
+              # just because its mtime moved. --exclude '.svn/' is cheap
+              # insurance for the working copy's own metadata.
+              rsync -rc --delete --exclude '.svn/' "$src/" svn/trunk/
+              ;;
+            readme-only)
+              cp "$src/readme.txt" svn/trunk/readme.txt
+              cp "$src/readme.txt" "svn/tags/$v/readme.txt"
+              ;;
+            assets-only)
+              echo "assets-only: trunk and tags are not touched"
+              ;;
+          esac
+
+          if [ -d "$ASSETS_SRC" ]; then
+            rsync -rc --delete --exclude '.svn/' "$ASSETS_SRC/" svn/assets/
+          else
+            echo "::warning::$ASSETS_SRC is absent; the published assets/ is left exactly as it is"
+          fi
+
+          cd svn
+
+          # Two halves of the same job, and skipping either ships a stale tree.
+          # New files are unversioned until svn add sees them. Files that rsync
+          # --delete removed are "missing" (status !) until svn rm sees them,
+          # and without this the release keeps shipping files deleted months
+          # ago, forever. The trailing @ protects paths containing an @ from
+          # being parsed as a peg revision.
+          svn add --force --no-ignore trunk assets >/dev/null
+          svn status | sed -n 's/^![[:space:]]*//p' | while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            echo "removing deleted file: $p"
+            svn rm --force "$p@" >/dev/null
+          done
+
+          # Serve the listing images with the right content type.
+          find assets -type f -name '*.png' -exec svn propset svn:mime-type image/png {} + >/dev/null 2>&1 || true
+          find assets -type f -name '*.jpg' -exec svn propset svn:mime-type image/jpeg {} + >/dev/null 2>&1 || true
+          find assets -type f -name '*.gif' -exec svn propset svn:mime-type image/gif {} + >/dev/null 2>&1 || true
+          find assets -type f -name '*.svg' -exec svn propset svn:mime-type image/svg+xml {} + >/dev/null 2>&1 || true
+
+          if [ "$mode" = "release" ]; then
+            # Copy the WORKING COPY, not the URL, so every pending add above is
+            # carried into the tag and trunk plus tag land in ONE commit. This
+            # is what makes "tag published but Stable tag left behind" not a
+            # thing that can happen: there is no revision containing one and
+            # not the other.
+            svn cp trunk "tags/$v"
+          fi
+
+      - name: Assert the staged tree before committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ needs.build.outputs.version }}"
+          mode="${{ needs.build.outputs.mode }}"
+          cd svn
+
+          read_stable() { sed -n 's/^Stable tag:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'; }
+
+          case "$mode" in
+            release|readme-only)
+              t=$(read_stable trunk/readme.txt)
+              [ "$t" = "$v" ] || { echo "::error::staged trunk/readme.txt Stable tag is '$t', not $v. Nobody would receive this release."; exit 1; }
+              g=$(read_stable "tags/$v/readme.txt")
+              [ "$g" = "$v" ] || { echo "::error::staged tags/$v/readme.txt Stable tag is '$g', not $v"; exit 1; }
+              echo "Stable tag agreement verified: trunk=$t tag=$g"
+              ;;
+            assets-only)
+              # Prove the blast radius. Anything staged outside assets/ means
+              # the run is not what it says it is. --xml because the plain
+              # status columns are fixed-width and easy to mis-slice.
+              stray=$(svn status --xml \
+                | sed -n 's/.*<entry[[:space:]][^>]*path="\([^"]*\)".*/\1/p' \
+                | grep -v '^assets\(/\|$\)' || true)
+              if [ -n "$stray" ]; then
+                echo "::error::assets-only staged changes outside assets/:"
+                echo "$stray"
+                exit 1
+              fi
+              echo "assets-only blast radius verified: assets/ only"
+              ;;
+          esac
+
+          echo "----- svn status -----"
+          svn status
+          echo "----------------------"
+          {
+            echo "### staged for wp.org"
+            echo ""
+            echo '```'
+            svn status
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run stops here
+        if: needs.build.outputs.dry_run == 'true'
+        shell: bash
+        run: |
+          echo "DRY RUN. Nothing was committed and the SVN password was never read."
+          echo "Re-run this workflow with dry_run=false to publish."
+
+      - name: Commit
+        if: needs.build.outputs.dry_run == 'false'
+        shell: bash
+        env:
+          SVN_USERNAME: ${{ vars.WPORG_SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.WPORG_SVN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          v="${{ needs.build.outputs.version }}"
+          mode="${{ needs.build.outputs.mode }}"
+          [ -n "${SVN_USERNAME:-}" ] || { echo "::error::environment variable WPORG_SVN_USERNAME is not set on the wordpress-org environment"; exit 1; }
+          [ -n "${SVN_PASSWORD:-}" ] || { echo "::error::environment secret WPORG_SVN_PASSWORD is not set on the wordpress-org environment"; exit 1; }
+
+          # --password would put the credential in the runner's process list.
+          # --password-from-stdin (Subversion 1.10+, and ubuntu-latest ships
+          # 1.14) keeps it out of argv entirely. If a runner ever lacks it,
+          # fail rather than silently downgrading to the argv form.
+          # NOTE THE -v. `svn help <subcommand>` hides GLOBAL options, and
+          # --password-from-stdin is a global auth option, so the probe without
+          # -v answers NO on every Subversion that actually has the flag.
+          # Measured on 1.14.5:
+          #   svn help commit    | grep password-from-stdin  ->  no match
+          #   svn help commit -v | grep password-from-stdin  ->  match
+          # Without -v this step refused to commit on every runner, and it
+          # could only fire AFTER Plugin Check was green and the wordpress-org
+          # approval had been clicked, while blaming the runner for a problem
+          # it did not have.
+          if ! svn help commit -v | grep -q -- '--password-from-stdin'; then
+            echo "::error::this runner's svn has no --password-from-stdin, which would force the password into the process list. Refusing to commit."
+            exit 1
+          fi
+
+          case "$mode" in
+            release)     msg="Release $v" ;;
+            readme-only) msg="Update readme for $v" ;;
+            assets-only) msg="Update directory assets" ;;
+          esac
+
+          cd svn
+          # No `set -x` anywhere in this step. The password is referenced only
+          # as a shell variable piped to stdin, never echoed, never in a URL,
+          # and --no-auth-cache keeps it out of ~/.subversion.
+          printf '%s' "$SVN_PASSWORD" | svn commit \
+            --non-interactive \
+            --no-auth-cache \
+            --username "$SVN_USERNAME" \
+            --password-from-stdin \
+            -m "$msg"
+          echo "committed: $msg"
+
+      - name: Verify against the server
+        if: needs.build.outputs.dry_run == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ needs.build.outputs.version }}"
+          mode="${{ needs.build.outputs.mode }}"
+          fail=0
+
+          # Everything above reasons about a working copy. This step reasons
+          # about what wordpress.org actually serves, which is the only thing
+          # that decides whether anyone receives the release.
+          if [ "$mode" != "assets-only" ]; then
+            if svn ls --non-interactive "$SVN_URL/tags/$v" >/dev/null 2>&1; then
+              echo "OK: tags/$v exists on the server"
+            else
+              echo "::error::tags/$v is NOT on the server after the commit"
+              fail=1
+            fi
+
+            served=$(svn cat --non-interactive "$SVN_URL/trunk/readme.txt" 2>/dev/null \
+              | sed -n 's/^Stable tag:[[:space:]]*//p' | head -1 | tr -d '[:space:]' || true)
+            if [ "$served" = "$v" ]; then
+              echo "OK: the server's trunk/readme.txt names Stable tag $v"
+            else
+              echo "::error::the server's trunk Stable tag is '$served', not $v. THE RELEASE IS PUBLISHED BUT NOBODY WILL RECEIVE IT. Fix by committing trunk/readme.txt with 'Stable tag: $v'; no version bump is needed for that."
+              fail=1
+            fi
+
+            tagged=$(svn cat --non-interactive "$SVN_URL/tags/$v/readme.txt" 2>/dev/null \
+              | sed -n 's/^Stable tag:[[:space:]]*//p' | head -1 | tr -d '[:space:]' || true)
+            if [ "$tagged" = "$v" ]; then
+              echo "OK: tags/$v/readme.txt names Stable tag $v"
+            else
+              echo "::error::tags/$v/readme.txt names Stable tag '$tagged'. The listing page is rendered from the STABLE TAG's readme, so the public page will be wrong."
+              fail=1
+            fi
+          fi
+
+          echo "----- assets/ on the server -----"
+          svn ls --non-interactive "$SVN_URL/assets" || echo "(none)"
+
+          if [ "$fail" != "0" ]; then
+            exit 1
+          fi
+          {
+            echo "### published"
+            echo ""
+            echo "- mode: \`$mode\`"
+            echo "- version: \`$v\`"
+            echo "- listing: https://wordpress.org/plugins/${SLUG}/"
+            echo ""
+            echo "Allow about 15 minutes for the listing page to rebuild, and longer for icon and banner CDN propagation."
+          } >> "$GITHUB_STEP_SUMMARY"

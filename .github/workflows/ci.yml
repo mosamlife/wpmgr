@@ -128,6 +128,16 @@ jobs:
             exit 1
           fi
 
+      # Shipped-copy gate: no em dashes, no en dashes, no competitor names in
+      # the marketing site, in apps/agent/readme.txt (which IS the public
+      # wordpress.org listing page), in the plugin header, or in the agent's
+      # user-facing PHP strings. The script previously ran only inside
+      # `pnpm -C apps/marketing build`, which ci.yml never invokes, so the most
+      # public copy the project ships had no gate on it at all. Plain node, no
+      # install required.
+      - name: Shipped copy check (no em/en dashes, no competitor names)
+        run: node apps/marketing/scripts/check-copy.mjs
+
       # Docs-version drift guard. Two checks against the top CHANGELOG.md entry:
       #  1. packages/openapi/openapi.yaml info.version must equal it exactly
       #     (the marketing build self-heals the rendered doc, but the source of
