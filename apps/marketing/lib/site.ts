@@ -7,6 +7,7 @@ export const SITE_CONFIG = {
   description:
     "Open-source, self-hostable WordPress fleet manager. Backups and restore, safe updates, Media Optimizer (AVIF and WebP), full-page caching, Database Cleaner, uptime, and security scanning, with a signed MIT-licensed agent you can audit and contribute to.",
   github: "https://github.com/mosamlife/wpmgr",
+  wordpressOrg: "https://wordpress.org/plugins/fleet-agent-site-manager/",
   dashboard: "https://manage.wpmgr.app",
   signup: "https://manage.wpmgr.app/register",
   docs: "/docs",
@@ -63,6 +64,7 @@ export const FOOTER_NAV: NavGroup[] = [
       { label: "Guides", href: "/guides/" },
       { label: "API reference", href: SITE_CONFIG.docs },
       { label: "GitHub", href: SITE_CONFIG.github, external: true },
+      { label: "WordPress.org listing", href: SITE_CONFIG.wordpressOrg, external: true },
       { label: "Contributing", href: `${SITE_CONFIG.github}/blob/main/docs/contributing.md`, external: true },
     ],
   },

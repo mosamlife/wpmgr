@@ -5,8 +5,13 @@
 import type { Cta, Chip, Step, FaqItem, FeatureCluster } from "./types";
 import { SITE_CONFIG } from "@/lib/site";
 
+// Bumped by hand on every agent release, alongside the /changelog RELEASES list.
+// Source of truth is the wordpress.org listing. One constant so the hero badge and
+// the provenance fact row cannot drift apart and contradict the listing they link to.
+const AGENT_VERSION = "0.61.127";
+
 export const HOME_HERO = {
-  badge: "v0.61.127 / open source",
+  badge: `v${AGENT_VERSION} / open source`,
   heading: "The open-source WordPress fleet manager you can run, read, and contribute to",
   subhead:
     "WPMgr is a self-hostable control plane for managing one WordPress site or a whole portfolio. Back up, restore, update, monitor uptime, optimize images with the Media Optimizer, clean the database, and lock down every site from a single dashboard, all on infrastructure you own, built from code you can read and improve.",
@@ -17,7 +22,7 @@ export const HOME_HERO = {
   trust: [
     { icon: "GitFork", title: "Fork and contribute", desc: "AGPL control plane, MIT agent, PRs welcome" },
     { icon: "ServerCog", title: "Your infrastructure", desc: "Fleet data never leaves your server" },
-    { icon: "BadgeCheck", title: "On WordPress.org", desc: "Reviewed and listed in the plugin directory" },
+    { icon: "FileSearch", title: "Reviewed on WordPress.org", desc: "Listed in the plugin directory, install straight from wp-admin", href: "#provenance" },
   ],
   ctas: [
     { label: "Get started for free", href: SITE_CONFIG.signup, variant: "primary" as const, icon: "ArrowRight" },
@@ -424,7 +429,58 @@ export const HOME_STATS = {
     { icon: "DatabaseZap", value: "DB Cleaner", label: "Scan, classify orphans, trend 90 days of health, and act on the whole fleet at once" },
     { icon: "Activity", value: "7 / 30 / 90 days", label: "Fleet status matrix, response-time trends, and incident history across all sites" },
     { icon: "Users", value: "4 roles", label: "From owner to viewer, plus single-site sharing" },
-    { icon: "GitFork", value: "AGPL + MIT", label: "Fork, self-host, and contribute, no paid tier required" },
+    { icon: "ShieldCheck", value: "CVE scanning", label: "Vulnerability scanning, file integrity monitoring, hardening rules, and IP bans across the fleet" },
+  ],
+};
+
+// Every fact below is copied from the live wordpress.org listing and is checkable
+// against it in one click, which is the whole point of the section. If one of these
+// drifts, the section argues against itself. Version comes from AGENT_VERSION above.
+export const HOME_PROVENANCE = {
+  eyebrow: "Provenance",
+  heading: "You do not have to take our word for it",
+  subhead:
+    "Two places you can check this project before you install it: the listing in the WordPress.org plugin directory, and the repository it is built in.",
+  directory: {
+    icon: "FileSearch",
+    source: "WordPress.org plugin directory",
+    title: "A human reviewed it before it went live",
+    body: "Every plugin in the WordPress.org directory is read by a reviewer on the plugin review team before it is published. This is a gate the agent passed, not a page we wrote about ourselves.",
+    link: {
+      label: "View the listing on WordPress.org",
+      href: "https://wordpress.org/plugins/fleet-agent-site-manager/",
+    },
+  },
+  facts: [
+    { label: "Plugin name", value: "Fleet Agent Site Manager" },
+    { label: "Slug", value: "fleet-agent-site-manager", mono: true },
+    { label: "Version", value: AGENT_VERSION, mono: true },
+    { label: "Requires", value: "WordPress 6.2, PHP 8.1" },
+    { label: "Tested up to", value: "WordPress 7.0.2" },
+  ],
+  repository: {
+    icon: "Github",
+    source: "GitHub repository",
+    title: "What the directory ships is built here",
+    body: "The agent, the control plane, and the full release history for both live in one public repository. Read a diff between any two releases and you can see exactly what changed on your sites.",
+    link: {
+      label: "View the source",
+      href: SITE_CONFIG.github,
+    },
+  },
+  checks: [
+    {
+      icon: "FileBadge",
+      text: "The version in the directory is built from the release tagged in this repository. The directory build has the self-update path removed, because WordPress.org ships its own updates.",
+    },
+    {
+      icon: "KeyRound",
+      text: "Everything an agent sends the control plane is Ed25519-signed over the method, path, timestamp, nonce and body hash, and verified before it is trusted.",
+    },
+    {
+      icon: "Scale",
+      text: "The source in this repository is MIT. The copy distributed through the directory carries GPLv2 or later, which is the license the directory asks for.",
+    },
   ],
 };
 

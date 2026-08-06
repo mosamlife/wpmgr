@@ -71,7 +71,7 @@ export function buildOrganizationLd(): LdObject {
     name: SITE_CONFIG.name,
     url: SITE_CONFIG.baseUrl,
     logo: `${SITE_CONFIG.baseUrl}/logo.svg`,
-    sameAs: [SITE_CONFIG.github],
+    sameAs: [SITE_CONFIG.github, SITE_CONFIG.wordpressOrg],
     description: SITE_CONFIG.description,
   };
 }
@@ -98,6 +98,11 @@ export function buildSoftwareApplicationLd(): LdObject {
     },
     url: SITE_CONFIG.baseUrl,
     downloadUrl: SITE_CONFIG.github,
+    // Deliberately no installUrl pointing at the wordpress.org listing. This node
+    // describes the WPMgr control plane, which is AGPL-3.0 and is not installed
+    // from the plugin directory; the listing is the agent plugin, distributed
+    // under GPLv2 or later. Pointing one node at both would publish a
+    // machine-readable licence contradiction.
     description: SITE_CONFIG.description,
     license: `${SITE_CONFIG.github}/blob/main/LICENSE`,
   };
