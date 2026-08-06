@@ -13,7 +13,7 @@ export const metadata: Metadata = buildMetadata({
   title: "WordPress Guides: Maintenance and Core Web Vitals",
   description:
     "Cornerstone long-form guides on running WordPress well. Start with the complete WordPress maintenance guide or the Core Web Vitals optimization guide.",
-  canonical: "/guides/",
+  canonical: "/guides",
 });
 
 // Static guide metadata. Intentionally separate from the file-system loader so

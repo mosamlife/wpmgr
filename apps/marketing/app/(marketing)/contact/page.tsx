@@ -11,7 +11,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Contact WPMgr",
   description:
     "Reach the WPMgr team for sales enquiries, support, security reports, or to ask about contributing to the open-source project.",
-  canonical: "/contact/",
+  canonical: "/contact",
 });
 
 const TOPICS = [

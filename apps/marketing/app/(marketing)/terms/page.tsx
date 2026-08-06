@@ -9,7 +9,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Terms of Service | WPMgr",
   description:
     "Terms of Service for the WPMgr hosted service at manage.wpmgr.app, including subscription billing and your choice of payment provider at checkout.",
-  canonical: "/terms/",
+  canonical: "/terms",
 });
 
 const mail = (

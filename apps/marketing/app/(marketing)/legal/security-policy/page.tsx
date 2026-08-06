@@ -10,7 +10,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
     "WPMgr responsible disclosure policy, security posture, and how to report a vulnerability. Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups.",
-  canonical: "/legal/security-policy/",
+  canonical: "/legal/security-policy",
 });
 
 const SECURITY_POSTURE = [

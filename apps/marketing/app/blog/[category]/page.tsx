@@ -73,7 +73,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return buildMetadata({
     title: `${meta.heading} Articles`,
     description: meta.description,
-    canonical: `/blog/${category}/`,
+    canonical: `/blog/${category}`,
   });
 }
 

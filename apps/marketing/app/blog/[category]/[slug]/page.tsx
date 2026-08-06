@@ -33,7 +33,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return buildMetadata({
     title: fm.title,
     description: fm.description,
-    canonical: `/blog/${category}/${slug}/`,
+    canonical: `/blog/${category}/${slug}`,
     ogImage: ogImageUrl,
   });
 }

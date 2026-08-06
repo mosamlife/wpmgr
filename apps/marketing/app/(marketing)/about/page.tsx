@@ -15,7 +15,7 @@ export const metadata: Metadata = buildMetadata({
   title: "About WPMgr | Open-Source WordPress Fleet Management",
   description:
     "WPMgr is an open-source, self-hostable WordPress fleet manager built on the conviction that your site data and your tooling should belong to you. AGPL control plane, MIT agent, Ed25519-signed messages.",
-  canonical: "/about/",
+  canonical: "/about",
 });
 
 const PRINCIPLES = [

@@ -10,7 +10,7 @@ export const metadata: Metadata = buildMetadata({
   title: "Resources: Blog, Guides, Changelog, and Docs",
   description:
     "WordPress operations resources from WPMgr: practical blog posts, cornerstone guides, release changelog, and API documentation.",
-  canonical: "/resources/",
+  canonical: "/resources",
 });
 
 const RESOURCES = [

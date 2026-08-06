@@ -70,7 +70,16 @@ export function buildOrganizationLd(): LdObject {
     "@type": "Organization",
     name: SITE_CONFIG.name,
     url: SITE_CONFIG.baseUrl,
-    logo: `${SITE_CONFIG.baseUrl}/logo.svg`,
+    // icon-512.png, NOT logo.svg. There has never been a logo.svg in public/:
+    // the header mark is an inline React component (components/ui/logo.tsx), so
+    // this declared a 404 as the organization logo on every page. Verified live
+    // before the fix: /logo.svg returned 404 while sitting in the JSON-LD.
+    logo: {
+      "@type": "ImageObject",
+      url: `${SITE_CONFIG.baseUrl}/icon-512.png`,
+      width: 512,
+      height: 512,
+    },
     sameAs: [SITE_CONFIG.github, SITE_CONFIG.wordpressOrg],
     description: SITE_CONFIG.description,
   };
@@ -190,7 +199,9 @@ export function buildArticleLd({
       url: SITE_CONFIG.baseUrl,
       logo: {
         "@type": "ImageObject",
-        url: `${SITE_CONFIG.baseUrl}/logo.svg`,
+        url: `${SITE_CONFIG.baseUrl}/icon-512.png`,
+        width: 512,
+        height: 512,
       },
     },
     mainEntityOfPage: {

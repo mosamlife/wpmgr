@@ -15,7 +15,7 @@ export const metadata: Metadata = buildMetadata({
   title: "WordPress Management Solutions | WPMgr",
   description:
     "WPMgr covers every WordPress management use case: agencies, freelancers, hosting providers, WordPress security, backups, performance, and managing multiple sites. One open-source platform, no per-site fee.",
-  canonical: "/solutions/",
+  canonical: "/solutions",
 });
 
 function Breadcrumb() {
