@@ -1,8 +1,25 @@
 // Copy-compliance gate. Fails the build if an em dash, an en dash, or a named
-// competitor product slips into copy that ships to a human. Two scopes:
+// competitor product slips into copy that ships to a human.
+//
+// TWO RULES, DIFFERENT SCOPES. Read this before adding a surface.
+//
+//   DASH rule        every surface below, no exceptions.
+//   COMPETITOR rule  everything EXCEPT the marketing site.
+//
+// The competitor rule exists for CODE PROVENANCE. Features here were built
+// clean-room against vendor reference, so crediting a rival product as the
+// source of a technique inside shipped code is the thing to prevent. It was
+// never meant to stop marketing from writing an honest comparison, and
+// "X alternative" is the highest-intent query in this market, so applying it to
+// apps/marketing was costing real demand for no benefit (owner's call,
+// 2026-08-06). The rule still binds where it means something: agent PHP and the
+// plugin header below, plus docs/ and root *.md via ci.yml's separate docs
+// vocabulary check, which is where the 2026-07-06 leak actually happened.
+//
+// Two scopes:
 //
 //  1. The marketing site (apps/marketing). Every source file under app/,
-//     components/, lib/content/ and content/, scanned whole.
+//     components/, lib/content/ and content/, scanned whole. DASH RULE ONLY.
 //
 //  2. The WordPress plugin (apps/agent). This is the most public copy the
 //     project ships and, until now, the only copy with no gate on it:
@@ -118,27 +135,29 @@ function checkWords(file, line, text, label) {
   }
 }
 
-function checkText(file, line, text, label) {
+// `names` controls the COMPETITOR rule only. The dash rule always applies.
+// See the scope table at the top of this file for which surfaces get which.
+function checkText(file, line, text, label, { names = true } = {}) {
   const flat = text.replace(/\s+/g, " ").trim();
   for (const { ch, name } of BANNED_CHARS) {
     if (text.includes(ch)) {
       report(file, line, `banned ${name}${label} ${flat.slice(0, 80)}`);
     }
   }
-  checkWords(file, line, text, label);
+  if (names) checkWords(file, line, text, label);
 }
 
 // ---------------------------------------------------------------------------
 // Scope 1 + readme.txt: whole-file, line by line.
 // ---------------------------------------------------------------------------
-function scanWholeFile(file) {
+function scanWholeFile(file, opts) {
   let text;
   try {
     text = readFileSync(file, "utf8");
   } catch {
     return;
   }
-  text.split("\n").forEach((line, i) => checkText(file, i + 1, line, ":"));
+  text.split("\n").forEach((line, i) => checkText(file, i + 1, line, ":", opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -308,14 +327,24 @@ function walkAgentPhp(dir, out = []) {
 const marketingFiles = SCAN_DIRS.flatMap((d) =>
   walk(d, (entry) => /\.(tsx?|mdx?|css|html)$/.test(entry)),
 );
-for (const file of marketingFiles) scanWholeFile(file);
+// Marketing gets the DASH rule but NOT the competitor rule. Naming a rival
+// product on a marketing page is legitimate comparison, and "X alternative" is
+// the highest-intent query in this market; refusing to write those pages was
+// costing real demand for no benefit. The clean-room rule this gate grew out of
+// is about CODE PROVENANCE (do not credit a competitor as the source of a
+// technique we implemented), and it still binds everywhere it matters: agent
+// PHP below, plus docs/ and root *.md via ci.yml's docs vocabulary check.
+for (const file of marketingFiles) scanWholeFile(file, { names: false });
 
-// 2a. The wordpress.org listing.
+// 2a. The wordpress.org listing. KEEPS the competitor rule even though
+// marketing dropped it: this file IS the directory listing page, and naming
+// rival plugins there is a plugin-review risk on the one surface where a
+// reviewer decides whether we stay published.
 const AGENT_README = join(AGENT, "readme.txt");
 let agentReadmeScanned = 0;
 try {
   statSync(AGENT_README);
-  scanWholeFile(AGENT_README);
+  scanWholeFile(AGENT_README, { names: true });
   agentReadmeScanned = 1;
 } catch {
   report(AGENT_README, 0, "missing: the wordpress.org listing copy must exist");
