@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 32 32" fill="none" role="img" aria-label="WPMgr">
+  <!-- Fleet Hub mark. Geometry copied verbatim from apps/marketing/app/icon.svg,
+       which is the source apps/marketing/public/icon-512.png was rastered from,
+       so this file is the same composition as icon-128x128.png and icon-256x256.png.
+       Two deliberate differences from the repo source, both required here:
+       1. the prefers-color-scheme style block is removed and the teal is hardcoded
+          to #1791A6, because wordpress.org renders this inside an <img> where the
+          media query would resolve against the VIEWER's OS theme and a dark-mode
+          visitor would get a different teal from every other asset on the page;
+       2. an opaque #F8FAFA background rect is added so it matches the PNG icons
+          instead of floating on whatever card colour sits behind it. -->
+  <rect width="32" height="32" fill="#F8FAFA"/>
+  <rect x="11.5" y="11.5" width="9" height="9" rx="2.5" fill="#1791A6"/>
+  <circle cx="6.5" cy="6.5" r="2.6" fill="#1791A6"/>
+  <circle cx="25.5" cy="6.5" r="2.6" fill="#1791A6"/>
+  <circle cx="6.5" cy="25.5" r="2.6" fill="#1791A6"/>
+  <circle cx="25.5" cy="25.5" r="2.6" fill="#1791A6"/>
+  <line x1="9" y1="9" x2="11.6" y2="11.6" stroke="#1791A6" stroke-width="2" stroke-linecap="round"/>
+  <line x1="23" y1="9" x2="20.4" y2="11.6" stroke="#1791A6" stroke-width="2" stroke-linecap="round"/>
+  <line x1="9" y1="23" x2="11.6" y2="20.4" stroke="#1791A6" stroke-width="2" stroke-linecap="round"/>
+  <line x1="23" y1="23" x2="20.4" y2="20.4" stroke="#1791A6" stroke-width="2" stroke-linecap="round"/>
+</svg>
