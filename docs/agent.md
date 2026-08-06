@@ -324,7 +324,7 @@ above) and consider a shorter refresh interval.
 
 ```bash
 make agent-zip
-# → release/wpmgr-agent.zip (excludes vendor/, tests/, *.dist)
+# → release/wpmgr-agent.zip (excludes tests/, tools/, *.dist; vendor/ is bundled)
 ```
 
 Develop and test the plugin locally:

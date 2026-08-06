@@ -7,6 +7,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
 [![Latest release](https://img.shields.io/github/v/release/mosamlife/wpmgr?label=release&style=flat)](https://github.com/mosamlife/wpmgr/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/mosamlife/wpmgr/ci.yml?branch=main&label=CI&style=flat)](https://github.com/mosamlife/wpmgr/actions/workflows/ci.yml)
+[![WordPress.org](https://img.shields.io/wordpress/plugin/v/fleet-agent-site-manager?label=wordpress.org&style=flat)](https://wordpress.org/plugins/fleet-agent-site-manager/)
 
 [![WPMgr: run your whole WordPress fleet from one dashboard you own](docs/images/landing.png)](https://wpmgr.app)
 
@@ -16,7 +17,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
-**v0.61.127**: open-source and production-usable for self-hosters.
+**v0.61.127**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
 
 ---
 
@@ -46,7 +47,7 @@ The script downloads every file the stack needs, generates all secrets, and prin
 - **Re-enrollment under a stable identity**: Re-connecting a site keeps the same `site_id`, preserving all backup history, scan runs, and lifecycle generations.
 - **Archive / restore soft-delete**: Retire sites from the active view without losing their history; restore them later.
 - **Per-site sharing**: Share exactly one site with a collaborator, enforced by both Gin middleware and Postgres RESTRICTIVE RLS, without exposing the rest of the fleet.
-- **Agent self-update channel**: Self-hosted control planes push signed agent releases to enrolled sites. The WordPress.org distribution ("Fleet Agent for WPMgr") is pending directory review; that build strips the self-updater and declares GPLv2.
+- **Agent self-update channel**: Self-hosted control planes push signed agent releases to enrolled sites. The [WordPress.org build](https://wordpress.org/plugins/fleet-agent-site-manager/) ships without the self-updater and updates from the site's own Plugins screen instead.
 
 ### Backups & restore
 
@@ -248,7 +249,7 @@ The script downloads every file the stack needs, generates all secrets, and prin
 ```text
 apps/api    Go 1.26 + Gin control plane (modular monolith)
 apps/web    React 19 + TypeScript + Vite + TanStack dashboard
-apps/agent  PHP 8.1+ WordPress agent plugin (MIT)
+apps/agent  PHP 8.1+ WordPress agent plugin (MIT; GPLv2+ on the wp.org build)
 ```
 
 **Data:** Postgres (primary + RLS) · Redis (sessions, cache, dedup) · S3-compatible object storage (backups, media) · on-disk page cache (`wp-content/cache/wpmgr`, pre-gzipped `.html.gz`) · ClickHouse (optional, uptime + RUM time-series)
@@ -333,13 +334,47 @@ Full install guide, env reference, and production hardening: [docs/install.md](.
 
 ## Install the Agent
 
-1. Download `wpmgr-agent.zip` from the [GitHub Releases page](https://github.com/mosamlife/wpmgr/releases).
-2. In WordPress: **Plugins → Add New → Upload Plugin** → choose the zip → **Install Now → Activate**.
-3. Open the top-level **WPMgr** admin menu, set the **Control-plane URL** field and click **Save URL**, then paste the dashboard's **Pairing code** into the **Enroll** form and click **Enroll**.
+**From the WordPress admin (recommended).** **Plugins → Add New** → search for **Fleet Agent Site Manager** → **Install Now → Activate**. That is the plugin's listing name in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
 
-The agent requires PHP 8.1+ and WordPress 6.0+. It self-updates through the control plane's signed update channel.
+**From GitHub.** Download `wpmgr-agent.zip` from the [Releases page](https://github.com/mosamlife/wpmgr/releases), then **Plugins → Add New → Upload Plugin** → choose the zip → **Install Now → Activate**.
 
-See [docs/agent.md](./docs/agent.md) for WP-CLI install and configuration options.
+**With Composer.** The directory listing is mirrored by both Composer repositories that serve WordPress.org, so pick whichever your project already declares:
+
+| Your project declares | Require this |
+| --- | --- |
+| `https://wpackagist.org` | `wpackagist-plugin/fleet-agent-site-manager` |
+| `https://repo.wp-packages.org` (current Bedrock) | `wp-plugin/fleet-agent-site-manager` |
+
+Bedrock already configures its repository and its installer paths, so add only the `require` entry. For a plain Composer-managed WordPress:
+
+```json
+{
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "https://wpackagist.org",
+      "only": ["wpackagist-plugin/*", "wpackagist-theme/*"]
+    }
+  ],
+  "require": {
+    "composer/installers": "^2.0",
+    "wpackagist-plugin/fleet-agent-site-manager": "*"
+  },
+  "extra": {
+    "installer-paths": {
+      "wp-content/plugins/{$name}/": ["type:wordpress-plugin"]
+    }
+  }
+}
+```
+
+Do not paste that `extra` block into a Bedrock project: `installer-paths` is a single key, so it replaces rather than merges, and Bedrock installs to `web/app/plugins/` instead. Use `*` rather than `^0.61`, because a caret on a 0.x version pins the minor and would leave you on 0.61.x forever once 0.62 is tagged.
+
+Then, whichever path you used: open the plugin's top-level admin menu (**WPMgr Agent** on the GitHub build, **Fleet Agent Site Manager** on the directory build), set the **Control-plane URL** field and click **Save URL**, then paste the dashboard's **Pairing code** into the **Enroll** form and click **Enroll**.
+
+The two builds are the same code; the difference that matters is how they update. The GitHub build self-updates through your control plane's signed update channel. The directory build ships without the self-updater and updates from the site's own Plugins screen, or through `composer update` on a Composer-managed site.
+
+The agent requires PHP 8.1+ and WordPress 6.2+. See [docs/agent.md](./docs/agent.md) for WP-CLI install and configuration options.
 
 ---
 
@@ -404,7 +439,7 @@ See [docs/contributing.md](./docs/contributing.md) for the full dev setup, PR ch
 | Component | License |
 |---|---|
 | Control plane + dashboard (`apps/api`, `apps/web`) | [AGPL-3.0-only](./LICENSE) |
-| WordPress agent plugin (`apps/agent`) | [MIT](./LICENSE-AGENT) |
+| WordPress agent plugin (`apps/agent`) | [MIT](./LICENSE-AGENT) (the WordPress.org build declares GPLv2 or later) |
 
 ---
 

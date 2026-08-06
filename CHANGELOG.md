@@ -1664,7 +1664,7 @@ Requires agent 0.41.1 for the on-site fixes; the dashboard fixes apply on the AP
 ## [0.31.2] - 2026-06-09
 
 ### Added
-- WordPress.org distribution build ("Fleet Agent for WPMgr") that passes the official Plugin Check with zero errors. A build-time variant excludes the control-plane self-updater from the WordPress.org package, since those builds update through WordPress.org; the self-hosted and SaaS builds keep control-plane self-update.
+- WordPress.org distribution build ("Fleet Agent Site Manager") that passes the official Plugin Check with zero errors. A build-time variant excludes the control-plane self-updater from the WordPress.org package, since those builds update through WordPress.org; the self-hosted and SaaS builds keep control-plane self-update.
 - Public Terms of Service and Privacy Policy pages on the control plane (manage.wpmgr.app/terms and /privacy), linked as the external-service disclosure from the agent readme.
 
 ### Changed
