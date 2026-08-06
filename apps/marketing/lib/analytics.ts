@@ -63,6 +63,7 @@ export type SignupSource =
   | "solution-hero"
   | "solution-cta"
   | "blog-post"
+  | "blog-inline"
   | "guide"
   | "guides-index"
   | "features-index"

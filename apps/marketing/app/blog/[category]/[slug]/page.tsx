@@ -9,6 +9,8 @@ import {
   BLOG_CATEGORIES,
   type BlogCategory,
 } from "@/lib/content/blog";
+import { FEATURE_REGISTRY } from "@/lib/content/features";
+import { SOLUTION_REGISTRY } from "@/lib/content/solutions";
 import { Container } from "@/components/ui/primitives";
 import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
@@ -183,7 +185,7 @@ export default async function BlogPostPage({ params }: Props) {
                     href={`/features/${fm.featureSlug}`}
                     className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                   >
-                    Explore the feature
+                    {FEATURE_REGISTRY[fm.featureSlug]?.title ?? "Explore the feature"}
                   </Link>
                 </div>
               )}
@@ -194,7 +196,7 @@ export default async function BlogPostPage({ params }: Props) {
                     href={`/solutions/${solutionSlug}`}
                     className="mt-1 block font-medium text-[var(--primary)] underline underline-offset-4 hover:opacity-80 transition-opacity"
                   >
-                    See the full solution
+                    {SOLUTION_REGISTRY[solutionSlug]?.title ?? "See the full solution"}
                   </Link>
                 </div>
               )}

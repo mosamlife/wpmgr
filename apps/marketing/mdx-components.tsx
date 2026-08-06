@@ -2,6 +2,7 @@ import type { MDXComponents } from "mdx/types";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
+import { SignupCard } from "@/components/content/signup-card";
 // ---------------------------------------------------------------------------
 // MDX element -> brand-token component map.
 // All prose elements receive the correct Impeccable token classes so every
@@ -10,6 +11,8 @@ import { cn } from "@/lib/utils";
 
 export function useMDXComponents(components: MDXComponents): MDXComponents {
   return {
+    // Authored components, usable directly inside .mdx content.
+    SignupCard,
     // Headings
     h1: ({ className, ...props }) => (
       <h1
