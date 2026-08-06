@@ -245,7 +245,7 @@ The script downloads every file the stack needs, generates all secrets, and prin
 
 ## Architecture
 
-```
+```text
 apps/api    Go 1.26 + Gin control plane (modular monolith)
 apps/web    React 19 + TypeScript + Vite + TanStack dashboard
 apps/agent  PHP 8.1+ WordPress agent plugin (MIT)
@@ -361,7 +361,7 @@ The following are accepted architectural decisions with no implementation yet:
 
 ## Repository layout
 
-```
+```text
 apps/
   api/      Go control plane
   web/      React dashboard

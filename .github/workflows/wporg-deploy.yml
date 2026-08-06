@@ -356,31 +356,64 @@ jobs:
           echo "zip_sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "built tree verified for $v (sha256 $sha)"
 
-      - name: Report the listing assets that will be published
+      - name: Verify the listing assets that will be published
         shell: bash
         run: |
           set -euo pipefail
-          if [ -d "$ASSETS_SRC" ]; then
-            echo "listing assets in $ASSETS_SRC:"
-            ls -l "$ASSETS_SRC"
-            # Uppercase names and unsupported extensions fail SILENTLY on
-            # wp.org: no error, the asset simply never appears.
-            bad=$(find "$ASSETS_SRC" -maxdepth 1 -type f -name '*[A-Z]*' | sort || true)
-            if [ -n "$bad" ]; then
-              echo "::error::wp.org asset filenames must be lowercase. Offenders:"
-              echo "$bad"
+          if [ ! -d "$ASSETS_SRC" ]; then
+            # assets-only exists to publish assets. Running it with none is
+            # always a mistake, and without this it "succeeds" having done
+            # nothing at all.
+            if [ "${{ inputs.mode }}" = "assets-only" ]; then
+              echo "::error::mode=assets-only but $ASSETS_SRC does not exist on this ref, so there is nothing to publish. Stage the assets first (see release/wporg-assets/README.md)."
               exit 1
             fi
-            for f in "$ASSETS_SRC"/*; do
-              [ -f "$f" ] || continue
-              case "$f" in
-                *.png|*.jpg|*.gif|*.svg) ;;
-                *) echo "::error::$f: wp.org accepts only .png, .jpg, .gif (and icon.svg). No .jpeg, .webp or .avif."; exit 1 ;;
-              esac
-            done
-          else
-            echo "::warning::$ASSETS_SRC does not exist on this ref, so no icons, banners or screenshots will be published. The listing will show a generated placeholder icon and no banner."
+            echo "::warning::$ASSETS_SRC does not exist on this ref, so no icons, banners or screenshots will be published. The listing will show a generated placeholder icon and no banner. Already-published assets are left untouched."
+            exit 0
           fi
+
+          echo "listing assets in $ASSETS_SRC:"
+          ls -l "$ASSETS_SRC"
+
+          # Uppercase names and unsupported extensions fail SILENTLY on
+          # wp.org: no error, the asset simply never appears.
+          #
+          # LC_ALL=C is load-bearing, not decoration. Under a UTF-8 collation
+          # locale the range [A-Z] follows dictionary order (aAbBcC...) and so
+          # matches LOWERCASE letters too, which turns this into a false
+          # positive on every correctly-named file. Measured: under
+          # en_US.UTF-8 the pattern matches `screenshot-1.png`; under C it
+          # matches only genuine uppercase. Runners default to C.UTF-8 today,
+          # where it behaves, so this would sit dormant until a runner image
+          # changed and then fail a publish while naming a file that is fine.
+          bad=$(LC_ALL=C find "$ASSETS_SRC" -maxdepth 1 -type f -name '*[A-Z]*' | sort || true)
+          if [ -n "$bad" ]; then
+            echo "::error::wp.org asset filenames must be lowercase. Offenders:"
+            echo "$bad"
+            exit 1
+          fi
+          for f in "$ASSETS_SRC"/*; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.png|*.jpg|*.gif|*.svg) ;;
+              *) echo "::error::$f: wp.org accepts only .png, .jpg, .gif (and icon.svg). No .jpeg, .webp or .avif."; exit 1 ;;
+            esac
+          done
+
+          # Names and extensions are only half of it. Wrong DIMENSIONS, an
+          # oversize file and a transparent icon each fail the same silent way:
+          # wp.org accepts the commit and omits or mangles the asset. verify.py
+          # is the same checker used to produce these files locally, so what
+          # gates the publish is what validated the render.
+          #
+          # It also insists all four icons and banners are present, which
+          # matters more than it looks: the publish step mirrors this directory
+          # with `rsync --delete`, so staging a PARTIAL set (screenshots only,
+          # say) does not add screenshots, it DELETES the published icon and
+          # banner. Absent is safe and leaves the listing alone; half-present
+          # is destructive.
+          python3 -m pip install --quiet --disable-pip-version-check Pillow
+          python3 tools/wporg-assets/verify.py "$ASSETS_SRC"
 
       - name: Upload zip and report
         if: always()

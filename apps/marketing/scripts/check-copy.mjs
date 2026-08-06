@@ -316,13 +316,29 @@ const AGENT_MAIN = join(AGENT, "wpmgr-agent.php");
 let agentHeaderScanned = 0;
 try {
   const src = readFileSync(AGENT_MAIN, "utf8");
-  const header = src.slice(0, src.indexOf("*/") + 2);
-  header.split("\n").forEach((line, i) => {
-    if (/^\s*\*\s*(Plugin Name|Plugin URI|Description|Author|Author URI):/.test(line)) {
-      checkText(AGENT_MAIN, i + 1, line, " in plugin header:");
-    }
-  });
-  agentHeaderScanned = 1;
+  // Fail CLOSED on a header this cannot read. `indexOf` returns -1 when the
+  // docblock is unterminated, and slice(0, -1 + 2) is the FIRST CHARACTER of
+  // the file: the loop below would then match nothing, find no violations and
+  // count the header as scanned. A gate that reports success because it read
+  // one character is worse than no gate, because the summary line says it ran.
+  const end = src.indexOf("*/");
+  const header = end === -1 ? "" : src.slice(0, end + 2);
+  if (!/^\s*\*\s*Plugin Name:/m.test(header)) {
+    report(
+      AGENT_MAIN,
+      0,
+      end === -1
+        ? "plugin header not scanned: no closing */ in the file"
+        : "plugin header not scanned: the first */ closes a block with no Plugin Name: field",
+    );
+  } else {
+    header.split("\n").forEach((line, i) => {
+      if (/^\s*\*\s*(Plugin Name|Plugin URI|Description|Author|Author URI):/.test(line)) {
+        checkText(AGENT_MAIN, i + 1, line, " in plugin header:");
+      }
+    });
+    agentHeaderScanned = 1;
+  }
 } catch {
   report(AGENT_MAIN, 0, "missing: the agent plugin entry file must exist");
 }

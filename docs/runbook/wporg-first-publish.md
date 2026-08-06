@@ -30,31 +30,11 @@ Every step is marked **REVERSIBLE** or **IRREVERSIBLE**.
 
 ## Phase 0: one-time setup (REVERSIBLE)
 
-### 0.1 GitHub repository variable
+All three items below live on ONE page, `Settings > Environments >
+wordpress-org`, and the order matters: the environment has to exist before it
+can hold anything.
 
-Settings > Secrets and variables > Actions > Variables > New repository variable
-
-```
-Name:  WPORG_SVN_USERNAME
-Value: Mosamlife
-```
-
-A variable and not a secret on purpose. GitHub masks every secret value in
-logs, so a secret username turns every SVN log line into `***` and makes a
-failed publish unreadable. The username is public anyway.
-
-### 0.2 GitHub repository secret
-
-Settings > Secrets and variables > Actions > Secrets > New repository secret
-
-```
-Name:  WPORG_SVN_PASSWORD
-Value: <your wordpress.org account password>
-```
-
-Type it straight into GitHub. Do not paste it into a chat, a file, or a commit.
-
-### 0.3 GitHub environment (this is the safety property)
+### 0.1 GitHub environment (this is the safety property)
 
 Settings > Environments > New environment
 
@@ -71,6 +51,52 @@ The build job therefore queries the environment through the API and fails the
 run if it is missing or has no required reviewers, so you cannot lose this
 silently. Confirm it anyway on the dry run: the run must show `Waiting for
 review` before the publish job starts.
+
+### 0.2 Environment variable
+
+On the `wordpress-org` environment page: **Environment variables > Add**
+
+```
+Name:  WPORG_SVN_USERNAME
+Value: Mosamlife
+```
+
+A variable and not a secret on purpose. GitHub masks every secret value in
+logs, so a secret username turns every SVN log line into `***` and makes a
+failed publish unreadable. The username is public anyway.
+
+### 0.3 Environment secret
+
+On the same page: **Environment secrets > Add secret**
+
+```
+Name:  WPORG_SVN_PASSWORD
+Value: <your wordpress.org account password>
+```
+
+Type it straight into GitHub. Do not paste it into a chat, a file, or a commit.
+
+**Environment scope, not repository scope, and do not create a repository
+secret of this name.** This is not a filing preference, it is the entire
+security property. A repository secret is readable by every workflow in the
+repo, including one with no approval gate, so putting it there would let the
+credential be reached without passing the approval that protects it. An
+environment secret is readable only by a job that declares
+`environment: wordpress-org`, and declaring it is exactly what forces that job
+to stop for a human. Scoped this way the credential and the gate cannot be
+separated. Only `publish` declares the environment; `build` runs Plugin Check
+with no credentials at all.
+
+Verify the scope rather than trusting the click, since both scopes look
+identical from the workflow's side until the day it matters:
+
+```sh
+gh api repos/mosamlife/wpmgr/actions/secrets --jq '.secrets[].name'
+# must print NOTHING. Any WPORG_ name here is repository scope: delete it.
+
+gh api repos/mosamlife/wpmgr/environments/wordpress-org/secrets --jq '.secrets[].name'
+# must print WPORG_SVN_PASSWORD
+```
 
 ### 0.4 Confirm the WordPress.org profile slug (REVERSIBLE)
 
