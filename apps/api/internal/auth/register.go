@@ -55,7 +55,7 @@ func (s *Service) RegisterSelfServe(
 	}
 	tenantName := strings.TrimSpace(in.TenantName)
 	if tenantName == "" {
-		tenantName = "Default"
+		tenantName = defaultTenantName(in.Email)
 	}
 	// Tenant slugs are GLOBALLY unique, so a fixed "default" collides after the
 	// first self-serve signup (tenant_slug_exists 409). Derive a unique slug.
@@ -87,6 +87,97 @@ func (s *Service) RegisterSelfServe(
 
 	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, intent)
 	return nil
+}
+
+// consumerMailDomains are providers where the domain says nothing about the
+// organization, so the local part is the better guess. Not exhaustive on
+// purpose: an unlisted provider yields a slightly odd name, which is a cosmetic
+// miss on a field the owner can rename, not a failure.
+var consumerMailDomains = map[string]bool{
+	"gmail.com": true, "googlemail.com": true, "outlook.com": true,
+	"hotmail.com": true, "live.com": true, "msn.com": true,
+	"yahoo.com": true, "ymail.com": true, "icloud.com": true,
+	"me.com": true, "mac.com": true, "aol.com": true,
+	"proton.me": true, "protonmail.com": true, "pm.me": true,
+	"gmx.com": true, "gmx.net": true, "mail.com": true, "zoho.com": true,
+	"yandex.com": true, "fastmail.com": true, "hey.com": true,
+}
+
+// defaultTenantName derives a readable organization name from the signup email.
+//
+// The signup form asks for two fields, email and password, so this default is
+// what every self-serve account is actually named. It used to be the literal
+// string "Default", which was tolerable while the form still offered an
+// organization field and is not once that field is gone: every account on the
+// instance would share one meaningless name, in the switcher, in client
+// reports, and in the admin console.
+//
+// A work address carries the organization, so acme.com becomes "Acme". A
+// consumer mailbox does not, so the local part is used instead and
+// sarah.jones@gmail.com becomes "Sarah Jones". Both are guesses, and both are
+// renameable in settings; the goal is a sensible starting point rather than a
+// correct one.
+func defaultTenantName(email string) string {
+	local, domainPart, ok := strings.Cut(email, "@")
+	if !ok || strings.TrimSpace(local) == "" {
+		return "My organization"
+	}
+	source := local
+	domainPart = strings.ToLower(strings.TrimSpace(domainPart))
+	if domainPart != "" && !consumerMailDomains[domainPart] {
+		source = registrableLabel(domainPart)
+	}
+	return titleizeName(source)
+}
+
+// secondLevelSuffixes are the common two-part public suffixes. Taking the
+// second-to-last label of "acme.co.uk" yields "co", so these have to be
+// stepped over. This is a short pragmatic list rather than the full public
+// suffix list, which would mean vendoring and refreshing a large dataset to
+// improve the default value of a renameable display name.
+var secondLevelSuffixes = map[string]bool{
+	"co": true, "com": true, "net": true, "org": true, "gov": true,
+	"edu": true, "ac": true, "or": true, "ne": true, "in": true, "gen": true,
+}
+
+// registrableLabel picks the label that identifies the organization:
+// "mail.acme.com" and "acme.co.uk" both yield "acme".
+func registrableLabel(domainPart string) string {
+	labels := strings.Split(domainPart, ".")
+	if len(labels) < 2 {
+		return labels[0]
+	}
+	i := len(labels) - 2
+	// Step over a two-part suffix, but only when a label remains in front of
+	// it: "co.uk" on its own must not walk off the start of the slice.
+	if secondLevelSuffixes[labels[i]] && i > 0 {
+		i--
+	}
+	return labels[i]
+}
+
+// titleizeName turns "sarah.jones" or "sarah_jones-01" into "Sarah Jones 01".
+func titleizeName(raw string) string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '+' || r == ' '
+	})
+	parts := make([]string, 0, len(fields))
+	for _, f := range fields {
+		runes := []rune(strings.ToLower(f))
+		if len(runes) == 0 {
+			continue
+		}
+		runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+		parts = append(parts, string(runes))
+	}
+	out := strings.Join(parts, " ")
+	if out == "" {
+		return "My organization"
+	}
+	if len([]rune(out)) > 200 {
+		out = string([]rune(out)[:200])
+	}
+	return out
 }
 
 // uniqueTenantSlug builds a globally-unique tenant slug from the email's local

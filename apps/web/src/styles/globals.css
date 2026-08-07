@@ -279,3 +279,36 @@
 .wpmgr-cmdk-overlay[data-state="closed"]{ animation: wpmgr-cmdk-overlay-out 120ms var(--ease-out-quint) both; }
 .wpmgr-cmdk-panel[data-state="open"]    { animation: wpmgr-cmdk-panel-in    180ms var(--ease-out-quint) both; }
 .wpmgr-cmdk-panel[data-state="closed"]  { animation: wpmgr-cmdk-panel-out   120ms var(--ease-out-quint) both; }
+
+/* Auth-page fleet illustration (components/brand/fleet-illustration.tsx).
+ *
+ * EVERY ANIMATION HERE ENDS ON THE VISIBLE STATE. The global reduced-motion
+ * rule above collapses animation-duration to 0.01ms, which means a
+ * reduced-motion visitor lands on the final keyframe immediately. If any of
+ * these finished at opacity 0 or a zero-length dash, that visitor (and any
+ * renderer that does not animate) would get a blank panel. `both` fill is used
+ * so the element also holds its start frame during the stagger delay rather
+ * than flashing at full size first. */
+@keyframes wpmgr-fleet-draw {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes wpmgr-fleet-settle {
+  from { opacity: 0; transform: scale(0.9); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes wpmgr-fleet-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+.wpmgr-fleet-spoke  { animation: wpmgr-fleet-draw 700ms var(--ease-out-quint) both; }
+.wpmgr-fleet-node   { animation: wpmgr-fleet-settle 520ms var(--ease-out-quint) both; }
+.wpmgr-fleet-hub    { animation: wpmgr-fleet-settle 520ms var(--ease-out-quint) both; }
+/* The only looping animation on the page. Opacity on a 3.5px dot, well under
+   the flash thresholds, and suppressed entirely under reduced motion. */
+.wpmgr-fleet-status { animation: wpmgr-fleet-pulse 2.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wpmgr-fleet-status { animation: none; opacity: 1; }
+}
