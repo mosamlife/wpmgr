@@ -23,7 +23,9 @@ const { listMyIdentitiesMock, unlinkMyIdentityMock, setMyInitialPasswordMock } =
 
 vi.mock("@wpmgr/api", () => ({
   client: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
-  getMe: vi.fn(async () => ({ data: null, error: undefined, response: { status: 401 } })),
+  getMe: vi.fn(() =>
+    Promise.resolve({ data: null, error: undefined, response: { status: 401 } }),
+  ),
   login: vi.fn(),
   logout: vi.fn(),
   register: vi.fn(),
