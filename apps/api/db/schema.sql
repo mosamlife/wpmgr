@@ -402,6 +402,46 @@ CREATE UNIQUE INDEX users_oidc_identity_key
     WHERE oidc_issuer IS NOT NULL AND oidc_subject IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
+-- user_identities (m110)
+-- ---------------------------------------------------------------------------
+-- One row per external identity a user can sign in with, replacing the single
+-- (oidc_issuer, oidc_subject) pair above. With Google and GitHub both offered,
+-- one slot is not enough: the ordinary case is somebody who signed up with one
+-- and later clicks the other, and with a single slot the second would overwrite
+-- the first.
+--
+-- (provider, subject, issuer) is the identity. The email column records what
+-- the provider asserted and is deliberately NOT unique: emails change, get
+-- reassigned inside a Workspace, and repeat across providers. Matching on email
+-- is how account takeovers happen.
+--
+-- email_verified is the PROVIDER's assertion at link time. users.email_verified_at
+-- is our own. The linking rules need both, separately.
+--
+-- Not RLS-scoped, matching users: a user spans tenants, so neither the user nor
+-- their means of authenticating belongs to one.
+CREATE TABLE user_identities (
+    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider       text        NOT NULL,
+    subject        text        NOT NULL,
+    issuer         text        NOT NULL DEFAULT '',
+    email          text        NOT NULL DEFAULT '',
+    email_verified boolean     NOT NULL DEFAULT false,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    last_login_at  timestamptz
+);
+
+CREATE UNIQUE INDEX user_identities_provider_subject_key
+    ON user_identities (provider, subject, issuer);
+
+CREATE UNIQUE INDEX user_identities_user_provider_key
+    ON user_identities (user_id, provider);
+
+CREATE INDEX user_identities_user_id_idx
+    ON user_identities (user_id);
+
+-- ---------------------------------------------------------------------------
 -- memberships
 -- ---------------------------------------------------------------------------
 -- Join table binding a user to a tenant with a role. Tenant-scoped: RLS keeps a
