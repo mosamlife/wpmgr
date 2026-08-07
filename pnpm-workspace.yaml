@@ -6,7 +6,7 @@ packages:
 # Force patched versions of transitive dependencies flagged by high-severity
 # advisories (DoS via quadratic/exponential parsing). All are same-major pins,
 # so no API change: brace-expansion 1.1.18 (GHSA-3jxr-9vmj-r5cp and
-# GHSA-rgw5-rvv9-x895), js-yaml 3.15.0 for gray-matter and js-yaml 4.3.0 for
+# GHSA-rgw5-rvv9-x895), js-yaml 3.15.1 for gray-matter and js-yaml 4.3.1 for
 # eslint tooling (GHSA-52cp-r559-cp3m).
 overrides:
   # 1.1.18, not 1.1.16. GHSA-rgw5-rvv9-x895 (published after this block was
@@ -22,8 +22,8 @@ overrides:
   # (@eslint/config-array pathMatches). The 1.x chain is eslint only, which never
   # ships in any deployed artifact, so it is pinned to the newest 1.x instead.
   brace-expansion@5: 5.0.8
-  js-yaml@3: 3.15.0
-  js-yaml@4: 4.3.0
+  js-yaml@3: 3.15.1
+  js-yaml@4: 4.3.1
   # sharp <0.35.0 bundles a vulnerable libvips (GHSA-f88m-g3jw-g9cj). Patched in
   # 0.35.0+; Next pulls it as an optional dep for image optimization and its
   # transform API is unchanged across this bump. Verified the marketing build.
