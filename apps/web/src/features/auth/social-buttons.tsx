@@ -2,7 +2,6 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { listSocialProviders } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { sameOriginPath } from "@/features/auth/social-errors";
 
 /**
@@ -20,10 +19,9 @@ import { sameOriginPath } from "@/features/auth/social-errors";
  * after first paint, a divider and up to two buttons were inserted above it and
  * everything below moved down: at best the SSO button and the sign-up link jump
  * while someone is reaching for them, at worst a click lands on the button that
- * arrived. Now the whole group renders from a single resolved snapshot, the
+ * arrived. Now the whole group renders from a single resolved snapshot, and the
  * sign-in routes prime that snapshot in beforeLoad (ensureSignInMethods) so it
- * is already there on first paint, and the loading state reserves the space
- * instead of leaving a hole.
+ * is already there on first paint.
  *
  * A FULL PAGE NAVIGATION, NOT FETCH. The OAuth handshake is a browser redirect
  * to a third-party origin; there is nothing here for XHR to do.
@@ -108,18 +106,19 @@ export function SocialButtons({
 }) {
   const { data, isPending } = useSignInMethods();
 
-  // Reserve the space rather than leave a hole that fills in later. Only
-  // reachable when the route's prefetch did not resolve in time.
-  if (isPending) {
-    return (
-      <div className="mt-4" data-testid="sign-in-methods-placeholder">
-        <Divider />
-        <div className="mt-4 flex flex-col gap-2">
-          <Skeleton className="h-9 w-full" />
-        </div>
-      </div>
-    );
-  }
+  // NOTHING WHILE THE ANSWER IS UNKNOWN, and specifically not a placeholder.
+  //
+  // Reserving space looks like the careful choice and is the opposite here,
+  // because the commonest install configures no provider and no issuer at all,
+  // and on that install the resolved render is nothing. A placeholder would
+  // then be a block that appears and collapses, which is the very shift this is
+  // meant to prevent, on the majority case, in exchange for softening a
+  // minority one. It cannot even reserve the right height: the group is one,
+  // two or three buttons and we do not yet know which.
+  //
+  // Reachable only when a route's prefetch missed its budget
+  // (ensureSignInMethods), which is already the degraded path.
+  if (isPending) return null;
 
   const providers = data?.providers ?? [];
   const showSso = sso && data?.sso === true;

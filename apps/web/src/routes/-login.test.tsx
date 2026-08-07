@@ -162,7 +162,20 @@ describe("LoginPage - alternative sign-in methods are part of first paint", () =
     expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in with SSO" })).toBeTruthy();
-    expect(screen.queryByTestId("sign-in-methods-placeholder")).toBeNull();
+  });
+
+  it("does not promise single sign-on above a page that may not offer it", async () => {
+    // The description is the first thing read and sits above the form. It used
+    // to name SSO on every install, including the default one where no issuer
+    // is configured and no SSO button renders.
+    mockedListSocialProviders.mockImplementation(
+      methodsResolving({ providers: [], sso: false }),
+    );
+    renderLoginPage("/login");
+    await screen.findByLabelText("Email");
+
+    expect(screen.queryByText(/single sign-on/i)).toBeNull();
+    expect(screen.getByText("Use your email and password.")).toBeTruthy();
   });
 
   it("renders no SSO button when the install has no issuer", async () => {
@@ -186,10 +199,23 @@ describe("LoginPage - alternative sign-in methods are part of first paint", () =
     renderLoginPage("/login");
 
     expect(await screen.findByLabelText("Email", undefined, { timeout: 4000 })).toBeTruthy();
-    // And the space the buttons will occupy is reserved rather than left as a
-    // hole for them to drop into.
-    expect(screen.getByTestId("sign-in-methods-placeholder")).toBeTruthy();
+    // And nothing stands in for the buttons meanwhile. A placeholder here would
+    // be a block that appears and then collapses on the commonest install,
+    // which configures no provider and no issuer, so the resolved render is
+    // nothing at all.
+    expect(screen.queryByTestId("sign-in-methods-placeholder")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Sign in with/ })).toBeNull();
   }, 10_000);
+
+  it("renders no block at all on an install that offers neither", async () => {
+    mockedListSocialProviders.mockImplementation(
+      methodsResolving({ providers: [], sso: false }),
+    );
+    renderLoginPage("/login");
+    await screen.findByLabelText("Email");
+
+    expect(screen.queryByText("or")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -224,6 +250,54 @@ describe("LoginPage - the ?redirect= deep link reaches the provider handshake", 
     fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
 
     expect(window.location.href).toBe("/auth/social/google/start");
+  });
+
+  // THE SIBLING USE OF THE SAME PARAMETER. beforeLoad sends a visitor who
+  // already has a session wherever ?redirect= says, from the same attacker
+  // chosen string, on the page whose whole job is to be linked to.
+  //
+  // Asserted on what beforeLoad THROWS rather than on where the test router
+  // ends up: the redirect target is the thing under test, and a memory history
+  // with a handful of stub routes quietly resolves an unmatched target to
+  // something harmless, which would make this pass either way.
+  describe("the redirect a signed-in visitor is sent to", () => {
+    async function redirectTargetFor(redirect: string | undefined) {
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(authKeys.me, {
+        user: { id: "u1", email: "sarah@acme.test" },
+        memberships: [],
+        role: "owner",
+      });
+      // beforeLoad takes the full router argument; a test supplies the two
+      // fields it reads.
+      const beforeLoad = LoginRoute.options.beforeLoad as (
+        arg: unknown,
+      ) => Promise<void>;
+      try {
+        await beforeLoad({ context: { queryClient }, search: { redirect } });
+      } catch (thrown) {
+        return (thrown as { options?: { to?: string } }).options?.to;
+      }
+      throw new Error("a visitor with a session must be redirected off /login");
+    }
+
+    it("honours a same-origin deep link", async () => {
+      expect(await redirectTargetFor("/sites/abc/backups")).toBe("/sites/abc/backups");
+    });
+
+    it("falls back to /sites with no deep link", async () => {
+      expect(await redirectTargetFor(undefined)).toBe("/sites");
+    });
+
+    it("refuses to send them anywhere off this origin", async () => {
+      for (const off of [
+        "https://evil.example/steal",
+        "//evil.example/steal",
+        "/\\evil.example/steal",
+      ]) {
+        expect(await redirectTargetFor(off), off).toBe("/sites");
+      }
+    });
   });
 });
 

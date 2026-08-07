@@ -118,11 +118,23 @@ func (h *Handler) socialCallback(c *gin.Context) {
 		return
 	}
 
-	// Same 2FA invariant as the OIDC callback: an enrolled second factor must
-	// not be skipped just because the first factor came from a provider.
-	// issueSessionOrChallenge writes the challenge redirect itself when needed;
-	// that shared helper owns the challenge URL, so a second factor still lands
-	// on /sites after the challenge rather than on the deep link.
+	h.socialComplete(c, res, returnTo)
+}
+
+// socialComplete is the ending every successful social sign-in shares: the 2FA
+// gate, then the landing page.
+//
+// Split out of socialCallback so the landing page can be driven by a test.
+// Everything above it needs a live provider and a database behind
+// SignInWithSocial, so the one line that a deep link changes was the one line
+// no test could reach; see social_redirect_test.go.
+//
+// The 2FA invariant is the OIDC callback's: an enrolled second factor must not
+// be skipped just because the first factor came from a provider.
+// issueSessionOrChallenge writes the challenge redirect itself when needed, and
+// that shared helper owns the challenge URL, so a second factor still lands on
+// /sites after the challenge rather than on the deep link.
+func (h *Handler) socialComplete(c *gin.Context, res LoginResult, returnTo string) {
 	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
 		return
 	}

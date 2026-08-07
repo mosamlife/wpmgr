@@ -18,6 +18,18 @@
  * (a disabled account, a provider that will not vouch for its own user's
  * address) say so and offer nothing, because offering a button that changes
  * nothing is worse than offering none.
+ *
+ * Where the copy still names a password reset, it is not being offered as a way
+ * to verify (it is not one) but as the way to take back an account somebody
+ * else may have created on that address. See the link refusal below.
+ *
+ * THE CODE LIST IS THE SERVER'S. Every value that can reach `?social_error=`
+ * comes from a socialFail call site or actionableSocialCodes in
+ * apps/api/internal/auth/social_handler.go. A code with no case here still
+ * renders, as the generic sentence, which is the right answer for the
+ * deliberately coarse failures (exchange, no code) and the wrong one for a
+ * refusal a person could act on. social-errors.test.ts pins the actionable set
+ * so a code added on the server cannot quietly land in the generic bucket.
  */
 export type SocialRefusal = {
   message: string;
@@ -27,11 +39,22 @@ export type SocialRefusal = {
 export function socialRefusal(code: string): SocialRefusal {
   switch (code) {
     case "social_link_requires_verification":
-      // The server has already sent the link at this point, so the copy says
-      // that rather than sending the reader off to reset a password.
+      // Two facts, and the copy has to carry both.
+      //
+      // The server really has sent the link by this point
+      // (Service.sendVerificationForSocialLink), so "check your inbox" is
+      // accurate here, unlike on the status-gate code below.
+      //
+      // But the account this link verifies is one that SOMEBODY ELSE may have
+      // created: the refusal exists because registration does not require
+      // proving control of an address, so an attacker can park a row on a
+      // stranger's address with a password only they know. Opening the link
+      // verifies that row and the next provider sign-in links onto it, with
+      // that password still on it. Resetting the password is what takes it
+      // back, so the sentence that says so is a mitigation and not filler.
       return {
         message:
-          "An account already exists for that email address and has never been verified. We have emailed a verification link to it. Open the link, then sign in with your provider again.",
+          "An account already exists for that email address and has never been verified. We have sent a verification link to it. Open the link, then sign in with your provider again. If you did not create that account yourself, reset its password too, so that whoever set it cannot sign in.",
         canResend: true,
       };
     case "email_not_verified":
@@ -54,12 +77,27 @@ export function socialRefusal(code: string): SocialRefusal {
           "That account has no verified email address with the provider. Verify your email with the provider, then try again.",
         canResend: false,
       };
-    case "user_exists":
-      // A local account already holds this address. Verification is not the
-      // blocker here, so no resend is offered.
+    case "social_provider_already_linked":
+      // A different account at the same provider is already connected to the
+      // local account for this address. Retrying reproduces it exactly, so the
+      // only useful answer names the other way in. Deliberately does NOT offer
+      // "disconnect it in account settings": there is no such screen in this
+      // app, and pointing at one is worse than saying nothing.
       return {
         message:
-          "An account already exists for that email address. Sign in with your password, then connect the provider from your account settings.",
+          "A different account at that provider is already connected to the account for this email address. Sign in with the provider account you connected first, or use your email and password.",
+        canResend: false,
+      };
+    case "social_rate_limited":
+      return {
+        message:
+          "Too many sign-in attempts from this network. Wait a minute, then try again.",
+        canResend: false,
+      };
+    case "social_start_failed":
+      return {
+        message:
+          "That sign-in provider could not be reached. Try again in a moment, or use your email and password.",
         canResend: false,
       };
     case "social_cancelled":
@@ -74,11 +112,6 @@ export function socialRefusal(code: string): SocialRefusal {
     default:
       return { message: "Sign-in failed. Please try again.", canResend: false };
   }
-}
-
-/** The sentence alone, for callers that render no controls. */
-export function socialErrorMessage(code: string): string {
-  return socialRefusal(code).message;
 }
 
 /**

@@ -9,7 +9,7 @@ import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
 import { SocialButtons, ensureSignInMethods } from "@/features/auth/social-buttons";
-import { socialRefusal } from "@/features/auth/social-errors";
+import { socialRefusal, sameOriginPath } from "@/features/auth/social-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,7 +54,12 @@ export const Route = createFileRoute("/login")({
     ]);
     if (me) {
       throw redirect({
-        to: me.role === "client" ? "/portal" : (search.redirect ?? "/sites"),
+        // Same narrowing as the handshake link, for the same reason: this is a
+        // navigation target taken from the query string, and ?redirect= is the
+        // one search param on this page an attacker gets to choose. Every use
+        // of it goes through sameOriginPath, or the one that does not is the
+        // hole.
+        to: me.role === "client" ? "/portal" : (sameOriginPath(search.redirect) ?? "/sites"),
       });
     }
   },
@@ -77,6 +82,11 @@ function LoginPage() {
   // Tracks when login failed because the email is not yet verified.
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [resendSent, setResendSent] = useState(false);
+
+  // Narrowed once, here, and used for every navigation on this page: the
+  // password path, the 2FA hand-off and the provider handshake all land the
+  // browser somewhere the query string named.
+  const deepLink = sameOriginPath(search.redirect);
 
   const {
     register,
@@ -106,7 +116,7 @@ function LoginPage() {
               totp: result.factors.totp,
               webauthn: result.factors.webauthn,
               recovery_factor: result.factors.recovery,
-              redirect: search.redirect,
+              redirect: deepLink,
             },
           });
           return;
@@ -127,7 +137,7 @@ function LoginPage() {
             if (freshMe?.role === "client") {
               void navigate({ to: "/portal" });
             } else {
-              void navigate({ to: search.redirect ?? "/sites" });
+              void navigate({ to: deepLink ?? "/sites" });
             }
           });
       },
@@ -174,9 +184,15 @@ function LoginPage() {
           <CardTitle asChild>
             <h1>Sign in</h1>
           </CardTitle>
-          <CardDescription>
-            Use your email and password, or single sign-on.
-          </CardDescription>
+          {/* Only the method every install has. It used to name single
+              sign-on, which the default install does not offer and now
+              correctly does not show a button for, so the line was promising a
+              way in that was not on the page. Kept static rather than composed
+              from the method list: this sits above the form, so wording that
+              changed when that list resolved would move the whole form down,
+              which is the shift the block below was rebuilt to avoid. Whatever
+              else is available is named on its own button a few lines down. */}
+          <CardDescription>Use your email and password.</CardDescription>
         </CardHeader>
         <CardContent>
           <form
@@ -339,7 +355,7 @@ function LoginPage() {
               paint and push it down. `redirect` is the deep link the visitor
               arrived with: the password path above has always honoured it, and
               the social path used to drop it. */}
-          <SocialButtons label="Sign in with" redirect={search.redirect} sso />
+          <SocialButtons label="Sign in with" redirect={deepLink} sso />
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             Don't have an account?{" "}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { socialRefusal, socialErrorMessage, sameOriginPath } from "./social-errors";
+import { socialRefusal, sameOriginPath } from "./social-errors";
 
 // 2.14. A refusal that only a verification link can clear has to say so AND
 // offer the link. The server sends mail on exactly one of these codes
@@ -22,13 +22,50 @@ describe("socialRefusal", () => {
     for (const code of [
       "account_disabled",
       "social_email_unverified",
-      "user_exists",
+      "social_provider_already_linked",
+      "social_rate_limited",
+      "social_start_failed",
       "social_cancelled",
       "social_provider_disabled",
       "social_state_mismatch",
       "something_new_from_the_server",
     ]) {
       expect(socialRefusal(code).canResend, code).toBe(false);
+    }
+  });
+
+  // The server picks these codes; this list is the contract. Source of truth is
+  // apps/api/internal/auth/social_handler.go: actionableSocialCodes plus the
+  // socialFail call sites that name a code directly. A code that reaches the
+  // URL with no case here renders "Sign-in failed. Please try again.", which
+  // for a refusal a person could act on is the same dead end this whole file
+  // exists to remove.
+  const ACTIONABLE_SERVER_CODES = [
+    "social_link_requires_verification",
+    "social_email_unverified",
+    "social_provider_already_linked",
+    "account_disabled",
+    "email_not_verified",
+    "social_provider_disabled",
+    "social_rate_limited",
+    "social_start_failed",
+    "social_state_mismatch",
+    "social_cancelled",
+  ];
+
+  it("has its own sentence for every code the server chooses deliberately", () => {
+    const generic = socialRefusal("a_code_that_will_never_exist").message;
+    for (const code of ACTIONABLE_SERVER_CODES) {
+      expect(socialRefusal(code).message, code).not.toBe(generic);
+    }
+  });
+
+  it("keeps the coarse failures generic", () => {
+    // Deliberately vague on the server: naming the failed verification step is
+    // a hint for whoever caused it. Nothing here should un-blur them.
+    const generic = socialRefusal("a_code_that_will_never_exist").message;
+    for (const code of ["social_exchange_failed", "social_no_code", "social_sign_in_failed"]) {
+      expect(socialRefusal(code).message, code).toBe(generic);
     }
   });
 
@@ -42,24 +79,22 @@ describe("socialRefusal", () => {
 
   it("tells the link refusal that the mail is already on its way", () => {
     // The server calls sendVerificationForSocialLink on this code, so the copy
-    // has to match what actually happened rather than sending the reader off
-    // to reset a password, which cannot clear this refusal at all.
+    // says the link is sent rather than pointing at a password sign-in, which
+    // cannot clear this refusal at all.
     const { message } = socialRefusal("social_link_requires_verification");
-    expect(message).toMatch(/emailed a verification link/i);
-    expect(message).not.toMatch(/reset/i);
+    expect(message).toMatch(/sent a verification link/i);
   });
 
-  it("has a sentence for the duplicate-account refusal", () => {
-    expect(socialRefusal("user_exists").message).toMatch(/already exists/i);
-    expect(socialRefusal("user_exists").message).not.toBe(
-      socialRefusal("anything_else").message,
-    );
-  });
-
-  it("keeps socialErrorMessage answering with the sentence alone", () => {
-    expect(socialErrorMessage("account_disabled")).toBe(
-      socialRefusal("account_disabled").message,
-    );
+  it("still tells the link refusal to take the account back", () => {
+    // THE MITIGATION, and the reason this assertion is separate. This refusal
+    // fires precisely when an account exists on that address that nobody has
+    // proven they own, which is what an attacker parking a row on a stranger's
+    // address looks like. Opening the link verifies THAT row, and the next
+    // provider sign-in links onto it with whatever password it was created
+    // with. Copy that walks someone through the merge without telling them to
+    // reset the password hands the account over politely.
+    const { message } = socialRefusal("social_link_requires_verification");
+    expect(message).toMatch(/reset its password/i);
   });
 });
 
