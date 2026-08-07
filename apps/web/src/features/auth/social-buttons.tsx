@@ -23,24 +23,38 @@ const PROVIDERS: Record<Provider, { label: string; Icon: () => React.ReactElemen
   github: { label: "GitHub", Icon: GitHubMark },
 };
 
-async function fetchProviders(): Promise<Provider[]> {
+export type SignInMethods = { providers: Provider[]; sso: boolean };
+
+async function fetchMethods(): Promise<SignInMethods> {
   const res = await fetch("/auth/social/providers", { credentials: "include" });
-  if (!res.ok) return [];
-  const body: unknown = await res.json();
-  const list = (body as { providers?: unknown }).providers;
-  if (!Array.isArray(list)) return [];
-  return list.filter((p): p is Provider => p === "google" || p === "github");
+  if (!res.ok) return { providers: [], sso: false };
+  const body = (await res.json()) as { providers?: unknown; sso?: unknown };
+  const list = Array.isArray(body.providers) ? body.providers : [];
+  return {
+    providers: list.filter((p): p is Provider => p === "google" || p === "github"),
+    sso: body.sso === true,
+  };
 }
 
-export function SocialButtons({ label }: { label: string }) {
-  const { data: providers } = useQuery({
-    queryKey: ["auth", "social-providers"],
-    queryFn: fetchProviders,
-    // The set only changes when an operator reconfigures the server and
-    // restarts it, so re-asking on every mount is wasted work.
+/**
+ * Which sign-in methods this install actually offers. Shared by the buttons and
+ * by the SSO button on the login page, so neither can render something the
+ * server will refuse.
+ */
+export function useSignInMethods() {
+  return useQuery({
+    queryKey: ["auth", "sign-in-methods"],
+    queryFn: fetchMethods,
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+}
+
+export function SocialButtons({ label }: { label: string }) {
+  // The set only changes when an operator reconfigures the server and restarts
+  // it, so the shared query re-asks rarely.
+  const { data } = useSignInMethods();
+  const providers = data?.providers;
 
   if (!providers || providers.length === 0) return null;
 

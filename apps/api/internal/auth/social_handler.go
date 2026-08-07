@@ -16,7 +16,17 @@ import (
 // unconfigured provider leads to a provider error page, which reads as a broken
 // product rather than an unconfigured one.
 func (h *Handler) socialProviders(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"providers": h.social.Enabled()})
+	// `sso` covers the generic operator-configured OIDC issuer, which is a
+	// separate mechanism from the consumer providers but the same question for
+	// the sign-in page: which buttons will actually work.
+	//
+	// It is reported here because the SSO button used to render unconditionally,
+	// so on an install with no issuer configured (which is every install by
+	// default, including production) it was a permanent dead end.
+	c.JSON(http.StatusOK, gin.H{
+		"providers": h.social.Enabled(),
+		"sso":       h.oidc.Enabled(),
+	})
 }
 
 // socialRedirectURL derives the callback the provider will send the browser
@@ -34,7 +44,7 @@ func (h *Handler) socialStart(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("social_provider_disabled", "this sign-in method is not configured"))
 		return
 	}
-	url, state, nonce, verifier, err := adapter.AuthCodeURL(h.socialRedirectURL(provider))
+	url, state, nonce, verifier, err := adapter.AuthCodeURL(c.Request.Context(), h.socialRedirectURL(provider))
 	if err != nil {
 		httpx.Error(c, domain.Internal("social_url_failed", "failed to build authorization URL").WithCause(err))
 		return

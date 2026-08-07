@@ -1,6 +1,11 @@
 package auth
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/config"
+)
 
 // GitHub is not an OpenID Connect provider and has no email_verified claim, so
 // primaryVerifiedEmail is where the verified address is established for that
@@ -101,5 +106,56 @@ func TestSocialProvidersAbsentWhenUnconfigured(t *testing.T) {
 	}
 	if empty.Get("github") != nil {
 		t.Fatal("an unconfigured provider must not resolve to an adapter")
+	}
+}
+
+// Constructing the provider set must do no network I/O and must not be able to
+// fail. It used to call oidc.NewProvider inline and main returned the error, so
+// an unreachable or merely slow accounts.google.com stopped the whole control
+// plane from booting. This asserts the constructor is now pure: it returns
+// immediately with Google listed as enabled, having contacted nobody.
+func TestNewSocialProvidersDoesNoNetworkIO(t *testing.T) {
+	sp := NewSocialProviders(config.SocialConfig{
+		Google: config.GoogleConfig{ClientID: "id", ClientSecret: "secret"},
+		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
+	})
+
+	got := sp.Enabled()
+	if len(got) != 2 {
+		t.Fatalf("Enabled() = %v, want both providers listed without any discovery call", got)
+	}
+	if sp.Get("google") == nil || sp.Get("github") == nil {
+		t.Fatal("both adapters must exist before any network call is attempted")
+	}
+
+	// Discovery has not run, so the Google adapter is not yet ready. That is the
+	// point: it becomes ready on first use, not at boot.
+	g, ok := sp.Get("google").(*googleAdapter)
+	if !ok {
+		t.Fatal("expected the google adapter type")
+	}
+	if g.ready {
+		t.Error("google adapter reports ready before any discovery call; construction is doing I/O")
+	}
+}
+
+// A discovery failure must surface as a failed sign-in, not a failed boot, and
+// must not be cached as permanent: the next attempt retries.
+func TestGoogleDiscoveryFailureIsNotPermanent(t *testing.T) {
+	g := newGoogleAdapter(config.GoogleConfig{ClientID: "id", ClientSecret: "secret"})
+
+	// A context already past its deadline stands in for an unreachable issuer.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, _, _, _, err := g.AuthCodeURL(ctx, "https://example.test/cb"); err == nil {
+		t.Fatal("a failed discovery must surface as an error from AuthCodeURL")
+	}
+	if g.ready {
+		t.Error("a failed discovery must not mark the adapter ready")
+	}
+	// Nothing was cached, so a later attempt is free to succeed.
+	if g.verifier != nil {
+		t.Error("a failed discovery must leave no half-built verifier behind")
 	}
 }

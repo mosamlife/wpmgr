@@ -8,7 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
-import { SocialButtons } from "@/features/auth/social-buttons";
+import { SocialButtons, useSignInMethods } from "@/features/auth/social-buttons";
 import { socialErrorMessage } from "@/features/auth/social-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,6 +64,7 @@ function LoginPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
   const loginMutation = useLogin();
+  const ssoEnabled = useSignInMethods().data?.sso === true;
   const resendMutation = useResendVerification();
   const queryClient = useQueryClient();
   // Tracks when login failed because the email is not yet verified.
@@ -143,7 +144,10 @@ function LoginPage() {
   // lands on that response and can navigate back — we keep the button always
   // visible to avoid a config probe on the login screen.
   function signInWithSso() {
-    window.location.href = "/api/auth/oidc/login";
+    // /auth/oidc/login, NOT /api/auth/... The auth routes mount on the root
+    // group (handler.go registers them under "/auth"), so the /api prefix was a
+    // 404 on every install that had SSO configured at all.
+    window.location.href = "/auth/oidc/login";
   }
 
   const isEmailNotVerified =
@@ -299,14 +303,19 @@ function LoginPage() {
 
           <SocialButtons label="Sign in with" />
 
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-2 w-full"
-            onClick={signInWithSso}
-          >
-            Sign in with SSO
-          </Button>
+          {/* Only when an issuer is actually configured. This button used to
+              render unconditionally, so on an install with no OIDC issuer,
+              which is the default and includes production, it was a dead end. */}
+          {ssoEnabled ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-2 w-full"
+              onClick={signInWithSso}
+            >
+              Sign in with SSO
+            </Button>
+          ) : null}
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             Don't have an account?{" "}
