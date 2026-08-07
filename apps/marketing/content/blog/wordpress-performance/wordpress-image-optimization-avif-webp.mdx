@@ -1,6 +1,6 @@
 ---
 title: "WordPress Image Optimization: AVIF and WebP in Practice"
-description: "AVIF and WebP reduce image file size by 30 to 60% compared to JPEG. Learn how they differ, which browsers support them, and how to convert your WordPress media library."
+description: "AVIF and WebP cut image weight by 30 to 60 percent against JPEG. How the formats differ, how WordPress actually serves them, how to convert an existing library, and the traps that make a conversion look worse than it is."
 category: "wordpress-performance"
 art: "compress"
 date: "2026-06-17"
@@ -10,23 +10,27 @@ featureSlug: "media-optimizer"
 solutionSlug: "wordpress-performance"
 ---
 
-Images account for the largest share of page weight on most WordPress sites. The average WordPress page loads several megabytes of images. Switching to modern formats is one of the highest-leverage optimisations you can make because it requires no change to your design, content, or workflow.
+Images are the largest component of page weight on most WordPress sites, usually by a wide margin. That makes format conversion unusually attractive as an optimisation: it changes nothing about your design, your content, or how anyone works, and it can remove half the bytes.
 
-## AVIF vs WebP: what is the difference
+It is also the optimisation most often done badly, in ways that produce a smaller number in a report and no improvement for real visitors.
 
-Both AVIF and WebP are modern image formats designed for the web. Both outperform JPEG and PNG at the same visual quality.
+## AVIF and WebP, and which to use
 
-**WebP** was developed by Google and is now supported by every major browser. At the same quality setting, WebP is typically 25 to 35% smaller than JPEG. For images with transparency (previously PNG territory), WebP is often 50 to 70% smaller than PNG.
+Both beat JPEG and PNG at equivalent visual quality. They are not interchangeable.
 
-**AVIF** is derived from the AV1 video codec. It achieves better compression than WebP at the same visual quality, typically 30 to 50% smaller than JPEG. It also handles high dynamic range images better than WebP. Browser support is now near-universal: Chrome, Firefox, Safari, and Edge all support AVIF.
+**WebP** came from Google and is supported everywhere that matters. Against JPEG it typically saves 25 to 35 percent at the same quality. Against PNG for images with transparency, the saving is much larger, often 50 to 70 percent, because PNG is lossless and frequently the wrong tool for photographic content with an alpha channel.
 
-The practical difference: AVIF gives you smaller files, but encoding is slower and requires more CPU than WebP. For a media library with thousands of images, this matters for the conversion time. For individual images, the quality improvement is usually worth it.
+**AVIF** is derived from the AV1 video codec and compresses harder, typically 30 to 50 percent below JPEG, with noticeably better behaviour in gradients and flat colour where JPEG produces banding. It handles wide colour and high dynamic range properly. Chrome, Firefox, Safari, and Edge all support it.
 
-## How WordPress serves next-gen images
+The real trade is encoding cost. AVIF encoding is substantially slower and more CPU-hungry than WebP. For a single hero image nobody cares. For a library of eight thousand images on shared hosting, that difference decides whether the batch job finishes overnight or runs for a week and gets killed.
 
-WordPress itself does not convert images to AVIF or WebP. The conversion has to happen through a plugin, a build step, or a CDN.
+A reasonable default: AVIF with a WebP fallback where you can afford the encoding, WebP alone where you cannot. The gap between WebP and AVIF is real but modest. The gap between JPEG and either is the one that matters.
 
-The correct pattern is to serve the most efficient format the browser supports, with a fallback chain. This is done with the `<picture>` element:
+## How the browser gets the right file
+
+WordPress core does not convert images. Something else has to, and then something has to serve the right format to each browser. There are two mechanisms.
+
+**The `<picture>` element**, which lets the browser choose:
 
 ```html
 <picture>
@@ -36,32 +40,88 @@ The correct pattern is to serve the most efficient format the browser supports, 
 </picture>
 ```
 
-Browsers that support AVIF fetch `photo.avif`. Browsers that support only WebP fetch `photo.webp`. Older browsers fall back to the JPEG.
+The browser takes the first `source` whose type it supports and falls back to the `img`. It is explicit and it caches cleanly.
 
-## Converting an existing media library
+**Content negotiation**, where the server inspects the browser's `Accept` header and returns a different file body at the same URL. This keeps markup untouched, which is why CDNs favour it, but it requires a correct `Vary: Accept` response header. Without that, a shared cache can serve an AVIF to a browser that cannot render it, and the result is a broken image for a subset of visitors that is very hard to reproduce.
 
-The challenge with an existing site is that you may have hundreds or thousands of images that need conversion. Options:
+Whichever you use, the `width` and `height` attributes on the `img` are not optional. Dropping them while restructuring markup for `<picture>` is a common way to convert images successfully and make [Cumulative Layout Shift](/blog/wordpress-performance/core-web-vitals-wordpress) worse.
 
-**CDN-based conversion.** Some CDNs convert images on the fly when a browser requests a WebP or AVIF version. This works but adds latency on the first request for each image and depends on the CDN staying in front of your images.
+## Converting an existing library
 
-**Server-side conversion at upload time.** The cleanest approach for new images: convert JPEG/PNG to WebP or AVIF as soon as a file is uploaded to WordPress, store the converted version alongside the original, and serve it from WordPress's standard media URL. No CDN dependency.
+Three approaches, with different failure modes.
 
-**Batch conversion of the existing library.** For the backlog of existing images, a one-time batch job runs through the media library and converts each file.
+**CDN conversion on the fly.** The CDN converts on first request and caches the result. No changes to your site, and it covers everything. The costs are a slow first request per image per format, and a permanent dependency: if the CDN is removed or bypassed, you are back to originals, and the optimisation lives in someone else's product rather than in your media library.
 
-WPMgr's Media Optimizer handles all three for images served from WordPress: new uploads are converted on the way in, and a batch job processes the existing library. The originals are preserved, and the conversion is fully reversible: you can restore the original file for any image at any time.
+**Conversion at upload.** New images are converted as they arrive and stored beside the original. Clean, predictable, no runtime dependency, and it means the problem stops growing. It does nothing for the images already there.
 
-## What to keep in JPEG or PNG
+**Batch conversion of the backlog.** A one-time pass over the existing library. This is the one with operational risk, because it is a long-running job doing heavy CPU work against every file you own.
 
-Not every image benefits from conversion. Exceptions:
+Most sites need the second and third together: convert on upload so the backlog stops growing, then work through what exists.
 
-- Very small images (icons under 1KB) where format overhead matters
-- Images that are already highly optimised (the gain may be under 5%)
-- SVG files, which are already vector-based and should stay as SVG
+[Media Optimizer](/features/media-optimizer) does both for images served from WordPress, keeps the originals, and lets you restore any image to its original file. That last part matters more than it sounds, and the next section is why.
 
-## Verifying the improvement
+## Keep the originals
 
-After converting your media library, verify the results with the Network tab in browser developer tools. Sort by size and confirm that image requests are serving AVIF or WebP (check the Content-Type response header). Also run a before-and-after with Google PageSpeed Insights to see the LCP impact.
+The single most damaging thing you can do to a media library is overwrite originals with lossy conversions.
 
-WPMgr's Real User Monitoring shows LCP trends from real visitors, so you can see whether the media conversion improved the 75th-percentile LCP across your actual audience.
+Lossy compression is not reversible. If you convert a JPEG to AVIF at quality 60 and delete the JPEG, the discarded detail is gone. Two years later, when a better encoder exists, or you need a print asset, or you decide the quality setting was too aggressive, your source of truth is a compressed derivative. Every future conversion compounds the loss.
 
-For more on the Media Optimizer, see the [Media Optimizer feature page](/features/media-optimizer/). For the full performance picture, see [how to speed up WordPress](/solutions/wordpress-performance/).
+Keep originals. Treat converted files as a cache: derived, disposable, regenerable. Any tool that cannot restore the original is asking you to make a permanent decision using today's encoder settings.
+
+## Format is only half the problem
+
+Converting a 4000 pixel image to AVIF and then serving that same file to a phone still sends a phone far more pixels than its screen can use. The other half of image optimisation is sending an appropriately sized file, and WordPress already has the machinery.
+
+WordPress generates multiple sizes on upload and emits `srcset` and `sizes` automatically for media library images:
+
+```html
+<img
+  src="photo-1024x768.jpg"
+  srcset="photo-480x360.jpg 480w, photo-1024x768.jpg 1024w, photo-1600x1200.jpg 1600w"
+  sizes="(max-width: 700px) 100vw, 700px"
+  width="1024" height="768" alt="Description" />
+```
+
+The `srcset` lists what exists. The `sizes` attribute tells the browser how wide the image will actually be displayed, which it needs before layout to make a choice.
+
+The failure is nearly always `sizes`. WordPress guesses, and its guess is frequently wrong once a theme or page builder puts the image in a constrained column. A `sizes` of `100vw` on an image that renders 700 pixels wide makes the browser fetch the largest candidate on every screen, and the `srcset` you carefully generated does nothing. Check the resolved value in DevTools rather than trusting it.
+
+Two further points. Serving the same image at the same dimensions to a phone and a desktop is the most common waste on WordPress, and it costs more bytes than the format choice does. And if a page builder writes its own markup, it may drop `srcset` entirely, in which case format conversion is compensating for a problem you could have solved outright.
+
+## Storage grows faster than you expect
+
+Each registered size multiplies files. A default install produces several per upload; a theme adding its own sizes can push that past ten. Layer AVIF and WebP on top and one photograph becomes twenty-odd files.
+
+For most sites this is fine and disk is cheap. It matters in three places: backup size and duration grow with it, migrations get slower, and hosts with inode limits (common on shared plans) can hit a file count ceiling long before a storage ceiling. If you have registered image sizes nothing uses, removing them and regenerating is worth doing before a mass conversion rather than after.
+
+## The traps
+
+**Converting at the wrong dimensions.** A 4000 pixel wide photograph displayed in a 800 pixel column is wasting most of its bytes no matter what the format is. Resizing first is usually worth more than the format change. Doing both is the answer.
+
+**Quality set by reflex.** Copying a JPEG quality number across to AVIF gives poor results, because the scales are not comparable. AVIF at 50 is often visually indistinguishable from JPEG at 80. Encoding AVIF at 85 out of caution produces files that are barely smaller than the JPEG and burns CPU for nothing. Test on your own photographs.
+
+**Not checking what is served.** A conversion job can complete successfully while pages still reference the originals, because a page builder hardcoded a URL or a caching layer is serving old HTML. The report says done, the visitors get JPEG.
+
+**Very small files.** Below a kilobyte or two, container overhead can make the converted file larger. Skip them.
+
+**SVG.** Already vector. Leave it alone. It wants minification, not transcoding.
+
+## Lazy loading, and the one image that must not be
+
+WordPress adds `loading="lazy"` to images automatically, which is right for almost everything and wrong for the one image that decides your LCP.
+
+Deferring the hero means the browser will not even begin fetching the element the metric is timing until layout has run. Modern WordPress tries to detect the first large image and skip lazy loading on it, but that detection works from document order, so it is regularly defeated by a slider, a background image applied in CSS, or a builder that renders the hero later in the markup than it appears on screen.
+
+Check the rendered HTML of your main templates. Anything above the fold, and the LCP element in particular, should have no `loading="lazy"` attribute at all. Everything below it should keep one.
+
+## Verifying it actually worked
+
+Do not trust the conversion count. Check what leaves the server.
+
+Open developer tools, load a real page with an empty cache, and look at the Network tab: sort by size and check the `Content-Type` of the image responses. If it says `image/jpeg`, the conversion is not reaching visitors regardless of what any dashboard reports. Do this on the templates that matter, the home page and a product or article page, not just one.
+
+Then check the effect where it counts. A lab run in PageSpeed Insights confirms the bytes changed. Whether it helped is a question about real visitors at the 75th percentile, and only field data answers it. WPMgr's Real User Monitoring reports LCP from actual visits, so a media conversion can be judged against the audience you have rather than a simulated device.
+
+Be prepared for a modest LCP improvement even after a large weight reduction. If your hero image is lazy-loaded, discovered late, or sitting behind a slow uncached server response, the bytes were never the bottleneck. Converting images on a site with a 900ms time to first byte is optimising the wrong stage.
+
+For the tooling, see the [Media Optimizer feature page](/features/media-optimizer). For where images sit among the other wins, see [how to speed up WordPress](/solutions/wordpress-performance).

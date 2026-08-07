@@ -1,6 +1,6 @@
 ---
 title: "WordPress Backup Strategy: How Often, What to Include, and Where to Store It"
-description: "A practical guide to building a WordPress backup strategy: backup frequency, what to include, offsite storage, and testing your restores."
+description: "Building a WordPress backup strategy that survives contact with a real incident: choosing frequency from a recovery objective, what to include, offsite storage, retention, and testing restores."
 category: "wordpress-backups"
 art: "snapshots"
 date: "2026-06-13"
@@ -10,66 +10,113 @@ featureSlug: "backups"
 solutionSlug: "wordpress-backups"
 ---
 
-A backup you have never tested is not a backup. It is a compressed hope. The goal of a backup strategy is not to have files somewhere. It is to be able to restore a site to a known good state within a predictable time frame, with confidence that the restore will work.
+A backup you have never restored is not a backup. It is a compressed hope.
 
-## What to include in a WordPress backup
+The purpose of a backup strategy is not to have files somewhere. It is to return a site to a known good state, within a time you can predict, with reasonable confidence that it will work. Almost every failure of a backup strategy is a failure of one of those three clauses, and usually the last one.
 
-A complete WordPress backup has two components:
+## Start from two numbers, not from a schedule
 
-**The database.** WordPress stores all of its content in MySQL: posts, pages, comments, user accounts, plugin settings, and widget configurations. A database backup can be as small as a few megabytes for a new site or hundreds of megabytes for a large content site. It backs up fast and restores fast.
+Before choosing a frequency, decide two things. They are the standard disaster recovery quantities and they turn a vague preference into a specification.
 
-**The file system.** The WordPress file system includes core files, plugins, themes, and the uploads directory (`wp-content/uploads`). Core files and plugins are reproducible (you can reinstall them), but the uploads directory contains user-uploaded media that exists only on that server. The uploads directory is the critical file-system component.
+**Recovery point objective (RPO): how much data can you afford to lose?** This sets backup frequency. If you back up nightly, your RPO is 24 hours, and you are stating that losing a day of work is acceptable.
 
-For most sites, the optimal backup includes the full database plus the uploads directory. Core and plugin files are omitted because they can be re-downloaded and are identical across all sites running the same version.
+**Recovery time objective (RTO): how long can the site be down?** This sets everything else: where backups are stored, how large they are, whether you have tested the process, and whether the restore path is one click or a support ticket.
 
-## Backup frequency: matching risk to cost
+Most people pick a frequency first and discover their real RPO during an incident. Doing it in the other order takes ten minutes and changes the answer more often than not.
 
-The right backup frequency depends on how much data you can afford to lose.
+The reason this matters is that the two numbers pull in different directions and are satisfied by different things. Hourly backups do nothing for RTO. A fast, rehearsed restore does nothing for RPO. A strategy that only addresses one is half a strategy.
 
-If your site publishes new content or receives new orders once a week, a daily backup means you lose at most one day of content in the worst case. That may be acceptable.
+## What a complete backup contains
 
-If your site receives orders continuously, a daily backup means you could lose a day of orders in the worst case. That is probably not acceptable. You need hourly or continuous backups, or a transactional replication strategy for the database.
+**The database.** All content, settings, users, comments, and most plugin configuration. Typically small, and fast to both back up and restore. This is where the majority of what people mean by "the site" actually lives.
 
-Common frequency patterns:
+**The uploads directory.** `wp-content/uploads` holds media that exists nowhere else. It is usually the bulk of the bytes and the part that cannot be regenerated.
 
-- **Daily backups** retained for 30 days: suitable for content sites, blogs, and most small business sites
-- **Hourly backups** retained for 7 days plus daily backups retained for 30 days: suitable for e-commerce and membership sites
-- **Continuous replication** for the database plus daily file backups: for high-stakes or regulated data
+**Everything else.** Core, plugins, and themes are reproducible: they can be downloaded again at the same versions. Backing them up costs storage and buys speed of recovery.
 
-## Incremental backups: why they matter at scale
+The common recommendation, and a good default, is database plus uploads, on the reasoning that the rest is replaceable. Two caveats deserve stating, because "replaceable" is doing a lot of work in that sentence.
 
-A full backup copies every file and every database row on every run. For a large site, this is slow and consumes a lot of storage.
+Custom and commercial code is not replaceable. A bespoke theme, a client-specific plugin, or a paid plugin whose licence has lapsed exists only on that server. If your backup excludes `wp-content/themes` and `wp-content/plugins` wholesale, verify that every excluded item can genuinely be re-obtained.
 
-An incremental backup copies only what changed since the last backup. For the database, this means binary log shipping. For the file system, this means tracking which files changed by comparing timestamps or content hashes.
+Root drop-ins matter more than their size suggests. `wp-config.php`, `.htaccess`, and drop-ins like `object-cache.php` or `advanced-cache.php` are small, easy to exclude by accident, and their absence produces a site that restores "successfully" and does not work.
 
-WPMgr uses content-addressed chunk storage: file content is split into chunks by hash, and each chunk is stored once. Two versions of a file that share 90% of their content share 90% of their storage. This makes the storage cost of daily backups close to the cost of storing the delta, not the full content.
+## Frequency patterns that hold up
 
-## Offsite storage: the non-negotiable requirement
+Given an RPO, the patterns that work in practice:
 
-A backup stored on the same server as the site it backs up is not a real backup. If the server fails, is compromised, or is deleted, the backup goes with it.
+- **Daily, retained 30 days.** Content sites, brochure sites, most small business sites. Losing a day is annoying, not existential.
+- **Hourly for 7 days plus daily for 30.** Stores and membership sites. Hourly bounds the loss; the daily tier gives you depth to reach past a problem you did not notice immediately.
+- **Continuous database replication plus daily file backups.** High transaction volume or regulated data, where losing an hour of orders is not acceptable.
 
-Offsite storage means a different location: a different server, a different cloud provider, or a physical location. For most WordPress sites, the practical options are S3-compatible object storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO), a local NAS, or a remote SFTP server.
+The depth matters as much as the frequency, and it is the part people under-provision. Ransomware, a slow-burning compromise, and a corrupted import all share a property: you find out days later. A backup set that only reaches back 48 hours contains the problem in every copy.
 
-WPMgr supports S3-compatible destinations and local storage. You configure a destination once at the control-plane level; all sites in your fleet can use it. Backups are encrypted before they leave the server and stored with credentials managed by the control plane.
+## Incremental backups, and why they change the calculus
 
-## Testing your restores
+A full backup copies everything every time. At any real size that is slow, expensive, and the reason people quietly reduce frequency until the strategy stops meaning anything.
 
-A backup strategy without a restore test is not complete. You need to know that the restore works before you need it in an emergency.
+Incremental backups copy only what changed. WPMgr splits file content into chunks addressed by hash and stores each chunk once, so two versions of a file sharing most of their content share most of their storage. The cost of a daily backup approaches the cost of the day's delta rather than the size of the site.
 
-A minimal restore test:
+The practical effect is that frequency stops being a budget decision. That is the actual benefit: not the storage saving, but that you no longer have to choose between an acceptable RPO and an acceptable bill.
 
-1. Create a staging environment (a second server, a local Docker container, or a subdomain)
-2. Restore a recent backup to the staging environment
-3. Walk through the site and verify that content, settings, and functionality are intact
+## Offsite is not optional
 
-Run this test quarterly at minimum, and after any major change to your backup configuration.
+A backup on the same server as the site is not a backup. Server dies, backup dies. Server is compromised, and any attacker competent enough to matter deletes the backups first, because that is what converts an incident into leverage.
 
-WPMgr supports point-in-time restore from any stored backup, and the restore flow is the same whether you are recovering from a disaster or testing a restore on a staging server.
+Offsite means a different failure domain: a different provider, or at minimum a different account. The practical options are S3-compatible object storage (S3, Cloudflare R2, Backblaze B2, MinIO), a remote SFTP target, or a NAS you control.
 
-## Pre-update snapshots: backups as a safety net
+Two properties are worth insisting on. **Encryption before the data leaves the site**, so the storage provider holds ciphertext rather than your client's customer database. And **credentials the site cannot use to delete history**: if the WordPress install holds keys with delete permission on the bucket, then anything that compromises the site can erase the backups. Write-only or append-only credentials, or object lock on the bucket, close that path.
 
-The highest-risk moment for a WordPress site is immediately after a plugin or core update. A pre-update snapshot is a backup taken automatically before any update runs. If the update breaks something, you restore from the snapshot.
+WPMgr encrypts on the site before upload, supports S3-compatible and local destinations configured once at the control plane and reused across the fleet, and keeps destination credentials in the control plane rather than on the sites.
 
-WPMgr takes a pre-update snapshot automatically before every update. The snapshot is retained for a configurable window (default 14 days). If the update causes a regression, you restore with one click.
+## Retention, and pruning on purpose
 
-For more detail on the backup system, see the [Backups and restore feature page](/features/backups/). For the complete picture of WordPress backup tools, see the [WordPress backups solution guide](/solutions/wordpress-backups/).
+Retention is where storage costs actually live, and where most setups drift into either unbounded growth or accidental shallowness.
+
+A tiered scheme covers the realistic recovery scenarios without keeping everything forever: hourly for a day or two, daily for a month, weekly for a quarter, monthly for a year if you have a compliance reason. Each tier answers a different question, from "undo the last hour" to "what did this look like before the redesign".
+
+The failure to avoid is a retention rule that silently prunes the only copy you needed. If pruning is automatic, know what it deletes and when.
+
+## Consistency: the failure nobody looks for
+
+A backup is taken over a period of time, and the site keeps running during it. That gap creates a class of problem that produces backups which restore perfectly and contain nonsense.
+
+Consider a store during a five-minute backup. The database is dumped at the start; an order arrives at minute two, writing rows across several tables; the uploads directory is copied at minute four. Depending on the order of operations you can end up with a database that references an uploaded file the backup does not contain, or an order row in one table with no matching row in another.
+
+Two mitigations matter. **Dump the database in a single transaction** so it represents one consistent moment rather than a smear across the backup window, which for InnoDB tables is a standard option and costs nothing. And **back up the database before the files**, so any file referenced by the database is at least as old as the reference, and the worst case is an orphaned file rather than a broken link.
+
+Neither is exotic, and both are the difference between a backup that is internally coherent and one that merely completed.
+
+## Large sites need a different shape
+
+Past a certain size the strategy changes rather than just scaling, and the threshold is usually file count rather than gigabytes.
+
+A media library with hundreds of thousands of files makes the per-file overhead dominate: walking the directory tree and hashing takes longer than transferring the data. Sites in this position benefit from excluding uploads from the frequent backup entirely and covering it separately at a lower frequency, on the reasoning that yesterday's uploads are recoverable from a source and yesterday's orders are not.
+
+Very large databases hit the opposite constraint, where the dump itself becomes the slow part and the consistency question above becomes acute.
+
+The general principle: when a backup takes long enough that it overlaps meaningfully with site activity, split it by component and give each the frequency its actual risk deserves, rather than pushing the whole thing to a schedule dictated by its slowest part.
+
+## Testing, which is the part that gets skipped
+
+Every backup strategy is a hypothesis until you restore one. The failure modes are numerous and none of them announce themselves: a backup that ran nightly for a year and only ever captured an empty database, an archive that was never completed, a file excluded by a pattern nobody reviewed.
+
+A minimal test:
+
+1. Restore a recent backup to a staging environment or a scratch site, not production.
+2. Load the site and click through the parts that matter: the home page, a post, checkout, a form.
+3. Check the database has actual rows, not just tables.
+4. Time it, and write the number down. That is your real RTO, and it is usually longer than people guess.
+
+Quarterly is a reasonable cadence, plus after any change to hosting, backup configuration, or site architecture.
+
+WPMgr restores any stored backup to any site in the fleet, so testing means restoring production's backup onto a staging site rather than building a parallel process you only ever use in a crisis. The mechanism you rehearse is the mechanism you use.
+
+## Pre-update snapshots
+
+The single highest-risk moment in a WordPress site's normal life is the minute after an update. It is also entirely predictable, which makes it the easiest risk to cover.
+
+A pre-update snapshot is a backup taken automatically immediately before an update runs, so a broken update becomes a rollback rather than an incident. WPMgr takes one before every update and retains it for a configurable window, defaulting to 14 days.
+
+This is the restore people actually perform. Catastrophes are rare. Plugin updates that break a layout are Tuesday.
+
+For the mechanics of performing one, see [restoring a WordPress site in practice](/blog/wordpress-backups/wordpress-backup-restore-guide). For the feature detail, see the [Backups and restore page](/features/backups), and for the wider view the [WordPress backups solution guide](/solutions/wordpress-backups).

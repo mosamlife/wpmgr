@@ -1,6 +1,6 @@
 ---
 title: "Core Web Vitals for WordPress: LCP, CLS, and INP Explained"
-description: "Understand the three Core Web Vitals metrics, what causes poor scores on WordPress sites, and practical fixes for each."
+description: "What the three Core Web Vitals actually measure, the WordPress-specific causes of poor scores, practical fixes for each, and why lab tools and field data disagree."
 category: "wordpress-performance"
 art: "vitals"
 date: "2026-06-14"
@@ -10,70 +10,105 @@ featureSlug: "real-user-monitoring"
 solutionSlug: "wordpress-performance"
 ---
 
-Google uses Core Web Vitals as a ranking signal. They are also the most user-facing performance metrics available: they measure how fast a page loads, how stable it is while loading, and how quickly it responds to user input. A site that scores well on all three delivers a genuinely good experience.
+Core Web Vitals are a Google ranking signal, which is why most people start caring about them. They are worth caring about for a better reason: they are among the few performance metrics that describe what using the page feels like rather than what a waterfall chart looks like.
 
-WordPress sites have a specific profile of Core Web Vitals challenges. Understanding them lets you fix the right things.
+Three metrics, three distinct questions. Did the main content appear quickly? Did the page hold still while it loaded? Did it respond when I touched it? WordPress sites fail each of these in fairly predictable ways, and knowing which failure you have saves a great deal of guessing.
 
-## LCP: Largest Contentful Paint
+## The thresholds, and the one detail everyone misses
 
-LCP measures how long it takes for the largest visible content element (usually the hero image or headline) to render on screen. Google's threshold for "good" is under 2.5 seconds.
+| Metric | Good | Needs work | Poor |
+| --- | --- | --- | --- |
+| LCP | under 2.5s | 2.5s to 4.0s | over 4.0s |
+| CLS | under 0.1 | 0.1 to 0.25 | over 0.25 |
+| INP | under 200ms | 200ms to 500ms | over 500ms |
 
-**Common WordPress LCP killers:**
+The detail that changes how you read every number: assessment uses the **75th percentile** of real visits over a rolling 28 day window. Not the average, and not your visit.
 
-- Unoptimised hero images (full-size JPEG or PNG served without compression or next-gen format)
-- Images loaded lazily when they should be prioritised (do not `loading="lazy"` on the hero image)
-- Slow server response time (TTFB above 600ms, often a sign that full-page caching is not working)
-- Large JavaScript bundles blocking the render path
-- Fonts loaded from a remote CDN with no `preconnect` hint
+That has two consequences worth internalising. Your own page load tells you almost nothing, because you are one sample, usually on good hardware with a warm cache and a nearby server. And an average hides exactly the users you need to fix, since a fast median with a slow tail still fails at p75. When a page is "fine for me" and failing in Search Console, this is nearly always why.
 
-**WordPress-specific fixes:**
+## LCP: did the main thing appear?
 
-Full-page caching is the single largest LCP win for most WordPress sites. Serving a prebuilt HTML response instead of running PHP eliminates the application-layer latency. WPMgr's page caching feature handles this at the server level.
+Largest Contentful Paint measures when the largest visible element in the viewport finishes rendering. On most WordPress pages that is a hero image, a featured image, or a large heading block.
 
-Convert your hero image to AVIF or WebP. Both formats are 30 to 50% smaller than JPEG at equivalent quality. WPMgr's Media Optimizer converts your entire media library automatically; new uploads are converted on the way in.
+LCP breaks into four stages, and fixing the wrong one wastes effort. Time to first byte, then resource load delay, then resource load time, then render delay. Before optimising an image, find out whether the image was even the slow part.
 
-Use a `<link rel="preload">` hint for the hero image so the browser starts fetching it before the main image tag is parsed.
+**Time to first byte.** For WordPress this is usually the dominant term and the easiest to fix. An uncached page means PHP boots, plugins load, the database is queried, and a theme renders, all before a single byte reaches the browser. Full-page caching serves prebuilt HTML instead and typically removes hundreds of milliseconds in one step. If your TTFB is above about 600ms, nothing else you do to LCP matters much. This is the single largest win available to most WordPress sites, and [page caching](/features/performance) is where to start.
 
-## CLS: Cumulative Layout Shift
+**Resource load delay.** The browser cannot fetch the hero image until it knows about it. Images injected by JavaScript, set as CSS backgrounds, or hidden inside a slider are discovered late. Put the LCP image in the HTML as a plain `<img>` tag where the preload scanner can see it, and add `<link rel="preload">` if it is still found late.
 
-CLS measures visual stability: how much the page layout shifts during load. Google's threshold for "good" is a CLS score below 0.1.
+**Resource load time.** How long the bytes take. Serve the hero in AVIF or WebP, which run 30 to 50 percent smaller than JPEG at equivalent quality, and size it to the largest dimension it is actually displayed at. A 3000px-wide image in a 1200px slot is pure waste. [Media Optimizer](/features/media-optimizer) converts an existing library and handles new uploads on the way in.
 
-**Common WordPress CLS killers:**
+**Render delay.** Render-blocking CSS and synchronous JavaScript in the head hold up painting even when the image has arrived.
 
-- Images without explicit `width` and `height` attributes: the browser does not know the image dimensions until it downloads the image, so it cannot reserve the right amount of space
-- Web fonts causing layout shifts when they load (FOUT: flash of unstyled text)
-- Late-loading ads or embeds that push content down
-- Animations that change `width`, `height`, or `top`/`left` properties (these trigger layout recalculations)
+The most common WordPress own-goal here is lazy loading the hero. WordPress adds `loading="lazy"` automatically, and on an above-the-fold image that delays the very thing LCP measures. The LCP image must load eagerly. Everything below the fold should stay lazy.
 
-**WordPress-specific fixes:**
+## CLS: did the page hold still?
 
-Always set `width` and `height` on `<img>` tags. WordPress does this automatically for images inserted through the media library, but page builders and some themes bypass this.
+Cumulative Layout Shift scores how much visible content moves during load, weighted by how much moved and how far. Under 0.1 is the target. It is the metric users feel most viscerally, because it is the one that makes you tap the wrong thing.
 
-Self-host web fonts instead of loading them from Google Fonts or other CDNs. Self-hosted fonts can include `font-display: optional` or be preloaded to avoid FOUT.
+**Images without dimensions.** If the browser does not know an image's aspect ratio, it reserves no space, then reflows everything below when the image arrives. WordPress sets `width` and `height` on media library images, but page builders, hand-written HTML, and some themes drop them. This is the single most common cause.
 
-For animations, use `transform` and `opacity` exclusively. These do not trigger layout recalculations and have no CLS impact.
+**Web fonts.** A fallback font swapped for a webfont with different metrics reflows every line of text it touches. Preload the font, use `font-display: optional` or `swap` deliberately, and set `size-adjust` on the fallback so the metrics roughly match. Self-hosting also removes a third-party connection from the critical path.
 
-## INP: Interaction to Next Paint
+**Ads, embeds, and cookie banners.** Anything injected after paint pushes content down. Reserve the space with a min-height container sized to the common case.
 
-INP replaced FID (First Input Delay) as a Core Web Vitals metric in March 2024. It measures the delay between a user action (click, tap, keystroke) and the next paint that shows a response. Google's threshold for "good" is under 200ms.
+**Animating the wrong properties.** Animating `width`, `height`, `top`, or `margin` triggers layout. Animate `transform` and `opacity` instead, which are composited and cost nothing in CLS.
 
-**Common WordPress INP killers:**
+One nuance: CLS is measured throughout the page's life, not just during load. A shift triggered by lazily loaded content when a visitor scrolls halfway down still counts.
 
-- Large JavaScript bundles executing on the main thread during interactions
-- Heavy WooCommerce cart or checkout JavaScript
-- Page builders that ship multi-hundred-kilobyte JavaScript payloads
-- Analytics and marketing scripts with synchronous execution
+## INP: did it respond?
 
-**WordPress-specific fixes:**
+Interaction to Next Paint replaced First Input Delay in March 2024, and the change matters. FID measured only the delay before handling started, which flattered pages that responded slowly but began quickly. INP measures the whole path from interaction to the next visual update, across all interactions on the page, and reports near the worst one.
 
-Defer or remove non-essential JavaScript. Every script that runs during an interaction adds to INP.
+The cause is nearly always the main thread being busy. JavaScript is single threaded, so a long task blocks the response to a tap.
 
-Remove unused CSS. Large CSS stylesheets force the browser to compute styles for every interaction. WPMgr's unused CSS removal strips per-page CSS to only the rules actually used.
+**Script volume.** Page builders, sliders, and plugin bundles that ship hundreds of kilobytes of JavaScript on every page. The fix is deactivating what you are not using and loading the rest only where it is needed, rather than globally.
 
-## Measuring with real user data
+**Commerce interactions.** Cart and checkout are the worst INP offenders on most WordPress sites, because those interactions do real work. They are also the interactions that pay for the site, so this is where the effort belongs.
 
-Lab tools (Lighthouse, PageSpeed Insights) simulate a single visit under controlled conditions. They are useful for debugging but do not represent your actual visitor population.
+**Third-party scripts.** Analytics, chat widgets, heat maps, and tag managers all execute on the same thread. Each one is a decision to spend responsiveness on measurement.
 
-Real User Monitoring (RUM) collects CWV metrics from actual visitors on their actual devices and network connections. WPMgr RUM aggregates these at the p75 level (the 75th-percentile user experience) across 28-day windows, so you can see trends and compare before-and-after for any optimisation you make.
+**Oversized CSS.** Style recalculation is proportional to the number of rules the browser must consider. A theme shipping one enormous stylesheet for every page makes every interaction slightly more expensive. Removing rules a page does not use is worth real milliseconds, and [unused CSS removal](/features/performance) does this per page.
 
-For a deep dive into the tooling, see the [Real User Monitoring feature page](/features/real-user-monitoring/) and the [speed up WordPress solution guide](/solutions/wordpress-performance/).
+The practical approach is to break long tasks up. Yield to the main thread between chunks of work, do the visual update first and the bookkeeping after, and defer anything not needed for the response itself.
+
+## Lab data and field data disagree, and both are right
+
+Lighthouse and PageSpeed Insights run a **lab** test: one load, one simulated device, one throttled connection, no cache. Repeatable and excellent for debugging, because it isolates variables and shows a filmstrip.
+
+**Field** data is what real visitors experienced, on their phones and networks, and it is what assessment uses. Lab data cannot measure INP properly at all, because there is no real interaction to measure, which is why a perfect Lighthouse score sits happily alongside a failing INP.
+
+Use lab tools to find causes and field data to decide whether anything improved. A change that improves your Lighthouse number and does nothing at p75 has improved nothing that counts.
+
+This is what real user monitoring is for. WPMgr RUM collects the metrics from actual visits and aggregates at p75 over 28 day windows, matching how the thresholds are actually assessed, so you can compare before and after for a change you made rather than guessing from a synthetic run.
+
+## Finding the element that is actually failing
+
+Before optimising anything, identify the specific element being measured. Guessing wrong is the usual reason a week of work moves nothing.
+
+In Chrome DevTools, the Performance panel marks the LCP element directly on the timeline, and Lighthouse names it in the diagnostics. It is frequently not what you assumed: a background image on a section wrapper, a paragraph of intro text rendering before the hero, or a cookie banner that briefly occupies most of the viewport.
+
+For CLS, the Performance panel lists each individual shift with the element that moved and its contribution to the score. One late-loading element usually accounts for nearly all of it. For INP, interact with the page while recording and look for the long task blocking the response.
+
+## Which pages to fix first
+
+Core Web Vitals are assessed per URL, but URLs with too little traffic to produce reliable data are grouped, and Search Console reports them that way: as groups of similar pages sharing a status.
+
+That grouping is the prioritisation. A single failing URL with fifty visits a month is not where the work goes. A group covering every product page is. Open the Core Web Vitals report in Search Console, sort by the number of URLs affected, and start with the template that covers the most traffic, because on WordPress a fix to one template fixes every page built from it.
+
+This is also why chasing a perfect score on the home page is usually misdirected effort. On most WordPress sites the home page is a minority of organic entries. Article and product templates carry the traffic, and they are the ones assessed.
+
+## A working order of operations
+
+Most WordPress sites get most of the available improvement from a short list, done in this order:
+
+1. **Turn on full-page caching.** Largest single effect on LCP, and it costs nothing in complexity.
+2. **Fix the hero image.** Eager, not lazy. Modern format. Sized to its slot. Preloaded if discovered late.
+3. **Set dimensions on every image.** Usually removes most CLS on its own.
+4. **Audit plugins for what they load globally.** Deactivate the unused; scope the rest to the pages that need them.
+5. **Handle fonts.** Self-host, preload, and pick a `font-display` on purpose.
+6. **Then measure at p75 and repeat.**
+
+Steps one to three are where the returns are. Everything after is refinement, and refinement measured against a synthetic score is refinement measured against the wrong thing.
+
+For the tooling, see the [Real User Monitoring feature page](/features/real-user-monitoring). For how caching, images, and CSS fit together, see the [speed up WordPress guide](/solutions/wordpress-performance).
