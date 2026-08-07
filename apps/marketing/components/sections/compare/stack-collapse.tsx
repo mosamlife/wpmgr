@@ -6,58 +6,59 @@ import { Icon } from "@/components/ui/icon";
 import type { ComparisonPageData } from "@/lib/content/types";
 
 /**
- * The consolidation visual: eight separately-bought tools converging into one.
+ * The consolidation visual: eight separately-bought tools wired into one core.
  *
- * This is the page's hero visual because it IS the commercial argument. The
- * matrix proves parity row by row; this shows in one glance what the reader is
- * actually buying, which is one system instead of eight subscriptions.
+ * THE RESTING STATE SHOWS ALL EIGHT TILES. That sentence is the whole fix. The
+ * first version animated the tiles INTO the core, so the state every reader
+ * ended on was eight tiles stacked invisibly underneath it, and the section
+ * rendered as a lone teal square with a heading. Reduced-motion users got that
+ * state immediately and never saw anything else.
  *
- * WHY IT IS NOT A CARD GRID. The tiles are not the content, the MOVEMENT is:
- * they start scattered on a ring and converge on a single core. A static grid
- * of icon-plus-label tiles would be the filler pattern the house rules ban, and
- * would say nothing a list could not.
+ * The lesson is worth keeping, because the verification was what failed: the
+ * tiles were confirmed present in the static HTML, which was true and useless.
+ * Being in the DOM is not being visible. Check the rendered state, not the
+ * markup.
  *
- * MOTION RULES OBSERVED:
- *   Only `transform` is animated. Never opacity, never a layout property. So
- *   there is no renderer anywhere, headless or print or JavaScript-off, in
- *   which any of this content is invisible. The tiles are in the DOM, readable
- *   and positioned, before any script runs; the animation only moves them.
- *   prefers-reduced-motion lands them in their final positions immediately.
+ * SO THE MOTION IS A SETTLE, NOT A COLLAPSE. Tiles start a little further out
+ * and ease inward to their ring positions, and the spokes grow from the core.
+ * "One tool" is carried by the spokes converging, not by hiding anything.
+ *
+ * Only `transform` is animated. Never opacity, never a layout property, so
+ * every tile is readable at its final position before any script runs, in any
+ * renderer, including with JavaScript off.
  */
 
-// Eight positions on a ring, as fractions of the panel box. Hand-placed rather
-// than computed so the labels never collide at the narrow breakpoint.
+// Eight positions on a ring, as percentages of the panel box. Hand-placed
+// rather than computed so labels never collide at the narrow breakpoint.
 const RING = [
-  { x: -0.34, y: -0.30 },
-  { x: 0.0, y: -0.38 },
-  { x: 0.34, y: -0.30 },
-  { x: 0.42, y: 0.0 },
-  { x: 0.34, y: 0.30 },
-  { x: 0.0, y: 0.38 },
-  { x: -0.34, y: 0.30 },
-  { x: -0.42, y: 0.0 },
+  { x: -32, y: -30 },
+  { x: 0, y: -38 },
+  { x: 32, y: -30 },
+  { x: 40, y: 0 },
+  { x: 32, y: 30 },
+  { x: 0, y: 38 },
+  { x: -32, y: 30 },
+  { x: -40, y: 0 },
 ];
 
 export function StackCollapse({ data }: { data: ComparisonPageData }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  // `settled` only controls a small inward drift. Both states are visible, so
+  // a reader who never triggers it loses nothing.
+  const [settled, setSettled] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-
-    // Reduced motion: land in the final state and never animate.
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (reduce.matches) {
-      setCollapsed(true);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setSettled(true);
       return;
     }
-
     const io = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) if (e.isIntersecting) setCollapsed(true);
+        for (const e of entries) if (e.isIntersecting) setSettled(true);
       },
-      { rootMargin: "-15% 0px -15% 0px" },
+      { rootMargin: "-10% 0px -10% 0px" },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -77,33 +78,73 @@ export function StackCollapse({ data }: { data: ComparisonPageData }) {
           </p>
         </div>
 
+        {/* Desktop and tablet: the radial. */}
         <div
           ref={ref}
-          className="relative mx-auto mt-14 h-[340px] w-full max-w-3xl sm:h-[420px]"
+          className="relative mx-auto mt-16 hidden h-[420px] w-full max-w-3xl sm:block"
         >
-          {/* The core. Always visible, never animated in. */}
+          {/* Spokes, behind everything. Scale from the core outward. */}
+          <svg
+            className="absolute inset-0 h-full w-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            aria-hidden
+          >
+            {RING.map((p, i) => (
+              <line
+                key={i}
+                x1="50"
+                y1="50"
+                x2={50 + p.x}
+                y2={50 + p.y}
+                stroke="var(--border)"
+                strokeWidth="0.35"
+                vectorEffect="non-scaling-stroke"
+                style={{
+                  transformOrigin: "50% 50%",
+                  transform: settled ? "scale(1)" : "scale(0.86)",
+                  transition: "transform 800ms cubic-bezier(0.22,1,0.36,1)",
+                  transitionDelay: `${i * 45}ms`,
+                }}
+              />
+            ))}
+          </svg>
+
+          {/* The core. */}
           <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
-            <div className="flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-2xl border border-[var(--primary)]/30 bg-[var(--primary-subtle)] text-[var(--primary-pressed)] sm:h-28 sm:w-28">
-              <Icon name="Layers" size={22} aria-hidden />
+            <div className="flex h-28 w-28 flex-col items-center justify-center gap-1.5 rounded-2xl border border-[var(--primary)]/35 bg-[var(--primary-subtle)] text-[var(--primary-pressed)] shadow-sm">
+              <Icon name="Layers" size={24} aria-hidden />
               <span className="text-xs font-semibold">WPMgr</span>
+              <span className="text-[10px] leading-none opacity-80">one system</span>
             </div>
           </div>
 
           {items.map((item, i) => {
-            const pos = RING[i]!;
-            // Collapsed: sit on the core. Expanded: out on the ring.
-            const tx = collapsed ? 0 : pos.x * 100;
-            const ty = collapsed ? 0 : pos.y * 100;
-            const scale = collapsed ? 0.62 : 1;
+            const p = RING[i]!;
+            // Settled sits ON the ring. Unsettled is 14% further out. Both are
+            // fully visible; the difference is only a small drift.
+            // POSITION comes from left/top, whose percentages resolve against
+            // the PANEL. The drift comes from a transform in px.
+            //
+            // This split is the bug that shipped: the first version put the
+            // ring offsets inside `transform: translate(...%)`, and percentages
+            // there resolve against the ELEMENT's own box, not the container.
+            // A w-32 tile at "45%" moved 58px, not 45% of a 768px panel, so all
+            // eight sat within 58px of centre, behind a 112px core. The section
+            // rendered as a lone teal square.
+            const drift = settled ? 0 : 14;
+            const dx = (p.x / 40) * drift;
+            const dy = (p.y / 40) * drift;
             return (
               <div
                 key={item.label}
-                className="absolute left-1/2 top-1/2 w-28 sm:w-32"
+                className="absolute w-32"
                 style={{
-                  transform: `translate3d(calc(-50% + ${tx}%), calc(-50% + ${ty}%), 0) scale(${scale})`,
-                  transition:
-                    "transform 900ms cubic-bezier(0.22, 1, 0.36, 1)",
-                  transitionDelay: `${i * 55}ms`,
+                  left: `${50 + p.x}%`,
+                  top: `${50 + p.y}%`,
+                  transform: `translate(-50%, -50%) translate(${dx}px, ${dy}px)`,
+                  transition: "transform 800ms cubic-bezier(0.22,1,0.36,1)",
+                  transitionDelay: `${i * 45}ms`,
                 }}
               >
                 <div className="flex flex-col items-center gap-1.5 rounded-xl border border-[var(--border)] bg-card px-3 py-2.5 text-center shadow-sm">
@@ -113,13 +154,39 @@ export function StackCollapse({ data }: { data: ComparisonPageData }) {
                     className="text-[var(--muted-foreground)]"
                     aria-hidden
                   />
-                  <span className="text-[11px] leading-tight text-[var(--muted-foreground)]">
-                    {item.label}
-                  </span>
+                  <span className="text-[11px] leading-tight text-foreground">{item.label}</span>
                 </div>
               </div>
             );
           })}
+        </div>
+
+        {/* Mobile: the radial does not fit, so the same argument as a grid
+            feeding one core. No absolute positioning, nothing to overlap. */}
+        <div className="mt-10 sm:hidden">
+          <ul className="grid grid-cols-2 gap-2.5">
+            {items.map((item) => (
+              <li
+                key={item.label}
+                className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-card px-3 py-2.5 shadow-sm"
+              >
+                <Icon
+                  name={item.icon}
+                  size={15}
+                  className="shrink-0 text-[var(--muted-foreground)]"
+                  aria-hidden
+                />
+                <span className="text-[11px] leading-tight text-foreground">{item.label}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-4 flex justify-center text-[var(--muted-foreground)]">
+            <Icon name="ArrowDown" size={20} aria-hidden />
+          </div>
+          <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[var(--primary)]/35 bg-[var(--primary-subtle)] px-4 py-4 text-[var(--primary-pressed)]">
+            <Icon name="Layers" size={20} aria-hidden />
+            <span className="text-sm font-semibold">WPMgr, one system</span>
+          </div>
         </div>
       </Container>
     </Section>

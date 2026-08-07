@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   Minus,
   Lock,
   Layers,
@@ -76,6 +77,7 @@ import {
 // Explicit registry: icons referenced by string from content data stay
 // tree-shakeable and type-checked. One stroke family, one weight.
 const REGISTRY: Record<string, LucideIcon> = {
+  ArrowDown,
   Minus,
   Lock,
   Layers,
