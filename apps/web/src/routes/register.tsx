@@ -3,8 +3,9 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, Globe, Sparkles } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
 
+import { AuthLayout } from "@/components/layout/auth-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,17 +44,19 @@ export const Route = createFileRoute("/register")({
   component: RegisterPage,
 });
 
+// TWO FIELDS. The form previously also asked for a display name, an
+// organization name, and an organization slug, all optional and all asked at
+// the worst possible moment: before the person has seen anything work.
+//
+// None of them was load-bearing. The API already derives an organization name
+// and a globally-unique slug from the email when they are absent (see
+// apps/api/internal/auth/register.go), and every one of the three is editable
+// in settings afterwards. So the fields bought nothing at signup and cost
+// three extra decisions on the screen with the highest drop-off in the
+// product. Anything not required to create the account is asked later.
 const registerSchema = z.object({
   email: z.email("Enter a valid email address"),
   password: z.string().min(12, "Use at least 12 characters"),
-  name: z.string().max(200).optional(),
-  tenant_name: z.string().max(200).optional(),
-  tenant_slug: z
-    .string()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Lowercase letters, numbers, and dashes")
-    .max(64)
-    .optional()
-    .or(z.literal("")),
 });
 
 type RegisterValues = z.infer<typeof registerSchema>;
@@ -76,7 +79,7 @@ function RegisterPage() {
     formState: { errors, isSubmitting },
   } = useForm<RegisterValues>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { email: "", password: "", name: "", tenant_name: "", tenant_slug: "" },
+    defaultValues: { email: "", password: "" },
   });
 
   const onSubmit = handleSubmit(async (values) => {
@@ -84,9 +87,6 @@ function RegisterPage() {
       {
         email: values.email,
         password: values.password,
-        name: values.name || undefined,
-        tenant_name: values.tenant_name || undefined,
-        tenant_slug: values.tenant_slug || undefined,
         plan: chosenPlan,
       },
       {
@@ -128,14 +128,7 @@ function RegisterPage() {
     }
 
     return (
-      <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-[var(--color-background)] p-4">
-        <div className="flex items-center gap-2">
-          <Globe aria-hidden="true" className="size-5 text-[var(--color-primary)]" />
-          <span className="text-sm font-semibold tracking-tight text-[var(--color-foreground)]">
-            WPMgr
-          </span>
-        </div>
-
+      <AuthLayout>
         <Card className="w-full max-w-md">
           <CardHeader className="space-y-1">
             <div className="flex items-center gap-2">
@@ -184,7 +177,7 @@ function RegisterPage() {
             </p>
           </CardContent>
         </Card>
-      </main>
+      </AuthLayout>
     );
   }
 
@@ -195,15 +188,7 @@ function RegisterPage() {
     : null;
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-[var(--color-background)] p-4">
-      {/* WPMgr wordmark — same Globe + text treatment as the sidebar BrandStrip */}
-      <div className="flex items-center gap-2">
-        <Globe aria-hidden="true" className="size-5 text-[var(--color-primary)]" />
-        <span className="text-sm font-semibold tracking-tight text-[var(--color-foreground)]">
-          WPMgr
-        </span>
-      </div>
-
+    <AuthLayout>
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
           <CardTitle asChild>
@@ -253,24 +238,6 @@ function RegisterPage() {
               register={register}
               error={errors.password?.message}
             />
-            <Field
-              id="name"
-              label="Your name (optional)"
-              register={register}
-              error={errors.name?.message}
-            />
-            <Field
-              id="tenant_name"
-              label="Organization name (optional)"
-              register={register}
-              error={errors.tenant_name?.message}
-            />
-            <Field
-              id="tenant_slug"
-              label="Organization slug (optional)"
-              register={register}
-              error={errors.tenant_slug?.message}
-            />
 
             <Button
               type="submit"
@@ -292,7 +259,7 @@ function RegisterPage() {
           </p>
         </CardContent>
       </Card>
-    </main>
+    </AuthLayout>
   );
 }
 

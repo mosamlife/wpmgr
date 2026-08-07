@@ -146,6 +146,60 @@ beforeEach(() => {
   );
 });
 
+describe("RegisterPage — the form asks for two things", () => {
+  // 2.8. The form used to also ask for a display name, an organization name,
+  // and an organization slug, all optional, all at the point of highest
+  // drop-off. These two tests are what stops them coming back: one pins what
+  // the visitor sees, the other pins what the API is sent, because a field
+  // could be removed from the markup while a stale default still rides along
+  // in the request body.
+  it("renders exactly the email and password fields", async () => {
+    mockedUseRegister.mockReturnValue(
+      mockMutationResult<RegisterResult, RegisterRequest>({
+        mutateAsync: mutateAsyncResolving<RegisterResult>({ pending: true }),
+      }),
+    );
+
+    renderRegisterPage("/register");
+    await screen.findByLabelText("Email");
+
+    const form = screen.getByRole("button", { name: "Create account" }).closest("form");
+    const inputs = [...(form?.querySelectorAll("input") ?? [])];
+    expect(inputs.map((i) => i.id)).toEqual(["email", "password"]);
+
+    for (const gone of ["Your name (optional)", "Organization name (optional)", "Organization slug (optional)"]) {
+      expect(screen.queryByLabelText(gone)).toBeNull();
+    }
+  });
+
+  it("sends only email, password and plan, never a name or tenant field", async () => {
+    // Declared with an explicit signature rather than via mutateAsyncResolving
+    // so `.mock.calls` carries a real type: this assertion reads the request
+    // body back, which the objectContaining style used elsewhere in this file
+    // cannot do (it would pass with extra fields present, which is the exact
+    // regression being guarded against).
+    const mutateAsyncMock = vi
+      .fn<(vars: RegisterRequest, opts?: unknown) => Promise<RegisterResult>>()
+      .mockResolvedValue({ pending: true });
+    mockedUseRegister.mockReturnValue(
+      mockMutationResult<RegisterResult, RegisterRequest>({
+        mutateAsync: mutateAsyncMock as unknown as UseMutationResult<
+          RegisterResult,
+          Error,
+          RegisterRequest
+        >["mutateAsync"],
+      }),
+    );
+
+    renderRegisterPage("/register");
+    await fillAndSubmit();
+
+    await waitFor(() => expect(mutateAsyncMock).toHaveBeenCalledTimes(1));
+    const body = mutateAsyncMock.mock.calls[0]![0];
+    expect(Object.keys(body).sort()).toEqual(["email", "password", "plan"]);
+  });
+});
+
 describe("RegisterPage — plan summary chip", () => {
   it("shows the Agency plan chip when the URL carries ?plan=agency", async () => {
     mockedUseRegister.mockReturnValue(
