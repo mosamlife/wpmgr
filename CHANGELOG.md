@@ -8,6 +8,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.128] - 2026-08-07
+
+### Changed
+
+- Creating an account now asks for an email address and a password, and nothing else. The form also collected a display name, an organisation name and an organisation slug. All three were optional, none was needed to create the account, and every one of them is editable in settings afterwards, so they only ever added decisions to the screen where people are most likely to give up.
+- An account's organisation is now named from the signup email instead of being called "Default". A work address gives the organisation, so an address at acme.com creates "Acme", while a personal mailbox gives the person, so sarah.jones at a consumer provider creates "Sarah Jones". It is a starting point rather than a claim to be right, and it is renamed in settings like any other. Accounts created before this release keep the name they have.
+- The sign-in, sign-up, password reset and email verification pages now show what the product does alongside the form, instead of putting a form on an empty page. On a phone the form still comes first and nothing sits above it, because someone who came to sign in should not have to scroll past an explanation to reach the field they came for.
+
 ## [0.61.127] - 2026-08-06
 
 ### Fixed
