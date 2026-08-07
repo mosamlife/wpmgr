@@ -907,6 +907,19 @@ func mapEnvKey(k string) string {
 	// passthrough below, which unmarshal simply ignores).
 	case strings.HasPrefix(k, "billing_razorpay_"):
 		return "billing.razorpay." + strings.TrimPrefix(k, "billing_razorpay_")
+	// Social sign-in, one case PER PROVIDER for the same reason billing needs
+	// one per gateway: the struct nests two levels, so the rewrite has to
+	// produce social.google.client_id. A single "social_" case would yield
+	// social.google_client_id, which is still flat and still does not bind.
+	//
+	// Their absence is why this feature shipped, deployed and could not be
+	// switched on: all four variables set correctly still left both providers
+	// disabled, because the keys fell through the default passthrough below and
+	// unmarshal ignored them. There was no error to notice.
+	case strings.HasPrefix(k, "social_google_"):
+		return "social.google." + strings.TrimPrefix(k, "social_google_")
+	case strings.HasPrefix(k, "social_github_"):
+		return "social.github." + strings.TrimPrefix(k, "social_github_")
 	default:
 		return k
 	}

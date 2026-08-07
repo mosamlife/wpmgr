@@ -503,3 +503,63 @@ func TestPrivilegeProbeGate(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadSocialProvidersFromEnv is the regression for the defect that made
+// social sign-in impossible to enable at all.
+//
+// mapEnvKey rewrites a flat WPMGR_FOO_BAR name into the dotted koanf path that
+// matches the struct. Every nested config block needs its own prefix case;
+// there was none for social_, so WPMGR_SOCIAL_GOOGLE_CLIENT_ID lowercased to
+// social_google_client_id, hit the default passthrough, and was loaded as a
+// flat top-level key that unmarshal ignores. The result was a feature that
+// shipped, deployed, and could never be switched on: setting all four variables
+// correctly still left both providers disabled, with no error anywhere.
+//
+// A bare "social_" case would NOT fix it: that yields social.google_client_id,
+// which is still not nested and still does not bind.
+func TestLoadSocialProvidersFromEnv(t *testing.T) {
+	t.Setenv("WPMGR_SOCIAL_GOOGLE_CLIENT_ID", "123.apps.googleusercontent.com")
+	t.Setenv("WPMGR_SOCIAL_GOOGLE_CLIENT_SECRET", "GOCSPX-google-secret")
+	t.Setenv("WPMGR_SOCIAL_GITHUB_CLIENT_ID", "Iv23liGitHubClient")
+	t.Setenv("WPMGR_SOCIAL_GITHUB_CLIENT_SECRET", "github-secret")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := cfg.Social.Google.ClientID; got != "123.apps.googleusercontent.com" {
+		t.Errorf("Social.Google.ClientID = %q, want the value from the environment", got)
+	}
+	if got := cfg.Social.Google.ClientSecret; got != "GOCSPX-google-secret" {
+		t.Errorf("Social.Google.ClientSecret = %q, want the value from the environment", got)
+	}
+	if got := cfg.Social.GitHub.ClientID; got != "Iv23liGitHubClient" {
+		t.Errorf("Social.GitHub.ClientID = %q, want the value from the environment", got)
+	}
+	if got := cfg.Social.GitHub.ClientSecret; got != "github-secret" {
+		t.Errorf("Social.GitHub.ClientSecret = %q, want the value from the environment", got)
+	}
+
+	// The property that actually matters: with credentials present, the
+	// provider must report itself enabled, because that is what decides whether
+	// a button ever renders.
+	if !cfg.Social.Google.Enabled() {
+		t.Error("Social.Google.Enabled() = false with both credentials set; the provider can never be turned on")
+	}
+	if !cfg.Social.GitHub.Enabled() {
+		t.Error("Social.GitHub.Enabled() = false with both credentials set; the provider can never be turned on")
+	}
+}
+
+// Half-configured must stay off rather than half-on.
+func TestLoadSocialProviderNeedsBothCredentials(t *testing.T) {
+	t.Setenv("WPMGR_SOCIAL_GOOGLE_CLIENT_ID", "123.apps.googleusercontent.com")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Social.Google.Enabled() {
+		t.Error("Google reported enabled with an id but no secret; a half-configured provider must stay off")
+	}
+}

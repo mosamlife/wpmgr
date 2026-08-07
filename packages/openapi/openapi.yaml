@@ -938,13 +938,19 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [providers]
+                required: [providers, sso]
                 properties:
                   providers:
                     type: array
                     items:
                       type: string
                       enum: [google, github]
+                  sso:
+                    type: boolean
+                    description: >
+                      Whether a generic operator-configured OIDC issuer is
+                      available. Reported here so the sign-in page renders the
+                      SSO button only when it will work.
   /auth/social/{provider}/start:
     get:
       operationId: socialStart

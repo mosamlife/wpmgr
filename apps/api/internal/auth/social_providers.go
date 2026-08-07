@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -29,7 +30,7 @@ type SocialProviderAdapter interface {
 	// AuthCodeURL builds the redirect, returning the state, nonce and PKCE
 	// verifier the callback must present. nonce is empty for providers with no
 	// ID token to bind it to.
-	AuthCodeURL(redirectURL string) (url, state, nonce, verifier string, err error)
+	AuthCodeURL(ctx context.Context, redirectURL string) (url, state, nonce, verifier string, err error)
 	// Exchange completes the code exchange and returns a verified identity.
 	Exchange(ctx context.Context, redirectURL, code, verifier, nonce string) (SocialIdentity, error)
 }
@@ -44,24 +45,20 @@ type SocialProviders struct {
 // with no credentials is simply absent: an unconfigured provider must never
 // render a button that leads to a provider error page.
 //
-// Google discovery is a network call, so a failure here is returned rather than
-// swallowed. Booting with a half-built Google adapter would surface as a broken
-// button at sign-in time, long after anyone was watching the logs.
-func NewSocialProviders(ctx context.Context, cfg config.SocialConfig) (*SocialProviders, error) {
+// This performs NO network I/O and cannot fail. Google's discovery call happens
+// on first use instead: see googleAdapter.ensure for why it must not be on the
+// boot path.
+func NewSocialProviders(cfg config.SocialConfig) *SocialProviders {
 	sp := &SocialProviders{byKey: map[string]SocialProviderAdapter{}}
 	if cfg.Google.Enabled() {
-		g, err := newGoogleAdapter(ctx, cfg.Google)
-		if err != nil {
-			return nil, fmt.Errorf("google sign-in: %w", err)
-		}
-		sp.byKey["google"] = g
+		sp.byKey["google"] = newGoogleAdapter(cfg.Google)
 		sp.order = append(sp.order, "google")
 	}
 	if cfg.GitHub.Enabled() {
 		sp.byKey["github"] = newGitHubAdapter(cfg.GitHub)
 		sp.order = append(sp.order, "github")
 	}
-	return sp, nil
+	return sp
 }
 
 // Get returns the adapter for a provider key, or nil.
@@ -86,23 +83,53 @@ func (s *SocialProviders) Enabled() []string {
 // ---------------------------------------------------------------------------
 
 type googleAdapter struct {
-	cfg      config.GoogleConfig
+	cfg config.GoogleConfig
+
+	// Discovery result, filled lazily. See ensure.
+	mu       sync.Mutex
 	endpoint oauth2.Endpoint
 	verifier *oidc.IDTokenVerifier
+	ready    bool
 }
 
 const googleIssuer = "https://accounts.google.com"
 
-func newGoogleAdapter(ctx context.Context, cfg config.GoogleConfig) (*googleAdapter, error) {
-	provider, err := oidc.NewProvider(ctx, googleIssuer)
-	if err != nil {
-		return nil, fmt.Errorf("discovery: %w", err)
+// googleDiscoveryTimeout bounds the one outbound call this adapter makes before
+// it can do anything. Unbounded, it inherits whatever context it is handed.
+const googleDiscoveryTimeout = 10 * time.Second
+
+func newGoogleAdapter(cfg config.GoogleConfig) *googleAdapter {
+	return &googleAdapter{cfg: cfg}
+}
+
+// ensure performs OIDC discovery once, on first use rather than at boot.
+//
+// DISCOVERY MUST NOT BE ON THE BOOT PATH. It was: NewSocialProviders called
+// oidc.NewProvider directly and main returned the error, so an unreachable or
+// merely slow accounts.google.com would stop the entire control plane from
+// starting. Backups, updates, uptime and every dashboard would be down because
+// a third party was having a bad morning, in exchange for learning ten seconds
+// earlier that a sign-in button might not work.
+//
+// Doing it lazily also means a transient failure is not permanent: the next
+// sign-in attempt retries, where a boot-time failure would have needed a
+// redeploy to clear.
+func (g *googleAdapter) ensure(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.ready {
+		return nil
 	}
-	return &googleAdapter{
-		cfg:      cfg,
-		endpoint: provider.Endpoint(),
-		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-	}, nil
+	dctx, cancel := context.WithTimeout(ctx, googleDiscoveryTimeout)
+	defer cancel()
+	provider, err := oidc.NewProvider(dctx, googleIssuer)
+	if err != nil {
+		return fmt.Errorf("google discovery: %w", err)
+	}
+	g.endpoint = provider.Endpoint()
+	g.verifier = provider.Verifier(&oidc.Config{ClientID: g.cfg.ClientID})
+	g.ready = true
+	return nil
 }
 
 func (g *googleAdapter) Key() string { return "google" }
@@ -117,7 +144,10 @@ func (g *googleAdapter) oauth(redirectURL string) *oauth2.Config {
 	}
 }
 
-func (g *googleAdapter) AuthCodeURL(redirectURL string) (string, string, string, string, error) {
+func (g *googleAdapter) AuthCodeURL(ctx context.Context, redirectURL string) (string, string, string, string, error) {
+	if err := g.ensure(ctx); err != nil {
+		return "", "", "", "", err
+	}
 	state, err := randString()
 	if err != nil {
 		return "", "", "", "", err
@@ -135,6 +165,9 @@ func (g *googleAdapter) AuthCodeURL(redirectURL string) (string, string, string,
 }
 
 func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifier, nonce string) (SocialIdentity, error) {
+	if err := g.ensure(ctx); err != nil {
+		return SocialIdentity{}, err
+	}
 	tok, err := g.oauth(redirectURL).Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return SocialIdentity{}, fmt.Errorf("code exchange: %w", err)
@@ -211,7 +244,7 @@ func (g *githubAdapter) oauth(redirectURL string) *oauth2.Config {
 	}
 }
 
-func (g *githubAdapter) AuthCodeURL(redirectURL string) (string, string, string, string, error) {
+func (g *githubAdapter) AuthCodeURL(_ context.Context, redirectURL string) (string, string, string, string, error) {
 	state, err := randString()
 	if err != nil {
 		return "", "", "", "", err

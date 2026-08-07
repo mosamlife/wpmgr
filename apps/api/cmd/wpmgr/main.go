@@ -519,13 +519,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// in, which is the right default for a self-hosted install whose operator
 	// has not registered an OAuth application anywhere.
 	//
-	// A discovery failure is fatal for the same reason OIDC's is: booting with
-	// a half-built adapter turns into a broken button at sign-in time, long
-	// after anyone was reading the logs.
-	socialProviders, err := auth.NewSocialProviders(ctx, cfg.Social)
-	if err != nil {
-		return err
-	}
+	// This does no network I/O. Google's discovery call happens on first use,
+	// because putting a third party's availability on our boot path means their
+	// outage stops this control plane from starting at all.
+	socialProviders := auth.NewSocialProviders(cfg.Social)
 	if enabled := socialProviders.Enabled(); len(enabled) > 0 {
 		logger.Info("social sign-in enabled", slog.Any("providers", enabled))
 	} else {
