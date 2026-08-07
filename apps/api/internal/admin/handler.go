@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -48,6 +49,8 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.GET("/sites/:siteId/tenancy", h.siteTenancy)
 	g.POST("/sites/:siteId/grant-self-membership", h.grantSelfMembership)
 	g.GET("/accounts-tenancy", h.accountsTenancy)
+	// The reader for the tenant-independent audit trail; see systemAudit.
+	g.GET("/system-audit", h.systemAudit)
 	// M16 Phase C1 — superadmin billing-admin panel (accounts / account
 	// detail / revenue / manual controls). See billing_handler.go +
 	// billing_dto.go for the full contract.
@@ -218,6 +221,38 @@ func (h *Handler) userSites(c *gin.Context) {
 		"user_id": userID,
 		"sites":   items,
 	})
+}
+
+// systemAudit serves the tenant-independent audit trail.
+//
+// It is the READER the system_audit_log finally has. The table holds two kinds
+// of event that no tenant's own audit_log can ever show: actions whose subject
+// organisation is being deleted, and authentication events for accounts that
+// belong to no organisation at all (a new social account, a site collaborator,
+// a portal user, anyone mid soft-delete grace window). Writing those somewhere
+// nothing reads is not oversight, it is a quieter version of dropping them.
+func (h *Handler) systemAudit(c *gin.Context) {
+	limit := parseInt32(c.Query("limit"), 50)
+	offset := parseInt32(c.Query("offset"), 0)
+	events, total, err := h.svc.ListSystemAuditEvents(c.Request.Context(), limit, offset)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(events))
+	for _, e := range events {
+		items = append(items, gin.H{
+			"id":          e.ID,
+			"occurred_at": e.OccurredAt,
+			"actor_type":  e.ActorType,
+			"actor_id":    e.ActorID,
+			"action":      e.Action,
+			"tenant_id":   e.TenantID,
+			"tenant_name": e.TenantName,
+			"metadata":    json.RawMessage(e.Metadata),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total})
 }
 
 func (h *Handler) stats(c *gin.Context) {

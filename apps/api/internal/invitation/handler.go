@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
@@ -56,11 +57,22 @@ func (h *Handler) accept(c *gin.Context) {
 		return
 	}
 
+	// The route is mounted on the session-carrying group, so a caller who is
+	// already signed in arrives with a principal. It is read from the request
+	// context and NEVER from the body: an id a caller could type would make this
+	// a way to accept as somebody else. Anonymous callers get uuid.Nil and the
+	// unchanged password path.
+	var sessionUserID uuid.UUID
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok && p.Type == domain.PrincipalUser {
+		sessionUserID = p.UserID
+	}
+
 	result, err := h.svc.Accept(c.Request.Context(), AcceptInput{
-		Token:    body.Token,
-		Email:    body.Email,
-		Name:     body.Name,
-		Password: body.Password,
+		Token:         body.Token,
+		Email:         body.Email,
+		Name:          body.Name,
+		Password:      body.Password,
+		SessionUserID: sessionUserID,
 	})
 	if err != nil {
 		httpx.Error(c, err)

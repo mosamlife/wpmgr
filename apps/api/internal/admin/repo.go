@@ -602,3 +602,66 @@ func (r *Repo) Stats(ctx context.Context) (AdminStats, error) {
 	}
 	return out, nil
 }
+
+// SystemAuditEvent is one row of the tenant-INDEPENDENT audit trail.
+//
+// TenantID/TenantName are denormalized snapshots, not references: the whole
+// reason this table exists is to outlive the organisation an event concerned.
+// Both are empty for an event that never had an organisation at all, which is
+// the case for the auth events of accounts with no membership.
+type SystemAuditEvent struct {
+	ID         uuid.UUID
+	OccurredAt time.Time
+	ActorType  string
+	ActorID    *uuid.UUID
+	Action     string
+	TenantID   *uuid.UUID
+	TenantName string
+	Metadata   []byte
+}
+
+// ListSystemAuditEvents returns a page of the tenant-independent audit trail,
+// newest first, plus the total row count for paging.
+//
+// system_audit_log carries no RLS (it is not tenant-scoped data, see its
+// schema.sql comment), so this reads on the bare pool. The gate is the
+// superadmin middleware on the route, and it is the only gate: these rows span
+// every account on the install.
+func (r *Repo) ListSystemAuditEvents(ctx context.Context, limit, offset int32) ([]SystemAuditEvent, int64, error) {
+	rows, err := r.q.ListSystemAuditEvents(ctx, sqlc.ListSystemAuditEventsParams{
+		RowLimit:  limit,
+		RowOffset: offset,
+	})
+	if err != nil {
+		return nil, 0, domain.Internal("system_audit_list_failed", "failed to load system audit log").WithCause(err)
+	}
+	total, err := r.q.CountSystemAuditEvents(ctx)
+	if err != nil {
+		return nil, 0, domain.Internal("system_audit_count_failed", "failed to count system audit log").WithCause(err)
+	}
+
+	out := make([]SystemAuditEvent, 0, len(rows))
+	for _, row := range rows {
+		ev := SystemAuditEvent{
+			ID:         row.ID,
+			OccurredAt: row.OccurredAt,
+			ActorType:  row.ActorType,
+			Action:     row.Action,
+			TenantName: row.TenantName,
+			Metadata:   row.Metadata,
+		}
+		if row.ActorID.Valid {
+			id := uuid.UUID(row.ActorID.Bytes)
+			ev.ActorID = &id
+		}
+		// The nil UUID is how a tenantless event is stored (the column is NOT
+		// NULL and has no FK). Surfaced as absent rather than as a zero id that
+		// a reader could mistake for a real organisation.
+		if row.TenantID != uuid.Nil {
+			id := row.TenantID
+			ev.TenantID = &id
+		}
+		out = append(out, ev)
+	}
+	return out, total, nil
+}

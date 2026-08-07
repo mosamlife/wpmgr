@@ -331,37 +331,96 @@ func TestSocialSignInStillBootstrapsTheFirstInstall(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2.12: an invitation must survive its recipient signing in socially
+// CompleteSocialLink re-checks the policy against fresh state
+// ---------------------------------------------------------------------------
+
+// TestParkedSocialLinkIsRefusedWhenTheAccountStateChanged pins that an approval
+// made before a two-factor prompt is re-evaluated before it is written.
+//
+// The parked link can sit for the whole 2FA window, and the decision it carries
+// is only as good as the facts it was made on. If the account is disabled in
+// that window, replaying the approval from stale data would bind a new
+// credential to an account that is no longer allowed to be signed into at all,
+// which is exactly what deferring the write was supposed to prevent.
+func TestParkedSocialLinkIsRefusedWhenTheAccountStateChanged(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+
+	victim := seedVerifiedUser(t, pool, "sarah@acme.com")
+	enrollTwoFactor(t, pool, victim)
+
+	created := 0
+	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created))
+	if err != nil {
+		t.Fatalf("sign-in should be allowed to reach the challenge: %v", err)
+	}
+	if res.PendingSocialLink == nil {
+		t.Fatal("precondition: the link must have been approved and parked")
+	}
+
+	// The window. An administrator disables the account before the challenge is
+	// answered.
+	if _, err := pool.Exec(ctx, "UPDATE users SET status = 'disabled' WHERE id = $1", victim); err != nil {
+		t.Fatalf("disable account: %v", err)
+	}
+
+	if err := svc.CompleteSocialLink(ctx, victim, *res.PendingSocialLink); err == nil {
+		t.Fatal("a link approved before the account was disabled was still written; the policy must be re-run against fresh state at write time")
+	}
+	if n := countIdentities(t, pool, victim); n != 0 {
+		t.Fatalf("a refused completion still wrote the link (%d rows)", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// invitations: accepting is an affirmative act, and it is one transaction
 // ---------------------------------------------------------------------------
 
 type noopSessions struct{}
 
 func (noopSessions) Login(ctx context.Context, userID, tenantID uuid.UUID) error { return nil }
 
-// TestSocialSignInClaimsAPendingInvitation pins that being invited and then
-// signing in with a provider lands the person in the organisation that invited
-// them.
+// seedInvitation creates an org invitation for email and returns the raw token.
+func seedInvitation(t *testing.T, ctx context.Context, inviteSvc *invitation.Service, tenantID, inviter uuid.UUID, email string) string {
+	t.Helper()
+	link, err := inviteSvc.CreateOrgInvitation(ctx, tenantID, inviter, authz.RoleOwner, email, string(authz.RoleAdmin))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+	return link[len("/accept?token="):]
+}
+
+func invitationAcceptedBy(t *testing.T, pool *db.Pool, tenantID uuid.UUID, email string) *uuid.UUID {
+	t.Helper()
+	// Read inside the tenant's RLS scope; invitations are tenant-isolated.
+	var acceptedBy *uuid.UUID
+	if err := pool.InTenantTx(context.Background(), tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			"SELECT accepted_user_id FROM invitations WHERE email = $1", email).Scan(&acceptedBy)
+	}); err != nil {
+		t.Fatalf("read invitation: %v", err)
+	}
+	return acceptedBy
+}
+
+// TestSigningInSociallyDoesNotAcceptInvitations is the consent invariant.
 //
-// Before this, that order of events destroyed the invitation. A social account
-// has no password hash and can never be given one, and the accept endpoint
-// authenticates an existing account with a password, so it answered with
-// "this account uses single sign-on, sign in first, then open the invite link
-// again", advice that leads straight back to the identical refusal, because
-// being signed in changes nothing about that check. The invitation was valid,
-// addressed to them, and unacceptable by anyone, permanently.
-func TestSocialSignInClaimsAPendingInvitation(t *testing.T) {
+// An invitation names an organisation the person has not agreed to join.
+// Accepting it on their behalf because a provider vouched for their address
+// takes a decision that is theirs to take, silently, across every organisation
+// on the install at once, and lands them in one of those orgs as their active
+// tenant. It also happens on the pre-2FA path, so it would be a grant made on
+// the strength of a provider handshake alone. Sign-in reads; it does not join.
+func TestSigningInSociallyDoesNotAcceptInvitations(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
-
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
-	svc.SetInviteClaimer(inviteSvc)
 
 	tenantID := seedTenant(t, pool, "acme")
 	owner := seedVerifiedUser(t, pool, "owner@acme.com")
-	if _, err := inviteSvc.CreateOrgInvitation(ctx, tenantID, owner, authz.RoleOwner, "sarah@acme.com", string(authz.RoleAdmin)); err != nil {
-		t.Fatalf("create invitation: %v", err)
-	}
+	seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@acme.com")
 
 	created := 0
 	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created))
@@ -369,71 +428,154 @@ func TestSocialSignInClaimsAPendingInvitation(t *testing.T) {
 		t.Fatalf("social sign-in: %v", err)
 	}
 
-	if len(res.Memberships) != 1 {
-		t.Fatalf("the invitation was not claimed: got %d memberships, want 1. Signing in socially before opening the invite link makes that invitation permanently unacceptable", len(res.Memberships))
+	if len(res.Memberships) != 0 {
+		t.Fatalf("signing in joined %d organisation(s) nobody agreed to join", len(res.Memberships))
 	}
-	if res.Memberships[0].TenantID != tenantID {
-		t.Fatalf("joined tenant %s, want the inviting tenant %s", res.Memberships[0].TenantID, tenantID)
+	if res.ActiveTenant != uuid.Nil {
+		t.Fatalf("signing in activated org %s off an unaccepted invitation", res.ActiveTenant)
 	}
-	if res.Memberships[0].Role != authz.RoleAdmin {
-		t.Fatalf("granted role %q, want the invited role %q", res.Memberships[0].Role, authz.RoleAdmin)
-	}
-	if res.ActiveTenant != tenantID {
-		t.Fatalf("active tenant %s, want %s: the claim must land before the session picks a tenant", res.ActiveTenant, tenantID)
-	}
-
-	// Single use still holds: the invitation is spent, not merely granted.
-	// Read inside the tenant's RLS scope; invitations are tenant-isolated.
-	var acceptedBy *uuid.UUID
-	if err := pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			"SELECT accepted_user_id FROM invitations WHERE email = 'sarah@acme.com'").Scan(&acceptedBy)
-	}); err != nil {
-		t.Fatalf("read invitation: %v", err)
-	}
-	if acceptedBy == nil || *acceptedBy != res.User.ID {
-		t.Fatalf("invitation not marked accepted by the signer: %v", acceptedBy)
-	}
-
-	// Signing in again must not re-grant anything or fail.
-	if _, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created)); err != nil {
-		t.Fatalf("second social sign-in: %v", err)
+	if by := invitationAcceptedBy(t, pool, tenantID, "sarah@acme.com"); by != nil {
+		t.Fatalf("the invitation was spent by a sign-in, accepted_user_id=%s; it must still be there for the person to accept", by)
 	}
 }
 
-// TestSocialAccountCannotAcceptAnInvitationByLink documents WHY the claim above
-// has to happen at sign-in: the link route is closed to these accounts, and the
-// error it returns advises a step that changes nothing.
-func TestSocialAccountCannotAcceptAnInvitationByLink(t *testing.T) {
+// TestASocialAccountCanAcceptAnInvitationOnceSignedIn closes the dead end that
+// made the silent claim look necessary.
+//
+// A social account has no password hash and can never be given one, and this
+// endpoint authenticated an existing account with a password, so it answered
+// them with "sign in first, then open the invite link again", advice that led
+// back to the identical refusal, because the check could not see the session.
+// The invitation was addressed to them, still valid, and unacceptable by them
+// or anyone else, permanently. A live session for that exact account is now
+// accepted in place of the password. The token and the deliberate act of
+// submitting it are unchanged.
+func TestASocialAccountCanAcceptAnInvitationOnceSignedIn(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
-
-	// Deliberately NOT wired as a claimer: this asserts the state of the world
-	// without the sign-in claim, which is what makes that claim necessary.
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
 	owner := seedVerifiedUser(t, pool, "owner@acme.com")
-	link, err := inviteSvc.CreateOrgInvitation(ctx, tenantID, owner, authz.RoleOwner, "sarah@acme.com", string(authz.RoleAdmin))
+	token := seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@acme.com")
+
+	created := 0
+	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created))
 	if err != nil {
-		t.Fatalf("create invitation: %v", err)
+		t.Fatalf("social sign-in: %v", err)
 	}
-	token := link[len("/accept?token="):]
+
+	// No password anywhere in this call. The session is the proof of identity.
+	out, err := inviteSvc.Accept(ctx, invitation.AcceptInput{
+		Token: token, Email: "sarah@acme.com", SessionUserID: res.User.ID,
+	})
+	if err != nil {
+		t.Fatalf("a signed-in social account must be able to accept its own invitation: %v", err)
+	}
+	if out.TenantID != tenantID {
+		t.Fatalf("accepted into tenant %s, want %s", out.TenantID, tenantID)
+	}
+
+	memberships, err := auth.NewRepo(pool).ListMembershipsForUser(ctx, res.User.ID)
+	if err != nil {
+		t.Fatalf("list memberships: %v", err)
+	}
+	if len(memberships) != 1 || memberships[0].TenantID != tenantID || memberships[0].Role != authz.RoleAdmin {
+		t.Fatalf("accept did not grant the invited role: %+v", memberships)
+	}
+	if by := invitationAcceptedBy(t, pool, tenantID, "sarah@acme.com"); by == nil || *by != res.User.ID {
+		t.Fatalf("invitation not marked accepted by the acceptor: %v", by)
+	}
+}
+
+// TestAcceptStillRefusesAPasswordlessAccountWithoutASession guards the relaxation
+// from overshooting: the session substitutes for the password, and only for the
+// account the invitation is addressed to. An anonymous holder of a leaked link
+// still gets nothing.
+func TestAcceptStillRefusesAPasswordlessAccountWithoutASession(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, auditRec := newAuthStack(pool)
+	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
+
+	tenantID := seedTenant(t, pool, "acme")
+	owner := seedVerifiedUser(t, pool, "owner@acme.com")
+	token := seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@acme.com")
 
 	created := 0
 	if _, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created)); err != nil {
 		t.Fatalf("social sign-in: %v", err)
 	}
 
-	_, err = inviteSvc.Accept(ctx, invitation.AcceptInput{
+	// Anonymous: SessionUserID is the zero UUID.
+	_, err := inviteSvc.Accept(ctx, invitation.AcceptInput{
 		Token: token, Email: "sarah@acme.com", Password: "anything-at-all",
 	})
-	if err == nil {
-		t.Skip("the accept route now admits password-less accounts; the sign-in claim is no longer the only way in")
-	}
 	de, _ := domain.AsDomain(err)
 	if de == nil || de.Code != "password_login_unavailable" {
-		t.Fatalf("got %v, want password_login_unavailable: this is the dead end the sign-in claim exists to avoid", err)
+		t.Fatalf("got %v, want password_login_unavailable: possession of the link alone must not grant access", err)
+	}
+
+	// And someone else's session is not a substitute either.
+	_, err = inviteSvc.Accept(ctx, invitation.AcceptInput{
+		Token: token, Email: "sarah@acme.com", SessionUserID: owner,
+	})
+	if err == nil {
+		t.Fatal("a session for a DIFFERENT account accepted an invitation addressed to sarah@acme.com")
+	}
+	if by := invitationAcceptedBy(t, pool, tenantID, "sarah@acme.com"); by != nil {
+		t.Fatalf("a refused accept still spent the invitation: %v", by)
+	}
+}
+
+// TestInvitationIsNotSpentWhenTheGrantFails pins that claiming and granting are
+// one transaction.
+//
+// They used to be two, and the invitation is single-use, so anything that went
+// wrong in the gap marked the token accepted and granted nothing. The person it
+// was addressed to could not retry, because the database now considered it
+// used, and no amount of re-opening the link would help. The failure did not
+// need to be exotic: a dropped connection between the two statements is enough.
+func TestInvitationIsNotSpentWhenTheGrantFails(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, auditRec := newAuthStack(pool)
+	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
+
+	tenantID := seedTenant(t, pool, "acme")
+	owner := seedVerifiedUser(t, pool, "owner@acme.com")
+	token := seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@acme.com")
+
+	created := 0
+	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created))
+	if err != nil {
+		t.Fatalf("social sign-in: %v", err)
+	}
+
+	// Fail the grant, and only the grant. Installed as the superuser: the
+	// application role deliberately cannot create objects.
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	if _, err := admin.Exec(ctx, `
+		CREATE FUNCTION reject_membership() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'injected membership failure';
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER reject_membership BEFORE INSERT ON memberships
+			FOR EACH ROW EXECUTE FUNCTION reject_membership();
+	`); err != nil {
+		t.Fatalf("install failure injection: %v", err)
+	}
+
+	if _, err := inviteSvc.Accept(ctx, invitation.AcceptInput{
+		Token: token, Email: "sarah@acme.com", SessionUserID: res.User.ID,
+	}); err == nil {
+		t.Fatal("expected the injected grant failure to surface")
+	}
+
+	if by := invitationAcceptedBy(t, pool, tenantID, "sarah@acme.com"); by != nil {
+		t.Fatalf("a failed grant still spent the invitation (accepted_user_id=%s); the person it was sent to can never retry", by)
 	}
 }

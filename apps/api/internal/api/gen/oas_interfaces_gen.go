@@ -449,6 +449,10 @@ type GetAdminStatsRes interface {
 	getAdminStatsRes()
 }
 
+type GetAdminSystemAuditRes interface {
+	getAdminSystemAuditRes()
+}
+
 type GetAdminVulnFeedStatusRes interface {
 	getAdminVulnFeedStatusRes()
 }
@@ -1111,6 +1115,10 @@ type SetSiteTagsRes interface {
 
 type SilenceSitePHPErrorRes interface {
 	silenceSitePHPErrorRes()
+}
+
+type SocialStartRes interface {
+	socialStartRes()
 }
 
 type StartScanRunRes interface {

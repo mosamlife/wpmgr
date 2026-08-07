@@ -2796,6 +2796,141 @@ func (s *AdminStats) SetSites(val int64) {
 
 func (*AdminStats) getAdminStatsRes() {}
 
+// Ref: #/components/schemas/AdminSystemAuditPage
+type AdminSystemAuditPage struct {
+	// Total rows in the log, for paging.
+	Total int64                           `json:"total"`
+	Items []AdminSystemAuditPageItemsItem `json:"items"`
+}
+
+// GetTotal returns the value of Total.
+func (s *AdminSystemAuditPage) GetTotal() int64 {
+	return s.Total
+}
+
+// GetItems returns the value of Items.
+func (s *AdminSystemAuditPage) GetItems() []AdminSystemAuditPageItemsItem {
+	return s.Items
+}
+
+// SetTotal sets the value of Total.
+func (s *AdminSystemAuditPage) SetTotal(val int64) {
+	s.Total = val
+}
+
+// SetItems sets the value of Items.
+func (s *AdminSystemAuditPage) SetItems(val []AdminSystemAuditPageItemsItem) {
+	s.Items = val
+}
+
+func (*AdminSystemAuditPage) getAdminSystemAuditRes() {}
+
+type AdminSystemAuditPageItemsItem struct {
+	ID         uuid.UUID `json:"id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ActorType  string    `json:"actor_type"`
+	// Absent for an event with no user actor.
+	ActorID OptNilUUID `json:"actor_id"`
+	Action  string     `json:"action"`
+	// A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event
+	// concerned. Absent when the event had no organisation at all, which is the case for the
+	// authentication events of accounts with no membership.
+	TenantID   OptNilUUID                            `json:"tenant_id"`
+	TenantName string                                `json:"tenant_name"`
+	Metadata   AdminSystemAuditPageItemsItemMetadata `json:"metadata"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminSystemAuditPageItemsItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AdminSystemAuditPageItemsItem) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetActorType returns the value of ActorType.
+func (s *AdminSystemAuditPageItemsItem) GetActorType() string {
+	return s.ActorType
+}
+
+// GetActorID returns the value of ActorID.
+func (s *AdminSystemAuditPageItemsItem) GetActorID() OptNilUUID {
+	return s.ActorID
+}
+
+// GetAction returns the value of Action.
+func (s *AdminSystemAuditPageItemsItem) GetAction() string {
+	return s.Action
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminSystemAuditPageItemsItem) GetTenantID() OptNilUUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminSystemAuditPageItemsItem) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AdminSystemAuditPageItemsItem) GetMetadata() AdminSystemAuditPageItemsItemMetadata {
+	return s.Metadata
+}
+
+// SetID sets the value of ID.
+func (s *AdminSystemAuditPageItemsItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AdminSystemAuditPageItemsItem) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetActorType sets the value of ActorType.
+func (s *AdminSystemAuditPageItemsItem) SetActorType(val string) {
+	s.ActorType = val
+}
+
+// SetActorID sets the value of ActorID.
+func (s *AdminSystemAuditPageItemsItem) SetActorID(val OptNilUUID) {
+	s.ActorID = val
+}
+
+// SetAction sets the value of Action.
+func (s *AdminSystemAuditPageItemsItem) SetAction(val string) {
+	s.Action = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminSystemAuditPageItemsItem) SetTenantID(val OptNilUUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminSystemAuditPageItemsItem) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AdminSystemAuditPageItemsItem) SetMetadata(val AdminSystemAuditPageItemsItemMetadata) {
+	s.Metadata = val
+}
+
+type AdminSystemAuditPageItemsItemMetadata map[string]jx.Raw
+
+func (s *AdminSystemAuditPageItemsItemMetadata) init() AdminSystemAuditPageItemsItemMetadata {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
 // Ref: #/components/schemas/AdminTenancyRef
 type AdminTenancyRef struct {
 	TenantID   uuid.UUID `json:"tenant_id"`
@@ -17899,6 +18034,7 @@ func (*Error) revokeAllTrustedDevicesRes()        {}
 func (*Error) revokeSiteRes()                     {}
 func (*Error) setSiteTagsRes()                    {}
 func (*Error) silenceSitePHPErrorRes()            {}
+func (*Error) socialStartRes()                    {}
 func (*Error) unlockBackupRes()                   {}
 func (*Error) verifyEmailRes()                    {}
 
@@ -21378,6 +21514,14 @@ type GetAdminStatsUnauthorized Error
 
 func (*GetAdminStatsUnauthorized) getAdminStatsRes() {}
 
+type GetAdminSystemAuditForbidden Error
+
+func (*GetAdminSystemAuditForbidden) getAdminSystemAuditRes() {}
+
+type GetAdminSystemAuditUnauthorized Error
+
+func (*GetAdminSystemAuditUnauthorized) getAdminSystemAuditRes() {}
+
 type GetAdminVulnFeedStatusForbidden Error
 
 func (*GetAdminVulnFeedStatusForbidden) getAdminVulnFeedStatusRes() {}
@@ -23158,6 +23302,74 @@ func (s *ListSitesTagsMatch) UnmarshalText(data []byte) error {
 		return nil
 	case ListSitesTagsMatchAll:
 		*s = ListSitesTagsMatchAll
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListSocialProvidersOK struct {
+	Providers []ListSocialProvidersOKProvidersItem `json:"providers"`
+	// Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page
+	// renders the SSO button only when it will work.
+	SSO bool `json:"sso"`
+}
+
+// GetProviders returns the value of Providers.
+func (s *ListSocialProvidersOK) GetProviders() []ListSocialProvidersOKProvidersItem {
+	return s.Providers
+}
+
+// GetSSO returns the value of SSO.
+func (s *ListSocialProvidersOK) GetSSO() bool {
+	return s.SSO
+}
+
+// SetProviders sets the value of Providers.
+func (s *ListSocialProvidersOK) SetProviders(val []ListSocialProvidersOKProvidersItem) {
+	s.Providers = val
+}
+
+// SetSSO sets the value of SSO.
+func (s *ListSocialProvidersOK) SetSSO(val bool) {
+	s.SSO = val
+}
+
+type ListSocialProvidersOKProvidersItem string
+
+const (
+	ListSocialProvidersOKProvidersItemGoogle ListSocialProvidersOKProvidersItem = "google"
+	ListSocialProvidersOKProvidersItemGithub ListSocialProvidersOKProvidersItem = "github"
+)
+
+// AllValues returns all ListSocialProvidersOKProvidersItem values.
+func (ListSocialProvidersOKProvidersItem) AllValues() []ListSocialProvidersOKProvidersItem {
+	return []ListSocialProvidersOKProvidersItem{
+		ListSocialProvidersOKProvidersItemGoogle,
+		ListSocialProvidersOKProvidersItemGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSocialProvidersOKProvidersItem) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSocialProvidersOKProvidersItemGoogle:
+		return []byte(s), nil
+	case ListSocialProvidersOKProvidersItemGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSocialProvidersOKProvidersItem) UnmarshalText(data []byte) error {
+	switch ListSocialProvidersOKProvidersItem(data) {
+	case ListSocialProvidersOKProvidersItemGoogle:
+		*s = ListSocialProvidersOKProvidersItemGoogle
+		return nil
+	case ListSocialProvidersOKProvidersItemGithub:
+		*s = ListSocialProvidersOKProvidersItemGithub
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -47987,6 +48199,96 @@ func (s *SmtpSettingsUpdate) SetAllowInsecureTLS(val bool) {
 // SetPassword sets the value of Password.
 func (s *SmtpSettingsUpdate) SetPassword(val OptNilString) {
 	s.Password = val
+}
+
+// SocialCallbackFound is response for SocialCallback operation.
+type SocialCallbackFound struct{}
+
+type SocialCallbackProvider string
+
+const (
+	SocialCallbackProviderGoogle SocialCallbackProvider = "google"
+	SocialCallbackProviderGithub SocialCallbackProvider = "github"
+)
+
+// AllValues returns all SocialCallbackProvider values.
+func (SocialCallbackProvider) AllValues() []SocialCallbackProvider {
+	return []SocialCallbackProvider{
+		SocialCallbackProviderGoogle,
+		SocialCallbackProviderGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SocialCallbackProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case SocialCallbackProviderGoogle:
+		return []byte(s), nil
+	case SocialCallbackProviderGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SocialCallbackProvider) UnmarshalText(data []byte) error {
+	switch SocialCallbackProvider(data) {
+	case SocialCallbackProviderGoogle:
+		*s = SocialCallbackProviderGoogle
+		return nil
+	case SocialCallbackProviderGithub:
+		*s = SocialCallbackProviderGithub
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// SocialStartFound is response for SocialStart operation.
+type SocialStartFound struct{}
+
+func (*SocialStartFound) socialStartRes() {}
+
+type SocialStartProvider string
+
+const (
+	SocialStartProviderGoogle SocialStartProvider = "google"
+	SocialStartProviderGithub SocialStartProvider = "github"
+)
+
+// AllValues returns all SocialStartProvider values.
+func (SocialStartProvider) AllValues() []SocialStartProvider {
+	return []SocialStartProvider{
+		SocialStartProviderGoogle,
+		SocialStartProviderGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SocialStartProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case SocialStartProviderGoogle:
+		return []byte(s), nil
+	case SocialStartProviderGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SocialStartProvider) UnmarshalText(data []byte) error {
+	switch SocialStartProvider(data) {
+	case SocialStartProviderGoogle:
+		*s = SocialStartProviderGoogle
+		return nil
+	case SocialStartProviderGithub:
+		*s = SocialStartProviderGithub
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Structured projection of a backup snapshot's SQL dump. Produced either

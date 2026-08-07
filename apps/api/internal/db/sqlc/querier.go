@@ -350,6 +350,7 @@ type Querier interface {
 	// Recomputes usage_count after a mutation (create/rename/merge/recolor) so
 	// the returned SiteTag never reports a stale count.
 	CountSitesWithTag(ctx context.Context, arg CountSitesWithTagParams) (int64, error)
+	CountSystemAuditEvents(ctx context.Context) (int64, error)
 	// Counts tasks not yet in a terminal state, used to decide when a run completes.
 	CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -1518,19 +1519,6 @@ type Querier interface {
 	// List pending (not yet accepted, not expired, not revoked) invitations for the
 	// current tenant.
 	ListPendingInvitations(ctx context.Context, tenantID uuid.UUID) ([]Invitation, error)
-	// Every live invitation addressed to one address, across all tenants. Like
-	// GetInvitationByTokenHash this is a pre-auth lookup and must run under
-	// InInviteLookupTx (app.invite_lookup='on'); there is no tenant scope yet
-	// because the whole point is to find invitations from orgs the caller does not
-	// belong to.
-	//
-	// Its one caller is the social sign-in claim path, which reaches it only after
-	// an identity provider has verified control of the address, so the address
-	// itself is the authorisation. email is citext, so the comparison is already
-	// case-insensitive. Ordered oldest-first with an id tiebreaker: invitations
-	// created in one batch share created_at, and the order decides which org a
-	// brand new user lands in.
-	ListPendingInvitationsForEmail(ctx context.Context, email string) ([]Invitation, error)
 	// Returns recently completed snapshots across a set of sites, ordered newest
 	// first. Used by the portal /summary recent_work feed. The site_ids param is
 	// always p.AllowedSiteIDs (RLS double-gate via app.site_scope on
@@ -1675,6 +1663,18 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
+	//
+	// A log with no reader is not oversight. This table now carries the auth events
+	// of accounts that belong to no organisation (a brand new social account, a
+	// site collaborator, a portal user, anyone mid soft-delete grace window), and
+	// those cannot appear in any tenant's own audit_log by construction, so without
+	// this query the population with the least visibility would have had none at
+	// all. Superadmin-gated, because the rows span every account on the install.
+	//
+	// Newest first with an id tiebreaker: rows written in one action share
+	// occurred_at, and a bare occurred_at sort would let paging skip or repeat them.
+	ListSystemAuditEvents(ctx context.Context, arg ListSystemAuditEventsParams) ([]SystemAuditLog, error)
 	// GH #230 "rich tags" — tenant-level tag registry (m100). site_tags owns
 	// existence/color/canonical name; sites.tags (text[]) remains the assignment
 	// store. See internal/sitetag for the orchestration that keeps them in sync.

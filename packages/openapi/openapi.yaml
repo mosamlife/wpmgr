@@ -2602,6 +2602,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/admin/system-audit:
+    get:
+      operationId: getAdminSystemAudit
+      summary: The tenant-independent audit trail (superadmin, read-only)
+      description: |
+        Reads system_audit_log, which holds the events no single organisation's
+        own audit log can show: actions whose subject organisation is being
+        deleted, and authentication events for accounts that belong to no
+        organisation at all (a new social account, a site collaborator, a portal
+        user, anyone inside the org delete grace window). Newest first.
+      tags: [admin]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size, default 50, capped at 200.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: One page of system audit events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSystemAuditPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/admin/vuln-feed/status:
     get:
       operationId: getAdminVulnFeedStatus
@@ -22160,6 +22201,40 @@ components:
               tenant_name: { type: string }
               site_count: { type: integer, format: int64 }
               member_count: { type: integer, format: int64 }
+    AdminSystemAuditPage:
+      type: object
+      required: [items, total]
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: Total rows in the log, for paging.
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, occurred_at, actor_type, action, tenant_name, metadata]
+            properties:
+              id: { type: string, format: uuid }
+              occurred_at: { type: string, format: date-time }
+              actor_type: { type: string }
+              actor_id:
+                type: string
+                format: uuid
+                nullable: true
+                description: Absent for an event with no user actor.
+              action: { type: string }
+              tenant_id:
+                type: string
+                format: uuid
+                nullable: true
+                description: >
+                  A denormalized snapshot, not a reference: this log deliberately
+                  outlives the organisation an event concerned. Absent when the
+                  event had no organisation at all, which is the case for the
+                  authentication events of accounts with no membership.
+              tenant_name: { type: string }
+              metadata: { type: object, additionalProperties: true }
     AdminVulnFeedStatus:
       type: object
       required: [configured, source, feed_ok, record_count, enrichment_available]

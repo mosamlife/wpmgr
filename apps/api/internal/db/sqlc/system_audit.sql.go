@@ -12,6 +12,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countSystemAuditEvents = `-- name: CountSystemAuditEvents :one
+SELECT count(*) FROM system_audit_log
+`
+
+func (q *Queries) CountSystemAuditEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countSystemAuditEvents)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertSystemAuditEvent = `-- name: InsertSystemAuditEvent :exec
 INSERT INTO system_audit_log (actor_type, actor_id, action, tenant_id, tenant_name, metadata)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -42,4 +53,55 @@ func (q *Queries) InsertSystemAuditEvent(ctx context.Context, arg InsertSystemAu
 		arg.Metadata,
 	)
 	return err
+}
+
+const listSystemAuditEvents = `-- name: ListSystemAuditEvents :many
+SELECT id, occurred_at, actor_type, actor_id, action, tenant_id, tenant_name, metadata FROM system_audit_log
+ORDER BY occurred_at DESC, id DESC
+LIMIT $2 OFFSET $1
+`
+
+type ListSystemAuditEventsParams struct {
+	RowOffset int32 `json:"row_offset"`
+	RowLimit  int32 `json:"row_limit"`
+}
+
+// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
+//
+// A log with no reader is not oversight. This table now carries the auth events
+// of accounts that belong to no organisation (a brand new social account, a
+// site collaborator, a portal user, anyone mid soft-delete grace window), and
+// those cannot appear in any tenant's own audit_log by construction, so without
+// this query the population with the least visibility would have had none at
+// all. Superadmin-gated, because the rows span every account on the install.
+//
+// Newest first with an id tiebreaker: rows written in one action share
+// occurred_at, and a bare occurred_at sort would let paging skip or repeat them.
+func (q *Queries) ListSystemAuditEvents(ctx context.Context, arg ListSystemAuditEventsParams) ([]SystemAuditLog, error) {
+	rows, err := q.db.Query(ctx, listSystemAuditEvents, arg.RowOffset, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SystemAuditLog
+	for rows.Next() {
+		var i SystemAuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.OccurredAt,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.TenantID,
+			&i.TenantName,
+			&i.Metadata,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

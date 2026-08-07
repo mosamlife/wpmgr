@@ -1235,6 +1235,16 @@ type Invoker interface {
 	//
 	// GET /api/v1/admin/stats
 	GetAdminStats(ctx context.Context) (GetAdminStatsRes, error)
+	// GetAdminSystemAudit invokes getAdminSystemAudit operation.
+	//
+	// Reads system_audit_log, which holds the events no single organisation's
+	// own audit log can show: actions whose subject organisation is being
+	// deleted, and authentication events for accounts that belong to no
+	// organisation at all (a new social account, a site collaborator, a portal
+	// user, anyone inside the org delete grace window). Newest first.
+	//
+	// GET /api/v1/admin/system-audit
+	GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error)
 	// GetAdminVulnFeedStatus invokes getAdminVulnFeedStatus operation.
 	//
 	// The key itself is never returned.
@@ -2319,6 +2329,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error)
+	// ListSocialProviders invokes listSocialProviders operation.
+	//
+	// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+	// these, so an unconfigured provider never shows a button that leads to a provider error page.
+	// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+	// buttons the operator chose to enable.
+	//
+	// GET /auth/social/providers
+	ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error)
 	// ListTags invokes listTags operation.
 	//
 	// Lists every tag in the tenant's registry (m100), sorted
@@ -3169,6 +3188,22 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, request OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// SocialCallback invokes socialCallback operation.
+	//
+	// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+	// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+	// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+	// enrolled is redirected to the 2FA challenge instead of being signed in.
+	//
+	// GET /auth/social/{provider}/callback
+	SocialCallback(ctx context.Context, params SocialCallbackParams) error
+	// SocialStart invokes socialStart operation.
+	//
+	// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+	// server-side in the session. Returns 503 when the provider is not configured on this install.
+	//
+	// GET /auth/social/{provider}/start
+	SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error)
 	// StartScanRun invokes startScanRun operation.
 	//
 	// Enqueues a scan against the site's WordPress core/plugin/theme files
@@ -16046,6 +16081,122 @@ func (c *Client) sendGetAdminStats(ctx context.Context) (res GetAdminStatsRes, e
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminStatsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetAdminSystemAudit invokes getAdminSystemAudit operation.
+//
+// Reads system_audit_log, which holds the events no single organisation's
+// own audit log can show: actions whose subject organisation is being
+// deleted, and authentication events for accounts that belong to no
+// organisation at all (a new social account, a site collaborator, a portal
+// user, anyone inside the org delete grace window). Newest first.
+//
+// GET /api/v1/admin/system-audit
+func (c *Client) GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error) {
+	res, err := c.sendGetAdminSystemAudit(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (res GetAdminSystemAuditRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getAdminSystemAudit"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/admin/system-audit"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetAdminSystemAuditOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/admin/system-audit"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "offset" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "offset",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Offset.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetAdminSystemAuditResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -29551,6 +29702,83 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 	return result, nil
 }
 
+// ListSocialProviders invokes listSocialProviders operation.
+//
+// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+// these, so an unconfigured provider never shows a button that leads to a provider error page.
+// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+// buttons the operator chose to enable.
+//
+// GET /auth/social/providers
+func (c *Client) ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error) {
+	res, err := c.sendListSocialProviders(ctx)
+	return res, err
+}
+
+func (c *Client) sendListSocialProviders(ctx context.Context) (res *ListSocialProvidersOK, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listSocialProviders"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/providers"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListSocialProvidersOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/auth/social/providers"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListSocialProvidersResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListTags invokes listTags operation.
 //
 // Lists every tag in the tenant's registry (m100), sorted
@@ -38000,6 +38228,251 @@ func (c *Client) sendSilenceSitePHPError(ctx context.Context, request OptPHPErro
 
 	stage = "DecodeResponse"
 	result, err := decodeSilenceSitePHPErrorResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SocialCallback invokes socialCallback operation.
+//
+// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+// enrolled is redirected to the 2FA challenge instead of being signed in.
+//
+// GET /auth/social/{provider}/callback
+func (c *Client) SocialCallback(ctx context.Context, params SocialCallbackParams) error {
+	_, err := c.sendSocialCallback(ctx, params)
+	return err
+}
+
+func (c *Client) sendSocialCallback(ctx context.Context, params SocialCallbackParams) (res *SocialCallbackFound, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("socialCallback"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/{provider}/callback"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SocialCallbackOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/auth/social/"
+	{
+		// Encode "provider" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "provider",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(string(params.Provider)))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/callback"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "code" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "code",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Code.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "state" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "state",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.State.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "error" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "error",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Error.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSocialCallbackResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SocialStart invokes socialStart operation.
+//
+// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+// server-side in the session. Returns 503 when the provider is not configured on this install.
+//
+// GET /auth/social/{provider}/start
+func (c *Client) SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error) {
+	res, err := c.sendSocialStart(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) (res SocialStartRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("socialStart"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/{provider}/start"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SocialStartOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/auth/social/"
+	{
+		// Encode "provider" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "provider",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(string(params.Provider)))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/start"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSocialStartResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

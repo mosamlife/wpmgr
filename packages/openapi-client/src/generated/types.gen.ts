@@ -7521,6 +7521,32 @@ export type AdminAccountsTenancy = {
   }>;
 };
 
+export type AdminSystemAuditPage = {
+  /**
+   * Total rows in the log, for paging.
+   */
+  total: number;
+  items: Array<{
+    id: string;
+    occurred_at: string;
+    actor_type: string;
+    /**
+     * Absent for an event with no user actor.
+     */
+    actor_id?: string;
+    action: string;
+    /**
+     * A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.
+     *
+     */
+    tenant_id?: string;
+    tenant_name: string;
+    metadata: {
+      [key: string]: unknown;
+    };
+  }>;
+};
+
 export type AdminVulnFeedStatus = {
   configured: boolean;
   source: "ui" | "env" | "none";
@@ -8818,6 +8844,64 @@ export type OidcCallbackResponses = {
 
 export type OidcCallbackResponse =
   OidcCallbackResponses[keyof OidcCallbackResponses];
+
+export type ListSocialProvidersData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/social/providers";
+};
+
+export type ListSocialProvidersResponses = {
+  /**
+   * The configured providers, possibly none
+   */
+  200: {
+    providers: Array<"google" | "github">;
+    /**
+     * Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page renders the SSO button only when it will work.
+     *
+     */
+    sso: boolean;
+  };
+};
+
+export type ListSocialProvidersResponse =
+  ListSocialProvidersResponses[keyof ListSocialProvidersResponses];
+
+export type SocialStartData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: never;
+  url: "/auth/social/{provider}/start";
+};
+
+export type SocialStartErrors = {
+  /**
+   * That provider is not configured
+   */
+  503: Error;
+};
+
+export type SocialStartError = SocialStartErrors[keyof SocialStartErrors];
+
+export type SocialCallbackData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    code?: string;
+    state?: string;
+    /**
+     * Set by the provider when the user declines.
+     */
+    error?: string;
+  };
+  url: "/auth/social/{provider}/callback";
+};
 
 export type ListMembersData = {
   body?: never;
@@ -10523,6 +10607,43 @@ export type GetAdminAccountsTenancyResponses = {
 
 export type GetAdminAccountsTenancyResponse =
   GetAdminAccountsTenancyResponses[keyof GetAdminAccountsTenancyResponses];
+
+export type GetAdminSystemAuditData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Page size, default 50, capped at 200.
+     */
+    limit?: number;
+    offset?: number;
+  };
+  url: "/api/v1/admin/system-audit";
+};
+
+export type GetAdminSystemAuditErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminSystemAuditError =
+  GetAdminSystemAuditErrors[keyof GetAdminSystemAuditErrors];
+
+export type GetAdminSystemAuditResponses = {
+  /**
+   * One page of system audit events
+   */
+  200: AdminSystemAuditPage;
+};
+
+export type GetAdminSystemAuditResponse =
+  GetAdminSystemAuditResponses[keyof GetAdminSystemAuditResponses];
 
 export type GetAdminVulnFeedStatusData = {
   body?: never;

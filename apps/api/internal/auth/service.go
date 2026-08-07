@@ -49,9 +49,6 @@ type Service struct {
 	// Injected via SetPlanValidator after startup; nil treats every plan hint
 	// as no intent.
 	planValidator PaidTierValidator
-	// inviteClaimer accepts invitations waiting for an address a provider just
-	// verified. Injected via SetInviteClaimer after startup; nil claims nothing.
-	inviteClaimer SocialInviteClaimer
 }
 
 // NewService builds an auth Service.

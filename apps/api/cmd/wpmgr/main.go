@@ -2327,13 +2327,6 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// the DB-configured SMTP (the legacy env mailer is nil once SMTP moved to the
 	// UI), and always return the accept link.
 	invitationSvc.SetInviteEnqueuer(mailer.NewEnqueuer(mailerSvc, riverClient))
-	// Social sign-in claims invitations waiting for an address a provider has
-	// verified. Without this, signing in with Google or GitHub before opening
-	// an invite link leaves the invitation permanently unacceptable: the accept
-	// endpoint authenticates an existing account with a password, and a social
-	// account has none. Injected (rather than imported) because
-	// internal/invitation already imports internal/auth.
-	authSvc.SetInviteClaimer(invitationSvc)
 	invitationH := invitation.NewHandler(invitationSvc)
 
 	// m66 — client portal. Member management mounts under the existing client

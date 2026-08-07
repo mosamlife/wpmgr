@@ -12,26 +12,6 @@ RETURNING *;
 SELECT * FROM invitations
 WHERE token_hash = $1;
 
--- name: ListPendingInvitationsForEmail :many
--- Every live invitation addressed to one address, across all tenants. Like
--- GetInvitationByTokenHash this is a pre-auth lookup and must run under
--- InInviteLookupTx (app.invite_lookup='on'); there is no tenant scope yet
--- because the whole point is to find invitations from orgs the caller does not
--- belong to.
---
--- Its one caller is the social sign-in claim path, which reaches it only after
--- an identity provider has verified control of the address, so the address
--- itself is the authorisation. email is citext, so the comparison is already
--- case-insensitive. Ordered oldest-first with an id tiebreaker: invitations
--- created in one batch share created_at, and the order decides which org a
--- brand new user lands in.
-SELECT * FROM invitations
-WHERE email       = @email
-  AND accepted_at IS NULL
-  AND revoked_at  IS NULL
-  AND expires_at  > now()
-ORDER BY created_at ASC, id ASC;
-
 -- name: MarkInvitationAccepted :one
 UPDATE invitations
 SET accepted_at      = now(),

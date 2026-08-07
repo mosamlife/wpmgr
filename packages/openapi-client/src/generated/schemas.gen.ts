@@ -13738,6 +13738,68 @@ export const AdminAccountsTenancySchema = {
   },
 } as const;
 
+export const AdminSystemAuditPageSchema = {
+  type: "object",
+  required: ["items", "total"],
+  properties: {
+    total: {
+      type: "integer",
+      format: "int64",
+      description: "Total rows in the log, for paging.",
+    },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: [
+          "id",
+          "occurred_at",
+          "actor_type",
+          "action",
+          "tenant_name",
+          "metadata",
+        ],
+        properties: {
+          id: {
+            type: "string",
+            format: "uuid",
+          },
+          occurred_at: {
+            type: "string",
+            format: "date-time",
+          },
+          actor_type: {
+            type: "string",
+          },
+          actor_id: {
+            type: "string",
+            format: "uuid",
+            nullable: true,
+            description: "Absent for an event with no user actor.",
+          },
+          action: {
+            type: "string",
+          },
+          tenant_id: {
+            type: "string",
+            format: "uuid",
+            nullable: true,
+            description:
+              "A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.\n",
+          },
+          tenant_name: {
+            type: "string",
+          },
+          metadata: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const AdminVulnFeedStatusSchema = {
   type: "object",
   required: [

@@ -32,6 +32,7 @@ type userStore interface {
 	GrantSelfOwnerMembership(ctx context.Context, userID, siteID uuid.UUID) (uuid.UUID, string, bool, error)
 	AccountsTenancy(ctx context.Context, emailSubstr string) (AccountsTenancyReport, error)
 	ListSitesByUser(ctx context.Context, userID uuid.UUID) ([]AdminUserSite, error)
+	ListSystemAuditEvents(ctx context.Context, limit, offset int32) ([]SystemAuditEvent, int64, error)
 }
 
 // SiteTenancy returns a read-only diagnostic comparing where a site + its perf
@@ -224,4 +225,22 @@ func (s *Service) ListSitesByUser(ctx context.Context, userID uuid.UUID) ([]Admi
 		return nil, domain.Validation("too_many_sites", "user is associated with more than 500 sites")
 	}
 	return sites, nil
+}
+
+// maxSystemAuditPageSize caps one page of the system audit log. The reader is a
+// human scrolling an ops console, not a bulk export.
+const maxSystemAuditPageSize int32 = 200
+
+// ListSystemAuditEvents returns a page of the tenant-independent audit trail.
+func (s *Service) ListSystemAuditEvents(ctx context.Context, limit, offset int32) ([]SystemAuditEvent, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > maxSystemAuditPageSize {
+		limit = maxSystemAuditPageSize
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.ListSystemAuditEvents(ctx, limit, offset)
 }

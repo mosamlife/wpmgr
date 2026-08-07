@@ -1215,6 +1215,16 @@ type Handler interface {
 	//
 	// GET /api/v1/admin/stats
 	GetAdminStats(ctx context.Context) (GetAdminStatsRes, error)
+	// GetAdminSystemAudit implements getAdminSystemAudit operation.
+	//
+	// Reads system_audit_log, which holds the events no single organisation's
+	// own audit log can show: actions whose subject organisation is being
+	// deleted, and authentication events for accounts that belong to no
+	// organisation at all (a new social account, a site collaborator, a portal
+	// user, anyone inside the org delete grace window). Newest first.
+	//
+	// GET /api/v1/admin/system-audit
+	GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error)
 	// GetAdminVulnFeedStatus implements getAdminVulnFeedStatus operation.
 	//
 	// The key itself is never returned.
@@ -2299,6 +2309,15 @@ type Handler interface {
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error)
+	// ListSocialProviders implements listSocialProviders operation.
+	//
+	// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+	// these, so an unconfigured provider never shows a button that leads to a provider error page.
+	// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+	// buttons the operator chose to enable.
+	//
+	// GET /auth/social/providers
+	ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error)
 	// ListTags implements listTags operation.
 	//
 	// Lists every tag in the tenant's registry (m100), sorted
@@ -3149,6 +3168,22 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// SocialCallback implements socialCallback operation.
+	//
+	// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+	// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+	// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+	// enrolled is redirected to the 2FA challenge instead of being signed in.
+	//
+	// GET /auth/social/{provider}/callback
+	SocialCallback(ctx context.Context, params SocialCallbackParams) error
+	// SocialStart implements socialStart operation.
+	//
+	// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+	// server-side in the session. Returns 503 when the provider is not configured on this install.
+	//
+	// GET /auth/social/{provider}/start
+	SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error)
 	// StartScanRun implements startScanRun operation.
 	//
 	// Enqueues a scan against the site's WordPress core/plugin/theme files

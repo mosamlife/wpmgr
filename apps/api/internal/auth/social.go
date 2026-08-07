@@ -344,10 +344,55 @@ func (s *Service) SignInWithSocial(
 // is the session's, not the pending link's, and the mismatch check below is the
 // point of taking both: a pending link parked during one login must never be
 // applied to whoever completes the next one.
+//
+// THE POLICY IS RE-RUN HERE, AGAINST FRESHLY READ STATE. An approval made
+// before a two-factor prompt can sit parked for up to pendingSocialLinkTTL, and
+// the decision it encodes is only as good as the facts it was made on. In that
+// window an administrator can disable the account, the address can be changed
+// or its verification revoked, or the same provider identity can be linked
+// somewhere else. Replaying the write from stale data would bind a new
+// credential to an account whose current state forbids exactly that, which is
+// the one thing deferring the write was supposed to prevent. So the account is
+// re-read and decideSocial, the same function that authorized it, has to say
+// "link" a second time.
 func (s *Service) CompleteSocialLink(ctx context.Context, userID uuid.UUID, link Identity) error {
 	if link.UserID == uuid.Nil || link.UserID != userID {
 		return domain.Forbidden("social_link_user_mismatch", "this sign-in cannot complete that link")
 	}
+
+	// Somebody else may have taken this provider identity while the link was
+	// parked. Already linked to this same account is success, not a conflict:
+	// completion has to be safe to run twice.
+	if owner, err := s.repo.GetUserByIdentity(ctx, link.Provider, link.Subject, link.Issuer); err == nil {
+		if owner.ID == userID {
+			return nil
+		}
+		return domain.Conflict("social_identity_taken", "this "+providerLabel(link.Provider)+" account is already linked to another user")
+	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
+		return err
+	}
+
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	// decideSocial takes the account found BY the asserted address, so handing it
+	// an account fetched by id is only equivalent while the two still agree. A
+	// changed address must not inherit the old one's approval.
+	if normalizeEmail(u.Email) != normalizeEmail(link.Email) {
+		return domain.Forbidden("social_link_email_changed", "this account's email address changed; sign in with "+providerLabel(link.Provider)+" again")
+	}
+	action, err := decideSocial(SocialIdentity{
+		Provider: link.Provider, Subject: link.Subject, Issuer: link.Issuer,
+		Email: link.Email, EmailVerified: link.EmailVerified,
+	}, nil, &u)
+	if err != nil {
+		return err
+	}
+	if action != socialLinkExisting {
+		return domain.Forbidden("social_link_no_longer_permitted", "this account can no longer be linked to "+providerLabel(link.Provider))
+	}
+
 	if err := s.repo.CreateIdentity(ctx, link); err != nil {
 		return err
 	}
@@ -502,10 +547,15 @@ func (s *Service) finishSocialLogin(
 	u User,
 	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
 ) (LoginResult, error) {
-	// Claim first, so a just-granted membership is in the list below and becomes
-	// the session's active tenant instead of the user landing nowhere.
-	s.claimInvitationsForSocialUser(ctx, u)
-
+	// NOTHING THAT GRANTS ACCESS BELONGS HERE. This runs before the second
+	// factor is even issued, so any grant it made would be a grant made on the
+	// strength of a provider handshake alone. An earlier version of this
+	// function accepted the caller's pending invitations at this point, which
+	// both spent them without the person ever asking and did so on the pre-2FA
+	// path, defeating the deferral the link write goes to such lengths for. An
+	// invitation is now accepted only by the affirmative act of opening the link
+	// and submitting it, on an authenticated session; see
+	// invitation.Service.Accept.
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, u.ID)
 	if len(memberships) == 0 && s.isFirstRunBootstrap(ctx, u) {
 		tenantID, terr := createTenant(ctx, defaultTenantName(u.Email), uniqueTenantSlug(u.Email))
@@ -561,55 +611,6 @@ func (s *Service) isFirstRunBootstrap(ctx context.Context, u User) bool {
 		return false
 	}
 	return ever == 0
-}
-
-// SocialInviteClaimer accepts invitations addressed to an email address that an
-// identity provider has just verified. Implemented by
-// *internal/invitation.Service and wired via SetInviteClaimer.
-//
-// It is an interface for the same reason PaidTierValidator is one: internal
-// /invitation already imports internal/auth, so the direct import would be a
-// cycle. The claim mechanics stay in the package that owns invitations, which
-// is also the package that already knows how to grant each of the three scopes.
-type SocialInviteClaimer interface {
-	ClaimForVerifiedEmail(ctx context.Context, userID uuid.UUID, email string) (int, error)
-}
-
-// SetInviteClaimer wires the invitation service. Leaving it unset (a test that
-// does not exercise invitations) simply means nothing is claimed.
-func (s *Service) SetInviteClaimer(c SocialInviteClaimer) { s.inviteClaimer = c }
-
-// claimInvitationsForSocialUser accepts any invitation waiting for this
-// account's address.
-//
-// WITHOUT IT, SIGNING IN SOCIALLY DESTROYS THE INVITATION. An invited person
-// who clicks "Sign in with Google" before opening their invite link gets an
-// account with no password hash, because a social account never has one. The
-// accept endpoint then refuses them forever: it requires an existing user to
-// prove themselves with a password, and answers a password-less account with
-// "this account uses single sign-on, sign in first, then open the invite link
-// again", advice that leads straight back to the same refusal, because being
-// signed in changes nothing about that check. The invitation cannot be
-// accepted by the person it was sent to, by any route, ever.
-//
-// Claiming here is safe on exactly the ground the invitation itself stands on:
-// invitations are email-bound, and this runs only for an address this account
-// has proven it controls (a provider verified it at sign-in, or we verified it
-// ourselves). That is a higher bar than the link path, which asks only for the
-// token plus a matching address plus a password.
-//
-// The password path is deliberately NOT changed to match. It has no dead end:
-// a password user can always open the link and accept it.
-func (s *Service) claimInvitationsForSocialUser(ctx context.Context, u User) {
-	if s.inviteClaimer == nil || u.Email == "" || !u.EmailVerified() {
-		return
-	}
-	if _, err := s.inviteClaimer.ClaimForVerifiedEmail(ctx, u.ID, u.Email); err != nil {
-		// Best effort. A failed claim must not cost the user their sign-in; the
-		// invitation stays pending and the next sign-in tries again.
-		slog.ErrorContext(ctx, "social invitation claim failed",
-			slog.String("user_id", u.ID.String()), slog.Any("error", err))
-	}
 }
 
 // sendVerificationForSocialLink mails the link that unblocks a refused social
