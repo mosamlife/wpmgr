@@ -410,10 +410,20 @@ CREATE UNIQUE INDEX users_oidc_identity_key
 -- and later clicks the other, and with a single slot the second would overwrite
 -- the first.
 --
--- (provider, subject, issuer) is the identity. The email column records what
--- the provider asserted and is deliberately NOT unique: emails change, get
+-- (provider, subject) is the identity. The email column records what the
+-- provider asserted and is deliberately NOT unique: emails change, get
 -- reassigned inside a Workspace, and repeat across providers. Matching on email
 -- is how account takeovers happen.
+--
+-- issuer is RECORDED, NOT KEYED (m111). It was part of the unique key until an
+-- install proved what that costs: an operator who edits WPMGR_OIDC_ISSUER, to
+-- move a corporate IdP to a new hostname or just to add a trailing slash,
+-- invalidates every generic-OIDC row at once and locks out every SSO user
+-- simultaneously. An install has exactly one configured OIDC issuer at a time,
+-- so issuer never told two rows apart here; it only supplied a way for the
+-- lookup to miss. Google and GitHub carry a constant issuer, so nothing changes
+-- for them. The column stays as a record of where the person last signed in
+-- from, refreshed on every login.
 --
 -- email_verified is the PROVIDER's assertion at link time. users.email_verified_at
 -- is our own. The linking rules need both, separately.
@@ -432,8 +442,8 @@ CREATE TABLE user_identities (
     last_login_at  timestamptz
 );
 
-CREATE UNIQUE INDEX user_identities_provider_subject_key
-    ON user_identities (provider, subject, issuer);
+CREATE UNIQUE INDEX user_identities_provider_subject_uniq
+    ON user_identities (provider, subject);
 
 CREATE UNIQUE INDEX user_identities_user_provider_key
     ON user_identities (user_id, provider);

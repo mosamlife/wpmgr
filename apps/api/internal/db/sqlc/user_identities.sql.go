@@ -11,6 +11,47 @@ import (
 	"github.com/google/uuid"
 )
 
+const adoptLegacyIdentity = `-- name: AdoptLegacyIdentity :exec
+INSERT INTO user_identities (user_id, provider, subject, issuer, email, email_verified, last_login_at)
+VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT DO NOTHING
+`
+
+type AdoptLegacyIdentityParams struct {
+	UserID        uuid.UUID `json:"user_id"`
+	Provider      string    `json:"provider"`
+	Subject       string    `json:"subject"`
+	Issuer        string    `json:"issuer"`
+	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
+}
+
+// Writes the user_identities row that m110's one-shot backfill never wrote.
+//
+// A migration backfill runs exactly once, and schema_migrations guarantees it is
+// never revisited. Anything the previous release wrote to users.oidc_subject
+// afterwards, during a rollback window, therefore has legacy columns and no
+// identity row forever. This is the runtime half of that repair: the sign-in
+// path notices the gap and closes it, which works whatever order the deploy and
+// the rollback happened in.
+//
+// ON CONFLICT DO NOTHING covers both unique indexes on purpose. Two concurrent
+// sign-ins racing to heal the same row is a no-op, and a user who already holds
+// an 'oidc' identity under a DIFFERENT subject keeps it: in both cases the
+// legacy columns already told us who is signing in, so failing here would turn
+// a successful repair into a failed login.
+func (q *Queries) AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) error {
+	_, err := q.db.Exec(ctx, adoptLegacyIdentity,
+		arg.UserID,
+		arg.Provider,
+		arg.Subject,
+		arg.Issuer,
+		arg.Email,
+		arg.EmailVerified,
+	)
+	return err
+}
+
 const countIdentitiesForUser = `-- name: CountIdentitiesForUser :one
 SELECT count(*) FROM user_identities WHERE user_id = $1
 `
@@ -79,17 +120,16 @@ func (q *Queries) DeleteIdentity(ctx context.Context, arg DeleteIdentityParams) 
 
 const getIdentity = `-- name: GetIdentity :one
 SELECT id, user_id, provider, subject, issuer, email, email_verified, created_at, last_login_at FROM user_identities
-WHERE provider = $1 AND subject = $2 AND issuer = $3
+WHERE provider = $1 AND subject = $2
 `
 
 type GetIdentityParams struct {
 	Provider string `json:"provider"`
 	Subject  string `json:"subject"`
-	Issuer   string `json:"issuer"`
 }
 
 func (q *Queries) GetIdentity(ctx context.Context, arg GetIdentityParams) (UserIdentity, error) {
-	row := q.db.QueryRow(ctx, getIdentity, arg.Provider, arg.Subject, arg.Issuer)
+	row := q.db.QueryRow(ctx, getIdentity, arg.Provider, arg.Subject)
 	var i UserIdentity
 	err := row.Scan(
 		&i.ID,
@@ -110,23 +150,31 @@ const getUserByIdentity = `-- name: GetUserByIdentity :one
 SELECT u.id, u.email, u.password_hash, u.oidc_subject, u.oidc_issuer, u.name, u.created_at, u.updated_at, u.last_login_at, u.password_changed_at, u.status, u.email_verified_at, u.is_superadmin, u.two_factor_enabled, u.totp_secret_encrypted, u.totp_confirmed_at, u.totp_last_step, u.totp_provisional_secret_encrypted, u.totp_provisional_expires_at
 FROM users u
 JOIN user_identities i ON i.user_id = u.id
-WHERE i.provider = $1 AND i.subject = $2 AND i.issuer = $3
+WHERE i.provider = $1 AND i.subject = $2
 `
 
 type GetUserByIdentityParams struct {
 	Provider string `json:"provider"`
 	Subject  string `json:"subject"`
-	Issuer   string `json:"issuer"`
 }
 
 // Social sign-in identities (m110). One row per external identity a user can
 // sign in with. See db/schema.sql for why this is a table and not two more
 // columns on users, and why email here is a record rather than a key.
-// The ONLY lookup that authenticates. (provider, subject, issuer) is the
-// provider's immutable id for the human; email is never used to authenticate,
-// only to decide whether linking a NEW identity is permitted.
+// The ONLY lookup that authenticates. (provider, subject) is the provider's
+// immutable id for the human; email is never used to authenticate, only to
+// decide whether linking a NEW identity is permitted.
+//
+// ISSUER IS DELIBERATELY NOT PART OF THIS KEY. It used to be, and that made
+// every generic-OIDC identity on the install depend on a string an operator can
+// edit: moving a corporate IdP to a new hostname, or adding a trailing slash to
+// WPMGR_OIDC_ISSUER, invalidated every row at once and locked out every SSO
+// user simultaneously. An install has exactly one configured OIDC issuer at a
+// time, so issuer never discriminated between two rows here; it only ever added
+// a way for the lookup to miss. It is kept on the row as a record of where the
+// person last came from, refreshed by TouchIdentityLogin.
 func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByIdentity, arg.Provider, arg.Subject, arg.Issuer)
+	row := q.db.QueryRow(ctx, getUserByIdentity, arg.Provider, arg.Subject)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -190,8 +238,8 @@ func (q *Queries) ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) (
 
 const touchIdentityLogin = `-- name: TouchIdentityLogin :exec
 UPDATE user_identities
-SET last_login_at = now(), email = $4, email_verified = $5
-WHERE provider = $1 AND subject = $2 AND issuer = $3
+SET last_login_at = now(), issuer = $3, email = $4, email_verified = $5
+WHERE provider = $1 AND subject = $2
 `
 
 type TouchIdentityLoginParams struct {
@@ -206,6 +254,10 @@ type TouchIdentityLoginParams struct {
 // may report a changed address, and keeping the last-seen value makes an
 // unexpected change visible instead of silently discarding it. This never
 // changes users.email, which stays the account's own address.
+//
+// issuer is refreshed rather than matched on, so an operator who repoints
+// WPMGR_OIDC_ISSUER gets rows that heal themselves to the new value on each
+// person's next sign-in instead of rows that no longer match anything.
 func (q *Queries) TouchIdentityLogin(ctx context.Context, arg TouchIdentityLoginParams) error {
 	_, err := q.db.Exec(ctx, touchIdentityLogin,
 		arg.Provider,

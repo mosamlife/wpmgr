@@ -12,6 +12,19 @@ SELECT * FROM users WHERE email = $1;
 -- name: GetUserByOIDC :one
 SELECT * FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2;
 
+-- name: ListUsersByLegacyOIDCSubject :many
+-- The pre-m110 identity, looked up by SUBJECT ALONE, so a sign-in can still
+-- find someone whose user_identities row was never written (see
+-- AdoptLegacyIdentity) even after the operator repointed WPMGR_OIDC_ISSUER.
+--
+-- :many, not :one, and LIMIT 2 is the point rather than an optimisation. The old
+-- users_oidc_identity_key was unique on (oidc_issuer, oidc_subject), so two rows
+-- CAN share a subject under different issuers. Subject alone does not identify
+-- anyone in that case, and adopting either one would be a coin flip between two
+-- humans. The caller sees both and refuses to guess; two rows is all it needs to
+-- know that.
+SELECT * FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 2;
+
 -- name: CountUsers :one
 SELECT count(*) FROM users;
 

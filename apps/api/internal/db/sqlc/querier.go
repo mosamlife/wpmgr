@@ -183,6 +183,21 @@ type Querier interface {
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
 	AdminUserSoleTenants(ctx context.Context, userID uuid.UUID) ([]AdminUserSoleTenantsRow, error)
+	// Writes the user_identities row that m110's one-shot backfill never wrote.
+	//
+	// A migration backfill runs exactly once, and schema_migrations guarantees it is
+	// never revisited. Anything the previous release wrote to users.oidc_subject
+	// afterwards, during a rollback window, therefore has legacy columns and no
+	// identity row forever. This is the runtime half of that repair: the sign-in
+	// path notices the gap and closes it, which works whatever order the deploy and
+	// the rollback happened in.
+	//
+	// ON CONFLICT DO NOTHING covers both unique indexes on purpose. Two concurrent
+	// sign-ins racing to heal the same row is a no-op, and a user who already holds
+	// an 'oidc' identity under a DIFFERENT subject keeps it: in both cases the
+	// legacy columns already told us who is signing in, so failing here would turn
+	// a successful repair into a failed login.
+	AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) error
 	// Records that a scheduled backup was enqueued and advances next_run_at. The
 	// scheduler resolves the tenant from the due-row first, then advances within
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
@@ -1051,9 +1066,18 @@ type Querier interface {
 	// Social sign-in identities (m110). One row per external identity a user can
 	// sign in with. See db/schema.sql for why this is a table and not two more
 	// columns on users, and why email here is a record rather than a key.
-	// The ONLY lookup that authenticates. (provider, subject, issuer) is the
-	// provider's immutable id for the human; email is never used to authenticate,
-	// only to decide whether linking a NEW identity is permitted.
+	// The ONLY lookup that authenticates. (provider, subject) is the provider's
+	// immutable id for the human; email is never used to authenticate, only to
+	// decide whether linking a NEW identity is permitted.
+	//
+	// ISSUER IS DELIBERATELY NOT PART OF THIS KEY. It used to be, and that made
+	// every generic-OIDC identity on the install depend on a string an operator can
+	// edit: moving a corporate IdP to a new hostname, or adding a trailing slash to
+	// WPMGR_OIDC_ISSUER, invalidated every row at once and locked out every SSO
+	// user simultaneously. An install has exactly one configured OIDC issuer at a
+	// time, so issuer never discriminated between two rows here; it only ever added
+	// a way for the lookup to miss. It is kept on the row as a record of where the
+	// person last came from, refreshed by TouchIdentityLogin.
 	GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
 	// Lightweight per-request lookup for the session reject-stale check.
@@ -1754,6 +1778,17 @@ type Querier interface {
 	// (waveOrder sorts by the same pair), so an agent rollout's canary is the
 	// first row of the table.
 	ListUpdateTasksForRunWithSiteName(ctx context.Context, arg ListUpdateTasksForRunWithSiteNameParams) ([]ListUpdateTasksForRunWithSiteNameRow, error)
+	// The pre-m110 identity, looked up by SUBJECT ALONE, so a sign-in can still
+	// find someone whose user_identities row was never written (see
+	// AdoptLegacyIdentity) even after the operator repointed WPMGR_OIDC_ISSUER.
+	//
+	// :many, not :one, and LIMIT 2 is the point rather than an optimisation. The old
+	// users_oidc_identity_key was unique on (oidc_issuer, oidc_subject), so two rows
+	// CAN share a subject under different issuers. Subject alone does not identify
+	// anyone in that case, and adopting either one would be a coin flip between two
+	// humans. The caller sees both and refuses to guess; two rows is all it needs to
+	// know that.
+	ListUsersByLegacyOIDCSubject(ctx context.Context, oidcSubject *string) ([]User, error)
 	// All registered credentials for a user (for the Security settings list).
 	// Ordered by created_at DESC, id DESC.
 	ListWebAuthnCredentialsForUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
@@ -2050,6 +2085,10 @@ type Querier interface {
 	// may report a changed address, and keeping the last-seen value makes an
 	// unexpected change visible instead of silently discarding it. This never
 	// changes users.email, which stays the account's own address.
+	//
+	// issuer is refreshed rather than matched on, so an operator who repoints
+	// WPMGR_OIDC_ISSUER gets rows that heal themselves to the new value on each
+	// person's next sign-in instead of rows that no longer match anything.
 	TouchIdentityLogin(ctx context.Context, arg TouchIdentityLoginParams) error
 	TouchRucssResultLastUsed(ctx context.Context, arg TouchRucssResultLastUsedParams) error
 	// ---------------------------------------------------------------------------

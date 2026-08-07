@@ -422,13 +422,18 @@ type Identity struct {
 }
 
 // GetUserByIdentity resolves the local user behind an external identity. This
-// is the ONLY function that authenticates a social sign-in: (provider, subject,
-// issuer) is the provider's immutable id for the person, and no email is
-// consulted. Email is used elsewhere to decide whether a NEW identity may be
-// linked, never to decide who is signing in.
-func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer string) (User, error) {
+// is the ONLY function that authenticates a social sign-in: (provider, subject)
+// is the provider's immutable id for the person, and no email is consulted.
+// Email is used elsewhere to decide whether a NEW identity may be linked, never
+// to decide who is signing in.
+//
+// Issuer is not an argument because it is not part of the identity. It is a
+// configuration string the operator can edit, and keying on it meant one edit
+// to WPMGR_OIDC_ISSUER stopped every SSO user on the install from being
+// recognised at the same moment. See the query and m111.
+func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject string) (User, error) {
 	row, err := r.q.GetUserByIdentity(ctx, sqlc.GetUserByIdentityParams{
-		Provider: provider, Subject: subject, Issuer: issuer,
+		Provider: provider, Subject: subject,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -437,6 +442,44 @@ func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer 
 		return User{}, domain.Internal("identity_get_failed", "failed to load identity").WithCause(err)
 	}
 	return userToModel(row), nil
+}
+
+// ListUsersByLegacyOIDCSubject returns the pre-m110 users carrying this OIDC
+// subject on users.oidc_subject, capped at two.
+//
+// Two is enough to answer the only question the caller has: does this subject
+// identify exactly one person? The old unique index was on (oidc_issuer,
+// oidc_subject), so two users CAN share a subject, and in that case subject
+// alone identifies neither. Returning both lets the caller decline rather than
+// pick one, which would hand somebody another person's account.
+func (r *Repo) ListUsersByLegacyOIDCSubject(ctx context.Context, subject string) ([]User, error) {
+	rows, err := r.q.ListUsersByLegacyOIDCSubject(ctx, &subject)
+	if err != nil {
+		return nil, domain.Internal("legacy_identity_lookup_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]User, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, userToModel(row))
+	}
+	return out, nil
+}
+
+// AdoptLegacyIdentity writes the user_identities row that m110's one-shot
+// backfill never wrote for this user. A conflict is success, not failure: see
+// the query for why both unique indexes are tolerated here.
+func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) error {
+	err := r.q.AdoptLegacyIdentity(ctx, sqlc.AdoptLegacyIdentityParams{
+		UserID:        in.UserID,
+		Provider:      in.Provider,
+		Subject:       in.Subject,
+		Issuer:        in.Issuer,
+		Email:         in.Email,
+		EmailVerified: in.EmailVerified,
+	})
+	if err != nil {
+		return domain.Internal("identity_adopt_failed", "failed to record identity").WithCause(err)
+	}
+	return nil
 }
 
 // CreateIdentity links an external identity to an existing user.
@@ -456,7 +499,9 @@ func (r *Repo) CreateIdentity(ctx context.Context, in Identity) error {
 }
 
 // TouchIdentityLogin stamps the login and records the address the provider
-// reported this time, which may differ from last time.
+// reported this time, which may differ from last time. issuer is WRITTEN here,
+// not matched on, so a row follows the operator's current WPMGR_OIDC_ISSUER
+// instead of being stranded by an edit to it.
 func (r *Repo) TouchIdentityLogin(ctx context.Context, provider, subject, issuer, email string, verified bool) {
 	_ = r.q.TouchIdentityLogin(ctx, sqlc.TouchIdentityLoginParams{
 		Provider: provider, Subject: subject, Issuer: issuer,

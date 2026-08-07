@@ -468,6 +468,60 @@ func (q *Queries) LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (Use
 	return i, err
 }
 
+const listUsersByLegacyOIDCSubject = `-- name: ListUsersByLegacyOIDCSubject :many
+SELECT id, email, password_hash, oidc_subject, oidc_issuer, name, created_at, updated_at, last_login_at, password_changed_at, status, email_verified_at, is_superadmin, two_factor_enabled, totp_secret_encrypted, totp_confirmed_at, totp_last_step, totp_provisional_secret_encrypted, totp_provisional_expires_at FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 2
+`
+
+// The pre-m110 identity, looked up by SUBJECT ALONE, so a sign-in can still
+// find someone whose user_identities row was never written (see
+// AdoptLegacyIdentity) even after the operator repointed WPMGR_OIDC_ISSUER.
+//
+// :many, not :one, and LIMIT 2 is the point rather than an optimisation. The old
+// users_oidc_identity_key was unique on (oidc_issuer, oidc_subject), so two rows
+// CAN share a subject under different issuers. Subject alone does not identify
+// anyone in that case, and adopting either one would be a coin flip between two
+// humans. The caller sees both and refuses to guess; two rows is all it needs to
+// know that.
+func (q *Queries) ListUsersByLegacyOIDCSubject(ctx context.Context, oidcSubject *string) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsersByLegacyOIDCSubject, oidcSubject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.PasswordHash,
+			&i.OidcSubject,
+			&i.OidcIssuer,
+			&i.Name,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastLoginAt,
+			&i.PasswordChangedAt,
+			&i.Status,
+			&i.EmailVerifiedAt,
+			&i.IsSuperadmin,
+			&i.TwoFactorEnabled,
+			&i.TotpSecretEncrypted,
+			&i.TotpConfirmedAt,
+			&i.TotpLastStep,
+			&i.TotpProvisionalSecretEncrypted,
+			&i.TotpProvisionalExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setUserPasswordHash = `-- name: SetUserPasswordHash :exec
 UPDATE users SET password_hash = $2, password_changed_at = now(), updated_at = now() WHERE id = $1
 `

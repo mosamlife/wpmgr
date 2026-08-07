@@ -98,6 +98,44 @@ const (
 // not the same as trusting it to claim an address on this install.
 func operatorConfigured(provider string) bool { return provider == "oidc" }
 
+// adoptableLegacyUser decides whether a pre-m110 users.oidc_subject row may be
+// treated as the person signing in. Pure, and separate from the database work,
+// for the same reason decideSocial is: the whole safety of the repair is this
+// one rule.
+//
+// EXACTLY ONE HOLDER, OR NOBODY. The old unique index was on (oidc_issuer,
+// oidc_subject), so a subject can legitimately be held by two users under two
+// issuers. Once issuer is out of the key that subject identifies neither of
+// them, and adopting the first row, or the newest, or any other tiebreak, is a
+// coin flip that hands one person the other's account. There is no tiebreak
+// that is safe here, so ambiguity resolves to "no match" and the sign-in falls
+// through to the ordinary policy, which will refuse or create but never guess.
+func adoptableLegacyUser(holders []User) (User, bool) {
+	if len(holders) != 1 {
+		return User{}, false
+	}
+	return holders[0], true
+}
+
+// legacySlotTaken reports whether some OTHER user already holds this exact
+// (issuer, subject) pair on the legacy users columns.
+//
+// createSocialUser mirrors new generic-OIDC accounts into those columns so a
+// rollback still recognises them. That mirror is a convenience; the sign-in
+// itself is not. Writing it blind made the convenience fatal: users_oidc_identity_key
+// is unique, so creating an account whose pair was already taken failed the
+// whole sign-in with a duplicate-key error rather than declining to mirror.
+// Reachable exactly in the ambiguous case above, where an account genuinely has
+// to be created and the legacy slot genuinely is occupied.
+func legacySlotTaken(in SocialIdentity, holders []User) bool {
+	for _, u := range holders {
+		if u.OIDCIssuer == in.Issuer {
+			return true
+		}
+	}
+	return false
+}
+
 // decideSocial IS THE POLICY, for every provider including the generic OIDC one.
 // It is a pure function of the facts, deliberately separated from the database
 // work, because everything that makes social sign-in safe or unsafe is decided
@@ -250,10 +288,50 @@ func (s *Service) SignInWithSocial(
 	in.Email = normalizeEmail(in.Email)
 
 	var identityUser *User
-	if u, err := s.repo.GetUserByIdentity(ctx, in.Provider, in.Subject, in.Issuer); err == nil {
+	if u, err := s.repo.GetUserByIdentity(ctx, in.Provider, in.Subject); err == nil {
 		identityUser = &u
 	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
 		return LoginResult{}, err
+	}
+
+	// THE PRE-m110 IDENTITY, WHICH A MIGRATION CANNOT BE TRUSTED TO HAVE MOVED.
+	//
+	// m110 copied users.oidc_subject into user_identities once. A backfill runs
+	// once by construction: schema_migrations records it and it is never
+	// revisited. So it could only ever see the rows that existed at that
+	// instant, and anything the PREVIOUS release wrote afterwards, during a
+	// rollback window, has legacy columns and no identity row for good.
+	//
+	// The consequence is not a cosmetic gap. That release never wrote
+	// email_verified_at, so such an account looks never-verified, and the
+	// takeover defence correctly declines to link a social identity onto a
+	// never-verified account. A correct rule applied to the wrong population:
+	// people who have signed in with SSO for months are refused at the door,
+	// where the release before this one signed them straight in.
+	//
+	// So the legacy columns are consulted here and the missing row is written,
+	// which fixes the gap whatever order the deploy and the rollback happened
+	// in. Only for an operator-configured issuer: Google and GitHub never wrote
+	// these columns, so for them a match could only ever be a subject collision
+	// between two different people.
+	var legacySubjectHolders []User
+	if identityUser == nil && operatorConfigured(in.Provider) {
+		holders, err := s.repo.ListUsersByLegacyOIDCSubject(ctx, in.Subject)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		legacySubjectHolders = holders
+		if u, ok := adoptableLegacyUser(holders); ok {
+			// Best effort by design. If this write loses a race it is a no-op
+			// and the next sign-in repeats it; what must not happen is a
+			// bookkeeping failure turning into a failed login, because the
+			// legacy columns have already told us who this is.
+			_ = s.repo.AdoptLegacyIdentity(ctx, Identity{
+				UserID: u.ID, Provider: in.Provider, Subject: in.Subject,
+				Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
+			})
+			identityUser = &u
+		}
 	}
 
 	// Only looked up when it can matter, so an unverified provider email never
@@ -303,7 +381,7 @@ func (s *Service) SignInWithSocial(
 		return s.finishSocialLogin(ctx, *emailUser, createTenant)
 
 	default:
-		u, err := s.createSocialUser(ctx, in, createTenant)
+		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, legacySubjectHolders))
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -360,7 +438,7 @@ func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provi
 func (s *Service) createSocialUser(
 	ctx context.Context,
 	in SocialIdentity,
-	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
+	legacyTaken bool,
 ) (User, error) {
 	email := in.Email
 	verified := in.EmailVerified
@@ -378,8 +456,13 @@ func (s *Service) createSocialUser(
 	// first signed in during the rollout. Google and GitHub have no
 	// representation there and deliberately get none: inventing one would put
 	// two providers into a single slot that only holds one.
+	//
+	// Skipped when another user already holds the pair, because that column pair
+	// is UNIQUE and this mirror is a courtesy to a rollback that may never
+	// happen. Insisting on it turned a creatable account into a duplicate-key
+	// failure and a broken sign-in.
 	legacyIssuer, legacySubject := "", ""
-	if operatorConfigured(in.Provider) {
+	if operatorConfigured(in.Provider) && !legacyTaken {
 		legacyIssuer, legacySubject = in.Issuer, in.Subject
 	}
 
@@ -412,18 +495,33 @@ func (s *Service) createSocialUser(
 	return u, nil
 }
 
-// syntheticEmailDomain keeps a placeholder address obviously non-routable and
-// scoped to the issuer, so two issuers cannot generate the same address for the
-// same subject.
+// syntheticEmailDomain keeps a placeholder address obviously non-routable, for
+// the one case that needs one: an operator-configured IdP that returns no email
+// claim, where the unique-email constraint still has to be satisfied by
+// something.
+//
+// IT IS SCOPED TO THE PROVIDER, NOT THE ISSUER, AND THAT IS THE WHOLE POINT.
+// Deriving the domain from the issuer host made the address a function of
+// configuration: repointing WPMGR_OIDC_ISSUER changed the address the same
+// subject would be given, so the same human came back and got a second account,
+// silently, with nothing to reconcile the two on. An account's own address is
+// not something an environment variable should be able to move.
+//
+// This cannot be used to claim or collide with a real address: .invalid is the
+// reserved TLD that resolves nowhere, and the row is created with
+// email_verified false, which the linking rules already refuse to act on.
+//
+// The remaining fork is genuinely not solvable here. If an IdP asserts no
+// address, a person arriving on a SECOND provider brings nothing that could tie
+// them to the first account, and inventing a link would mean guessing. That is
+// what an explicit "link another sign-in method" flow on an already
+// authenticated session is for, not the sign-in path.
 func syntheticEmailDomain(in SocialIdentity) string {
-	host := strings.TrimPrefix(strings.TrimPrefix(in.Issuer, "https://"), "http://")
-	if i := strings.IndexAny(host, "/:"); i > 0 {
-		host = host[:i]
+	provider := strings.TrimSpace(in.Provider)
+	if provider == "" {
+		provider = "sso"
 	}
-	if host == "" {
-		host = in.Provider
-	}
-	return host + ".oidc.invalid"
+	return provider + ".invalid"
 }
 
 // finishSocialLogin resolves memberships and the active tenant, mirroring the
