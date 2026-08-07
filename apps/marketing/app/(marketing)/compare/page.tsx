@@ -4,8 +4,6 @@ import { buildMetadata, buildBreadcrumbLd, buildItemListLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { COMPARE_REGISTRY } from "@/lib/content/compare";
 import { Container, Section } from "@/components/ui/primitives";
-import { SiteHeader } from "@/components/sections/header";
-import { SiteFooter } from "@/components/sections/footer";
 
 export const metadata: Metadata = buildMetadata({
   title: "Compare WordPress management tools",
@@ -19,7 +17,6 @@ export default function CompareIndexPage() {
 
   return (
     <>
-      <SiteHeader />
       <main>
         <Section>
           <Container>
@@ -50,7 +47,6 @@ export default function CompareIndexPage() {
           </Container>
         </Section>
       </main>
-      <SiteFooter />
       <JsonLd
         data={buildBreadcrumbLd([
           { name: "Home", href: "/" },
