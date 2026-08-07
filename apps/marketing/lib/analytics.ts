@@ -65,6 +65,7 @@ export type SignupSource =
   | "blog-post"
   | "blog-inline"
   | "compare"
+  | "plugin-stack"
   | "self-host"
   | "guide"
   | "guides-index"

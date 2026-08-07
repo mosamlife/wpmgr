@@ -142,6 +142,31 @@ export default async function PricingPage() {
               .
             </p>
           </Reveal>
+
+          {/* The comparison a reader is actually making on this page is not
+              against our other tiers, it is against the plugins they already
+              pay for. Send them somewhere they can add that up. */}
+          <Reveal delay={0.15}>
+            <div className="mx-auto mt-10 flex max-w-2xl flex-col items-center gap-4 rounded-xl border border-[var(--border)] bg-card p-6 text-center shadow-sm sm:flex-row sm:text-left">
+              <Icon
+                name="Receipt"
+                size={22}
+                className="shrink-0 text-[var(--primary)]"
+                aria-hidden
+              />
+              <p className="flex-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                Comparing this against the plugins you already renew? Add them up at your fleet
+                size, from each vendor&apos;s own pricing page.
+              </p>
+              <Link
+                href="/pricing/plugin-stack"
+                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] px-4 text-sm font-medium text-foreground transition-colors duration-[var(--duration-fast)] hover:bg-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+              >
+                Open the calculator
+                <Icon name="ArrowRight" size={15} aria-hidden />
+              </Link>
+            </div>
+          </Reveal>
         </Container>
       </Section>
 

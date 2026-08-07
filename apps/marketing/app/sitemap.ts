@@ -62,6 +62,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${base}/features`, changeFrequency: "weekly", priority: 0.9 },
     { url: `${base}/solutions`, changeFrequency: "weekly", priority: 0.9 },
     { url: `${base}/pricing`, changeFrequency: "monthly", priority: 0.8 },
+    { url: `${base}/pricing/plugin-stack`, changeFrequency: "monthly", priority: 0.75 },
     { url: `${base}/about`, changeFrequency: "monthly", priority: 0.6 },
     { url: `${base}/changelog`, changeFrequency: "weekly", priority: 0.7 },
     { url: `${base}/resources`, changeFrequency: "monthly", priority: 0.7 },
