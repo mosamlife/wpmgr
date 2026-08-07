@@ -183,6 +183,28 @@ type Querier interface {
 	// with each tenant's name + site count. Run under Pool.InAgentTx
 	// (memberships_agent + sites_agent) so the cross-tenant read is allowed.
 	AdminUserSoleTenants(ctx context.Context, userID uuid.UUID) ([]AdminUserSoleTenantsRow, error)
+	// Writes the user_identities row that m110's one-shot backfill never wrote.
+	//
+	// A migration backfill runs exactly once, and schema_migrations guarantees it is
+	// never revisited. Anything the previous release wrote to users.oidc_subject
+	// afterwards, during a rollback window, therefore has legacy columns and no
+	// identity row forever. This is the runtime half of that repair: the sign-in
+	// path notices the gap and closes it, which works whatever order the deploy and
+	// the rollback happened in.
+	//
+	// Only ever called AFTER the policy has allowed the sign-in, so a refused
+	// account cannot acquire a permanent identity binding on its way out.
+	//
+	// ON CONFLICT DO NOTHING covers both unique indexes on purpose. Two concurrent
+	// sign-ins racing to heal the same row is a no-op, and a user who already holds
+	// an 'oidc' identity under a DIFFERENT subject keeps it: in both cases the
+	// legacy columns already told us who is signing in, so failing here would turn
+	// a successful repair into a failed login.
+	//
+	// :execrows so the caller can tell a real repair from a no-op. One repair, one
+	// audit entry: a conflict that repeats on every sign-in must not write an audit
+	// entry on every sign-in.
+	AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) (int64, error)
 	// Records that a scheduled backup was enqueued and advances next_run_at. The
 	// scheduler resolves the tenant from the due-row first, then advances within
 	// that tenant's scope (the per-tenant isolation policy permits the UPDATE).
@@ -1054,6 +1076,13 @@ type Querier interface {
 	// The ONLY lookup that authenticates. (provider, subject, issuer) is the
 	// provider's immutable id for the human; email is never used to authenticate,
 	// only to decide whether linking a NEW identity is permitted.
+	//
+	// ISSUER STAYS IN THE KEY. A subject is only unique WITHIN the issuer that
+	// minted it: two identity providers can hand out the same opaque string for two
+	// different people, and dropping issuer here would turn that collision into a
+	// silent sign-in as somebody else. Continuity across an issuer change is
+	// handled one level up, by ListIdentitiesBySubject plus an issuer the operator
+	// has explicitly declared, never by widening this key.
 	GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
 	// Lightweight per-request lookup for the session reject-stale check.
@@ -1449,6 +1478,20 @@ type Querier interface {
 	// convention; batch inserts share updated_at so id breaks ties deterministically).
 	// Runs under InTenantTx (operator path).
 	ListFontResultsForSite(ctx context.Context, arg ListFontResultsForSiteParams) ([]FontResult, error)
+	// The candidates for an issuer migration, and NOT an authenticating lookup on
+	// its own: what comes back here is handed to a pure policy that decides whether
+	// any of it may be used (see matchStoredIdentity).
+	//
+	// Reached only when the exact-issuer lookup above missed. The policy accepts a
+	// row whose issuer differs from the current one in exactly two shapes: the
+	// difference is cosmetic (a trailing slash, host case), or the stored issuer is
+	// the one the operator DECLARED as this install's previous issuer. Everything
+	// else, and any ambiguity at all, resolves to no match.
+	//
+	// The cap is a sanity bound, not part of the policy: more rows than this for
+	// one subject is not a state any install reaches, and the policy refuses on
+	// ambiguity anyway.
+	ListIdentitiesBySubject(ctx context.Context, arg ListIdentitiesBySubjectParams) ([]UserIdentity, error)
 	// Powers the account settings list, so a user can see what is linked and unlink
 	// it. Ordered for a stable UI.
 	ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
@@ -1754,6 +1797,19 @@ type Querier interface {
 	// (waveOrder sorts by the same pair), so an agent rollout's canary is the
 	// first row of the table.
 	ListUpdateTasksForRunWithSiteName(ctx context.Context, arg ListUpdateTasksForRunWithSiteNameParams) ([]ListUpdateTasksForRunWithSiteNameRow, error)
+	// The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
+	// user_identities row was never written (see AdoptLegacyIdentity).
+	//
+	// It selects by subject and NOT by (issuer, subject) so the caller can see the
+	// whole picture before deciding: the issuer rule is applied in Go, by the same
+	// pure policy that governs the user_identities lookup, rather than being half
+	// enforced in SQL and half in code. Nothing here authenticates on its own.
+	//
+	// :many because the old users_oidc_identity_key was unique on (oidc_issuer,
+	// oidc_subject), so two users CAN legitimately share a subject under two
+	// issuers. The caller must be able to SEE that and refuse, instead of being
+	// handed one row by a :one and treating it as the answer.
+	ListUsersByLegacyOIDCSubject(ctx context.Context, oidcSubject *string) ([]User, error)
 	// All registered credentials for a user (for the Security settings list).
 	// Ordered by created_at DESC, id DESC.
 	ListWebAuthnCredentialsForUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
@@ -1835,6 +1891,17 @@ type Querier interface {
 	MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error)
 	// Activate + mark verified (used on self-serve activation and trusted bootstrap).
 	MarkUserEmailVerified(ctx context.Context, id uuid.UUID) error
+	// Moves ONE identity from the issuer it was stored under to the one that just
+	// signed the token. The operator declared the old issuer, the sign-in path
+	// decided this row is the unambiguous single candidate, and the caller audits
+	// the move: this is the deliberate, recorded half of "an issuer change is a
+	// migration", as opposed to a lookup that quietly ignores issuer.
+	//
+	// Matching on the OLD issuer, not just (provider, subject), is what keeps it
+	// one row and makes a concurrent second sign-in a no-op rather than a double
+	// move; :execrows so the caller only writes an audit entry when a row actually
+	// moved.
+	MigrateIdentityIssuer(ctx context.Context, arg MigrateIdentityIssuerParams) (int64, error)
 	// ---------------------------------------------------------------------------
 	// site_incidents (M94 — GH #148: persisted incident history, written
 	// alongside site_alert_state inside TransitionAlertState).

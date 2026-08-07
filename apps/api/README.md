@@ -81,7 +81,11 @@ The RLS integration tests (`tests/*_integration_test.go`) connect as the
   closed and members are added via `POST /api/v1/members`). OIDC relying party
   (coreos/go-oidc v3 + x/oauth2, PKCE + state + nonce) at `GET /auth/oidc/login`
   and `GET /auth/oidc/callback`; disabled cleanly (501) when `WPMGR_OIDC_ISSUER`
-  is unset.
+  is unset. An identity is `(provider, subject, issuer)`: a subject is unique
+  only within the issuer that minted it, so moving your IdP to a new issuer URL
+  needs `WPMGR_OIDC_PREVIOUS_ISSUER` set to the old one. That authorises a
+  one-time, audited move of each identity on its owner's next sign-in; unset it
+  once the move is done. Cosmetic edits (trailing slash, host case) need nothing.
 - **Sessions**: SCS v2 with a Redis store (redigo pool, `WPMGR_REDIS_ADDR`),
   opaque `wpmgr_session` cookie (HttpOnly, SameSite=Lax, Secure in prod), idle +
   absolute lifetimes. The session holds `user_id` + `active_tenant_id`. The
@@ -240,4 +244,5 @@ tables so the M1 `ALTER DEFAULT PRIVILEGES` grant covers them for `wpmgr_app`.**
 app DSN), `WPMGR_ALLOW_RLS_BYPASS_ROLE` (dev escape hatch, default false),
 `WPMGR_SESSION_SECRET` (≥32 bytes, no `change-me*`), `WPMGR_REDIS_ADDR`,
 `WPMGR_REDIS_PASSWORD`, `WPMGR_OIDC_ISSUER`/`_CLIENT_ID`/`_CLIENT_SECRET`/`_REDIRECT_URL`,
+optional `WPMGR_OIDC_PREVIOUS_ISSUER` (only while moving to a new issuer URL),
 and optional `WPMGR_AUTH_IDLE_TIMEOUT` / `WPMGR_AUTH_ABSOLUTE_EXPIRY`.

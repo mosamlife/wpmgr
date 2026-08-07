@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"time"
 
@@ -113,6 +114,160 @@ const (
 // status gate still applies. Trusting an issuer to say who its own users are is
 // not the same as trusting it to claim an address on this install.
 func operatorConfigured(provider string) bool { return provider == "oidc" }
+
+// normalizeIssuer folds the differences between two spellings of the SAME
+// issuer, and nothing else.
+//
+// Scheme and host are case-insensitive by definition (DNS and RFC 3986), and a
+// trailing slash on the issuer URL denotes nothing: no operator runs two
+// different identity providers on one hostname distinguished only by whether
+// the URL ends in "/". So treating those as a changed issuer is a lockout with
+// no security content on the other side of it.
+//
+// The PATH is deliberately left alone apart from that trailing slash. Two
+// issuers on one host that differ by path are two issuers (Dex, Keycloak and
+// Auth0 all use the path for the realm), and folding them together would merge
+// two populations of users.
+func normalizeIssuer(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		// Not a URL we can reason about. Compare it as an opaque string rather
+		// than guess at its structure.
+		return strings.TrimRight(s, "/")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String()
+}
+
+// sameIssuer reports whether two issuer strings name the same issuer.
+func sameIssuer(a, b string) bool {
+	return normalizeIssuer(a) == normalizeIssuer(b)
+}
+
+// identityMatchKind says HOW a stored identity was matched, which decides both
+// what has to be written and what has to be audited.
+type identityMatchKind int
+
+const (
+	matchNone           identityMatchKind = iota
+	matchExact                            // stored under the issuer that just signed the token
+	matchIssuerMigrated                   // stored under the issuer the operator DECLARED as the previous one
+)
+
+// matchStoredIdentity decides which stored identity, if any, authenticates this
+// sign-in. Pure, and separate from the database work, for the same reason
+// decideSocial is: an account is won or lost here.
+//
+// (provider, subject, issuer) IS THE IDENTITY. A subject is only unique within
+// the issuer that minted it, so matching on (provider, subject) alone would let
+// two identity providers that happen to mint the same opaque string resolve to
+// one account: a cross-IdP collision would become a silent, complete account
+// takeover. That is why issuer is in the unique index and in the exact lookup.
+//
+// AN ISSUER CHANGE IS A MIGRATION, NOT A LOOKUP RULE. Keying on issuer has a
+// real cost: an operator who repoints WPMGR_OIDC_ISSUER strands every
+// generic-OIDC identity at once, and every SSO user on the install stops being
+// recognised on the same deploy. Two narrow relaxations answer that without
+// making the key ambiguous:
+//
+//   - A cosmetic difference is not a difference. See normalizeIssuer.
+//
+//   - A GENUINE change is accepted only when the operator declared the old
+//     issuer in WPMGR_OIDC_PREVIOUS_ISSUER, only for the generic OIDC provider
+//     (Google and GitHub mint a constant issuer, so a mismatch there could only
+//     ever be a collision between two different people), and only when exactly
+//     one stored row is a candidate. The caller then MOVES the row to the new
+//     issuer and audits it, so the relaxation applies once per identity rather
+//     than becoming a standing rule.
+//
+// Anything else, including any ambiguity at all, is matchNone. There is no
+// tiebreak that is safe when two rows are candidates: picking one hands a
+// person somebody else's account.
+func matchStoredIdentity(in SocialIdentity, previousIssuer string, stored []Identity) (Identity, identityMatchKind) {
+	var exact, previous []Identity
+	for _, s := range stored {
+		// Defensive: the query already scopes this, and a pure function that
+		// trusts its caller for the identity halves of the key is one refactor
+		// away from being wrong.
+		if s.Provider != in.Provider || s.Subject != in.Subject {
+			continue
+		}
+		switch {
+		case sameIssuer(s.Issuer, in.Issuer):
+			exact = append(exact, s)
+		case operatorConfigured(in.Provider) && previousIssuer != "" && sameIssuer(s.Issuer, previousIssuer):
+			previous = append(previous, s)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], matchExact
+	}
+	if len(exact) > 1 {
+		// Only reachable through a normalization fold (the unique index stops
+		// exact duplicates), and still ambiguous. Refuse.
+		return Identity{}, matchNone
+	}
+	if len(previous) == 1 {
+		return previous[0], matchIssuerMigrated
+	}
+	return Identity{}, matchNone
+}
+
+// matchLegacyUser applies exactly the same rule to the pre-m110 identity still
+// sitting on users.oidc_issuer / users.oidc_subject, for a user whose
+// user_identities row was never written.
+//
+// It is a separate function only because the row shape differs. The policy must
+// not: a repair path that matched more loosely than the authenticating lookup
+// would simply move the takeover one query along.
+func matchLegacyUser(in SocialIdentity, previousIssuer string, holders []User) (User, identityMatchKind) {
+	if !operatorConfigured(in.Provider) {
+		// The legacy columns were only ever written by the generic OIDC path, so
+		// for a consumer provider a match could only be a subject collision
+		// between two different people.
+		return User{}, matchNone
+	}
+	stored := make([]Identity, 0, len(holders))
+	byUser := make(map[uuid.UUID]User, len(holders))
+	for _, u := range holders {
+		if u.OIDCSubject == "" {
+			continue
+		}
+		stored = append(stored, Identity{
+			UserID: u.ID, Provider: in.Provider, Subject: u.OIDCSubject, Issuer: u.OIDCIssuer,
+		})
+		byUser[u.ID] = u
+	}
+	got, kind := matchStoredIdentity(in, previousIssuer, stored)
+	if kind == matchNone {
+		return User{}, matchNone
+	}
+	return byUser[got.UserID], kind
+}
+
+// legacySlotTaken reports whether some user already holds this exact
+// (issuer, subject) pair on the legacy users columns.
+//
+// createSocialUser mirrors new generic-OIDC accounts into those columns so a
+// rollback still recognises them. That mirror is a convenience; the sign-in
+// itself is not. Writing it blind makes the convenience fatal:
+// users_oidc_identity_key is unique, so creating an account whose pair was
+// already taken fails the whole sign-in with a duplicate-key error rather than
+// declining to mirror.
+func legacySlotTaken(in SocialIdentity, holders []User) bool {
+	for _, u := range holders {
+		if u.OIDCSubject == in.Subject && sameIssuer(u.OIDCIssuer, in.Issuer) {
+			return true
+		}
+	}
+	return false
+}
 
 // decideSocial IS THE POLICY, for every provider including the generic OIDC one.
 // It is a pure function of the facts, deliberately separated from the database
@@ -278,23 +433,22 @@ func (s *Service) SignInWithSocial(
 ) (LoginResult, error) {
 	in.Email = normalizeEmail(in.Email)
 
-	var identityUser *User
-	if u, err := s.repo.GetUserByIdentity(ctx, in.Provider, in.Subject, in.Issuer); err == nil {
-		identityUser = &u
-	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
-		return LoginResult{}, err
+	// NO SUBJECT, NO IDENTITY. Everything below keys on (provider, subject,
+	// issuer), and an empty subject would make that key a shared bucket: the
+	// first person through it would create the account and everyone after would
+	// sign into it. A provider that returns no `sub` is broken, not anonymous.
+	if in.Provider == "" || in.Subject == "" {
+		return LoginResult{}, domain.Unauthorized(
+			"social_subject_missing",
+			"your identity provider did not return an account identifier",
+		)
 	}
 
-	// Only looked up when it can matter, so an unverified provider email never
-	// even probes for the existence of an account.
-	var emailUser *User
-	if identityUser == nil && in.usableEmail() {
-		if u, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
-			emailUser = &u
-		} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
-			return LoginResult{}, err
-		}
+	facts, err := s.loadSocialFacts(ctx, in)
+	if err != nil {
+		return LoginResult{}, err
 	}
+	identityUser, emailUser := facts.identityUser, facts.emailUser
 
 	action, err := decideSocial(in, identityUser, emailUser)
 	if err != nil {
@@ -318,6 +472,12 @@ func (s *Service) SignInWithSocial(
 
 	switch action {
 	case socialSignIn:
+		// AFTER THE GATE, NEVER BEFORE IT. The repair writes a permanent
+		// identity binding, and doing it while loading the facts meant a
+		// sign-in the policy went on to REFUSE (a disabled account, an
+		// unverified one) still mutated authentication state on its way out.
+		// A refusal must leave the database exactly as it found it.
+		s.repairIdentity(ctx, action, in, facts)
 		s.repo.TouchIdentityLogin(ctx, in.Provider, in.Subject, in.Issuer, in.Email, in.EmailVerified)
 		return s.finishSocialLogin(ctx, *identityUser, createTenant)
 
@@ -332,13 +492,181 @@ func (s *Service) SignInWithSocial(
 		return s.finishSocialLogin(ctx, *emailUser, createTenant)
 
 	default:
-		u, err := s.createSocialUser(ctx, in, createTenant)
+		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, facts.legacyHolders))
 		if err != nil {
 			return LoginResult{}, err
 		}
 		s.recordSocialAudit(ctx, u.ID, in.Provider, "register")
 		return s.finishSocialLogin(ctx, u, createTenant)
 	}
+}
+
+// socialFacts is everything the database knows that the policy needs, plus the
+// bookkeeping the sign-in will owe IF the policy allows it. Loading and
+// deciding are kept apart on purpose: see repairIdentity.
+type socialFacts struct {
+	// identityUser is the account the identity resolved to, by whichever of the
+	// three routes below matched.
+	identityUser *User
+	// emailUser is the account holding the provider's asserted address, looked
+	// up only when it can matter.
+	emailUser *User
+
+	// match is how identityUser was found, and storedIssuer is the issuer it was
+	// found under. Together they say what has to be repaired.
+	match        identityMatchKind
+	storedIssuer string
+	// fromLegacy is true when the match came from the pre-m110 users.oidc_*
+	// columns, which means no user_identities row exists for it yet.
+	fromLegacy bool
+	// legacyHolders is the raw legacy lookup, kept so account creation can see
+	// whether the legacy mirror slot is already occupied.
+	legacyHolders []User
+}
+
+// loadSocialFacts reads, and ONLY reads. Every write this sign-in might owe is
+// recorded in the returned facts and executed later, once the policy has
+// allowed the sign-in.
+func (s *Service) loadSocialFacts(ctx context.Context, in SocialIdentity) (socialFacts, error) {
+	f, err := s.resolveIdentity(ctx, in)
+	if err != nil {
+		return socialFacts{}, err
+	}
+
+	// The email is looked up only when it can matter, so an address the provider
+	// will not vouch for never even probes for the existence of an account.
+	// usableEmail, not a bare verified check: an address we cannot reach is no
+	// use for linking either, and decideSocial refuses it a few lines later, so
+	// probing for its owner would be a lookup whose answer can never be acted on.
+	if f.identityUser == nil && in.usableEmail() {
+		if u, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
+			f.emailUser = &u
+		} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
+			return socialFacts{}, err
+		}
+	}
+	return f, nil
+}
+
+// resolveIdentity answers the only question that authenticates: which account,
+// if any, does this external identity belong to? Three routes, in descending
+// order of certainty, and none of them writes anything.
+func (s *Service) resolveIdentity(ctx context.Context, in SocialIdentity) (socialFacts, error) {
+	var f socialFacts
+
+	// 1. The exact identity: (provider, subject, issuer). The ordinary path,
+	//    and the only one that involves no relaxation of any kind.
+	if u, err := s.repo.GetUserByIdentity(ctx, in.Provider, in.Subject, in.Issuer); err == nil {
+		f.identityUser, f.match, f.storedIssuer = &u, matchExact, in.Issuer
+		return f, nil
+	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
+		return socialFacts{}, err
+	}
+
+	// 2. THE SAME IDENTITY UNDER THE ISSUER IT WAS STORED WITH. Reached only on
+	//    a miss, and matchStoredIdentity decides whether anything here may be
+	//    used: a cosmetic difference in the issuer string, or an issuer the
+	//    operator explicitly declared as this install's previous one. Ambiguity
+	//    resolves to no match, on this lookup and not only on the legacy one.
+	stored, err := s.repo.ListIdentitiesBySubject(ctx, in.Provider, in.Subject)
+	if err != nil {
+		return socialFacts{}, err
+	}
+	if got, kind := matchStoredIdentity(in, s.previousOIDCIssuer, stored); kind != matchNone {
+		u, err := s.repo.GetUserByID(ctx, got.UserID)
+		if err != nil {
+			return socialFacts{}, err
+		}
+		f.identityUser, f.match, f.storedIssuer = &u, kind, got.Issuer
+		return f, nil
+	}
+
+	// 3. THE PRE-m110 IDENTITY, WHICH A MIGRATION CANNOT BE TRUSTED TO HAVE
+	//    MOVED. m110 copied users.oidc_subject into user_identities once, and a
+	//    backfill runs once by construction: schema_migrations records it and it
+	//    is never revisited. Anything the PREVIOUS release wrote afterwards,
+	//    during a rollback window, has legacy columns and no identity row for
+	//    good.
+	//
+	//    The consequence is not cosmetic. That release never wrote
+	//    email_verified_at, so such an account looks never-verified, and the
+	//    takeover defence correctly declines to link a social identity onto a
+	//    never-verified account. A correct rule meeting the wrong population:
+	//    people who have signed in through SSO for months are refused at the
+	//    door, where the release before this one signed them straight in.
+	//
+	//    Only for an operator-configured issuer, and under exactly the issuer
+	//    rule above: a repair path that matched more loosely than the
+	//    authenticating lookup would just move the takeover one query along.
+	if !operatorConfigured(in.Provider) {
+		return f, nil
+	}
+	holders, err := s.repo.ListUsersByLegacyOIDCSubject(ctx, in.Subject)
+	if err != nil {
+		return socialFacts{}, err
+	}
+	f.legacyHolders = holders
+	if u, kind := matchLegacyUser(in, s.previousOIDCIssuer, holders); kind != matchNone {
+		f.identityUser, f.match, f.storedIssuer, f.fromLegacy = &u, kind, u.OIDCIssuer, true
+	}
+	return f, nil
+}
+
+// repairIdentity writes the one row this sign-in owes, once the policy has said
+// the sign-in may proceed. Everything it does is best effort by design: the
+// identity has already been established, so a bookkeeping failure must not turn
+// into a failed login. The next sign-in repeats it.
+//
+// It takes the DECIDED action and re-checks it rather than trusting its call
+// site, because the bug this guards against is precisely a repair that runs
+// before, or instead of, a decision: a refused sign-in must not leave a
+// permanent identity binding behind. Any action other than signing in owns no
+// repair, and a refusal never reaches here at all.
+func (s *Service) repairIdentity(ctx context.Context, action socialAction, in SocialIdentity, f socialFacts) {
+	if action != socialSignIn || f.identityUser == nil {
+		return
+	}
+	switch {
+	case f.fromLegacy:
+		// The missing user_identities row, written under the CURRENT issuer, so
+		// the next sign-in is an ordinary exact hit that does not depend on the
+		// legacy columns at all.
+		written, err := s.repo.AdoptLegacyIdentity(ctx, Identity{
+			UserID: f.identityUser.ID, Provider: in.Provider, Subject: in.Subject,
+			Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
+		})
+		if err != nil || !written {
+			// Nothing written means a concurrent sign-in healed it first, or the
+			// user already holds an 'oidc' identity under another subject. Either
+			// way there is no new fact to record.
+			return
+		}
+		s.recordSocialAuditWith(ctx, f.identityUser.ID, in.Provider, "legacy_identity_adopted",
+			issuerMoveMeta(f.storedIssuer, in.Issuer))
+
+	case f.match == matchIssuerMigrated:
+		// The operator declared the move; this is the row actually moving, once,
+		// and it is recorded because an identity changing issuer is exactly the
+		// kind of event somebody reading the audit log later needs to see.
+		moved, err := s.repo.MigrateIdentityIssuer(ctx, in.Provider, in.Subject,
+			f.storedIssuer, in.Issuer, in.Email, in.EmailVerified)
+		if err != nil || !moved {
+			// Not moved means a concurrent sign-in moved it first. One move, one
+			// audit entry.
+			return
+		}
+		s.recordSocialAuditWith(ctx, f.identityUser.ID, in.Provider, "identity_issuer_migrated",
+			issuerMoveMeta(f.storedIssuer, in.Issuer))
+	}
+}
+
+// issuerMoveMeta records where an identity was and where it went, omitting the
+// pair when nothing actually moved.
+func issuerMoveMeta(from, to string) map[string]any {
+	if sameIssuer(from, to) {
+		return nil
+	}
+	return map[string]any{"from_issuer": from, "to_issuer": to}
 }
 
 // socialStatusGate refuses the same account states the password path refuses.
@@ -367,10 +695,21 @@ func providerLabel(p string) string {
 }
 
 func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provider, action string) {
+	s.recordSocialAuditWith(ctx, userID, provider, action, nil)
+}
+
+// recordSocialAuditWith carries the extra facts that make an entry worth
+// reading: which issuer an identity moved from and to, above all, because that
+// is the one event here that changes what a stored credential means.
+func (s *Service) recordSocialAuditWith(ctx context.Context, userID uuid.UUID, provider, action string, extra map[string]any) {
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, userID)
 	var tenantID uuid.UUID
 	if len(memberships) > 0 {
 		tenantID = memberships[0].TenantID
+	}
+	meta := map[string]any{"provider": provider, "event": action}
+	for k, v := range extra {
+		meta[k] = v
 	}
 	_, _ = s.audit.Record(ctx, audit.Event{
 		TenantID:   tenantID,
@@ -379,7 +718,7 @@ func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provi
 		Action:     audit.ActionOIDCLogin,
 		TargetType: "user",
 		TargetID:   userID.String(),
-		Metadata:   map[string]any{"provider": provider, "event": action},
+		Metadata:   meta,
 	})
 }
 
@@ -389,7 +728,7 @@ func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provi
 func (s *Service) createSocialUser(
 	ctx context.Context,
 	in SocialIdentity,
-	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
+	legacyTaken bool,
 ) (User, error) {
 	email := in.Email
 	verified := in.EmailVerified
@@ -407,8 +746,13 @@ func (s *Service) createSocialUser(
 	// first signed in during the rollout. Google and GitHub have no
 	// representation there and deliberately get none: inventing one would put
 	// two providers into a single slot that only holds one.
+	//
+	// Skipped when another user already holds the pair, because that column pair
+	// is UNIQUE and this mirror is a courtesy to a rollback that may never
+	// happen. Insisting on it turned a creatable account into a duplicate-key
+	// failure and a broken sign-in.
 	legacyIssuer, legacySubject := "", ""
-	if operatorConfigured(in.Provider) {
+	if operatorConfigured(in.Provider) && !legacyTaken {
 		legacyIssuer, legacySubject = in.Issuer, in.Subject
 	}
 
@@ -444,6 +788,17 @@ func (s *Service) createSocialUser(
 // syntheticEmailDomain keeps a placeholder address obviously non-routable and
 // scoped to the issuer, so two issuers cannot generate the same address for the
 // same subject.
+//
+// That scoping is what stops a subject collision between two IdPs from becoming
+// a unique-email failure at account creation: the same opaque subject minted by
+// two different issuers is two different people, and they get two different
+// placeholders. The address is minted ONCE, at creation, and never recomputed,
+// so an issuer change afterwards does not move anybody's address; continuity
+// across such a change is the identity layer's job, not this function's.
+//
+// It cannot be used to claim or collide with a real address: .invalid is the
+// reserved TLD that resolves nowhere, and the row is created with
+// email_verified false, which the linking rules already refuse to act on.
 func syntheticEmailDomain(in SocialIdentity) string {
 	host := strings.TrimPrefix(strings.TrimPrefix(in.Issuer, "https://"), "http://")
 	if i := strings.IndexAny(host, "/:"); i > 0 {

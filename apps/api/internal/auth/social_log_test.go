@@ -30,8 +30,15 @@ func (emptyDB) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag,
 	return pgconn.CommandTag{}, errors.New("emptyDB: no writes in this test")
 }
 
+// An empty result set, NOT pgx.ErrNoRows. Every caller of Query is a sqlc
+// :many, and pgx only reports ErrNoRows from QueryRow().Scan(); a list query
+// against an empty table returns zero rows and a nil error. Returning the error
+// here made "nobody in the database" indistinguishable from "the database is
+// broken", so the identity lookups added for issuer continuity aborted the
+// sign-in before the policy ran and this file's refusal tests stopped seeing
+// the refusal they assert on.
 func (emptyDB) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
-	return nil, pgx.ErrNoRows
+	return emptyRows{}, nil
 }
 
 func (emptyDB) QueryRow(context.Context, string, ...interface{}) pgx.Row { return noRow{} }
@@ -39,6 +46,18 @@ func (emptyDB) QueryRow(context.Context, string, ...interface{}) pgx.Row { retur
 type noRow struct{}
 
 func (noRow) Scan(...any) error { return pgx.ErrNoRows }
+
+type emptyRows struct{}
+
+func (emptyRows) Close()                                       {}
+func (emptyRows) Err() error                                   { return nil }
+func (emptyRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (emptyRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (emptyRows) Next() bool                                   { return false }
+func (emptyRows) Scan(...any) error                            { return pgx.ErrNoRows }
+func (emptyRows) Values() ([]any, error)                       { return nil, nil }
+func (emptyRows) RawValues() [][]byte                          { return nil }
+func (emptyRows) Conn() *pgx.Conn                              { return nil }
 
 // stubAdapter stands in for a provider that fails in a specific way.
 type stubAdapter struct {

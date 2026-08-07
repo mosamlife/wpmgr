@@ -49,6 +49,28 @@ type Service struct {
 	// Injected via SetPlanValidator after startup; nil treats every plan hint
 	// as no intent.
 	planValidator PaidTierValidator
+	// previousOIDCIssuer is the issuer this install used BEFORE the configured
+	// one, declared by the operator. Empty on every install that never moved.
+	// See SetPreviousOIDCIssuer.
+	previousOIDCIssuer string
+}
+
+// SetPreviousOIDCIssuer declares the generic-OIDC issuer this install used
+// before the current one, so identities stored under it can be migrated forward
+// on their owners' next sign-in.
+//
+// IT IS AN AUTHORISATION, NOT A HINT, AND IT NEVER VERIFIES A TOKEN. An
+// identity is (provider, subject, issuer) and subject is unique only within its
+// issuer, so nothing may cross an issuer boundary on its own. Only the operator
+// knows that the people arriving from the new issuer are the same people the old
+// one vouched for, so only the operator can say so, by setting
+// WPMGR_OIDC_PREVIOUS_ISSUER. Each identity is then moved once, and the move is
+// audited.
+//
+// Leaving it unset is always safe: an unset value means no identity can ever be
+// matched across an issuer change, which is the pre-existing behaviour.
+func (s *Service) SetPreviousOIDCIssuer(issuer string) {
+	s.previousOIDCIssuer = strings.TrimSpace(issuer)
 }
 
 // NewService builds an auth Service.

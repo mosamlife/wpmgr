@@ -415,6 +415,21 @@ CREATE UNIQUE INDEX users_oidc_identity_key
 -- reassigned inside a Workspace, and repeat across providers. Matching on email
 -- is how account takeovers happen.
 --
+-- ISSUER IS PART OF THE KEY, AND HAS TO BE. A subject is unique only within the
+-- issuer that minted it; two IdPs can hand out the same opaque string for two
+-- different people. Keying on (provider, subject) alone would make that
+-- collision resolve to a silent sign-in as somebody else, which is a worse
+-- failure than any lockout.
+--
+-- The lockout that argument is usually raised against is real, and is answered
+-- elsewhere: an operator who repoints WPMGR_OIDC_ISSUER strands every
+-- generic-OIDC row at once. internal/auth treats that as a MIGRATION rather
+-- than a lookup rule. A difference that is purely cosmetic (trailing slash,
+-- host case) is not a change at all, and a genuine change of issuer is carried
+-- by WPMGR_OIDC_PREVIOUS_ISSUER, which the operator sets deliberately; each row
+-- is then moved to the new issuer once, on that person's next sign-in, and the
+-- move is written to the audit log. Ambiguity never resolves to a guess.
+--
 -- email_verified is the PROVIDER's assertion at link time. users.email_verified_at
 -- is our own. The linking rules need both, separately.
 --

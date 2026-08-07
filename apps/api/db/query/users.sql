@@ -12,6 +12,21 @@ SELECT * FROM users WHERE email = $1;
 -- name: GetUserByOIDC :one
 SELECT * FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2;
 
+-- name: ListUsersByLegacyOIDCSubject :many
+-- The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
+-- user_identities row was never written (see AdoptLegacyIdentity).
+--
+-- It selects by subject and NOT by (issuer, subject) so the caller can see the
+-- whole picture before deciding: the issuer rule is applied in Go, by the same
+-- pure policy that governs the user_identities lookup, rather than being half
+-- enforced in SQL and half in code. Nothing here authenticates on its own.
+--
+-- :many because the old users_oidc_identity_key was unique on (oidc_issuer,
+-- oidc_subject), so two users CAN legitimately share a subject under two
+-- issuers. The caller must be able to SEE that and refuse, instead of being
+-- handed one row by a :one and treating it as the answer.
+SELECT * FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 10;
+
 -- name: CountUsers :one
 SELECT count(*) FROM users;
 

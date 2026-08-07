@@ -426,6 +426,12 @@ type Identity struct {
 // issuer) is the provider's immutable id for the person, and no email is
 // consulted. Email is used elsewhere to decide whether a NEW identity may be
 // linked, never to decide who is signing in.
+//
+// Issuer stays in the key because a subject is unique only within the issuer
+// that minted it. Continuity across an issuer change is handled by
+// ListIdentitiesBySubject plus an operator-declared previous issuer, not by
+// dropping issuer from this lookup: that would make two IdPs minting the same
+// opaque string resolve to one account.
 func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer string) (User, error) {
 	row, err := r.q.GetUserByIdentity(ctx, sqlc.GetUserByIdentityParams{
 		Provider: provider, Subject: subject, Issuer: issuer,
@@ -437,6 +443,84 @@ func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer 
 		return User{}, domain.Internal("identity_get_failed", "failed to load identity").WithCause(err)
 	}
 	return userToModel(row), nil
+}
+
+// ListIdentitiesBySubject returns every stored identity for (provider, subject),
+// across issuers. It does NOT authenticate anything on its own: it is the
+// candidate set for matchStoredIdentity, which decides whether any of it may be
+// used and refuses on any ambiguity.
+func (r *Repo) ListIdentitiesBySubject(ctx context.Context, provider, subject string) ([]Identity, error) {
+	rows, err := r.q.ListIdentitiesBySubject(ctx, sqlc.ListIdentitiesBySubjectParams{
+		Provider: provider, Subject: subject,
+	})
+	if err != nil {
+		return nil, domain.Internal("identity_list_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]Identity, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Identity{
+			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
+			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
+		})
+	}
+	return out, nil
+}
+
+// MigrateIdentityIssuer moves one identity row from the issuer it was stored
+// under to the one that just signed the token, and reports whether a row
+// actually moved. False means somebody else's concurrent sign-in got there
+// first, which is not an error and must not be audited twice.
+func (r *Repo) MigrateIdentityIssuer(ctx context.Context, provider, subject, fromIssuer, toIssuer, email string, verified bool) (bool, error) {
+	n, err := r.q.MigrateIdentityIssuer(ctx, sqlc.MigrateIdentityIssuerParams{
+		Provider: provider, Subject: subject, Issuer: fromIssuer,
+		Issuer_2: toIssuer, Email: email, EmailVerified: verified,
+	})
+	if err != nil {
+		return false, domain.Internal("identity_issuer_migrate_failed", "failed to move identity").WithCause(err)
+	}
+	return n > 0, nil
+}
+
+// ListUsersByLegacyOIDCSubject returns the pre-m110 users carrying this OIDC
+// subject on users.oidc_subject.
+//
+// Subject alone, because the caller has to be able to SEE that two users share
+// a subject under two issuers, which the old (oidc_issuer, oidc_subject) unique
+// index permitted. The issuer rule is applied by the same pure policy that
+// governs user_identities; nothing here authenticates on its own.
+func (r *Repo) ListUsersByLegacyOIDCSubject(ctx context.Context, subject string) ([]User, error) {
+	rows, err := r.q.ListUsersByLegacyOIDCSubject(ctx, &subject)
+	if err != nil {
+		return nil, domain.Internal("legacy_identity_lookup_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]User, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, userToModel(row))
+	}
+	return out, nil
+}
+
+// AdoptLegacyIdentity writes the user_identities row that m110's one-shot
+// backfill never wrote for this user. A conflict is success, not failure: see
+// the query for why both unique indexes are tolerated here.
+//
+// Called only after the policy has ALLOWED the sign-in. A refused account must
+// not acquire a permanent identity binding on its way out of the door.
+// It reports whether a row was actually written, so one repair produces one
+// audit entry rather than one per sign-in.
+func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) (bool, error) {
+	n, err := r.q.AdoptLegacyIdentity(ctx, sqlc.AdoptLegacyIdentityParams{
+		UserID:        in.UserID,
+		Provider:      in.Provider,
+		Subject:       in.Subject,
+		Issuer:        in.Issuer,
+		Email:         in.Email,
+		EmailVerified: in.EmailVerified,
+	})
+	if err != nil {
+		return false, domain.Internal("identity_adopt_failed", "failed to record identity").WithCause(err)
+	}
+	return n > 0, nil
 }
 
 // CreateIdentity links an external identity to an existing user.

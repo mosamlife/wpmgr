@@ -468,6 +468,62 @@ func (q *Queries) LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (Use
 	return i, err
 }
 
+const listUsersByLegacyOIDCSubject = `-- name: ListUsersByLegacyOIDCSubject :many
+SELECT id, email, password_hash, oidc_subject, oidc_issuer, name, created_at, updated_at, last_login_at, password_changed_at, status, email_verified_at, is_superadmin, two_factor_enabled, totp_secret_encrypted, totp_confirmed_at, totp_last_step, totp_provisional_secret_encrypted, totp_provisional_expires_at FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 10
+`
+
+// The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
+// user_identities row was never written (see AdoptLegacyIdentity).
+//
+// It selects by subject and NOT by (issuer, subject) so the caller can see the
+// whole picture before deciding: the issuer rule is applied in Go, by the same
+// pure policy that governs the user_identities lookup, rather than being half
+// enforced in SQL and half in code. Nothing here authenticates on its own.
+//
+// :many because the old users_oidc_identity_key was unique on (oidc_issuer,
+// oidc_subject), so two users CAN legitimately share a subject under two
+// issuers. The caller must be able to SEE that and refuse, instead of being
+// handed one row by a :one and treating it as the answer.
+func (q *Queries) ListUsersByLegacyOIDCSubject(ctx context.Context, oidcSubject *string) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsersByLegacyOIDCSubject, oidcSubject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.PasswordHash,
+			&i.OidcSubject,
+			&i.OidcIssuer,
+			&i.Name,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastLoginAt,
+			&i.PasswordChangedAt,
+			&i.Status,
+			&i.EmailVerifiedAt,
+			&i.IsSuperadmin,
+			&i.TwoFactorEnabled,
+			&i.TotpSecretEncrypted,
+			&i.TotpConfirmedAt,
+			&i.TotpLastStep,
+			&i.TotpProvisionalSecretEncrypted,
+			&i.TotpProvisionalExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setUserPasswordHash = `-- name: SetUserPasswordHash :exec
 UPDATE users SET password_hash = $2, password_changed_at = now(), updated_at = now() WHERE id = $1
 `
