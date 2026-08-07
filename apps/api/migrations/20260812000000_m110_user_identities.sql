@@ -82,19 +82,6 @@ SELECT
     true,
     u.created_at
 FROM users u
--- oidc_subject alone decides eligibility. Requiring oidc_issuer too was a bug:
--- COALESCE two lines up already handles a NULL issuer, so the only thing the
--- extra condition did was skip those rows entirely, and a skipped row is an
--- identity the new sign-in path cannot find. m111 repeats this backfill with
--- the same predicate for installs that already ran m110 with the old one.
 WHERE u.oidc_subject IS NOT NULL
-  -- A subject shared by two users under different issuers, which the old
-  -- (oidc_issuer, oidc_subject) unique index permitted, identifies neither of
-  -- them once issuer stops being part of the key (m111). Binding one at random
-  -- would hand one person the other's account, so both are left for the sign-in
-  -- path, which refuses to guess.
-  AND NOT EXISTS (
-      SELECT 1 FROM users u2
-      WHERE u2.oidc_subject = u.oidc_subject AND u2.id <> u.id
-  )
+  AND u.oidc_issuer IS NOT NULL
 ON CONFLICT DO NOTHING;

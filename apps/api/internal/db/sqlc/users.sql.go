@@ -469,19 +469,21 @@ func (q *Queries) LinkUserOIDC(ctx context.Context, arg LinkUserOIDCParams) (Use
 }
 
 const listUsersByLegacyOIDCSubject = `-- name: ListUsersByLegacyOIDCSubject :many
-SELECT id, email, password_hash, oidc_subject, oidc_issuer, name, created_at, updated_at, last_login_at, password_changed_at, status, email_verified_at, is_superadmin, two_factor_enabled, totp_secret_encrypted, totp_confirmed_at, totp_last_step, totp_provisional_secret_encrypted, totp_provisional_expires_at FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 2
+SELECT id, email, password_hash, oidc_subject, oidc_issuer, name, created_at, updated_at, last_login_at, password_changed_at, status, email_verified_at, is_superadmin, two_factor_enabled, totp_secret_encrypted, totp_confirmed_at, totp_last_step, totp_provisional_secret_encrypted, totp_provisional_expires_at FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 10
 `
 
-// The pre-m110 identity, looked up by SUBJECT ALONE, so a sign-in can still
-// find someone whose user_identities row was never written (see
-// AdoptLegacyIdentity) even after the operator repointed WPMGR_OIDC_ISSUER.
+// The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
+// user_identities row was never written (see AdoptLegacyIdentity).
 //
-// :many, not :one, and LIMIT 2 is the point rather than an optimisation. The old
-// users_oidc_identity_key was unique on (oidc_issuer, oidc_subject), so two rows
-// CAN share a subject under different issuers. Subject alone does not identify
-// anyone in that case, and adopting either one would be a coin flip between two
-// humans. The caller sees both and refuses to guess; two rows is all it needs to
-// know that.
+// It selects by subject and NOT by (issuer, subject) so the caller can see the
+// whole picture before deciding: the issuer rule is applied in Go, by the same
+// pure policy that governs the user_identities lookup, rather than being half
+// enforced in SQL and half in code. Nothing here authenticates on its own.
+//
+// :many because the old users_oidc_identity_key was unique on (oidc_issuer,
+// oidc_subject), so two users CAN legitimately share a subject under two
+// issuers. The caller must be able to SEE that and refuse, instead of being
+// handed one row by a :one and treating it as the answer.
 func (q *Queries) ListUsersByLegacyOIDCSubject(ctx context.Context, oidcSubject *string) ([]User, error) {
 	rows, err := q.db.Query(ctx, listUsersByLegacyOIDCSubject, oidcSubject)
 	if err != nil {

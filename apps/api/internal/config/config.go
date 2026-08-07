@@ -533,6 +533,27 @@ type OIDCConfig struct {
 	ClientID     string `koanf:"client_id"`
 	ClientSecret string `koanf:"client_secret"`
 	RedirectURL  string `koanf:"redirect_url"`
+
+	// PreviousIssuer (WPMGR_OIDC_PREVIOUS_ISSUER) is the issuer this install
+	// used BEFORE Issuer, declared by the operator when they repoint SSO at a
+	// new IdP hostname. Empty on every install that has never moved, which is
+	// almost all of them.
+	//
+	// IT EXISTS BECAUSE THE ALTERNATIVES ARE BOTH BAD. An identity is
+	// (provider, subject, issuer), and subject is unique only within its
+	// issuer, so the key cannot drop issuer without letting two IdPs collide
+	// onto one account. But with issuer in the key, changing this variable
+	// strands every generic-OIDC identity at once: every SSO user on the
+	// install stops being recognised on the same deploy.
+	//
+	// Declaring the old value turns that into a migration the operator asked
+	// for. Each identity is moved to the new issuer once, on that person's next
+	// sign-in, and the move is audited. It is NEVER used to verify a token:
+	// only the current Issuer can do that. It only says "identities stored
+	// under this issuer are the same people as the ones arriving from the
+	// current one", which is a statement only the operator is in a position to
+	// make.
+	PreviousIssuer string `koanf:"previous_issuer"`
 }
 
 // Enabled reports whether OIDC is configured.
@@ -690,6 +711,7 @@ func defaults() map[string]any {
 		"oidc.client_id":                "",
 		"oidc.client_secret":            "",
 		"oidc.redirect_url":             "",
+		"oidc.previous_issuer":          "",
 		"otel.exporter_otlp_endpoint":   "",
 		"otel.service_name":             "wpmgr-api",
 		"shutdown.timeout":              "15s",

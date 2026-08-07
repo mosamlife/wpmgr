@@ -514,6 +514,19 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Info("OIDC disabled (no issuer configured); email+password only")
 	}
 
+	// An identity is (provider, subject, issuer), so repointing the issuer
+	// strands every generic-OIDC identity unless the operator declares where
+	// they came from. Declaring it authorises a ONE-TIME, audited move of each
+	// identity to the new issuer; it never verifies a token. Logged loudly
+	// because a stale value left set is a standing relaxation nobody meant to
+	// keep.
+	authSvc.SetPreviousOIDCIssuer(cfg.OIDC.PreviousIssuer)
+	if cfg.OIDC.PreviousIssuer != "" {
+		logger.Warn("OIDC previous issuer declared: existing identities will be migrated to the current issuer on next sign-in; unset WPMGR_OIDC_PREVIOUS_ISSUER once the move is complete",
+			slog.String("previous_issuer", cfg.OIDC.PreviousIssuer),
+			slog.String("issuer", cfg.OIDC.Issuer))
+	}
+
 	// Consumer identity providers (Google, GitHub). Each is independently
 	// optional; configuring neither leaves email and password as the only way
 	// in, which is the right default for a self-hosted install whose operator

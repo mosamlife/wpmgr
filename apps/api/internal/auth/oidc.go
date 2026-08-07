@@ -99,6 +99,15 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, verifier, expectedNon
 	if err := idToken.Claims(&claims); err != nil {
 		return OIDCClaims{}, fmt.Errorf("decode id_token claims: %w", err)
 	}
+	// `sub` IS THE IDENTITY, so an empty one is not an anonymous sign-in, it is
+	// a shared bucket: every user of a provider that omits the claim would key
+	// to the same (provider, "", issuer) row and sign into whichever account
+	// reached it first. The verifier does not require the claim (it checks
+	// signature, audience, expiry and nonce), so this is checked here, at the
+	// boundary where an ID token becomes an identity.
+	if idToken.Subject == "" {
+		return OIDCClaims{}, fmt.Errorf("id_token has no sub claim")
+	}
 	return OIDCClaims{
 		Subject:       idToken.Subject,
 		Issuer:        idToken.Issuer,

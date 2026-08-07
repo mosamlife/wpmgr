@@ -1,11 +1,12 @@
-// social_identity_continuity_test.go: does (provider, subject, issuer) still
-// resolve to the account the person already had?
+// social_identity_continuity_test.go: does a returning person land on the
+// account they already had, and does everyone else stay out of it?
 //
-// Every case here is the same question asked from a different side: an issuer
-// string the operator edited, an identity row a migration never wrote, and a
-// synthesised placeholder address that used to be derived from the issuer. All
-// three used to end at a NEW account or a hard refusal, where the release
-// before social sign-in silently signed the person straight in.
+// The end-to-end half of the rule unit-tested in internal/auth (which is where
+// the policy itself is exercised, because this package sits out the unit CI
+// lane). Here the questions are the ones only a real database answers: that the
+// row is actually moved, that the repair is idempotent, that a REFUSED sign-in
+// leaves no trace, and that a subject collision between two issuers cannot
+// resolve to somebody else's account.
 package tests
 
 import (
@@ -21,7 +22,7 @@ import (
 
 // noTenant is the createTenant callback for cases where the bootstrap is
 // irrelevant: these tests are about WHICH user a sign-in resolves to, not about
-// organisation creation, and the install always already has a user.
+// organisation creation.
 func noTenant(t *testing.T, pool *db.Pool) func(context.Context, string, string) (uuid.UUID, error) {
 	return func(_ context.Context, _, slug string) (uuid.UUID, error) {
 		return seedTenant(t, pool, slug+"-"+uuid.NewString()[:8]), nil
@@ -57,6 +58,16 @@ func identityRowCount(t *testing.T, pool *db.Pool, userID uuid.UUID) int {
 	return n
 }
 
+func identityIssuer(t *testing.T, pool *db.Pool, userID uuid.UUID) string {
+	t.Helper()
+	var issuer string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT issuer FROM user_identities WHERE user_id = $1`, userID).Scan(&issuer); err != nil {
+		t.Fatalf("read issuer: %v", err)
+	}
+	return issuer
+}
+
 func userCount(t *testing.T, pool *db.Pool) int {
 	t.Helper()
 	var n int
@@ -66,12 +77,11 @@ func userCount(t *testing.T, pool *db.Pool) int {
 	return n
 }
 
-// [2.9] An operator edits WPMGR_OIDC_ISSUER, because the company moved its IdP
-// to a new hostname or someone added a trailing slash. The subject is unchanged and
-// the human is unchanged, so the sign-in must land on the same account. With
-// issuer in the identity key it landed on a brand new one, for EVERY SSO user
-// at once, which is an install-wide lockout triggered by a config edit.
-func TestSocialIdentity_IssuerChangeKeepsTheSameAccount(t *testing.T) {
+// An operator moves the corporate IdP to a new hostname and DECLARES where it
+// moved from. The subject is unchanged and the human is unchanged, so the
+// sign-in must land on the same account, and the row must actually move, so the
+// declaration can be withdrawn afterwards.
+func TestSocialIdentity_DeclaredIssuerChangeKeepsTheSameAccount(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
@@ -83,41 +93,114 @@ func TestSocialIdentity_IssuerChangeKeepsTheSameAccount(t *testing.T) {
 		t.Fatalf("first sign-in: %v", err)
 	}
 
-	// Same IdP, same person, same subject, new URL.
+	// The declaration is what authorises the move. Without it the stored
+	// identity belongs to an issuer this install no longer knows anything about;
+	// see TestSocialIdentity_UndeclaredIssuerChangeDoesNotAdoptALegacyRow and
+	// the collision test below for the strictness that buys.
+	svc.SetPreviousOIDCIssuer("https://idp.acme.com")
 	second, err := svc.UpsertOIDCUser(ctx,
 		"https://login.acme.com", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk)
 	if err != nil {
-		t.Fatalf("sign-in after the issuer URL changed must still work: %v", err)
+		t.Fatalf("sign-in after a declared issuer change must work: %v", err)
 	}
-
 	if second.User.ID != first.User.ID {
-		t.Fatalf("editing the issuer forked the account: was %s, now %s", first.User.ID, second.User.ID)
-	}
-	if n := userCount(t, pool); n != 1 {
-		t.Fatalf("expected exactly 1 user after an issuer change, got %d", n)
+		t.Fatalf("a declared issuer change forked the account: was %s, now %s", first.User.ID, second.User.ID)
 	}
 	if n := identityRowCount(t, pool, first.User.ID); n != 1 {
 		t.Fatalf("expected exactly 1 identity row, got %d", n)
 	}
-
-	// The recorded issuer follows the current configuration, so the row is a
-	// truthful record of where the person last came from.
-	var issuer string
-	if err := pool.QueryRow(ctx,
-		`SELECT issuer FROM user_identities WHERE user_id = $1`, first.User.ID).Scan(&issuer); err != nil {
-		t.Fatalf("read issuer: %v", err)
+	// MOVED, not merely matched: the declaration is meant to be temporary, so
+	// the row has to carry the new issuer once the person has signed in.
+	if got := identityIssuer(t, pool, first.User.ID); got != "https://login.acme.com" {
+		t.Fatalf("identity issuer = %q, want the new one; the row was not migrated", got)
 	}
-	if issuer != "https://login.acme.com" {
-		t.Fatalf("issuer = %q, want the issuer seen on the most recent sign-in", issuer)
+
+	// AND IT IS ON THE RECORD. An identity changing issuer changes what a stored
+	// credential means, so a move that nobody can see afterwards is not a
+	// migration, it is a silent relaxation. Read through a superuser connection
+	// because audit_log is tenant-scoped by RLS.
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	var moves int
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log
+		 WHERE metadata->>'event' = 'identity_issuer_migrated'
+		   AND metadata->>'from_issuer' = 'https://idp.acme.com'
+		   AND metadata->>'to_issuer' = 'https://login.acme.com'`).Scan(&moves); err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if moves != 1 {
+		t.Fatalf("expected exactly 1 audited issuer migration, got %d", moves)
+	}
+
+	// With the row moved, the declaration is no longer load-bearing.
+	svc.SetPreviousOIDCIssuer("")
+	third, err := svc.UpsertOIDCUser(ctx,
+		"https://login.acme.com", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk)
+	if err != nil || third.User.ID != first.User.ID {
+		t.Fatalf("after the move the sign-in must be an ordinary exact hit: %v", err)
 	}
 }
 
-// [2.8] The rollback window. m110 backfilled once; anything the previous
-// release wrote afterwards has legacy columns and no identity row. The new
-// policy refuses to link onto a never-verified account, which is correct in
-// general and catastrophic here: the account is never-verified only because the
-// OLD SSO path never wrote email_verified_at. Every pre-existing SSO user on
-// such an install is refused at the door.
+// A trailing slash is not a change of issuer and needs no declaration. This is
+// the edit most likely to be made by accident, and the one whose blast radius
+// is every SSO user on the install at once.
+func TestSocialIdentity_CosmeticIssuerEditNeedsNoDeclaration(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	mk := noTenant(t, pool)
+
+	first, err := svc.UpsertOIDCUser(ctx,
+		"https://idp.acme.com", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk)
+	if err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+	second, err := svc.UpsertOIDCUser(ctx,
+		"https://idp.acme.com/", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk)
+	if err != nil {
+		t.Fatalf("a trailing slash must not break sign-in: %v", err)
+	}
+	if second.User.ID != first.User.ID {
+		t.Fatalf("a trailing slash forked the account: %s then %s", first.User.ID, second.User.ID)
+	}
+	if n := userCount(t, pool); n != 1 {
+		t.Fatalf("expected 1 user, got %d", n)
+	}
+}
+
+// THE TAKEOVER. Two issuers mint the same opaque subject for two different
+// people. Nothing, declaration or not, may let the second one sign into the
+// first one's account.
+func TestSocialIdentity_SubjectCollisionAcrossIssuersIsNeverTheSameAccount(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	mk := noTenant(t, pool)
+
+	alice, err := svc.UpsertOIDCUser(ctx,
+		"https://idp.acme.com", "1000", "alice@acme.com", true, "Alice", mk)
+	if err != nil {
+		t.Fatalf("alice: %v", err)
+	}
+
+	// A different IdP, the same subject string, a different human with a
+	// different verified address.
+	bob, err := svc.UpsertOIDCUser(ctx,
+		"https://idp.other-company.example", "1000", "bob@other-company.example", true, "Bob", mk)
+	if err != nil {
+		t.Fatalf("bob: %v", err)
+	}
+	if bob.User.ID == alice.User.ID {
+		t.Fatal("a subject collision between two issuers signed one person into another's account")
+	}
+}
+
+// The rollback window. m110 backfilled once; anything the previous release
+// wrote afterwards has legacy columns and no identity row. The new policy
+// refuses to link onto a never-verified account, which is correct in general and
+// catastrophic here: the account is never-verified only because the OLD SSO path
+// never wrote email_verified_at.
 func TestSocialIdentity_LegacyRowWithoutIdentitySignsInAndHeals(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
@@ -160,11 +243,9 @@ func TestSocialIdentity_LegacyRowWithoutIdentitySignsInAndHeals(t *testing.T) {
 	}
 }
 
-// [2.8] + [2.26] The same rollback window for an IdP that returns no email
-// claim. The old release synthesised <subject>@oidc.local; this one synthesised
-// <subject>@<issuer-host>.oidc.invalid. With no email to reconcile on and no
-// identity row, nothing connected the two and the person silently got a second
-// account: the duplicate-account fork, with no way for them to notice.
+// The same rollback window for an IdP that returns no email claim: there is no
+// address to reconcile on, so the identity is the only thing that can connect
+// the person to their account.
 func TestSocialIdentity_NoEmailClaimDoesNotForkALegacyAccount(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
@@ -186,60 +267,10 @@ func TestSocialIdentity_NoEmailClaimDoesNotForkALegacyAccount(t *testing.T) {
 	}
 }
 
-// [2.26] A no-email IdP creates a genuinely new account, and then the operator
-// edits the issuer. The placeholder address must not move with the issuer, or
-// the same person forks a second account on the next sign-in.
-func TestSocialIdentity_SyntheticAddressSurvivesAnIssuerChange(t *testing.T) {
-	pool := startPostgres(t)
-	ctx := context.Background()
-	svc, _ := newAuthStack(pool)
-	mk := noTenant(t, pool)
-
-	first, err := svc.UpsertOIDCUser(ctx, "https://idp.acme.com", "corp-sub-9", "", false, "", mk)
-	if err != nil {
-		t.Fatalf("first sign-in: %v", err)
-	}
-	second, err := svc.UpsertOIDCUser(ctx, "https://login.acme.com", "corp-sub-9", "", false, "", mk)
-	if err != nil {
-		t.Fatalf("sign-in after the issuer changed: %v", err)
-	}
-	if second.User.ID != first.User.ID {
-		t.Fatalf("a no-email account forked on an issuer change: %s then %s", first.User.ID, second.User.ID)
-	}
-	if n := userCount(t, pool); n != 1 {
-		t.Fatalf("expected 1 user, got %d", n)
-	}
-}
-
-// The narrow case that must still REFUSE to guess. Two legacy rows share a
-// subject under different issuers, which the old (oidc_issuer, oidc_subject)
-// unique index allowed. Subject alone no longer identifies anyone here, so
-// adopting either row would be a coin flip between two humans. The sign-in must
-// fall through to the ordinary policy rather than pick one.
-func TestSocialIdentity_AmbiguousLegacySubjectIsNeverAdopted(t *testing.T) {
-	pool := startPostgres(t)
-	ctx := context.Background()
-	svc, _ := newAuthStack(pool)
-	mk := noTenant(t, pool)
-
-	a := seedLegacyOIDCUser(t, pool, "a@acme.com", "https://idp-a.acme.com", "shared-sub")
-	b := seedLegacyOIDCUser(t, pool, "b@acme.com", "https://idp-b.acme.com", "shared-sub")
-
-	// No email claim, so the policy cannot link either; it creates a distinct
-	// account instead of silently adopting one of the two.
-	res, err := svc.UpsertOIDCUser(ctx, "https://idp-a.acme.com", "shared-sub", "", false, "", mk)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.User.ID == a || res.User.ID == b {
-		t.Fatalf("an ambiguous legacy subject must never be adopted, got %s", res.User.ID)
-	}
-}
-
-// The status gate still applies to a healed legacy identity. Adopting a legacy
-// row must not become a way around the check that a disabled user cannot sign
-// in, which is the whole reason the gate was added to this path.
-func TestSocialIdentity_HealedLegacyIdentityStillObeysTheStatusGate(t *testing.T) {
+// A REFUSED SIGN-IN MUST LEAVE THE DATABASE AS IT FOUND IT. The repair writes a
+// permanent identity binding, so running it while loading the facts meant a
+// disabled account still acquired one on its way out of the door.
+func TestSocialIdentity_RefusedSignInWritesNoIdentity(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
@@ -257,6 +288,56 @@ func TestSocialIdentity_HealedLegacyIdentityStillObeysTheStatusGate(t *testing.T
 	}
 	if de, ok := domain.AsDomain(err); !ok || de.Code != "account_disabled" {
 		t.Fatalf("want account_disabled, got %v", err)
+	}
+	if n := identityRowCount(t, pool, legacyID); n != 0 {
+		t.Fatalf("a refused sign-in wrote %d identity rows; authentication state must not move on a refusal", n)
+	}
+}
+
+// The same, for the issuer migration: a declared move must not be applied to an
+// account the policy then refuses.
+func TestSocialIdentity_RefusedSignInDoesNotMigrateTheIssuer(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	mk := noTenant(t, pool)
+
+	first, err := svc.UpsertOIDCUser(ctx,
+		"https://idp.acme.com", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk)
+	if err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, first.User.ID); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	svc.SetPreviousOIDCIssuer("https://idp.acme.com")
+	if _, err := svc.UpsertOIDCUser(ctx,
+		"https://login.acme.com", "corp-sub-1", "sarah@acme.com", true, "Sarah", mk); err == nil {
+		t.Fatal("a disabled user must not sign in across a declared issuer change")
+	}
+	if got := identityIssuer(t, pool, first.User.ID); got != "https://idp.acme.com" {
+		t.Fatalf("identity issuer = %q: a refused sign-in migrated the row", got)
+	}
+}
+
+// An undeclared issuer change must not adopt a legacy row either. The repair
+// path has to be exactly as strict as the authenticating lookup.
+func TestSocialIdentity_UndeclaredIssuerChangeDoesNotAdoptALegacyRow(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	mk := noTenant(t, pool)
+
+	legacyID := seedLegacyOIDCUser(t, pool, "corp-sub-1@oidc.local", "https://idp.acme.com", "corp-sub-1")
+
+	// No email claim, so nothing else can connect this sign-in to that account.
+	res, err := svc.UpsertOIDCUser(ctx, "https://idp.other-company.example", "corp-sub-1", "", false, "", mk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.User.ID == legacyID {
+		t.Fatal("a legacy row was adopted across an undeclared issuer change")
 	}
 }
 
@@ -286,5 +367,25 @@ func TestSocialIdentity_ConsumerProviderNeverAdoptsALegacyRow(t *testing.T) {
 	// And the legacy user is untouched.
 	if _, err := repo.GetUserByID(ctx, legacyID); err != nil {
 		t.Fatalf("legacy user should still exist: %v", err)
+	}
+}
+
+// A provider that returns no subject is broken, not anonymous: an empty subject
+// is a shared key that everybody would sign into.
+func TestSocialIdentity_EmptySubjectIsRefused(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	mk := noTenant(t, pool)
+
+	_, err := svc.UpsertOIDCUser(ctx, "https://idp.acme.com", "", "sarah@acme.com", true, "Sarah", mk)
+	if err == nil {
+		t.Fatal("an empty subject must never create or resolve an account")
+	}
+	if de, ok := domain.AsDomain(err); !ok || de.Code != "social_subject_missing" {
+		t.Fatalf("want social_subject_missing, got %v", err)
+	}
+	if n := userCount(t, pool); n != 0 {
+		t.Fatalf("expected no user to be created, got %d", n)
 	}
 }

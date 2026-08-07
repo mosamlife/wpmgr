@@ -422,18 +422,19 @@ type Identity struct {
 }
 
 // GetUserByIdentity resolves the local user behind an external identity. This
-// is the ONLY function that authenticates a social sign-in: (provider, subject)
-// is the provider's immutable id for the person, and no email is consulted.
-// Email is used elsewhere to decide whether a NEW identity may be linked, never
-// to decide who is signing in.
+// is the ONLY function that authenticates a social sign-in: (provider, subject,
+// issuer) is the provider's immutable id for the person, and no email is
+// consulted. Email is used elsewhere to decide whether a NEW identity may be
+// linked, never to decide who is signing in.
 //
-// Issuer is not an argument because it is not part of the identity. It is a
-// configuration string the operator can edit, and keying on it meant one edit
-// to WPMGR_OIDC_ISSUER stopped every SSO user on the install from being
-// recognised at the same moment. See the query and m111.
-func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject string) (User, error) {
+// Issuer stays in the key because a subject is unique only within the issuer
+// that minted it. Continuity across an issuer change is handled by
+// ListIdentitiesBySubject plus an operator-declared previous issuer, not by
+// dropping issuer from this lookup: that would make two IdPs minting the same
+// opaque string resolve to one account.
+func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer string) (User, error) {
 	row, err := r.q.GetUserByIdentity(ctx, sqlc.GetUserByIdentityParams{
-		Provider: provider, Subject: subject,
+		Provider: provider, Subject: subject, Issuer: issuer,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -444,14 +445,49 @@ func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject string) 
 	return userToModel(row), nil
 }
 
+// ListIdentitiesBySubject returns every stored identity for (provider, subject),
+// across issuers. It does NOT authenticate anything on its own: it is the
+// candidate set for matchStoredIdentity, which decides whether any of it may be
+// used and refuses on any ambiguity.
+func (r *Repo) ListIdentitiesBySubject(ctx context.Context, provider, subject string) ([]Identity, error) {
+	rows, err := r.q.ListIdentitiesBySubject(ctx, sqlc.ListIdentitiesBySubjectParams{
+		Provider: provider, Subject: subject,
+	})
+	if err != nil {
+		return nil, domain.Internal("identity_list_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]Identity, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Identity{
+			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
+			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
+		})
+	}
+	return out, nil
+}
+
+// MigrateIdentityIssuer moves one identity row from the issuer it was stored
+// under to the one that just signed the token, and reports whether a row
+// actually moved. False means somebody else's concurrent sign-in got there
+// first, which is not an error and must not be audited twice.
+func (r *Repo) MigrateIdentityIssuer(ctx context.Context, provider, subject, fromIssuer, toIssuer, email string, verified bool) (bool, error) {
+	n, err := r.q.MigrateIdentityIssuer(ctx, sqlc.MigrateIdentityIssuerParams{
+		Provider: provider, Subject: subject, Issuer: fromIssuer,
+		Issuer_2: toIssuer, Email: email, EmailVerified: verified,
+	})
+	if err != nil {
+		return false, domain.Internal("identity_issuer_migrate_failed", "failed to move identity").WithCause(err)
+	}
+	return n > 0, nil
+}
+
 // ListUsersByLegacyOIDCSubject returns the pre-m110 users carrying this OIDC
-// subject on users.oidc_subject, capped at two.
+// subject on users.oidc_subject.
 //
-// Two is enough to answer the only question the caller has: does this subject
-// identify exactly one person? The old unique index was on (oidc_issuer,
-// oidc_subject), so two users CAN share a subject, and in that case subject
-// alone identifies neither. Returning both lets the caller decline rather than
-// pick one, which would hand somebody another person's account.
+// Subject alone, because the caller has to be able to SEE that two users share
+// a subject under two issuers, which the old (oidc_issuer, oidc_subject) unique
+// index permitted. The issuer rule is applied by the same pure policy that
+// governs user_identities; nothing here authenticates on its own.
 func (r *Repo) ListUsersByLegacyOIDCSubject(ctx context.Context, subject string) ([]User, error) {
 	rows, err := r.q.ListUsersByLegacyOIDCSubject(ctx, &subject)
 	if err != nil {
@@ -467,8 +503,13 @@ func (r *Repo) ListUsersByLegacyOIDCSubject(ctx context.Context, subject string)
 // AdoptLegacyIdentity writes the user_identities row that m110's one-shot
 // backfill never wrote for this user. A conflict is success, not failure: see
 // the query for why both unique indexes are tolerated here.
-func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) error {
-	err := r.q.AdoptLegacyIdentity(ctx, sqlc.AdoptLegacyIdentityParams{
+//
+// Called only after the policy has ALLOWED the sign-in. A refused account must
+// not acquire a permanent identity binding on its way out of the door.
+// It reports whether a row was actually written, so one repair produces one
+// audit entry rather than one per sign-in.
+func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) (bool, error) {
+	n, err := r.q.AdoptLegacyIdentity(ctx, sqlc.AdoptLegacyIdentityParams{
 		UserID:        in.UserID,
 		Provider:      in.Provider,
 		Subject:       in.Subject,
@@ -477,9 +518,9 @@ func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) error {
 		EmailVerified: in.EmailVerified,
 	})
 	if err != nil {
-		return domain.Internal("identity_adopt_failed", "failed to record identity").WithCause(err)
+		return false, domain.Internal("identity_adopt_failed", "failed to record identity").WithCause(err)
 	}
-	return nil
+	return n > 0, nil
 }
 
 // CreateIdentity links an external identity to an existing user.
@@ -499,9 +540,7 @@ func (r *Repo) CreateIdentity(ctx context.Context, in Identity) error {
 }
 
 // TouchIdentityLogin stamps the login and records the address the provider
-// reported this time, which may differ from last time. issuer is WRITTEN here,
-// not matched on, so a row follows the operator's current WPMGR_OIDC_ISSUER
-// instead of being stranded by an edit to it.
+// reported this time, which may differ from last time.
 func (r *Repo) TouchIdentityLogin(ctx context.Context, provider, subject, issuer, email string, verified bool) {
 	_ = r.q.TouchIdentityLogin(ctx, sqlc.TouchIdentityLoginParams{
 		Provider: provider, Subject: subject, Issuer: issuer,

@@ -176,7 +176,7 @@ func TestOIDCLinkingRequiresBothSidesVerified(t *testing.T) {
 			t.Fatalf("want a refusal or a unique-email conflict, got %v", err)
 		}
 	}
-	assertIdentityNotBoundTo(t, ctx, authRepo, "evil-subject", existing.ID)
+	assertIdentityNotBoundTo(t, ctx, authRepo, "evil-subject", "https://evil-idp.example", existing.ID)
 
 	// 2. THE TAKEOVER. Verified provider email, but the local account has never
 	//    been verified by this install. Must be refused.
@@ -188,7 +188,7 @@ func TestOIDCLinkingRequiresBothSidesVerified(t *testing.T) {
 	if de, ok := domain.AsDomain(err); !ok || de.Code != "social_link_requires_verification" {
 		t.Fatalf("want social_link_requires_verification, got %v", err)
 	}
-	assertIdentityNotBoundTo(t, ctx, authRepo, "trusted-subject", existing.ID)
+	assertIdentityNotBoundTo(t, ctx, authRepo, "trusted-subject", "https://trusted-idp.example", existing.ID)
 
 	// 3. Once the address IS verified on this install, the same sign-in links.
 	//    This is the recovery path the refusal above mails a link for.
@@ -207,12 +207,9 @@ func TestOIDCLinkingRequiresBothSidesVerified(t *testing.T) {
 
 // assertIdentityNotBoundTo fails when the given external identity resolves to
 // the account it must not have been attached to.
-func assertIdentityNotBoundTo(t *testing.T, ctx context.Context, repo *auth.Repo, subject string, mustNotBe uuid.UUID) {
+func assertIdentityNotBoundTo(t *testing.T, ctx context.Context, repo *auth.Repo, subject, issuer string, mustNotBe uuid.UUID) {
 	t.Helper()
-	// Issuer is no longer part of the identity key (m111), so the strongest form
-	// of this assertion is now subject-wide: the identity must not resolve to
-	// the protected account under ANY issuer.
-	linked, err := repo.GetUserByIdentity(ctx, "oidc", subject)
+	linked, err := repo.GetUserByIdentity(ctx, "oidc", subject, issuer)
 	if err != nil {
 		return // no such identity at all, which is the strongest pass
 	}

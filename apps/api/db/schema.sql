@@ -410,20 +410,25 @@ CREATE UNIQUE INDEX users_oidc_identity_key
 -- and later clicks the other, and with a single slot the second would overwrite
 -- the first.
 --
--- (provider, subject) is the identity. The email column records what the
--- provider asserted and is deliberately NOT unique: emails change, get
+-- (provider, subject, issuer) is the identity. The email column records what
+-- the provider asserted and is deliberately NOT unique: emails change, get
 -- reassigned inside a Workspace, and repeat across providers. Matching on email
 -- is how account takeovers happen.
 --
--- issuer is RECORDED, NOT KEYED (m111). It was part of the unique key until an
--- install proved what that costs: an operator who edits WPMGR_OIDC_ISSUER, to
--- move a corporate IdP to a new hostname or just to add a trailing slash,
--- invalidates every generic-OIDC row at once and locks out every SSO user
--- simultaneously. An install has exactly one configured OIDC issuer at a time,
--- so issuer never told two rows apart here; it only supplied a way for the
--- lookup to miss. Google and GitHub carry a constant issuer, so nothing changes
--- for them. The column stays as a record of where the person last signed in
--- from, refreshed on every login.
+-- ISSUER IS PART OF THE KEY, AND HAS TO BE. A subject is unique only within the
+-- issuer that minted it; two IdPs can hand out the same opaque string for two
+-- different people. Keying on (provider, subject) alone would make that
+-- collision resolve to a silent sign-in as somebody else, which is a worse
+-- failure than any lockout.
+--
+-- The lockout that argument is usually raised against is real, and is answered
+-- elsewhere: an operator who repoints WPMGR_OIDC_ISSUER strands every
+-- generic-OIDC row at once. internal/auth treats that as a MIGRATION rather
+-- than a lookup rule. A difference that is purely cosmetic (trailing slash,
+-- host case) is not a change at all, and a genuine change of issuer is carried
+-- by WPMGR_OIDC_PREVIOUS_ISSUER, which the operator sets deliberately; each row
+-- is then moved to the new issuer once, on that person's next sign-in, and the
+-- move is written to the audit log. Ambiguity never resolves to a guess.
 --
 -- email_verified is the PROVIDER's assertion at link time. users.email_verified_at
 -- is our own. The linking rules need both, separately.
@@ -442,8 +447,8 @@ CREATE TABLE user_identities (
     last_login_at  timestamptz
 );
 
-CREATE UNIQUE INDEX user_identities_provider_subject_uniq
-    ON user_identities (provider, subject);
+CREATE UNIQUE INDEX user_identities_provider_subject_key
+    ON user_identities (provider, subject, issuer);
 
 CREATE UNIQUE INDEX user_identities_user_provider_key
     ON user_identities (user_id, provider);
