@@ -16,28 +16,34 @@ import (
 
 // Config is the fully-typed application configuration.
 type Config struct {
-	Env        string           `koanf:"env"`
-	HTTPAddr   string           `koanf:"http_addr"`
-	LogLevel   string           `koanf:"log_level"`
-	DB         DBConfig         `koanf:"db"`
-	Redis      RedisConfig      `koanf:"redis"`
-	Auth       AuthConfig       `koanf:"auth"`
-	OIDC       OIDCConfig       `koanf:"oidc"`
-	Social     SocialConfig     `koanf:"social"`
-	OTel       OTelConfig       `koanf:"otel"`
-	Shutdown   ShutdownConfig   `koanf:"shutdown"`
-	Agent      AgentConfig      `koanf:"agent"`
-	Update     UpdateConfig     `koanf:"update"`
-	S3         S3Config         `koanf:"s3"`
-	Backup     BackupConfig     `koanf:"backup"`
-	ClickHouse ClickHouseConfig `koanf:"clickhouse"`
-	SMTP       SMTPConfig       `koanf:"smtp"`
-	Uptime     UptimeConfig     `koanf:"uptime"`
-	River      RiverConfig      `koanf:"river"`
-	Autologin  AutologinConfig  `koanf:"autologin"`
-	Conn       ConnConfig       `koanf:"conn"`
-	Hosted     HostedConfig     `koanf:"hosted"`
-	Billing    BillingConfig    `koanf:"billing"`
+	Env      string `koanf:"env"`
+	HTTPAddr string `koanf:"http_addr"`
+	LogLevel string `koanf:"log_level"`
+	// PublicBaseURL (WPMGR_PUBLIC_BASE_URL) is the externally reachable origin
+	// of this control plane. It is typed here rather than read from the
+	// environment ad hoc because Validate has to judge it: the social sign-in
+	// redirect_uri is DERIVED from it, so an empty value is not a missing
+	// convenience, it is a redirect_uri every provider rejects.
+	PublicBaseURL string           `koanf:"public_base_url"`
+	DB            DBConfig         `koanf:"db"`
+	Redis         RedisConfig      `koanf:"redis"`
+	Auth          AuthConfig       `koanf:"auth"`
+	OIDC          OIDCConfig       `koanf:"oidc"`
+	Social        SocialConfig     `koanf:"social"`
+	OTel          OTelConfig       `koanf:"otel"`
+	Shutdown      ShutdownConfig   `koanf:"shutdown"`
+	Agent         AgentConfig      `koanf:"agent"`
+	Update        UpdateConfig     `koanf:"update"`
+	S3            S3Config         `koanf:"s3"`
+	Backup        BackupConfig     `koanf:"backup"`
+	ClickHouse    ClickHouseConfig `koanf:"clickhouse"`
+	SMTP          SMTPConfig       `koanf:"smtp"`
+	Uptime        UptimeConfig     `koanf:"uptime"`
+	River         RiverConfig      `koanf:"river"`
+	Autologin     AutologinConfig  `koanf:"autologin"`
+	Conn          ConnConfig       `koanf:"conn"`
+	Hosted        HostedConfig     `koanf:"hosted"`
+	Billing       BillingConfig    `koanf:"billing"`
 }
 
 // BillingConfig gates the M16 Phase B payment-provider integration
@@ -551,6 +557,19 @@ type SocialConfig struct {
 	GitHub GitHubConfig `koanf:"github"`
 }
 
+// Configured reports whether the operator has started configuring ANY social
+// provider, which is a different question from Enabled.
+//
+// Enabled asks "will this provider work", and is what decides whether a button
+// renders. Configured asks "did somebody intend social sign-in here", and is
+// what Validate uses to decide whether a half-entered credential or a missing
+// public base URL is a problem worth reporting. Keeping them apart is what
+// stops an install with no social configuration at all from being told about
+// requirements that do not apply to it.
+func (s SocialConfig) Configured() bool {
+	return s.Google.Configured() || s.GitHub.Configured()
+}
+
 // GoogleConfig is a standard OIDC relying-party registration. Google publishes
 // a discovery document and issues ID tokens carrying an email_verified claim,
 // so no bespoke handling is needed beyond checking that claim.
@@ -559,8 +578,14 @@ type GoogleConfig struct {
 	ClientSecret string `koanf:"client_secret"`
 }
 
-// Enabled reports whether Google sign-in is configured.
+// Enabled reports whether Google sign-in will work: both halves of the
+// credential are present. A half-entered credential is deliberately NOT enabled
+// (no button that fails at the provider), but it is also not silent: Validate
+// reports it, because the operator plainly meant to switch this on.
 func (g GoogleConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
+
+// Configured reports whether either half of the credential is present.
+func (g GoogleConfig) Configured() bool { return g.ClientID != "" || g.ClientSecret != "" }
 
 // GitHubConfig is a plain OAuth 2.0 registration. GitHub is NOT an OpenID
 // Connect provider: there is no discovery document, no ID token and no
@@ -571,8 +596,12 @@ type GitHubConfig struct {
 	ClientSecret string `koanf:"client_secret"`
 }
 
-// Enabled reports whether GitHub sign-in is configured.
+// Enabled reports whether GitHub sign-in will work. Same split as Google: see
+// GoogleConfig.Enabled and Configured.
 func (g GitHubConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
+
+// Configured reports whether either half of the credential is present.
+func (g GitHubConfig) Configured() bool { return g.ClientID != "" || g.ClientSecret != "" }
 
 // OTelConfig holds OpenTelemetry export configuration.
 type OTelConfig struct {
@@ -665,9 +694,13 @@ func (c Config) ValidateAgentSigningKey() error {
 
 func defaults() map[string]any {
 	return map[string]any{
-		"env":                      "development",
-		"http_addr":                ":8080",
-		"log_level":                "info",
+		"env":       "development",
+		"http_addr": ":8080",
+		"log_level": "info",
+		// Empty rather than a guessed origin: a wrong public base URL mints
+		// links and redirect URIs pointing at somebody else's host, so the only
+		// safe default is one Validate can recognise as unset.
+		"public_base_url":          "",
 		"db.host":                  "localhost",
 		"db.port":                  5432,
 		"db.user":                  "wpmgr",

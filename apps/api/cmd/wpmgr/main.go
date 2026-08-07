@@ -2071,7 +2071,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// ADR-045 Phase 2 — wire the auth service's transactional mailer (password
 	// reset link + change-password notification) + an in-memory rate limiter now
 	// that River has started.
-	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), os.Getenv("WPMGR_PUBLIC_BASE_URL"), autologin.NewMemoryLimiter())
+	// cfg.PublicBaseURL, not os.Getenv: this is the value the social sign-in
+	// redirect_uri is derived from, and config.Validate refuses to boot past a
+	// missing or relative one. Reading the environment separately here would
+	// mean validating one value and using another (they differ whenever the
+	// operator configures via the YAML file rather than the environment).
+	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), cfg.PublicBaseURL, autologin.NewMemoryLimiter())
 	// Track B (m49) — wire the backup-event mailer now that River has started.
 	// The BackupMailer interface is satisfied by *mailer.Enqueuer. Emails are
 	// best-effort (sendBackupEmail swallows errors); nil mailer = no emails.
