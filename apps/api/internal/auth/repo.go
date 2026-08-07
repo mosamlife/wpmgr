@@ -534,6 +534,28 @@ type Identity struct {
 	Issuer        string
 	Email         string
 	EmailVerified bool
+	// CreatedAt and LastLoginAt are read-only display facts for the connected
+	// accounts list. LastLoginAt is nil until the identity has been used to
+	// sign in at least once, which is the normal state for one just linked.
+	CreatedAt   time.Time
+	LastLoginAt *time.Time
+}
+
+func identityToModel(row sqlc.UserIdentity) Identity {
+	out := Identity{
+		UserID:        row.UserID,
+		Provider:      row.Provider,
+		Subject:       row.Subject,
+		Issuer:        row.Issuer,
+		Email:         row.Email,
+		EmailVerified: row.EmailVerified,
+		CreatedAt:     row.CreatedAt,
+	}
+	if row.LastLoginAt.Valid {
+		t := row.LastLoginAt.Time
+		out.LastLoginAt = &t
+	}
+	return out
 }
 
 // GetUserByIdentity resolves the local user behind an external identity. This
@@ -671,28 +693,85 @@ func (r *Repo) ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) ([]I
 	}
 	out := make([]Identity, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, Identity{
-			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
-			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
-		})
+		out = append(out, identityToModel(row))
 	}
 	return out, nil
 }
 
-// CountIdentitiesForUser is the unlink guard: dropping the last identity from a
-// user with no password would lock them out permanently.
-func (r *Repo) CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
-	n, err := r.q.CountIdentitiesForUser(ctx, userID)
-	if err != nil {
-		return 0, domain.Internal("identity_count_failed", "failed to count identities").WithCause(err)
-	}
-	return n, nil
+// UnlinkIdentity removes one external sign-in method, and only when the account
+// keeps at least one other way in. decideUnlink holds the rule; this function
+// exists to make the rule's inputs and the delete ATOMIC.
+//
+// WHY A TRANSACTION AND A ROW LOCK. Read-then-delete across two statements has
+// a gap, and the gap is reachable without an attacker: someone with two linked
+// providers and no password, disconnecting both from two browser tabs, has each
+// request read "two identities, removing one is safe" and then delete a
+// different row. The account ends with no password and no identity.
+//
+// Nothing recovers from that state. Password reset deliberately refuses to mint
+// a set-password link for an account with no password (that would turn reset
+// into account creation for anyone who knows the address), so there is no way
+// back in and no way to prove ownership. That is why this is a locked
+// transaction rather than a count followed by a delete.
+//
+// The lock is taken on the users row, which is also where password_hash lives,
+// so one statement both serialises concurrent unlinks for this user and reads
+// the password half of the rule on the same snapshot as the identity list. Any
+// concurrent unlink waits and then sees this one's result; SetInitialPassword
+// locks the same row, so a password being added mid-unlink cannot be missed
+// either way round.
+func (r *Repo) UnlinkIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
+	return r.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		var hash *string
+		err := tx.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&hash)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("user_not_found", "user not found")
+			}
+			return domain.Internal("identity_unlink_failed", "failed to unlink identity").WithCause(err)
+		}
+
+		q := sqlc.New(tx)
+		// One read answers both halves of the rule: is this provider actually
+		// linked, and how many methods would be left. Counting separately would
+		// reintroduce the gap the lock exists to close.
+		rows, err := q.ListIdentitiesForUser(ctx, userID)
+		if err != nil {
+			return domain.Internal("identity_list_failed", "failed to list identities").WithCause(err)
+		}
+		linked := false
+		for _, row := range rows {
+			if row.Provider == provider {
+				linked = true
+				break
+			}
+		}
+		if err := decideUnlink(linked, len(rows), deref(hash) != "", provider); err != nil {
+			return err
+		}
+		if err := q.DeleteIdentity(ctx, sqlc.DeleteIdentityParams{UserID: userID, Provider: provider}); err != nil {
+			return domain.Internal("identity_delete_failed", "failed to unlink identity").WithCause(err)
+		}
+		return nil
+	})
 }
 
-// DeleteIdentity unlinks one provider from a user.
-func (r *Repo) DeleteIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
-	if err := r.q.DeleteIdentity(ctx, sqlc.DeleteIdentityParams{UserID: userID, Provider: provider}); err != nil {
-		return domain.Internal("identity_delete_failed", "failed to unlink identity").WithCause(err)
+// SetInitialPasswordHash writes a first password for an account that has none.
+// The "has none" half is decided by the UPDATE's own WHERE clause rather than by
+// a preceding read, so this can never overwrite a password that already exists:
+// see SetUserInitialPassword in db/query/users.sql. Zero rows affected is that
+// case, and it is a conflict, not a failure.
+func (r *Repo) SetInitialPasswordHash(ctx context.Context, userID uuid.UUID, hash string) error {
+	n, err := r.q.SetUserInitialPassword(ctx, sqlc.SetUserInitialPasswordParams{
+		ID:           userID,
+		PasswordHash: strPtr(hash),
+	})
+	if err != nil {
+		return domain.Internal("password_update_failed", "failed to set password").WithCause(err)
+	}
+	if n == 0 {
+		return domain.Conflict("password_already_set",
+			"this account already has a password. Change it from the change password form, which asks for the current one.")
 	}
 	return nil
 }

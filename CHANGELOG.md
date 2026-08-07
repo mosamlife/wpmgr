@@ -10,9 +10,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 - You are now told when a new way of signing in is added to your account. Connecting Google or GitHub to an account you already have still works without signing in first, because requiring that would put every returning user through a password reset to defend against someone who already needs both a provider that vouches for the address and an account this instance has verified at that same address. What was wrong was that it happened in silence. The message goes to the address this instance verified, names the provider and the time, and links to the page where sign-in methods are reviewed and removed.
 
+- Account security settings now show which sign-in methods your account has, and let you disconnect one or connect another. Until now an account could accumulate providers with no way to see or undo it.
+- An account that was created by signing in with a provider, and so has no password at all, can now set one from that same card. It can only be done while signed in. Password reset deliberately will not do it: a reset link that can create a password where there was none would turn "forgot password" into a way for anyone who knows your address to make an account theirs.
+
 ### Changed
 
 - `WPMGR_SUPERADMIN_EMAILS` no longer marks the listed address as verified. It grants the superadmin flag and activates the account, so the operator can still sign in with a password on an instance whose mailbox domain does not accept mail, and that is all it does now. Confirming an address means this instance watched someone open a link it sent there, which an environment variable is not, and that confirmation is half of what allows a provider-verified identity to attach itself to an existing account. Setting the variable therefore supplied that half on the most privileged account on the instance. Operators listed in it now confirm their address the same way everyone else does, and accounts confirmed under an earlier release keep their confirmation.
+
+### Fixed
+
+- Disconnecting a provider is now refused when it would leave the account with no way to sign in at all, and the refusal says to set a password first. That state had no way back: there would be no password to reset and no provider to sign in with. The check and the removal happen together, so disconnecting two providers at the same moment from two tabs cannot slip past it.
 
 ## [0.61.130] - 2026-08-07
 

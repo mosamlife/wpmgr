@@ -462,6 +462,128 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /auth/me/password/set:
+    post:
+      operationId: setMyInitialPassword
+      summary: Add a password to an account that has none
+      description: |
+        For an account created through a social provider, which has no password
+        at all. Adds one, so the account no longer depends on the provider.
+
+        Separate from `POST /auth/me/password` on purpose. That endpoint changes
+        an existing password and proves knowledge of the current one first; this
+        one has no current password to ask for, so an authenticated session is
+        the whole authorisation. Folding the two together would let a request
+        with no `current_password` reach the stronger operation.
+
+        This is also why password reset cannot do it: `POST
+        /auth/password/forgot` deliberately sends nothing for an account with no
+        password, because minting a set-password link for one would turn reset
+        into account creation for anyone who knows the address.
+
+        Refuses with 409 when a password already exists. The account address is
+        notified, and every other session for this user is invalidated
+        (`password_changed_at` moves); the calling session stays alive.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+                  maxLength: 200
+      responses:
+        "204":
+          description: Password set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: >
+            This account already has a password. Use `POST /auth/me/password`,
+            which asks for the current one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  # ---------------------------------------------------------------------------
+  # Connected accounts: the sign-in methods on the caller's own account
+  # ---------------------------------------------------------------------------
+
+  /auth/me/identities:
+    get:
+      operationId: listMyIdentities
+      summary: List the external sign-in methods connected to this account
+      description: |
+        Powers the connected accounts card at settings/security. Acts on the
+        caller's own account only: no user id appears anywhere in this route.
+
+        `has_password` and `can_unlink` describe the account as a whole.
+        `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
+        will give, so the page can avoid offering a button that would only be
+        refused. It is a display hint and never the enforcement: the server
+        re-decides on every delete.
+      tags: [auth]
+      responses:
+        "200":
+          description: The connected sign-in methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectedAccounts"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/me/identities/{provider}:
+    delete:
+      operationId: unlinkMyIdentity
+      summary: Disconnect one external sign-in method from this account
+      description: |
+        REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
+        which is the case where this is the only connected provider and no
+        password is set. That state is not recoverable: there would be no
+        password to reset and no provider to sign in with, and password reset
+        will not mint a set-password link for a passwordless account. The
+        refusal names the next step, which is to add a password first via
+        `POST /auth/me/password/set`.
+
+        The check and the delete happen inside one locked transaction, so two
+        requests disconnecting two different providers at the same moment cannot
+        each conclude that one may go.
+      tags: [auth]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: The provider key, as returned by `GET /auth/me/identities`.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Provider disconnected
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: That provider is not connected to this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Refused: this is the account's last sign-in method. Set a password
+            first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   # ---------------------------------------------------------------------------
   # ADR-056 Phase 3 — dashboard two-factor authentication
@@ -21183,6 +21305,53 @@ components:
     # ---------------------------------------------------------------------------
     # ADR-056 Phase 3 — dashboard two-factor authentication
     # ---------------------------------------------------------------------------
+    ConnectedIdentity:
+      type: object
+      description: >-
+        One external sign-in method linked to an account. `subject` and `issuer`
+        (the provider's own identifiers for the person) are deliberately absent:
+        they mean nothing to the person reading the page and they are what an
+        attacker would need to forge a matching identity. `email` is what the
+        provider asserted at the last sign-in, which is a record, not the
+        account's own address, and may differ from it.
+      required: [provider, email, email_verified, created_at]
+      properties:
+        provider:
+          type: string
+          description: >-
+            The provider key, e.g. `google`, `github`, or `oidc` for an
+            operator-configured issuer.
+        email: { type: string }
+        email_verified:
+          type: boolean
+          description: >-
+            Whether the PROVIDER vouched for the address at link time. Distinct
+            from this install having seen the person open a verification link.
+        created_at: { type: string, format: date-time }
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null until the method has been used to sign in at least once.
+    ConnectedAccounts:
+      type: object
+      description: How the authenticated account can be signed in to.
+      required: [has_password, can_unlink, items]
+      properties:
+        has_password:
+          type: boolean
+          description: >-
+            Whether a password is set. False means the account is social-only
+            and can add one via `POST /auth/me/password/set`.
+        can_unlink:
+          type: boolean
+          description: >-
+            Whether removing one identity would still leave a way in, which is
+            true when a password is set or more than one identity is connected.
+            A display hint mirroring the server's rule, never the enforcement.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ConnectedIdentity" }
     TwoFactorStatus:
       type: object
       description: Current 2FA configuration summary for the authenticated user.

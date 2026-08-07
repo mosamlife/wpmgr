@@ -639,6 +639,9 @@ import type {
   ListMembersData,
   ListMembersErrors,
   ListMembersResponses,
+  ListMyIdentitiesData,
+  ListMyIdentitiesErrors,
+  ListMyIdentitiesResponses,
   ListOrgsData,
   ListOrgsErrors,
   ListOrgsResponses,
@@ -954,6 +957,9 @@ import type {
   SetAdminVulnFeedKeyData,
   SetAdminVulnFeedKeyErrors,
   SetAdminVulnFeedKeyResponses,
+  SetMyInitialPasswordData,
+  SetMyInitialPasswordErrors,
+  SetMyInitialPasswordResponses,
   SetSiteTagsData,
   SetSiteTagsErrors,
   SetSiteTagsResponses,
@@ -1004,6 +1010,9 @@ import type {
   UnblockSiteIpData,
   UnblockSiteIpErrors,
   UnblockSiteIpResponses,
+  UnlinkMyIdentityData,
+  UnlinkMyIdentityErrors,
+  UnlinkMyIdentityResponses,
   UnlockBackupData,
   UnlockBackupErrors,
   UnlockBackupResponses,
@@ -1294,6 +1303,91 @@ export const changeMyPassword = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Add a password to an account that has none
+ *
+ * For an account created through a social provider, which has no password
+ * at all. Adds one, so the account no longer depends on the provider.
+ *
+ * Separate from `POST /auth/me/password` on purpose. That endpoint changes
+ * an existing password and proves knowledge of the current one first; this
+ * one has no current password to ask for, so an authenticated session is
+ * the whole authorisation. Folding the two together would let a request
+ * with no `current_password` reach the stronger operation.
+ *
+ * This is also why password reset cannot do it: `POST
+ * /auth/password/forgot` deliberately sends nothing for an account with no
+ * password, because minting a set-password link for one would turn reset
+ * into account creation for anyone who knows the address.
+ *
+ * Refuses with 409 when a password already exists. The account address is
+ * notified, and every other session for this user is invalidated
+ * (`password_changed_at` moves); the calling session stays alive.
+ *
+ */
+export const setMyInitialPassword = <ThrowOnError extends boolean = false>(
+  options: Options<SetMyInitialPasswordData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    SetMyInitialPasswordResponses,
+    SetMyInitialPasswordErrors,
+    ThrowOnError
+  >({
+    url: "/auth/me/password/set",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List the external sign-in methods connected to this account
+ *
+ * Powers the connected accounts card at settings/security. Acts on the
+ * caller's own account only: no user id appears anywhere in this route.
+ *
+ * `has_password` and `can_unlink` describe the account as a whole.
+ * `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
+ * will give, so the page can avoid offering a button that would only be
+ * refused. It is a display hint and never the enforcement: the server
+ * re-decides on every delete.
+ *
+ */
+export const listMyIdentities = <ThrowOnError extends boolean = false>(
+  options?: Options<ListMyIdentitiesData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListMyIdentitiesResponses,
+    ListMyIdentitiesErrors,
+    ThrowOnError
+  >({ url: "/auth/me/identities", ...options });
+
+/**
+ * Disconnect one external sign-in method from this account
+ *
+ * REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
+ * which is the case where this is the only connected provider and no
+ * password is set. That state is not recoverable: there would be no
+ * password to reset and no provider to sign in with, and password reset
+ * will not mint a set-password link for a passwordless account. The
+ * refusal names the next step, which is to add a password first via
+ * `POST /auth/me/password/set`.
+ *
+ * The check and the delete happen inside one locked transaction, so two
+ * requests disconnecting two different providers at the same moment cannot
+ * each conclude that one may go.
+ *
+ */
+export const unlinkMyIdentity = <ThrowOnError extends boolean = false>(
+  options: Options<UnlinkMyIdentityData, ThrowOnError>,
+) =>
+  (options.client ?? client).delete<
+    UnlinkMyIdentityResponses,
+    UnlinkMyIdentityErrors,
+    ThrowOnError
+  >({ url: "/auth/me/identities/{provider}", ...options });
 
 /**
  * Current 2FA configuration summary for the authenticated user

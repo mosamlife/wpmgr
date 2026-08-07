@@ -142,6 +142,9 @@ func (h *Handler) Register(r gin.IRouter) {
 	g.GET("/social/:provider/callback", h.socialCallback)
 	// ADR-056 Phase 3 — dashboard 2FA challenge-completion + management.
 	h.RegisterTwoFactor(g)
+	// Connected accounts: list/remove linked providers, and add a password to
+	// an account that only has a provider.
+	h.RegisterIdentities(g)
 }
 
 type loginBody struct {

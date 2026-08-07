@@ -6690,6 +6690,41 @@ export type FileVersionRestoreResult = {
 };
 
 /**
+ * One external sign-in method linked to an account. `subject` and `issuer` (the provider's own identifiers for the person) are deliberately absent: they mean nothing to the person reading the page and they are what an attacker would need to forge a matching identity. `email` is what the provider asserted at the last sign-in, which is a record, not the account's own address, and may differ from it.
+ */
+export type ConnectedIdentity = {
+  /**
+   * The provider key, e.g. `google`, `github`, or `oidc` for an operator-configured issuer.
+   */
+  provider: string;
+  email: string;
+  /**
+   * Whether the PROVIDER vouched for the address at link time. Distinct from this install having seen the person open a verification link.
+   */
+  email_verified: boolean;
+  created_at: string;
+  /**
+   * Null until the method has been used to sign in at least once.
+   */
+  last_login_at?: string;
+};
+
+/**
+ * How the authenticated account can be signed in to.
+ */
+export type ConnectedAccounts = {
+  /**
+   * Whether a password is set. False means the account is social-only and can add one via `POST /auth/me/password/set`.
+   */
+  has_password: boolean;
+  /**
+   * Whether removing one identity would still leave a way in, which is true when a password is set or more than one identity is connected. A display hint mirroring the server's rule, never the enforcement.
+   */
+  can_unlink: boolean;
+  items: Array<ConnectedIdentity>;
+};
+
+/**
  * Current 2FA configuration summary for the authenticated user.
  */
 export type TwoFactorStatus = {
@@ -8278,6 +8313,112 @@ export type ChangeMyPasswordResponses = {
 
 export type ChangeMyPasswordResponse =
   ChangeMyPasswordResponses[keyof ChangeMyPasswordResponses];
+
+export type SetMyInitialPasswordData = {
+  body: {
+    password: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/me/password/set";
+};
+
+export type SetMyInitialPasswordErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * This account already has a password. Use `POST /auth/me/password`, which asks for the current one.
+   *
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type SetMyInitialPasswordError =
+  SetMyInitialPasswordErrors[keyof SetMyInitialPasswordErrors];
+
+export type SetMyInitialPasswordResponses = {
+  /**
+   * Password set
+   */
+  204: void;
+};
+
+export type SetMyInitialPasswordResponse =
+  SetMyInitialPasswordResponses[keyof SetMyInitialPasswordResponses];
+
+export type ListMyIdentitiesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/me/identities";
+};
+
+export type ListMyIdentitiesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListMyIdentitiesError =
+  ListMyIdentitiesErrors[keyof ListMyIdentitiesErrors];
+
+export type ListMyIdentitiesResponses = {
+  /**
+   * The connected sign-in methods
+   */
+  200: ConnectedAccounts;
+};
+
+export type ListMyIdentitiesResponse =
+  ListMyIdentitiesResponses[keyof ListMyIdentitiesResponses];
+
+export type UnlinkMyIdentityData = {
+  body?: never;
+  path: {
+    /**
+     * The provider key, as returned by `GET /auth/me/identities`.
+     */
+    provider: string;
+  };
+  query?: never;
+  url: "/auth/me/identities/{provider}";
+};
+
+export type UnlinkMyIdentityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * That provider is not connected to this account
+   */
+  404: Error;
+  /**
+   * Refused: this is the account's last sign-in method. Set a password first.
+   *
+   */
+  409: Error;
+};
+
+export type UnlinkMyIdentityError =
+  UnlinkMyIdentityErrors[keyof UnlinkMyIdentityErrors];
+
+export type UnlinkMyIdentityResponses = {
+  /**
+   * Provider disconnected
+   */
+  204: void;
+};
+
+export type UnlinkMyIdentityResponse =
+  UnlinkMyIdentityResponses[keyof UnlinkMyIdentityResponses];
 
 export type GetTwoFactorStatusData = {
   body?: never;

@@ -24,6 +24,8 @@ const ACTION_LABELS: Record<string, string> = {
   "auth.logout": "Signed out",
   "auth.register": "Registered account",
   "auth.oidc.login": "Signed in with SSO",
+  "auth.identity.unlinked": "Disconnected a sign-in provider",
+  "auth.password.set": "Added a password",
 
   // Members & organization
   "member.add": "Added member",
@@ -305,6 +307,10 @@ const SENSITIVE_ACTIONS = new Set<string>([
   "admin.vuln_feed.key.clear",
   "apikey.create",
   "apikey.revoke",
+  // Changing what an account can sign in with is a credential change, and the
+  // one an owner most needs to spot if it was not them.
+  "auth.identity.unlinked",
+  "auth.password.set",
   "site_destination.create",
   "site_destination.update",
   "site_destination.delete",

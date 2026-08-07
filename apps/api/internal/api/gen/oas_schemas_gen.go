@@ -13696,6 +13696,119 @@ type ConfirmTotpEnrollmentUnprocessableEntity Error
 
 func (*ConfirmTotpEnrollmentUnprocessableEntity) confirmTotpEnrollmentRes() {}
 
+// How the authenticated account can be signed in to.
+// Ref: #/components/schemas/ConnectedAccounts
+type ConnectedAccounts struct {
+	// Whether a password is set. False means the account is social-only and can add one via `POST
+	// /auth/me/password/set`.
+	HasPassword bool `json:"has_password"`
+	// Whether removing one identity would still leave a way in, which is true when a password is set or
+	// more than one identity is connected. A display hint mirroring the server's rule, never the
+	// enforcement.
+	CanUnlink bool                `json:"can_unlink"`
+	Items     []ConnectedIdentity `json:"items"`
+}
+
+// GetHasPassword returns the value of HasPassword.
+func (s *ConnectedAccounts) GetHasPassword() bool {
+	return s.HasPassword
+}
+
+// GetCanUnlink returns the value of CanUnlink.
+func (s *ConnectedAccounts) GetCanUnlink() bool {
+	return s.CanUnlink
+}
+
+// GetItems returns the value of Items.
+func (s *ConnectedAccounts) GetItems() []ConnectedIdentity {
+	return s.Items
+}
+
+// SetHasPassword sets the value of HasPassword.
+func (s *ConnectedAccounts) SetHasPassword(val bool) {
+	s.HasPassword = val
+}
+
+// SetCanUnlink sets the value of CanUnlink.
+func (s *ConnectedAccounts) SetCanUnlink(val bool) {
+	s.CanUnlink = val
+}
+
+// SetItems sets the value of Items.
+func (s *ConnectedAccounts) SetItems(val []ConnectedIdentity) {
+	s.Items = val
+}
+
+func (*ConnectedAccounts) listMyIdentitiesRes() {}
+
+// One external sign-in method linked to an account. `subject` and `issuer` (the provider's own
+// identifiers for the person) are deliberately absent: they mean nothing to the person reading the
+// page and they are what an attacker would need to forge a matching identity. `email` is what the
+// provider asserted at the last sign-in, which is a record, not the account's own address, and may
+// differ from it.
+// Ref: #/components/schemas/ConnectedIdentity
+type ConnectedIdentity struct {
+	// The provider key, e.g. `google`, `github`, or `oidc` for an operator-configured issuer.
+	Provider string `json:"provider"`
+	Email    string `json:"email"`
+	// Whether the PROVIDER vouched for the address at link time. Distinct from this install having seen
+	// the person open a verification link.
+	EmailVerified bool      `json:"email_verified"`
+	CreatedAt     time.Time `json:"created_at"`
+	// Null until the method has been used to sign in at least once.
+	LastLoginAt OptNilDateTime `json:"last_login_at"`
+}
+
+// GetProvider returns the value of Provider.
+func (s *ConnectedIdentity) GetProvider() string {
+	return s.Provider
+}
+
+// GetEmail returns the value of Email.
+func (s *ConnectedIdentity) GetEmail() string {
+	return s.Email
+}
+
+// GetEmailVerified returns the value of EmailVerified.
+func (s *ConnectedIdentity) GetEmailVerified() bool {
+	return s.EmailVerified
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *ConnectedIdentity) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastLoginAt returns the value of LastLoginAt.
+func (s *ConnectedIdentity) GetLastLoginAt() OptNilDateTime {
+	return s.LastLoginAt
+}
+
+// SetProvider sets the value of Provider.
+func (s *ConnectedIdentity) SetProvider(val string) {
+	s.Provider = val
+}
+
+// SetEmail sets the value of Email.
+func (s *ConnectedIdentity) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetEmailVerified sets the value of EmailVerified.
+func (s *ConnectedIdentity) SetEmailVerified(val bool) {
+	s.EmailVerified = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *ConnectedIdentity) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastLoginAt sets the value of LastLoginAt.
+func (s *ConnectedIdentity) SetLastLoginAt(val OptNilDateTime) {
+	s.LastLoginAt = val
+}
+
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
 	Name         string    `json:"name"`
@@ -18028,6 +18141,7 @@ func (*Error) getSiteUptimeRes()                  {}
 func (*Error) getTenantRes()                      {}
 func (*Error) getTwoFactorStatusRes()             {}
 func (*Error) getUpdateRunRes()                   {}
+func (*Error) listMyIdentitiesRes()               {}
 func (*Error) listOrgsRes()                       {}
 func (*Error) listRestoreRunsRes()                {}
 func (*Error) listScheduleRunsRes()               {}
@@ -42353,6 +42467,37 @@ type SetAdminVulnFeedKeyUnauthorized Error
 
 func (*SetAdminVulnFeedKeyUnauthorized) setAdminVulnFeedKeyRes() {}
 
+type SetMyInitialPasswordConflict Error
+
+func (*SetMyInitialPasswordConflict) setMyInitialPasswordRes() {}
+
+// SetMyInitialPasswordNoContent is response for SetMyInitialPassword operation.
+type SetMyInitialPasswordNoContent struct{}
+
+func (*SetMyInitialPasswordNoContent) setMyInitialPasswordRes() {}
+
+type SetMyInitialPasswordReq struct {
+	Password string `json:"password"`
+}
+
+// GetPassword returns the value of Password.
+func (s *SetMyInitialPasswordReq) GetPassword() string {
+	return s.Password
+}
+
+// SetPassword sets the value of Password.
+func (s *SetMyInitialPasswordReq) SetPassword(val string) {
+	s.Password = val
+}
+
+type SetMyInitialPasswordUnauthorized Error
+
+func (*SetMyInitialPasswordUnauthorized) setMyInitialPasswordRes() {}
+
+type SetMyInitialPasswordUnprocessableEntity Error
+
+func (*SetMyInitialPasswordUnprocessableEntity) setMyInitialPasswordRes() {}
+
 // SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
 type SilenceSitePHPErrorNoContent struct{}
 
@@ -49249,6 +49394,23 @@ func (*UnblockSiteIPServiceUnavailable) unblockSiteIPRes() {}
 type UnblockSiteIPUnprocessableEntity Error
 
 func (*UnblockSiteIPUnprocessableEntity) unblockSiteIPRes() {}
+
+type UnlinkMyIdentityConflict Error
+
+func (*UnlinkMyIdentityConflict) unlinkMyIdentityRes() {}
+
+// UnlinkMyIdentityNoContent is response for UnlinkMyIdentity operation.
+type UnlinkMyIdentityNoContent struct{}
+
+func (*UnlinkMyIdentityNoContent) unlinkMyIdentityRes() {}
+
+type UnlinkMyIdentityNotFound Error
+
+func (*UnlinkMyIdentityNotFound) unlinkMyIdentityRes() {}
+
+type UnlinkMyIdentityUnauthorized Error
+
+func (*UnlinkMyIdentityUnauthorized) unlinkMyIdentityRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest
