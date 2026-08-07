@@ -46,7 +46,7 @@ export default async function FeatureSlugPage({
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
     { name: "Features", href: "/features" },
-    { name: feature.title, href: `/features/${slug}/` },
+    { name: feature.title, href: `/features/${slug}` },
   ]);
 
   const faqLd = buildFAQPageLd(feature.faq);

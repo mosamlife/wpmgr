@@ -82,7 +82,7 @@ export default function SolutionsHubPage() {
   const allSolutionsForLd = SOLUTION_HUB_CARDS.map((c) => ({
     name: c.title,
     description: c.summary,
-    url: `/solutions/${c.slug}/`,
+    url: `/solutions/${c.slug}`,
   }));
 
   const breadcrumbLd = buildBreadcrumbLd([

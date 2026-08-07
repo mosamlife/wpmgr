@@ -76,8 +76,8 @@ export default async function BlogPostPage({ params }: Props) {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
     { name: "Blog", href: "/blog" },
-    { name: catLabel, href: `/blog/${category}/` },
-    { name: fm.title, href: `/blog/${category}/${slug}/` },
+    { name: catLabel, href: `/blog/${category}` },
+    { name: fm.title, href: `/blog/${category}/${slug}` },
   ]);
 
   const articleLd = buildArticleLd({

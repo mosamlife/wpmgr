@@ -35,7 +35,7 @@ const CATEGORY_META: Record<
     heading: "WordPress Security",
     description:
       "Practical guides to hardening WordPress: login protection, file integrity monitoring, vulnerability scanning, and two-factor authentication.",
-    solutionHref: "/solutions/wordpress-security/",
+    solutionHref: "/solutions/wordpress-security",
     solutionLabel: "WordPress Security solution guide",
   },
   "wordpress-performance": {
@@ -43,7 +43,7 @@ const CATEGORY_META: Record<
     heading: "WordPress Performance",
     description:
       "Speed up WordPress with full-page caching, AVIF/WebP images, Redis object cache, and Core Web Vitals monitoring from real visitors.",
-    solutionHref: "/solutions/wordpress-performance/",
+    solutionHref: "/solutions/wordpress-performance",
     solutionLabel: "Speed up WordPress solution guide",
   },
   "wordpress-backups": {
@@ -51,7 +51,7 @@ const CATEGORY_META: Record<
     heading: "WordPress Backups",
     description:
       "Build a reliable WordPress backup strategy: frequency, offsite storage, incremental backups, and verified restore procedures.",
-    solutionHref: "/solutions/wordpress-backups/",
+    solutionHref: "/solutions/wordpress-backups",
     solutionLabel: "WordPress Backups solution guide",
   },
   "agency-operations": {
@@ -59,7 +59,7 @@ const CATEGORY_META: Record<
     heading: "Agency Operations",
     description:
       "Scale your WordPress agency: fleet management, client reporting, white-label tools, and workflows for managing dozens of sites efficiently.",
-    solutionHref: "/solutions/agencies/",
+    solutionHref: "/solutions/agencies",
     solutionLabel: "For agencies solution guide",
   },
 };
@@ -91,7 +91,7 @@ export default async function BlogCategoryPage({ params }: Props) {
   const breadcrumb = buildBreadcrumbLd([
     { name: "Home", href: "/" },
     { name: "Blog", href: "/blog" },
-    { name: meta.label, href: `/blog/${cat}/` },
+    { name: meta.label, href: `/blog/${cat}` },
   ]);
 
   return (

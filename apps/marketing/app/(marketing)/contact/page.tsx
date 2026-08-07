@@ -32,7 +32,7 @@ const TOPICS = [
     title: "Security",
     description: "Responsible disclosure of a vulnerability in WPMgr.",
     note: "See our security policy for scope and process.",
-    noteHref: "/legal/security-policy/",
+    noteHref: "/legal/security-policy",
   },
   {
     icon: "GitPullRequest",

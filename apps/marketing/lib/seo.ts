@@ -253,12 +253,12 @@ export function buildContactPageLd(): LdObject {
   return {
     "@type": "ContactPage",
     name: `Contact ${SITE_CONFIG.name}`,
-    url: `${SITE_CONFIG.baseUrl}/contact/`,
+    url: `${SITE_CONFIG.baseUrl}/contact`,
     description:
       "Contact WPMgr for sales enquiries, support, security reports, or to ask about contributing.",
     mainEntityOfPage: {
       "@type": "WebPage",
-      "@id": `${SITE_CONFIG.baseUrl}/contact/`,
+      "@id": `${SITE_CONFIG.baseUrl}/contact`,
     },
   };
 }
