@@ -24,6 +24,10 @@ const (
 	sessKeyOAuthState    = "oauth_state"
 	sessKeyOAuthNonce    = "oauth_nonce"
 	sessKeyOAuthVerifier = "oauth_verifier"
+	// Which provider the in-flight handshake belongs to. Without this the
+	// callback cannot know whether to verify a Google ID token or call the
+	// GitHub API, and a single shared callback would have to guess.
+	sessKeyOAuthProvider = "oauth_provider"
 )
 
 // SessionManager wraps SCS with the WPMgr cookie policy. The opaque session
@@ -271,6 +275,22 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 	m.scs.Put(ctx, sessKeyOAuthState, state)
 	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
 	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
+}
+
+// putSocial stores the same handshake values plus the provider the flow was
+// started for. The provider is server-side state on purpose: taking it from the
+// callback URL instead would let anyone who can reach the callback nominate
+// which adapter verifies their code.
+func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier string) {
+	m.putOAuth(ctx, state, nonce, verifier)
+	m.scs.Put(ctx, sessKeyOAuthProvider, provider)
+}
+
+// takeSocial reads and clears the handshake, including the provider.
+func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier string) {
+	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
+	state, nonce, verifier = m.takeOAuth(ctx)
+	return
 }
 
 // takeOAuth reads and clears the transient OIDC handshake values.
