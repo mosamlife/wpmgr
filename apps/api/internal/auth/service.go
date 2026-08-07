@@ -49,6 +49,9 @@ type Service struct {
 	// Injected via SetPlanValidator after startup; nil treats every plan hint
 	// as no intent.
 	planValidator PaidTierValidator
+	// inviteClaimer accepts invitations waiting for an address a provider just
+	// verified. Injected via SetInviteClaimer after startup; nil claims nothing.
+	inviteClaimer SocialInviteClaimer
 }
 
 // NewService builds an auth Service.
@@ -87,6 +90,17 @@ type LoginResult struct {
 	// just-consumed verification token). Every other path (Login,
 	// UpsertOIDCUser, Me/UpdateProfile) leaves this at its zero value "".
 	DesiredPlan string
+	// PendingSocialLink is an external identity that the sign-in policy has
+	// APPROVED for linking to User but that has deliberately NOT been written
+	// yet. Only the social paths ever set it, and only on the branch that
+	// attaches a new provider to an account that already exists.
+	//
+	// Linking changes how an account can be authenticated to, so it must not
+	// outlive a login that never completed. The caller writes it with
+	// CompleteSocialLink once, and only once, a session actually exists for
+	// User: immediately for an account with no second factor, or after the
+	// factor is proven for one that has.
+	PendingSocialLink *Identity
 }
 
 // loginInput validates the email/password login body.

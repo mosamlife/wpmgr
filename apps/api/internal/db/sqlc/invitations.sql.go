@@ -316,6 +316,64 @@ func (q *Queries) ListPendingInvitations(ctx context.Context, tenantID uuid.UUID
 	return items, nil
 }
 
+const listPendingInvitationsForEmail = `-- name: ListPendingInvitationsForEmail :many
+SELECT id, tenant_id, email, scope, site_id, role, token_hash, invited_by, expires_at, attempts, accepted_at, accepted_user_id, revoked_at, revoked_by, created_at, client_id FROM invitations
+WHERE email       = $1
+  AND accepted_at IS NULL
+  AND revoked_at  IS NULL
+  AND expires_at  > now()
+ORDER BY created_at ASC, id ASC
+`
+
+// Every live invitation addressed to one address, across all tenants. Like
+// GetInvitationByTokenHash this is a pre-auth lookup and must run under
+// InInviteLookupTx (app.invite_lookup='on'); there is no tenant scope yet
+// because the whole point is to find invitations from orgs the caller does not
+// belong to.
+//
+// Its one caller is the social sign-in claim path, which reaches it only after
+// an identity provider has verified control of the address, so the address
+// itself is the authorisation. email is citext, so the comparison is already
+// case-insensitive. Ordered oldest-first with an id tiebreaker: invitations
+// created in one batch share created_at, and the order decides which org a
+// brand new user lands in.
+func (q *Queries) ListPendingInvitationsForEmail(ctx context.Context, email string) ([]Invitation, error) {
+	rows, err := q.db.Query(ctx, listPendingInvitationsForEmail, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Invitation
+	for rows.Next() {
+		var i Invitation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Email,
+			&i.Scope,
+			&i.SiteID,
+			&i.Role,
+			&i.TokenHash,
+			&i.InvitedBy,
+			&i.ExpiresAt,
+			&i.Attempts,
+			&i.AcceptedAt,
+			&i.AcceptedUserID,
+			&i.RevokedAt,
+			&i.RevokedBy,
+			&i.CreatedAt,
+			&i.ClientID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInvitationAccepted = `-- name: MarkInvitationAccepted :one
 UPDATE invitations
 SET accepted_at      = now(),

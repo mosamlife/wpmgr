@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
@@ -109,6 +110,120 @@ func (r *Repo) CreateUser(ctx context.Context, email, passwordHash, name, oidcIs
 		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
 	}
 	return userToModel(row), nil
+}
+
+// CreateSocialUserTx creates a user, optionally marks the address verified, and
+// links the external identity, as ONE transaction.
+//
+// It replaces three independent statements, and the difference is not
+// theoretical. The account row is what holds the email address, and the address
+// is unique. A failure after the INSERT but before the identity link left a
+// user with no identity, no password, and email_verified_at NULL, sitting on
+// the address forever: the next social sign-in finds that row, sees an account
+// this install never verified, and correctly refuses to link onto it, so the
+// person who actually owns the address is locked out of it by the ghost of
+// their own first attempt. Recovery needed a verification email, which is the
+// one thing a fresh self-host install with no SMTP cannot send.
+//
+// Neither users nor user_identities is RLS-scoped (a user spans tenants), so
+// this needs no GUC, only atomicity.
+func (r *Repo) CreateSocialUserTx(ctx context.Context, email, name, oidcIssuer, oidcSubject string, verified bool, ident Identity) (User, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlc.New(tx)
+	row, err := q.CreateUser(ctx, sqlc.CreateUserParams{
+		Email:        email,
+		PasswordHash: nil,
+		OidcSubject:  strPtr(oidcSubject),
+		OidcIssuer:   strPtr(oidcIssuer),
+		Name:         name,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return User{}, domain.Conflict("user_exists", "a user with this email already exists").WithCause(err)
+		}
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+	u := userToModel(row)
+
+	if verified {
+		if err := q.MarkUserEmailVerified(ctx, u.ID); err != nil {
+			return User{}, domain.Internal("user_verify_failed", "failed to mark email verified").WithCause(err)
+		}
+	}
+
+	ident.UserID = u.ID
+	if _, err := q.CreateIdentity(ctx, sqlc.CreateIdentityParams{
+		UserID:        ident.UserID,
+		Provider:      ident.Provider,
+		Subject:       ident.Subject,
+		Issuer:        ident.Issuer,
+		Email:         ident.Email,
+		EmailVerified: ident.EmailVerified,
+	}); err != nil {
+		return User{}, domain.Internal("identity_create_failed", "failed to link identity").WithCause(err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+
+	// Re-read what the transaction just wrote rather than trusting the pre-update
+	// row: MarkUserEmailVerified also moves status, and returning a stale copy is
+	// how the caller ends up patching fields by hand.
+	if verified {
+		if fresh, ferr := r.GetUserByID(ctx, u.ID); ferr == nil {
+			return fresh, nil
+		}
+	}
+	return u, nil
+}
+
+// CountAllMembershipsForUser counts memberships INCLUDING those in
+// soft-deleted orgs. See the query comment: this answers "has this user ever
+// belonged to an org", which is a different question from
+// ListMembershipsForUser's "what can this session act in".
+func (r *Repo) CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := r.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		count, qerr := sqlc.New(tx).CountAllMembershipsForUser(ctx, userID)
+		if qerr != nil {
+			return domain.Internal("membership_count_failed", "failed to count memberships").WithCause(qerr)
+		}
+		n = count
+		return nil
+	})
+	return n, err
+}
+
+// RecordTenantlessAuthEvent writes an authentication event that belongs to no
+// tenant to system_audit_log, which carries no FK to tenants.
+//
+// audit_log cannot hold it: its tenant_id references tenants, so an event
+// recorded against uuid.Nil is rejected by the database and thrown away by a
+// best-effort caller. That silently discarded exactly the accounts worth
+// watching, because "has no membership at all" describes a brand new social
+// account, a site collaborator, a portal user, and anyone whose only org is
+// mid soft-delete: the users with the least oversight, not the most.
+func (r *Repo) RecordTenantlessAuthEvent(ctx context.Context, actorID uuid.UUID, action string, meta []byte) error {
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	return r.q.InsertSystemAuditEvent(ctx, sqlc.InsertSystemAuditEventParams{
+		ActorType: "user",
+		ActorID:   pgtype.UUID{Bytes: actorID, Valid: actorID != uuid.Nil},
+		Action:    action,
+		// system_audit_log.tenant_id is a plain NOT NULL column, not a
+		// reference. The nil UUID is the honest value here: there is no tenant.
+		TenantID:   uuid.Nil,
+		TenantName: "",
+		Metadata:   meta,
+	})
 }
 
 // GetUserByEmail loads a user by email.

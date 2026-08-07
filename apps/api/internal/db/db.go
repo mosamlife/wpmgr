@@ -499,8 +499,14 @@ func (p *Pool) InRumIngestTx(ctx context.Context, tenantID, siteID uuid.UUID, fn
 // InInviteLookupTx runs fn inside a transaction with app.invite_lookup set to
 // 'on', enabling the invitations_token_lookup SELECT-only policy. This mirrors
 // InAPIKeyLookupTx: it is the one place an invitation may be read before any
-// authenticated session or tenant scope is established (the public accept
-// endpoint). fn must do nothing but resolve an invitation by its token hash.
+// authenticated session or tenant scope is established.
+//
+// fn must do nothing but resolve an invitation by something that already
+// stands in for the invited person: the token hash (the public accept
+// endpoint), or the invited address once an identity provider has verified the
+// caller controls it (the social sign-in claim). Both are pre-auth by
+// necessity, because the whole point is to find invitations from organisations
+// the caller does not belong to yet.
 func (p *Pool) InInviteLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	tx, err := p.Begin(ctx)
 	if err != nil {

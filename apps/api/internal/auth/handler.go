@@ -564,7 +564,11 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 	// h.svc.baseURL is the public base URL (WPMGR_PUBLIC_BASE_URL). When 2FA is
 	// not enrolled issueSessionOrChallenge issues the session and returns true;
 	// we then redirect to the SPA home (the callback was always a browser redirect).
-	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
+	// Routed through the shared provider helper so this callback also defers an
+	// approved identity link until the second factor is proven, and writes it
+	// once it is. The generic OIDC path goes through the same policy as the
+	// consumer providers, so it must go through the same completion too.
+	if !h.issueProviderSessionOrChallenge(c, res) {
 		// 2FA challenge redirect was already written by issueSessionOrChallenge.
 		return
 	}

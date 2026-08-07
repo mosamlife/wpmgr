@@ -325,6 +325,15 @@ type Querier interface {
 	// (operator app.tenant_id OR public-enroll app.enroll) — see the function's
 	// own comment in schema.sql for the full rationale.
 	CountActiveSitesForBilling(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// Deliberately does NOT join tenants, so a membership in a SOFT-DELETED org
+	// still counts. ListMembershipsForUser hides those rows, which is right for
+	// "what can this session act in" but wrong for "has this user ever belonged to
+	// an org": the two questions differ for exactly the length of the delete grace
+	// window, and social sign-in used the visible-membership answer to decide
+	// whether to bootstrap a brand new org. That minted an org mid grace window
+	// for a user who already had one in the bin, while the password path for the
+	// same user created nothing. Runs under InUserTx (memberships_self_read).
+	CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	// Guards unlink: removing the last identity from a user with no password would
 	// lock them out of their own account permanently.
 	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
@@ -1509,6 +1518,19 @@ type Querier interface {
 	// List pending (not yet accepted, not expired, not revoked) invitations for the
 	// current tenant.
 	ListPendingInvitations(ctx context.Context, tenantID uuid.UUID) ([]Invitation, error)
+	// Every live invitation addressed to one address, across all tenants. Like
+	// GetInvitationByTokenHash this is a pre-auth lookup and must run under
+	// InInviteLookupTx (app.invite_lookup='on'); there is no tenant scope yet
+	// because the whole point is to find invitations from orgs the caller does not
+	// belong to.
+	//
+	// Its one caller is the social sign-in claim path, which reaches it only after
+	// an identity provider has verified control of the address, so the address
+	// itself is the authorisation. email is citext, so the comparison is already
+	// case-insensitive. Ordered oldest-first with an id tiebreaker: invitations
+	// created in one batch share created_at, and the order decides which org a
+	// brand new user lands in.
+	ListPendingInvitationsForEmail(ctx context.Context, email string) ([]Invitation, error)
 	// Returns recently completed snapshots across a set of sites, ordered newest
 	// first. Used by the portal /summary recent_work feed. The site_ids param is
 	// always p.AllowedSiteIDs (RLS double-gate via app.site_scope on
