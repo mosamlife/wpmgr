@@ -6,7 +6,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Account security settings now show which sign-in methods your account has, and let you disconnect one or connect another. Until now an account could accumulate providers with no way to see or undo it.
+- An account that was created by signing in with a provider, and so has no password at all, can now set one from that same card. It can only be done while signed in. Password reset deliberately will not do it: a reset link that can create a password where there was none would turn "forgot password" into a way for anyone who knows your address to make an account theirs.
+
+### Fixed
+
+- Disconnecting a provider is now refused when it would leave the account with no way to sign in at all, and the refusal says to set a password first. That state had no way back: there would be no password to reset and no provider to sign in with. The check and the removal happen together, so disconnecting two providers at the same moment from two tabs cannot slip past it.
 
 ## [0.61.129] - 2026-08-07
 

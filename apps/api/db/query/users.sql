@@ -20,6 +20,21 @@ SELECT count(*) FROM users;
 -- sessions (ADR-045 Phase 2).
 UPDATE users SET password_hash = $2, password_changed_at = now(), updated_at = now() WHERE id = $1;
 
+-- name: SetUserInitialPassword :execrows
+-- Adds a FIRST password to an account that has none, for a social-only user who
+-- wants to be able to sign in without their provider.
+--
+-- The `password_hash IS NULL` predicate is the guard, not an optimisation: it
+-- makes "add a password" and "change a password" two different operations
+-- decided by the database in one statement, so this path can never overwrite an
+-- existing password. Overwriting is what the change-password path is for, and
+-- that one first proves knowledge of the current password. Zero rows affected
+-- therefore means "a password already exists", which the caller turns into a
+-- 409 rather than a silent success.
+UPDATE users
+SET password_hash = $2, password_changed_at = now(), updated_at = now()
+WHERE id = $1 AND password_hash IS NULL;
+
 -- name: GetUserPasswordChangedAt :one
 -- Lightweight per-request lookup for the session reject-stale check.
 SELECT password_changed_at FROM users WHERE id = $1;

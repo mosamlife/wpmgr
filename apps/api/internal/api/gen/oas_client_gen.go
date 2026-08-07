@@ -2067,6 +2067,18 @@ type Invoker interface {
 	//
 	// GET /api/v1/members
 	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
+	// ListMyIdentities invokes listMyIdentities operation.
+	//
+	// Powers the connected accounts card at settings/security. Acts on the
+	// caller's own account only: no user id appears anywhere in this route.
+	// `has_password` and `can_unlink` describe the account as a whole.
+	// `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
+	// will give, so the page can avoid offering a button that would only be
+	// refused. It is a display hint and never the enforcement: the server
+	// re-decides on every delete.
+	//
+	// GET /auth/me/identities
+	ListMyIdentities(ctx context.Context) (ListMyIdentitiesRes, error)
 	// ListOrgs invokes listOrgs operation.
 	//
 	// List the caller's organisations, with their role in each.
@@ -2319,6 +2331,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error)
+	// ListSocialProviders invokes listSocialProviders operation.
+	//
+	// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+	// these, so an unconfigured provider never shows a button that leads to a provider error page.
+	// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+	// buttons the operator chose to enable.
+	//
+	// GET /auth/social/providers
+	ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error)
 	// ListTags invokes listTags operation.
 	//
 	// Lists every tag in the tenant's registry (m100), sorted
@@ -3155,6 +3176,25 @@ type Invoker interface {
 	//
 	// PUT /api/v1/admin/vuln-feed/key
 	SetAdminVulnFeedKey(ctx context.Context, request *SetAdminVulnFeedKeyReq) (SetAdminVulnFeedKeyRes, error)
+	// SetMyInitialPassword invokes setMyInitialPassword operation.
+	//
+	// For an account created through a social provider, which has no password
+	// at all. Adds one, so the account no longer depends on the provider.
+	// Separate from `POST /auth/me/password` on purpose. That endpoint changes
+	// an existing password and proves knowledge of the current one first; this
+	// one has no current password to ask for, so an authenticated session is
+	// the whole authorisation. Folding the two together would let a request
+	// with no `current_password` reach the stronger operation.
+	// This is also why password reset cannot do it: `POST
+	// /auth/password/forgot` deliberately sends nothing for an account with no
+	// password, because minting a set-password link for one would turn reset
+	// into account creation for anyone who knows the address.
+	// Refuses with 409 when a password already exists. The account address is
+	// notified, and every other session for this user is invalidated
+	// (`password_changed_at` moves); the calling session stays alive.
+	//
+	// POST /auth/me/password/set
+	SetMyInitialPassword(ctx context.Context, request *SetMyInitialPasswordReq) (SetMyInitialPasswordRes, error)
 	// SetSiteTags invokes setSiteTags operation.
 	//
 	// Replace the tag set on a site.
@@ -3169,6 +3209,22 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, request OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
+	// SocialCallback invokes socialCallback operation.
+	//
+	// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+	// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+	// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+	// enrolled is redirected to the 2FA challenge instead of being signed in.
+	//
+	// GET /auth/social/{provider}/callback
+	SocialCallback(ctx context.Context, params SocialCallbackParams) error
+	// SocialStart invokes socialStart operation.
+	//
+	// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+	// server-side in the session. Returns 503 when the provider is not configured on this install.
+	//
+	// GET /auth/social/{provider}/start
+	SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error)
 	// StartScanRun invokes startScanRun operation.
 	//
 	// Enqueues a scan against the site's WordPress core/plugin/theme files
@@ -3283,6 +3339,21 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/security/unblock-ip
 	UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
+	// UnlinkMyIdentity invokes unlinkMyIdentity operation.
+	//
+	// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
+	// which is the case where this is the only connected provider and no
+	// password is set. That state is not recoverable: there would be no
+	// password to reset and no provider to sign in with, and password reset
+	// will not mint a set-password link for a passwordless account. The
+	// refusal names the next step, which is to add a password first via
+	// `POST /auth/me/password/set`.
+	// The check and the delete happen inside one locked transaction, so two
+	// requests disconnecting two different providers at the same moment cannot
+	// each conclude that one may go.
+	//
+	// DELETE /auth/me/identities/{provider}
+	UnlinkMyIdentity(ctx context.Context, params UnlinkMyIdentityParams) (UnlinkMyIdentityRes, error)
 	// UnlockBackup invokes unlockBackup operation.
 	//
 	// Clears the `locked` flag, making the snapshot eligible for normal
@@ -26032,6 +26103,86 @@ func (c *Client) sendListMembers(ctx context.Context, params ListMembersParams) 
 	return result, nil
 }
 
+// ListMyIdentities invokes listMyIdentities operation.
+//
+// Powers the connected accounts card at settings/security. Acts on the
+// caller's own account only: no user id appears anywhere in this route.
+// `has_password` and `can_unlink` describe the account as a whole.
+// `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
+// will give, so the page can avoid offering a button that would only be
+// refused. It is a display hint and never the enforcement: the server
+// re-decides on every delete.
+//
+// GET /auth/me/identities
+func (c *Client) ListMyIdentities(ctx context.Context) (ListMyIdentitiesRes, error) {
+	res, err := c.sendListMyIdentities(ctx)
+	return res, err
+}
+
+func (c *Client) sendListMyIdentities(ctx context.Context) (res ListMyIdentitiesRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listMyIdentities"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/me/identities"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListMyIdentitiesOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/auth/me/identities"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListMyIdentitiesResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListOrgs invokes listOrgs operation.
 //
 // List the caller's organisations, with their role in each.
@@ -29544,6 +29695,83 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 
 	stage = "DecodeResponse"
 	result, err := decodeListSitesResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListSocialProviders invokes listSocialProviders operation.
+//
+// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+// these, so an unconfigured provider never shows a button that leads to a provider error page.
+// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+// buttons the operator chose to enable.
+//
+// GET /auth/social/providers
+func (c *Client) ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error) {
+	res, err := c.sendListSocialProviders(ctx)
+	return res, err
+}
+
+func (c *Client) sendListSocialProviders(ctx context.Context) (res *ListSocialProvidersOK, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listSocialProviders"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/providers"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListSocialProvidersOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/auth/social/providers"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeListSocialProvidersResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -37794,6 +38022,96 @@ func (c *Client) sendSetAdminVulnFeedKey(ctx context.Context, request *SetAdminV
 	return result, nil
 }
 
+// SetMyInitialPassword invokes setMyInitialPassword operation.
+//
+// For an account created through a social provider, which has no password
+// at all. Adds one, so the account no longer depends on the provider.
+// Separate from `POST /auth/me/password` on purpose. That endpoint changes
+// an existing password and proves knowledge of the current one first; this
+// one has no current password to ask for, so an authenticated session is
+// the whole authorisation. Folding the two together would let a request
+// with no `current_password` reach the stronger operation.
+// This is also why password reset cannot do it: `POST
+// /auth/password/forgot` deliberately sends nothing for an account with no
+// password, because minting a set-password link for one would turn reset
+// into account creation for anyone who knows the address.
+// Refuses with 409 when a password already exists. The account address is
+// notified, and every other session for this user is invalidated
+// (`password_changed_at` moves); the calling session stays alive.
+//
+// POST /auth/me/password/set
+func (c *Client) SetMyInitialPassword(ctx context.Context, request *SetMyInitialPasswordReq) (SetMyInitialPasswordRes, error) {
+	res, err := c.sendSetMyInitialPassword(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendSetMyInitialPassword(ctx context.Context, request *SetMyInitialPasswordReq) (res SetMyInitialPasswordRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("setMyInitialPassword"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/auth/me/password/set"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SetMyInitialPasswordOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/auth/me/password/set"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSetMyInitialPasswordRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSetMyInitialPasswordResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // SetSiteTags invokes setSiteTags operation.
 //
 // Replace the tag set on a site.
@@ -38000,6 +38318,251 @@ func (c *Client) sendSilenceSitePHPError(ctx context.Context, request OptPHPErro
 
 	stage = "DecodeResponse"
 	result, err := decodeSilenceSitePHPErrorResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SocialCallback invokes socialCallback operation.
+//
+// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+// enrolled is redirected to the 2FA challenge instead of being signed in.
+//
+// GET /auth/social/{provider}/callback
+func (c *Client) SocialCallback(ctx context.Context, params SocialCallbackParams) error {
+	_, err := c.sendSocialCallback(ctx, params)
+	return err
+}
+
+func (c *Client) sendSocialCallback(ctx context.Context, params SocialCallbackParams) (res *SocialCallbackFound, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("socialCallback"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/{provider}/callback"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SocialCallbackOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/auth/social/"
+	{
+		// Encode "provider" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "provider",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(string(params.Provider)))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/callback"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "code" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "code",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Code.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "state" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "state",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.State.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "error" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "error",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Error.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSocialCallbackResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SocialStart invokes socialStart operation.
+//
+// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+// server-side in the session. Returns 503 when the provider is not configured on this install.
+//
+// GET /auth/social/{provider}/start
+func (c *Client) SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error) {
+	res, err := c.sendSocialStart(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) (res SocialStartRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("socialStart"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/auth/social/{provider}/start"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SocialStartOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/auth/social/"
+	{
+		// Encode "provider" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "provider",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(string(params.Provider)))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/start"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSocialStartResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -39146,6 +39709,107 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 
 	stage = "DecodeResponse"
 	result, err := decodeUnblockSiteIPResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// UnlinkMyIdentity invokes unlinkMyIdentity operation.
+//
+// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
+// which is the case where this is the only connected provider and no
+// password is set. That state is not recoverable: there would be no
+// password to reset and no provider to sign in with, and password reset
+// will not mint a set-password link for a passwordless account. The
+// refusal names the next step, which is to add a password first via
+// `POST /auth/me/password/set`.
+// The check and the delete happen inside one locked transaction, so two
+// requests disconnecting two different providers at the same moment cannot
+// each conclude that one may go.
+//
+// DELETE /auth/me/identities/{provider}
+func (c *Client) UnlinkMyIdentity(ctx context.Context, params UnlinkMyIdentityParams) (UnlinkMyIdentityRes, error) {
+	res, err := c.sendUnlinkMyIdentity(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendUnlinkMyIdentity(ctx context.Context, params UnlinkMyIdentityParams) (res UnlinkMyIdentityRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("unlinkMyIdentity"),
+		semconv.HTTPRequestMethodKey.String("DELETE"),
+		semconv.URLTemplateKey.String("/auth/me/identities/{provider}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, UnlinkMyIdentityOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/auth/me/identities/"
+	{
+		// Encode "provider" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "provider",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.Provider))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeUnlinkMyIdentityResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

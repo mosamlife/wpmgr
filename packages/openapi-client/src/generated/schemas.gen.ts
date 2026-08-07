@@ -11625,6 +11625,63 @@ export const FileVersionRestoreResultSchema = {
   },
 } as const;
 
+export const ConnectedIdentitySchema = {
+  type: "object",
+  description:
+    "One external sign-in method linked to an account. `subject` and `issuer` (the provider's own identifiers for the person) are deliberately absent: they mean nothing to the person reading the page and they are what an attacker would need to forge a matching identity. `email` is what the provider asserted at the last sign-in, which is a record, not the account's own address, and may differ from it.",
+  required: ["provider", "email", "email_verified", "created_at"],
+  properties: {
+    provider: {
+      type: "string",
+      description:
+        "The provider key, e.g. `google`, `github`, or `oidc` for an operator-configured issuer.",
+    },
+    email: {
+      type: "string",
+    },
+    email_verified: {
+      type: "boolean",
+      description:
+        "Whether the PROVIDER vouched for the address at link time. Distinct from this install having seen the person open a verification link.",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+    last_login_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "Null until the method has been used to sign in at least once.",
+    },
+  },
+} as const;
+
+export const ConnectedAccountsSchema = {
+  type: "object",
+  description: "How the authenticated account can be signed in to.",
+  required: ["has_password", "can_unlink", "items"],
+  properties: {
+    has_password: {
+      type: "boolean",
+      description:
+        "Whether a password is set. False means the account is social-only and can add one via `POST /auth/me/password/set`.",
+    },
+    can_unlink: {
+      type: "boolean",
+      description:
+        "Whether removing one identity would still leave a way in, which is true when a password is set or more than one identity is connected. A display hint mirroring the server's rule, never the enforcement.",
+    },
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/ConnectedIdentity",
+      },
+    },
+  },
+} as const;
+
 export const TwoFactorStatusSchema = {
   type: "object",
   description: "Current 2FA configuration summary for the authenticated user.",

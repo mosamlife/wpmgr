@@ -1969,6 +1969,17 @@ type Querier interface {
 	// silently re-pointed at a different provider by a later checkout attempt.
 	SetTenantBillingProviderIfUnset(ctx context.Context, arg SetTenantBillingProviderIfUnsetParams) (int64, error)
 	SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error)
+	// Adds a FIRST password to an account that has none, for a social-only user who
+	// wants to be able to sign in without their provider.
+	//
+	// The `password_hash IS NULL` predicate is the guard, not an optimisation: it
+	// makes "add a password" and "change a password" two different operations
+	// decided by the database in one statement, so this path can never overwrite an
+	// existing password. Overwriting is what the change-password path is for, and
+	// that one first proves knowledge of the current password. Zero rows affected
+	// therefore means "a password already exists", which the caller turns into a
+	// 409 rather than a silent success.
+	SetUserInitialPassword(ctx context.Context, arg SetUserInitialPasswordParams) (int64, error)
 	// Stamps password_changed_at so the Authenticator invalidates the user's other
 	// sessions (ADR-045 Phase 2).
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error

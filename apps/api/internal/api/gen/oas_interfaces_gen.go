@@ -737,6 +737,10 @@ type ListMembersRes interface {
 	listMembersRes()
 }
 
+type ListMyIdentitiesRes interface {
+	listMyIdentitiesRes()
+}
+
 type ListOrgsRes interface {
 	listOrgsRes()
 }
@@ -1105,12 +1109,20 @@ type SetAdminVulnFeedKeyRes interface {
 	setAdminVulnFeedKeyRes()
 }
 
+type SetMyInitialPasswordRes interface {
+	setMyInitialPasswordRes()
+}
+
 type SetSiteTagsRes interface {
 	setSiteTagsRes()
 }
 
 type SilenceSitePHPErrorRes interface {
 	silenceSitePHPErrorRes()
+}
+
+type SocialStartRes interface {
+	socialStartRes()
 }
 
 type StartScanRunRes interface {
@@ -1143,6 +1155,10 @@ type ToggleScanFindingIgnoreRes interface {
 
 type UnblockSiteIPRes interface {
 	unblockSiteIPRes()
+}
+
+type UnlinkMyIdentityRes interface {
+	unlinkMyIdentityRes()
 }
 
 type UnlockBackupRes interface {

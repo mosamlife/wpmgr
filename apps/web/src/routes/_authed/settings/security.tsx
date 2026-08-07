@@ -43,6 +43,7 @@ import {
 import { TotpSetupWizard } from "@/features/auth/totp-setup-wizard";
 import { PasskeyRegisterWizard } from "@/features/auth/passkey-register-wizard";
 import { ReauthDialog } from "@/features/auth/reauth-dialog";
+import { ConnectedAccountsCard } from "@/features/auth/connected-accounts-card";
 import { toast } from "@/components/toast";
 
 export const Route = createFileRoute("/_authed/settings/security")({
@@ -70,7 +71,7 @@ function SecuritySettingsPage() {
       <section aria-labelledby="security-heading" className="max-w-2xl space-y-6">
         <PageHeader
           title="Account security"
-          subline="Manage two-factor authentication, passkeys, and trusted devices."
+          subline="Manage two-factor authentication, passkeys, trusted devices, and connected accounts."
         />
         <SkeletonCard />
         <SkeletonCard />
@@ -84,7 +85,7 @@ function SecuritySettingsPage() {
       <section aria-labelledby="security-heading" className="max-w-2xl space-y-6">
         <PageHeader
           title="Account security"
-          subline="Manage two-factor authentication, passkeys, and trusted devices."
+          subline="Manage two-factor authentication, passkeys, trusted devices, and connected accounts."
         />
         <PageError
           what="Could not load security settings."
@@ -100,7 +101,7 @@ function SecuritySettingsPage() {
     <section aria-labelledby="security-heading" className="max-w-2xl space-y-6">
       <PageHeader
         title="Account security"
-        subline="Manage two-factor authentication, passkeys, and trusted devices."
+        subline="Manage two-factor authentication, passkeys, trusted devices, and connected accounts."
       />
 
       {/* Superadmin nudge — non-blocking, only shown when 2FA is not enabled */}
@@ -141,6 +142,9 @@ function SecuritySettingsPage() {
 
       {/* Trusted devices */}
       <TrustedDevicesCard />
+
+      {/* Connected accounts: what this account can sign in with */}
+      <ConnectedAccountsCard />
     </section>
   );
 }
