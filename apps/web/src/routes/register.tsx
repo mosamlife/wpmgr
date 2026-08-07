@@ -6,6 +6,7 @@ import { useState } from "react";
 import { AlertCircle, AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
+import { SocialButtons } from "@/features/auth/social-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -247,6 +248,12 @@ function RegisterPage() {
               Create account
             </Button>
           </form>
+
+          {/* Signing up with a provider skips the verification email entirely:
+              the provider has already proven the address, so the account is
+              active immediately. It also supplies a display name, which is why
+              the form no longer asks for one. */}
+          <SocialButtons label="Sign up with" />
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             Already have an account?{" "}

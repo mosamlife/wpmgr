@@ -8,6 +8,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
+import { SocialButtons } from "@/features/auth/social-buttons";
+import { socialErrorMessage } from "@/features/auth/social-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +31,10 @@ import {
 const searchSchema = z.object({
   // Where to land after a successful login (defaults to /sites).
   redirect: z.string().optional(),
+  // Set by the social callback when it refuses or fails. `.catch(undefined)`
+  // so a stray value can never error the whole route out: this page must
+  // always render, it is the way back in.
+  social_error: z.string().optional().catch(undefined),
 });
 
 export const Route = createFileRoute("/login")({
@@ -166,6 +172,21 @@ function LoginPage() {
             noValidate
             className="space-y-4"
           >
+            {search.social_error ? (
+              <div
+                role="alert"
+                className="flex items-start gap-2.5 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning-subtle)] px-3 py-2.5"
+              >
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--color-warning-subtle-fg)]"
+                />
+                <p className="text-sm leading-relaxed text-[var(--color-warning-subtle-fg)]">
+                  {socialErrorMessage(search.social_error)}
+                </p>
+              </div>
+            ) : null}
+
             {serverError ? (
               <div
                 role="alert"
@@ -276,16 +297,12 @@ function LoginPage() {
             </Button>
           </form>
 
-          <div className="my-4 flex items-center gap-3 text-xs text-[var(--color-muted-foreground)]">
-            <span className="h-px flex-1 bg-[var(--color-border)]" />
-            <span>or</span>
-            <span className="h-px flex-1 bg-[var(--color-border)]" />
-          </div>
+          <SocialButtons label="Sign in with" />
 
           <Button
             type="button"
             variant="outline"
-            className="w-full"
+            className="mt-2 w-full"
             onClick={signInWithSso}
           >
             Sign in with SSO
