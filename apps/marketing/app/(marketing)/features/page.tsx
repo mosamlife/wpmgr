@@ -9,7 +9,7 @@ import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { cn } from "@/lib/utils";
 import { HUB_CLUSTERS } from "@/lib/content/features";
 import { CTABand } from "@/components/sections/cta-band";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: "WordPress Management Features | WPMgr",
@@ -150,7 +150,6 @@ export default function FeaturesHubPage() {
         subhead="Self-host the full control plane, read every line, and run it on your own infrastructure."
         ctas={[
           { label: "Get started for free", href: signupHref("features-index"), variant: "primary", icon: "ArrowRight" },
-          { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
         ]}
       />
 

@@ -210,7 +210,6 @@ export default async function BlogPostPage({ params }: Props) {
           subhead="Free, self-hostable, no per-site fee. Read every line before you run it."
           ctas={[
             { label: "Get started for free", href: signupHref("blog-post"), variant: "primary", icon: "ArrowRight" },
-            { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
           ]}
         />
       </main>

@@ -320,7 +320,6 @@ export default function AboutPage() {
         subhead="Self-host the complete control plane on your own infrastructure. No per-site fee, no data sent to a third party, and no features behind a paywall."
         ctas={[
           { label: "Get started for free", href: signupHref("about"), variant: "primary", icon: "ArrowRight" },
-          { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
         ]}
       />
 

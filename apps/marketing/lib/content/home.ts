@@ -26,7 +26,6 @@ export const HOME_HERO = {
   ],
   ctas: [
     { label: "Get started for free", href: signupHref("hero"), variant: "primary" as const, icon: "ArrowRight" },
-    { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary" as const, icon: "Github" },
   ] satisfies Cta[],
 } as const;
 
@@ -510,7 +509,7 @@ export const HOME_ENROLL = {
       desc: "Back up, update, monitor uptime, optimize images, and lock the site down, all from the single dashboard. Disconnect cleanly anytime, and reconnecting later keeps the full history.",
     },
   ] satisfies Step[],
-  cta: { label: "Self-host it", href: SITE_CONFIG.github, icon: "Github" } satisfies Cta,
+  cta: { label: "Or self-host it", href: "/self-host" } satisfies Cta,
 };
 
 export const HOME_FAQ: FaqItem[] = [
@@ -549,12 +548,11 @@ export const HOME_FAQ: FaqItem[] = [
 ];
 
 export const HOME_FINAL_CTA = {
-  heading: "Self-host it, contribute to it, or just use it. Your call.",
+  heading: "Run your whole fleet from a dashboard you own.",
   subhead:
     "Bring up the full stack with a few commands, enroll your first site with a one-time code, and run your whole fleet from a dashboard that lives on infrastructure you control. Or fork it and build what you need.",
   body: "Free, open source, no per-site fee. Read every line before you run it.",
   ctas: [
     { label: "Get started for free", href: signupHref("hero"), variant: "primary" as const, icon: "ArrowRight" },
-    { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary" as const, icon: "Github" },
   ] satisfies Cta[],
 };

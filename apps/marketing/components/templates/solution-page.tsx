@@ -11,7 +11,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 import type { SolutionPageData } from "@/lib/content/types";
 
 // ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ export function SolutionPage({ data }: { data: SolutionPageData }) {
 
       {/* 6b. Closing CTA band */}
       <CTABand
-        heading="Self-host it, read the code, run your whole fleet."
+        heading="Run your whole fleet from one dashboard."
         subhead="Free and open source. No per-site fee. The full release is on GitHub."
         ctas={[
           {
@@ -284,12 +284,6 @@ export function SolutionPage({ data }: { data: SolutionPageData }) {
             href: signupHref("solution-cta"),
             variant: "primary",
             icon: "ArrowRight",
-          },
-          {
-            label: "Star on GitHub",
-            href: SITE_CONFIG.github,
-            variant: "secondary",
-            icon: "Github",
           },
         ]}
       />
