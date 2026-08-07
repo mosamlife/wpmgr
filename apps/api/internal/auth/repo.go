@@ -135,27 +135,6 @@ func (r *Repo) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return userToModel(row), nil
 }
 
-// GetUserByOIDC loads a user by their OIDC identity.
-func (r *Repo) GetUserByOIDC(ctx context.Context, issuer, subject string) (User, error) {
-	row, err := r.q.GetUserByOIDC(ctx, sqlc.GetUserByOIDCParams{OidcIssuer: strPtr(issuer), OidcSubject: strPtr(subject)})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return User{}, domain.NotFound("user_not_found", "user not found")
-		}
-		return User{}, domain.Internal("user_get_failed", "failed to load user").WithCause(err)
-	}
-	return userToModel(row), nil
-}
-
-// LinkOIDC attaches an OIDC identity to an existing user.
-func (r *Repo) LinkOIDC(ctx context.Context, userID uuid.UUID, issuer, subject string) (User, error) {
-	row, err := r.q.LinkUserOIDC(ctx, sqlc.LinkUserOIDCParams{ID: userID, OidcIssuer: strPtr(issuer), OidcSubject: strPtr(subject)})
-	if err != nil {
-		return User{}, domain.Internal("user_link_failed", "failed to link OIDC identity").WithCause(err)
-	}
-	return userToModel(row), nil
-}
-
 // TouchLogin updates the user's last_login_at.
 func (r *Repo) TouchLogin(ctx context.Context, userID uuid.UUID) error {
 	if err := r.q.TouchUserLogin(ctx, userID); err != nil {

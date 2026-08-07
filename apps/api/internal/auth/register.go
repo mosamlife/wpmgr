@@ -270,7 +270,13 @@ func (s *Service) ResendVerification(ctx context.Context, email string) error {
 		}
 	}
 	u, err := s.repo.GetUserByEmail(ctx, email)
-	if err != nil || u.Status != "pending" {
+	// Gated on "not yet verified", NOT on status == 'pending'. Those are not the
+	// same set: users.status defaults to 'active' while email_verified_at
+	// defaults NULL, so the first user on an install, everyone created by
+	// invitation and every pre-existing SSO user is active and unverified. The
+	// old condition left all of them with no way to ever verify, which social
+	// account linking then refused them for.
+	if err != nil || u.Status == "disabled" || u.EmailVerified() {
 		return nil
 	}
 	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, s.priorDesiredPlan(ctx, u.ID))

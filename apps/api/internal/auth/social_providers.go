@@ -161,6 +161,13 @@ func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifie
 	if err := idTok.Claims(&claims); err != nil {
 		return SocialIdentity{}, fmt.Errorf("claims: %w", err)
 	}
+	if claims.Sub == "" {
+		// The subject IS the identity. go-oidc does not require it to be
+		// present, and GitHub's adapter has the equivalent guard (user.ID == 0),
+		// so the asymmetry is worth closing even though a real Google token
+		// always carries one: an empty subject would key an identity row on "".
+		return SocialIdentity{}, fmt.Errorf("google id token has no subject")
+	}
 	// email_verified is passed straight through, NOT assumed. A Google
 	// Workspace administrator can create an account bearing an address the
 	// organisation does not own, and the resulting ID token is validly signed,
@@ -197,10 +204,10 @@ func (g *githubAdapter) oauth(redirectURL string) *oauth2.Config {
 		ClientSecret: g.cfg.ClientSecret,
 		RedirectURL:  redirectURL,
 		Endpoint:     githuboauth.Endpoint,
-		// user:email is required. Without it /user/emails is forbidden and the
-		// verified address cannot be established at all, which under this
-		// policy means no sign-in rather than an unverified one.
-		Scopes: []string{"read:user", "user:email"},
+		// user:email ALONE. It is what reaches /user/emails, which is the only
+		// source of a verified address, and GET /user answers unscoped. read:user
+		// was granting the whole profile for nothing.
+		Scopes: []string{"user:email"},
 	}
 }
 

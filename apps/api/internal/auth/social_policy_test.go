@@ -205,7 +205,12 @@ func TestDecideSocial_RefusalsAreActionable(t *testing.T) {
 	if de == nil || de.Message == "" {
 		t.Fatal("refusal must carry a message")
 	}
-	for _, want := range []string{"password", "Google"} {
+	// This assertion used to require the word "password", because the message
+	// used to say "sign in with your password, or reset it". That advice was
+	// false: neither action writes email_verified_at, so following it could
+	// never clear the refusal. The test pinned the bug. It now requires the
+	// step that actually resolves it.
+	for _, want := range []string{"verification link", "Google"} {
 		if !contains(de.Message, want) {
 			t.Errorf("refusal message should mention %q so the user knows what to do: %q", want, de.Message)
 		}
@@ -221,4 +226,97 @@ func contains(haystack, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// ---------------------------------------------------------------------------
+// Regressions from the security review of PR #389
+// ---------------------------------------------------------------------------
+
+// The review's headline finding: the takeover defence and the status gate were
+// added for Google and GitHub and NOT for the generic OIDC path, which carried
+// its own copy of the rules. There is now one policy, so these assert the
+// generic provider is bound by exactly the same matrix.
+func TestDecideSocial_GenericOIDCIsBoundByTheSamePolicy(t *testing.T) {
+	oidcID := func(verified bool) SocialIdentity {
+		return SocialIdentity{
+			Provider: "oidc", Subject: "corp-sub-1", Issuer: "https://idp.acme.com",
+			Email: "sarah@acme.com", EmailVerified: verified,
+		}
+	}
+
+	t.Run("cannot link onto a never-verified account", func(t *testing.T) {
+		u := unverifiedUser()
+		u.Status = "active"
+		u.EmailVerifiedAt = nil
+		if _, err := decideSocial(oidcID(true), nil, u); err == nil {
+			t.Fatal("the generic OIDC path must refuse the takeover exactly like Google does")
+		}
+	})
+
+	t.Run("a disabled user cannot sign in", func(t *testing.T) {
+		u := verifiedUser()
+		u.Status = "disabled"
+		if _, err := decideSocial(oidcID(true), u, nil); err == nil {
+			t.Fatal("a disabled user must not sign in through the generic OIDC path")
+		}
+	})
+
+	t.Run("still links when both sides are verified", func(t *testing.T) {
+		got, err := decideSocial(oidcID(true), nil, verifiedUser())
+		if err != nil || got != socialLinkExisting {
+			t.Fatalf("action=%v err=%v", got, err)
+		}
+	})
+}
+
+// The one relaxation that IS legitimate: some corporate IdPs return no email
+// claim. An operator configured that issuer themselves, so a distinct account
+// may be created, but it must never be used to LINK.
+func TestDecideSocial_OperatorConfiguredIssuerMayCreateWithoutAVerifiedEmail(t *testing.T) {
+	in := SocialIdentity{Provider: "oidc", Subject: "corp-1", Issuer: "https://idp.acme.com"}
+
+	got, err := decideSocial(in, nil, nil)
+	if err != nil || got != socialCreate {
+		t.Fatalf("an operator-configured issuer with no email must create: action=%v err=%v", got, err)
+	}
+
+	// The same input must still be refused for a consumer provider.
+	consumer := in
+	consumer.Provider = "google"
+	if _, err := decideSocial(consumer, nil, nil); err == nil {
+		t.Fatal("a consumer provider with no verified email must be refused")
+	}
+
+	// And an unverified address must never reach the linking branch, even for
+	// an operator-configured issuer: it creates instead.
+	withEmail := in
+	withEmail.Email = "sarah@acme.com"
+	got, err = decideSocial(withEmail, nil, verifiedUser())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == socialLinkExisting {
+		t.Fatal("an unverified email must never link, whatever the issuer")
+	}
+}
+
+// The refusal used to be unrecoverable, and it told the user to do something
+// that does not work. This pins the corrected wording so the false advice
+// cannot come back.
+func TestDecideSocial_RefusalExplainsTheActualRecovery(t *testing.T) {
+	u := verifiedUser()
+	u.EmailVerifiedAt = nil
+	_, err := decideSocial(googleID(true), nil, u)
+	de, _ := domain.AsDomain(err)
+	if de == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !contains(de.Message, "verification link") {
+		t.Errorf("the refusal must point at the verification link that resolves it: %q", de.Message)
+	}
+	// "reset it" was the old, false advice: resetting a password does not set
+	// email_verified_at, so it could never clear this refusal.
+	if contains(de.Message, "reset it") {
+		t.Errorf("refusal still advises a password reset, which does not verify the address: %q", de.Message)
+	}
 }

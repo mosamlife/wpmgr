@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.128
+  version: 0.61.129
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -920,6 +920,96 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /auth/social/providers:
+    get:
+      operationId: listSocialProviders
+      summary: List the social sign-in providers this install offers
+      description: >
+        Returns the provider keys that are configured and will work. The sign-in
+        page renders exactly these, so an unconfigured provider never shows a
+        button that leads to a provider error page. Unauthenticated by design:
+        the caller has not signed in yet, and the response reveals only which
+        buttons the operator chose to enable.
+      tags: [auth]
+      responses:
+        "200":
+          description: The configured providers, possibly none
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: string
+                      enum: [google, github]
+  /auth/social/{provider}/start:
+    get:
+      operationId: socialStart
+      summary: Begin social sign-in (redirect to the provider)
+      description: >
+        Redirects (302) to the provider's authorization endpoint with PKCE and a
+        state value held server-side in the session. Returns 503 when the
+        provider is not configured on this install.
+      tags: [auth]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, github]
+      responses:
+        "302":
+          description: Redirect to the provider
+        "503":
+          description: That provider is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/social/{provider}/callback:
+    get:
+      operationId: socialCallback
+      summary: Social sign-in redirect callback
+      description: >
+        Completes the handshake and issues a session. ALWAYS redirects (302),
+        never returns a JSON error body: the caller is a browser mid-redirect
+        from a third party, so a failure sends it back to the sign-in page with
+        a `social_error` code the app turns into a sentence. A user with a
+        second factor enrolled is redirected to the 2FA challenge instead of
+        being signed in.
+      tags: [auth]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, github]
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          description: Set by the provider when the user declines.
+          schema:
+            type: string
+      responses:
+        "302":
+          description: >
+            Signed in (redirect to the app), sent to the 2FA challenge, or
+            returned to the sign-in page carrying a social_error code.
   /api/v1/members:
     get:
       operationId: listMembers

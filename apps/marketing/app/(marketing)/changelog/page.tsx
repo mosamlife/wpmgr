@@ -39,6 +39,30 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.129",
+    date: "2026-08-07",
+    summary:
+      "Sign in with Google or GitHub, and two fixes to single sign-on: a disabled user could still get in, and an identity could be attached to an account whose address nobody had confirmed.",
+    items: [
+      {
+        tag: "Added",
+        text: "You can now sign in and sign up with Google or GitHub. Both are optional and set up separately by whoever runs the instance, so an install that configures neither carries on with email and password only. Signing up with a provider skips the verification email, because the provider has already confirmed the address, and supplies your name.",
+      },
+      {
+        tag: "Fixed",
+        text: "A disabled user could still sign in through single sign-on. Signing in with a password had always refused disabled and unverified accounts; the single sign-on route refused neither, so switching a user off in the admin area did not actually keep them out.",
+      },
+      {
+        tag: "Fixed",
+        text: "Single sign-on could attach an identity to an account whose email address nobody had ever confirmed. Because anyone can register an address without proving they own it, that let someone claim an address ahead of its real owner and keep access to the account the owner then signed in to. Connecting now requires the address to have been confirmed on this instance first, and we send that confirmation link at the moment it is needed.",
+      },
+      {
+        tag: "Fixed",
+        text: "Both of the above came from the sign-on rules existing twice in the codebase, once for each route, and only one copy being kept current. There is now a single set of rules that every provider goes through. Separately, accounts that were never sent a verification email, which includes the first account on a new install and everyone added by invitation, can now request one.",
+      },
+    ],
+  },
+  {
     version: "0.61.128",
     date: "2026-08-07",
     summary:

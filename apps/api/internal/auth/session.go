@@ -275,6 +275,10 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 	m.scs.Put(ctx, sessKeyOAuthState, state)
 	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
 	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
+	// Clear any provider left by an abandoned social handshake. The two flows
+	// share this state, so without it a generic-OIDC handshake started after a
+	// social one would carry the social provider forward.
+	m.scs.Remove(ctx, sessKeyOAuthProvider)
 }
 
 // putSocial stores the same handshake values plus the provider the flow was

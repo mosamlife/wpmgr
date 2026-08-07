@@ -88,9 +88,12 @@ func (h *Handler) socialCallback(c *gin.Context) {
 
 	res, err := h.svc.SignInWithSocial(c.Request.Context(), identity, h.newTenant)
 	if err != nil {
-		if de, ok := domain.AsDomain(err); ok && de.Code != "" {
-			// The refusals from decideSocial are the ones a person needs to act
-			// on, so their codes are passed through for the SPA to explain.
+		if de, ok := domain.AsDomain(err); ok && actionableSocialCodes[de.Code] {
+			// ONLY the refusals a person can act on. An allowlist rather than
+			// passing de.Code through, because the same branch also carries
+			// internal codes (identity_create_failed, tenant_slug_exists) that
+			// the UI renders as a generic string anyway and that would otherwise
+			// travel in browser history and proxy logs.
 			h.socialFail(c, de.Code)
 			return
 		}
@@ -105,6 +108,15 @@ func (h *Handler) socialCallback(c *gin.Context) {
 		return
 	}
 	c.Redirect(http.StatusFound, strings.TrimRight(h.svc.baseURL, "/")+"/sites")
+}
+
+// actionableSocialCodes are the refusals the sign-in page can turn into a
+// sentence with a next step. Anything not listed becomes a generic failure.
+var actionableSocialCodes = map[string]bool{
+	"social_link_requires_verification": true,
+	"social_email_unverified":           true,
+	"account_disabled":                  true,
+	"email_not_verified":                true,
 }
 
 // socialFail sends the browser back to the sign-in page carrying a code the SPA
