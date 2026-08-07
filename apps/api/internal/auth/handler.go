@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -54,6 +55,9 @@ type Handler struct {
 	// Optional: nil makes every Me response report true. Set after
 	// construction via SetManagedStorageResolver.
 	managedStorage ManagedStorageResolver
+	// logger receives the social sign-in failure lines (see social_log.go).
+	// Optional: nil falls back to slog.Default(), which cmd/wpmgr configures.
+	logger *slog.Logger
 }
 
 // NewHandler builds an auth Handler.
@@ -66,6 +70,12 @@ func NewHandler(svc *Service, sessions *SessionManager, oidc *OIDCProvider, newT
 // keeps the routes present but reporting nothing enabled, so a self-hosted
 // install that configures neither provider behaves exactly as before.
 func (h *Handler) SetSocialProviders(sp *SocialProviders) { h.social = sp }
+
+// SetLogger wires the logger the social sign-in path writes its failures to.
+// Call this after NewHandler, before serving. Leaving it unset falls back to
+// slog.Default(), so a test or an embedder that never calls it still gets the
+// lines rather than silence.
+func (h *Handler) SetLogger(l *slog.Logger) { h.logger = l }
 
 // SetSecureCookies configures whether the Secure flag is set on the
 // trusted-device cookie. Call this after NewHandler, before serving.

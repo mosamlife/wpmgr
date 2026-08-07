@@ -2569,6 +2569,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 	authH.SetSocialProviders(socialProviders)
+	// Social sign-in is the one auth path whose outcome a third party decides,
+	// so its failures have to be readable in the operator's log rather than
+	// only in a redirect the browser follows away.
+	authH.SetLogger(logger)
 	authH.SetSecureCookies(cfg.IsProduction())
 	authH.SetHosted(cfg.Hosted.Enabled)
 	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
