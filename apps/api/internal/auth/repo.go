@@ -62,6 +62,10 @@ func userToModel(u sqlc.User) User {
 		t := u.LastLoginAt.Time
 		m.LastLoginAt = &t
 	}
+	if u.EmailVerifiedAt.Valid {
+		t := u.EmailVerifiedAt.Time
+		m.EmailVerifiedAt = &t
+	}
 	if u.TotpConfirmedAt.Valid {
 		t := u.TotpConfirmedAt.Time
 		m.TOTPConfirmedAt = &t
@@ -127,27 +131,6 @@ func (r *Repo) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 			return User{}, domain.NotFound("user_not_found", "user not found")
 		}
 		return User{}, domain.Internal("user_get_failed", "failed to load user").WithCause(err)
-	}
-	return userToModel(row), nil
-}
-
-// GetUserByOIDC loads a user by their OIDC identity.
-func (r *Repo) GetUserByOIDC(ctx context.Context, issuer, subject string) (User, error) {
-	row, err := r.q.GetUserByOIDC(ctx, sqlc.GetUserByOIDCParams{OidcIssuer: strPtr(issuer), OidcSubject: strPtr(subject)})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return User{}, domain.NotFound("user_not_found", "user not found")
-		}
-		return User{}, domain.Internal("user_get_failed", "failed to load user").WithCause(err)
-	}
-	return userToModel(row), nil
-}
-
-// LinkOIDC attaches an OIDC identity to an existing user.
-func (r *Repo) LinkOIDC(ctx context.Context, userID uuid.UUID, issuer, subject string) (User, error) {
-	row, err := r.q.LinkUserOIDC(ctx, sqlc.LinkUserOIDCParams{ID: userID, OidcIssuer: strPtr(issuer), OidcSubject: strPtr(subject)})
-	if err != nil {
-		return User{}, domain.Internal("user_link_failed", "failed to link OIDC identity").WithCause(err)
 	}
 	return userToModel(row), nil
 }
@@ -422,4 +405,95 @@ func (r *Repo) DeleteMembership(ctx context.Context, userID, tenantID uuid.UUID)
 		}
 		return nil
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Social identities (m110)
+// ---------------------------------------------------------------------------
+
+// Identity is a linked external sign-in method.
+type Identity struct {
+	UserID        uuid.UUID
+	Provider      string
+	Subject       string
+	Issuer        string
+	Email         string
+	EmailVerified bool
+}
+
+// GetUserByIdentity resolves the local user behind an external identity. This
+// is the ONLY function that authenticates a social sign-in: (provider, subject,
+// issuer) is the provider's immutable id for the person, and no email is
+// consulted. Email is used elsewhere to decide whether a NEW identity may be
+// linked, never to decide who is signing in.
+func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer string) (User, error) {
+	row, err := r.q.GetUserByIdentity(ctx, sqlc.GetUserByIdentityParams{
+		Provider: provider, Subject: subject, Issuer: issuer,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, domain.NotFound("identity_not_found", "no user for this identity")
+		}
+		return User{}, domain.Internal("identity_get_failed", "failed to load identity").WithCause(err)
+	}
+	return userToModel(row), nil
+}
+
+// CreateIdentity links an external identity to an existing user.
+func (r *Repo) CreateIdentity(ctx context.Context, in Identity) error {
+	_, err := r.q.CreateIdentity(ctx, sqlc.CreateIdentityParams{
+		UserID:        in.UserID,
+		Provider:      in.Provider,
+		Subject:       in.Subject,
+		Issuer:        in.Issuer,
+		Email:         in.Email,
+		EmailVerified: in.EmailVerified,
+	})
+	if err != nil {
+		return domain.Internal("identity_create_failed", "failed to link identity").WithCause(err)
+	}
+	return nil
+}
+
+// TouchIdentityLogin stamps the login and records the address the provider
+// reported this time, which may differ from last time.
+func (r *Repo) TouchIdentityLogin(ctx context.Context, provider, subject, issuer, email string, verified bool) {
+	_ = r.q.TouchIdentityLogin(ctx, sqlc.TouchIdentityLoginParams{
+		Provider: provider, Subject: subject, Issuer: issuer,
+		Email: email, EmailVerified: verified,
+	})
+}
+
+// ListIdentitiesForUser powers the account settings list.
+func (r *Repo) ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) ([]Identity, error) {
+	rows, err := r.q.ListIdentitiesForUser(ctx, userID)
+	if err != nil {
+		return nil, domain.Internal("identity_list_failed", "failed to list identities").WithCause(err)
+	}
+	out := make([]Identity, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Identity{
+			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
+			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
+		})
+	}
+	return out, nil
+}
+
+// CountIdentitiesForUser is the unlink guard: dropping the last identity from a
+// user with no password would lock them out permanently.
+func (r *Repo) CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	n, err := r.q.CountIdentitiesForUser(ctx, userID)
+	if err != nil {
+		return 0, domain.Internal("identity_count_failed", "failed to count identities").WithCause(err)
+	}
+	return n, nil
+}
+
+// DeleteIdentity unlinks one provider from a user.
+func (r *Repo) DeleteIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
+	if err := r.q.DeleteIdentity(ctx, sqlc.DeleteIdentityParams{UserID: userID, Provider: provider}); err != nil {
+		return domain.Internal("identity_delete_failed", "failed to unlink identity").WithCause(err)
+	}
+	return nil
 }

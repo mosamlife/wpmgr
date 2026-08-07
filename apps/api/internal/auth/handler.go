@@ -41,6 +41,7 @@ type Handler struct {
 	svc       *Service
 	sessions  *SessionManager
 	oidc      *OIDCProvider
+	social    *SocialProviders
 	newTenant TenantCreator
 	// secureCookies mirrors cfg.IsProduction(). Controls the Secure flag on
 	// the trusted-device cookie. Set after construction via SetSecureCookies.
@@ -59,6 +60,12 @@ type Handler struct {
 func NewHandler(svc *Service, sessions *SessionManager, oidc *OIDCProvider, newTenant TenantCreator) *Handler {
 	return &Handler{svc: svc, sessions: sessions, oidc: oidc, newTenant: newTenant}
 }
+
+// SetSocialProviders wires the consumer identity providers after construction,
+// mirroring how the other optional dependencies are injected. Leaving it unset
+// keeps the routes present but reporting nothing enabled, so a self-hosted
+// install that configures neither provider behaves exactly as before.
+func (h *Handler) SetSocialProviders(sp *SocialProviders) { h.social = sp }
 
 // SetSecureCookies configures whether the Secure flag is set on the
 // trusted-device cookie. Call this after NewHandler, before serving.
@@ -118,6 +125,11 @@ func (h *Handler) Register(r gin.IRouter) {
 	g.POST("/verification/resend", h.resendVerification)
 	g.GET("/oidc/login", h.oidcLogin)
 	g.GET("/oidc/callback", h.oidcCallback)
+	// Social sign-in. The provider list is public so the sign-in page can
+	// render exactly the buttons that will work on this install.
+	g.GET("/social/providers", h.socialProviders)
+	g.GET("/social/:provider/start", h.socialStart)
+	g.GET("/social/:provider/callback", h.socialCallback)
 	// ADR-056 Phase 3 — dashboard 2FA challenge-completion + management.
 	h.RegisterTwoFactor(g)
 }

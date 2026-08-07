@@ -19,6 +19,11 @@ type User struct {
 	Name         string
 	Status       string // 'active' | 'pending' | 'disabled' (ADR-045 Phase 3)
 	IsSuperadmin bool   // instance-level; written only by boot seeder
+	// EmailVerifiedAt is when THIS install saw the human open a link sent to
+	// that address. Distinct from an identity provider asserting the address is
+	// verified, and the social linking rules need both, separately: see
+	// SignInWithSocial. Nil means we have never confirmed it ourselves.
+	EmailVerifiedAt *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	LastLoginAt  *time.Time
@@ -34,6 +39,12 @@ type User struct {
 	TOTPSecretEncrypted  []byte
 	TOTPConfirmedAt      *time.Time
 }
+
+// EmailVerified reports whether THIS install has confirmed the address, as
+// opposed to an identity provider asserting it. Social account linking turns on
+// this distinction, so it is a method rather than an inline nil check at each
+// call site.
+func (u User) EmailVerified() bool { return u.EmailVerifiedAt != nil }
 
 // Membership binds a user to a tenant with a role.
 type Membership struct {

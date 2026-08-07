@@ -23,6 +23,7 @@ type Config struct {
 	Redis      RedisConfig      `koanf:"redis"`
 	Auth       AuthConfig       `koanf:"auth"`
 	OIDC       OIDCConfig       `koanf:"oidc"`
+	Social     SocialConfig     `koanf:"social"`
 	OTel       OTelConfig       `koanf:"otel"`
 	Shutdown   ShutdownConfig   `koanf:"shutdown"`
 	Agent      AgentConfig      `koanf:"agent"`
@@ -536,6 +537,42 @@ type OIDCConfig struct {
 
 // Enabled reports whether OIDC is configured.
 func (o OIDCConfig) Enabled() bool { return o.Issuer != "" }
+
+// SocialConfig holds the consumer identity providers offered on the sign-in
+// page. Each is independently optional: configuring neither leaves email and
+// password as the only way in, which is the correct default for a self-hosted
+// install whose operator has not registered an OAuth application anywhere.
+//
+// RedirectURL is derived from the public base URL rather than configured, so an
+// operator cannot set it to something the provider will reject or, worse, to a
+// host they do not control.
+type SocialConfig struct {
+	Google GoogleConfig `koanf:"google"`
+	GitHub GitHubConfig `koanf:"github"`
+}
+
+// GoogleConfig is a standard OIDC relying-party registration. Google publishes
+// a discovery document and issues ID tokens carrying an email_verified claim,
+// so no bespoke handling is needed beyond checking that claim.
+type GoogleConfig struct {
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+}
+
+// Enabled reports whether Google sign-in is configured.
+func (g GoogleConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
+
+// GitHubConfig is a plain OAuth 2.0 registration. GitHub is NOT an OpenID
+// Connect provider: there is no discovery document, no ID token and no
+// email_verified claim, so its adapter has to call the API and derive the
+// verified address itself.
+type GitHubConfig struct {
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+}
+
+// Enabled reports whether GitHub sign-in is configured.
+func (g GitHubConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
 
 // OTelConfig holds OpenTelemetry export configuration.
 type OTelConfig struct {

@@ -360,10 +360,21 @@ func (s *Service) RoleInTenant(ctx context.Context, userID, tenantID uuid.UUID) 
 	return "", false
 }
 
-// UpsertOIDCUser finds-or-creates a user for an OIDC identity and ensures they
-// have at least one tenant (bootstrapping a personal tenant on first OIDC login
-// when no users exist yet, mirroring password bootstrap). Returns the resolved
-// login result.
+// UpsertOIDCUser resolves a generic-OIDC identity to a session.
+//
+// IT IS A THIN WRAPPER OVER SignInWithSocial, AND THAT IS THE WHOLE POINT. This
+// function used to carry its own copy of the linking rules, and the copies
+// drifted: when the account-takeover defence and the account-status gate were
+// added for Google and GitHub, this path kept neither. The result was a route
+// that still linked a verified external identity onto a local account nobody
+// had ever proven they owned, and still let a DISABLED user sign in, while a
+// comment one file over claimed both were fixed everywhere.
+//
+// Two implementations of one security policy is the bug. There is now one
+// decideSocial, and every provider goes through it. The differences that are
+// genuinely real for an operator-configured issuer, chiefly that some corporate
+// IdPs return no email claim at all, live in operatorConfigured() inside that
+// single policy rather than in a second copy of it here.
 func (s *Service) UpsertOIDCUser(
 	ctx context.Context,
 	issuer, subject, email string,
@@ -371,75 +382,14 @@ func (s *Service) UpsertOIDCUser(
 	name string,
 	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
 ) (LoginResult, error) {
-	email = normalizeEmail(email)
-
-	u, err := s.repo.GetUserByOIDC(ctx, issuer, subject)
-	if err != nil {
-		de, ok := domain.AsDomain(err)
-		if !ok || de.Kind != domain.KindNotFound {
-			return LoginResult{}, err
-		}
-		// No user by OIDC identity. We may link this identity to a pre-existing
-		// account that shares the same email ONLY when the IdP asserts the email
-		// is verified. Linking on an unverified email would let an attacker who
-		// controls an external IdP claim an arbitrary address and take over the
-		// matching password account, so on an unverified email we fall through to
-		// creating/keeping a distinct OIDC account instead.
-		if email != "" && emailVerified {
-			if existing, eerr := s.repo.GetUserByEmail(ctx, email); eerr == nil {
-				u, err = s.repo.LinkOIDC(ctx, existing.ID, issuer, subject)
-				if err != nil {
-					return LoginResult{}, err
-				}
-			}
-		}
-		if u.ID == uuid.Nil {
-			// Brand new user. Bootstrap a tenant only if this is the first user.
-			u, err = s.createOIDCUser(ctx, issuer, subject, email, name)
-			if err != nil {
-				return LoginResult{}, err
-			}
-		}
-	}
-
-	memberships, _ := s.repo.ListMembershipsForUser(ctx, u.ID)
-	if len(memberships) == 0 {
-		// First OIDC user with no membership: bootstrap a tenant + owner.
-		count, cerr := s.repo.CountUsers(ctx)
-		if cerr == nil && count <= 1 {
-			tenantID, terr := createTenant(ctx, "Default", "default")
-			if terr == nil {
-				if m, merr := s.repo.CreateMembership(ctx, u.ID, tenantID, authz.RoleOwner); merr == nil {
-					memberships = []Membership{m}
-				}
-			}
-		}
-	}
-
-	_ = s.repo.TouchLogin(ctx, u.ID)
-	if len(memberships) > 0 {
-		_, _ = s.audit.Record(ctx, audit.Event{
-			TenantID:   memberships[0].TenantID,
-			ActorType:  audit.ActorUser,
-			ActorID:    u.ID.String(),
-			Action:     audit.ActionOIDCLogin,
-			TargetType: "user",
-			TargetID:   u.ID.String(),
-		})
-	}
-
-	res := LoginResult{User: u, Memberships: memberships}
-	res.ActiveTenant = s.resolveActiveTenant(ctx, u.ID, memberships)
-	return res, nil
-}
-
-func (s *Service) createOIDCUser(ctx context.Context, issuer, subject, email, name string) (User, error) {
-	if email == "" {
-		// Synthesize a stable placeholder email from the subject so the unique
-		// email constraint is satisfied for providers that omit email.
-		email = normalizeEmail(subject + "@oidc.local")
-	}
-	return s.repo.CreateUser(ctx, email, "", name, issuer, subject)
+	return s.SignInWithSocial(ctx, SocialIdentity{
+		Provider:      "oidc",
+		Subject:       subject,
+		Issuer:        issuer,
+		Email:         email,
+		EmailVerified: emailVerified,
+		Name:          name,
+	}, createTenant)
 }
 
 // CountOwners returns how many owner-role memberships exist for the tenant.

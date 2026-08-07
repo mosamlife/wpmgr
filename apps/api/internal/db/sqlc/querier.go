@@ -325,6 +325,9 @@ type Querier interface {
 	// (operator app.tenant_id OR public-enroll app.enroll) — see the function's
 	// own comment in schema.sql for the full rationale.
 	CountActiveSitesForBilling(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// Guards unlink: removing the last identity from a user with no password would
+	// lock them out of their own account permanently.
+	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	// 30-day flapping count for the incident-detail endpoint: how many incidents
 	// (open or closed) have STARTED for this site in the last 30 days, including
 	// the incident being viewed itself.
@@ -358,6 +361,7 @@ type Querier interface {
 	// Upsert: ON CONFLICT DO NOTHING so the caller detects "already a member" by
 	// checking for zero RETURNING rows (pgx.ErrNoRows), matching the Conflict pattern.
 	CreateClientMember(ctx context.Context, arg CreateClientMemberParams) (ClientMember, error)
+	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (UserIdentity, error)
 	// m66: client_id param added. Org/site callers pass pgtype.UUID{Valid:false}.
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (Invitation, error)
 	// ---------------------------------------------------------------------------
@@ -469,6 +473,7 @@ type Querier interface {
 	// Deletes a single file_transfers row by id (InAgentTx). Used by the GC worker
 	// after the staged object has been deleted from object storage.
 	DeleteFileTransfer(ctx context.Context, id uuid.UUID) error
+	DeleteIdentity(ctx context.Context, arg DeleteIdentityParams) error
 	DeleteMembership(ctx context.Context, arg DeleteMembershipParams) (int64, error)
 	// Prunes daily rollup rows older than @since_day across ALL tenants.
 	DeleteOldRumDailyRollups(ctx context.Context, sinceDay pgtype.Date) (int64, error)
@@ -759,6 +764,7 @@ type Querier interface {
 	// Per-site stats for the digest [from, to] window. Returns top sites by failure
 	// count. Runs under InAgentTx.
 	GetFleetStatsBySite(ctx context.Context, arg GetFleetStatsBySiteParams) ([]GetFleetStatsBySiteRow, error)
+	GetIdentity(ctx context.Context, arg GetIdentityParams) (UserIdentity, error)
 	// Tenant-scoped read of one incident, joined with its site's name/url, for
 	// GET /api/v1/fleet/incidents/:incidentId (InTenantTx). RLS additionally
 	// scopes this by tenant_id; the explicit predicate here is defense-in-depth +
@@ -1042,6 +1048,13 @@ type Querier interface {
 	GetUpdateTask(ctx context.Context, arg GetUpdateTaskParams) (UpdateTask, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	// Social sign-in identities (m110). One row per external identity a user can
+	// sign in with. See db/schema.sql for why this is a table and not two more
+	// columns on users, and why email here is a record rather than a key.
+	// The ONLY lookup that authenticates. (provider, subject, issuer) is the
+	// provider's immutable id for the human; email is never used to authenticate,
+	// only to decide whether linking a NEW identity is permitted.
+	GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error)
 	GetUserByOIDC(ctx context.Context, arg GetUserByOIDCParams) (User, error)
 	// Lightweight per-request lookup for the session reject-stale check.
 	GetUserPasswordChangedAt(ctx context.Context, id uuid.UUID) (pgtype.Timestamptz, error)
@@ -1436,6 +1449,9 @@ type Querier interface {
 	// convention; batch inserts share updated_at so id breaks ties deterministically).
 	// Runs under InTenantTx (operator path).
 	ListFontResultsForSite(ctx context.Context, arg ListFontResultsForSiteParams) ([]FontResult, error)
+	// Powers the account settings list, so a user can see what is linked and unlink
+	// it. Ordered for a stable UI.
+	ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error)
 	// ADR-050 mark-and-sweep grace floor: the oldest created_at among snapshots
 	// that are still pending or running for the tenant. A chunk created before this
 	// floor cannot be re-referenced by an in-flight backup (its manifest/file_index
@@ -2030,6 +2046,11 @@ type Querier interface {
 	// Runs under InAgentTx.
 	TopFailureSamplesBySite(ctx context.Context, arg TopFailureSamplesBySiteParams) ([]TopFailureSamplesBySiteRow, error)
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
+	// Records the provider's current email alongside the login stamp: a provider
+	// may report a changed address, and keeping the last-seen value makes an
+	// unexpected change visible instead of silently discarding it. This never
+	// changes users.email, which stays the account's own address.
+	TouchIdentityLogin(ctx context.Context, arg TouchIdentityLoginParams) error
 	TouchRucssResultLastUsed(ctx context.Context, arg TouchRucssResultLastUsedParams) error
 	// ---------------------------------------------------------------------------
 	// Heartbeat liveness (tenant-scoped). Returns the current connection_state so

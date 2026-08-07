@@ -8,6 +8,21 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.129] - 2026-08-07
+
+### Added
+
+- You can now sign in and sign up with Google or GitHub. Both are optional and set up separately by whoever runs the instance, so an install that configures neither carries on with email and password only and shows no extra buttons.
+- Signing up with a provider skips the verification email: the provider has already confirmed the address, so the account works immediately. It also supplies your name, which is one reason the signup form no longer asks for it.
+- Connecting a provider to an account you already have requires that both sides have confirmed the address: the provider must vouch for it, and this instance must have seen you open a verification link. If the second half is missing we send that link at the moment you try, so the message tells you exactly what will unblock it.
+
+### Fixed
+
+- A disabled user could still sign in through single sign-on. Signing in with a password had always refused disabled and unverified accounts; the single sign-on route refused neither, so switching a user off in the admin area did not actually keep them out. It does now, on every route.
+- Single sign-on could attach an identity to an account whose email address nobody had ever confirmed. Because anyone can register an address without proving they own it, that let someone claim an address ahead of its real owner and keep access to the account the owner then signed in to. Connecting now requires the address to have been confirmed on this instance first.
+- Both of the above came from the sign-on rules existing twice in the codebase, once for each route, and only one copy being kept current. There is now a single set of rules that every provider goes through.
+- Accounts that were never sent a verification email, which includes the first account on a new install and everyone added by invitation, had no way to confirm their address at all. They can now request the link, which previously only worked for accounts still waiting on their first one.
+
 ## [0.61.128] - 2026-08-07
 
 ### Changed

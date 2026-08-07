@@ -133,10 +133,19 @@ func TestInviteRoleCeiling(t *testing.T) {
 	}
 }
 
-// TestOIDCNoLinkOnUnverifiedEmail is the FIX 3 regression: an OIDC upsert whose
-// ID token claims email_verified=false must NOT link the OIDC identity to a
-// pre-existing password account with the same email.
-func TestOIDCNoLinkOnUnverifiedEmail(t *testing.T) {
+// TestOIDCLinkingRequiresBothSidesVerified covers the linking rules end to end
+// against a real database, through the generic OIDC entry point.
+//
+// THE EXPECTATION HERE CHANGED, DELIBERATELY. The original version of this test
+// asserted that a verified provider email SHOULD link to a pre-existing
+// password account, and seeded that account without ever verifying its address.
+// A security review of the social sign-in work established that this is the
+// account takeover: registration does not require proving control of an
+// address, so an attacker can register a victim's address, and linking the
+// victim's later verified sign-in onto that row hands them an account whose
+// password the attacker chose. Linking now requires the LOCAL account to have
+// been verified too, and this test asserts that stronger rule.
+func TestOIDCLinkingRequiresBothSidesVerified(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
@@ -144,7 +153,9 @@ func TestOIDCNoLinkOnUnverifiedEmail(t *testing.T) {
 	authRepo := auth.NewRepo(pool)
 	svc, _ := newAuthStack(pool)
 
-	// Pre-existing password account.
+	// Pre-existing password account, address never verified. This is what
+	// self-serve registration leaves behind, and what an attacker can create
+	// for somebody else's address.
 	existing, err := authRepo.CreateUser(ctx, "victim@example.com", "hash", "Victim", "", "")
 	if err != nil {
 		t.Fatalf("seed existing user: %v", err)
@@ -157,44 +168,52 @@ func TestOIDCNoLinkOnUnverifiedEmail(t *testing.T) {
 		return seedTenant(t, pool, "oidc-bootstrap-"+slug), nil
 	}
 
-	// OIDC login claiming the victim's email but WITHOUT email_verified.
+	// 1. Unverified provider email must never link.
 	_, err = svc.UpsertOIDCUser(ctx, "https://evil-idp.example", "evil-subject",
 		"victim@example.com", false /* emailVerified */, "Attacker", createTenant)
-
-	// The existing email is taken by the password account; refusing to link means
-	// the new-user create path collides on the unique email -> Conflict. Either
-	// way, the OIDC identity must NOT be attached to the existing account.
 	if err != nil {
-		if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindConflict {
-			t.Fatalf("want Conflict (refused link) or success, got %v", err)
+		if de, ok := domain.AsDomain(err); !ok || (de.Kind != domain.KindConflict && de.Kind != domain.KindForbidden) {
+			t.Fatalf("want a refusal or a unique-email conflict, got %v", err)
 		}
 	}
+	assertIdentityNotBoundTo(t, ctx, authRepo, "evil-subject", "https://evil-idp.example", existing.ID)
 
-	// The existing account must remain unlinked to the attacker's OIDC identity.
-	if _, lookupErr := authRepo.GetUserByOIDC(ctx, "https://evil-idp.example", "evil-subject"); lookupErr == nil {
-		// If a user resolves by that OIDC identity, it must NOT be the victim.
-		linked, _ := authRepo.GetUserByOIDC(ctx, "https://evil-idp.example", "evil-subject")
-		if linked.ID == existing.ID {
-			t.Fatal("OIDC identity was linked to the pre-existing email account on an unverified email")
-		}
+	// 2. THE TAKEOVER. Verified provider email, but the local account has never
+	//    been verified by this install. Must be refused.
+	_, err = svc.UpsertOIDCUser(ctx, "https://trusted-idp.example", "trusted-subject",
+		"victim@example.com", true /* emailVerified */, "Victim", createTenant)
+	if err == nil {
+		t.Fatal("linking a verified identity onto a never-verified local account is an account takeover; it must be refused")
 	}
+	if de, ok := domain.AsDomain(err); !ok || de.Code != "social_link_requires_verification" {
+		t.Fatalf("want social_link_requires_verification, got %v", err)
+	}
+	assertIdentityNotBoundTo(t, ctx, authRepo, "trusted-subject", "https://trusted-idp.example", existing.ID)
 
-	// And the victim account itself must still have no OIDC identity attached.
-	victim, err := authRepo.GetUserByID(ctx, existing.ID)
-	if err != nil {
-		t.Fatalf("reload victim: %v", err)
+	// 3. Once the address IS verified on this install, the same sign-in links.
+	//    This is the recovery path the refusal above mails a link for.
+	if err := authRepo.MarkUserEmailVerified(ctx, existing.ID); err != nil {
+		t.Fatalf("verify the seeded account: %v", err)
 	}
-	if victim.OIDCIssuer != "" || victim.OIDCSubject != "" {
-		t.Fatalf("victim account was linked to OIDC on unverified email: issuer=%q subject=%q", victim.OIDCIssuer, victim.OIDCSubject)
-	}
-
-	// Sanity: with email_verified=true, linking SHOULD occur.
 	res, err := svc.UpsertOIDCUser(ctx, "https://trusted-idp.example", "trusted-subject",
 		"victim@example.com", true /* emailVerified */, "Victim", createTenant)
 	if err != nil {
-		t.Fatalf("verified-email link should succeed: %v", err)
+		t.Fatalf("with both sides verified, linking should succeed: %v", err)
 	}
 	if res.User.ID != existing.ID {
-		t.Fatalf("verified-email login should resolve to the existing account, got %s", res.User.ID)
+		t.Fatalf("should resolve to the existing account, got %s", res.User.ID)
+	}
+}
+
+// assertIdentityNotBoundTo fails when the given external identity resolves to
+// the account it must not have been attached to.
+func assertIdentityNotBoundTo(t *testing.T, ctx context.Context, repo *auth.Repo, subject, issuer string, mustNotBe uuid.UUID) {
+	t.Helper()
+	linked, err := repo.GetUserByIdentity(ctx, "oidc", subject, issuer)
+	if err != nil {
+		return // no such identity at all, which is the strongest pass
+	}
+	if linked.ID == mustNotBe {
+		t.Fatalf("identity %q was linked to the pre-existing account", subject)
 	}
 }

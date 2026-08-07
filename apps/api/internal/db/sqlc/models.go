@@ -1255,6 +1255,18 @@ type User struct {
 	TotpProvisionalExpiresAt       pgtype.Timestamptz `json:"totp_provisional_expires_at"`
 }
 
+type UserIdentity struct {
+	ID            uuid.UUID          `json:"id"`
+	UserID        uuid.UUID          `json:"user_id"`
+	Provider      string             `json:"provider"`
+	Subject       string             `json:"subject"`
+	Issuer        string             `json:"issuer"`
+	Email         string             `json:"email"`
+	EmailVerified bool               `json:"email_verified"`
+	CreatedAt     time.Time          `json:"created_at"`
+	LastLoginAt   pgtype.Timestamptz `json:"last_login_at"`
+}
+
 type UserRecoveryCode struct {
 	ID        uuid.UUID          `json:"id"`
 	UserID    uuid.UUID          `json:"user_id"`

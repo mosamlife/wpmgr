@@ -514,6 +514,24 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.Info("OIDC disabled (no issuer configured); email+password only")
 	}
 
+	// Consumer identity providers (Google, GitHub). Each is independently
+	// optional; configuring neither leaves email and password as the only way
+	// in, which is the right default for a self-hosted install whose operator
+	// has not registered an OAuth application anywhere.
+	//
+	// A discovery failure is fatal for the same reason OIDC's is: booting with
+	// a half-built adapter turns into a broken button at sign-in time, long
+	// after anyone was reading the logs.
+	socialProviders, err := auth.NewSocialProviders(ctx, cfg.Social)
+	if err != nil {
+		return err
+	}
+	if enabled := socialProviders.Enabled(); len(enabled) > 0 {
+		logger.Info("social sign-in enabled", slog.Any("providers", enabled))
+	} else {
+		logger.Info("social sign-in disabled (no provider credentials configured)")
+	}
+
 	redisPool := auth.NewRedisPool(cfg.Redis.Addr, cfg.Redis.Password)
 	sessions := auth.NewRedisSessionManager(redisPool, cfg.Auth.IdleTimeout, cfg.Auth.AbsoluteExpiry, cfg.IsProduction())
 
@@ -2553,6 +2571,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	authSvc.SetTwoFactorDeps(totpFactor, waFactor, siteDestAgeID)
 
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
+	authH.SetSocialProviders(socialProviders)
 	authH.SetSecureCookies(cfg.IsProduction())
 	authH.SetHosted(cfg.Hosted.Enabled)
 	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
