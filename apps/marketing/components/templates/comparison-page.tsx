@@ -5,6 +5,7 @@ import { CompareMatrix } from "@/components/sections/compare/matrix";
 import { StackCollapse } from "@/components/sections/compare/stack-collapse";
 import { CostModelSection } from "@/components/sections/compare/cost-model";
 import { DataLocality } from "@/components/sections/compare/data-locality";
+import { CompareHeroPanel } from "@/components/sections/compare/hero-panel";
 import { signupHref } from "@/lib/site";
 import { Icon } from "@/components/ui/icon";
 import type { ComparisonPageData } from "@/lib/content/types";
@@ -45,14 +46,16 @@ export function ComparisonPage({ data }: { data: ComparisonPageData }) {
             </Link>
           </nav>
 
-          <h1 className="max-w-[24ch] text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+          <div className="grid gap-10 lg:grid-cols-[1.15fr_1fr] lg:items-start lg:gap-14">
+            <div>
+                  <h1 className="max-w-[24ch] text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
             {data.hero.heading}
           </h1>
-          <p className="mt-5 max-w-[62ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
+              <p className="mt-5 max-w-[62ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
             {data.hero.subhead}
           </p>
 
-          <div className="mt-7 flex flex-wrap gap-3">
+              <div className="mt-7 flex flex-wrap gap-3">
             <a
               href={signupHref("compare")}
               target="_blank"
@@ -70,7 +73,7 @@ export function ComparisonPage({ data }: { data: ComparisonPageData }) {
             </a>
           </div>
 
-          <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2">
+              <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2">
             {data.hero.chips.map((chip) => (
               <li
                 key={chip}
@@ -80,7 +83,15 @@ export function ComparisonPage({ data }: { data: ComparisonPageData }) {
                 {chip}
               </li>
             ))}
-          </ul>
+              </ul>
+            </div>
+
+            {/* The fleet panel. Below lg it sits under the copy rather than
+                beside it, so the h1 keeps the full column width on a phone. */}
+            <div className="lg:pt-2">
+              <CompareHeroPanel />
+            </div>
+          </div>
         </Container>
       </Section>
 

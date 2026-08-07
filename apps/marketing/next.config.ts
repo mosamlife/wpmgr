@@ -33,6 +33,24 @@ const withMDX = createMDX({
 });
 
 const nextConfig: NextConfig = {
+  // The comparison page shipped briefly at a slug that named only the two
+  // competitors, which read as somebody else's comparison and left our own
+  // product out of the URL. Permanent, because the old slug was live and is in
+  // a submitted sitemap, so it must not 404.
+  async redirects() {
+    return [
+      {
+        source: "/compare/managewp-vs-mainwp",
+        destination: "/compare/managewp-vs-mainwp-vs-wpmgr",
+        permanent: true,
+      },
+      {
+        source: "/compare/managewp-vs-mainwp/sources",
+        destination: "/compare/managewp-vs-mainwp-vs-wpmgr/sources",
+        permanent: true,
+      },
+    ];
+  },
   output: "standalone",
   // CRITICAL monorepo gotcha: without this, the file-trace roots at
   // apps/marketing and drops hoisted workspace dependencies.

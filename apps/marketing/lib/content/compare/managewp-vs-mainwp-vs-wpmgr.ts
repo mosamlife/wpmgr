@@ -20,7 +20,7 @@
 import type { ComparisonPageData } from "@/lib/content/types";
 
 export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
-  slug: "managewp-vs-mainwp",
+  slug: "managewp-vs-mainwp-vs-wpmgr",
   title: "ManageWP vs MainWP vs WPMgr",
   metaTitle: "ManageWP vs MainWP vs WPMgr: One Dashboard, Compared",
   metaDescription:
