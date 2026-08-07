@@ -15,13 +15,20 @@ var _ Handler = UnimplementedHandler{}
 
 // AcceptInvitation implements acceptInvitation operation.
 //
-// Accept an invitation by token (public; creates/links user and session).
-// Accepts both org-scope invitations (creates a membership) and site-scope
-// invitations (creates a site_shares row). Validates token hash, email
-// binding, expiry, single-use, and rate-limit.
+// The caller proves who they are in one of two ways. Anonymously, with the
+// password of the account the invitation names (or a new password, which
+// creates that account). Or, when already signed in as exactly that
+// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+// is what an account created through Google or GitHub uses because it has
+// no password to send.
+// The header is required for the session route and carries no secret: a
+// session cookie travels on requests the person did not initiate, and this
+// API sets no CORS policy, so a header is something only a script on this
+// install's own page can add. Without it the request is treated as
+// anonymous and a password is required, exactly as before.
 //
 // POST /api/v1/invitations/accept
-func (UnimplementedHandler) AcceptInvitation(ctx context.Context, req *AcceptInvitationRequest) (r AcceptInvitationRes, _ error) {
+func (UnimplementedHandler) AcceptInvitation(ctx context.Context, req *AcceptInvitationRequest, params AcceptInvitationParams) (r AcceptInvitationRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1600,6 +1607,25 @@ func (UnimplementedHandler) GetAdminStats(ctx context.Context) (r GetAdminStatsR
 	return r, ht.ErrNotImplemented
 }
 
+// GetAdminSystemAudit implements getAdminSystemAudit operation.
+//
+// Reads system_audit_log, which holds the events no single organisation's
+// own audit log can show: actions whose subject organisation is being
+// deleted, and authentication events for accounts that belong to no
+// organisation at all (a new social account, a site collaborator, a portal
+// user, anyone inside the org delete grace window). Newest first.
+// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+// the log grows at its head while it is being read, so a numbered page
+// boundary is already stale when it is handed out and the rows that moved
+// past it come back twice. Send the previous response's `next_cursor` to
+// get the rows that follow the last one you saw. `next_cursor` is absent
+// on the last page.
+//
+// GET /api/v1/admin/system-audit
+func (UnimplementedHandler) GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (r GetAdminSystemAuditRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetAdminVulnFeedStatus implements getAdminVulnFeedStatus operation.
 //
 // The key itself is never returned.
@@ -3056,6 +3082,18 @@ func (UnimplementedHandler) ListSites(ctx context.Context, params ListSitesParam
 	return r, ht.ErrNotImplemented
 }
 
+// ListSocialProviders implements listSocialProviders operation.
+//
+// Returns the provider keys that are configured and will work. The sign-in page renders exactly
+// these, so an unconfigured provider never shows a button that leads to a provider error page.
+// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
+// buttons the operator chose to enable.
+//
+// GET /auth/social/providers
+func (UnimplementedHandler) ListSocialProviders(ctx context.Context) (r *ListSocialProvidersOK, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ListTags implements listTags operation.
 //
 // Lists every tag in the tenant's registry (m100), sorted
@@ -4160,6 +4198,28 @@ func (UnimplementedHandler) SetSiteTags(ctx context.Context, req *SiteTags, para
 //
 // POST /api/v1/sites/{siteId}/errors/{md5}/silence
 func (UnimplementedHandler) SilenceSitePHPError(ctx context.Context, req OptPHPErrorSilence, params SilenceSitePHPErrorParams) (r SilenceSitePHPErrorRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// SocialCallback implements socialCallback operation.
+//
+// Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error
+// body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the
+// sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor
+// enrolled is redirected to the 2FA challenge instead of being signed in.
+//
+// GET /auth/social/{provider}/callback
+func (UnimplementedHandler) SocialCallback(ctx context.Context, params SocialCallbackParams) error {
+	return ht.ErrNotImplemented
+}
+
+// SocialStart implements socialStart operation.
+//
+// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
+// server-side in the session. Returns 503 when the provider is not configured on this install.
+//
+// GET /auth/social/{provider}/start
+func (UnimplementedHandler) SocialStart(ctx context.Context, params SocialStartParams) (r SocialStartRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

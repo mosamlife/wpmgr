@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
@@ -146,10 +147,77 @@ func (h *Handler) socialCallback(c *gin.Context) {
 	// Same 2FA invariant as the OIDC callback: an enrolled second factor must
 	// not be skipped just because the first factor came from a provider.
 	// issueSessionOrChallenge writes the challenge redirect itself when needed.
-	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
+	if !h.issueProviderSessionOrChallenge(c, res) {
 		return
 	}
 	c.Redirect(http.StatusFound, strings.TrimRight(h.svc.baseURL, "/")+"/sites")
+}
+
+// issueProviderSessionOrChallenge wraps issueSessionOrChallenge for the two
+// provider-redirect callbacks (the consumer providers and the generic OIDC
+// issuer), and is the ONLY place a link approved by SignInWithSocial gets
+// written.
+//
+// A provider handshake is one factor. An account with a second factor must not
+// have a new way in bound to it on the strength of the first alone, so the
+// approved link is parked in the server-side session and applied by the
+// factor-completion handlers instead. Both callbacks go through here because
+// both reach the same policy, and a callback that forgot to write the link
+// would silently never link that provider at all.
+//
+// Returns false when the caller must write nothing further, exactly like
+// issueSessionOrChallenge.
+func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResult) bool {
+	// Parked from inside the challenge hook, which is the only moment that works
+	// for both halves of the binding: the challenge id does not exist any earlier,
+	// and the session save rides the response write, so any later is too late.
+	//
+	// The link is bound to THIS challenge and not merely to this user. A browser
+	// can hold more than one live challenge for one account, and a link approved
+	// by a provider handshake must not be applied by a challenge that handshake
+	// did not produce.
+	park := func(challengeID uuid.UUID) {
+		if res.PendingSocialLink == nil {
+			return
+		}
+		h.sessions.putPendingSocialLink(c.Request.Context(), res.User.ID, challengeID, *res.PendingSocialLink)
+	}
+	if !h.issueSessionOrChallengeThen(c, res, h.svc.baseURL, park) {
+		return false
+	}
+	// A session exists, so the login is complete and the link can be written.
+	if res.PendingSocialLink != nil {
+		if err := h.svc.CompleteSocialLink(c.Request.Context(), res.User.ID, *res.PendingSocialLink); err != nil {
+			// The person IS signed in; only the convenience of not repeating the
+			// handshake next time is lost. Sending them back to the sign-in page
+			// over that would be worse than the failure.
+			slog.ErrorContext(c.Request.Context(), "social link write failed after sign-in",
+				slog.String("provider", res.PendingSocialLink.Provider),
+				slog.String("user_id", res.User.ID.String()), slog.Any("error", err))
+		}
+	}
+	return true
+}
+
+// completePendingSocialLink writes a link parked by socialCallback, now that
+// the second factor has been proven. Called by every factor-completion handler
+// immediately after a session is established, passing the challenge that was
+// just completed: only the challenge the handshake produced may apply its link.
+//
+// Silent on failure by design: the caller has authenticated with both factors
+// and their session is already valid, so the only thing a failure costs is one
+// repeated provider handshake at the next sign-in.
+func (h *Handler) completePendingSocialLink(c *gin.Context, userID, challengeID uuid.UUID) {
+	ctx := c.Request.Context()
+	link, ok := h.sessions.takePendingSocialLink(ctx, userID, challengeID)
+	if !ok {
+		return
+	}
+	if err := h.svc.CompleteSocialLink(ctx, userID, link); err != nil {
+		slog.ErrorContext(ctx, "parked social link write failed after second factor",
+			slog.String("provider", link.Provider),
+			slog.String("user_id", userID.String()), slog.Any("error", err))
+	}
 }
 
 // actionableSocialCodes are the refusals the sign-in page can turn into a

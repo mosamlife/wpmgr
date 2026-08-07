@@ -293,12 +293,34 @@ func (h *Handler) register(c *gin.Context) {
 // <oidcRedirectBase>/login?two_factor_challenge=<challengeID> instead of
 // writing a JSON 202. For all other paths pass oidcRedirectBase="".
 func (h *Handler) issueSessionOrChallenge(c *gin.Context, res LoginResult, oidcRedirectBase string) (issued bool) {
+	return h.issueSessionOrChallengeThen(c, res, oidcRedirectBase, nil)
+}
+
+// issueSessionOrChallengeThen is issueSessionOrChallenge with one addition: a
+// hook that runs the moment a challenge exists and BEFORE the response carrying
+// it is written.
+//
+// Both halves of that timing are load-bearing. A caller that needs to remember
+// something ABOUT this challenge (the provider paths park an approved identity
+// link against it) can only bind to the challenge id once it has been minted,
+// and can only put anything in the session before the response is written,
+// because the session middleware saves on write and nothing after it lands.
+// Passing a nil hook is exactly the old behaviour.
+func (h *Handler) issueSessionOrChallengeThen(
+	c *gin.Context,
+	res LoginResult,
+	oidcRedirectBase string,
+	onChallengeIssued func(challengeID uuid.UUID),
+) (issued bool) {
 	if res.User.TwoFactorEnabled {
 		ip := clientAddr(c)
 		result, cherr := h.svc.RequestTwoFactorChallenge(c.Request.Context(), res.User.ID, &ip)
 		if cherr != nil {
 			httpx.Error(c, cherr)
 			return false
+		}
+		if onChallengeIssued != nil {
+			onChallengeIssued(result.ChallengeID)
 		}
 		if oidcRedirectBase != "" {
 			// Browser redirect flow (OIDC callback): redirect to the SPA 2FA
@@ -574,7 +596,11 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 	// h.svc.baseURL is the public base URL (WPMGR_PUBLIC_BASE_URL). When 2FA is
 	// not enrolled issueSessionOrChallenge issues the session and returns true;
 	// we then redirect to the SPA home (the callback was always a browser redirect).
-	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
+	// Routed through the shared provider helper so this callback also defers an
+	// approved identity link until the second factor is proven, and writes it
+	// once it is. The generic OIDC path goes through the same policy as the
+	// consumer providers, so it must go through the same completion too.
+	if !h.issueProviderSessionOrChallenge(c, res) {
 		// 2FA challenge redirect was already written by issueSessionOrChallenge.
 		return
 	}

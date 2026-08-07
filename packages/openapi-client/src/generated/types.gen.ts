@@ -7521,6 +7521,38 @@ export type AdminAccountsTenancy = {
   }>;
 };
 
+export type AdminSystemAuditPage = {
+  /**
+   * Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back instead. On a log that is still being written to, a count and a page boundary disagree by design.
+   *
+   */
+  total: number;
+  /**
+   * Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only reliable end-of-list signal.
+   *
+   */
+  next_cursor?: string;
+  items: Array<{
+    id: string;
+    occurred_at: string;
+    actor_type: string;
+    /**
+     * Absent for an event with no user actor.
+     */
+    actor_id?: string;
+    action: string;
+    /**
+     * A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.
+     *
+     */
+    tenant_id?: string;
+    tenant_name: string;
+    metadata: {
+      [key: string]: unknown;
+    };
+  }>;
+};
+
 export type AdminVulnFeedStatus = {
   configured: boolean;
   source: "ui" | "env" | "none";
@@ -8819,6 +8851,64 @@ export type OidcCallbackResponses = {
 export type OidcCallbackResponse =
   OidcCallbackResponses[keyof OidcCallbackResponses];
 
+export type ListSocialProvidersData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/social/providers";
+};
+
+export type ListSocialProvidersResponses = {
+  /**
+   * The configured providers, possibly none
+   */
+  200: {
+    providers: Array<"google" | "github">;
+    /**
+     * Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page renders the SSO button only when it will work.
+     *
+     */
+    sso: boolean;
+  };
+};
+
+export type ListSocialProvidersResponse =
+  ListSocialProvidersResponses[keyof ListSocialProvidersResponses];
+
+export type SocialStartData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: never;
+  url: "/auth/social/{provider}/start";
+};
+
+export type SocialStartErrors = {
+  /**
+   * That provider is not configured
+   */
+  503: Error;
+};
+
+export type SocialStartError = SocialStartErrors[keyof SocialStartErrors];
+
+export type SocialCallbackData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    code?: string;
+    state?: string;
+    /**
+     * Set by the provider when the user declines.
+     */
+    error?: string;
+  };
+  url: "/auth/social/{provider}/callback";
+};
+
 export type ListMembersData = {
   body?: never;
   path?: never;
@@ -9478,6 +9568,13 @@ export type RegenerateSiteInvitationResponse =
 
 export type AcceptInvitationData = {
   body: AcceptInvitationRequest;
+  headers?: {
+    /**
+     * Any non-empty value. Required only when relying on an existing session instead of a password; ignored otherwise.
+     *
+     */
+    "X-WPMgr-Invite-Accept"?: string;
+  };
   path?: never;
   query?: never;
   url: "/api/v1/invitations/accept";
@@ -9488,6 +9585,15 @@ export type AcceptInvitationErrors = {
    * Invalid token, expired, already used, or email mismatch
    */
   400: Error;
+  /**
+   * Expired, or the address does not match the invitation.
+   * `invitation_email_mismatch` costs one of the invitation's attempts.
+   * `invitation_other_recipient` does not: it means the signed-in
+   * account's own address is not the invited one, which is a fact the
+   * caller already knew and so buys no enumeration.
+   *
+   */
+  403: Error;
   /**
    * Validation failed
    */
@@ -10523,6 +10629,46 @@ export type GetAdminAccountsTenancyResponses = {
 
 export type GetAdminAccountsTenancyResponse =
   GetAdminAccountsTenancyResponses[keyof GetAdminAccountsTenancyResponses];
+
+export type GetAdminSystemAuditData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
+     */
+    limit?: number;
+    /**
+     * Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
+     */
+    cursor?: string;
+  };
+  url: "/api/v1/admin/system-audit";
+};
+
+export type GetAdminSystemAuditErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminSystemAuditError =
+  GetAdminSystemAuditErrors[keyof GetAdminSystemAuditErrors];
+
+export type GetAdminSystemAuditResponses = {
+  /**
+   * One page of system audit events
+   */
+  200: AdminSystemAuditPage;
+};
+
+export type GetAdminSystemAuditResponse =
+  GetAdminSystemAuditResponses[keyof GetAdminSystemAuditResponses];
 
 export type GetAdminVulnFeedStatusData = {
   body?: never;

@@ -372,6 +372,9 @@ import type {
   GetAdminStatsData,
   GetAdminStatsErrors,
   GetAdminStatsResponses,
+  GetAdminSystemAuditData,
+  GetAdminSystemAuditErrors,
+  GetAdminSystemAuditResponses,
   GetAdminVulnFeedStatusData,
   GetAdminVulnFeedStatusErrors,
   GetAdminVulnFeedStatusResponses,
@@ -714,6 +717,8 @@ import type {
   ListSiteVulnerabilitiesData,
   ListSiteVulnerabilitiesErrors,
   ListSiteVulnerabilitiesResponses,
+  ListSocialProvidersData,
+  ListSocialProvidersResponses,
   ListTagsData,
   ListTagsResponses,
   ListTenantsData,
@@ -955,6 +960,9 @@ import type {
   SilenceSitePhpErrorData,
   SilenceSitePhpErrorErrors,
   SilenceSitePhpErrorResponses,
+  SocialCallbackData,
+  SocialStartData,
+  SocialStartErrors,
   StartScanRunData,
   StartScanRunErrors,
   StartScanRunResponses,
@@ -1605,6 +1613,49 @@ export const oidcCallback = <ThrowOnError extends boolean = false>(
   >({ url: "/auth/oidc/callback", ...options });
 
 /**
+ * List the social sign-in providers this install offers
+ *
+ * Returns the provider keys that are configured and will work. The sign-in page renders exactly these, so an unconfigured provider never shows a button that leads to a provider error page. Unauthenticated by design: the caller has not signed in yet, and the response reveals only which buttons the operator chose to enable.
+ *
+ */
+export const listSocialProviders = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSocialProvidersData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListSocialProvidersResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/auth/social/providers", ...options });
+
+/**
+ * Begin social sign-in (redirect to the provider)
+ *
+ * Redirects (302) to the provider's authorization endpoint with PKCE and a state value held server-side in the session. Returns 503 when the provider is not configured on this install.
+ *
+ */
+export const socialStart = <ThrowOnError extends boolean = false>(
+  options: Options<SocialStartData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<unknown, SocialStartErrors, ThrowOnError>({
+    url: "/auth/social/{provider}/start",
+    ...options,
+  });
+
+/**
+ * Social sign-in redirect callback
+ *
+ * Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor enrolled is redirected to the 2FA challenge instead of being signed in.
+ *
+ */
+export const socialCallback = <ThrowOnError extends boolean = false>(
+  options: Options<SocialCallbackData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<unknown, unknown, ThrowOnError>({
+    url: "/auth/social/{provider}/callback",
+    ...options,
+  });
+
+/**
  * List members of the active tenant
  */
 export const listMembers = <ThrowOnError extends boolean = false>(
@@ -1913,6 +1964,20 @@ export const regenerateSiteInvitation = <ThrowOnError extends boolean = false>(
  * Accepts both org-scope invitations (creates a membership) and site-scope
  * invitations (creates a site_shares row). Validates token hash, email
  * binding, expiry, single-use, and rate-limit.
+ *
+ *
+ * The caller proves who they are in one of two ways. Anonymously, with the
+ * password of the account the invitation names (or a new password, which
+ * creates that account). Or, when already signed in as exactly that
+ * account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+ * is what an account created through Google or GitHub uses because it has
+ * no password to send.
+ *
+ * The header is required for the session route and carries no secret: a
+ * session cookie travels on requests the person did not initiate, and this
+ * API sets no CORS policy, so a header is something only a script on this
+ * install's own page can add. Without it the request is treated as
+ * anonymous and a password is required, exactly as before.
  *
  */
 export const acceptInvitation = <ThrowOnError extends boolean = false>(
@@ -2428,6 +2493,32 @@ export const getAdminAccountsTenancy = <ThrowOnError extends boolean = false>(
     GetAdminAccountsTenancyErrors,
     ThrowOnError
   >({ url: "/api/v1/admin/accounts-tenancy", ...options });
+
+/**
+ * The tenant-independent audit trail (superadmin, read-only)
+ *
+ * Reads system_audit_log, which holds the events no single organisation's
+ * own audit log can show: actions whose subject organisation is being
+ * deleted, and authentication events for accounts that belong to no
+ * organisation at all (a new social account, a site collaborator, a portal
+ * user, anyone inside the org delete grace window). Newest first.
+ *
+ * Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+ * the log grows at its head while it is being read, so a numbered page
+ * boundary is already stale when it is handed out and the rows that moved
+ * past it come back twice. Send the previous response's `next_cursor` to
+ * get the rows that follow the last one you saw. `next_cursor` is absent
+ * on the last page.
+ *
+ */
+export const getAdminSystemAudit = <ThrowOnError extends boolean = false>(
+  options?: Options<GetAdminSystemAuditData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    GetAdminSystemAuditResponses,
+    GetAdminSystemAuditErrors,
+    ThrowOnError
+  >({ url: "/api/v1/admin/system-audit", ...options });
 
 /**
  * Masked Wordfence Intelligence feed API key status (superadmin)

@@ -32,6 +32,17 @@ JOIN tenants t ON t.id = m.tenant_id
 WHERE m.user_id = $1 AND t.deleted_at IS NULL
 ORDER BY m.created_at ASC;
 
+-- name: CountAllMembershipsForUser :one
+-- Deliberately does NOT join tenants, so a membership in a SOFT-DELETED org
+-- still counts. ListMembershipsForUser hides those rows, which is right for
+-- "what can this session act in" but wrong for "has this user ever belonged to
+-- an org": the two questions differ for exactly the length of the delete grace
+-- window, and social sign-in used the visible-membership answer to decide
+-- whether to bootstrap a brand new org. That minted an org mid grace window
+-- for a user who already had one in the bin, while the password path for the
+-- same user created nothing. Runs under InUserTx (memberships_self_read).
+SELECT count(*) FROM memberships WHERE user_id = $1;
+
 -- name: UpdateMembershipRole :one
 UPDATE memberships
 SET role = $3, updated_at = now()

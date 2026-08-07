@@ -13,7 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { toError } from "@/features/auth/use-auth";
+import { toError, useMe } from "@/features/auth/use-auth";
 
 // Public accept-invitation page — /accept?token=...
 //
@@ -29,6 +29,24 @@ import { toError } from "@/features/auth/use-auth";
 //   3. POST /api/v1/invitations/accept {token, email, name?, password?}
 //   4. On success navigate to /sites/{site_id} (scope=site) or /sites (scope=org).
 //   5. Clear errors for invalid/expired/already-used tokens with clear copy.
+//
+// ALREADY SIGNED IN IS A FIRST-CLASS CASE, not an afterthought. An account
+// created with Google or GitHub has no password and can never be given one, so
+// asking for one here was a door with no key: the only advice the API could
+// give back was "sign in first", which led straight to this same form again.
+// When a session exists the API accepts it in place of the password, so the
+// field is dropped and the address is the session's own. What is NOT dropped is
+// the deliberate act: the person still opens this link and presses Accept.
+//
+// BEING SIGNED IN IS AN OFFER, NOT A CAGE. People have more than one address,
+// and being invited at work while signed in at home is ordinary. Presenting the
+// session's address as the only possible answer would send that person's one
+// available submission at an address that cannot match, and each of those
+// spends one of the invitation's ten attempts, so a handful of honest retries
+// would destroy an invitation that was perfectly valid. The session's address
+// is therefore the default and not the verdict: "use a different address"
+// returns the full form, and the API charges no attempt for a mismatch that
+// came from the session rather than from a guess.
 
 const searchSchema = z.object({
   token: z.string().optional(),
@@ -52,6 +70,42 @@ interface AcceptResult {
 }
 
 // ---------------------------------------------------------------------------
+// Request body
+// ---------------------------------------------------------------------------
+
+export interface AcceptFormState {
+  token: string;
+  /** The session's own address, or null when nobody is signed in. */
+  signedInEmail: string | null;
+  typedEmail: string;
+  typedName: string;
+  typedPassword: string;
+}
+
+/**
+ * Builds the POST body, and is where the signed-in and logged-out cases are
+ * actually decided.
+ *
+ * Two rules it exists to hold. The address is the SESSION's whenever there is
+ * one, never something typed on this page, because the API matches the session
+ * against the account the invitation names and a typed address could only ever
+ * disagree with it. And no password is sent for a signed-in caller: the session
+ * stands in for it, and a social account has none to send.
+ *
+ * Extracted from the component so both cases can be asserted without rendering.
+ */
+export function buildAcceptBody(
+  state: AcceptFormState,
+): Record<string, string> {
+  const email = state.signedInEmail ?? state.typedEmail.trim();
+  const body: Record<string, string> = { token: state.token, email };
+  if (state.signedInEmail) return body;
+  body["password"] = state.typedPassword;
+  if (state.typedName.trim()) body["name"] = state.typedName.trim();
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // Page component
 // ---------------------------------------------------------------------------
 
@@ -66,6 +120,17 @@ function AcceptPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  // Set when the person tells us the invitation went to another of their
+  // addresses. From here on the page behaves exactly as it does for a stranger.
+  const [useOtherAddress, setUseOtherAddress] = useState(false);
+
+  // useMe returns null (not an error) when there is no session, so a logged-out
+  // visitor simply falls through to the email + password form.
+  const { data: me, isLoading: isLoadingMe } = useMe();
+  const sessionEmail = me?.user.email ?? null;
+  // signedInEmail is the address this submission will actually use, which is
+  // not the same question as whether a session exists.
+  const signedInEmail = useOtherAddress ? null : sessionEmail;
 
   // If no token in the URL we show a clear error immediately.
   if (!token) {
@@ -77,8 +142,8 @@ function AcceptPage() {
               <h1>Invalid invitation</h1>
             </CardTitle>
             <CardDescription>
-              This invitation link is missing the required token. Check that
-              you copied the full link.
+              This invitation link is missing the required token. Check that you
+              copied the full link.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -115,14 +180,17 @@ function AcceptPage() {
   }
 
   async function handleSubmit() {
-    const trimmedEmail = email.trim();
+    // Signed in: the address is the session's, never something typed here. The
+    // API matches the session against the account the invitation names, so a
+    // typed address could only ever disagree with it.
+    const trimmedEmail = signedInEmail ?? email.trim();
     if (!trimmedEmail) {
       setServerError("Email is required");
       return;
     }
-    if (!password) {
+    if (!signedInEmail && !password) {
       setServerError(
-        "Enter your password — or choose one to create a new account.",
+        "Enter your password, or choose one to create a new account.",
       );
       return;
     }
@@ -131,17 +199,27 @@ function AcceptPage() {
     setServerError(null);
 
     try {
-      const body: Record<string, string> = {
+      const body = buildAcceptBody({
         token: token!,
-        email: trimmedEmail,
-        password,
-      };
-      if (name.trim()) body["name"] = name.trim();
+        signedInEmail,
+        typedEmail: email,
+        typedName: name,
+        typedPassword: password,
+      });
 
       const raw = await fetch("/api/v1/invitations/accept", {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The affirmative act the session cookie cannot carry. A cookie rides
+          // along on requests the person never initiated; a header cannot be
+          // added by another site's markup, and a cross-origin script that
+          // tries earns a preflight this API answers for nobody. Without it the
+          // server ignores the session and asks for a password, so a forged
+          // request achieves exactly nothing.
+          "X-WPMgr-Invite-Accept": "1",
+        },
         body: JSON.stringify(body),
       });
 
@@ -155,8 +233,7 @@ function AcceptPage() {
         // middleware issue), so branch on STATUS codes, not the body. The
         // optional code/message reads are a no-op today and a bonus once the
         // body is restored.
-        const msg =
-          typeof json["message"] === "string" ? json["message"] : "";
+        const msg = typeof json["message"] === "string" ? json["message"] : "";
         const code = typeof json["code"] === "string" ? json["code"] : "";
 
         // Token gone — not found / expired / already used.
@@ -185,6 +262,15 @@ function AcceptPage() {
           return;
         }
         if (raw.status === 403) {
+          if (signedInEmail) {
+            // No attempt was spent on this one (invitation_other_recipient), so
+            // the offer to try the right address is real and not a trap.
+            setServerError(
+              `This invitation was not sent to ${signedInEmail}. If it went to another of your addresses, choose "Use a different address" below; otherwise sign out and open this link again with the account it was addressed to.`,
+            );
+            setUseOtherAddress(true);
+            return;
+          }
           setServerError(
             "This email doesn't match the invitation (or the invite has expired). Use the exact address it was sent to.",
           );
@@ -225,8 +311,9 @@ function AcceptPage() {
             <h1>Accept invitation</h1>
           </CardTitle>
           <CardDescription>
-            Enter the email this invitation was sent to and your password. If you
-            don't have a WPMgr account yet, the password you choose creates one.
+            {signedInEmail
+              ? `You are signed in as ${signedInEmail}. Accepting adds this invitation to that account.`
+              : "Enter the email this invitation was sent to and your password. If you don't have a WPMgr account yet, the password you choose creates one."}
           </CardDescription>
         </CardHeader>
 
@@ -246,58 +333,119 @@ function AcceptPage() {
             </div>
           ) : null}
 
-          <div className="space-y-2">
-            <Label htmlFor="accept-email">Email address</Label>
-            <Input
-              id="accept-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              autoComplete="email"
-              disabled={isSubmitting}
-            />
-          </div>
+          {signedInEmail ? (
+            <div className="space-y-2">
+              <Label htmlFor="accept-signed-in-email">Email address</Label>
+              <Input
+                id="accept-signed-in-email"
+                type="email"
+                value={signedInEmail}
+                readOnly
+                disabled
+              />
+              <p className="text-xs text-muted-foreground">
+                Signed in as {signedInEmail}. Accepting needs no password.
+              </p>
+              {/* The way out of the default. Without it a person invited at one
+                  of their addresses while signed in at another has exactly one
+                  submission available and it cannot succeed. */}
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto p-0 text-xs"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setUseOtherAddress(true);
+                  setServerError(null);
+                }}
+              >
+                This invitation was sent to a different address
+              </Button>
+            </div>
+          ) : (
+            <>
+              {sessionEmail ? (
+                <p className="text-xs text-muted-foreground">
+                  Signed in as {sessionEmail}. Enter the address this invitation
+                  was sent to and that account's password, or{" "}
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto p-0 text-xs"
+                    disabled={isSubmitting}
+                    onClick={() => {
+                      setUseOtherAddress(false);
+                      setServerError(null);
+                    }}
+                  >
+                    accept as {sessionEmail}
+                  </Button>
+                  . An account that signs in with Google or GitHub has no
+                  password, so sign out and open this link again as that
+                  account.
+                </p>
+              ) : null}
 
-          <div className="space-y-2">
-            <Label htmlFor="accept-name">
-              Display name{" "}
-              <span className="text-xs text-muted-foreground">(optional)</span>
-            </Label>
-            <Input
-              id="accept-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
-              autoComplete="name"
-              disabled={isSubmitting}
-            />
-          </div>
+              <div className="space-y-2">
+                <Label htmlFor="accept-email">Email address</Label>
+                <Input
+                  id="accept-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  disabled={isSubmitting}
+                />
+              </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="accept-password">Password</Label>
-            <Input
-              id="accept-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              disabled={isSubmitting}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handleSubmit();
-              }}
-            />
-            <p className="text-xs text-muted-foreground">
-              If you already have a WPMgr account, enter its password. Otherwise
-              this sets the password for your new account.
-            </p>
-          </div>
+              <div className="space-y-2">
+                <Label htmlFor="accept-name">
+                  Display name{" "}
+                  <span className="text-xs text-muted-foreground">
+                    (optional)
+                  </span>
+                </Label>
+                <Input
+                  id="accept-name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  autoComplete="name"
+                  disabled={isSubmitting}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="accept-password">Password</Label>
+                <Input
+                  id="accept-password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  disabled={isSubmitting}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleSubmit();
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  If you already have a WPMgr account, enter its password.
+                  Otherwise this sets the password for your new account.
+                </p>
+              </div>
+            </>
+          )}
 
           <Button
             type="button"
             className="w-full"
-            disabled={isSubmitting || !email.trim() || !password}
+            disabled={
+              isSubmitting ||
+              isLoadingMe ||
+              (!signedInEmail && (!email.trim() || !password))
+            }
             onClick={() => void handleSubmit()}
           >
             {isSubmitting ? (
@@ -323,7 +471,10 @@ function InvitationLayout({ children }: { children: React.ReactNode }) {
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-[var(--color-background)] p-4">
       <div className="flex items-center gap-2">
-        <Globe aria-hidden="true" className="size-5 text-[var(--color-primary)]" />
+        <Globe
+          aria-hidden="true"
+          className="size-5 text-[var(--color-primary)]"
+        />
         <span className="text-sm font-semibold tracking-tight text-[var(--color-foreground)]">
           WPMgr
         </span>

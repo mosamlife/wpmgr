@@ -2,9 +2,10 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -482,22 +483,46 @@ func (s *Service) SignInWithSocial(
 		return s.finishSocialLogin(ctx, *identityUser, createTenant)
 
 	case socialLinkExisting:
-		if err := s.repo.CreateIdentity(ctx, Identity{
-			UserID: emailUser.ID, Provider: in.Provider, Subject: in.Subject,
-			Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
-		}); err != nil {
+		// THE LINK IS AUTHORIZED HERE AND WRITTEN SOMEWHERE ELSE, ON PURPOSE.
+		//
+		// Linking binds a new way into an existing account, so it is a change to
+		// that account's credentials, and it used to be committed right here,
+		// before the caller had reached the second factor. Everything after this
+		// point could then fail and the binding still stood: an attacker who got
+		// no further than a provider consent screen for an address the provider
+		// vouches for walked away with their identity permanently attached to a
+		// 2FA-protected account they never authenticated to.
+		//
+		// So the decision travels as data and the write happens once the login is
+		// genuinely complete. See CompleteSocialLink.
+		res, err := s.finishSocialLogin(ctx, *emailUser, createTenant)
+		if err != nil {
 			return LoginResult{}, err
 		}
-		s.recordSocialAudit(ctx, emailUser.ID, in.Provider, "link")
-		return s.finishSocialLogin(ctx, *emailUser, createTenant)
+		res.PendingSocialLink = &Identity{
+			UserID: emailUser.ID, Provider: in.Provider, Subject: in.Subject,
+			Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
+		}
+		return res, nil
 
 	default:
+		// No deferral on this branch: the account is being created by this very
+		// sign-in, so it cannot already carry a second factor to skip past, and
+		// the identity is written in the same transaction as the user it belongs
+		// to (see createSocialUser).
 		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, facts.legacyHolders))
 		if err != nil {
 			return LoginResult{}, err
 		}
+		// Audited after the login is resolved, not before: finishSocialLogin is
+		// what settles which tenant this account belongs to, and recording first
+		// would file every new account's registration against no tenant at all.
+		res, err := s.finishSocialLogin(ctx, u, createTenant)
+		if err != nil {
+			return LoginResult{}, err
+		}
 		s.recordSocialAudit(ctx, u.ID, in.Provider, "register")
-		return s.finishSocialLogin(ctx, u, createTenant)
+		return res, nil
 	}
 }
 
@@ -669,6 +694,69 @@ func issuerMoveMeta(from, to string) map[string]any {
 	return map[string]any{"from_issuer": from, "to_issuer": to}
 }
 
+// CompleteSocialLink writes a link that SignInWithSocial authorized but
+// deliberately left unwritten until the caller finished authenticating.
+//
+// The caller must have issued a session for userID first. The userID argument
+// is the session's, not the pending link's, and the mismatch check below is the
+// point of taking both: a pending link parked during one login must never be
+// applied to whoever completes the next one.
+//
+// THE POLICY IS RE-RUN HERE, AGAINST FRESHLY READ STATE. An approval made
+// before a two-factor prompt can sit parked for up to pendingSocialLinkTTL, and
+// the decision it encodes is only as good as the facts it was made on. In that
+// window an administrator can disable the account, the address can be changed
+// or its verification revoked, or the same provider identity can be linked
+// somewhere else. Replaying the write from stale data would bind a new
+// credential to an account whose current state forbids exactly that, which is
+// the one thing deferring the write was supposed to prevent. So the account is
+// re-read and decideSocial, the same function that authorized it, has to say
+// "link" a second time.
+func (s *Service) CompleteSocialLink(ctx context.Context, userID uuid.UUID, link Identity) error {
+	if link.UserID == uuid.Nil || link.UserID != userID {
+		return domain.Forbidden("social_link_user_mismatch", "this sign-in cannot complete that link")
+	}
+
+	// Somebody else may have taken this provider identity while the link was
+	// parked. Already linked to this same account is success, not a conflict:
+	// completion has to be safe to run twice.
+	if owner, err := s.repo.GetUserByIdentity(ctx, link.Provider, link.Subject, link.Issuer); err == nil {
+		if owner.ID == userID {
+			return nil
+		}
+		return domain.Conflict("social_identity_taken", "this "+providerLabel(link.Provider)+" account is already linked to another user")
+	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
+		return err
+	}
+
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	// decideSocial takes the account found BY the asserted address, so handing it
+	// an account fetched by id is only equivalent while the two still agree. A
+	// changed address must not inherit the old one's approval.
+	if normalizeEmail(u.Email) != normalizeEmail(link.Email) {
+		return domain.Forbidden("social_link_email_changed", "this account's email address changed; sign in with "+providerLabel(link.Provider)+" again")
+	}
+	action, err := decideSocial(SocialIdentity{
+		Provider: link.Provider, Subject: link.Subject, Issuer: link.Issuer,
+		Email: link.Email, EmailVerified: link.EmailVerified,
+	}, nil, &u)
+	if err != nil {
+		return err
+	}
+	if action != socialLinkExisting {
+		return domain.Forbidden("social_link_no_longer_permitted", "this account can no longer be linked to "+providerLabel(link.Provider))
+	}
+
+	if err := s.repo.CreateIdentity(ctx, link); err != nil {
+		return err
+	}
+	s.recordSocialAudit(ctx, userID, link.Provider, "link")
+	return nil
+}
+
 // socialStatusGate refuses the same account states the password path refuses.
 // Its absence on this path meant a disabled user could still sign in via SSO.
 func socialStatusGate(u User) error {
@@ -694,6 +782,23 @@ func providerLabel(p string) string {
 	}
 }
 
+// recordSocialAudit records that a provider was linked to an account, or that
+// an account was created from one. Both are credential changes, so neither may
+// go unrecorded.
+//
+// IT USED TO GO UNRECORDED EXACTLY WHERE IT MATTERED MOST. The tenant came from
+// memberships[0] and fell back to the zero UUID when the list was empty;
+// audit_log.tenant_id references tenants, so the insert failed the foreign key
+// and a best-effort caller threw the error away. Every user with no org
+// membership therefore had their provider linked in total silence, and that set
+// is not an edge case: it is a brand new social account, a site collaborator, a
+// portal user, and anyone whose only org is inside its soft-delete grace
+// window. The accounts with the least oversight got the least audit.
+//
+// So the tenant is resolved the same way the session's active tenant is (org
+// membership, then site share, then client membership), and when there is
+// genuinely no tenant the event goes to the tenant-independent sink instead of
+// being dropped.
 func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provider, action string) {
 	s.recordSocialAuditWith(ctx, userID, provider, action, nil)
 }
@@ -703,28 +808,53 @@ func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provi
 // is the one event here that changes what a stored credential means.
 func (s *Service) recordSocialAuditWith(ctx context.Context, userID uuid.UUID, provider, action string, extra map[string]any) {
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, userID)
-	var tenantID uuid.UUID
-	if len(memberships) > 0 {
-		tenantID = memberships[0].TenantID
-	}
+	tenantID := s.resolveActiveTenant(ctx, userID, memberships)
+
+	// Built once and used by whichever sink takes the event, so the issuer-move
+	// facts survive on the tenantless path too. That path is exactly where they
+	// matter most: a brand new social account has no org yet, and an identity
+	// changing issuer is the event a reader most needs the before and after of.
 	meta := map[string]any{"provider": provider, "event": action}
 	for k, v := range extra {
 		meta[k] = v
 	}
-	_, _ = s.audit.Record(ctx, audit.Event{
-		TenantID:   tenantID,
-		ActorType:  audit.ActorUser,
-		ActorID:    userID.String(),
-		Action:     audit.ActionOIDCLogin,
-		TargetType: "user",
-		TargetID:   userID.String(),
-		Metadata:   meta,
-	})
+
+	if tenantID != uuid.Nil {
+		_, _ = s.audit.Record(ctx, audit.Event{
+			TenantID:   tenantID,
+			ActorType:  audit.ActorUser,
+			ActorID:    userID.String(),
+			Action:     audit.ActionOIDCLogin,
+			TargetType: "user",
+			TargetID:   userID.String(),
+			Metadata:   meta,
+		})
+		return
+	}
+
+	// The tenant-independent sink has no actor column of its own, so the subject
+	// travels in the payload.
+	meta["user_id"] = userID.String()
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		raw = nil
+	}
+	if err := s.repo.RecordTenantlessAuthEvent(ctx, userID, audit.ActionOIDCLogin, raw); err != nil {
+		slog.ErrorContext(ctx, "social audit record failed",
+			slog.String("event", action), slog.String("provider", provider),
+			slog.String("user_id", userID.String()), slog.Any("error", err))
+	}
 }
 
-// createSocialUser creates an ACTIVE user plus their identity, and bootstraps a
-// tenant. The account is active because the provider verified the address; see
+// createSocialUser creates a user and their identity in ONE transaction. The
+// account is active because the provider verified the address; see
 // SignInWithSocial.
+//
+// The atomicity is the whole point of the helper. These were three separate
+// statements against the pool, and the address is unique, so a failure between
+// any two of them left an account holding that address with nothing attached to
+// it: no identity, no password, and no verification. See
+// Repo.CreateSocialUserTx for why that row is so hard to get out of the way.
 func (s *Service) createSocialUser(
 	ctx context.Context,
 	in SocialIdentity,
@@ -756,26 +886,14 @@ func (s *Service) createSocialUser(
 		legacyIssuer, legacySubject = in.Issuer, in.Subject
 	}
 
-	u, err := s.repo.CreateUser(ctx, email, "", in.Name, legacyIssuer, legacySubject)
-	if err != nil {
-		return User{}, err
-	}
-	// Active immediately ONLY when a provider actually vouched for the address.
-	// Mailing our own verification link would otherwise ask the user to prove a
-	// second time what a trusted provider just proved.
-	if verified {
-		if err := s.repo.MarkUserEmailVerified(ctx, u.ID); err != nil {
-			return User{}, err
-		}
-		now := time.Now().UTC()
-		u.EmailVerifiedAt = &now
-	}
-	u.Status = "active"
-
-	if err := s.repo.CreateIdentity(ctx, Identity{
-		UserID: u.ID, Provider: in.Provider, Subject: in.Subject,
+	// Verified means active immediately, ONLY when a provider actually vouched
+	// for the address. Mailing our own verification link would otherwise ask the
+	// user to prove a second time what a trusted provider just proved.
+	u, err := s.repo.CreateSocialUserTx(ctx, email, in.Name, legacyIssuer, legacySubject, verified, Identity{
+		Provider: in.Provider, Subject: in.Subject,
 		Issuer: in.Issuer, Email: email, EmailVerified: verified,
-	}); err != nil {
+	})
+	if err != nil {
 		return User{}, err
 	}
 
@@ -817,29 +935,21 @@ func (s *Service) finishSocialLogin(
 	u User,
 	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
 ) (LoginResult, error) {
+	// NOTHING THAT GRANTS ACCESS BELONGS HERE. This runs before the second
+	// factor is even issued, so any grant it made would be a grant made on the
+	// strength of a provider handshake alone. An earlier version of this
+	// function accepted the caller's pending invitations at this point, which
+	// both spent them without the person ever asking and did so on the pre-2FA
+	// path, defeating the deferral the link write goes to such lengths for. An
+	// invitation is now accepted only by the affirmative act of opening the link
+	// and submitting it, on an authenticated session; see
+	// invitation.Service.Accept.
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, u.ID)
-	if len(memberships) == 0 {
-		// ZERO MEMBERSHIPS IS A NORMAL STATE, NOT A FAULT TO REPAIR. It is what
-		// a site collaborator has (an active site_share and nothing else), what
-		// a client-portal user has (a client_member row and nothing else), and
-		// what anyone whose only organisation is inside its soft-delete grace
-		// window has.
-		//
-		// An earlier version of this function created a tenant and granted
-		// RoleOwner whenever the list came back empty, which would have handed a
-		// portal user org-level capabilities the product deliberately withholds,
-		// activated that new empty org instead of their portal tenant (see
-		// resolveActiveTenant, which takes memberships[0] first) and, on a
-		// hosted install, minted an unbilled organisation on demand.
-		//
-		// So the bootstrap is gated exactly as UpsertOIDCUser gated it: only
-		// when this is genuinely the only user on the install.
-		if count, cerr := s.repo.CountUsers(ctx); cerr == nil && count <= 1 {
-			tenantID, terr := createTenant(ctx, defaultTenantName(u.Email), uniqueTenantSlug(u.Email))
-			if terr == nil {
-				if m, merr := s.repo.CreateMembership(ctx, u.ID, tenantID, authz.RoleOwner); merr == nil {
-					memberships = []Membership{m}
-				}
+	if len(memberships) == 0 && s.isFirstRunBootstrap(ctx, u) {
+		tenantID, terr := createTenant(ctx, defaultTenantName(u.Email), uniqueTenantSlug(u.Email))
+		if terr == nil {
+			if m, merr := s.repo.CreateMembership(ctx, u.ID, tenantID, authz.RoleOwner); merr == nil {
+				memberships = []Membership{m}
 			}
 		}
 	}
@@ -850,6 +960,45 @@ func (s *Service) finishSocialLogin(
 	res := LoginResult{User: u, Memberships: memberships}
 	res.ActiveTenant = s.resolveActiveTenant(ctx, u.ID, memberships)
 	return res, nil
+}
+
+// isFirstRunBootstrap reports whether this login should mint the install's
+// first organisation.
+//
+// ZERO VISIBLE MEMBERSHIPS IS A NORMAL STATE, NOT A FAULT TO REPAIR. It is what
+// a site collaborator has (an active site_share and nothing else), what a
+// client-portal user has (a client_member row and nothing else), and what
+// anyone whose only organisation is inside its soft-delete grace window has.
+// Creating a tenant for all of them would hand a portal user org-level
+// capabilities the product deliberately withholds, activate that new empty org
+// instead of their portal tenant (resolveActiveTenant takes memberships[0]
+// first) and, on a hosted install, mint an unbilled organisation on demand.
+//
+// The user count alone is not enough to tell first run from the grace window.
+// An install with one user whose only org has just been deleted still counts
+// one user, and its owner signing in with Google was handed a fresh empty
+// organisation while the very same person signing in with their password got
+// nothing. Two sign-in paths disagreeing about what an account is a member of
+// is the bug, and undoing a deletion nobody asked to undo is the damage.
+//
+// So it asks the question it actually means: is this user new, or merely
+// currently unattached? CountAllMembershipsForUser counts soft-deleted orgs
+// too, so a grace-window user answers "not new" and gets the same nothing the
+// password path gives them. Restoring the org is the org owner's decision, made
+// on the restore route, not a side effect of signing in.
+func (s *Service) isFirstRunBootstrap(ctx context.Context, u User) bool {
+	count, err := s.repo.CountUsers(ctx)
+	if err != nil || count > 1 {
+		return false
+	}
+	ever, err := s.repo.CountAllMembershipsForUser(ctx, u.ID)
+	if err != nil {
+		// Unreadable is not the same as zero. Refusing to bootstrap on an error
+		// costs a first user one visit to the org page; guessing costs a
+		// grace-window user a resurrected organisation.
+		return false
+	}
+	return ever == 0
 }
 
 // sendVerificationForSocialLink mails the link that unblocks a refused social

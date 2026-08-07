@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -28,7 +29,15 @@ const (
 	// callback cannot know whether to verify a Google ID token or call the
 	// GitHub API, and a single shared callback would have to guess.
 	sessKeyOAuthProvider = "oauth_provider"
+	// sessKeyPendingSocialLink parks an approved-but-unwritten identity link
+	// across the two-factor round trip. See putPendingSocialLink.
+	sessKeyPendingSocialLink = "pending_social_link"
 )
+
+// pendingSocialLinkTTL bounds how long an approved link may sit unwritten. It
+// covers one 2FA prompt, nothing more: a link nobody finished authenticating
+// for should expire, not wait indefinitely for the account's next login.
+const pendingSocialLinkTTL = 10 * time.Minute
 
 // SessionManager wraps SCS with the WPMgr cookie policy. The opaque session
 // cookie is HttpOnly + SameSite=Lax, Secure in production, with idle and
@@ -279,6 +288,10 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 	// share this state, so without it a generic-OIDC handshake started after a
 	// social one would carry the social provider forward.
 	m.scs.Remove(ctx, sessKeyOAuthProvider)
+	// A new handshake supersedes any link approved by an abandoned one. Without
+	// this, a link the person walked away from mid two-factor would still be
+	// sitting there waiting for their next challenge to apply it.
+	m.scs.Remove(ctx, sessKeyPendingSocialLink)
 }
 
 // putSocial stores the same handshake values plus the provider the flow was
@@ -295,6 +308,95 @@ func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce
 	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
 	state, nonce, verifier = m.takeOAuth(ctx)
 	return
+}
+
+// pendingSocialLinkEnvelope is what gets parked.
+//
+// Three things travel with the identity, and each one refuses a different way
+// of applying it to the wrong login. The user id refuses a different account.
+// The challenge id refuses a different challenge for the SAME account. The
+// absolute expiry refuses a much later one.
+type pendingSocialLinkEnvelope struct {
+	UserID        string `json:"user_id"`
+	ChallengeID   string `json:"challenge_id"`
+	Provider      string `json:"provider"`
+	Subject       string `json:"subject"`
+	Issuer        string `json:"issuer"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	ExpiresAt     int64  `json:"expires_at"`
+}
+
+// putPendingSocialLink parks an identity link that the sign-in policy approved
+// but that must not be written until a second factor is proven.
+//
+// The session is the right place for it precisely because it is server-side:
+// the browser holds an opaque token and cannot read, forge or move the parked
+// link, and the value never appears in a URL or a form the person completing
+// the challenge could edit. It is not a credential on its own either. Applying
+// it still requires completing the challenge it names, as the user it names.
+//
+// challengeID IS THE BINDING THAT MATTERS, and the user id is not a substitute
+// for it. A browser can hold several live challenges for one account: opening
+// the sign-in page again issues another, and password login and a provider
+// callback both issue their own. Binding to the user alone would let ANY of
+// them apply this link, so a person who abandoned the provider flow, went back
+// to their password, and completed that challenge instead would silently gain a
+// provider binding from a handshake they walked away from. The link is applied
+// only by the exact challenge the handshake that approved it produced.
+func (m *SessionManager) putPendingSocialLink(ctx context.Context, userID, challengeID uuid.UUID, ident Identity) {
+	if userID == uuid.Nil || challengeID == uuid.Nil {
+		return
+	}
+	blob, err := json.Marshal(pendingSocialLinkEnvelope{
+		UserID:        userID.String(),
+		ChallengeID:   challengeID.String(),
+		Provider:      ident.Provider,
+		Subject:       ident.Subject,
+		Issuer:        ident.Issuer,
+		Email:         ident.Email,
+		EmailVerified: ident.EmailVerified,
+		ExpiresAt:     time.Now().UTC().Add(pendingSocialLinkTTL).Unix(),
+	})
+	if err != nil {
+		return
+	}
+	m.scs.Put(ctx, sessKeyPendingSocialLink, string(blob))
+}
+
+// takePendingSocialLink pops a parked link for userID, completing challengeID.
+// It returns ok=false, and still clears the slot, when nothing is parked, when
+// the park has expired, when it names a different account, or when it names a
+// different challenge: a link approved by one handshake must be applied by that
+// handshake's challenge or by none.
+//
+// Clearing on refusal is deliberate. A link that survived a mismatch would sit
+// there waiting for a challenge that does match, which is exactly the reuse the
+// mismatch check exists to stop.
+func (m *SessionManager) takePendingSocialLink(ctx context.Context, userID, challengeID uuid.UUID) (Identity, bool) {
+	raw := m.scs.PopString(ctx, sessKeyPendingSocialLink)
+	if raw == "" {
+		return Identity{}, false
+	}
+	var env pendingSocialLinkEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return Identity{}, false
+	}
+	if env.ExpiresAt <= time.Now().UTC().Unix() {
+		return Identity{}, false
+	}
+	parked, err := uuid.Parse(env.UserID)
+	if err != nil || parked != userID || parked == uuid.Nil {
+		return Identity{}, false
+	}
+	parkedChallenge, err := uuid.Parse(env.ChallengeID)
+	if err != nil || parkedChallenge != challengeID || parkedChallenge == uuid.Nil {
+		return Identity{}, false
+	}
+	return Identity{
+		UserID: parked, Provider: env.Provider, Subject: env.Subject,
+		Issuer: env.Issuer, Email: env.Email, EmailVerified: env.EmailVerified,
+	}, true
 }
 
 // takeOAuth reads and clears the transient OIDC handshake values.

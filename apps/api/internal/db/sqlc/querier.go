@@ -347,6 +347,15 @@ type Querier interface {
 	// (operator app.tenant_id OR public-enroll app.enroll) — see the function's
 	// own comment in schema.sql for the full rationale.
 	CountActiveSitesForBilling(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	// Deliberately does NOT join tenants, so a membership in a SOFT-DELETED org
+	// still counts. ListMembershipsForUser hides those rows, which is right for
+	// "what can this session act in" but wrong for "has this user ever belonged to
+	// an org": the two questions differ for exactly the length of the delete grace
+	// window, and social sign-in used the visible-membership answer to decide
+	// whether to bootstrap a brand new org. That minted an org mid grace window
+	// for a user who already had one in the bin, while the password path for the
+	// same user created nothing. Runs under InUserTx (memberships_self_read).
+	CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	// Guards unlink: removing the last identity from a user with no password would
 	// lock them out of their own account permanently.
 	CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error)
@@ -363,6 +372,7 @@ type Querier interface {
 	// Recomputes usage_count after a mutation (create/rename/merge/recolor) so
 	// the returned SiteTag never reports a stale count.
 	CountSitesWithTag(ctx context.Context, arg CountSitesWithTagParams) (int64, error)
+	CountSystemAuditEvents(ctx context.Context) (int64, error)
 	// Counts tasks not yet in a terminal state, used to decide when a run completes.
 	CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -1696,6 +1706,29 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
+	//
+	// A log with no reader is not oversight. This table now carries the auth events
+	// of accounts that belong to no organisation (a brand new social account, a
+	// site collaborator, a portal user, anyone mid soft-delete grace window), and
+	// those cannot appear in any tenant's own audit_log by construction, so without
+	// this query the population with the least visibility would have had none at
+	// all. Superadmin-gated, because the rows span every account on the install.
+	//
+	// Newest first, paged by a COMPOSITE (occurred_at, id) keyset cursor, not by
+	// OFFSET. This list grows at the head continuously (every tenantless auth event
+	// lands here as it happens), so an offset counts from a boundary that has
+	// already moved by the time the reader asks for page two, and the rows that
+	// shifted past it are shown twice while nothing warns anyone. The cursor names
+	// the last row the reader actually saw, so what comes back next is what follows
+	// it no matter how much arrived above. The id half of the pair is load-bearing
+	// and not decoration: one action writes several rows sharing an occurred_at, and
+	// a bare `occurred_at <` would step over the rest of that group (see
+	// wpmgr-keyset-cursor-composite).
+	//
+	// First page: pass a far-future @cursor_ts and the max uuid, so the predicate is
+	// true for every row.
+	ListSystemAuditEvents(ctx context.Context, arg ListSystemAuditEventsParams) ([]SystemAuditLog, error)
 	// GH #230 "rich tags" — tenant-level tag registry (m100). site_tags owns
 	// existence/color/canonical name; sites.tags (text[]) remains the assignment
 	// store. See internal/sitetag for the orchestration that keeps them in sync.

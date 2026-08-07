@@ -118,6 +118,10 @@ func (h *Handler) twoFATOTPComplete(c *gin.Context) {
 		return
 	}
 
+	// A social sign-in that reached this challenge left its approved identity
+	// link unwritten. Both factors are now proven, so it can be written.
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
+
 	label := body.DeviceLabel
 	if label == "" {
 		label = labelFromUserAgent(c.Request.UserAgent())
@@ -129,8 +133,8 @@ func (h *Handler) twoFATOTPComplete(c *gin.Context) {
 	remaining, _ := h.svc.CountRecoveryCodes(c.Request.Context(), res.User.ID)
 	out := toMe(res.User, res.Memberships, res.ActiveTenant, h.hosted, h.managedStorageAllowed(c.Request.Context(), res.ActiveTenant), res.DesiredPlan)
 	c.JSON(http.StatusOK, gin.H{
-		"me":                        out,
-		"recovery_codes_remaining":  remaining,
+		"me":                       out,
+		"recovery_codes_remaining": remaining,
 	})
 }
 
@@ -166,6 +170,10 @@ func (h *Handler) twoFARecoveryComplete(c *gin.Context) {
 		httpx.Error(c, domain.Internal("session_failed", "failed to establish session").WithCause(err))
 		return
 	}
+
+	// A social sign-in that reached this challenge left its approved identity
+	// link unwritten. Both factors are now proven, so it can be written.
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
 
 	label := body.DeviceLabel
 	if label == "" {
@@ -247,6 +255,10 @@ func (h *Handler) twoFAWebAuthnFinish(c *gin.Context) {
 		httpx.Error(c, domain.Internal("session_failed", "failed to establish session").WithCause(err))
 		return
 	}
+
+	// A social sign-in that reached this challenge left its approved identity
+	// link unwritten. Both factors are now proven, so it can be written.
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
 
 	label := body.DeviceLabel
 	if label == "" {
