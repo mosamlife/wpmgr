@@ -32,7 +32,7 @@ type userStore interface {
 	GrantSelfOwnerMembership(ctx context.Context, userID, siteID uuid.UUID) (uuid.UUID, string, bool, error)
 	AccountsTenancy(ctx context.Context, emailSubstr string) (AccountsTenancyReport, error)
 	ListSitesByUser(ctx context.Context, userID uuid.UUID) ([]AdminUserSite, error)
-	ListSystemAuditEvents(ctx context.Context, limit, offset int32) ([]SystemAuditEvent, int64, error)
+	ListSystemAuditEvents(ctx context.Context, limit int32, cursor string) (SystemAuditPage, error)
 }
 
 // SiteTenancy returns a read-only diagnostic comparing where a site + its perf
@@ -229,18 +229,20 @@ func (s *Service) ListSitesByUser(ctx context.Context, userID uuid.UUID) ([]Admi
 
 // maxSystemAuditPageSize caps one page of the system audit log. The reader is a
 // human scrolling an ops console, not a bulk export.
+//
+// It bounds the PAGE only. Paging itself is by cursor, so a cap here limits how
+// much one request costs and never limits how far back a reader can walk, which
+// is the trap an offset cap sets.
 const maxSystemAuditPageSize int32 = 200
 
-// ListSystemAuditEvents returns a page of the tenant-independent audit trail.
-func (s *Service) ListSystemAuditEvents(ctx context.Context, limit, offset int32) ([]SystemAuditEvent, int64, error) {
+// ListSystemAuditEvents returns one keyset page of the tenant-independent audit
+// trail. An empty cursor starts at the newest row.
+func (s *Service) ListSystemAuditEvents(ctx context.Context, limit int32, cursor string) (SystemAuditPage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > maxSystemAuditPageSize {
 		limit = maxSystemAuditPageSize
 	}
-	if offset < 0 {
-		offset = 0
-	}
-	return s.repo.ListSystemAuditEvents(ctx, limit, offset)
+	return s.repo.ListSystemAuditEvents(ctx, limit, cursor)
 }

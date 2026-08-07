@@ -17,6 +17,70 @@ import (
 	"github.com/ogen-go/ogen/validate"
 )
 
+// AcceptInvitationParams is parameters of acceptInvitation operation.
+type AcceptInvitationParams struct {
+	// Any non-empty value. Required only when relying on an existing session instead of a password;
+	// ignored otherwise.
+	XWPMgrInviteAccept OptString `json:",omitempty,omitzero"`
+}
+
+func unpackAcceptInvitationParams(packed middleware.Parameters) (params AcceptInvitationParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "X-WPMgr-Invite-Accept",
+			In:   "header",
+		}
+		if v, ok := packed[key]; ok {
+			params.XWPMgrInviteAccept = v.(OptString)
+		}
+	}
+	return params
+}
+
+func decodeAcceptInvitationParams(args [0]string, argsEscaped bool, r *http.Request) (params AcceptInvitationParams, _ error) {
+	h := uri.NewHeaderDecoder(r.Header)
+	// Decode header: X-WPMgr-Invite-Accept.
+	if err := func() error {
+		cfg := uri.HeaderParameterDecodingConfig{
+			Name:    "X-WPMgr-Invite-Accept",
+			Explode: false,
+		}
+		if err := h.HasParam(cfg); err == nil {
+			if err := h.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotXWPMgrInviteAcceptVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotXWPMgrInviteAcceptVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.XWPMgrInviteAccept.SetTo(paramsDotXWPMgrInviteAcceptVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "X-WPMgr-Invite-Accept",
+			In:   "header",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // ActivateOrgParams is parameters of activateOrg operation.
 type ActivateOrgParams struct {
 	OrgId uuid.UUID
@@ -5486,9 +5550,10 @@ func decodeGetAdminSiteTenancyParams(args [1]string, argsEscaped bool, r *http.R
 
 // GetAdminSystemAuditParams is parameters of getAdminSystemAudit operation.
 type GetAdminSystemAuditParams struct {
-	// Page size, default 50, capped at 200.
-	Limit  OptInt `json:",omitempty,omitzero"`
-	Offset OptInt `json:",omitempty,omitzero"`
+	// Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
+	Limit OptInt `json:",omitempty,omitzero"`
+	// Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
+	Cursor OptString `json:",omitempty,omitzero"`
 }
 
 func unpackGetAdminSystemAuditParams(packed middleware.Parameters) (params GetAdminSystemAuditParams) {
@@ -5503,11 +5568,11 @@ func unpackGetAdminSystemAuditParams(packed middleware.Parameters) (params GetAd
 	}
 	{
 		key := middleware.ParameterKey{
-			Name: "offset",
+			Name: "cursor",
 			In:   "query",
 		}
 		if v, ok := packed[key]; ok {
-			params.Offset = v.(OptInt)
+			params.Cursor = v.(OptString)
 		}
 	}
 	return params
@@ -5581,68 +5646,43 @@ func decodeGetAdminSystemAuditParams(args [0]string, argsEscaped bool, r *http.R
 			Err:  err,
 		}
 	}
-	// Decode query: offset.
+	// Decode query: cursor.
 	if err := func() error {
 		cfg := uri.QueryParameterDecodingConfig{
-			Name:    "offset",
+			Name:    "cursor",
 			Style:   uri.QueryStyleForm,
 			Explode: true,
 		}
 
 		if err := q.HasParam(cfg); err == nil {
 			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
-				var paramsDotOffsetVal int
+				var paramsDotCursorVal string
 				if err := func() error {
 					val, err := d.DecodeValue()
 					if err != nil {
 						return err
 					}
 
-					c, err := conv.ToInt(val)
+					c, err := conv.ToString(val)
 					if err != nil {
 						return err
 					}
 
-					paramsDotOffsetVal = c
+					paramsDotCursorVal = c
 					return nil
 				}(); err != nil {
 					return err
 				}
-				params.Offset.SetTo(paramsDotOffsetVal)
+				params.Cursor.SetTo(paramsDotCursorVal)
 				return nil
 			}); err != nil {
-				return err
-			}
-			if err := func() error {
-				if value, ok := params.Offset.Get(); ok {
-					if err := func() error {
-						if err := (validate.Int{
-							MinSet:        true,
-							Min:           0,
-							MaxSet:        false,
-							Max:           0,
-							MinExclusive:  false,
-							MaxExclusive:  false,
-							MultipleOfSet: false,
-							MultipleOf:    0,
-							Pattern:       nil,
-						}).Validate(int64(value)); err != nil {
-							return errors.Wrap(err, "int")
-						}
-						return nil
-					}(); err != nil {
-						return err
-					}
-				}
-				return nil
-			}(); err != nil {
 				return err
 			}
 		}
 		return nil
 	}(); err != nil {
 		return params, &ogenerrors.DecodeParamError{
-			Name: "offset",
+			Name: "cursor",
 			In:   "query",
 			Err:  err,
 		}

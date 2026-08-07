@@ -223,6 +223,25 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 	// FIX 6 (NIT): compare emails via subtle.ConstantTimeCompare on lowercased
 	// strings to prevent timing-based email enumeration attacks.
 	if subtle.ConstantTimeCompare([]byte(strings.ToLower(inv.Email)), []byte(strings.ToLower(in.Email))) != 1 {
+		// A SIGNED-IN CALLER SUBMITTING THEIR OWN ADDRESS IS NOT GUESSING, AND
+		// MUST NOT BE CHARGED AN ATTEMPT FOR IT.
+		//
+		// The counter exists to stop a link-holder from walking a list of
+		// addresses to discover who an invitation names. That attack needs many
+		// tries; this caller has exactly one, the address of an account they
+		// already hold a session for, whose value they knew before they started.
+		// Charging it does no security work and does real damage: people own more
+		// than one address, so someone invited at work and signed in at home lands
+		// here through no fault of their own, and ten arrivals burn a valid
+		// invitation permanently for the person it was actually sent to. The
+		// refusal still stands; only the penalty is dropped.
+		if in.SessionUserID != uuid.Nil {
+			if su, serr := s.authRepo.GetUserByID(ctx, in.SessionUserID); serr == nil &&
+				subtle.ConstantTimeCompare([]byte(strings.ToLower(su.Email)), []byte(strings.ToLower(in.Email))) == 1 {
+				return AcceptResult{}, domain.Forbidden("invitation_other_recipient",
+					"this invitation was sent to a different address than the one you are signed in with")
+			}
+		}
 		// Increment attempts before returning (rate-limit enumeration).
 		_ = s.incrementAttempts(ctx, inv.TenantID, inv.ID)
 		return AcceptResult{}, domain.Forbidden("invitation_email_mismatch", "email does not match the invitation")

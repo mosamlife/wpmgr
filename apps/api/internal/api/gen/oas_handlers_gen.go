@@ -35,10 +35,17 @@ func (c *codeRecorder) Unwrap() http.ResponseWriter {
 
 // handleAcceptInvitationRequest handles acceptInvitation operation.
 //
-// Accept an invitation by token (public; creates/links user and session).
-// Accepts both org-scope invitations (creates a membership) and site-scope
-// invitations (creates a site_shares row). Validates token hash, email
-// binding, expiry, single-use, and rate-limit.
+// The caller proves who they are in one of two ways. Anonymously, with the
+// password of the account the invitation names (or a new password, which
+// creates that account). Or, when already signed in as exactly that
+// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+// is what an account created through Google or GitHub uses because it has
+// no password to send.
+// The header is required for the session route and carries no secret: a
+// session cookie travels on requests the person did not initiate, and this
+// API sets no CORS policy, so a header is something only a script on this
+// install's own page can add. Without it the request is treated as
+// anonymous and a password is required, exactly as before.
 //
 // POST /api/v1/invitations/accept
 func (s *Server) handleAcceptInvitationRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -112,6 +119,16 @@ func (s *Server) handleAcceptInvitationRequest(args [0]string, argsEscaped bool,
 			ID:   "acceptInvitation",
 		}
 	)
+	params, err := decodeAcceptInvitationParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
 
 	var rawBody []byte
 	request, rawBody, close, err := s.decodeAcceptInvitationRequest(r)
@@ -139,13 +156,18 @@ func (s *Server) handleAcceptInvitationRequest(args [0]string, argsEscaped bool,
 			OperationID:      "acceptInvitation",
 			Body:             request,
 			RawBody:          rawBody,
-			Params:           middleware.Parameters{},
-			Raw:              r,
+			Params: middleware.Parameters{
+				{
+					Name: "X-WPMgr-Invite-Accept",
+					In:   "header",
+				}: params.XWPMgrInviteAccept,
+			},
+			Raw: r,
 		}
 
 		type (
 			Request  = *AcceptInvitationRequest
-			Params   = struct{}
+			Params   = AcceptInvitationParams
 			Response = AcceptInvitationRes
 		)
 		response, err = middleware.HookMiddleware[
@@ -155,14 +177,14 @@ func (s *Server) handleAcceptInvitationRequest(args [0]string, argsEscaped bool,
 		](
 			m,
 			mreq,
-			nil,
+			unpackAcceptInvitationParams,
 			func(ctx context.Context, request Request, params Params) (response Response, err error) {
-				response, err = s.h.AcceptInvitation(ctx, request)
+				response, err = s.h.AcceptInvitation(ctx, request, params)
 				return response, err
 			},
 		)
 	} else {
-		response, err = s.h.AcceptInvitation(ctx, request)
+		response, err = s.h.AcceptInvitation(ctx, request, params)
 	}
 	if err != nil {
 		defer recordError("Internal", err)
@@ -20187,6 +20209,12 @@ func (s *Server) handleGetAdminStatsRequest(args [0]string, argsEscaped bool, w 
 // deleted, and authentication events for accounts that belong to no
 // organisation at all (a new social account, a site collaborator, a portal
 // user, anyone inside the org delete grace window). Newest first.
+// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+// the log grows at its head while it is being read, so a numbered page
+// boundary is already stale when it is handed out and the rows that moved
+// past it come back twice. Send the previous response's `next_cursor` to
+// get the rows that follow the last one you saw. `next_cursor` is absent
+// on the last page.
 //
 // GET /api/v1/admin/system-audit
 func (s *Server) handleGetAdminSystemAuditRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -20288,9 +20316,9 @@ func (s *Server) handleGetAdminSystemAuditRequest(args [0]string, argsEscaped bo
 					In:   "query",
 				}: params.Limit,
 				{
-					Name: "offset",
+					Name: "cursor",
 					In:   "query",
-				}: params.Offset,
+				}: params.Cursor,
 			},
 			Raw: r,
 		}

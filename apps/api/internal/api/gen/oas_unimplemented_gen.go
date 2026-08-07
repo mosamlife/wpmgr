@@ -15,13 +15,20 @@ var _ Handler = UnimplementedHandler{}
 
 // AcceptInvitation implements acceptInvitation operation.
 //
-// Accept an invitation by token (public; creates/links user and session).
-// Accepts both org-scope invitations (creates a membership) and site-scope
-// invitations (creates a site_shares row). Validates token hash, email
-// binding, expiry, single-use, and rate-limit.
+// The caller proves who they are in one of two ways. Anonymously, with the
+// password of the account the invitation names (or a new password, which
+// creates that account). Or, when already signed in as exactly that
+// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+// is what an account created through Google or GitHub uses because it has
+// no password to send.
+// The header is required for the session route and carries no secret: a
+// session cookie travels on requests the person did not initiate, and this
+// API sets no CORS policy, so a header is something only a script on this
+// install's own page can add. Without it the request is treated as
+// anonymous and a password is required, exactly as before.
 //
 // POST /api/v1/invitations/accept
-func (UnimplementedHandler) AcceptInvitation(ctx context.Context, req *AcceptInvitationRequest) (r AcceptInvitationRes, _ error) {
+func (UnimplementedHandler) AcceptInvitation(ctx context.Context, req *AcceptInvitationRequest, params AcceptInvitationParams) (r AcceptInvitationRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -1607,6 +1614,12 @@ func (UnimplementedHandler) GetAdminStats(ctx context.Context) (r GetAdminStatsR
 // deleted, and authentication events for accounts that belong to no
 // organisation at all (a new social account, a site collaborator, a portal
 // user, anyone inside the org delete grace window). Newest first.
+// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+// the log grows at its head while it is being read, so a numbered page
+// boundary is already stale when it is handed out and the rows that moved
+// past it come back twice. Send the previous response's `next_cursor` to
+// get the rows that follow the last one you saw. `next_cursor` is absent
+// on the last page.
 //
 // GET /api/v1/admin/system-audit
 func (UnimplementedHandler) GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (r GetAdminSystemAuditRes, _ error) {

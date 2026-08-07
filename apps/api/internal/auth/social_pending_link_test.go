@@ -11,8 +11,9 @@ import (
 
 // The parked link is the mechanism that lets an approved identity link survive
 // a two-factor round trip WITHOUT being written first. It is only safe if it
-// cannot be applied to the wrong account, cannot be replayed later, and cannot
-// outlive the handshake that produced it, so those are what is asserted.
+// cannot be applied to the wrong account, cannot be applied by a challenge the
+// approving handshake did not produce, cannot be replayed later, and cannot
+// outlive the handshake itself, so those are what is asserted.
 
 func parkedLink(userID uuid.UUID) Identity {
 	return Identity{
@@ -21,42 +22,64 @@ func parkedLink(userID uuid.UUID) Identity {
 	}
 }
 
-func TestPendingSocialLinkRoundTripsForTheAccountItNames(t *testing.T) {
+func TestPendingSocialLinkRoundTripsForTheChallengeItNames(t *testing.T) {
 	m := NewSessionManagerWithStore(scs.New(), false)
 	ctx := loadCtx(t, m)
 
-	user := uuid.New()
-	m.putPendingSocialLink(ctx, user, parkedLink(user))
+	user, challenge := uuid.New(), uuid.New()
+	m.putPendingSocialLink(ctx, user, challenge, parkedLink(user))
 
-	got, ok := m.takePendingSocialLink(ctx, user)
+	got, ok := m.takePendingSocialLink(ctx, user, challenge)
 	if !ok {
-		t.Fatal("a link parked for this user must come back to them")
+		t.Fatal("a link parked for this user and challenge must come back to them")
 	}
 	if got.Provider != "google" || got.Subject != "google-sub-1" || got.UserID != user {
 		t.Fatalf("round trip lost fields: %+v", got)
 	}
 
 	// Single use: the second factor completes once, and so does the link.
-	if _, ok := m.takePendingSocialLink(ctx, user); ok {
+	if _, ok := m.takePendingSocialLink(ctx, user, challenge); ok {
 		t.Fatal("the parked link must be consumed on read; a link that survives can be applied twice")
 	}
 }
 
-// The binding that matters. A link approved during one login must never be
+// The binding that matters most. A link approved during one login must never be
 // applied by whoever completes the next challenge on this browser.
 func TestPendingSocialLinkIsRefusedForADifferentAccount(t *testing.T) {
 	m := NewSessionManagerWithStore(scs.New(), false)
 	ctx := loadCtx(t, m)
 
-	victim := uuid.New()
-	m.putPendingSocialLink(ctx, victim, parkedLink(victim))
+	victim, challenge := uuid.New(), uuid.New()
+	m.putPendingSocialLink(ctx, victim, challenge, parkedLink(victim))
 
-	if _, ok := m.takePendingSocialLink(ctx, uuid.New()); ok {
+	if _, ok := m.takePendingSocialLink(ctx, uuid.New(), challenge); ok {
 		t.Fatal("a link parked for one account was handed to another; that binds a provider to whoever finishes the next challenge")
 	}
 	// And it is gone, not left waiting for a luckier caller.
-	if _, ok := m.takePendingSocialLink(ctx, victim); ok {
+	if _, ok := m.takePendingSocialLink(ctx, victim, challenge); ok {
 		t.Fatal("a refused link must be discarded, not left parked for a later attempt")
+	}
+}
+
+// The same account can hold several live challenges at once: opening the
+// sign-in page again issues another, and a password login and a provider
+// callback each issue their own. Only the one the approving handshake produced
+// may apply the link, otherwise abandoning the provider flow and finishing a
+// password login instead would still bind the provider.
+func TestPendingSocialLinkIsRefusedForADifferentChallengeOfTheSameUser(t *testing.T) {
+	m := NewSessionManagerWithStore(scs.New(), false)
+	ctx := loadCtx(t, m)
+
+	user := uuid.New()
+	fromProvider := uuid.New()
+	m.putPendingSocialLink(ctx, user, fromProvider, parkedLink(user))
+
+	otherChallenge := uuid.New()
+	if _, ok := m.takePendingSocialLink(ctx, user, otherChallenge); ok {
+		t.Fatal("a link approved by one handshake was applied by an unrelated challenge for the same account")
+	}
+	if _, ok := m.takePendingSocialLink(ctx, user, fromProvider); ok {
+		t.Fatal("a refused link must be discarded, not left parked for the challenge that does match")
 	}
 }
 
@@ -64,21 +87,22 @@ func TestPendingSocialLinkExpires(t *testing.T) {
 	m := NewSessionManagerWithStore(scs.New(), false)
 	ctx := loadCtx(t, m)
 
-	user := uuid.New()
+	user, challenge := uuid.New(), uuid.New()
 	// Park one that is already past its window. Written directly because the
 	// TTL is what is under test.
 	stale, err := json.Marshal(pendingSocialLinkEnvelope{
-		UserID:    user.String(),
-		Provider:  "google",
-		Subject:   "google-sub-1",
-		ExpiresAt: time.Now().UTC().Add(-time.Second).Unix(),
+		UserID:      user.String(),
+		ChallengeID: challenge.String(),
+		Provider:    "google",
+		Subject:     "google-sub-1",
+		ExpiresAt:   time.Now().UTC().Add(-time.Second).Unix(),
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	m.SCS().Put(ctx, sessKeyPendingSocialLink, string(stale))
 
-	if _, ok := m.takePendingSocialLink(ctx, user); ok {
+	if _, ok := m.takePendingSocialLink(ctx, user, challenge); ok {
 		t.Fatal("an expired link was applied; a handshake nobody finished authenticating for must not wait indefinitely for this account's next login")
 	}
 }
@@ -89,11 +113,11 @@ func TestStartingANewHandshakeClearsAParkedLink(t *testing.T) {
 	m := NewSessionManagerWithStore(scs.New(), false)
 	ctx := loadCtx(t, m)
 
-	user := uuid.New()
-	m.putPendingSocialLink(ctx, user, parkedLink(user))
+	user, challenge := uuid.New(), uuid.New()
+	m.putPendingSocialLink(ctx, user, challenge, parkedLink(user))
 	m.putSocial(ctx, "github", "state-2", "nonce-2", "verifier-2")
 
-	if _, ok := m.takePendingSocialLink(ctx, user); ok {
+	if _, ok := m.takePendingSocialLink(ctx, user, challenge); ok {
 		t.Fatal("a new handshake must discard the link approved by the abandoned one")
 	}
 }

@@ -98,8 +98,8 @@ func (f *fakeStore) ListSitesByUser(_ context.Context, _ uuid.UUID) ([]AdminUser
 	return []AdminUserSite{}, nil
 }
 
-func (f *fakeStore) ListSystemAuditEvents(_ context.Context, _, _ int32) ([]SystemAuditEvent, int64, error) {
-	return []SystemAuditEvent{}, 0, nil
+func (f *fakeStore) ListSystemAuditEvents(_ context.Context, _ int32, _ string) (SystemAuditPage, error) {
+	return SystemAuditPage{}, nil
 }
 
 func (f *fakeStore) AccountsTenancy(_ context.Context, emailSubstr string) (AccountsTenancyReport, error) {

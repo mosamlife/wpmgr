@@ -17,6 +17,10 @@ type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
 
+type AcceptInvitationForbidden Error
+
+func (*AcceptInvitationForbidden) acceptInvitationRes() {}
+
 // Ref: #/components/schemas/AcceptInvitationRequest
 type AcceptInvitationRequest struct {
 	// The raw token from the accept link (?token=…).
@@ -2798,14 +2802,23 @@ func (*AdminStats) getAdminStatsRes() {}
 
 // Ref: #/components/schemas/AdminSystemAuditPage
 type AdminSystemAuditPage struct {
-	// Total rows in the log, for paging.
-	Total int64                           `json:"total"`
-	Items []AdminSystemAuditPageItemsItem `json:"items"`
+	// Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back
+	// instead. On a log that is still being written to, a count and a page boundary disagree by design.
+	Total int64 `json:"total"`
+	// Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only
+	// reliable end-of-list signal.
+	NextCursor OptString                       `json:"next_cursor"`
+	Items      []AdminSystemAuditPageItemsItem `json:"items"`
 }
 
 // GetTotal returns the value of Total.
 func (s *AdminSystemAuditPage) GetTotal() int64 {
 	return s.Total
+}
+
+// GetNextCursor returns the value of NextCursor.
+func (s *AdminSystemAuditPage) GetNextCursor() OptString {
+	return s.NextCursor
 }
 
 // GetItems returns the value of Items.
@@ -2816,6 +2829,11 @@ func (s *AdminSystemAuditPage) GetItems() []AdminSystemAuditPageItemsItem {
 // SetTotal sets the value of Total.
 func (s *AdminSystemAuditPage) SetTotal(val int64) {
 	s.Total = val
+}
+
+// SetNextCursor sets the value of NextCursor.
+func (s *AdminSystemAuditPage) SetNextCursor(val OptString) {
+	s.NextCursor = val
 }
 
 // SetItems sets the value of Items.

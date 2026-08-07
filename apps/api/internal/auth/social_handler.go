@@ -137,12 +137,21 @@ func (h *Handler) socialCallback(c *gin.Context) {
 // Returns false when the caller must write nothing further, exactly like
 // issueSessionOrChallenge.
 func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResult) bool {
-	// Parked BEFORE the call: issueSessionOrChallenge writes the challenge
-	// redirect, and after it there is no response left to influence.
-	if res.PendingSocialLink != nil && res.User.TwoFactorEnabled {
-		h.sessions.putPendingSocialLink(c.Request.Context(), res.User.ID, *res.PendingSocialLink)
+	// Parked from inside the challenge hook, which is the only moment that works
+	// for both halves of the binding: the challenge id does not exist any earlier,
+	// and the session save rides the response write, so any later is too late.
+	//
+	// The link is bound to THIS challenge and not merely to this user. A browser
+	// can hold more than one live challenge for one account, and a link approved
+	// by a provider handshake must not be applied by a challenge that handshake
+	// did not produce.
+	park := func(challengeID uuid.UUID) {
+		if res.PendingSocialLink == nil {
+			return
+		}
+		h.sessions.putPendingSocialLink(c.Request.Context(), res.User.ID, challengeID, *res.PendingSocialLink)
 	}
-	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
+	if !h.issueSessionOrChallengeThen(c, res, h.svc.baseURL, park) {
 		return false
 	}
 	// A session exists, so the login is complete and the link can be written.
@@ -161,14 +170,15 @@ func (h *Handler) issueProviderSessionOrChallenge(c *gin.Context, res LoginResul
 
 // completePendingSocialLink writes a link parked by socialCallback, now that
 // the second factor has been proven. Called by every factor-completion handler
-// immediately after a session is established.
+// immediately after a session is established, passing the challenge that was
+// just completed: only the challenge the handshake produced may apply its link.
 //
 // Silent on failure by design: the caller has authenticated with both factors
 // and their session is already valid, so the only thing a failure costs is one
 // repeated provider handshake at the next sign-in.
-func (h *Handler) completePendingSocialLink(c *gin.Context, userID uuid.UUID) {
+func (h *Handler) completePendingSocialLink(c *gin.Context, userID, challengeID uuid.UUID) {
 	ctx := c.Request.Context()
-	link, ok := h.sessions.takePendingSocialLink(ctx, userID)
+	link, ok := h.sessions.takePendingSocialLink(ctx, userID, challengeID)
 	if !ok {
 		return
 	}

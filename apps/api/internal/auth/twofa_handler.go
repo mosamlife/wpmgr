@@ -120,7 +120,7 @@ func (h *Handler) twoFATOTPComplete(c *gin.Context) {
 
 	// A social sign-in that reached this challenge left its approved identity
 	// link unwritten. Both factors are now proven, so it can be written.
-	h.completePendingSocialLink(c, res.User.ID)
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
 
 	label := body.DeviceLabel
 	if label == "" {
@@ -173,7 +173,7 @@ func (h *Handler) twoFARecoveryComplete(c *gin.Context) {
 
 	// A social sign-in that reached this challenge left its approved identity
 	// link unwritten. Both factors are now proven, so it can be written.
-	h.completePendingSocialLink(c, res.User.ID)
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
 
 	label := body.DeviceLabel
 	if label == "" {
@@ -258,7 +258,7 @@ func (h *Handler) twoFAWebAuthnFinish(c *gin.Context) {
 
 	// A social sign-in that reached this challenge left its approved identity
 	// link unwritten. Both factors are now proven, so it can be written.
-	h.completePendingSocialLink(c, res.User.ID)
+	h.completePendingSocialLink(c, res.User.ID, challengeID)
 
 	label := body.DeviceLabel
 	if label == "" {

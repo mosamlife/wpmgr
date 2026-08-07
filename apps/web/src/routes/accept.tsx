@@ -37,6 +37,16 @@ import { toError, useMe } from "@/features/auth/use-auth";
 // When a session exists the API accepts it in place of the password, so the
 // field is dropped and the address is the session's own. What is NOT dropped is
 // the deliberate act: the person still opens this link and presses Accept.
+//
+// BEING SIGNED IN IS AN OFFER, NOT A CAGE. People have more than one address,
+// and being invited at work while signed in at home is ordinary. Presenting the
+// session's address as the only possible answer would send that person's one
+// available submission at an address that cannot match, and each of those
+// spends one of the invitation's ten attempts, so a handful of honest retries
+// would destroy an invitation that was perfectly valid. The session's address
+// is therefore the default and not the verdict: "use a different address"
+// returns the full form, and the API charges no attempt for a mismatch that
+// came from the session rather than from a guess.
 
 const searchSchema = z.object({
   token: z.string().optional(),
@@ -110,11 +120,17 @@ function AcceptPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  // Set when the person tells us the invitation went to another of their
+  // addresses. From here on the page behaves exactly as it does for a stranger.
+  const [useOtherAddress, setUseOtherAddress] = useState(false);
 
   // useMe returns null (not an error) when there is no session, so a logged-out
   // visitor simply falls through to the email + password form.
   const { data: me, isLoading: isLoadingMe } = useMe();
-  const signedInEmail = me?.user.email ?? null;
+  const sessionEmail = me?.user.email ?? null;
+  // signedInEmail is the address this submission will actually use, which is
+  // not the same question as whether a session exists.
+  const signedInEmail = useOtherAddress ? null : sessionEmail;
 
   // If no token in the URL we show a clear error immediately.
   if (!token) {
@@ -194,7 +210,16 @@ function AcceptPage() {
       const raw = await fetch("/api/v1/invitations/accept", {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The affirmative act the session cookie cannot carry. A cookie rides
+          // along on requests the person never initiated; a header cannot be
+          // added by another site's markup, and a cross-origin script that
+          // tries earns a preflight this API answers for nobody. Without it the
+          // server ignores the session and asks for a password, so a forged
+          // request achieves exactly nothing.
+          "X-WPMgr-Invite-Accept": "1",
+        },
         body: JSON.stringify(body),
       });
 
@@ -237,10 +262,17 @@ function AcceptPage() {
           return;
         }
         if (raw.status === 403) {
+          if (signedInEmail) {
+            // No attempt was spent on this one (invitation_other_recipient), so
+            // the offer to try the right address is real and not a trap.
+            setServerError(
+              `This invitation was not sent to ${signedInEmail}. If it went to another of your addresses, choose "Use a different address" below; otherwise sign out and open this link again with the account it was addressed to.`,
+            );
+            setUseOtherAddress(true);
+            return;
+          }
           setServerError(
-            signedInEmail
-              ? `This invitation was not sent to ${signedInEmail}. Sign out, then open this link again with the account it was addressed to.`
-              : "This email doesn't match the invitation (or the invite has expired). Use the exact address it was sent to.",
+            "This email doesn't match the invitation (or the invite has expired). Use the exact address it was sent to.",
           );
           return;
         }
@@ -312,12 +344,48 @@ function AcceptPage() {
                 disabled
               />
               <p className="text-xs text-muted-foreground">
-                Signed in as {signedInEmail}. If this invitation was sent to a
-                different address, sign out and open the link again.
+                Signed in as {signedInEmail}. Accepting needs no password.
               </p>
+              {/* The way out of the default. Without it a person invited at one
+                  of their addresses while signed in at another has exactly one
+                  submission available and it cannot succeed. */}
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto p-0 text-xs"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setUseOtherAddress(true);
+                  setServerError(null);
+                }}
+              >
+                This invitation was sent to a different address
+              </Button>
             </div>
           ) : (
             <>
+              {sessionEmail ? (
+                <p className="text-xs text-muted-foreground">
+                  Signed in as {sessionEmail}. Enter the address this invitation
+                  was sent to and that account's password, or{" "}
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto p-0 text-xs"
+                    disabled={isSubmitting}
+                    onClick={() => {
+                      setUseOtherAddress(false);
+                      setServerError(null);
+                    }}
+                  >
+                    accept as {sessionEmail}
+                  </Button>
+                  . An account that signs in with Google or GitHub has no
+                  password, so sign out and open this link again as that
+                  account.
+                </p>
+              ) : null}
+
               <div className="space-y-2">
                 <Label htmlFor="accept-email">Email address</Label>
                 <Input

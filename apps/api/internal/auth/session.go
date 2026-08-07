@@ -310,12 +310,15 @@ func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce
 	return
 }
 
-// pendingSocialLinkEnvelope is what gets parked. The user id is carried
-// explicitly so the consumer can refuse to apply a link to anyone but the
-// account it was approved for, and the expiry is absolute so a parked link
-// cannot be revived by a much later login.
+// pendingSocialLinkEnvelope is what gets parked.
+//
+// Three things travel with the identity, and each one refuses a different way
+// of applying it to the wrong login. The user id refuses a different account.
+// The challenge id refuses a different challenge for the SAME account. The
+// absolute expiry refuses a much later one.
 type pendingSocialLinkEnvelope struct {
 	UserID        string `json:"user_id"`
+	ChallengeID   string `json:"challenge_id"`
 	Provider      string `json:"provider"`
 	Subject       string `json:"subject"`
 	Issuer        string `json:"issuer"`
@@ -331,10 +334,23 @@ type pendingSocialLinkEnvelope struct {
 // the browser holds an opaque token and cannot read, forge or move the parked
 // link, and the value never appears in a URL or a form the person completing
 // the challenge could edit. It is not a credential on its own either. Applying
-// it still requires completing the challenge as the exact user it names.
-func (m *SessionManager) putPendingSocialLink(ctx context.Context, userID uuid.UUID, ident Identity) {
+// it still requires completing the challenge it names, as the user it names.
+//
+// challengeID IS THE BINDING THAT MATTERS, and the user id is not a substitute
+// for it. A browser can hold several live challenges for one account: opening
+// the sign-in page again issues another, and password login and a provider
+// callback both issue their own. Binding to the user alone would let ANY of
+// them apply this link, so a person who abandoned the provider flow, went back
+// to their password, and completed that challenge instead would silently gain a
+// provider binding from a handshake they walked away from. The link is applied
+// only by the exact challenge the handshake that approved it produced.
+func (m *SessionManager) putPendingSocialLink(ctx context.Context, userID, challengeID uuid.UUID, ident Identity) {
+	if userID == uuid.Nil || challengeID == uuid.Nil {
+		return
+	}
 	blob, err := json.Marshal(pendingSocialLinkEnvelope{
 		UserID:        userID.String(),
+		ChallengeID:   challengeID.String(),
 		Provider:      ident.Provider,
 		Subject:       ident.Subject,
 		Issuer:        ident.Issuer,
@@ -348,11 +364,16 @@ func (m *SessionManager) putPendingSocialLink(ctx context.Context, userID uuid.U
 	m.scs.Put(ctx, sessKeyPendingSocialLink, string(blob))
 }
 
-// takePendingSocialLink pops a parked link for userID. It returns ok=false, and
-// still clears the slot, when nothing is parked, when the park has expired, or
-// when it names a different account: a link approved during one login must
-// never be applied by whoever finishes the next one.
-func (m *SessionManager) takePendingSocialLink(ctx context.Context, userID uuid.UUID) (Identity, bool) {
+// takePendingSocialLink pops a parked link for userID, completing challengeID.
+// It returns ok=false, and still clears the slot, when nothing is parked, when
+// the park has expired, when it names a different account, or when it names a
+// different challenge: a link approved by one handshake must be applied by that
+// handshake's challenge or by none.
+//
+// Clearing on refusal is deliberate. A link that survived a mismatch would sit
+// there waiting for a challenge that does match, which is exactly the reuse the
+// mismatch check exists to stop.
+func (m *SessionManager) takePendingSocialLink(ctx context.Context, userID, challengeID uuid.UUID) (Identity, bool) {
 	raw := m.scs.PopString(ctx, sessKeyPendingSocialLink)
 	if raw == "" {
 		return Identity{}, false
@@ -366,6 +387,10 @@ func (m *SessionManager) takePendingSocialLink(ctx context.Context, userID uuid.
 	}
 	parked, err := uuid.Parse(env.UserID)
 	if err != nil || parked != userID || parked == uuid.Nil {
+		return Identity{}, false
+	}
+	parkedChallenge, err := uuid.Parse(env.ChallengeID)
+	if err != nil || parkedChallenge != challengeID || parkedChallenge == uuid.Nil {
 		return Identity{}, false
 	}
 	return Identity{

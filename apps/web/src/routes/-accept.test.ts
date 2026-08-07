@@ -66,4 +66,24 @@ describe("buildAcceptBody", () => {
 
     expect(body).not.toHaveProperty("name");
   });
+
+  // The page passes signedInEmail: null once the person says the invitation
+  // went elsewhere, even though a session still exists. Without that door, one
+  // person's two addresses meet one invitation with ten attempts, and the
+  // address the page insists on can never be the right one.
+  it("sends the typed address and password once the person chooses a different one", () => {
+    const body = buildAcceptBody({
+      token: "tok-1",
+      signedInEmail: null, // useOtherAddress is on; the session is still live
+      typedEmail: "sarah@work.example",
+      typedName: "",
+      typedPassword: "hunter2",
+    });
+
+    expect(body).toEqual({
+      token: "tok-1",
+      email: "sarah@work.example",
+      password: "hunter2",
+    });
+  });
 });

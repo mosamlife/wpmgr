@@ -7523,9 +7523,15 @@ export type AdminAccountsTenancy = {
 
 export type AdminSystemAuditPage = {
   /**
-   * Total rows in the log, for paging.
+   * Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back instead. On a log that is still being written to, a count and a page boundary disagree by design.
+   *
    */
   total: number;
+  /**
+   * Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only reliable end-of-list signal.
+   *
+   */
+  next_cursor?: string;
   items: Array<{
     id: string;
     occurred_at: string;
@@ -9562,6 +9568,13 @@ export type RegenerateSiteInvitationResponse =
 
 export type AcceptInvitationData = {
   body: AcceptInvitationRequest;
+  headers?: {
+    /**
+     * Any non-empty value. Required only when relying on an existing session instead of a password; ignored otherwise.
+     *
+     */
+    "X-WPMgr-Invite-Accept"?: string;
+  };
   path?: never;
   query?: never;
   url: "/api/v1/invitations/accept";
@@ -9572,6 +9585,15 @@ export type AcceptInvitationErrors = {
    * Invalid token, expired, already used, or email mismatch
    */
   400: Error;
+  /**
+   * Expired, or the address does not match the invitation.
+   * `invitation_email_mismatch` costs one of the invitation's attempts.
+   * `invitation_other_recipient` does not: it means the signed-in
+   * account's own address is not the invited one, which is a fact the
+   * caller already knew and so buys no enumeration.
+   *
+   */
+  403: Error;
   /**
    * Validation failed
    */
@@ -10613,10 +10635,13 @@ export type GetAdminSystemAuditData = {
   path?: never;
   query?: {
     /**
-     * Page size, default 50, capped at 200.
+     * Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
      */
     limit?: number;
-    offset?: number;
+    /**
+     * Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
+     */
+    cursor?: string;
   };
   url: "/api/v1/admin/system-audit";
 };

@@ -30,13 +30,20 @@ func trimTrailingSlashes(u *url.URL) {
 type Invoker interface {
 	// AcceptInvitation invokes acceptInvitation operation.
 	//
-	// Accept an invitation by token (public; creates/links user and session).
-	// Accepts both org-scope invitations (creates a membership) and site-scope
-	// invitations (creates a site_shares row). Validates token hash, email
-	// binding, expiry, single-use, and rate-limit.
+	// The caller proves who they are in one of two ways. Anonymously, with the
+	// password of the account the invitation names (or a new password, which
+	// creates that account). Or, when already signed in as exactly that
+	// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+	// is what an account created through Google or GitHub uses because it has
+	// no password to send.
+	// The header is required for the session route and carries no secret: a
+	// session cookie travels on requests the person did not initiate, and this
+	// API sets no CORS policy, so a header is something only a script on this
+	// install's own page can add. Without it the request is treated as
+	// anonymous and a password is required, exactly as before.
 	//
 	// POST /api/v1/invitations/accept
-	AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest) (AcceptInvitationRes, error)
+	AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest, params AcceptInvitationParams) (AcceptInvitationRes, error)
 	// ActivateOrg invokes activateOrg operation.
 	//
 	// Switch the session's active organisation (must be a member).
@@ -1242,6 +1249,12 @@ type Invoker interface {
 	// deleted, and authentication events for accounts that belong to no
 	// organisation at all (a new social account, a site collaborator, a portal
 	// user, anyone inside the org delete grace window). Newest first.
+	// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+	// the log grows at its head while it is being read, so a numbered page
+	// boundary is already stale when it is handed out and the rows that moved
+	// past it come back twice. Send the previous response's `next_cursor` to
+	// get the rows that follow the last one you saw. `next_cursor` is absent
+	// on the last page.
 	//
 	// GET /api/v1/admin/system-audit
 	GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error)
@@ -3484,18 +3497,25 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 
 // AcceptInvitation invokes acceptInvitation operation.
 //
-// Accept an invitation by token (public; creates/links user and session).
-// Accepts both org-scope invitations (creates a membership) and site-scope
-// invitations (creates a site_shares row). Validates token hash, email
-// binding, expiry, single-use, and rate-limit.
+// The caller proves who they are in one of two ways. Anonymously, with the
+// password of the account the invitation names (or a new password, which
+// creates that account). Or, when already signed in as exactly that
+// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+// is what an account created through Google or GitHub uses because it has
+// no password to send.
+// The header is required for the session route and carries no secret: a
+// session cookie travels on requests the person did not initiate, and this
+// API sets no CORS policy, so a header is something only a script on this
+// install's own page can add. Without it the request is treated as
+// anonymous and a password is required, exactly as before.
 //
 // POST /api/v1/invitations/accept
-func (c *Client) AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest) (AcceptInvitationRes, error) {
-	res, err := c.sendAcceptInvitation(ctx, request)
+func (c *Client) AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest, params AcceptInvitationParams) (AcceptInvitationRes, error) {
+	res, err := c.sendAcceptInvitation(ctx, request, params)
 	return res, err
 }
 
-func (c *Client) sendAcceptInvitation(ctx context.Context, request *AcceptInvitationRequest) (res AcceptInvitationRes, err error) {
+func (c *Client) sendAcceptInvitation(ctx context.Context, request *AcceptInvitationRequest, params AcceptInvitationParams) (res AcceptInvitationRes, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("acceptInvitation"),
 		semconv.HTTPRequestMethodKey.String("POST"),
@@ -3543,6 +3563,23 @@ func (c *Client) sendAcceptInvitation(ctx context.Context, request *AcceptInvita
 	}
 	if err := encodeAcceptInvitationRequest(request, r); err != nil {
 		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "EncodeHeaderParams"
+	h := uri.NewHeaderEncoder(r.Header)
+	{
+		cfg := uri.HeaderParameterEncodingConfig{
+			Name:    "X-WPMgr-Invite-Accept",
+			Explode: false,
+		}
+		if err := h.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.XWPMgrInviteAccept.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode header")
+		}
 	}
 
 	stage = "SendRequest"
@@ -16095,6 +16132,12 @@ func (c *Client) sendGetAdminStats(ctx context.Context) (res GetAdminStatsRes, e
 // deleted, and authentication events for accounts that belong to no
 // organisation at all (a new social account, a site collaborator, a portal
 // user, anyone inside the org delete grace window). Newest first.
+// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+// the log grows at its head while it is being read, so a numbered page
+// boundary is already stale when it is handed out and the rows that moved
+// past it come back twice. Send the previous response's `next_cursor` to
+// get the rows that follow the last one you saw. `next_cursor` is absent
+// on the last page.
 //
 // GET /api/v1/admin/system-audit
 func (c *Client) GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error) {
@@ -16163,16 +16206,16 @@ func (c *Client) sendGetAdminSystemAudit(ctx context.Context, params GetAdminSys
 		}
 	}
 	{
-		// Encode "offset" parameter.
+		// Encode "cursor" parameter.
 		cfg := uri.QueryParameterEncodingConfig{
-			Name:    "offset",
+			Name:    "cursor",
 			Style:   uri.QueryStyleForm,
 			Explode: true,
 		}
 
 		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
-			if val, ok := params.Offset.Get(); ok {
-				return e.EncodeValue(conv.IntToString(val))
+			if val, ok := params.Cursor.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
 			}
 			return nil
 		}); err != nil {

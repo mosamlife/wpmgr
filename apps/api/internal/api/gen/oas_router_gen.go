@@ -181,7 +181,7 @@ var (
 		"POST": "Content-Type",
 	}
 	rn1AllowedHeaders = map[string]string{
-		"POST": "Content-Type",
+		"POST": "Content-Type,X-Wpmgr-Invite-Accept",
 	}
 	rn317AllowedHeaders = map[string]string{
 		"POST": "Content-Type",

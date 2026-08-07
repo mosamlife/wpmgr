@@ -18,11 +18,23 @@ VALUES (@actor_type, @actor_id, @action, @tenant_id, @tenant_name, @metadata);
 -- this query the population with the least visibility would have had none at
 -- all. Superadmin-gated, because the rows span every account on the install.
 --
--- Newest first with an id tiebreaker: rows written in one action share
--- occurred_at, and a bare occurred_at sort would let paging skip or repeat them.
+-- Newest first, paged by a COMPOSITE (occurred_at, id) keyset cursor, not by
+-- OFFSET. This list grows at the head continuously (every tenantless auth event
+-- lands here as it happens), so an offset counts from a boundary that has
+-- already moved by the time the reader asks for page two, and the rows that
+-- shifted past it are shown twice while nothing warns anyone. The cursor names
+-- the last row the reader actually saw, so what comes back next is what follows
+-- it no matter how much arrived above. The id half of the pair is load-bearing
+-- and not decoration: one action writes several rows sharing an occurred_at, and
+-- a bare `occurred_at <` would step over the rest of that group (see
+-- wpmgr-keyset-cursor-composite).
+--
+-- First page: pass a far-future @cursor_ts and the max uuid, so the predicate is
+-- true for every row.
 SELECT * FROM system_audit_log
+WHERE (occurred_at, id) < (@cursor_ts::timestamptz, @cursor_id::uuid)
 ORDER BY occurred_at DESC, id DESC
-LIMIT @row_limit OFFSET @row_offset;
+LIMIT @row_limit;
 
 -- name: CountSystemAuditEvents :one
 SELECT count(*) FROM system_audit_log;

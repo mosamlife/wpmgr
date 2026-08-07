@@ -53,6 +53,44 @@ func (s *AcceptInvitationBadRequest) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes AcceptInvitationForbidden as json.
+func (s *AcceptInvitationForbidden) Encode(e *jx.Encoder) {
+	unwrapped := (*Error)(s)
+
+	unwrapped.Encode(e)
+}
+
+// Decode decodes AcceptInvitationForbidden from json.
+func (s *AcceptInvitationForbidden) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AcceptInvitationForbidden to nil")
+	}
+	var unwrapped Error
+	if err := func() error {
+		if err := unwrapped.Decode(d); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = AcceptInvitationForbidden(unwrapped)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AcceptInvitationForbidden) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AcceptInvitationForbidden) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *AcceptInvitationRequest) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -7221,6 +7259,12 @@ func (s *AdminSystemAuditPage) encodeFields(e *jx.Encoder) {
 		e.Int64(s.Total)
 	}
 	{
+		if s.NextCursor.Set {
+			e.FieldStart("next_cursor")
+			s.NextCursor.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("items")
 		e.ArrStart()
 		for _, elem := range s.Items {
@@ -7230,9 +7274,10 @@ func (s *AdminSystemAuditPage) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAdminSystemAuditPage = [2]string{
+var jsonFieldsNameOfAdminSystemAuditPage = [3]string{
 	0: "total",
-	1: "items",
+	1: "next_cursor",
+	2: "items",
 }
 
 // Decode decodes AdminSystemAuditPage from json.
@@ -7256,8 +7301,18 @@ func (s *AdminSystemAuditPage) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"total\"")
 			}
+		case "next_cursor":
+			if err := func() error {
+				s.NextCursor.Reset()
+				if err := s.NextCursor.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"next_cursor\"")
+			}
 		case "items":
-			requiredBitSet[0] |= 1 << 1
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				s.Items = make([]AdminSystemAuditPageItemsItem, 0)
 				if err := d.Arr(func(d *jx.Decoder) error {
@@ -7284,7 +7339,7 @@ func (s *AdminSystemAuditPage) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000011,
+		0b00000101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

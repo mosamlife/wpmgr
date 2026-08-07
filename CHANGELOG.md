@@ -8,6 +8,21 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 No unreleased changes.
 
+## [0.61.130] - 2026-08-07
+
+### Added
+
+- Whoever runs the instance can now read the record of sign-ins that belong to no organisation, through the admin API at `GET /api/v1/admin/system-audit` (superadmin only; there is no screen for it yet). These are the accounts with the least oversight anywhere else: a brand new account created with Google or GitHub, someone who only collaborates on one site, a client with portal access, and anyone whose only organisation is inside its deletion grace window. Their sign-ins were being written down and then read by nothing at all.
+
+### Fixed
+
+- Connecting Google or GitHub to an account that has two-factor authentication turned on no longer attaches anything until the second factor has actually been entered. It used to attach as soon as the provider said yes, so getting as far as a provider consent screen was enough to leave a new way into an account nobody had finished signing in to. The connection is now held until the sign-in completes, and only the challenge that started it can complete it.
+- Accepting an invitation now happens in one step that either finishes completely or does not happen at all. Claiming the invitation and granting the access were separate, and an invitation can only be used once, so anything going wrong between the two spent the invitation and granted nothing, with no way for the person it was addressed to to try again.
+- An account that signs in with Google or GitHub can now accept an invitation. It has no password and never can have one, so the accept page's password field was a door with no key, and the only advice it could offer led straight back to the same refusal. Being signed in as the invited account is now accepted instead, along with an explicit press of the Accept button that a page on another site cannot forge on your behalf.
+- Being invited at one of your addresses while signed in at another no longer destroys the invitation. The page offered the signed-in address as the only possible answer, every attempt was refused for not matching, and ten refusals kill an invitation permanently. The page now offers a way to use the address the invitation actually went to, and a mismatch that comes from your own signed-in address costs nothing, because it tells nobody anything they did not already know.
+- Signing in with Google or GitHub no longer creates a fresh organisation for someone whose only organisation is in the deletion grace window. Signing in with a password created nothing for the same person, so the two routes disagreed about what an account belonged to, and the new empty organisation quietly undid a deletion nobody asked to undo.
+- An account created through Google or GitHub is now written in one piece. The account, its confirmed address and the provider link were three separate steps, and a failure between any two of them left the address occupied by an account with no way into it, which then blocked the person who owns that address from ever using it.
+
 ## [0.61.129] - 2026-08-07
 
 ### Added

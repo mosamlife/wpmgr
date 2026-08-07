@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.129
+  version: 0.61.130
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -1631,7 +1631,29 @@ paths:
         Accepts both org-scope invitations (creates a membership) and site-scope
         invitations (creates a site_shares row). Validates token hash, email
         binding, expiry, single-use, and rate-limit.
+      description: |
+        The caller proves who they are in one of two ways. Anonymously, with the
+        password of the account the invitation names (or a new password, which
+        creates that account). Or, when already signed in as exactly that
+        account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+        is what an account created through Google or GitHub uses because it has
+        no password to send.
+
+        The header is required for the session route and carries no secret: a
+        session cookie travels on requests the person did not initiate, and this
+        API sets no CORS policy, so a header is something only a script on this
+        install's own page can add. Without it the request is treated as
+        anonymous and a password is required, exactly as before.
       tags: [invitations]
+      parameters:
+        - name: X-WPMgr-Invite-Accept
+          in: header
+          required: false
+          description: >
+            Any non-empty value. Required only when relying on an existing
+            session instead of a password; ignored otherwise.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -1647,6 +1669,17 @@ paths:
                 $ref: "#/components/schemas/AcceptInvitationResponse"
         "400":
           description: Invalid token, expired, already used, or email mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            Expired, or the address does not match the invitation.
+            `invitation_email_mismatch` costs one of the invitation's attempts.
+            `invitation_other_recipient` does not: it means the signed-in
+            account's own address is not the invited one, which is a fact the
+            caller already knew and so buys no enumeration.
           content:
             application/json:
               schema:
@@ -2612,22 +2645,29 @@ paths:
         deleted, and authentication events for accounts that belong to no
         organisation at all (a new social account, a site collaborator, a portal
         user, anyone inside the org delete grace window). Newest first.
+
+        Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+        the log grows at its head while it is being read, so a numbered page
+        boundary is already stale when it is handed out and the rows that moved
+        past it come back twice. Send the previous response's `next_cursor` to
+        get the rows that follow the last one you saw. `next_cursor` is absent
+        on the last page.
       tags: [admin]
       parameters:
         - name: limit
           in: query
           required: false
-          description: Page size, default 50, capped at 200.
+          description: Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
           schema:
             type: integer
             minimum: 1
             maximum: 200
-        - name: offset
+        - name: cursor
           in: query
           required: false
+          description: Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
           schema:
-            type: integer
-            minimum: 0
+            type: string
       responses:
         "200":
           description: One page of system audit events
@@ -22208,7 +22248,15 @@ components:
         total:
           type: integer
           format: int64
-          description: Total rows in the log, for paging.
+          description: >
+            Total rows in the log, as context for the reader. It is NOT how you
+            page: pass next_cursor back instead. On a log that is still being
+            written to, a count and a page boundary disagree by design.
+        next_cursor:
+          type: string
+          description: >
+            Pass as `cursor` to get the rows after this page. Absent on the last
+            page, which is the only reliable end-of-list signal.
         items:
           type: array
           items:

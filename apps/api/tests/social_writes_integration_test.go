@@ -579,3 +579,93 @@ func TestInvitationIsNotSpentWhenTheGrantFails(t *testing.T) {
 		t.Fatalf("a failed grant still spent the invitation (accepted_user_id=%s); the person it was sent to can never retry", by)
 	}
 }
+
+func invitationAttempts(t *testing.T, pool *db.Pool, tenantID uuid.UUID, email string) int32 {
+	t.Helper()
+	var attempts int32
+	if err := pool.InTenantTx(context.Background(), tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			"SELECT attempts FROM invitations WHERE email = $1", email).Scan(&attempts)
+	}); err != nil {
+		t.Fatalf("read invitation attempts: %v", err)
+	}
+	return attempts
+}
+
+// TestTheSessionsOwnAddressCostsNoAttempt guards a valid invitation against
+// being destroyed by the person it was sent to.
+//
+// The accept page offers a signed-in caller their session's address, which is
+// the right default and the wrong answer for anyone invited at a different
+// address of their own: work and home, an old employer and a new one. Every
+// such submission mismatches, an invitation dies after ten mismatches, and the
+// caller has no way to tell that patiently retrying is what is killing it.
+//
+// The counter is there to stop a link-holder walking a list of addresses to
+// discover who an invitation names. A caller signed in as the address they
+// submitted is not walking anything: they have one address, they already knew
+// it, and learning "not this one" tells them nothing they could not have
+// guessed. So the refusal stands and the penalty does not. An anonymous guess
+// still pays, which is the half that does the security work.
+func TestTheSessionsOwnAddressCostsNoAttempt(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, auditRec := newAuthStack(pool)
+	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
+
+	tenantID := seedTenant(t, pool, "acme")
+	owner := seedVerifiedUser(t, pool, "owner@acme.com")
+	token := seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@work.example")
+
+	// Signed in at her personal address; the invitation went to her work one.
+	created := 0
+	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@home.example"), tenantCreator(t, pool, &created))
+	if err != nil {
+		t.Fatalf("social sign-in: %v", err)
+	}
+
+	for i := 0; i < 12; i++ {
+		_, aerr := inviteSvc.Accept(ctx, invitation.AcceptInput{
+			Token: token, Email: "sarah@home.example", SessionUserID: res.User.ID,
+		})
+		de, _ := domain.AsDomain(aerr)
+		if de == nil || de.Code != "invitation_other_recipient" {
+			t.Fatalf("attempt %d: got %v, want invitation_other_recipient", i+1, aerr)
+		}
+	}
+	if n := invitationAttempts(t, pool, tenantID, "sarah@work.example"); n != 0 {
+		t.Fatalf("the session's own address spent %d attempts; twelve of those kill an invitation nobody did anything wrong with", n)
+	}
+
+	// The invitation is still alive, and the person it names can still take it.
+	sarah := seedVerifiedUser(t, pool, "sarah@work.example")
+	if _, err := inviteSvc.Accept(ctx, invitation.AcceptInput{
+		Token: token, Email: "sarah@work.example", SessionUserID: sarah,
+	}); err != nil {
+		t.Fatalf("the invitation did not survive the mismatches: %v", err)
+	}
+}
+
+// The other half: an anonymous guess is exactly the enumeration the counter
+// exists for, and still costs.
+func TestAnAnonymousAddressGuessStillCostsAnAttempt(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	_, auditRec := newAuthStack(pool)
+	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
+
+	tenantID := seedTenant(t, pool, "acme")
+	owner := seedVerifiedUser(t, pool, "owner@acme.com")
+	token := seedInvitation(t, ctx, inviteSvc, tenantID, owner, "sarah@work.example")
+
+	_, err := inviteSvc.Accept(ctx, invitation.AcceptInput{
+		Token: token, Email: "someone.else@acme.com", Password: "guessing",
+	})
+	de, _ := domain.AsDomain(err)
+	if de == nil || de.Code != "invitation_email_mismatch" {
+		t.Fatalf("got %v, want invitation_email_mismatch", err)
+	}
+	if n := invitationAttempts(t, pool, tenantID, "sarah@work.example"); n != 1 {
+		t.Fatalf("a guess cost %d attempts, want 1; the rate limit is what stops a link-holder discovering who an invitation names", n)
+	}
+}

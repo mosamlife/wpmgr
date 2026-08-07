@@ -13745,7 +13745,13 @@ export const AdminSystemAuditPageSchema = {
     total: {
       type: "integer",
       format: "int64",
-      description: "Total rows in the log, for paging.",
+      description:
+        "Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back instead. On a log that is still being written to, a count and a page boundary disagree by design.\n",
+    },
+    next_cursor: {
+      type: "string",
+      description:
+        "Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only reliable end-of-list signal.\n",
     },
     items: {
       type: "array",

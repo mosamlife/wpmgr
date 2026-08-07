@@ -1672,8 +1672,19 @@ type Querier interface {
 	// this query the population with the least visibility would have had none at
 	// all. Superadmin-gated, because the rows span every account on the install.
 	//
-	// Newest first with an id tiebreaker: rows written in one action share
-	// occurred_at, and a bare occurred_at sort would let paging skip or repeat them.
+	// Newest first, paged by a COMPOSITE (occurred_at, id) keyset cursor, not by
+	// OFFSET. This list grows at the head continuously (every tenantless auth event
+	// lands here as it happens), so an offset counts from a boundary that has
+	// already moved by the time the reader asks for page two, and the rows that
+	// shifted past it are shown twice while nothing warns anyone. The cursor names
+	// the last row the reader actually saw, so what comes back next is what follows
+	// it no matter how much arrived above. The id half of the pair is load-bearing
+	// and not decoration: one action writes several rows sharing an occurred_at, and
+	// a bare `occurred_at <` would step over the rest of that group (see
+	// wpmgr-keyset-cursor-composite).
+	//
+	// First page: pass a far-future @cursor_ts and the max uuid, so the predicate is
+	// true for every row.
 	ListSystemAuditEvents(ctx context.Context, arg ListSystemAuditEventsParams) ([]SystemAuditLog, error)
 	// GH #230 "rich tags" — tenant-level tag registry (m100). site_tags owns
 	// existence/color/canonical name; sites.tags (text[]) remains the assignment

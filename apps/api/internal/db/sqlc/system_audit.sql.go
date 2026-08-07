@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -57,13 +58,15 @@ func (q *Queries) InsertSystemAuditEvent(ctx context.Context, arg InsertSystemAu
 
 const listSystemAuditEvents = `-- name: ListSystemAuditEvents :many
 SELECT id, occurred_at, actor_type, actor_id, action, tenant_id, tenant_name, metadata FROM system_audit_log
+WHERE (occurred_at, id) < ($1::timestamptz, $2::uuid)
 ORDER BY occurred_at DESC, id DESC
-LIMIT $2 OFFSET $1
+LIMIT $3
 `
 
 type ListSystemAuditEventsParams struct {
-	RowOffset int32 `json:"row_offset"`
-	RowLimit  int32 `json:"row_limit"`
+	CursorTs time.Time `json:"cursor_ts"`
+	CursorID uuid.UUID `json:"cursor_id"`
+	RowLimit int32     `json:"row_limit"`
 }
 
 // The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
@@ -75,10 +78,21 @@ type ListSystemAuditEventsParams struct {
 // this query the population with the least visibility would have had none at
 // all. Superadmin-gated, because the rows span every account on the install.
 //
-// Newest first with an id tiebreaker: rows written in one action share
-// occurred_at, and a bare occurred_at sort would let paging skip or repeat them.
+// Newest first, paged by a COMPOSITE (occurred_at, id) keyset cursor, not by
+// OFFSET. This list grows at the head continuously (every tenantless auth event
+// lands here as it happens), so an offset counts from a boundary that has
+// already moved by the time the reader asks for page two, and the rows that
+// shifted past it are shown twice while nothing warns anyone. The cursor names
+// the last row the reader actually saw, so what comes back next is what follows
+// it no matter how much arrived above. The id half of the pair is load-bearing
+// and not decoration: one action writes several rows sharing an occurred_at, and
+// a bare `occurred_at <` would step over the rest of that group (see
+// wpmgr-keyset-cursor-composite).
+//
+// First page: pass a far-future @cursor_ts and the max uuid, so the predicate is
+// true for every row.
 func (q *Queries) ListSystemAuditEvents(ctx context.Context, arg ListSystemAuditEventsParams) ([]SystemAuditLog, error) {
-	rows, err := q.db.Query(ctx, listSystemAuditEvents, arg.RowOffset, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listSystemAuditEvents, arg.CursorTs, arg.CursorID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

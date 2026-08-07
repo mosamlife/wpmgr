@@ -648,17 +648,33 @@ GRANT EXECUTE ON FUNCTION admin_delete_empty_tenant(uuid) TO wpmgr_app;
 -- ---------------------------------------------------------------------------
 -- system_audit_log  (M93 — GH #152 part 2)
 -- ---------------------------------------------------------------------------
--- A durable, tenant-INDEPENDENT audit trail for actions whose subject tenant's
--- own hash-chained audit_log is going away — org deletion being the first
--- (and, today, only) writer. tenant_id carries NO FK to tenants (a plain
--- column) and tenant_name is denormalized, so a row here survives BOTH the
--- Lane-A empty-org immediate hard-delete (which wipes that tenant's own
+-- A durable, tenant-INDEPENDENT audit trail for events that no single tenant's
+-- own hash-chained audit_log can hold. tenant_id carries NO FK to tenants (a
+-- plain column) and tenant_name is denormalized, so a row here survives BOTH
+-- the Lane-A empty-org immediate hard-delete (which wipes that tenant's own
 -- audit_log outright, via admin_delete_empty_tenant) and the Lane-B
 -- grace-window purge (admin_purge_tenant, below, which eventually does the
--- same). No RLS: mirrors `tenants` itself (see the file header) — this is not
--- tenant-scoped data, has no per-tenant reader today, and is written only by
--- trusted CP code (internal/org.Handler.recordSystemAudit), never exposed to
--- a tenant-scoped request.
+-- same).
+--
+-- TWO WRITERS, and the second is why the nil tenant_id below is a real value
+-- rather than an accident:
+--   * org deletion (internal/org.Handler.recordSystemAudit), the original
+--     writer, recording an action whose subject organisation is going away.
+--   * tenantless authentication events (internal/auth.Repo
+--     .RecordTenantlessAuthEvent): an account with no membership at all has no
+--     tenant to file against, and audit_log.tenant_id references tenants, so
+--     those events were previously rejected by the database and dropped. They
+--     land here with tenant_id = the nil uuid and an empty tenant_name.
+--
+-- ONE READER: GET /api/v1/admin/system-audit (internal/admin.Handler
+-- .systemAudit), superadmin-gated, newest first, keyset-paged on
+-- (occurred_at, id).
+--
+-- No RLS: mirrors `tenants` itself (see the file header): this is not
+-- tenant-scoped data, is written only by trusted CP code, and is never exposed
+-- to a tenant-scoped request. The one reader is gated by the superadmin
+-- middleware on its route, not by a policy on this table, because these rows
+-- deliberately span every account on the install.
 CREATE TABLE system_audit_log (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     occurred_at timestamptz NOT NULL DEFAULT now(),
