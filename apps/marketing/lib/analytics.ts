@@ -64,6 +64,7 @@ export type SignupSource =
   | "solution-cta"
   | "blog-post"
   | "blog-inline"
+  | "compare"
   | "guide"
   | "guides-index"
   | "features-index"

@@ -4,6 +4,7 @@ import { FEATURE_SLUGS } from "@/lib/content/features";
 import { SOLUTION_SLUGS } from "@/lib/content/solutions";
 import { getAllPosts } from "@/lib/content/blog";
 import { getAllGuides } from "@/lib/content/guides";
+import { COMPARE_SLUGS } from "@/lib/content/compare";
 
 const base = SITE_CONFIG.baseUrl;
 
@@ -67,6 +68,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${base}/contact`, changeFrequency: "monthly", priority: 0.6 },
     { url: `${base}/docs`, changeFrequency: "monthly", priority: 0.7 },
     { url: `${base}/legal`, changeFrequency: "yearly", priority: 0.3 },
+    { url: `${base}/compare`, changeFrequency: "monthly", priority: 0.8 },
     { url: `${base}/legal/security-policy`, changeFrequency: "monthly", priority: 0.5 },
     // Indexable, linked from the Legal column of the footer on every page, and
     // absent from this file until 2026-08-06.
@@ -110,6 +112,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: slug === "media-optimizer" ? 0.85 : 0.8,
   }));
 
+  // Comparison pages. No date field: the claims carry their own verifiedOn,
+  // which is the date that actually matters to a reader here.
+  const compareRoutes: MetadataRoute.Sitemap = COMPARE_SLUGS.map((slug) => ({
+    url: `${base}/compare/${slug}`,
+    changeFrequency: "monthly" as const,
+    priority: 0.8,
+  }));
+
   const solutionRoutes: MetadataRoute.Sitemap = SOLUTION_SLUGS.map((slug) => ({
     url: `${base}/solutions/${slug}`,
     changeFrequency: "monthly" as const,
@@ -134,6 +144,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...coreRoutes,
     ...featureRoutes,
     ...solutionRoutes,
+    ...compareRoutes,
     ...blogPostRoutes,
     ...guideRoutes,
   ];
