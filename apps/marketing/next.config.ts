@@ -2,13 +2,35 @@ import type { NextConfig } from "next";
 import path from "path";
 import createMDX from "@next/mdx";
 
-// remark-gfm is loaded dynamically in the mdx-components.tsx context.
-// We use the Rust-based mdxRs compiler (experimental.mdxRs) which:
-//   - avoids Turbopack serialization errors with remark plugin functions, and
-//   - ships native GFM support by default (tables, task lists, strikethrough).
-// For custom remark/rehype plugins, switch experimental.mdxRs to false and
-// use the webpack path (disable Turbopack with --no-turbo in dev/build).
-const withMDX = createMDX({});
+// MDX compilation for the blog and guide content collections.
+//
+// WHY NOT experimental.mdxRs. The Rust compiler was used here for native GFM
+// and to dodge Turbopack's "non-serializable options" error, but it does not
+// strip YAML frontmatter. Every .mdx file in content/ opens with a `---` block,
+// so the compiled output rendered that block as page content: a thematic break
+// followed by `title: "..." description: "..." date: "..."` set as a heading,
+// directly under the real heading. It shipped that way on every blog post and
+// guide, which is what /guides/wordpress-maintenance was showing publicly.
+//
+// remark-frontmatter teaches the parser that the block is frontmatter and not
+// content, so it is dropped from the output. The metadata is unaffected: the
+// loaders in lib/content/ read frontmatter with gray-matter from the RAW FILE
+// on disk, never from the compiled module, so stripping it at compile time
+// removes the duplicate render and nothing else.
+//
+// remark-gfm has to come back explicitly, since it was mdxRs providing GFM.
+//
+// PLUGINS ARE NAMED AS STRINGS, NOT IMPORTED. Turbopack passes loader options
+// across a serialization boundary and rejects functions with "does not have
+// serializable options", which is the error the previous comment here was
+// working around. A module name is a plain string, so Turbopack resolves it on
+// the other side and the whole problem disappears. Importing these and passing
+// the functions fails the build; this does not.
+const withMDX = createMDX({
+  options: {
+    remarkPlugins: [["remark-frontmatter"], ["remark-gfm"]],
+  },
+});
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -19,13 +41,9 @@ const nextConfig: NextConfig = {
   // Content-collection MDX (blog/guides) uses gray-matter + fs loader, not
   // page-extension MDX, so standalone MDX route files stay as .tsx.
   pageExtensions: ["tsx", "ts", "mdx"],
-  experimental: {
-    // mdxRs: the Rust-based MDX compiler. Supports GFM natively.
-    // This avoids the Turbopack "non-serializable options" error that
-    // occurs when remark plugin functions are passed through the Turbopack
-    // loader bridge. Compatible with Next.js 16 + Turbopack builds.
-    mdxRs: true,
-  },
+  // experimental.mdxRs is deliberately absent. See the createMDX comment above:
+  // the Rust compiler does not strip frontmatter, and the remark plugins that
+  // do cannot be passed to it.
 };
 
 export default withMDX(nextConfig);
