@@ -119,6 +119,7 @@ ${base} - home
 ${base}/features - all features
 ${base}/solutions - use cases by audience
 ${base}/pricing - hosted pricing and the free self-host option
+${base}/pricing/plugin-stack - what the equivalent premium plugins cost per year, per vendor, with sources
 ${base}/docs - API reference
 ${base}/blog - articles
 ${base}/guides - long form guides

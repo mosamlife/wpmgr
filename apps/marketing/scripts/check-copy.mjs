@@ -403,7 +403,15 @@ const marketingFiles = SCAN_DIRS.flatMap((d) =>
 // is about CODE PROVENANCE (do not credit a competitor as the source of a
 // technique we implemented), and it still binds everywhere it matters: agent
 // PHP below, plus docs/ and root *.md via ci.yml's docs vocabulary check.
-const isCompareFile = (f) => f.includes("/content/compare/") || f.includes("/compare/");
+// Any surface whose subject is somebody else's product. /compare/ is the
+// obvious one; the plugin-stack calculator is the same thing wearing a
+// different URL, since it names seven vendors and computes a number against
+// them, and it would be absurd for it to escape the rule on a path technicality.
+const isCompareFile = (f) =>
+  f.includes("/content/compare/") ||
+  f.includes("/compare/") ||
+  f.includes("plugin-costs") ||
+  f.includes("/plugin-stack/");
 for (const file of marketingFiles) {
   scanWholeFile(file, { names: false, quotesExempt: isCompareFile(file) });
 }

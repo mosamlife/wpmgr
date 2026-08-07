@@ -74,6 +74,7 @@ export const FOOTER_NAV: NavGroup[] = [
       { label: "Performance", href: "/features/performance" },
       { label: "Security", href: "/features/security" },
       { label: "Pricing", href: "/pricing" },
+      { label: "Plugin stack cost", href: "/pricing/plugin-stack" },
     ],
   },
   {
