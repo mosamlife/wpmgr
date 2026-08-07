@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -46,6 +47,10 @@ func (h *Handler) socialStart(c *gin.Context) {
 	}
 	url, state, nonce, verifier, err := adapter.AuthCodeURL(c.Request.Context(), h.socialRedirectURL(provider))
 	if err != nil {
+		// For Google this is the OIDC discovery call failing, which is now the
+		// only symptom of an unreachable issuer: discovery moved off the boot
+		// path, so nothing else anywhere reports it.
+		h.logSocialFailure(c, "social authorization URL failed", provider, err)
 		httpx.Error(c, domain.Internal("social_url_failed", "failed to build authorization URL").WithCause(err))
 		return
 	}
@@ -73,6 +78,11 @@ func (h *Handler) socialCallback(c *gin.Context) {
 	// Checking the provider stops a code obtained for one provider being
 	// presented to another's callback.
 	if state == "" || c.Query("state") != state || wantProvider != provider {
+		// Usually a stale tab or a session that expired mid-flow, occasionally
+		// somebody replaying a callback. Both are worth being able to count.
+		h.logSocialFailure(c, "social callback state mismatch", provider, nil,
+			slog.Bool("had_state", state != ""),
+			slog.String("started_for_provider", wantProvider))
 		h.socialFail(c, "social_state_mismatch")
 		return
 	}
@@ -90,14 +100,25 @@ func (h *Handler) socialCallback(c *gin.Context) {
 
 	identity, err := adapter.Exchange(c.Request.Context(), h.socialRedirectURL(provider), code, verifier, nonce)
 	if err != nil {
-		// Deliberately coarse. The detail belongs in logs, not in a query
-		// parameter that tells an attacker which verification step failed.
+		// The redirect stays deliberately coarse: a query parameter naming the
+		// step that failed tells an attacker which one to work on. This is
+		// where the detail goes instead, and until this line existed it went
+		// nowhere at all.
+		h.logSocialFailure(c, "social code exchange failed", provider, err)
 		h.socialFail(c, "social_exchange_failed")
 		return
 	}
 
 	res, err := h.svc.SignInWithSocial(c.Request.Context(), identity, h.newTenant)
 	if err != nil {
+		// Refusals included, and especially. A refusal is the policy working,
+		// but the operator fielding "it will not let me in" needs to see which
+		// rule said no and for which identity.
+		h.logSocialFailure(c, "social sign-in failed", provider, err,
+			slog.String("subject", identity.Subject),
+			slog.String("email", identity.Email),
+			slog.Bool("provider_email_verified", identity.EmailVerified),
+			slog.Bool("provider_email_unreachable", identity.EmailUnreachable))
 		if de, ok := domain.AsDomain(err); ok && actionableSocialCodes[de.Code] {
 			// ONLY the refusals a person can act on. An allowlist rather than
 			// passing de.Code through, because the same branch also carries
@@ -125,6 +146,7 @@ func (h *Handler) socialCallback(c *gin.Context) {
 var actionableSocialCodes = map[string]bool{
 	"social_link_requires_verification": true,
 	"social_email_unverified":           true,
+	"social_email_unreachable":          true,
 	"account_disabled":                  true,
 	"email_not_verified":                true,
 }

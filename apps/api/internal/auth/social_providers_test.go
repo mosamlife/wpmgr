@@ -56,9 +56,13 @@ func TestPrimaryVerifiedEmail(t *testing.T) {
 			wantVerified: true,
 		},
 		{
-			// GitHub's noreply addresses arrive as ordinary entries. They are
-			// verified and usable; nothing here should special-case them.
-			name:         "noreply primary is accepted like any other",
+			// GitHub's privacy addresses arrive as ordinary entries and this
+			// function reports them as it finds them: primary, verified, and
+			// exactly what GitHub said. Whether an address that GitHub will
+			// never DELIVER to may become an account's contact address is a
+			// separate question with a separate answer, one layer up in
+			// githubAdapter.identity. See TestGitHubPrivateEmailIsMarkedUnreachable.
+			name:         "noreply primary is reported as the verified primary it is",
 			in:           []githubEmail{{Email: "1234+sarah@users.noreply.github.com", Primary: true, Verified: true}},
 			wantEmail:    "1234+sarah@users.noreply.github.com",
 			wantVerified: true,

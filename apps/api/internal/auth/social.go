@@ -26,7 +26,23 @@ type SocialIdentity struct {
 	Issuer        string // only meaningful for the generic "oidc" provider
 	Email         string
 	EmailVerified bool
-	Name          string
+	// EmailUnreachable marks an address the PROVIDER will not deliver mail to,
+	// even though it is genuine and verified. GitHub's privacy address is the
+	// one that exists in practice (see isGitHubNoreply). Verified and reachable
+	// are separate questions and this install needs both: verified decides
+	// whether the address may be acted on, reachable decides whether an account
+	// built on it can ever be sent a verification link, a password reset or an
+	// alert.
+	EmailUnreachable bool
+	Name             string
+}
+
+// usableEmail reports whether the provider handed us an address this install
+// may both act on and reach the person at. Anything less is treated as no
+// address at all, which is what keeps an unreachable address from becoming an
+// account's permanent contact address.
+func (i SocialIdentity) usableEmail() bool {
+	return i.Email != "" && i.EmailVerified && !i.EmailUnreachable
 }
 
 // SignInWithSocial resolves an external identity to a session.
@@ -119,7 +135,7 @@ func decideSocial(in SocialIdentity, identityUser, emailUser *User) (socialActio
 
 	// LINKING. Only ever considered when the provider vouches for the address,
 	// and only ever permitted when this install has verified it too.
-	if in.Email != "" && in.EmailVerified && emailUser != nil {
+	if in.usableEmail() && emailUser != nil {
 		if err := socialStatusGate(*emailUser); err != nil {
 			return 0, err
 		}
@@ -138,8 +154,21 @@ func decideSocial(in SocialIdentity, identityUser, emailUser *User) (socialActio
 	// CREATING. An address the provider will not vouch for cannot seed an
 	// account on a consumer provider: somebody could otherwise squat an address
 	// they do not own and collect the real owner's later sign-in.
-	if in.Email == "" || !in.EmailVerified {
+	if !in.usableEmail() {
 		if !operatorConfigured(in.Provider) {
+			if in.EmailUnreachable {
+				// A DIFFERENT refusal, because it has a different fix. This
+				// person's address is verified; it is the provider's own
+				// outbound-only placeholder, so telling them to "verify your
+				// email" would send them looking for a problem that is not
+				// there. What resolves it is one setting on the provider.
+				return 0, domain.Forbidden(
+					"social_email_unreachable",
+					"your "+providerLabel(in.Provider)+" account keeps its email address private, so this "+
+						"install has no address it can reach you at. Make your address visible in your "+
+						providerLabel(in.Provider)+" email settings and sign in again.",
+				)
+			}
 			return 0, domain.Forbidden(
 				"social_email_unverified",
 				"your "+providerLabel(in.Provider)+" account has no verified email address. "+
@@ -259,7 +288,7 @@ func (s *Service) SignInWithSocial(
 	// Only looked up when it can matter, so an unverified provider email never
 	// even probes for the existence of an account.
 	var emailUser *User
-	if identityUser == nil && in.Email != "" && in.EmailVerified {
+	if identityUser == nil && in.usableEmail() {
 		if u, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
 			emailUser = &u
 		} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindNotFound {
@@ -364,7 +393,7 @@ func (s *Service) createSocialUser(
 ) (User, error) {
 	email := in.Email
 	verified := in.EmailVerified
-	if email == "" || !verified {
+	if !in.usableEmail() {
 		// Only reachable for an operator-configured issuer (decideSocial refuses
 		// this for consumer providers). A synthesised address satisfies the
 		// unique-email constraint without claiming an address the holder has not
