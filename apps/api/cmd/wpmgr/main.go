@@ -276,27 +276,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if email == "" {
 				continue
 			}
-			// Allowlisted superadmins are trusted at the infrastructure level, so
-			// also activate + mark them verified — they need not receive a
-			// verification email (their mailbox domain may not even accept mail).
-			tag, err := migPool.Pool.Exec(ctx,
-				`UPDATE users
-				    SET is_superadmin = true,
-				        status = 'active',
-				        email_verified_at = COALESCE(email_verified_at, now()),
-				        updated_at = now()
-				  WHERE lower(email) = $1`, email,
-			)
+			// Grants superadmin and ACTIVATES the account, and deliberately does
+			// not touch email_verified_at. See superadminGrantSQL for why that
+			// distinction is the whole point of this statement.
+			tag, err := migPool.Pool.Exec(ctx, superadminGrantSQL, email)
 			switch {
 			case err != nil:
 				logger.Warn("superadmin seed failed", slog.String("email", email), slog.Any("error", err))
 			case tag.RowsAffected() > 0:
 				logger.Info("superadmin granted to existing account", slog.String("email", email))
 			default:
-				// No account yet: create one (active + verified + superadmin) with
-				// a random password the operator never learns, and mint a one-time
-				// set-password link so they choose their own password. The link is
-				// logged because the account's mailbox may not accept mail.
+				// No account yet: create one (active + superadmin, and NOT
+				// email-verified) with a random password the operator never
+				// learns, and mint a one-time set-password link so they choose
+				// their own password. The link is logged because the account's
+				// mailbox may not accept mail.
 				if err := seedSuperadminAccount(ctx, migPool.Pool, logger, saBaseURL, email); err != nil {
 					logger.Warn("superadmin account create failed", slog.String("email", email), slog.Any("error", err))
 				}
@@ -2779,13 +2773,52 @@ func agentSigningPublicKey(cfg config.AgentConfig) (string, error) {
 	return cfg.SigningPublicKey, nil
 }
 
+// WPMGR_SUPERADMIN_EMAILS GRANTS PRIVILEGE. IT DOES NOT VERIFY AN ADDRESS.
+//
+// Both statements below activate the account, because password login gates on
+// users.status and an operator whose mailbox domain does not accept mail must
+// still be able to get in. Neither writes email_verified_at, and that is the
+// point.
+//
+// email_verified_at means one narrow thing: this install watched a human open a
+// link it sent to that address. An environment variable is not that. The
+// difference is not bookkeeping, because email_verified_at is one half of the
+// rule that decides whether a provider-verified identity may attach itself to
+// an existing account (decideSocial, internal/auth/social.go). The other half is
+// the provider's own assertion.
+//
+// Stamping it here let the env var supply the local half on the single highest
+// privilege account on the install: anyone who could get a provider to assert
+// the allowlisted address, which a Workspace administrator over that domain can,
+// would have had their identity linked straight onto the superadmin account,
+// with no local password, no local link opened and nothing asked of them. The
+// operator now verifies their address the same way every other user does.
+//
+// This is additive, like the rest of the seeder: an account stamped verified by
+// an earlier release keeps that stamp. The seeder never demotes and never
+// un-verifies.
+const superadminGrantSQL = `UPDATE users
+	    SET is_superadmin = true,
+	        status        = 'active',
+	        updated_at    = now()
+	  WHERE lower(email) = $1`
+
+// superadminCreateSQL provisions the account when the allowlisted address has
+// none. Same rule as superadminGrantSQL: active, superadmin, and NOT verified.
+// email_verified_at is left NULL by omission rather than written as NULL, so
+// the column cannot be re-added by editing a value.
+const superadminCreateSQL = `INSERT INTO users (email, password_hash, name, status, is_superadmin)
+	 VALUES ($1, $2, '', 'active', true)
+	 RETURNING id`
+
 // migrateRiver applies River's own schema using the migration-owner pool.
 // seedSuperadminAccount provisions a superadmin account that does not exist yet
 // (the operator could not self-register, e.g. their mailbox domain does not
-// accept mail). It creates the user as active + email-verified + is_superadmin
-// with a RANDOM password no one is told, then mints a one-time, 24h
-// password-reset token and logs the set-password URL so the operator chooses
-// their own password. Runs on the owner pool (superuser, bypasses RLS).
+// accept mail). It creates the user as active + is_superadmin, with a RANDOM
+// password no one is told, then mints a one-time, 24h password-reset token and
+// logs the set-password URL so the operator chooses their own password. The
+// address is NOT marked verified (see superadminGrantSQL). Runs on the owner
+// pool (superuser, bypasses RLS).
 func seedSuperadminAccount(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, baseURL, email string) error {
 	pwBuf := make([]byte, 24)
 	if _, err := crand.Read(pwBuf); err != nil {
@@ -2796,10 +2829,7 @@ func seedSuperadminAccount(ctx context.Context, pool *pgxpool.Pool, logger *slog
 		return fmt.Errorf("hash password: %w", err)
 	}
 	var userID uuid.UUID
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO users (email, password_hash, name, status, email_verified_at, is_superadmin)
-		 VALUES ($1, $2, '', 'active', now(), true)
-		 RETURNING id`, email, hash).Scan(&userID); err != nil {
+	if err := pool.QueryRow(ctx, superadminCreateSQL, email, hash).Scan(&userID); err != nil {
 		return fmt.Errorf("insert user: %w", err)
 	}
 	return mintSetPasswordLink(ctx, pool, logger, baseURL, userID, email, "superadmin account CREATED")

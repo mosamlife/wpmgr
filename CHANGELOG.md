@@ -6,7 +6,13 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- You are now told when a new way of signing in is added to your account. Connecting Google or GitHub to an account you already have still works without signing in first, because requiring that would put every returning user through a password reset to defend against someone who already needs both a provider that vouches for the address and an account this instance has verified at that same address. What was wrong was that it happened in silence. The message goes to the address this instance verified, names the provider and the time, and links to the page where sign-in methods are reviewed and removed.
+
+### Changed
+
+- `WPMGR_SUPERADMIN_EMAILS` no longer marks the listed address as verified. It grants the superadmin flag and activates the account, so the operator can still sign in with a password on an instance whose mailbox domain does not accept mail, and that is all it does now. Confirming an address means this instance watched someone open a link it sent there, which an environment variable is not, and that confirmation is half of what allows a provider-verified identity to attach itself to an existing account. Setting the variable therefore supplied that half on the most privileged account on the instance. Operators listed in it now confirm their address the same way everyone else does, and accounts confirmed under an earlier release keep their confirmation.
 
 ## [0.61.129] - 2026-08-07
 

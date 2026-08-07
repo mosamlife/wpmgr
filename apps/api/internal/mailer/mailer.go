@@ -425,6 +425,8 @@ func defaultPreview(template string) string {
 		return "Your WPMgr password was changed."
 	case "verify_email":
 		return "Verify your WPMgr email address."
+	case "sign_in_method_added":
+		return "A new way to sign in was added to your account."
 	case "invite":
 		return "You've been invited to WPMgr."
 	case "test":

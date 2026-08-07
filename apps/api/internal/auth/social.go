@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -300,9 +299,16 @@ func (s *Service) SignInWithSocial(
 			return LoginResult{}, err
 		}
 		s.recordSocialAudit(ctx, emailUser.ID, in.Provider, "link")
+		// An account just gained a way to sign in that it did not have a moment
+		// ago, and nobody had to be signed in for that to happen. The holder is
+		// told, at the address this install verified. See sendSignInMethodAdded.
+		s.sendSignInMethodAdded(ctx, *emailUser, in)
 		return s.finishSocialLogin(ctx, *emailUser, createTenant)
 
 	default:
+		// No notification on this path: the account IS the new method, so there
+		// is no prior holder to warn and the only address available is the one
+		// the provider just asserted.
 		u, err := s.createSocialUser(ctx, in, createTenant)
 		if err != nil {
 			return LoginResult{}, err
@@ -416,10 +422,7 @@ func (s *Service) createSocialUser(
 // scoped to the issuer, so two issuers cannot generate the same address for the
 // same subject.
 func syntheticEmailDomain(in SocialIdentity) string {
-	host := strings.TrimPrefix(strings.TrimPrefix(in.Issuer, "https://"), "http://")
-	if i := strings.IndexAny(host, "/:"); i > 0 {
-		host = host[:i]
-	}
+	host := issuerHost(in.Issuer)
 	if host == "" {
 		host = in.Provider
 	}
