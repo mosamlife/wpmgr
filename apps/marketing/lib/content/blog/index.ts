@@ -33,6 +33,9 @@ export type BlogPostFrontmatter = {
   description: string;
   category: BlogCategory;
   date: string;
+  /** ISO date, set ONLY when the piece has been genuinely revised. Absent means
+   *  never revised: see buildArticleLd for why this must not default to `date`. */
+  updated?: string;
   slug: string;
   /** Optional: author display name. Defaults to "WPMgr Team". */
   author?: string;

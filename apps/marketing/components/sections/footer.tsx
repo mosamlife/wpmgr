@@ -2,6 +2,11 @@ import { Container } from "@/components/ui/primitives";
 import { Icon } from "@/components/ui/icon";
 import { Logo } from "@/components/ui/logo";
 import { FOOTER_NAV, WORDPRESS_TRADEMARK_DISCLAIMER, SITE_CONFIG } from "@/lib/site";
+// Derived here rather than in lib/site.ts on purpose: 14 feature files import
+// signupHref from lib/site, so lib/site importing the registries would be a
+// cycle. The footer is a leaf, so it can read them safely.
+import { FEATURE_REGISTRY } from "@/lib/content/features";
+import { SOLUTION_REGISTRY } from "@/lib/content/solutions";
 
 export function SiteFooter() {
   return (
@@ -54,6 +59,54 @@ export function SiteFooter() {
             </div>
           ))}
         </div>
+
+        {/* Full index of every feature and solution.
+
+            The header mega-menu renders its panels through createPortal inside
+            AnimatePresence, gated on a panel being open, so it contributes ZERO
+            links to the served HTML. Measured: "features/file-manager" appeared
+            on 3 pages of 55 and "solutions/hosting-providers" on 2. Neither is
+            orphaned, since both index pages link everything, but ten feature
+            pages were reachable only through one hub while four sat in the
+            footer with a sitewide link each.
+
+            This is a strip rather than more grid columns because 14 items in a
+            single column unbalances a five-column footer, and it is derived
+            from the registries rather than hand-listed so a new feature page
+            cannot be added without appearing here. */}
+        <nav aria-label="All features and solutions" className="mt-12 border-t border-[var(--border)] pt-8">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
+            All features
+          </h3>
+          <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+            {Object.entries(FEATURE_REGISTRY).map(([slug, data]) => (
+              <li key={slug}>
+                <a
+                  href={`/features/${slug}`}
+                  className="text-sm text-[var(--muted-foreground)] hover:text-foreground transition-colors duration-[var(--duration-fast)]"
+                >
+                  {data.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+
+          <h3 className="mt-6 text-xs font-semibold uppercase tracking-[0.1em] text-foreground">
+            All solutions
+          </h3>
+          <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+            {Object.entries(SOLUTION_REGISTRY).map(([slug, data]) => (
+              <li key={slug}>
+                <a
+                  href={`/solutions/${slug}`}
+                  className="text-sm text-[var(--muted-foreground)] hover:text-foreground transition-colors duration-[var(--duration-fast)]"
+                >
+                  {data.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col gap-3 border-t border-[var(--border)] pt-8 text-xs text-[var(--muted-foreground)]">

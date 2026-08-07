@@ -28,6 +28,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: fm.title,
     description: fm.description,
     canonical: `/guides/${slug}`,
+    article: {
+      published: fm.date,
+      ...(fm.updated ? { modified: fm.updated } : {}),
+      authors: [fm.author ?? "WPMgr Team"],
+    },
     ogImage: `${SITE_CONFIG.baseUrl}/opengraph-image`,
   });
 }
@@ -56,8 +61,9 @@ export default async function GuidePage({ params }: Props) {
   const articleLd = buildArticleLd({
     title: fm.title,
     description: fm.description,
-    slug: `/guides/${slug}/`,
+    slug: `/guides/${slug}`,
     datePublished: fm.date,
+    ...(fm.updated ? { dateModified: fm.updated } : {}),
     authorName: fm.author ?? "WPMgr Team",
   });
 

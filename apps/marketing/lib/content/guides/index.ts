@@ -18,6 +18,8 @@ export type GuideFrontmatter = {
   title: string;
   description: string;
   date: string;
+  /** ISO date, set ONLY when the piece has been genuinely revised. */
+  updated?: string;
   slug: string;
   author?: string;
   image?: string;
