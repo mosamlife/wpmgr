@@ -80,7 +80,17 @@ func newSocialTestClient(sm *SessionManager, sp *SocialProviders, svc *Service) 
 
 func (c *socialTestClient) get(t *testing.T, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	return c.getAs(t, path, "")
+}
+
+// getAs is the same request with a chosen X-Forwarded-For, which is what a
+// caller who wants a fresh rate-limit bucket sends.
+func (c *socialTestClient) getAs(t *testing.T, path, forwardedFor string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if forwardedFor != "" {
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+	}
 	if c.cookie != nil {
 		req.AddCookie(c.cookie)
 	}
@@ -176,6 +186,28 @@ func TestSocialCallback_ConsumesTheHandshakeItMatches(t *testing.T) {
 	}
 }
 
+// A callback is not the only route a cross-site top-level navigation can reach.
+// STARTING a handshake used to destroy the one already in flight, because the
+// session could hold exactly one, so a navigation to any /start (or to
+// /auth/oidc/login) broke a sign-in the visitor had open in another tab.
+func TestSocialStart_DoesNotDestroyAHandshakeAlreadyInFlight(t *testing.T) {
+	google := &fakeSocialAdapter{key: "google", state: "google-state", exchErr: errors.New("exchange refused")}
+	// Both adapters refuse the exchange, which is how these tests observe that a
+	// callback got PAST the state check without needing a database behind it.
+	github := &fakeSocialAdapter{key: "github", state: "github-state", exchErr: errors.New("exchange refused")}
+	c := newSocialTestClient(NewSessionManagerWithStore(scs.New(), false), newSocialProviders(google, github), newTestService())
+
+	c.get(t, "/auth/social/google/start")
+	c.get(t, "/auth/social/github/start")
+
+	if code := socialErrorOf(t, c.get(t, "/auth/social/google/callback?state=google-state&code=abc")); code != "social_exchange_failed" {
+		t.Fatalf("starting the other provider's handshake destroyed the one in flight: got %q, want social_exchange_failed", code)
+	}
+	if code := socialErrorOf(t, c.get(t, "/auth/social/github/callback?state=github-state&code=abc")); code != "social_exchange_failed" {
+		t.Fatalf("the second handshake should still complete: got %q", code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 2.28 - /start answers a browser, so it redirects
 // ---------------------------------------------------------------------------
@@ -209,28 +241,49 @@ func TestSocialStart_ProviderFailureRedirectsRatherThanRenderingJSON(t *testing.
 // 2.25 - an anonymous GET must not be free
 // ---------------------------------------------------------------------------
 
+// stubLimiter gives each key its own budget, which is the property under test:
+// one of the two keys the endpoint uses can be given a fresh bucket by the
+// caller, and the other cannot.
 type stubLimiter struct {
 	mu      sync.Mutex
-	budget  int
+	budgets map[string]int // remaining grants per key; a key not listed is unlimited
 	seen    []string
-	perMin  int
-	granted int
+	perMin  map[string]int
+}
+
+func newStubLimiter(budgets map[string]int) *stubLimiter {
+	return &stubLimiter{budgets: budgets, perMin: map[string]int{}}
 }
 
 func (s *stubLimiter) Allow(_ context.Context, key string, limitPerMinute int) (bool, time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen = append(s.seen, key)
-	s.perMin = limitPerMinute
-	if s.granted >= s.budget {
+	s.perMin[key] = limitPerMinute
+	left, capped := s.budgets[key]
+	if !capped {
+		return true, 0
+	}
+	if left <= 0 {
 		return false, time.Minute
 	}
-	s.granted++
+	s.budgets[key] = left - 1
 	return true, 0
 }
 
+func (s *stubLimiter) sawKey(prefix string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range s.seen {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSocialStart_IsRateLimitedPerClient(t *testing.T) {
-	lim := &stubLimiter{budget: 2}
+	lim := newStubLimiter(map[string]int{"social-start:192.0.2.1": 2})
 	svc := newTestService()
 	svc.limiter = lim
 	c := newSocialTestClient(NewSessionManagerWithStore(scs.New(), false), newSocialProviders(&fakeSocialAdapter{key: "google", state: "s"}), svc)
@@ -245,14 +298,60 @@ func TestSocialStart_IsRateLimitedPerClient(t *testing.T) {
 	if code := socialErrorOf(t, c.get(t, "/auth/social/google/start")); code != "social_rate_limited" {
 		t.Fatalf("an unauthenticated start endpoint with no budget mints a session per request: got %q", code)
 	}
-	if lim.perMin != socialStartPerMinute {
-		t.Errorf("budget passed to the limiter is %d, want socialStartPerMinute (%d)", lim.perMin, socialStartPerMinute)
+	if got := lim.perMin["social-start:192.0.2.1"]; got != socialStartPerMinute {
+		t.Errorf("per-client budget passed to the limiter is %d, want socialStartPerMinute (%d)", got, socialStartPerMinute)
 	}
 	// Keyed per client, or one visitor's retries would throttle the whole world.
-	for _, k := range lim.seen {
-		if !strings.HasPrefix(k, "social-start:192.0.2.1") {
-			t.Fatalf("limiter key %q is not scoped to the client address", k)
+	if !lim.sawKey("social-start:192.0.2.1") {
+		t.Fatalf("no limiter key was scoped to the client address; keys seen: %v", lim.seen)
+	}
+}
+
+// THE PER-CLIENT KEY IS CHOSEN BY THE CALLER. gin resolves the client address
+// from X-Forwarded-For for every proxy it trusts, and nothing in this tree
+// narrows that, so rotating the header hands out a fresh per-client budget on
+// every request. This test forges it, which is why the per-client budget here is
+// generous and the run still stops: the instance ceiling is keyed on nothing the
+// caller supplies.
+func TestSocialStart_InstanceCeilingHoldsAgainstAForgedClientAddress(t *testing.T) {
+	lim := newStubLimiter(map[string]int{"social-start:instance": 2})
+	svc := newTestService()
+	svc.limiter = lim
+	c := newSocialTestClient(NewSessionManagerWithStore(scs.New(), false), newSocialProviders(&fakeSocialAdapter{key: "google", state: "s"}), svc)
+
+	for i, ip := range []string{"203.0.113.7", "203.0.113.8"} {
+		w := c.getAs(t, "/auth/social/google/start", ip)
+		if loc := w.Header().Get("Location"); !strings.HasPrefix(loc, "https://google.test/") {
+			t.Fatalf("request %d should have reached the provider, went to %q", i, loc)
 		}
+	}
+
+	if code := socialErrorOf(t, c.getAs(t, "/auth/social/google/start", "203.0.113.9")); code != "social_rate_limited" {
+		t.Fatalf("a caller rotating X-Forwarded-For got an unbounded supply of handshakes: got %q", code)
+	}
+	// The premise of the test: each forged address really did get its own bucket.
+	if !lim.sawKey("social-start:203.0.113.8") {
+		t.Fatalf("expected the forged address to be used as a per-client key; keys seen: %v", lim.seen)
+	}
+	if got := lim.perMin["social-start:instance"]; got != socialStartInstancePerMinute {
+		t.Errorf("instance budget passed to the limiter is %d, want socialStartInstancePerMinute (%d)", got, socialStartInstancePerMinute)
+	}
+}
+
+// The ceiling is checked before the spoofable key, so a refused flood cannot
+// make the limiter allocate a bucket per forged address: that map is one of the
+// resources this is protecting.
+func TestSocialStart_ARefusedFloodAllocatesNoPerClientBucket(t *testing.T) {
+	lim := newStubLimiter(map[string]int{"social-start:instance": 0})
+	svc := newTestService()
+	svc.limiter = lim
+	c := newSocialTestClient(NewSessionManagerWithStore(scs.New(), false), newSocialProviders(&fakeSocialAdapter{key: "google", state: "s"}), svc)
+
+	if code := socialErrorOf(t, c.getAs(t, "/auth/social/google/start", "203.0.113.9")); code != "social_rate_limited" {
+		t.Fatalf("expected the instance ceiling to refuse, got %q", code)
+	}
+	if lim.sawKey("social-start:203.0.113.9") {
+		t.Fatalf("a request refused by the ceiling still allocated a per-client bucket; keys seen: %v", lim.seen)
 	}
 }
 

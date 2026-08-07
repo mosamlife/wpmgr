@@ -36,13 +36,36 @@ func (h *Handler) socialRedirectURL(provider string) string {
 	return strings.TrimRight(h.svc.baseURL, "/") + "/auth/social/" + provider + "/callback"
 }
 
-// socialStartPerMinute caps how often one client may BEGIN a handshake.
-//
-// Each start writes a session record and, for Google, can trigger an outbound
-// discovery call, all from an unauthenticated GET. A person clicking a sign-in
-// button does this once and occasionally retries; nothing legitimate needs ten
-// in a minute, including a shared office address behind one NAT.
+// socialStartPerMinute caps how often one apparent client may BEGIN a
+// handshake. Each start writes a session record and, for Google, can trigger an
+// outbound discovery call, all from an unauthenticated GET. A person clicking a
+// sign-in button does this once and occasionally retries; nothing legitimate
+// needs ten in a minute, including a shared office address behind one NAT.
 const socialStartPerMinute = 10
+
+// socialStartInstancePerMinute is the ceiling that actually bounds a flood.
+//
+// THE PER-CLIENT KEY IS NOT A DEFENCE, because the client chooses it. It comes
+// from gin's ClientIP, which reads X-Forwarded-For, and gin only ignores that
+// header for hops it is told are untrusted. Nothing in this tree calls
+// SetTrustedProxies, so gin trusts every proxy and takes the leftmost entry,
+// which any caller can write. Rotating that header gives an attacker a fresh
+// per-client budget on every request, so socialStartPerMinute is a fairness
+// control between honest clients and nothing more. (Fixing the trust properly
+// is a tree-wide change: the same header feeds the password-reset and 2FA
+// limiters and the IPs written to the audit log, and a wrong hop count behind
+// the load balancer collapses every visitor into one bucket, which turns the
+// 2FA lockout into an outage. It belongs in one deliberate change, not here.)
+//
+// This budget is keyed on nothing the caller supplies, so it holds however the
+// header is forged: an instance will begin at most this many handshakes a
+// minute, which bounds both the session records written and the outbound
+// discovery calls made. It is set far above human traffic (five a second, on an
+// endpoint a person hits when they click a button) so it is a ceiling on abuse
+// rather than a queue honest visitors ever stand in. It is per instance, like
+// every other budget here, because the limiter is in-process; a fleet of N
+// instances therefore admits N times this.
+const socialStartInstancePerMinute = 300
 
 // socialStart begins the handshake.
 //
@@ -76,15 +99,24 @@ func (h *Handler) socialStart(c *gin.Context) {
 	c.Redirect(http.StatusFound, url)
 }
 
-// allowSocialStart applies the per-client budget. Nil limiter (not wired) and an
-// unparseable client address both allow the request, matching the password-reset
-// path: a rate limiter that is not configured must never become an outage.
+// allowSocialStart applies both budgets. Nil limiter (not wired) allows the
+// request, matching the password-reset path: a rate limiter that is not
+// configured must never become an outage.
 func (h *Handler) allowSocialStart(c *gin.Context) bool {
 	if h.svc.limiter == nil {
 		return true
 	}
+	// The instance ceiling is checked FIRST, so a flood of forged client
+	// addresses is refused before it can allocate a per-client bucket each. The
+	// limiter keeps one bucket per distinct key for ten idle minutes, so
+	// checking the spoofable key first would let the flood grow the limiter
+	// itself, which is the resource this is supposed to protect.
+	if ok, _ := h.svc.limiter.Allow(c.Request.Context(), "social-start:instance", socialStartInstancePerMinute); !ok {
+		return false
+	}
 	ip := clientAddr(c)
 	if !ip.IsValid() {
+		// No usable address to key on. The instance ceiling above still applies.
 		return true
 	}
 	ok, _ := h.svc.limiter.Allow(c.Request.Context(), "social-start:"+ip.String(), socialStartPerMinute)
@@ -164,23 +196,33 @@ func (h *Handler) socialCallback(c *gin.Context) {
 // sentence with a next step. Anything not listed becomes a generic failure.
 //
 // WHY account_disabled AND email_not_verified STAY, having been read as an
-// account-existence oracle. Both are reachable on exactly two paths, and
-// neither answers a question the caller could not already answer:
+// account-existence oracle. They are reachable on two paths:
 //
 //   - the identity path, where (provider, subject) is already bound to this
 //     local account. The caller authenticated at the provider AS that identity,
-//     so they are being told the state of their own account.
-//   - the linking path, which requires the PROVIDER to vouch for the address.
-//     Google and GitHub only vouch for an address its holder controls, so
-//     probing a stranger's address is not something a provider account buys
-//     you. There is no enumeration here, only a person learning about the
-//     account for an address they demonstrably own.
+//     so they are being told the state of their own account. Nothing is
+//     disclosed to anyone but its owner.
 //
-// Withholding them would not close a channel. social_link_requires_verification
-// is a strictly larger disclosure about the same address on the same path, and
-// it mails that address as well. It would only cost a disabled user the one
-// sentence that explains why they cannot get in, leaving "try again" as the
-// advice for a state that trying again cannot change.
+//   - the linking path, which requires the provider to have vouched for the
+//     address. That is NOT the same as the caller holding it, and this package
+//     says so itself: see SignInWithSocial on a Workspace administrator being
+//     able to obtain a validly signed token carrying an arbitrary address in
+//     their own domain. So there IS a residual: someone who administers a
+//     domain can learn whether an address in that domain has an account on this
+//     install, and whether it is disabled or unverified.
+//
+// That residual is not created here and is not closed by hiding these two.
+// The same linking path already answers social_link_requires_verification,
+// which discloses strictly more about the same address to the same caller (an
+// account exists, and it is unverified) and mails that address as well.
+// Dropping account_disabled and email_not_verified would leave the channel
+// open and cost a disabled user the one sentence explaining why they cannot get
+// in, leaving "try again" as the advice for a state that trying again cannot
+// change.
+//
+// Closing it for real means deciding what the LINKING path may say at all, for
+// every refusal it can produce, which is a policy change in decideSocial rather
+// than a display change in this list.
 var actionableSocialCodes = map[string]bool{
 	"social_link_requires_verification": true,
 	"social_email_unverified":           true,

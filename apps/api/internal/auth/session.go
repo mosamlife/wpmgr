@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -21,14 +22,19 @@ const (
 	// Authenticator rejects sessions whose auth_at predates the user's
 	// password_changed_at (ADR-045 Phase 2 session invalidation).
 	sessKeyAuthAt = "auth_at"
-	// sessKeyOAuthState/Nonce/Verifier hold the transient OIDC handshake values.
-	sessKeyOAuthState    = "oauth_state"
-	sessKeyOAuthNonce    = "oauth_nonce"
-	sessKeyOAuthVerifier = "oauth_verifier"
-	// Which provider the in-flight handshake belongs to. Without this the
-	// callback cannot know whether to verify a Google ID token or call the
-	// GitHub API, and a single shared callback would have to guess.
-	sessKeyOAuthProvider = "oauth_provider"
+	// sessKeyHandshakes holds the in-flight authorization-code handshakes as
+	// JSON. It replaces the oauth_state/nonce/verifier/provider quartet: a
+	// quartet can hold exactly one handshake, so STARTING a second one silently
+	// destroyed the first, and any request that reached a callback popped
+	// whatever was there. Both are the same denial of service, reachable by a
+	// cross-site top-level navigation, which SameSite=Lax still sends the
+	// session cookie on. See putHandshake and takeHandshake.
+	//
+	// Sessions written before this change carry the old keys. They are never
+	// read again, so a handshake started within seconds of a deploy fails once
+	// with "that sign-in link expired, please try again", which is the truth and
+	// resolves itself on the retry.
+	sessKeyHandshakes = "oauth_handshakes"
 )
 
 // SessionManager wraps SCS with the WPMgr cookie policy. The opaque session
@@ -271,28 +277,114 @@ func (m *SessionManager) Current(ctx context.Context) (userID, activeTenant uuid
 	return uid, tid, true
 }
 
-// putOAuth stores the transient OIDC handshake values on the session.
-func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier string) {
-	m.scs.Put(ctx, sessKeyOAuthState, state)
-	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
-	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
-	// Clear any provider left by an abandoned social handshake. The two flows
-	// share this state, so without it a generic-OIDC handshake started after a
-	// social one would carry the social provider forward.
-	m.scs.Remove(ctx, sessKeyOAuthProvider)
+// oauthHandshake is one in-flight authorization-code exchange.
+//
+// Provider is the social provider key, or "" for the operator-configured OIDC
+// issuer. It is server-side state on purpose: taking it from the callback URL
+// instead would let anyone who can reach a callback nominate which adapter
+// verifies their code.
+type oauthHandshake struct {
+	Provider string `json:"p"`
+	State    string `json:"s"`
+	Nonce    string `json:"n"`
+	Verifier string `json:"v"`
 }
+
+// maxInFlightHandshakes bounds what one session may accumulate. More than one
+// because a person can legitimately have two open: they click Google, leave the
+// consent screen sitting in that tab, come back and click GitHub. Three because
+// beyond that it is a loop, not a person, and each entry is store space bought
+// by an unauthenticated GET. The oldest is dropped, so the newest start always
+// works.
+const maxInFlightHandshakes = 3
 
 // socialHandshakeTTL is how long an ABANDONED social handshake keeps its
 // session record alive. See putSocial.
 const socialHandshakeTTL = 15 * time.Minute
 
-// putSocial stores the same handshake values plus the provider the flow was
-// started for. The provider is server-side state on purpose: taking it from the
-// callback URL instead would let anyone who can reach the callback nominate
-// which adapter verifies their code.
+// handshakes reads the in-flight set. Unreadable JSON is treated as an empty
+// set: the only cost is a sign-in that has to be started again, and the
+// alternative is a session no one can ever use.
+func (m *SessionManager) handshakes(ctx context.Context) []oauthHandshake {
+	raw := m.scs.GetString(ctx, sessKeyHandshakes)
+	if raw == "" {
+		return nil
+	}
+	var hs []oauthHandshake
+	if err := json.Unmarshal([]byte(raw), &hs); err != nil {
+		return nil
+	}
+	return hs
+}
+
+// putHandshake records a new handshake WITHOUT destroying the ones already in
+// flight, which is the whole reason this is a list.
+func (m *SessionManager) putHandshake(ctx context.Context, h oauthHandshake) {
+	hs := append([]oauthHandshake{h}, m.handshakes(ctx)...)
+	if len(hs) > maxInFlightHandshakes {
+		hs = hs[:maxInFlightHandshakes]
+	}
+	m.storeHandshakes(ctx, hs)
+}
+
+func (m *SessionManager) storeHandshakes(ctx context.Context, hs []oauthHandshake) {
+	if len(hs) == 0 {
+		m.scs.Remove(ctx, sessKeyHandshakes)
+		return
+	}
+	b, err := json.Marshal(hs)
+	if err != nil {
+		// Only reachable if the struct stops being serialisable, which is a
+		// compile-time-ish fact; dropping the set beats writing a corrupt one.
+		m.scs.Remove(ctx, sessKeyHandshakes)
+		return
+	}
+	m.scs.Put(ctx, sessKeyHandshakes, string(b))
+}
+
+// takeHandshake consumes the ONE handshake this callback is for, and only that
+// one.
+//
+// CONSUMING BEFORE CHECKING WAS A WAY TO KILL SOMEBODY ELSE'S SIGN-IN. The old
+// code popped the handshake and then asked whether it belonged to this
+// callback, so any request that reached any callback emptied the session: a
+// stale link, the other provider's callback, or a cross-site top-level
+// navigation, which SameSite=Lax still attaches the cookie to. The real
+// callback then arrived to find nothing.
+//
+// A state that does not match is equally not-this-handshake, so it is left
+// alone too. The state is a one-time CSRF binder, not a credential: leaving it
+// in place cannot authorise anything, while burning it hands anyone who can
+// cause a navigation a denial of service against an in-flight sign-in.
+func (m *SessionManager) takeHandshake(ctx context.Context, provider, state string) (oauthHandshake, bool) {
+	if state == "" {
+		return oauthHandshake{}, false
+	}
+	hs := m.handshakes(ctx)
+	for i, h := range hs {
+		if h.Provider != provider {
+			continue
+		}
+		// Constant time because the stored state is a secret the caller is
+		// trying to present, and a byte-by-byte compare is the shape that leaks
+		// it.
+		if subtle.ConstantTimeCompare([]byte(h.State), []byte(state)) != 1 {
+			continue
+		}
+		m.storeHandshakes(ctx, append(hs[:i:i], hs[i+1:]...))
+		return h, true
+	}
+	return oauthHandshake{}, false
+}
+
+// putOAuth stores a handshake for the operator-configured OIDC issuer.
+func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier string) {
+	m.putHandshake(ctx, oauthHandshake{State: state, Nonce: nonce, Verifier: verifier})
+}
+
+// putSocial stores a handshake for a consumer provider.
 func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier string) {
-	m.putOAuth(ctx, state, nonce, verifier)
-	m.scs.Put(ctx, sessKeyOAuthProvider, provider)
+	m.putHandshake(ctx, oauthHandshake{Provider: provider, State: state, Nonce: nonce, Verifier: verifier})
 
 	// AN UNAUTHENTICATED GET MUST NOT MINT A LONG-LIVED SESSION. /start is
 	// public, so every crawler, scanner and retry loop that touches it writes a
@@ -302,56 +394,28 @@ func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, 
 	//
 	// A handshake is worth minutes, so an abandoned one expires in minutes.
 	// Completing the sign-in calls RenewToken, which resets the deadline to the
-	// configured lifetime, so nobody who actually signs in is affected. Only the
-	// anonymous case is shortened: a visitor who is already signed in (linking a
-	// second provider) keeps the deadline their own sign-in earned.
+	// configured lifetime, so nobody who actually signs in is affected.
+	//
+	// The signed-in case is left alone. There is no connect-another-provider
+	// flow in the product today, so this is not protecting a feature: it is
+	// making sure a rule written for anonymous traffic can never truncate a
+	// session that a real sign-in already paid for, whether that request comes
+	// from a signed-in visitor who navigated to /start by hand or from a linking
+	// flow added later.
 	if _, _, signedIn := m.Current(ctx); !signedIn {
 		m.scs.SetDeadline(ctx, time.Now().Add(socialHandshakeTTL).UTC())
 	}
 }
 
-// takeSocialFor consumes the in-flight handshake ONLY when this callback is the
-// one that handshake was started for, and returns whether it was.
-//
-// CONSUMING BEFORE CHECKING WAS A WAY TO KILL SOMEBODY ELSE'S SIGN-IN. takeSocial
-// pops unconditionally, so any request that reached a social callback emptied
-// the session: a stale link, the other provider's callback, or a cross-site
-// top-level navigation, which SameSite=Lax still attaches the cookie to. The
-// real callback then arrived to find no state and failed. Checking first costs
-// nothing and makes the handshake survive everything that is not it.
-//
-// A state that does not match is equally not-this-handshake, so it is left
-// alone too. The state is a one-time CSRF binder, not a credential: leaving it
-// in place cannot authorise anything, while burning it hands anyone who can
-// cause a navigation a denial of service against an in-flight sign-in.
+// takeSocialFor consumes the handshake for this provider and state, if there is
+// one. See takeHandshake for why it will not touch anything else.
 func (m *SessionManager) takeSocialFor(ctx context.Context, provider, state string) (nonce, verifier string, ok bool) {
-	wantProvider := m.scs.GetString(ctx, sessKeyOAuthProvider)
-	wantState := m.scs.GetString(ctx, sessKeyOAuthState)
-	if wantState == "" || wantProvider != provider {
-		return "", "", false
-	}
-	// Constant time because the stored state is a secret the caller is trying to
-	// present, and a byte-by-byte compare is the shape that leaks it.
-	if subtle.ConstantTimeCompare([]byte(wantState), []byte(state)) != 1 {
-		return "", "", false
-	}
-	_, _, nonce, verifier = m.takeSocial(ctx)
-	return nonce, verifier, true
+	h, ok := m.takeHandshake(ctx, provider, state)
+	return h.Nonce, h.Verifier, ok
 }
 
-// takeSocial reads and clears the handshake, including the provider. Callers
-// completing a callback want takeSocialFor, which will not consume a handshake
-// that belongs to a different flow.
-func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier string) {
-	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
-	state, nonce, verifier = m.takeOAuth(ctx)
-	return
-}
-
-// takeOAuth reads and clears the transient OIDC handshake values.
-func (m *SessionManager) takeOAuth(ctx context.Context) (state, nonce, verifier string) {
-	state = m.scs.PopString(ctx, sessKeyOAuthState)
-	nonce = m.scs.PopString(ctx, sessKeyOAuthNonce)
-	verifier = m.scs.PopString(ctx, sessKeyOAuthVerifier)
-	return
+// takeOAuthFor is the same for the operator-configured OIDC issuer.
+func (m *SessionManager) takeOAuthFor(ctx context.Context, state string) (nonce, verifier string, ok bool) {
+	h, ok := m.takeHandshake(ctx, "", state)
+	return h.Nonce, h.Verifier, ok
 }

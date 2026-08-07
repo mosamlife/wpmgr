@@ -534,8 +534,13 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("oidc_disabled", "OIDC is not configured"))
 		return
 	}
-	state, nonce, verifier := h.sessions.takeOAuth(c.Request.Context())
-	if state == "" || c.Query("state") != state {
+	// Consumed only when this callback IS the handshake it names. Popping first
+	// and asking afterwards made this route a way to break somebody else's
+	// sign-in: it is a GET, so a cross-site top-level navigation reaches it with
+	// the session cookie attached, and it used to empty the handshake the
+	// visitor had in flight at another provider. See takeHandshake.
+	nonce, verifier, ok := h.sessions.takeOAuthFor(c.Request.Context(), c.Query("state"))
+	if !ok {
 		httpx.Error(c, domain.Unauthorized("oidc_state_mismatch", "OIDC state mismatch or expired"))
 		return
 	}
