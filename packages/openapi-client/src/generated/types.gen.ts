@@ -8819,6 +8819,70 @@ export type OidcCallbackResponses = {
 export type OidcCallbackResponse =
   OidcCallbackResponses[keyof OidcCallbackResponses];
 
+export type ListSocialProvidersData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/social/providers";
+};
+
+export type ListSocialProvidersResponses = {
+  /**
+   * The configured providers, possibly none
+   */
+  200: {
+    providers: Array<"google" | "github">;
+    /**
+     * Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page renders the SSO button only when it will work.
+     *
+     */
+    sso: boolean;
+  };
+};
+
+export type ListSocialProvidersResponse =
+  ListSocialProvidersResponses[keyof ListSocialProvidersResponses];
+
+export type SocialStartData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    /**
+     * Where to land after a successful sign-in, so a shared deep link survives the provider round trip. Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the sign-in lands on the default page. The value is held in the session for the duration of the handshake and is never carried on the callback URL.
+     *
+     */
+    redirect?: string;
+  };
+  url: "/auth/social/{provider}/start";
+};
+
+export type SocialStartErrors = {
+  /**
+   * That provider is not configured
+   */
+  503: Error;
+};
+
+export type SocialStartError = SocialStartErrors[keyof SocialStartErrors];
+
+export type SocialCallbackData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    code?: string;
+    state?: string;
+    /**
+     * Set by the provider when the user declines.
+     */
+    error?: string;
+  };
+  url: "/auth/social/{provider}/callback";
+};
+
 export type ListMembersData = {
   body?: never;
   path?: never;

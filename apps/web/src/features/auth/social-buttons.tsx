@@ -1,16 +1,29 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { listSocialProviders } from "@wpmgr/api";
 
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { sameOriginPath } from "@/features/auth/social-errors";
 
 /**
- * Sign in with Google or GitHub.
+ * Every way into this install other than a password: Google, GitHub, and the
+ * operator's own SSO issuer.
  *
- * THE LIST COMES FROM THE SERVER. Both providers are optional and independently
- * configured, and a self-hosted install that has registered neither must show
- * neither. Hardcoding two buttons and letting the click fail would send a
- * visitor to a provider error page, which reads as a broken product rather than
- * an unconfigured one. While the list is loading nothing renders, so a button
- * never appears and then disappears under someone's cursor.
+ * THE LIST COMES FROM THE SERVER. All three are optional and independently
+ * configured, and a self-hosted install that has registered none must show
+ * none. Hardcoding buttons and letting the click fail would send a visitor to a
+ * provider error page, which reads as a broken product rather than an
+ * unconfigured one.
+ *
+ * ONE BLOCK, ONE QUERY, ONE LAYOUT STEP. The SSO button used to be rendered by
+ * the login page BELOW this component, so when the provider list resolved,
+ * after first paint, a divider and up to two buttons were inserted above it and
+ * everything below moved down: at best the SSO button and the sign-up link jump
+ * while someone is reaching for them, at worst a click lands on the button that
+ * arrived. Now the whole group renders from a single resolved snapshot, the
+ * sign-in routes prime that snapshot in beforeLoad (ensureSignInMethods) so it
+ * is already there on first paint, and the loading state reserves the space
+ * instead of leaving a hole.
  *
  * A FULL PAGE NAVIGATION, NOT FETCH. The OAuth handshake is a browser redirect
  * to a third-party origin; there is nothing here for XHR to do.
@@ -25,46 +38,96 @@ const PROVIDERS: Record<Provider, { label: string; Icon: () => React.ReactElemen
 
 export type SignInMethods = { providers: Provider[]; sso: boolean };
 
+const signInMethodsKey = ["auth", "sign-in-methods"] as const;
+
 async function fetchMethods(): Promise<SignInMethods> {
-  const res = await fetch("/auth/social/providers", { credentials: "include" });
-  if (!res.ok) return { providers: [], sso: false };
-  const body = (await res.json()) as { providers?: unknown; sso?: unknown };
-  const list = Array.isArray(body.providers) ? body.providers : [];
+  const { data } = await listSocialProviders();
+  // A failure here is not worth an error state: it means we do not know which
+  // buttons would work, and the honest rendering of that is none of them.
+  const list: unknown[] = Array.isArray(data?.providers) ? data.providers : [];
   return {
     providers: list.filter((p): p is Provider => p === "google" || p === "github"),
-    sso: body.sso === true,
+    sso: data?.sso === true,
   };
 }
 
 /**
- * Which sign-in methods this install actually offers. Shared by the buttons and
- * by the SSO button on the login page, so neither can render something the
- * server will refuse.
+ * Which sign-in methods this install actually offers.
+ *
+ * The set only changes when an operator reconfigures the server and restarts
+ * it, so this is asked rarely and shared by every surface that offers a button.
  */
 export function useSignInMethods() {
   return useQuery({
-    queryKey: ["auth", "sign-in-methods"],
+    queryKey: signInMethodsKey,
     queryFn: fetchMethods,
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
 }
 
-export function SocialButtons({ label }: { label: string }) {
-  // The set only changes when an operator reconfigures the server and restarts
-  // it, so the shared query re-asks rarely.
-  const { data } = useSignInMethods();
-  const providers = data?.providers;
+/**
+ * How long a sign-in route will wait for the method list before painting.
+ *
+ * There has to be a bound. The list decides what the page renders, so having it
+ * before first paint is what removes the shift, but sign-in is the one page
+ * that must work when things are broken: if this endpoint were slow or hanging,
+ * blocking on it would take the whole login page down with it. Past the budget
+ * the page paints and the buttons arrive when they arrive.
+ */
+const METHODS_PREFETCH_BUDGET_MS = 1200;
 
-  if (!providers || providers.length === 0) return null;
+/**
+ * Primes the method list from a route's beforeLoad. Never rejects and never
+ * outlasts the budget, so no sign-in route can be blocked by it.
+ */
+export async function ensureSignInMethods(queryClient: QueryClient): Promise<void> {
+  await Promise.race([
+    queryClient
+      .ensureQueryData({
+        queryKey: signInMethodsKey,
+        queryFn: fetchMethods,
+        staleTime: 5 * 60 * 1000,
+        retry: false,
+      })
+      .catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, METHODS_PREFETCH_BUDGET_MS)),
+  ]);
+}
+
+export function SocialButtons({
+  label,
+  redirect,
+  sso = false,
+}: {
+  label: string;
+  /** Where the visitor was heading, carried through the provider handshake. */
+  redirect?: string;
+  /** Whether this surface offers the operator's SSO issuer as well. */
+  sso?: boolean;
+}) {
+  const { data, isPending } = useSignInMethods();
+
+  // Reserve the space rather than leave a hole that fills in later. Only
+  // reachable when the route's prefetch did not resolve in time.
+  if (isPending) {
+    return (
+      <div className="mt-4" data-testid="sign-in-methods-placeholder">
+        <Divider />
+        <div className="mt-4 flex flex-col gap-2">
+          <Skeleton className="h-9 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  const providers = data?.providers ?? [];
+  const showSso = sso && data?.sso === true;
+  if (providers.length === 0 && !showSso) return null;
 
   return (
     <div className="mt-4">
-      <div className="flex items-center gap-3 text-xs text-[var(--color-muted-foreground)]">
-        <span className="h-px flex-1 bg-[var(--color-border)]" />
-        <span>or</span>
-        <span className="h-px flex-1 bg-[var(--color-border)]" />
-      </div>
+      <Divider />
 
       <div className="mt-4 flex flex-col gap-2">
         {providers.map((p) => {
@@ -76,7 +139,7 @@ export function SocialButtons({ label }: { label: string }) {
               variant="outline"
               className="w-full"
               onClick={() => {
-                window.location.href = `/auth/social/${p}/start`;
+                window.location.href = socialStartUrl(p, redirect);
               }}
             >
               <Icon />
@@ -84,7 +147,47 @@ export function SocialButtons({ label }: { label: string }) {
             </Button>
           );
         })}
+
+        {showSso ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() => {
+              // /auth/oidc/login, NOT /api/auth/... The auth routes mount on
+              // the root group, so the /api prefix was a 404 on every install
+              // that had SSO configured at all.
+              window.location.href = "/auth/oidc/login";
+            }}
+          >
+            {label} SSO
+          </Button>
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The provider handshake, carrying the deep link the visitor arrived with.
+ *
+ * The target rides as a query parameter on OUR start endpoint, which stores it
+ * in the session for the duration of the handshake; it is never handed to the
+ * provider and never read back off the callback URL, so the callback has
+ * nothing to trust.
+ */
+function socialStartUrl(provider: Provider, redirect: string | undefined): string {
+  const target = sameOriginPath(redirect);
+  const base = `/auth/social/${provider}/start`;
+  return target ? `${base}?redirect=${encodeURIComponent(target)}` : base;
+}
+
+function Divider() {
+  return (
+    <div className="flex items-center gap-3 text-xs text-[var(--color-muted-foreground)]">
+      <span className="h-px flex-1 bg-[var(--color-border)]" />
+      <span>or</span>
+      <span className="h-px flex-1 bg-[var(--color-border)]" />
     </div>
   );
 }

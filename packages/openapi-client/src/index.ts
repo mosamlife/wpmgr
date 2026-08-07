@@ -23,6 +23,7 @@ export {
   getMe,
   oidcLogin,
   oidcCallback,
+  listSocialProviders,
   // members
   listMembers,
   inviteMember,

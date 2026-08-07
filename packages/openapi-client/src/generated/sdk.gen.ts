@@ -714,6 +714,8 @@ import type {
   ListSiteVulnerabilitiesData,
   ListSiteVulnerabilitiesErrors,
   ListSiteVulnerabilitiesResponses,
+  ListSocialProvidersData,
+  ListSocialProvidersResponses,
   ListTagsData,
   ListTagsResponses,
   ListTenantsData,
@@ -955,6 +957,9 @@ import type {
   SilenceSitePhpErrorData,
   SilenceSitePhpErrorErrors,
   SilenceSitePhpErrorResponses,
+  SocialCallbackData,
+  SocialStartData,
+  SocialStartErrors,
   StartScanRunData,
   StartScanRunErrors,
   StartScanRunResponses,
@@ -1603,6 +1608,49 @@ export const oidcCallback = <ThrowOnError extends boolean = false>(
     OidcCallbackErrors,
     ThrowOnError
   >({ url: "/auth/oidc/callback", ...options });
+
+/**
+ * List the social sign-in providers this install offers
+ *
+ * Returns the provider keys that are configured and will work. The sign-in page renders exactly these, so an unconfigured provider never shows a button that leads to a provider error page. Unauthenticated by design: the caller has not signed in yet, and the response reveals only which buttons the operator chose to enable.
+ *
+ */
+export const listSocialProviders = <ThrowOnError extends boolean = false>(
+  options?: Options<ListSocialProvidersData, ThrowOnError>,
+) =>
+  (options?.client ?? client).get<
+    ListSocialProvidersResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/auth/social/providers", ...options });
+
+/**
+ * Begin social sign-in (redirect to the provider)
+ *
+ * Redirects (302) to the provider's authorization endpoint with PKCE and a state value held server-side in the session. Returns 503 when the provider is not configured on this install.
+ *
+ */
+export const socialStart = <ThrowOnError extends boolean = false>(
+  options: Options<SocialStartData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<unknown, SocialStartErrors, ThrowOnError>({
+    url: "/auth/social/{provider}/start",
+    ...options,
+  });
+
+/**
+ * Social sign-in redirect callback
+ *
+ * Completes the handshake and issues a session. ALWAYS redirects (302), never returns a JSON error body: the caller is a browser mid-redirect from a third party, so a failure sends it back to the sign-in page with a `social_error` code the app turns into a sentence. A user with a second factor enrolled is redirected to the 2FA challenge instead of being signed in.
+ *
+ */
+export const socialCallback = <ThrowOnError extends boolean = false>(
+  options: Options<SocialCallbackData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<unknown, unknown, ThrowOnError>({
+    url: "/auth/social/{provider}/callback",
+    ...options,
+  });
 
 /**
  * List members of the active tenant
