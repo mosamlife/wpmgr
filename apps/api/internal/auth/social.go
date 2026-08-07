@@ -503,6 +503,12 @@ func (s *Service) SignInWithSocial(
 			UserID: emailUser.ID, Provider: in.Provider, Subject: in.Subject,
 			Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
 		}
+		// No notification here either. The account has not gained anything yet:
+		// this is an authorization travelling as data, and it is CompleteSocialLink
+		// that writes the identity and tells the holder about it. Mailing "a new
+		// sign-in method was added" at this point would announce a link that the
+		// second factor may still refuse, and would hand an attacker who only
+		// reached a consent screen a way to mail the victim on demand.
 		return res, nil
 
 	default:
@@ -510,6 +516,10 @@ func (s *Service) SignInWithSocial(
 		// sign-in, so it cannot already carry a second factor to skip past, and
 		// the identity is written in the same transaction as the user it belongs
 		// to (see createSocialUser).
+		//
+		// No notification either: the account IS the new method, so there is no
+		// prior holder to warn and the only address available is the one the
+		// provider just asserted.
 		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, facts.legacyHolders))
 		if err != nil {
 			return LoginResult{}, err
@@ -754,6 +764,16 @@ func (s *Service) CompleteSocialLink(ctx context.Context, userID uuid.UUID, link
 		return err
 	}
 	s.recordSocialAudit(ctx, userID, link.Provider, "link")
+	// THIS is the moment the account gained a way to sign in, so this is where
+	// its holder is told. The notification used to sit at the point the link was
+	// authorized, which stopped being the point it was written once the write
+	// moved behind the second factor; leaving it there would have announced
+	// links that were never made and stayed silent about the ones that were.
+	// Addressed to u, re-read above, so it goes to the address the account holds
+	// now rather than the one the parked link was approved against.
+	s.sendSignInMethodAdded(ctx, u, SocialIdentity{
+		Provider: link.Provider, Issuer: link.Issuer,
+	})
 	return nil
 }
 
@@ -918,10 +938,7 @@ func (s *Service) createSocialUser(
 // reserved TLD that resolves nowhere, and the row is created with
 // email_verified false, which the linking rules already refuse to act on.
 func syntheticEmailDomain(in SocialIdentity) string {
-	host := strings.TrimPrefix(strings.TrimPrefix(in.Issuer, "https://"), "http://")
-	if i := strings.IndexAny(host, "/:"); i > 0 {
-		host = host[:i]
-	}
+	host := issuerHost(in.Issuer)
 	if host == "" {
 		host = in.Provider
 	}

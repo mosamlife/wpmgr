@@ -27,6 +27,13 @@ func sampleData(name string) map[string]any {
 		common["Name"] = "Sam"
 		common["When"] = "2026-06-02 14:00 UTC"
 		common["IP"] = "203.0.113.7"
+	case "sign_in_method_added":
+		// Mirrors the shape built in auth/social_notify.go
+		// sendSignInMethodAdded.
+		common["Name"] = "Sam"
+		common["Provider"] = "Google"
+		common["When"] = "2026-08-07 14:00 UTC"
+		common["SecurityURL"] = "https://manage.wpmgr.app/settings/security"
 	case "verify_email":
 		common["Name"] = "Sam"
 		common["VerifyURL"] = "https://manage.wpmgr.app/verify-email?token=def456"
@@ -168,6 +175,10 @@ func TestPlaintextContainsActionURL(t *testing.T) {
 		"verify_email":         "https://manage.wpmgr.app/verify-email?token=def456",
 		"invite":               "https://manage.wpmgr.app/accept?token=ghi789",
 		"client_portal_invite": "https://manage.wpmgr.app/accept?token=portal123",
+		// The security notice is only useful if the reader can reach the page
+		// that lists (and removes) sign-in methods, including from a text-only
+		// client.
+		"sign_in_method_added": "https://manage.wpmgr.app/settings/security",
 	}
 	for name, url := range cases {
 		em, err := r.Render(name, sampleData(name))
