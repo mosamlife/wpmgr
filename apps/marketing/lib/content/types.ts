@@ -122,47 +122,95 @@ export type SolutionPageData = {
 // ---------------------------------------------------------------------------
 // Comparison pages (/compare/[slug]).
 //
-// These are the only pages on the site permitted to name competitor products,
-// and the type is shaped to enforce the rule that makes that safe: EVERY
-// factual claim about another product carries the URL it came from and the
-// date it was checked. A comparison page is the one page whose whole value is
-// being trustworthy, so an unsourced claim costs more here than anywhere else.
+// These are the only pages permitted to name competitor products.
 //
-// `strengths` is required and must be non-empty for each competitor. A
-// comparison in which the author wins on every axis is not believed by anyone,
-// and the credibility spent admitting what a rival does better is what makes
-// the rest of the page land.
+// TWO RULES, AND THEY ARE NOT THE SAME RULE.
+//
+//   WHAT A CELL SAYS must be true and sourced. Every claim about a named
+//   company carries the URL it came from and the date it was checked, and the
+//   page renders both. A comparison page that misstates a rival's price is the
+//   one thing that gets screenshotted, and it would cost us the only asset
+//   this page has.
+//
+//   WHICH ROWS APPEAR is ours to choose. Row selection is positioning, not
+//   accuracy. We pick the axes the page argues on; we do not shade what sits
+//   in the cells once picked.
+//
+// GROUP ORDER IS LOAD BEARING. The first group is parity: rows where all three
+// products deliver. It costs us nothing, it answers "the new one must be
+// missing things" before a reader forms the thought, and it makes the groups
+// that follow believable. Do not reorder it to lead with a win.
 // ---------------------------------------------------------------------------
 
 /** One checkable statement about a named product, with its provenance. */
 export type SourcedClaim = {
-  /** pricing | hosting | install-count | features | licensing | limits */
+  /** Stable anchor id, used by matrix footnotes and the /sources register. */
+  id: string;
   topic: string;
-  /** One neutral factual sentence. */
   claim: string;
-  /** The product owner's own page. Never a review site or a listicle. */
+  /** The page it was fetched from. Vendor site, docs, repo or wordpress.org. */
   sourceUrl: string;
-  /** ISO date this was last checked against sourceUrl. */
+  /** ISO date this was last checked. */
   verifiedOn: string;
 };
 
-export type ComparedProduct = {
-  name: string;
-  /** Short neutral description in our own words. */
-  summary: string;
-  claims: SourcedClaim[];
-  /** What this product genuinely does better than WPMgr. Must be non-empty. */
-  strengths: string[];
-  /** Their wordpress.org listing or product site. */
-  url: string;
+/**
+ * Cell tone. Semantic, never per product: a tone says what the CELL means, so
+ * tinting our own column wholesale is not available and the parity group stays
+ * credible.
+ */
+export type MatrixTone = "included" | "paid" | "partial" | "absent" | "neutral";
+
+export type MatrixCell = {
+  /** Free text, never a tick. A tick cannot say "paid add-on". */
+  value: string;
+  tone: MatrixTone;
+  /** SourcedClaim ids backing this cell. A row is a claim we are making. */
+  cites?: string[];
 };
 
-/** One row of the at-a-glance table. */
-export type ComparisonRow = {
+export type MatrixRow = {
   label: string;
-  /** Keyed by product name, plus "WPMgr". Free text, not a tick or a cross: a
-   *  boolean cannot express "paid add-on" or "incremental only on annual". */
-  values: Record<string, string>;
+  /** Keyed by product key, plus "wpmgr". Every product needs an entry. */
+  cells: Record<string, MatrixCell>;
+};
+
+export type MatrixGroup = {
+  label: string;
+  rows: MatrixRow[];
+};
+
+export type ComparedProduct = {
+  /** Stable key used across cells and lanes. */
+  key: string;
+  name: string;
+  url: string;
+  claims: SourcedClaim[];
+};
+
+/** One product's cost curve, computed live from published prices. */
+export type CostModel = {
+  productKey: string;
+  label: string;
+  /** Per site per period, in USD. 0 for free. */
+  perSite: number;
+  /** Flat fee covering `bundleCovers` sites, when the vendor offers one. */
+  bundle?: number;
+  bundleCovers?: number;
+  /** A single flat fee for unlimited sites. */
+  flat?: number;
+  period: "month" | "year";
+  note: string;
+  cites?: string[];
+};
+
+/** One lane of the data-locality diagram. */
+export type LocalityLane = {
+  productKey: string;
+  /** Node labels, left to right: where the data goes. */
+  path: string[];
+  note: string;
+  cites?: string[];
 };
 
 export type ComparisonPageData = {
@@ -170,18 +218,30 @@ export type ComparisonPageData = {
   title: string;
   metaTitle: string;
   metaDescription: string;
-  /** The query this page is written to answer, recorded so intent stays honest. */
+  /** The query this page answers, recorded so intent stays honest. */
   targetQuery: string;
   hero: {
     heading: string;
     subhead: string;
+    chips: string[];
   };
-  /** Stated up front, because a comparison written by one of the products is
-   *  only trustworthy if it says so before the reader works it out. */
-  disclosure: string;
   products: ComparedProduct[];
-  table: ComparisonRow[];
-  /** Who each option actually suits, including cases where it is not us. */
-  verdicts: Array<{ heading: string; body: string }>;
+  matrix: MatrixGroup[];
+  /** The consolidation visual: what one tool replaces. */
+  replaces: {
+    heading: string;
+    subhead: string;
+    items: Array<{ icon: string; label: string }>;
+  };
+  cost: {
+    heading: string;
+    subhead: string;
+    models: CostModel[];
+  };
+  locality: {
+    heading: string;
+    subhead: string;
+    lanes: LocalityLane[];
+  };
   faq: FaqItem[];
 };
