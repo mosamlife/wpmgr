@@ -12,6 +12,7 @@ import {
 import { FEATURE_REGISTRY } from "@/lib/content/features";
 import { SOLUTION_REGISTRY } from "@/lib/content/solutions";
 import { Container } from "@/components/ui/primitives";
+import { PostArt } from "@/components/blog/post-art";
 import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 import { ScrollProgress } from "@/components/motion/scroll-progress";
@@ -153,6 +154,15 @@ export default async function BlogPostPage({ params }: Props) {
             <p className="mt-4 text-lg leading-relaxed text-[var(--muted-foreground)] max-w-[72ch]">
               {fm.description}
             </p>
+
+            {/* Featured art. Below the deck rather than above the h1: the
+                headline is the LCP element on this page and must not be pushed
+                under the fold by a decorative band. */}
+            <PostArt
+              art={fm.art}
+              category={category as BlogCategory}
+              className="mt-10 w-full overflow-hidden rounded-xl border border-[var(--border)]"
+            />
           </Container>
         </section>
 
