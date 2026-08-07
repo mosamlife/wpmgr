@@ -6,7 +6,7 @@
 // directory.
 
 import type { ComparisonPageData } from "@/lib/content/types";
-import { MANAGEWP_VS_MAINWP } from "./managewp-vs-mainwp";
+import { MANAGEWP_VS_MAINWP } from "./managewp-vs-mainwp-vs-wpmgr";
 
 export const COMPARE_REGISTRY: Record<string, ComparisonPageData> = {
   [MANAGEWP_VS_MAINWP.slug]: MANAGEWP_VS_MAINWP,
