@@ -32,6 +32,12 @@ const (
 	// sessKeyPendingSocialLink parks an approved-but-unwritten identity link
 	// across the two-factor round trip. See putPendingSocialLink.
 	sessKeyPendingSocialLink = "pending_social_link"
+	// Where the browser was heading when it started the handshake, so a shared
+	// deep link survives a provider round trip. Held here rather than round
+	// tripped through the provider (state, or a query parameter on the callback)
+	// because the callback would then have to trust a value an attacker controls,
+	// and the whole point of a redirect target is that we send the browser there.
+	sessKeyOAuthReturn = "oauth_return"
 )
 
 // pendingSocialLinkTTL bounds how long an approved link may sit unwritten. It
@@ -284,10 +290,11 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 	m.scs.Put(ctx, sessKeyOAuthState, state)
 	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
 	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
-	// Clear any provider left by an abandoned social handshake. The two flows
-	// share this state, so without it a generic-OIDC handshake started after a
-	// social one would carry the social provider forward.
+	// Clear any provider or return path left by an abandoned social handshake.
+	// The two flows share this state, so without it a generic-OIDC handshake
+	// started after a social one would carry the social values forward.
 	m.scs.Remove(ctx, sessKeyOAuthProvider)
+	m.scs.Remove(ctx, sessKeyOAuthReturn)
 	// A new handshake supersedes any link approved by an abandoned one. Without
 	// this, a link the person walked away from mid two-factor would still be
 	// sitting there waiting for their next challenge to apply it.
@@ -295,17 +302,26 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 }
 
 // putSocial stores the same handshake values plus the provider the flow was
-// started for. The provider is server-side state on purpose: taking it from the
-// callback URL instead would let anyone who can reach the callback nominate
-// which adapter verifies their code.
-func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier string) {
+// started for and where to land afterwards. Both are server-side state on
+// purpose: taking the provider from the callback URL would let anyone who can
+// reach the callback nominate which adapter verifies their code, and taking the
+// return path from there would turn the callback into an open redirect.
+//
+// returnTo must already be a validated same-origin path (see safeReturnPath);
+// an empty string means "land wherever the callback defaults to".
+func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier, returnTo string) {
 	m.putOAuth(ctx, state, nonce, verifier)
 	m.scs.Put(ctx, sessKeyOAuthProvider, provider)
+	if returnTo != "" {
+		m.scs.Put(ctx, sessKeyOAuthReturn, returnTo)
+	}
 }
 
-// takeSocial reads and clears the handshake, including the provider.
-func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier string) {
+// takeSocial reads and clears the handshake, including the provider and the
+// return path.
+func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier, returnTo string) {
 	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
+	returnTo = m.scs.PopString(ctx, sessKeyOAuthReturn)
 	state, nonce, verifier = m.takeOAuth(ctx)
 	return
 }

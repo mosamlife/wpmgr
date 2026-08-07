@@ -8,8 +8,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getMe } from "@wpmgr/api";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
-import { SocialButtons, useSignInMethods } from "@/features/auth/social-buttons";
-import { socialErrorMessage } from "@/features/auth/social-errors";
+import { SocialButtons, ensureSignInMethods } from "@/features/auth/social-buttons";
+import { socialRefusal, sameOriginPath } from "@/features/auth/social-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,10 +43,23 @@ export const Route = createFileRoute("/login")({
   // Portal users (role==="client") are sent to /portal; everyone else to /sites or
   // the requested redirect path.
   beforeLoad: async ({ context, search }) => {
-    const me = await ensureMe(context.queryClient);
+    // Both in flight together: the method list decides what the page renders,
+    // so having it before first paint is what stops buttons being injected
+    // under someone's cursor a moment later. It is bounded and cannot reject
+    // (see ensureSignInMethods), and it runs alongside the session check rather
+    // than after it, so it costs no extra wall time.
+    const [me] = await Promise.all([
+      ensureMe(context.queryClient),
+      ensureSignInMethods(context.queryClient),
+    ]);
     if (me) {
       throw redirect({
-        to: me.role === "client" ? "/portal" : (search.redirect ?? "/sites"),
+        // Same narrowing as the handshake link, for the same reason: this is a
+        // navigation target taken from the query string, and ?redirect= is the
+        // one search param on this page an attacker gets to choose. Every use
+        // of it goes through sameOriginPath, or the one that does not is the
+        // hole.
+        to: me.role === "client" ? "/portal" : (sameOriginPath(search.redirect) ?? "/sites"),
       });
     }
   },
@@ -64,17 +77,22 @@ function LoginPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
   const loginMutation = useLogin();
-  const ssoEnabled = useSignInMethods().data?.sso === true;
   const resendMutation = useResendVerification();
   const queryClient = useQueryClient();
   // Tracks when login failed because the email is not yet verified.
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [resendSent, setResendSent] = useState(false);
 
+  // Narrowed once, here, and used for every navigation on this page: the
+  // password path, the 2FA hand-off and the provider handshake all land the
+  // browser somewhere the query string named.
+  const deepLink = sameOriginPath(search.redirect);
+
   const {
     register,
     handleSubmit,
     getValues,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
@@ -98,7 +116,7 @@ function LoginPage() {
               totp: result.factors.totp,
               webauthn: result.factors.webauthn,
               recovery_factor: result.factors.recovery,
-              redirect: search.redirect,
+              redirect: deepLink,
             },
           });
           return;
@@ -119,7 +137,7 @@ function LoginPage() {
             if (freshMe?.role === "client") {
               void navigate({ to: "/portal" });
             } else {
-              void navigate({ to: search.redirect ?? "/sites" });
+              void navigate({ to: deepLink ?? "/sites" });
             }
           });
       },
@@ -133,22 +151,22 @@ function LoginPage() {
 
   function handleResend() {
     const email = unverifiedEmail ?? getValues("email");
+    // Nothing to send to. Reachable from the social refusal, where the callback
+    // deliberately does not tell us which address was refused.
+    if (!email) return;
     void resendMutation.mutateAsync(
       { email },
       { onError: () => {}, onSuccess: () => setResendSent(true) },
     );
   }
 
-  // Begin OIDC login via a full-page redirect to the backend, which 302s to the
-  // provider. If OIDC is unconfigured the backend returns 501; the user simply
-  // lands on that response and can navigate back — we keep the button always
-  // visible to avoid a config probe on the login screen.
-  function signInWithSso() {
-    // /auth/oidc/login, NOT /api/auth/... The auth routes mount on the root
-    // group (handler.go registers them under "/auth"), so the /api prefix was a
-    // 404 on every install that had SSO configured at all.
-    window.location.href = "/auth/oidc/login";
-  }
+  // The social refusal panel offers the same resend, so the button's enabled
+  // state has to track what is typed in the email field.
+  const typedEmail = watch("email");
+
+  const refusal = search.social_error
+    ? socialRefusal(search.social_error)
+    : null;
 
   const isEmailNotVerified =
     unverifiedEmail !== null ||
@@ -166,9 +184,15 @@ function LoginPage() {
           <CardTitle asChild>
             <h1>Sign in</h1>
           </CardTitle>
-          <CardDescription>
-            Use your email and password, or single sign-on.
-          </CardDescription>
+          {/* Only the method every install has. It used to name single
+              sign-on, which the default install does not offer and now
+              correctly does not show a button for, so the line was promising a
+              way in that was not on the page. Kept static rather than composed
+              from the method list: this sits above the form, so wording that
+              changed when that list resolved would move the whole form down,
+              which is the shift the block below was rebuilt to avoid. Whatever
+              else is available is named on its own button a few lines down. */}
+          <CardDescription>Use your email and password.</CardDescription>
         </CardHeader>
         <CardContent>
           <form
@@ -176,7 +200,13 @@ function LoginPage() {
             noValidate
             className="space-y-4"
           >
-            {search.social_error ? (
+            {/* A refusal that only a verification link can clear has to offer
+                the link. The status-gate refusal sends no mail at all, so the
+                page was telling people to open something that was never sent,
+                and nothing else here would have sent it: only opening a
+                verification link writes email_verified_at, so neither a
+                password sign-in nor a reset gets past it. */}
+            {refusal ? (
               <div
                 role="alert"
                 className="flex items-start gap-2.5 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning-subtle)] px-3 py-2.5"
@@ -185,9 +215,27 @@ function LoginPage() {
                   aria-hidden="true"
                   className="mt-0.5 size-4 shrink-0 text-[var(--color-warning-subtle-fg)]"
                 />
-                <p className="text-sm leading-relaxed text-[var(--color-warning-subtle-fg)]">
-                  {socialErrorMessage(search.social_error)}
-                </p>
+                <div className="space-y-1.5">
+                  <p className="text-sm leading-relaxed text-[var(--color-warning-subtle-fg)]">
+                    {refusal.message}
+                  </p>
+                  {refusal.canResend ? (
+                    resendSent ? (
+                      <p className="text-sm text-[var(--color-warning-subtle-fg)]">
+                        Verification email sent. Open the link, then try again.
+                      </p>
+                    ) : (
+                      <button
+                        type="button"
+                        className="text-sm font-medium text-[var(--color-warning-subtle-fg)] underline underline-offset-4 disabled:no-underline disabled:opacity-60"
+                        disabled={!typedEmail || resendMutation.isPending}
+                        onClick={handleResend}
+                      >
+                        Send the verification email
+                      </button>
+                    )
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
@@ -301,21 +349,13 @@ function LoginPage() {
             </Button>
           </form>
 
-          <SocialButtons label="Sign in with" />
-
-          {/* Only when an issuer is actually configured. This button used to
-              render unconditionally, so on an install with no OIDC issuer,
-              which is the default and includes production, it was a dead end. */}
-          {ssoEnabled ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="mt-2 w-full"
-              onClick={signInWithSso}
-            >
-              Sign in with SSO
-            </Button>
-          ) : null}
+          {/* Providers AND SSO, from one snapshot of what the server offers.
+              The SSO button used to be rendered here, below this component,
+              which is what let the provider buttons appear above it after
+              paint and push it down. `redirect` is the deep link the visitor
+              arrived with: the password path above has always honoured it, and
+              the social path used to drop it. */}
+          <SocialButtons label="Sign in with" redirect={deepLink} sso />
 
           <p className="mt-4 text-center text-xs text-[var(--color-muted-foreground)]">
             Don't have an account?{" "}

@@ -115,7 +115,7 @@ func TestStartingANewHandshakeClearsAParkedLink(t *testing.T) {
 
 	user, challenge := uuid.New(), uuid.New()
 	m.putPendingSocialLink(ctx, user, challenge, parkedLink(user))
-	m.putSocial(ctx, "github", "state-2", "nonce-2", "verifier-2")
+	m.putSocial(ctx, "github", "state-2", "nonce-2", "verifier-2", "")
 
 	if _, ok := m.takePendingSocialLink(ctx, user, challenge); ok {
 		t.Fatal("a new handshake must discard the link approved by the abandoned one")

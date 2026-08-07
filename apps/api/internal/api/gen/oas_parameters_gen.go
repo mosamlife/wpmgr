@@ -25643,6 +25643,11 @@ func decodeSocialCallbackParams(args [1]string, argsEscaped bool, r *http.Reques
 // SocialStartParams is parameters of socialStart operation.
 type SocialStartParams struct {
 	Provider SocialStartProvider
+	// Where to land after a successful sign-in, so a shared deep link survives the provider round trip.
+	// Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the
+	// sign-in lands on the default page. The value is held in the session for the duration of the
+	// handshake and is never carried on the callback URL.
+	Redirect OptString `json:",omitempty,omitzero"`
 }
 
 func unpackSocialStartParams(packed middleware.Parameters) (params SocialStartParams) {
@@ -25653,10 +25658,20 @@ func unpackSocialStartParams(packed middleware.Parameters) (params SocialStartPa
 		}
 		params.Provider = packed[key].(SocialStartProvider)
 	}
+	{
+		key := middleware.ParameterKey{
+			Name: "redirect",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Redirect = v.(OptString)
+		}
+	}
 	return params
 }
 
 func decodeSocialStartParams(args [1]string, argsEscaped bool, r *http.Request) (params SocialStartParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
 	// Decode path: provider.
 	if err := func() error {
 		param := args[0]
@@ -25707,6 +25722,47 @@ func decodeSocialStartParams(args [1]string, argsEscaped bool, r *http.Request) 
 		return params, &ogenerrors.DecodeParamError{
 			Name: "provider",
 			In:   "path",
+			Err:  err,
+		}
+	}
+	// Decode query: redirect.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "redirect",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotRedirectVal string
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotRedirectVal = c
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Redirect.SetTo(paramsDotRedirectVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "redirect",
+			In:   "query",
 			Err:  err,
 		}
 	}

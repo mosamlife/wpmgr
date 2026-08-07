@@ -1089,6 +1089,18 @@ paths:
           schema:
             type: string
             enum: [google, github]
+        - name: redirect
+          in: query
+          required: false
+          description: >
+            Where to land after a successful sign-in, so a shared deep link
+            survives the provider round trip. Must be a path on this origin;
+            anything else (absolute or protocol-relative) is discarded and the
+            sign-in lands on the default page. The value is held in the session
+            for the duration of the handshake and is never carried on the
+            callback URL.
+          schema:
+            type: string
       responses:
         "302":
           description: Redirect to the provider

@@ -23,6 +23,7 @@ export {
   getMe,
   oidcLogin,
   oidcCallback,
+  listSocialProviders,
   // connected accounts (settings/security)
   listMyIdentities,
   unlinkMyIdentity,

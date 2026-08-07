@@ -52237,6 +52237,10 @@ func (s *Server) handleSocialStartRequest(args [1]string, argsEscaped bool, w ht
 					Name: "provider",
 					In:   "path",
 				}: params.Provider,
+				{
+					Name: "redirect",
+					In:   "query",
+				}: params.Redirect,
 			},
 			Raw: r,
 		}

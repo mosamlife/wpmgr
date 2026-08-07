@@ -47,49 +47,6 @@ func (i SocialIdentity) usableEmail() bool {
 	return i.Email != "" && i.EmailVerified && !i.EmailUnreachable
 }
 
-// SignInWithSocial resolves an external identity to a session.
-//
-// THE RULES, AND WHY EACH ONE EXISTS.
-//
-// An external identity is (provider, subject). That pair, and only that pair,
-// authenticates. Email never does. Emails change, get reassigned inside a
-// Workspace when an employee leaves, and repeat across providers, so treating a
-// matching address as proof of the same person is the mistake that account
-// takeovers are built on.
-//
-// Email decides one narrower question: may this NEW identity be attached to an
-// account that already exists? The answer needs BOTH sides to be verified, and
-// the two verifications mean different things:
-//
-//   - identity.EmailVerified is the provider saying it controls the address.
-//     Google asserts this as a claim. GitHub has no such claim, so the adapter
-//     must read /user/emails and take the entry that is both primary and
-//     verified. Without this check anyone who can obtain a validly signed token
-//     carrying an arbitrary address, which a Workspace administrator can, could
-//     claim any account on this instance.
-//
-//   - user.EmailVerified() is US having seen the human open a link we sent to
-//     that address.
-//
-// The four cases, which follow the pattern the identity industry converged on:
-//
-//	provider verified + local verified   -> link, sign in
-//	provider unverified                  -> refuse, whatever the local state
-//	provider verified + local UNVERIFIED -> REFUSE, and this is the subtle one
-//	no local account at all              -> create, if the provider verified it
-//
-// The third case is the attack worth spelling out. An attacker registers
-// victim@company.com with a password. Registration deliberately does not
-// require proving control of the address, so the row exists in 'pending'. The
-// victim later clicks "Sign in with Google", Google truthfully asserts the
-// address is verified, and a naive implementation links the victim's Google
-// identity onto the attacker's row. The attacker knows that account's password.
-// Refusing here costs a legitimate user one password reset and closes the hole.
-//
-// The status gate at the top applies to EVERY path. Its absence was a real bug:
-// the password path has always refused 'pending' and 'disabled' accounts, and
-// this path refused neither, so an administrator could disable a user and that
-// user could still sign in through SSO.
 // socialAction is what the policy decided to do with an inbound identity.
 type socialAction int
 
@@ -341,49 +298,6 @@ func decideSocial(in SocialIdentity, identityUser, emailUser *User) (socialActio
 	return socialCreate, nil
 }
 
-// SignInWithSocial resolves an external identity to a session.
-//
-// THE RULES, AND WHY EACH ONE EXISTS.
-//
-// An external identity is (provider, subject). That pair, and only that pair,
-// authenticates. Email never does. Emails change, get reassigned inside a
-// Workspace when an employee leaves, and repeat across providers, so treating a
-// matching address as proof of the same person is the mistake that account
-// takeovers are built on.
-//
-// Email decides one narrower question: may this NEW identity be attached to an
-// account that already exists? The answer needs BOTH sides to be verified, and
-// the two verifications mean different things:
-//
-//   - identity.EmailVerified is the provider saying it controls the address.
-//     Google asserts this as a claim. GitHub has no such claim, so the adapter
-//     must read /user/emails and take the entry that is both primary and
-//     verified. Without this check anyone who can obtain a validly signed token
-//     carrying an arbitrary address, which a Workspace administrator can, could
-//     claim any account on this instance.
-//
-//   - user.EmailVerified() is US having seen the human open a link we sent to
-//     that address.
-//
-// The four cases, which follow the pattern the identity industry converged on:
-//
-//	provider verified + local verified   -> link, sign in
-//	provider unverified                  -> refuse, whatever the local state
-//	provider verified + local UNVERIFIED -> REFUSE, and this is the subtle one
-//	no local account at all              -> create, if the provider verified it
-//
-// The third case is the attack worth spelling out. An attacker registers
-// victim@company.com with a password. Registration deliberately does not
-// require proving control of the address, so the row exists in 'pending'. The
-// victim later clicks "Sign in with Google", Google truthfully asserts the
-// address is verified, and a naive implementation links the victim's Google
-// identity onto the attacker's row. The attacker knows that account's password.
-// Refusing here costs a legitimate user one password reset and closes the hole.
-//
-// The status gate at the top applies to EVERY path. Its absence was a real bug:
-// the password path has always refused 'pending' and 'disabled' accounts, and
-// this path refused neither, so an administrator could disable a user and that
-// user could still sign in through SSO.
 // SignInWithSocial resolves an external identity to a session by loading the
 // facts, asking decideSocial what to do, and doing it.
 //

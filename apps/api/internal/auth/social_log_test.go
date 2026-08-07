@@ -87,7 +87,7 @@ func socialCallbackHarness(t *testing.T, adapter SocialProviderAdapter, query st
 
 	sessions := NewSessionManagerWithStore(scs.New(), false)
 	sctx := loadCtx(t, sessions)
-	sessions.putSocial(sctx, adapter.Key(), "st", "", "vf")
+	sessions.putSocial(sctx, adapter.Key(), "st", "", "vf", "")
 
 	var buf bytes.Buffer
 	h := &Handler{
