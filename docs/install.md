@@ -73,7 +73,7 @@ the service:
 
 ```bash
 WPMGR_ENV=production                              # turns on the prod boot guards
-WPMGR_PUBLIC_BASE_URL=https://wpmgr.example.com   # this control plane, agent-reachable
+WPMGR_PUBLIC_BASE_URL=https://wpmgr.example.com   # this control plane: the origin browsers and agents use
 WPMGR_S3_ENDPOINT=https://s3.example.com          # MUST be reachable by remote agents
 WPMGR_DB_PASSWORD=...                             # not the dev default
 WPMGR_S3_SECRET_KEY=...                            # not the dev default

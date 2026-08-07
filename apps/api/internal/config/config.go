@@ -20,10 +20,16 @@ type Config struct {
 	HTTPAddr string `koanf:"http_addr"`
 	LogLevel string `koanf:"log_level"`
 	// PublicBaseURL (WPMGR_PUBLIC_BASE_URL) is the externally reachable origin
-	// of this control plane. It is typed here rather than read from the
-	// environment ad hoc because Validate has to judge it: the social sign-in
-	// redirect_uri is DERIVED from it, so an empty value is not a missing
-	// convenience, it is a redirect_uri every provider rejects.
+	// of this control plane: the origin every link the product hands out is
+	// built from (password reset, invitations, agent callbacks, the derived
+	// social sign-in redirect_uri).
+	//
+	// It is typed here so there is ONE value. It used to be read with
+	// os.Getenv at sixteen call sites, which meant a YAML-configured install
+	// had a public_base_url nothing read, and any check of the variable judged
+	// a string no consumer used. Load normalizes it (see
+	// NormalizePublicBaseURL) so the value checked and the value used are the
+	// same string, byte for byte.
 	PublicBaseURL string           `koanf:"public_base_url"`
 	DB            DBConfig         `koanf:"db"`
 	Redis         RedisConfig      `koanf:"redis"`
@@ -855,7 +861,20 @@ func Load(path string) (Config, error) {
 	if err := k.Unmarshal("", &cfg); err != nil {
 		return Config{}, fmt.Errorf("unmarshal config: %w", err)
 	}
+	// Normalize ONCE, here, so every consumer and every check sees the same
+	// string. Consumers append paths to this value; a check that trimmed and a
+	// consumer that did not would disagree about what was configured, and the
+	// check would then approve a value nothing uses.
+	cfg.PublicBaseURL = NormalizePublicBaseURL(cfg.PublicBaseURL)
 	return cfg, nil
+}
+
+// NormalizePublicBaseURL is the canonical form of WPMGR_PUBLIC_BASE_URL: no
+// surrounding whitespace (a stray space or newline survives .env parsing and
+// docker-compose interpolation) and no trailing slash (every consumer appends
+// an absolute path, so a trailing slash yields a doubled separator).
+func NormalizePublicBaseURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 // mapEnvKey maps the flat WPMGR_* env names (see .env.example) to the nested

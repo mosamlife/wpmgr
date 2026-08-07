@@ -71,8 +71,14 @@ type Issue struct {
 //  4. WPMGR_AUTH_WEBAUTHN_RP_ORIGINS — production-only: https, no loopback.
 //  5. WPMGR_RIVER_MEDIA_SCHEMA — must be a simple Postgres identifier.
 //  6. WPMGR_BILLING_* — hosted-only: no partially configured payment provider.
-//  7. WPMGR_SOCIAL_* and WPMGR_PUBLIC_BASE_URL — no partially configured social
-//     provider, and an absolute public base URL once one is configured.
+//
+// EVERY ISSUE RETURNED HERE STOPS THE CONTROL PLANE FROM SERVING (main parks in
+// serveDegraded, where /readyz 503s and nothing else answers at all). That is
+// the bar for adding a check to this function: the configuration must be one
+// under which the product cannot be trusted to run, not merely one under which
+// some optional feature will not work. A problem confined to a single feature
+// belongs in Advisories, which degrades that feature and leaves the rest of the
+// control plane serving.
 //
 // The production guard mirrors the exact condition used during full boot: checks
 // 2 and 3 are skipped in non-production environments so the function is safe to
@@ -160,20 +166,48 @@ func Validate(cfg Config) []Issue {
 		issues = append(issues, validateRazorpayConfig(cfg.Billing.Razorpay)...)
 	}
 
-	// 7. Social sign-in, checked ONLY once the operator has started configuring
-	// it. Both halves of the check exist because social sign-in is the one
-	// subsystem here that can be misconfigured into total silence: a provider
-	// with half a credential simply does not appear, and a missing public base
-	// URL produces a redirect_uri the provider rejects, neither of which
-	// produces a log line, a failed health check or a visible button.
-	issues = append(issues, validateSocialConfig(cfg)...)
-
 	return issues
 }
 
-// validateSocialConfig refuses a social configuration that cannot work, on the
-// same principle as the Stripe and Razorpay checks above: an optional
-// subsystem is either off or whole, never half-wired.
+// Advisories reports configuration problems that must NOT stop the control
+// plane from serving.
+//
+// The distinction from Validate is the whole point of this function. An
+// operator who half-enters a Google client id has made a mistake about ONE
+// sign-in button. Parking the process in degraded boot over it would take down
+// backups, updates, uptime monitoring and every dashboard for every tenant, and
+// it would do so on the upgrade path, where the operator did not change
+// anything and has no reason to suspect the variable they set months ago. That
+// is the same trade that was already rejected for Google's discovery call:
+// nothing about one sign-in method is worth the control plane.
+//
+// So the FEATURE degrades, never the process. Callers log these, surface them
+// in wpmgr-cli validate-env, and switch off the affected feature (see
+// Config.SocialSignInUsable) so no button renders that would fail at the
+// provider.
+func Advisories(cfg Config) []Issue {
+	issues := validateSocialConfig(cfg)
+	if cfg.IsProduction() {
+		if issue := insecurePublicBaseURLIssue(cfg.PublicBaseURL); issue != nil {
+			issues = append(issues, *issue)
+		}
+	}
+	return issues
+}
+
+// SocialSignInUsable reports whether the derived OAuth redirect_uri would be an
+// absolute URL, which is the condition under which social sign-in can work at
+// all.
+//
+// Callers use it to switch the feature OFF rather than to refuse to boot: a
+// provider whose redirect_uri is the relative path /auth/social/google/callback
+// renders a button that dead-ends at a provider error page, so not rendering it
+// is the honest degradation.
+func (c Config) SocialSignInUsable() bool {
+	return validatePublicBaseURL(c.PublicBaseURL) == nil
+}
+
+// validateSocialConfig reports a social configuration that cannot work.
 //
 // It reports two distinct mistakes.
 //
@@ -183,13 +217,13 @@ func Validate(cfg Config) []Issue {
 // operator typed one of the two variables, so they meant to switch this on, and
 // the install owes them the reason it did not happen.
 //
-// A MISSING PUBLIC BASE URL. The OAuth redirect_uri is derived, never
-// configured, as <public base URL>/auth/social/<provider>/callback. That
+// A MISSING OR RELATIVE PUBLIC BASE URL. The OAuth redirect_uri is derived,
+// never configured, as <public base URL>/auth/social/<provider>/callback. That
 // derivation is a security property, but it makes the sign-in flow depend on a
-// variable that nothing else refuses to boot without, so an unset value yields
-// the relative path /auth/social/google/callback. Every provider rejects it,
-// and the operator sees only a provider error page with no hint that the fault
-// is in their own environment.
+// variable nothing else refuses to start without, so an unset value yields the
+// relative path /auth/social/google/callback. Every provider rejects it, and
+// the operator sees only a provider error page with no hint that the fault is
+// in their own environment.
 func validateSocialConfig(cfg Config) []Issue {
 	var issues []Issue
 
@@ -236,27 +270,63 @@ const publicBaseURLName = "WPMGR_PUBLIC_BASE_URL"
 
 // validatePublicBaseURL requires an absolute origin: scheme plus host.
 //
-// It deliberately does NOT require https. A provider will refuse a plain-http
-// redirect URI itself, loudly, at registration time, and a self-hosted operator
-// testing on http://localhost is doing something legitimate. The check here is
-// only for the failure the operator cannot see: a value that is not an absolute
-// URL at all, which silently produces a relative redirect_uri.
+// It judges the string EXACTLY as given, with no trimming of its own. Load
+// normalizes the value once (NormalizePublicBaseURL) and every consumer reads
+// cfg.PublicBaseURL, so the string judged here is the string that will be
+// concatenated into a redirect_uri. A check that quietly trimmed first would be
+// approving a value nobody uses.
+//
+// It deliberately does NOT require https, which is the separate, production-only
+// question insecurePublicBaseURLIssue asks: a self-hosted operator testing on
+// http://localhost is doing something legitimate, and the failure this check
+// exists for is the one the operator cannot see, a value that is not an
+// absolute URL at all and silently produces a relative redirect_uri.
 func validatePublicBaseURL(raw string) *Issue {
-	v := strings.TrimSpace(raw)
-	if v == "" {
+	if raw == "" {
 		return &Issue{
 			Name:   publicBaseURLName,
-			Reason: "required once a social sign-in provider is configured: the OAuth redirect_uri is derived from it, so an empty value produces the relative path /auth/social/<provider>/callback, which every provider rejects",
+			Reason: "required once a social sign-in provider is configured: the OAuth redirect_uri is derived from it, so an empty value produces the relative path /auth/social/<provider>/callback, which every provider rejects. Social sign-in stays switched off until it is set",
 		}
 	}
-	u, err := url.Parse(v)
+	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return &Issue{
 			Name:   publicBaseURLName,
-			Reason: "must be an absolute URL with an http or https scheme and a host, for example https://manage.example.com, because the social sign-in redirect_uri is derived from it",
+			Reason: "must be an absolute URL with an http or https scheme and a host, for example https://manage.example.com, because the social sign-in redirect_uri is derived from it. Social sign-in stays switched off until it is",
 		}
 	}
 	return nil
+}
+
+// insecurePublicBaseURLIssue reports a plain-http public base URL in production.
+//
+// Narrow on purpose. Loopback is exempt (an operator testing production config
+// locally is not exposing anything), and the whole check is production-only,
+// because a self-hosted install on a private network over http is a choice its
+// operator has already made. What it is not narrow about is the reason: this
+// value is not only the social redirect_uri, it is the origin of every password
+// reset and invitation link, and those carry single-use tokens.
+func insecurePublicBaseURLIssue(raw string) *Issue {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || !strings.EqualFold(u.Scheme, "http") {
+		return nil
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return &Issue{
+		Name:   publicBaseURLName,
+		Reason: "uses plain http in production: reset and invitation links, and the social sign-in redirect_uri, are all built from this origin, so their single-use tokens travel in clear text. Set the https origin your users reach (terminate TLS at your proxy and point this at it)",
+	}
+}
+
+// isLoopbackHost reports whether a hostname names this machine.
+func isLoopbackHost(host string) bool {
+	h := strings.ToLower(host)
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]" || strings.HasSuffix(h, ".localhost")
 }
 
 // validateStripeConfig checks internal consistency of the five Stripe
