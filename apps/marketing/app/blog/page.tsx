@@ -4,6 +4,7 @@ import { buildMetadata, buildBreadcrumbLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { getAllPosts, BLOG_CATEGORIES } from "@/lib/content/blog";
 import { Container, Section, Badge } from "@/components/ui/primitives";
+import { PostArt } from "@/components/blog/post-art";
 import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 
@@ -110,8 +111,16 @@ export default function BlogIndexPage() {
                     <li key={`${frontmatter.category}/${frontmatter.slug}`}>
                       <Link
                         href={`/blog/${frontmatter.category}/${frontmatter.slug}`}
-                        className="group flex h-full flex-col rounded-xl border border-[var(--border)] bg-card p-6 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+                        className="group flex h-full flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-card shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                       >
+                        {/* Featured art. overflow-hidden on the card clips it
+                            under the top corners, so it runs edge to edge. */}
+                        <PostArt
+                          art={frontmatter.art}
+                          category={frontmatter.category}
+                          className="w-full border-b border-[var(--border)]"
+                        />
+                        <div className="flex flex-1 flex-col p-6">
                         <div className="mb-4 flex items-center gap-3">
                           <Badge>{catMeta ? catMeta.label : frontmatter.category}</Badge>
                           <time
@@ -127,6 +136,7 @@ export default function BlogIndexPage() {
                         <p className="mt-auto text-sm leading-relaxed text-[var(--muted-foreground)]">
                           {frontmatter.description}
                         </p>
+                        </div>
                       </Link>
                     </li>
                   );

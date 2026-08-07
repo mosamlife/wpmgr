@@ -1,7 +1,8 @@
 ---
 title: "WordPress File Integrity Monitoring: Detect Unauthorized Changes"
-description: "File integrity monitoring compares your WordPress install against known-good checksums to catch modified or injected files. Here is how it works and when it matters."
+description: "File integrity monitoring compares a WordPress install against known-good checksums to catch modified or injected files. How it works, why the baseline must never advance on its own, and how to read the results."
 category: "wordpress-security"
+art: "integrity"
 date: "2026-06-20"
 author: "WPMgr Team"
 tags: ["security", "file-integrity", "malware"]
@@ -9,61 +10,120 @@ featureSlug: "security"
 solutionSlug: "wordpress-security"
 ---
 
-When an attacker gains access to a WordPress site, the first thing they typically do is modify files: injecting backdoors into plugin code, changing theme files to serve spam, or dropping web shells in the uploads directory. File integrity monitoring is what catches this.
+Vulnerability scanning tells you what could be exploited. File integrity monitoring tells you what already was.
 
-## What file integrity monitoring does
+When somebody gains write access to a WordPress site, the next step is almost always to change files: a backdoor appended to a plugin, a theme template rewritten to serve spam links to search engines only, a web shell dropped into an uploads folder with an innocuous name. None of that is visible on the front end. Most of it is invisible in the admin area too. It is visible on disk, which is where integrity monitoring looks.
 
-File integrity monitoring (FIM) computes cryptographic hashes of files in your WordPress install and compares them against a known-good baseline. Any change to a file changes its hash. If the hash no longer matches, the file has been modified.
+## What it actually does
 
-For WordPress core and plugins hosted on WordPress.org, the "known good" state is the published checksum list at the WordPress.org API. For custom code and anything not on WordPress.org, the known-good state is the baseline WPMgr captured during the last clean scan.
+File integrity monitoring computes a cryptographic hash of each file and compares it against a known-good value. Hashes are extremely sensitive to change: a single altered byte produces a completely different result. So if the hash no longer matches, the file is not what it was.
 
-## Three scan modes
+The interesting question is where "known good" comes from, because WordPress has two very different situations on the same disk.
 
-WPMgr supports three scan scopes:
+For **WordPress core and anything distributed through WordPress.org**, there is an external authority. The WordPress.org API publishes checksums for every released version of core, and for plugins and themes in the directory the canonical package is public. A local file can be compared against a value the site itself never controlled, which is the strongest form of this check.
 
-**Core files only.** The fastest option. Checks WordPress core files against WordPress.org checksums. Catches a WordPress core compromise but misses plugin and theme modifications.
+For **everything else**, no such authority exists. Custom plugins, bespoke themes, commercial plugins sold outside the directory, and every file in uploads have no published checksum anywhere. For these the reference has to be a baseline: a snapshot of hashes recorded by an earlier scan.
 
-**wp-content only.** Skips core (where unauthorized changes are rarer) and focuses on plugins, themes, and uploads, where most injections happen.
+## The baseline problem, and why it decides everything
 
-**Full install.** Comprehensive but slowest. Covers both core and wp-content. Useful for a periodic deep check or after a suspected incident.
+A baseline is a record of what the files looked like at some past moment. It is only meaningful if that moment was clean, and nothing outside the site can tell you whether it was.
 
-## The baseline problem
+This creates a design decision that separates useful integrity monitoring from decorative integrity monitoring: **can the baseline advance by itself?**
 
-For files that are not on WordPress.org (custom plugins, themes, uploaded files), there is no external reference. FIM uses a per-site baseline: a snapshot of file hashes taken during a clean scan. Subsequent scans compare against this baseline.
+If it can, the system is defeated trivially. An attacker writes a backdoor, the next scan notices a new file, the baseline updates to include it, and every subsequent scan reports the site as clean. The tool has been taught that the backdoor is normal. Worse, it now actively reassures you.
 
-The key design decision is whether the baseline can advance automatically. WPMgr's stance is that it cannot. A flagged file stays flagged until an operator reviews it and explicitly accepts it. The baseline never silently advances past an unreviewed change. This prevents an attacker from injecting a file, waiting for the baseline to update, and then appearing clean.
+WPMgr's baseline does not advance on its own. A flagged file stays flagged until a person looks at it and explicitly accepts it. That is deliberately more work, and it is the only version of this feature that means anything. An accepted change is a decision somebody made; a silently absorbed change is a decision nobody made.
 
-## Reading scan results
+The corollary matters when you adopt the tool: your first baseline is only as trustworthy as the site was on the day you took it. Capturing a baseline on an already-compromised site records the compromise as normal. If you are enabling this on a site with unknown history, it is worth pairing the first scan with a core-checksum comparison, which does not depend on the baseline at all.
 
-A scan result categorises every finding:
+## Three scan scopes and when each is right
 
-- **Changed.** A file that existed in the last baseline now has a different hash. For core or wp.org files, "changed" means "no longer matches the published checksum."
-- **Added.** A file is present that was not in the baseline.
-- **Removed.** A file in the baseline is no longer on disk.
+Scanning everything on every run is thorough and slow, and slow scans get turned off. Three scopes cover the realistic cases.
 
-Added files in the uploads directory are common and usually benign (user uploads). Added files in plugin or theme directories are suspicious and warrant investigation. Modified core files are almost always a sign of tampering.
+**Core only.** Fast, and compares against published WordPress.org checksums rather than a local baseline, so it is the highest-confidence check available. Core files being modified is rare and nearly always means tampering. Good as a frequent, cheap heartbeat.
 
-## What to do when something is flagged
+**wp-content only.** Skips core and covers plugins, themes, and uploads, which is where the large majority of injections actually land. This is the sensible default for regular scheduled runs.
 
-Finding a modified file does not mean you have been compromised. Plugin auto-updates, migration tools, and maintenance scripts can all legitimately change files. The first step is to understand whether the change is expected.
+**Full install.** Both of the above. Slower, and worth running periodically and always after a suspected incident, when you want completeness rather than speed.
 
-If the change is expected, review it in the dashboard and accept it to update the baseline for that file. If the change is unexpected, the right response is:
+On a large or media-heavy site, uploads dominate the runtime. Scanning uploads still matters, because dropping a PHP file into a directory that should only ever hold images is a classic move, but it is reasonable to run the full scope less often than the rest.
 
-1. Take the site offline or put it in maintenance mode
-2. Take a backup of the current state for forensics
-3. Restore from the most recent clean backup
-4. Investigate how the change happened (check access logs, plugin change history)
-5. Patch the entry point before bringing the site back online
+## Reading the results
 
-WPMgr's backup and restore flow is integrated with the Security tab so you can go from "flagged file" to "clean restore" without leaving the dashboard.
+Findings come in three kinds, and they carry very different weight depending on where they land.
 
-## Combining FIM with other controls
+**Changed.** A file's hash differs from the reference. For core and directory-hosted files this means it no longer matches the published checksum, which is a strong signal. For baselined files it means it differs from your last accepted state.
 
-File integrity monitoring is most effective as one layer in a defence-in-depth posture:
+**Added.** A file exists that was not in the baseline.
 
-- Vulnerability scanning finds known-vulnerable plugins before they are exploited
-- FIM detects exploitation after it happens
-- Two-factor authentication on the dashboard prevents attackers from using the dashboard itself to deploy changes
-- Backups ensure you can recover regardless
+**Removed.** A baselined file is gone.
 
-See the [Security suite feature page](/features/security/) and the [WordPress security solution](/solutions/wordpress-security/) for the full picture.
+Location does most of the interpretation:
+
+- Added files in **uploads** are usually just uploads. Added files in uploads with executable extensions are not, and are one of the most reliable indicators of a real problem.
+- Added or changed files in **plugin and theme directories** deserve attention, though plugin updates legitimately produce a lot of both.
+- Changed files in **core** are close to conclusive. Core does not change unless something changed it.
+- Changed files at the **web root**, especially `wp-config.php`, `.htaccess`, or an unexpected drop-in in `wp-content`, are worth looking at immediately, because that is where redirects and persistence usually live.
+
+## Expect legitimate noise, and plan for it
+
+A finding is not a compromise. Plenty of ordinary events change files: plugin and core auto-updates, a migration tool, a caching plugin writing config, a deploy, a developer editing a template through the file editor.
+
+This is why the accept step exists, and why the review habit matters more than the alert. A tool that cries wolf and is never triaged is worse than no tool, because it produces a false sense of coverage. The workflow that survives contact with reality is to scan on a schedule, review findings in a batch, accept the ones you can account for, and investigate the ones you cannot.
+
+If you run updates through a controlled flow, the noise drops sharply, because you know when changes were supposed to happen and can accept a plugin update's file changes as a group rather than one at a time.
+
+## When a finding is not explainable
+
+If you cannot account for a change, treat it as an incident rather than a curiosity.
+
+1. **Put the site into maintenance mode** or take it offline. Every minute it serves traffic while compromised is more spam indexed and more visitors exposed.
+2. **Back up the current state before changing anything.** This is not for recovery, it is evidence. If you clean first you lose any chance of understanding what happened.
+3. **Restore from the most recent backup you believe is clean.** Note the word believe: check its date against when the change appeared, because restoring to a point after the intrusion just reinstates it.
+4. **Find the entry point before going back online.** Restoring without patching the way in produces a site that is compromised again within days, often within hours. Check access logs around the file's modification time, review recent plugin installs, and audit administrator accounts and their password history.
+5. **Rotate credentials.** Admin passwords, database password, any API keys stored in `wp-config.php`, and the hosting account itself.
+
+Step four is the one people skip, and it is the reason sites get reinfected repeatedly. A backdoor is a symptom. The vulnerable plugin, reused password, or exposed credential is the cause.
+
+## What it cannot see
+
+The limitation worth understanding before you rely on this: **file integrity monitoring only looks at files.** A large share of WordPress compromises leave little or nothing on disk.
+
+- **Injected administrator accounts** live in the `wp_users` table. Every file hash matches and there is a new admin you did not create.
+- **Malicious content in options.** Redirect rules, injected scripts, and spam payloads are frequently stored in `wp_options` and executed by legitimate, unmodified plugin code. A common pattern uses a real plugin's own settings to serve the attacker's content, so nothing on disk is wrong.
+- **Scheduled tasks.** A malicious cron entry in `wp_options` can re-download a backdoor after you delete it, which is why files sometimes reappear after a clean.
+- **Injected posts and comments** are ordinary database rows.
+- **Anything outside the WordPress directory.** A compromised hosting account may have payloads in other sites on the same server, in the home directory, or in cron at the system level.
+
+This is also the practical answer to "I cleaned the files and it came back". If a scan shows a reinfection with no explanation, the persistence is almost certainly in the database or in a scheduled task, not in the files you keep deleting.
+
+Checking the admin user list and the active scheduled tasks takes two minutes and belongs in the same review as the file findings.
+
+## Scheduling that people actually keep
+
+A scan that runs while a site is under load is a scan somebody eventually disables. Two settings decide whether this stays switched on.
+
+**Frequency by scope.** Daily is reasonable for core or wp-content. Full-install scans including uploads are better weekly on a media-heavy site, or on demand after an incident.
+
+**Timing.** Hashing every file is I/O bound, and on shared hosting it competes with the site itself. Schedule it for the site's own quiet hours rather than yours, which for a client base spread across time zones is not the same thing.
+
+The other half is alerting. Findings you have to go looking for are findings you see a week late. What you want is to be told when something new appears and left alone when nothing has, which means the noise reduction above is not a nicety, it is what makes the alerts survivable.
+
+## Where it sits among the other controls
+
+Integrity monitoring is a detective control, not a preventive one. It does not stop anything. It tells you something happened, which is only useful alongside the controls that reduce how often that is true and the ones that let you recover.
+
+- [Vulnerability scanning](/blog/wordpress-security/wordpress-vulnerability-scanning) closes known holes before they are used.
+- [Login hardening and two-factor authentication](/blog/wordpress-security/harden-wordpress-login) cut off the credential route, which is how a surprising share of "hacks" actually happen.
+- Integrity monitoring catches what got through anyway.
+- [Backups](/features/backups) are what turn a compromise into an afternoon rather than a rebuild.
+
+Each covers what the others miss. Integrity monitoring in isolation is an alarm on a door you left unlocked.
+
+## Running it across a fleet
+
+The per-site question is "is this site clean". The portfolio question is "which of my sites has an unreviewed finding right now", and only the second one scales.
+
+WPMgr runs scans from the control plane on a schedule you set, surfaces findings per site and across the fleet, and keeps the backup and restore flow in the same place, so going from a flagged file to a clean restore does not mean leaving the dashboard and reconstructing context.
+
+See the [Security suite feature page](/features/security) for the controls, and the [WordPress security solution](/solutions/wordpress-security) for how they fit together.

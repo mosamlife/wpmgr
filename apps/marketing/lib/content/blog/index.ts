@@ -41,6 +41,12 @@ export type BlogPostFrontmatter = {
   author?: string;
   /** Optional: path relative to /public for the OG thumbnail */
   image?: string;
+  /**
+   * Which featured illustration to draw, from the registry in
+   * components/blog/post-art.tsx. Optional: an unset or unrecognised value
+   * falls back to the post's category illustration, so a card is never blank.
+   */
+  art?: string;
   /** 1 to 3 tags for internal cross-linking */
   tags?: string[];
   /** Funnel: the feature page this post links toward */

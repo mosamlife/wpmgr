@@ -1,7 +1,8 @@
 ---
 title: "Redis Object Cache for WordPress: When It Helps and When It Does Not"
-description: "Redis object cache stores the results of expensive database queries so WordPress does not repeat them. Here is when it makes a real difference and how to measure it."
+description: "Persistent object caching stores the results of expensive database queries across requests. Where it earns its keep, where it adds complexity for nothing, and how to tell the difference from your own numbers."
 category: "wordpress-performance"
+art: "cache"
 date: "2026-06-19"
 author: "WPMgr Team"
 tags: ["performance", "redis", "object-cache", "caching"]
@@ -9,53 +10,103 @@ featureSlug: "object-cache"
 solutionSlug: "wordpress-performance"
 ---
 
-Redis object cache is one of the most effective WordPress performance tools available, but it is also one of the most misunderstood. It is not a substitute for full-page caching and it will not help every site equally. Understanding when it helps lets you deploy it where it delivers real value.
+Redis object caching is one of the most effective things you can do to a WordPress site, and one of the most frequently deployed where it does nothing at all. Both statements are true, and which one applies to you depends on facts about your traffic that are easy to check before you install anything.
 
-## What the WordPress object cache does
+## What the object cache actually is
 
-WordPress has a built-in object cache API. During a page load, WordPress checks the object cache before running a database query. If the result is already in the cache, it uses that result instead of querying the database.
+WordPress has had an object cache API since long before Redis was involved. During a page load, before running a database query, WordPress checks whether it already has the answer.
 
-By default, the object cache is in-memory and per-request: it stores results only for the duration of the current PHP request. When the request ends, the cache is cleared.
+The important detail is the default backend. Out of the box the object cache is **per request**: it lives in PHP memory for the duration of one page load and is discarded when the request ends. It stops WordPress asking for the same option twice while building one page. It does nothing for the next visitor.
 
-Redis (or Memcached) extends the object cache to be persistent: cached results survive across requests. The next visitor to trigger the same database query gets the result from Redis instead of from the database.
+Dropping in Redis or Memcached makes it **persistent**. Cached results survive across requests, so a query run for one visitor can answer for the next.
 
-## When Redis object cache makes a difference
+That single word, persistent, is the whole feature. It also explains every case where it helps and every case where it does not: the benefit exists only when the same query is asked more than once, by different requests, within the cache lifetime.
 
-The object cache is most effective for:
+## Where it earns its keep
 
-**Sites with high database query overhead.** WooCommerce stores, membership sites, and heavily customised WordPress installs often run dozens of database queries per page load. If those queries hit the same data repeatedly, caching them in Redis has a compounding effect.
+**Sites doing real database work per page.** A default WordPress blog post might run a few dozen queries. A WooCommerce category page with filters, or a membership site resolving access rules, or an install with forty plugins each fetching their own options can run many times that. When those queries repeat across visitors, persistent caching removes them.
 
-**High-traffic sites where the same queries are hit frequently.** The benefit of persistent object caching scales with traffic. A site with 100 requests per hour has little benefit from a cross-request cache. A site with 10,000 requests per hour benefits a lot.
+**Traffic volume.** The benefit scales with how often the same query recurs before it expires. At a hundred requests an hour, most cached entries expire unused. At ten thousand, the cache is warm and nearly everything is a hit.
 
-**Sites where full-page caching cannot be used.** WooCommerce cart pages, membership-gated content, and pages that vary by user cannot be served from a full-page cache. Redis can still cache the database queries that generate those personalised responses.
+**Pages that full-page caching cannot touch.** This is the strongest case. A logged-in visitor, a cart, a member-only page, and a personalised dashboard all have to run PHP, and full-page caching is unavailable by definition. Redis cannot make the page static, but it can strip the repeated database work out of generating it. On a store where a meaningful share of traffic is logged in, this is where the wins are.
 
-## When Redis object cache does not help much
+**Autoloaded options.** WordPress loads every autoloaded option on every request. On a site where plugins have accumulated a bloated `wp_options` table, that is a large query on the critical path of literally every page. Persistent caching removes the repetition, though the honest fix is to clean up what is being autoloaded.
 
-**Static sites or sites with heavy full-page caching.** If most of your traffic is served from a full-page cache (HTML cached at the server), WordPress PHP does not run at all for those requests. The object cache is never consulted. Adding Redis to a well-cached static site adds complexity without benefit.
+## Where it does not help
 
-**Sites with very low traffic.** The cross-request benefit requires that the same query be hit multiple times across requests. Low-traffic sites may never see the same query twice before the cached result expires.
+**A site already served almost entirely from full-page cache.** If anonymous visitors get prebuilt HTML, PHP never runs for them, so the object cache is never consulted. Adding Redis to a well-cached brochure site adds a service to run, monitor, and secure, in exchange for improving requests that were not happening. This is the most common misapplication.
 
-**Sites with queries that always return different results.** If every visitor triggers queries that return unique results (for example, a personalised feed with no shared data), caching the responses is not useful.
+**Low traffic.** Without repetition there is nothing to reuse.
 
-## Understanding hit ratio
+**Genuinely unique queries.** If every request produces different results with no shared data, there is nothing to hit.
 
-The hit ratio is the percentage of object cache lookups that return a cached result rather than falling through to the database. A hit ratio below 70% suggests the cache is not warm, the TTL (time to live) settings are too short, or the site's query patterns do not benefit from caching.
+**A slow database that is slow for other reasons.** Caching in front of missing indexes or a badly written meta query hides the symptom for cached paths and leaves it in place for everything else. Fix the query, then cache it.
 
-WPMgr tracks the Redis hit ratio, memory usage, and latency per site and shows them in the dashboard. A rising hit ratio after enabling Redis is confirmation that it is working. A persistently low hit ratio may mean you should investigate query patterns before concluding Redis is the right tool.
+## Measure before and after, with the right number
 
-## Eviction policy matters
+The number to watch is the **hit ratio**: the share of lookups answered from cache rather than falling through to the database.
 
-Redis has a fixed memory allocation. When that allocation fills, it must evict existing entries to make room for new ones. The eviction policy determines which entries are removed.
+A ratio below roughly 70 percent means something is wrong, and it is worth knowing which thing. The cache may still be cold, in which case it climbs on its own. Memory may be too small, so entries are evicted before they can be reused. Expiry times may be shorter than the interval between repeat requests. Or the site's query patterns genuinely do not repeat, which is a real answer and means Redis is not your problem.
 
-For a WordPress object cache, `allkeys-lru` (evict the least recently used key regardless of whether it has an expiry) is a sensible default. It ensures that the most-accessed data stays in the cache under memory pressure. Without the right policy, a full cache might evict frequently-used entries in favour of entries that will never be read again.
+Watch three things together, because any one alone misleads: hit ratio, memory used against memory allocated, and eviction count. A high hit ratio with heavy eviction means the cache is working and starved. WPMgr reports all three per site, so the question "did this help" has an answer rather than an opinion.
 
-## Combining Redis with full-page caching
+The other measurement worth taking is the one people skip: what the page cost before. If time to first byte was already 200ms, the database was not your bottleneck and nothing here will move it much.
 
-The most effective WordPress performance configuration layers both:
+## Memory and eviction policy
 
-- Full-page caching serves anonymous traffic without running PHP
-- Redis object cache serves authenticated or uncacheable requests with minimal database overhead
+Redis has a fixed memory ceiling. When it fills, the eviction policy decides what goes.
 
-WPMgr supports both on the same site. Full-page caching is configured through the Performance settings; Redis object cache is a separate per-site toggle that connects to a Redis instance and installs the object-cache drop-in automatically.
+For a WordPress object cache, `allkeys-lru` is the sensible default: evict the least recently used key, whether or not it carries an expiry. This keeps hot data resident under pressure.
 
-For the complete performance picture, see the [Redis Object Cache feature page](/features/object-cache/) and the [speed up WordPress solution guide](/solutions/wordpress-performance/).
+The policy to avoid is `noeviction`, which returns errors on write instead of making room. WordPress generally handles a failed cache write by carrying on and hitting the database, so the visible symptom is not an error page but a cache that silently stops accepting new entries and a hit ratio that decays while everything looks superficially fine.
+
+`volatile-lru` only evicts keys with an expiry set, which sounds safer and behaves badly here, because WordPress sets many entries with no expiry at all. Under pressure it can find nothing eligible to evict.
+
+## Transients quietly become a different feature
+
+WordPress transients are cached values with an expiry, and where they are stored depends entirely on whether a persistent object cache exists.
+
+Without one, transients go in the `wp_options` table. They are rows in your database, they persist across requests because the database does, and expired ones are not reliably cleaned up, which is why `wp_options` on an older site is often full of stale transient rows.
+
+Install a persistent object cache and transients move into it instead. Two consequences follow, and both surprise people.
+
+The good one: the `wp_options` bloat stops accumulating, and transient reads stop being database queries. On sites where plugins lean heavily on transients this is a meaningful share of the benefit.
+
+The one that causes support tickets: **transients now evaporate when the cache is flushed or evicted.** Code that stored something expensive in a transient and assumed it would survive because it always had now finds it gone. Anything written to survive a restart belongs in an option, not a transient. That was always true; a persistent object cache is just the thing that makes it visible.
+
+## Redis or Memcached
+
+Both work. WordPress does not care which sits behind the drop-in.
+
+Memcached is simpler, purely a volatile cache, and slightly faster for plain key lookups. Redis has richer data types, optional persistence to disk, and better introspection, which in practice means you can actually inspect what is cached and why the hit ratio is what it is.
+
+For WordPress the deciding factor is usually availability: use whichever your host already runs well. Redis is the more common default now and the easier of the two to debug, which is why it is what most guidance, including this page, assumes.
+
+## Stale data and flushing
+
+Caching introduces the possibility of serving something that is no longer true. WordPress handles most of this for you, invalidating relevant keys when posts and options change, and the common plugins do the same. The problems arise at the edges.
+
+Code writing directly to the database with `$wpdb` bypasses the invalidation entirely, so the cache keeps returning the old value indefinitely. Imports, bulk edit scripts, and migrations frequently do this, which is why a bulk operation can appear to have done nothing until the cache is flushed.
+
+The symptom is distinctive: changes that are correct in the database and wrong on the page, sometimes for some visitors and not others. If you see that, flush the cache before debugging anything else. If flushing fixes it, the bug is a missing invalidation, not the cache.
+
+Worth knowing before an incident: flushing an object cache is safe. Nothing is lost that cannot be recomputed, the only cost is a period of slower requests while it warms again.
+
+## Two operational traps
+
+**Redis reachable from outside.** Redis is not designed to sit on the public internet. It should bind to localhost or a private network, require a password, and never be exposed. A publicly reachable instance with no auth is a well-known and heavily scanned target, and on a shared host it may also be visible to other tenants.
+
+**One Redis, many sites, one keyspace.** Pointing several WordPress installs at the same Redis without separating them means one site can read and flush another's entries. Use a distinct database index or key prefix per site. This bites agencies specifically, and it presents as impossible-to-reproduce bugs where clearing the cache on one client's site changes another's.
+
+## Layer it with full-page caching
+
+These solve different problems and the strongest setup uses both:
+
+- **Full-page caching** serves anonymous traffic without executing PHP at all. Largest single win for most sites.
+- **Object caching** reduces the cost of everything that must execute PHP: logged-in sessions, carts, checkout, admin.
+
+Configure page caching first and measure. Then, if a meaningful share of your traffic is authenticated or otherwise uncacheable, add object caching for that share and watch the hit ratio confirm it.
+
+WPMgr runs both on the same site. Page caching lives in the Performance settings, and the object cache is a per-site toggle that connects to Redis and installs the drop-in for you, with hit ratio, memory, and latency reported back so the decision to keep it is based on your numbers.
+
+See the [Redis Object Cache feature page](/features/object-cache) and the [speed up WordPress guide](/solutions/wordpress-performance).

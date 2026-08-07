@@ -1,7 +1,8 @@
 ---
 title: "How to Harden Your WordPress Login Page"
-description: "Practical steps to reduce automated login attacks on WordPress: limit attempts, change the login URL, enforce strong passwords, and add a second factor."
+description: "Practical steps to cut automated login attacks on WordPress: rate limiting that survives a PHP error, closing XML-RPC multicall, stopping user enumeration, and adding a second factor."
 category: "wordpress-security"
+art: "gate"
 date: "2026-06-15"
 author: "WPMgr Team"
 tags: ["security", "login", "2fa"]
@@ -9,56 +10,102 @@ featureSlug: "security"
 solutionSlug: "wordpress-security"
 ---
 
-Automated login attacks are one of the most common threats to WordPress sites. Bots scan for `wp-login.php` around the clock, testing credential lists against every site they find. A stock WordPress install gives attackers an unlimited runway.
+Every WordPress site on the public internet receives automated login traffic. Not because anyone chose it, but because `wp-login.php` sits at a predictable address on millions of hosts, and testing credential lists against a predictable address is cheap.
 
-Hardening your login page is one of the highest-return security investments you can make because it cuts off a whole class of attacks before they reach the application layer.
+A stock install gives that traffic an unlimited runway. There is no attempt limit, the username is often discoverable, and a second protocol on the same host will happily accept hundreds of credential guesses in a single request. Closing those gaps is among the highest-return security work available, because it removes a whole class of attack before it reaches your application code.
 
-## Why the default login page is a target
+## Why the login page is the default target
 
-WordPress advertises its login URL in the page source (`/wp-login.php`), in its XML-RPC endpoint, and through user enumeration via author archive URLs. Bots fingerprint WordPress installs automatically and queue them for credential stuffing.
+Three properties make it attractive.
 
-The consequences of a successful login attack go beyond account compromise. High-volume attempts degrade server performance, inflate hosting bills, and generate noise that masks real security events in your logs.
+It is **findable**. WordPress announces itself in page source, in HTTP headers, in the readme file, and through the REST API. Fingerprinting a WordPress install takes one request.
 
-## Step 1: Limit login attempts
+It is **uniform**. The login form is at the same path, takes the same field names, and returns distinguishable responses across the entire ecosystem. One script works everywhere.
 
-WordPress allows unlimited login attempts by default. Restricting failed attempts to three to five per IP address per hour stops most credential stuffing with no user impact.
+It is **chatty**. By default WordPress tells an attacker whether the username was wrong or the password was wrong. That turns one guess into two pieces of information, and it means an attacker can confirm a valid username before spending a single attempt on passwords.
 
-WPMgr enforces this at the server layer through the agent, so limits apply even if PHP returns a 500 error during the login request. The control plane also tracks failed-attempt counts across your fleet so you can spot a targeted attack on a specific site.
+The damage is not limited to a successful login either. Sustained attempts consume PHP workers, inflate hosting bills on metered plans, and bury real security events in log noise. Plenty of sites that were never breached have still been taken down by the load of people trying.
 
-## Step 2: Block XML-RPC when you do not need it
+## Limit attempts, at the right layer
 
-XML-RPC is a legacy remote-procedure protocol that WordPress still exposes. It has a `system.multicall` method that lets attackers test hundreds of credential pairs in a single HTTP request, which makes rate limiting on the login form irrelevant if XML-RPC is open.
+WordPress permits unlimited login attempts. Capping failures per IP address, somewhere around three to five per hour, stops most credential stuffing with no effect on legitimate users, who almost never fail five times in an hour.
 
-If you do not use XML-RPC (Jetpack and older mobile apps need it; most modern setups do not), disable it entirely. WPMgr lets you toggle this per site from the Security tab. The "pingbacks only" option keeps comment pingbacks working while closing the multicall exploit surface.
+Where the limit is enforced matters more than the number. A limiter implemented purely in PHP inside WordPress is bypassed whenever the request does not complete normally: if the site throws a fatal error during login, the attempt may never be recorded, and an attacker who can reliably trigger an error gets free guesses. WPMgr enforces limits through the agent at a layer that still counts the attempt when PHP returns a 500.
 
-## Step 3: Restrict the REST API
+The second thing worth having is a view across sites. A single site showing forty failures an hour is background noise. The same forty against one specific site while the rest of your fleet sees nothing is somebody who has picked a target, and that distinction only exists if the counts are aggregated centrally.
 
-WordPress exposes a REST API at `/wp-json/`. Unauthenticated access is needed for some themes and plugins, but several endpoints leak user data (the `/users` route, for example, returns display names, slugs, and IDs that attackers use for targeted credential attacks).
+## Close XML-RPC, or at least close multicall
 
-You can restrict the REST API to authenticated requests only, or allow public access only to specific namespaces. WPMgr's Security tab gives you this toggle without writing code.
+XML-RPC is a legacy remote procedure protocol that WordPress still exposes at `/xmlrpc.php`. It matters here for one reason: the `system.multicall` method batches many calls into a single HTTP request.
 
-## Step 4: Move or obfuscate the login URL
+That single property defeats naive rate limiting entirely. If your limiter counts requests, and one request carries three hundred credential pairs, the attacker gets three hundred guesses for the price of one. Everything you did to the login form is irrelevant while this endpoint is open.
 
-Moving `wp-login.php` to a custom address removes it from automated scanners. This is a deterrent, not a defence, because a determined attacker can still find the page, but it eliminates the majority of low-effort automated traffic.
+Some things still need it. Jetpack uses it, as do older mobile apps and some remote publishing tools. Most modern setups do not. If nothing depends on it, disable it. If pingbacks are the only thing you want, a pingbacks-only mode keeps those working while removing the multicall surface. WPMgr exposes this per site from the Security tab so you can make the decision once and apply it everywhere.
 
-WPMgr's "Hide login" feature sets a custom login path per site. The control plane continues to work normally because it accesses sites through a signed token path, not the login form.
+## Stop the site from confirming usernames
 
-## Step 5: Force unique display names
+An attacker needs a username and a password. WordPress is unhelpfully generous with the first half.
 
-WordPress defaults to showing usernames as display names. If your display name matches your username, you have handed attackers half of the credential pair. Forcing unique display names that differ from login usernames closes this gap.
+**Author archives.** Requesting `/?author=1` redirects to that user's archive, and the resulting URL contains their login slug. Walking the integers enumerates the whole user table.
 
-## Step 6: Enable two-factor authentication
+**The REST API users route.** `/wp-json/wp/v2/users` returns display names, slugs, and IDs to unauthenticated requests on a default install.
 
-A strong password plus a second factor is the most reliable protection against credential-based attacks. Even if an attacker obtains a user's password through a data breach, they cannot log in without the second factor.
+**Login error messages.** "Unknown username" and "The password you entered for the username admin is incorrect" are different messages, and the difference is the answer.
 
-WPMgr lets operators require 2FA for any user role on a per-site basis. Supported methods include authenticator apps (TOTP) and email one-time codes. A configurable grace period lets existing users enroll before the policy is enforced.
+**Display names.** WordPress shows the display name on posts and comments, and by default the display name is the username. If your byline reads `sarah`, that is the login.
 
-## Step 7: Block author archive enumeration
+Fix all four. Block author enumeration redirects, restrict the users route to authenticated requests, and force display names that differ from login names. WPMgr's Security tab covers the first three without code, and the display name rule is worth enforcing as policy because it costs nothing.
 
-WordPress creates archive URLs at `/?author=1`, `/?author=2`, and so on that redirect to user profile pages and expose usernames. Blocking these redirects removes one of the most reliable username enumeration vectors.
+Restricting the REST API needs a little judgement. Some themes and plugins genuinely require unauthenticated access to specific namespaces, so blanket-blocking `/wp-json/` can break a site in ways that are not obvious immediately. Restricting the user-listing routes specifically is the high-value, low-risk version.
 
-## Putting it together
+## Moving the login URL: useful, but be honest about it
 
-None of these steps is complicated in isolation. The challenge is applying them consistently across a fleet of sites without missing one. WPMgr's Security tab pushes all of these controls from the control plane to the agent, so you can harden fifty sites in the same time it would take to do one manually.
+Relocating `wp-login.php` to a custom path removes your site from the reach of scanners that only know the default address. In practice that is a large share of the automated traffic, and the drop in log noise is immediate and real.
 
-For more on WordPress security hardening, see the [Security suite feature page](/features/security/) or the [WordPress security solution guide](/solutions/wordpress-security/).
+It is not a defence. The page is still there, still reachable by anyone who finds it, and various things leak the new location if you are careless. Treat it as reducing volume rather than reducing risk, and do not let it substitute for attempt limiting or a second factor.
+
+One practical caution: whatever manages your sites needs to keep working after the move. WPMgr reaches sites over a signed token path rather than the login form, so hiding the login does not lock the control plane out. Anything that automates through the login form will break.
+
+## Add a second factor
+
+Everything above reduces the number of guesses an attacker gets. A second factor changes the game, because it makes the password insufficient even when correct.
+
+This matters because the most likely way somebody gets a valid password for your site is not guessing it. It is reuse. A password exposed in an unrelated breach, tried against your login, works on the first attempt, and no rate limiter fires because there were no failures.
+
+Require it for administrators at minimum, and for editors on any site where content is revenue. Authenticator apps (TOTP) are the sensible default; email one-time codes are weaker, because they inherit the security of the mailbox, but they are far better than nothing and much easier to roll out to non-technical clients.
+
+Roll it out with a grace period rather than overnight. WPMgr lets you require 2FA per role, per site, with a configurable window for existing users to enrol, which is the difference between a policy that lands and one that generates twenty support emails on a Monday.
+
+## Restricting wp-admin at the web server
+
+A layer above WordPress entirely: require HTTP authentication or an IP allowlist on `/wp-admin` and `/wp-login.php` at the web server. A request that fails there never reaches PHP, so it costs you nothing to serve and cannot exploit anything in the application.
+
+It is the strongest option on this page and the least often usable. An IP allowlist needs everyone who administers the site to have a stable address, which rules out most agencies with remote staff and anyone on mobile networks. HTTP auth adds a second prompt that clients find confusing and will ask you to remove.
+
+Where it fits well is sites with a small, fixed set of administrators and no client logins: your own properties, internal tools, and staging environments. Staging in particular is worth doing every time, because staging sites are routinely left with weak passwords, real data, and no monitoring.
+
+One caveat: blocking `/wp-admin` wholesale breaks `admin-ajax.php`, which plenty of front-end features on public pages call without a login. Exempt that file, or expect intermittent breakage that is difficult to trace.
+
+## Sessions and application passwords
+
+Two smaller surfaces worth closing once the main ones are done.
+
+**Sessions outlive password changes unless you end them.** Changing a compromised password does not, by itself, log out an attacker who already has a valid session cookie. WordPress can destroy other sessions for a user, and doing so should be part of any credential rotation. Rotating the salts in `wp-config.php` invalidates every session on the site at once, which is the blunt version and is the right move after a confirmed compromise.
+
+**Application passwords bypass two-factor authentication by design.** They exist so that external tools can authenticate to the REST API, and they are not covered by your 2FA policy. That is correct behaviour and also means an attacker who creates one has a durable credential that survives a password reset. Audit the application passwords on each account, revoke ones you cannot account for, and disable the feature entirely on sites where nothing uses the REST API for authenticated work.
+
+## Two things people skip
+
+**Delete dormant administrator accounts.** The developer who built the site three years ago, the agency you stopped working with, the plugin that created a service account. Each is a full-privilege credential you are not watching. Audit the admin list on every site and reduce it to people who need it this quarter.
+
+**Do not reuse admin credentials across a portfolio.** One password across fifty client sites means one breach is fifty breaches. This is the single most common structural weakness in agency setups, and it turns a contained incident into a catastrophic one.
+
+## Doing it across a fleet
+
+None of these steps is difficult on one site. The difficulty is applying all of them to every site, and knowing which ones drifted.
+
+That is the actual failure mode in an agency: the hardening was done, correctly, at launch, and then a site was migrated, or restored from an old backup, or handed over, and quietly reverted. Nobody notices until it matters.
+
+Push the controls from one place, and check them from one place. WPMgr sends this configuration from the control plane to the agent on each site, so hardening fifty sites takes about as long as hardening one, and the fleet view shows you where the settings do not match what you intended.
+
+For the full set of controls, see the [Security suite feature page](/features/security). For how login hardening fits alongside [vulnerability scanning](/blog/wordpress-security/wordpress-vulnerability-scanning) and file integrity checks, see the [WordPress security solution guide](/solutions/wordpress-security).
