@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -297,7 +299,7 @@ func (s *Service) SignInWithSocial(
 			UserID: emailUser.ID, Provider: in.Provider, Subject: in.Subject,
 			Issuer: in.Issuer, Email: in.Email, EmailVerified: in.EmailVerified,
 		}); err != nil {
-			return LoginResult{}, err
+			return LoginResult{}, linkIdentityError(err)
 		}
 		s.recordSocialAudit(ctx, emailUser.ID, in.Provider, "link")
 		return s.finishSocialLogin(ctx, *emailUser, createTenant)
@@ -310,6 +312,41 @@ func (s *Service) SignInWithSocial(
 		s.recordSocialAudit(ctx, u.ID, in.Provider, "register")
 		return s.finishSocialLogin(ctx, u, createTenant)
 	}
+}
+
+// identityUserProviderIndex holds "one identity per provider per user" (m110).
+const identityUserProviderIndex = "user_identities_user_provider_key"
+
+// linkIdentityError names the one link failure a person can act on.
+//
+// The account already holds an identity for this provider, and a DIFFERENT
+// account at that provider is now presenting the same verified address. That is
+// not exotic: a Workspace address is reassigned to a new hire, or an account is
+// deleted and recreated, and the provider issues a NEW subject for an address
+// this install has already seen. The insert then trips the unique index.
+//
+// Left generic it is a dead end, and a permanent one: the refusal carried no
+// reason, and every retry reproduces it exactly, because nothing about the two
+// accounts changes by trying again. Naming it lets the sign-in page say which
+// account to use, or what to disconnect.
+//
+// ONLY this index is translated. A collision on (provider, subject, issuer) is
+// two concurrent callbacks racing to create the same identity, which the caller
+// can neither cause nor fix, so it stays a generic failure.
+func linkIdentityError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != identityUserProviderIndex {
+		return err
+	}
+	// Deliberately does not name the provider: providerLabel falls back to a
+	// phrase that cannot be spliced into this sentence, and the browser is sent
+	// the CODE, not this message, so the sign-in page words it with the context
+	// it already has.
+	return domain.Conflict(
+		"social_provider_already_linked",
+		"a different account at this provider is already connected to the account for this email address. "+
+			"Sign in with the account you connected first, or disconnect it in account settings.",
+	)
 }
 
 // socialStatusGate refuses the same account states the password path refuses.

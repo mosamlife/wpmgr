@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
-	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
 // socialProviders lists what this install offers. The sign-in page calls it so
@@ -37,20 +36,59 @@ func (h *Handler) socialRedirectURL(provider string) string {
 	return strings.TrimRight(h.svc.baseURL, "/") + "/auth/social/" + provider + "/callback"
 }
 
+// socialStartPerMinute caps how often one client may BEGIN a handshake.
+//
+// Each start writes a session record and, for Google, can trigger an outbound
+// discovery call, all from an unauthenticated GET. A person clicking a sign-in
+// button does this once and occasionally retries; nothing legitimate needs ten
+// in a minute, including a shared office address behind one NAT.
+const socialStartPerMinute = 10
+
+// socialStart begins the handshake.
+//
+// LIKE THE CALLBACK, EVERY FAILURE REDIRECTS. This endpoint exists to be
+// navigated to: the browser is following a button, so the address bar is where
+// the response lands. It used to answer an unconfigured or stale provider with
+// a JSON error body, which put `{"error":{"code":"social_provider_disabled"}}`
+// on screen with no way back, at the exact moment the sign-in page one click
+// away could have explained it.
 func (h *Handler) socialStart(c *gin.Context) {
 	provider := c.Param("provider")
 	adapter := h.social.Get(provider)
 	if adapter == nil {
-		httpx.Error(c, domain.Unavailable("social_provider_disabled", "this sign-in method is not configured"))
+		h.socialFail(c, "social_provider_disabled")
+		return
+	}
+	// Ahead of both the session write and the provider call, so a flood costs
+	// this instance a map lookup rather than a store record and a round trip.
+	if !h.allowSocialStart(c) {
+		h.socialFail(c, "social_rate_limited")
 		return
 	}
 	url, state, nonce, verifier, err := adapter.AuthCodeURL(c.Request.Context(), h.socialRedirectURL(provider))
 	if err != nil {
-		httpx.Error(c, domain.Internal("social_url_failed", "failed to build authorization URL").WithCause(err))
+		// Typically provider discovery being unreachable. Coarse on purpose: the
+		// detail is a server-side fact and belongs in logs.
+		h.socialFail(c, "social_start_failed")
 		return
 	}
 	h.sessions.putSocial(c.Request.Context(), provider, state, nonce, verifier)
 	c.Redirect(http.StatusFound, url)
+}
+
+// allowSocialStart applies the per-client budget. Nil limiter (not wired) and an
+// unparseable client address both allow the request, matching the password-reset
+// path: a rate limiter that is not configured must never become an outage.
+func (h *Handler) allowSocialStart(c *gin.Context) bool {
+	if h.svc.limiter == nil {
+		return true
+	}
+	ip := clientAddr(c)
+	if !ip.IsValid() {
+		return true
+	}
+	ok, _ := h.svc.limiter.Allow(c.Request.Context(), "social-start:"+ip.String(), socialStartPerMinute)
+	return ok
 }
 
 // socialCallback completes the handshake.
@@ -68,11 +106,13 @@ func (h *Handler) socialCallback(c *gin.Context) {
 		return
 	}
 
-	wantProvider, state, nonce, verifier := h.sessions.takeSocial(c.Request.Context())
-	// The handshake is single-use and bound to the provider it was started for.
-	// Checking the provider stops a code obtained for one provider being
-	// presented to another's callback.
-	if state == "" || c.Query("state") != state || wantProvider != provider {
+	// The handshake is single-use, bound to the provider it was started for, and
+	// consumed ONLY by the callback it belongs to. Binding the provider stops a
+	// code obtained for one provider being presented to another's callback;
+	// consuming conditionally stops any stray callback from popping a legitimate
+	// sign-in that is still in flight. See takeSocialFor.
+	nonce, verifier, ok := h.sessions.takeSocialFor(c.Request.Context(), provider, c.Query("state"))
+	if !ok {
 		h.socialFail(c, "social_state_mismatch")
 		return
 	}
@@ -122,9 +162,29 @@ func (h *Handler) socialCallback(c *gin.Context) {
 
 // actionableSocialCodes are the refusals the sign-in page can turn into a
 // sentence with a next step. Anything not listed becomes a generic failure.
+//
+// WHY account_disabled AND email_not_verified STAY, having been read as an
+// account-existence oracle. Both are reachable on exactly two paths, and
+// neither answers a question the caller could not already answer:
+//
+//   - the identity path, where (provider, subject) is already bound to this
+//     local account. The caller authenticated at the provider AS that identity,
+//     so they are being told the state of their own account.
+//   - the linking path, which requires the PROVIDER to vouch for the address.
+//     Google and GitHub only vouch for an address its holder controls, so
+//     probing a stranger's address is not something a provider account buys
+//     you. There is no enumeration here, only a person learning about the
+//     account for an address they demonstrably own.
+//
+// Withholding them would not close a channel. social_link_requires_verification
+// is a strictly larger disclosure about the same address on the same path, and
+// it mails that address as well. It would only cost a disabled user the one
+// sentence that explains why they cannot get in, leaving "try again" as the
+// advice for a state that trying again cannot change.
 var actionableSocialCodes = map[string]bool{
 	"social_link_requires_verification": true,
 	"social_email_unverified":           true,
+	"social_provider_already_linked":    true,
 	"account_disabled":                  true,
 	"email_not_verified":                true,
 }

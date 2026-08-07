@@ -957,8 +957,12 @@ paths:
       summary: Begin social sign-in (redirect to the provider)
       description: >
         Redirects (302) to the provider's authorization endpoint with PKCE and a
-        state value held server-side in the session. Returns 503 when the
-        provider is not configured on this install.
+        state value held server-side in the session. ALWAYS redirects, never
+        returns a JSON error body: the caller is a browser following a sign-in
+        button, so a failure sends it back to the sign-in page with a
+        `social_error` code (`social_provider_disabled` when that provider is not
+        configured here, `social_rate_limited` when the client has begun too many
+        handshakes, `social_start_failed` when the provider cannot be reached).
       tags: [auth]
       parameters:
         - name: provider
@@ -969,13 +973,9 @@ paths:
             enum: [google, github]
       responses:
         "302":
-          description: Redirect to the provider
-        "503":
-          description: That provider is not configured
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: >
+            Redirect to the provider, or back to the sign-in page carrying a
+            social_error code.
   /auth/social/{provider}/callback:
     get:
       operationId: socialCallback

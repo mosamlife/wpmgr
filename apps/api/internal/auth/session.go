@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"time"
 
@@ -281,6 +282,10 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 	m.scs.Remove(ctx, sessKeyOAuthProvider)
 }
 
+// socialHandshakeTTL is how long an ABANDONED social handshake keeps its
+// session record alive. See putSocial.
+const socialHandshakeTTL = 15 * time.Minute
+
 // putSocial stores the same handshake values plus the provider the flow was
 // started for. The provider is server-side state on purpose: taking it from the
 // callback URL instead would let anyone who can reach the callback nominate
@@ -288,9 +293,55 @@ func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier st
 func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier string) {
 	m.putOAuth(ctx, state, nonce, verifier)
 	m.scs.Put(ctx, sessKeyOAuthProvider, provider)
+
+	// AN UNAUTHENTICATED GET MUST NOT MINT A LONG-LIVED SESSION. /start is
+	// public, so every crawler, scanner and retry loop that touches it writes a
+	// session record, and each one inherited the full signed-in lifetime: at the
+	// default idle timeout that is a week of store space bought with one
+	// anonymous request.
+	//
+	// A handshake is worth minutes, so an abandoned one expires in minutes.
+	// Completing the sign-in calls RenewToken, which resets the deadline to the
+	// configured lifetime, so nobody who actually signs in is affected. Only the
+	// anonymous case is shortened: a visitor who is already signed in (linking a
+	// second provider) keeps the deadline their own sign-in earned.
+	if _, _, signedIn := m.Current(ctx); !signedIn {
+		m.scs.SetDeadline(ctx, time.Now().Add(socialHandshakeTTL).UTC())
+	}
 }
 
-// takeSocial reads and clears the handshake, including the provider.
+// takeSocialFor consumes the in-flight handshake ONLY when this callback is the
+// one that handshake was started for, and returns whether it was.
+//
+// CONSUMING BEFORE CHECKING WAS A WAY TO KILL SOMEBODY ELSE'S SIGN-IN. takeSocial
+// pops unconditionally, so any request that reached a social callback emptied
+// the session: a stale link, the other provider's callback, or a cross-site
+// top-level navigation, which SameSite=Lax still attaches the cookie to. The
+// real callback then arrived to find no state and failed. Checking first costs
+// nothing and makes the handshake survive everything that is not it.
+//
+// A state that does not match is equally not-this-handshake, so it is left
+// alone too. The state is a one-time CSRF binder, not a credential: leaving it
+// in place cannot authorise anything, while burning it hands anyone who can
+// cause a navigation a denial of service against an in-flight sign-in.
+func (m *SessionManager) takeSocialFor(ctx context.Context, provider, state string) (nonce, verifier string, ok bool) {
+	wantProvider := m.scs.GetString(ctx, sessKeyOAuthProvider)
+	wantState := m.scs.GetString(ctx, sessKeyOAuthState)
+	if wantState == "" || wantProvider != provider {
+		return "", "", false
+	}
+	// Constant time because the stored state is a secret the caller is trying to
+	// present, and a byte-by-byte compare is the shape that leaks it.
+	if subtle.ConstantTimeCompare([]byte(wantState), []byte(state)) != 1 {
+		return "", "", false
+	}
+	_, _, nonce, verifier = m.takeSocial(ctx)
+	return nonce, verifier, true
+}
+
+// takeSocial reads and clears the handshake, including the provider. Callers
+// completing a callback want takeSocialFor, which will not consume a handshake
+// that belongs to a different flow.
 func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier string) {
 	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
 	state, nonce, verifier = m.takeOAuth(ctx)
