@@ -19,6 +19,8 @@ import { buildMetadata, buildBreadcrumbLd, buildFAQPageLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { signupHref } from "@/lib/site";
 import { PLUGIN_COST_CATEGORIES } from "@/lib/content/plugin-costs";
+import { PRICING_TIERS, resolveTierPrices } from "@/lib/content/pricing";
+import { fetchLivePricing } from "@/lib/pricing-live";
 import { PluginStackCalculator } from "./calculator";
 
 export const metadata: Metadata = buildMetadata({
@@ -69,7 +71,16 @@ const METHOD = [
   },
 ];
 
-export default function PluginStackPage() {
+export default async function PluginStackPage() {
+  // The same live quote /pricing renders, resolved at build time, so the two
+  // pages can never show different prices for our own product.
+  const prices = resolveTierPrices(await fetchLivePricing());
+  const wpmgrTiers = PRICING_TIERS.map((tier) => ({
+    name: tier.name,
+    sites: tier.sites,
+    perMonth: prices[tier.id].usd.amountMajor,
+  }));
+
   const breadcrumbLd = buildBreadcrumbLd([
     { name: "Home", href: "/" },
     { name: "Pricing", href: "/pricing" },
@@ -104,7 +115,7 @@ export default function PluginStackPage() {
           </p>
 
           <div className="mt-10">
-            <PluginStackCalculator />
+            <PluginStackCalculator wpmgrTiers={wpmgrTiers} />
           </div>
         </Container>
       </Section>

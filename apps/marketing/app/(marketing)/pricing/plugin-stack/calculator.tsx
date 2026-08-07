@@ -11,6 +11,7 @@ import {
   annualCost,
   resolveTier,
   resolveWpmgrTier,
+  type WpmgrTier,
 } from "@/lib/content/plugin-costs";
 
 /**
@@ -157,7 +158,7 @@ function reducer(state: State, action: Action): State {
 
 const INITIAL: State = { sites: 25, off: [], pick: {} };
 
-export function PluginStackCalculator() {
+export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] }) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const { sites, off } = state;
 
@@ -178,7 +179,7 @@ export function PluginStackCalculator() {
   const total = included.reduce((sum, l) => sum + (l.cost ?? 0), 0);
   const unpriced = included.filter((l) => l.cost === null);
 
-  const wpmgrTier = resolveWpmgrTier(sites);
+  const wpmgrTier = resolveWpmgrTier(wpmgrTiers, sites);
   const wpmgrYear = wpmgrTier ? wpmgrTier.perMonth * 12 : null;
   const saving = wpmgrYear === null ? null : total - wpmgrYear;
 

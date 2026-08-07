@@ -235,14 +235,19 @@ export function annualCost(
  *  largest fleet every product above still publishes a price for. */
 export const SITE_PRESETS = [1, 5, 10, 25, 50, 100, 250, 500];
 
-/** WPMgr hosted tiers, mirrored from lib/content/pricing.ts, in $/month. */
-export const WPMGR_TIERS = [
-  { name: "Free", sites: 3, perMonth: 0 },
-  { name: "Starter", sites: 10, perMonth: 15 },
-  { name: "Agency", sites: 50, perMonth: 59 },
-  { name: "Scale", sites: 200, perMonth: 169 },
-];
+/**
+ * A WPMgr hosted tier, resolved by the page from PRICING_TIERS plus whatever
+ * the control plane quotes live at build time.
+ *
+ * This is a PARAMETER rather than a constant on purpose. An earlier version
+ * hardcoded the ladder here, which duplicated /pricing and would have let the
+ * two pages disagree the first time a price changed. A calculator whose whole
+ * pitch is "every figure is sourced" cannot be the page quoting a stale price
+ * for our own product.
+ */
+export type WpmgrTier = { name: string; sites: number; perMonth: number };
 
-export function resolveWpmgrTier(sites: number) {
-  return WPMGR_TIERS.find((t) => sites <= t.sites) ?? null;
+/** The cheapest hosted tier covering `sites`, or null above the largest one. */
+export function resolveWpmgrTier(tiers: WpmgrTier[], sites: number): WpmgrTier | null {
+  return tiers.find((t) => sites <= t.sites) ?? null;
 }

@@ -14,6 +14,16 @@ export type PricingTier = {
   name: string;
   /** Fallback USD dollars/month, used whenever live pricing is unresolved. */
   price: number;
+  /**
+   * Sites this tier covers. STRUCTURED because more than one page needs it:
+   * /pricing renders it as the first feature line, and /pricing/plugin-stack
+   * uses it to pick the tier that matches the reader's fleet. It used to
+   * exist only as the string "50 sites" inside `features`, which meant the
+   * second page had to hardcode its own copy of the ladder and could drift
+   * from this one silently. The feature line is now generated from this
+   * number, so there is exactly one place to edit.
+   */
+  sites: number;
   audience: string;
   mostPopular?: boolean;
   features: string[];
@@ -26,14 +36,17 @@ export type PricingTier = {
   cta: Cta;
 };
 
-export const PRICING_TIERS: PricingTier[] = [
+// The first feature line is derived from `sites` rather than written out, so
+// the site cap has a single source that both /pricing and the plugin-stack
+// calculator read.
+const TIERS: PricingTier[] = [
   {
     id: "free",
     name: "Free",
     price: 0,
+    sites: 3,
     audience: "For trying it out or a small personal site",
     features: [
-      "3 sites",
       "Bring your own backup storage",
       "5-minute uptime checks",
       "The full feature set, nothing gated",
@@ -49,9 +62,9 @@ export const PRICING_TIERS: PricingTier[] = [
     id: "starter",
     name: "Starter",
     price: 15,
+    sites: 10,
     audience: "For freelancers and small portfolios",
     features: [
-      "10 sites",
       "50 GB managed backup storage",
       "Daily backups",
       "The full feature set, nothing gated",
@@ -67,10 +80,10 @@ export const PRICING_TIERS: PricingTier[] = [
     id: "agency",
     name: "Agency",
     price: 59,
+    sites: 50,
     audience: "The core plan for agencies",
     mostPopular: true,
     features: [
-      "50 sites",
       "250 GB managed backup storage",
       "Hourly backups",
       "The full feature set, nothing gated",
@@ -86,9 +99,9 @@ export const PRICING_TIERS: PricingTier[] = [
     id: "scale",
     name: "Scale",
     price: 169,
+    sites: 200,
     audience: "For large fleets",
     features: [
-      "200 sites",
       "1 TB managed backup storage",
       "Hourly backups",
       "The full feature set, nothing gated",
@@ -101,6 +114,11 @@ export const PRICING_TIERS: PricingTier[] = [
     },
   },
 ];
+
+export const PRICING_TIERS: PricingTier[] = TIERS.map((tier) => ({
+  ...tier,
+  features: [`${tier.sites} sites`, ...tier.features],
+}));
 
 export const PRICING_NOTE =
   "Self-hosting the control plane is free and unlimited forever under the AGPL-3.0 license, with no site limit and no feature gating. Annual billing on the hosted plans is coming soon; every plan above is billed monthly today.";
