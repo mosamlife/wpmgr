@@ -345,14 +345,20 @@ fi
 #    no --hostname flag was given.
 # ---------------------------------------------------------------------------
 current_pub="$(current_value WPMGR_PUBLIC_BASE_URL)"
-# Match both the old :8080 placeholder (pre-fix .env.example) and the new :8081.
+# Every localhost placeholder .env.example has ever shipped. A value missing
+# from this list is read as "the operator chose this deliberately", so the
+# hostname prompt is skipped and the install quietly keeps a localhost URL that
+# no agent can reach: whenever the shipped default changes, add it here.
 placeholder_pub_8080="http://localhost:8080"
 placeholder_pub_8081="http://localhost:8081"
+placeholder_pub_8088="http://localhost:8088"
+placeholder_pub_default="${placeholder_pub_8088}"
 
 _is_placeholder_pub() {
   [ -z "${current_pub}" ] \
     || [ "${current_pub}" = "${placeholder_pub_8080}" ] \
-    || [ "${current_pub}" = "${placeholder_pub_8081}" ]
+    || [ "${current_pub}" = "${placeholder_pub_8081}" ] \
+    || [ "${current_pub}" = "${placeholder_pub_8088}" ]
 }
 
 if [ -n "${HOSTNAME_OVERRIDE}" ]; then
@@ -362,14 +368,15 @@ elif _is_placeholder_pub; then
   if [ -t 0 ]; then
     # stdin is a terminal — prompt.
     printf '\n==> What is the public URL of this control plane?\n'
-    printf '    (Agents use this to reach back; press Enter to keep %s)\n' "${current_pub:-http://localhost:8081}"
+    printf '    (Agents reach back here, emailed links and the social sign-in\n'
+    printf '     callback are built from it; press Enter to keep %s)\n' "${current_pub:-${placeholder_pub_default}}"
     printf '    URL: '
     read -r input_pub </dev/tty || true
-    if [ -n "${input_pub}" ] && [ "${input_pub}" != "${placeholder_pub_8081}" ] && [ "${input_pub}" != "${placeholder_pub_8080}" ]; then
+    if [ -n "${input_pub}" ] && ! { [ "${input_pub}" = "${placeholder_pub_8080}" ] || [ "${input_pub}" = "${placeholder_pub_8081}" ] || [ "${input_pub}" = "${placeholder_pub_8088}" ]; }; then
       set_env_value "WPMGR_PUBLIC_BASE_URL" "${input_pub}"
       log "Set WPMGR_PUBLIC_BASE_URL=${input_pub}"
     else
-      log "WPMGR_PUBLIC_BASE_URL left at ${current_pub:-http://localhost:8081} — update it before adding real sites"
+      log "WPMGR_PUBLIC_BASE_URL left at ${current_pub:-${placeholder_pub_default}}: update it before adding real sites"
     fi
   else
     warn "WPMGR_PUBLIC_BASE_URL is '${current_pub}' (localhost). Set it to a URL your agents can reach."

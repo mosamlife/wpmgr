@@ -171,8 +171,10 @@ func run() error {
 
 	// The agent's media_apply status callback (job-status) MUST be an absolute
 	// CP URL — the agent posts it via wp_remote_post(), which rejects a relative
-	// path. Same env the API uses to build its agent-facing callback URLs.
-	cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	// path. cfg.PublicBaseURL, not os.Getenv: same normalized value the API
+	// builds its agent-facing callback URLs from, and it also honors the YAML
+	// config file, which os.Getenv silently ignored.
+	cpBaseURL := cfg.PublicBaseURL
 	if cpBaseURL == "" {
 		return errEnv("WPMGR_PUBLIC_BASE_URL is required: the media_apply job-status callback must be an absolute CP URL")
 	}

@@ -30,12 +30,23 @@ func (h *Handler) socialProviders(c *gin.Context) {
 	})
 }
 
-// socialRedirectURL derives the callback the provider will send the browser
+// SocialRedirectURL derives the callback the provider will send the browser
 // back to. Derived, never configured: an operator-supplied value could point at
 // a host they do not control, and the provider would happily deliver an
 // authorization code there.
+//
+// Exported because an operator has to register this exact string at the
+// provider, so .env.example documents it, and a documented URL that differs
+// from the produced one by a character is a support ticket with no symptom to
+// search for. The documentation is checked against THIS function
+// (TestEnvExampleDocumentsTheDerivedSocialCallback), not against a second copy
+// of the rule.
+func SocialRedirectURL(baseURL, provider string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/auth/social/" + provider + "/callback"
+}
+
 func (h *Handler) socialRedirectURL(provider string) string {
-	return strings.TrimRight(h.svc.baseURL, "/") + "/auth/social/" + provider + "/callback"
+	return SocialRedirectURL(h.svc.baseURL, provider)
 }
 
 func (h *Handler) socialStart(c *gin.Context) {

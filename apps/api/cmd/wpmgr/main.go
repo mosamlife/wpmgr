@@ -128,10 +128,43 @@ func main() {
 		return
 	}
 
+	// Advisories are the problems that must NOT cost the operator their control
+	// plane: each one disables the single feature it names and nothing else. We
+	// still say so at the top of every boot, because the alternative for a
+	// half-configured feature is silence, and silence is what makes an operator
+	// spend an afternoon on it.
+	for _, iss := range config.Advisories(cfg) {
+		logger.Warn("config advisory: this feature is degraded, the control plane is not",
+			slog.String("setting", iss.Name), slog.String("reason", iss.Reason))
+	}
+
 	if err := run(ctx, cfg, logger); err != nil {
 		slog.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+// bootSocialConfig decides which social providers this boot will offer.
+//
+// It returns an EMPTY config, disabling every provider, when the operator has
+// configured one but WPMGR_PUBLIC_BASE_URL cannot produce an absolute
+// redirect_uri. The whole flow is dead in that state: the derived redirect_uri
+// is the relative path /auth/social/google/callback and every provider rejects
+// it, so the only thing a rendered button can do is send a person to an error
+// page on someone else's domain.
+//
+// DEGRADING THE FEATURE IS THE POINT. Refusing to boot on this would take the
+// entire control plane down, for every tenant, over one sign-in button, and it
+// would do it on the upgrade path where the operator changed nothing. The
+// reason is logged at ERROR (an operator who configured a provider deserves to
+// find out why it vanished) and repeated by wpmgr-cli validate-env.
+func bootSocialConfig(cfg config.Config, logger *slog.Logger) config.SocialConfig {
+	if !cfg.Social.Configured() || cfg.SocialSignInUsable() {
+		return cfg.Social
+	}
+	logger.Error("social sign-in DISABLED: WPMGR_PUBLIC_BASE_URL is not an absolute http(s) URL, so the derived OAuth redirect_uri would be a relative path that every provider rejects. Everything else on this control plane keeps running; run `wpmgr-cli validate-env` for the full text",
+		slog.String("setting", "WPMGR_PUBLIC_BASE_URL"))
+	return config.SocialConfig{}
 }
 
 // ageIdentityDeriveInfo is the fixed HKDF info label used to derive the
@@ -268,7 +301,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// emails. Never auto-demotes. Done before closing migPool (owner DSN, bypasses
 	// RLS). Runs after migrations so the is_superadmin column is guaranteed to exist.
 	if raw := os.Getenv("WPMGR_SUPERADMIN_EMAILS"); raw != "" {
-		saBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		saBaseURL := cfg.PublicBaseURL
 		for _, email := range strings.Split(raw, ",") {
 			// Emails are persisted lowercased (normalizeEmail), so match
 			// case-insensitively.
@@ -340,7 +373,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// an account whose password is unknown — e.g. one seeded before a fix — then
 	// remove the env var so it does not mint a link on every boot.
 	if raw := os.Getenv("WPMGR_SUPERADMIN_RESET_EMAILS"); raw != "" {
-		rsBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		rsBaseURL := cfg.PublicBaseURL
 		for _, email := range strings.Split(raw, ",") {
 			email = strings.ToLower(strings.TrimSpace(email))
 			if email == "" {
@@ -363,7 +396,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// set-password link. Use this to recover an account whose org + sites are
 	// intact but whose user row was deleted. Idempotent. REMOVE the env after use, // it re-mints a link on every boot otherwise.
 	if raw := os.Getenv("WPMGR_RECOVER_ACCOUNTS"); raw != "" {
-		rcBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		rcBaseURL := cfg.PublicBaseURL
 		for _, entry := range strings.Split(raw, ",") {
 			entry = strings.TrimSpace(entry)
 			if entry == "" {
@@ -535,9 +568,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// This does no network I/O. Google's discovery call happens on first use,
 	// because putting a third party's availability on our boot path means their
 	// outage stops this control plane from starting at all.
-	socialProviders := auth.NewSocialProviders(cfg.Social)
+	//
+	// See bootSocialConfig for what happens when the public base URL cannot
+	// produce a usable redirect_uri.
+	socialProviders := auth.NewSocialProviders(bootSocialConfig(cfg, logger))
 	if enabled := socialProviders.Enabled(); len(enabled) > 0 {
-		logger.Info("social sign-in enabled", slog.Any("providers", enabled))
+		logger.Info("social sign-in enabled", slog.Any("providers", enabled),
+			slog.String("redirect_uri_pattern", auth.SocialRedirectURL(cfg.PublicBaseURL, "<provider>")))
 	} else {
 		logger.Info("social sign-in disabled (no provider credentials configured)")
 	}
@@ -576,7 +613,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PriceStarter:    cfg.Billing.Stripe.PriceStarter,
 		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
 		PriceScale:      cfg.Billing.Stripe.PriceScale,
-		PortalReturnURL: strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/") + "/billing",
+		PortalReturnURL: cfg.PublicBaseURL + "/billing",
 	}
 	if stripeCfg.Configured() {
 		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
@@ -612,7 +649,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// only MOUNTED when hosted billing is enabled (see the server.Deps wiring
 	// near the bottom of this function) — that nil/non-nil split is the
 	// routes-contract 404-when-unhosted guarantee.
-	billingPublicBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+	billingPublicBaseURL := cfg.PublicBaseURL
 	billingH := billing.NewHandler(billingSvc, func(ctx context.Context, userID uuid.UUID) (string, error) {
 		u, err := authRepo.GetUserByID(ctx, userID)
 		if err != nil {
@@ -851,7 +888,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// m16 — Restore Runs + Logs: wire the restore-run repo into the backup
 		// service so CreateRestore + RecordProgress persist durable run entities.
 		backupSvc.SetRestoreRunStore(backup.NewRestoreRunRepo(pool))
-		cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+		cpBaseURL := cfg.PublicBaseURL
 		// River's default per-job context deadline is 60s — far too short for a
 		// real-site backup. Override with the configured backup HTTPTimeout plus
 		// a 2-minute buffer so the http.Client's per-attempt timeout (which has
@@ -971,7 +1008,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if supportEmail == "" {
 		supportEmail = "support@wpmgr.app"
 	}
-	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, os.Getenv("WPMGR_PUBLIC_BASE_URL"), supportEmail, logger)
+	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, cfg.PublicBaseURL, supportEmail, logger)
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
 	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec)
@@ -986,7 +1023,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	emailH := email.NewHandler(emailSvc, auditRec)
 	// m61: set the public base URL on the email handler so GET config responses
 	// can include the webhook_url field for the UI.
-	emailPublicBase := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	emailPublicBase := cfg.PublicBaseURL
 	if emailPublicBase != "" {
 		emailH.SetPublicBase(emailPublicBase)
 	}
@@ -1393,7 +1430,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		mediaStore = ms
 	}
-	mediaCPBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	mediaCPBaseURL := cfg.PublicBaseURL
 	mediaSvc := mediaservice.NewService(mediaRepo, mediaStore, siteEventsPub, auditRec, clock, mediaservice.Config{
 		PresignTTL:    cfg.Backup.PresignTTL,
 		CPBaseURL:     mediaCPBaseURL,
@@ -1999,7 +2036,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// River has started. The schedule worker finds due sites and enqueues
 	// DBCleanArgs River jobs; the dispatch worker calls perfSvc.DBCleanScheduled.
 	dbCleanEnqueuer := perf.NewDBCleanRiverEnqueuer(riverClient)
-	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -2046,7 +2083,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		},
 	}
 	perfH := perf.NewHandler(perfSvc, perfRucssReader, auditRec)
-	perfH.SetCPBaseURL(os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	perfH.SetCPBaseURL(cfg.PublicBaseURL)
 	// P3.5 — wire the corpus reader so the orphans classification endpoint can
 	// classify stored scan candidates against the live plugin_signatures corpus.
 	perfH.SetCorpusSource(dbclean.NewCorpusPostgresReader(sqlc.New(pool)))
@@ -2075,7 +2112,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	perfH.SetRumResultsReader(perfRumResultsReader)
 	// M56 — Wire the RUM beacon key repo so UpdateConfig generates keys on first enable.
-	perfSvc.SetBeaconKeyRepo(rumBeaconRepo, os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	perfSvc.SetBeaconKeyRepo(rumBeaconRepo, cfg.PublicBaseURL)
 	// GH #174 — wire the ack-based reconcile enqueuer now that River has started.
 	perfSvc.SetRumBeaconReconcileEnqueuer(perf.NewRumBeaconReconcileRiverEnqueuer(riverClient))
 	fontResultsAgentH := perf.NewFontResultsAgentHandler(perfRepo)
@@ -2084,7 +2121,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// ADR-045 Phase 2 — wire the auth service's transactional mailer (password
 	// reset link + change-password notification) + an in-memory rate limiter now
 	// that River has started.
-	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), os.Getenv("WPMGR_PUBLIC_BASE_URL"), autologin.NewMemoryLimiter())
+	// cfg.PublicBaseURL, not os.Getenv, here and at every other public-base-URL
+	// consumer in this file: os.Getenv skips the YAML file entirely, so a
+	// file-configured install had a public_base_url nothing read, and any check
+	// of the variable judged a string no consumer used.
+	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), cfg.PublicBaseURL, autologin.NewMemoryLimiter())
 	// Track B (m49) — wire the backup-event mailer now that River has started.
 	// The BackupMailer interface is satisfied by *mailer.Enqueuer. Emails are
 	// best-effort (sendBackupEmail swallows errors); nil mailer = no emails.
@@ -2308,7 +2349,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 
 	// M5.7 — Orgs + Sharing + Invitations.
-	publicBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	publicBaseURL := cfg.PublicBaseURL
 
 	// Build the sharing mailer (reuse SMTP config; may be nil/noop).
 	var sharingMailer sharing.Mailer
@@ -2437,7 +2478,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if cfg.Update.AgentPackageServeEnabled {
 			packageBase := strings.TrimRight(strings.TrimSpace(cfg.Update.AgentPackageBaseURL), "/")
 			if packageBase == "" {
-				packageBase = strings.TrimRight(strings.TrimSpace(os.Getenv("WPMGR_PUBLIC_BASE_URL")), "/")
+				packageBase = cfg.PublicBaseURL
 			}
 			updateAgentH.EnablePackageServing(manifestSigner, packageBase)
 			logger.Info("GH #302 control-plane agent package serving ENABLED",
