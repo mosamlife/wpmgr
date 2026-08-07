@@ -4,8 +4,6 @@ import { ComparisonPage } from "@/components/templates/comparison-page";
 import { buildMetadata, buildBreadcrumbLd, buildFAQPageLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
 import { COMPARE_SLUGS, getComparison } from "@/lib/content/compare";
-import { SiteHeader } from "@/components/sections/header";
-import { SiteFooter } from "@/components/sections/footer";
 
 export function generateStaticParams() {
   return COMPARE_SLUGS.map((slug) => ({ slug }));
@@ -43,11 +41,9 @@ export default async function ComparePage({
 
   return (
     <>
-      <SiteHeader />
       <main>
         <ComparisonPage data={page} />
       </main>
-      <SiteFooter />
       <JsonLd data={breadcrumbLd} />
       {page.faq.length > 0 && <JsonLd data={buildFAQPageLd(page.faq)} />}
     </>
