@@ -116,7 +116,7 @@ export default async function PricingPage() {
                 className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-6 py-3 text-base font-medium text-foreground transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
               >
                 <Icon name="Github" size={18} />
-                Self-host instead
+                Or self-host it
               </Link>
             </div>
           </div>

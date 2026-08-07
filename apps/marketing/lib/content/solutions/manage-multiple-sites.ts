@@ -1,7 +1,7 @@
 // Solution page: manage multiple WordPress sites.
 // House rules: no em dashes, no en dashes, no competitor plugin names.
 import type { SolutionPageData } from "@/lib/content/types";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const MANAGE_MULTIPLE_SITES_SOLUTION: SolutionPageData = {
   slug: "manage-multiple-sites",
@@ -16,7 +16,7 @@ export const MANAGE_MULTIPLE_SITES_SOLUTION: SolutionPageData = {
     subhead:
       "Connect every WordPress site you manage to a single dashboard. Run bulk updates with auto-revert, monitor uptime across the fleet, trigger backups before every change, and give each team member exactly the access they need without sharing passwords.",
     primaryCta: { label: "Get started free", href: signupHref("solution-hero"), variant: "primary", icon: "ArrowRight" },
-    secondaryCta: { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
+    secondaryCta: { label: "Or self-host it", href: "/self-host", variant: "secondary" },
   },
   outcomes: {
     heading: "One dashboard for everything that matters",

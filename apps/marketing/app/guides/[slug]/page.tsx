@@ -174,7 +174,6 @@ export default async function GuidePage({ params }: Props) {
           subhead="Free, self-hostable, open-source WordPress fleet management. No per-site fee."
           ctas={[
             { label: "Get started for free", href: signupHref("guide"), variant: "primary", icon: "ArrowRight" },
-            { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
           ]}
         />
       </main>

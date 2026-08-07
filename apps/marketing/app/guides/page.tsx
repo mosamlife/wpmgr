@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { SiteHeader } from "@/components/sections/header";
 import { SiteFooter } from "@/components/sections/footer";
 import { CTABand } from "@/components/sections/cta-band";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: "WordPress Guides: Maintenance and Core Web Vitals",
@@ -204,7 +204,6 @@ export default function GuidesIndexPage() {
           subhead="No per-site fee. Run WPMgr on your own infrastructure or use the hosted cloud version."
           ctas={[
             { label: "Get started for free", href: signupHref("guides-index"), variant: "primary", icon: "ArrowRight" },
-            { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
           ]}
         />
       </main>

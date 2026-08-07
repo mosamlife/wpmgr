@@ -13,7 +13,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 import {
   NAV_ITEMS,
   FEATURES_COLUMNS,
@@ -419,9 +419,7 @@ export function MobileNav() {
                   Get started free
                 </a>
                 <a
-                  href={SITE_CONFIG.github}
-                  target="_blank"
-                  rel="noreferrer noopener"
+                  href="/self-host"
                   onClick={close}
                   className={cn(
                     "flex min-h-[48px] items-center justify-center gap-2 rounded-[var(--radius)]",
@@ -430,7 +428,6 @@ export function MobileNav() {
                     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
                   )}
                 >
-                  <Icon name="Github" size={16} />
                   Self-host it
                 </a>
               </div>

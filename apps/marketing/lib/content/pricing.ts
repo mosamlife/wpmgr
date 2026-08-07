@@ -6,7 +6,7 @@
 // app/(marketing)/pricing/page.tsx via lib/pricing-live.ts) override each
 // paid tier's `price` fallback below, per currency -- see resolveTierPrices.
 import type { Cta, FaqItem } from "./types";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 import type { LivePricingResponse, LiveTier } from "@/lib/pricing-live";
 
 export type PricingTier = {
@@ -134,7 +134,6 @@ export const PRICING_FAQ: FaqItem[] = [
 
 export const PRICING_CTAS: Cta[] = [
   { label: "Get started for free", href: signupHref("cta-band"), variant: "primary", icon: "ArrowRight" },
-  { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
 ];
 
 // ---------------------------------------------------------------------------

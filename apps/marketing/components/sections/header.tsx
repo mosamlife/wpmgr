@@ -78,13 +78,7 @@ export function SiteHeader() {
             <Icon name="Github" size={17} />
           </a>
           <ThemeToggle />
-          <Button
-            href={SITE_CONFIG.github}
-            target="_blank"
-            rel="noreferrer noopener"
-            variant="secondary"
-            className="hidden md:inline-flex"
-          >
+          <Button href="/self-host" variant="secondary" className="hidden md:inline-flex">
             Self-host it
           </Button>
           <Button href={signupHref("header")} className="hidden md:inline-flex">

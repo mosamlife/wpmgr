@@ -11,7 +11,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { signupHref } from "@/lib/site";
 import type { FeaturePageData } from "@/lib/content/types";
 
 // Visual leaf: resolved at render time based on slug.
@@ -293,11 +293,10 @@ export function FeaturePage({ data }: { data: FeaturePageData }) {
 
       {/* 7b. Closing CTA band */}
       <CTABand
-        heading="Self-host it, read the code, and run your whole fleet."
+        heading="Run your whole fleet from one dashboard."
         subhead="Free and open source. No per-site fee. The full release is on GitHub."
         ctas={[
           { label: "Get started for free", href: signupHref("feature-cta"), variant: "primary", icon: "ArrowRight" },
-          { label: "Star on GitHub", href: SITE_CONFIG.github, variant: "secondary", icon: "Github" },
         ]}
       />
     </>

@@ -69,6 +69,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${base}/docs`, changeFrequency: "monthly", priority: 0.7 },
     { url: `${base}/legal`, changeFrequency: "yearly", priority: 0.3 },
     { url: `${base}/compare`, changeFrequency: "monthly", priority: 0.8 },
+    { url: `${base}/self-host`, changeFrequency: "monthly", priority: 0.7 },
     { url: `${base}/legal/security-policy`, changeFrequency: "monthly", priority: 0.5 },
     // Indexable, linked from the Legal column of the footer on every page, and
     // absent from this file until 2026-08-06.
