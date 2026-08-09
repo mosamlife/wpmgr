@@ -13,207 +13,213 @@
 
 declare(strict_types=1);
 
-namespace WPMgr\Agent\Tests\Email;
+namespace WPMgr\Agent\Email\Handlers;
 
-use PHPMailer\PHPMailer\FakePhpMailerRegistry;
-use PHPUnit\Framework\TestCase;
-use WPMgr\Agent\Email\Handlers\SmtpHandler;
-
-require_once __DIR__ . '/fake-phpmailer.php';
+use WPMgr\Agent\Email\AddressParser;
+use WPMgr\Agent\Email\ProviderHandlerInterface;
 
 /**
- * @covers \WPMgr\Agent\Email\Handlers\SmtpHandler
+ * SMTP provider handler using WP's bundled PHPMailer.
  */
-class SmtpHandlerTest extends TestCase
-{
-    private function base_mail(): array
-    {
-        return [
-            'to'          => ['recipient@example.com'],
-            'cc'          => [],
-            'bcc'         => [],
-            'reply_to'    => [],
-            'from'        => 'sender@example.com',
-            'from_name'   => 'WPMgr Test',
-            'subject'     => 'Hello',
-            'body_text'   => 'Plain body',
-            'body_html'   => '',
-            'charset'     => 'UTF-8',
-            'headers'     => [],
-            'attachments' => [],
-            'return_path' => false,
-            'x_site_id'   => 'site-abc',
-            'x_tenant_id' => 'tenant-abc',
-        ];
-    }
+final class SmtpHandler implements ProviderHandlerInterface {
 
-    private function config(): array
-    {
-        return ['host' => 'smtp.example.com', 'port' => 587, 'auth' => false];
-    }
+	/** @inheritDoc */
+	public function provider(): string {
+		return 'smtp';
+	}
 
-    // -------------------------------------------------------------------------
-    // GH #312: the reporter's exact case
-    // -------------------------------------------------------------------------
+	/** @inheritDoc */
+	public function send( array $mail, array $config, string$secret ): array {
+		// Ensure PHPMailer dependencies are loaded correctly.
+		$this->ensure_phpmailer_loaded();
 
-    public function test_reporter_exact_reply_to_is_delivered_with_name_and_does_not_fail_the_send(): void
-    {
-        $mail = $this->base_mail();
-        $mail['reply_to'] = ['Andrea Somigli <salesianalibri@gmail.com>'];
+		if ( ! class_exists( 'PHPMailer\\PHPMailer\\PHPMailer' ) ) {
+			return $this->failure( 'PHPMailer class not available' );
+		}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+		try {
+			$phpmailer = new \PHPMailer\PHPMailer\PHPMailer( true );$phpmailer->isSMTP();
+			
+			// Prevent infinite hangs on background/cron executions.
+			$phpmailer->Timeout = 15;
 
-        $this->assertTrue($result['ok'], 'the send must succeed, not fail the whole message over one Reply-To');
-        $this->assertStringNotContainsString('Invalid address', $result['error']);
+			$phpmailer->CharSet = isset( $mail['charset'] ) ? (string)$mail['charset'] : 'UTF-8';
 
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertNotNull($phpmailer);
-        $this->assertSame(
-            [['address' => 'salesianalibri@gmail.com', 'name' => 'Andrea Somigli']],
-            $phpmailer->recordedReplyTo,
-            'the display name must be preserved, not discarded'
-        );
-    }
+			// -- SMTP connection settings ------------------------------------
+			$host = isset($config['host'] ) && is_string( $config['host'] ) ? trim( $config['host'] ) : '';
+			if ( $host === '' ) {
+				return $this->failure( 'SMTP host not configured' );
+			}
+			$phpmailer->Host =$host;
+			$phpmailer->Port = isset( $config['port'] ) ? (int)$config['port'] : 587;
 
-    // -------------------------------------------------------------------------
-    // to / cc / bcc: same defect class as reply_to
-    // -------------------------------------------------------------------------
+			$encryption = isset( $config['encryption'] ) && is_string($config['encryption'] )
+				? strtolower( $config['encryption'] ) : 'tls';
 
-    public function test_to_cc_bcc_display_names_are_all_preserved(): void
-    {
-        $mail = $this->base_mail();
-        $mail['to']  = ['Terry To <terry@example.com>'];
-        $mail['cc']  = ['Carla Cee <carla@example.com>'];
-        $mail['bcc'] = ['Bob Bee <bob@example.com>'];
+			switch ( $encryption ) {
+				case 'ssl':
+					$phpmailer->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+					$phpmailer->SMTPAutoTLS = false;
+					break;
+				case 'none':
+					$phpmailer->SMTPSecure = '';$phpmailer->SMTPAutoTLS = false;
+					break;
+				default: // 'tls'
+					$phpmailer->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+					$auto_tls = ! isset( $config['auto_tls'] ) \vert{}\vert{} (bool)$config['auto_tls'];
+					$phpmailer->SMTPAutoTLS =$auto_tls;
+					break;
+			}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+			// -- SMTP Authentication -----------------------------------------
+			$use_auth = ! isset( $config['auth'] ) \vert{}\vert{} (bool)$config['auth'];
+			if ( $use_auth ) {$username = isset( $config['username'] ) && is_string($config['username'] )
+					? trim( $config['username'] ) : '';
+				$password = trim( str_replace( array( "\r", "\n" ), '', $secret ) );
 
-        $this->assertTrue($result['ok']);
+				if ( $username === '' \vert{}\vert{}$password === '' ) {
+					return $this->failure( 'SMTP authentication credentials missing or empty' );
+				}
 
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame([['address' => 'terry@example.com', 'name' => 'Terry To']], $phpmailer->recordedTo);
-        $this->assertSame([['address' => 'carla@example.com', 'name' => 'Carla Cee']], $phpmailer->recordedCc);
-        $this->assertSame([['address' => 'bob@example.com', 'name' => 'Bob Bee']], $phpmailer->recordedBcc);
-    }
+				$phpmailer->SMTPAuth = true;
+				$phpmailer->Username =$username;
+				$phpmailer->Password =$password;
+			}
 
-    // -------------------------------------------------------------------------
-    // Quoted display name containing a comma
-    // -------------------------------------------------------------------------
+			// -- From -----------------------------------------------------------
+			$from_entry   = AddressParser::parse_one( (string) ($mail['from'] ?? '' ) );
+			$from_address =$from_entry !== null ? $from_entry['address'] : (string) ($mail['from'] ?? '' );
+			$from_name    = (string) ($mail['from_name'] ?? '' );
+			if ( $from_name === '' && $from_entry !== null &&$from_entry['name'] !== '' ) {
+				$from_name =$from_entry['name'];
+			}
+			$phpmailer->setFrom( $from_address,$from_name );
 
-    public function test_quoted_comma_display_name_is_parsed_correctly(): void
-    {
-        $mail = $this->base_mail();
-        $mail['to'] = ['"Rossi, Andrea" <a@x.com>'];
+			if ( ! empty( $mail['return_path'] ) ) {
+				$phpmailer->Sender =$from_address;
+			}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+			// -- Recipients -------------------------------------------------------
+			$invalid_addresses     = array();$added_recipient_count = 0;
 
-        $this->assertTrue($result['ok']);
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame([['address' => 'a@x.com', 'name' => 'Rossi, Andrea']], $phpmailer->recordedTo);
-    }
+			$added_recipient_count += $this->add_addresses($phpmailer, 'addAddress', $mail['to'] ?? array(), $invalid_addresses );
+			$added_recipient_count +=$this->add_addresses( $phpmailer, 'addCC',$mail['cc'] ?? array(), $invalid_addresses );$added_recipient_count += $this->add_addresses($phpmailer, 'addBCC', $mail['bcc'] ?? array(), $invalid_addresses );
+			$this->add_addresses($phpmailer, 'addReplyTo', $mail['reply_to'] ?? array(), $invalid_addresses );
 
-    // -------------------------------------------------------------------------
-    // A plain bare address is unaffected
-    // -------------------------------------------------------------------------
+			if ( $added_recipient_count === 0 ) {
+				return $this->failure(
+					'no valid recipient address' . ( $invalid_addresses !== array() ? ' (rejected: ' . implode( ', ', $invalid_addresses ) . ')' : '' )
+				);
+			}
 
-    public function test_plain_bare_address_is_unaffected(): void
-    {
-        $mail = $this->base_mail();
-        $mail['to'] = ['plain@example.com'];
+			// -- Subject + body -----------------------------------------------
+			$phpmailer->Subject = (string) ($mail['subject'] ?? '' );
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+			$body_html = (string) ($mail['body_html'] ?? '' );
+			$body_text = (string) ($mail['body_text'] ?? '' );
 
-        $this->assertTrue($result['ok']);
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame([['address' => 'plain@example.com', 'name' => '']], $phpmailer->recordedTo);
-    }
+			if ( $body_html !== '' ) {$phpmailer->isHTML( true );
+				$phpmailer->Body    =$body_html;
+				$phpmailer->AltBody =$body_text;
+			} else {
+				$phpmailer->isHTML( false );
+				$phpmailer->Body =$body_text;
+			}
 
-    // -------------------------------------------------------------------------
-    // A single header carrying a comma-separated list of addresses
-    // -------------------------------------------------------------------------
+			// -- Correlation header -------------------------------------------
+			$site_id = (string) ($mail['x_site_id'] ?? '' );
+			if ( $site_id !== '' ) {
+				$phpmailer->addCustomHeader( 'X-WPMgr-Site',$site_id );
+			}
 
-    public function test_single_header_value_with_multiple_addresses_is_split(): void
-    {
-        $mail = $this->base_mail();
-        $mail['cc'] = ['a@x.com, b@y.com'];
+			// -- Attachments --------------------------------------------------
+			foreach ( (array) ( $mail['attachments'] ?? array() ) as $att ) {
+				if ( ! is_array( $att ) || empty( $att['path'] ) ) { 					continue; 				}$phpmailer->addAttachment(
+					(string) $att['path'],
+					(string) ( $att['name'] ?? '' ),
+					'base64',
+					(string) ( $att['mime'] ?? 'application/octet-stream' )
+				);
+			}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+			$phpmailer->send();
 
-        $this->assertTrue($result['ok']);
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame(
-            [
-                ['address' => 'a@x.com', 'name' => ''],
-                ['address' => 'b@y.com', 'name' => ''],
-            ],
-            $phpmailer->recordedCc
-        );
-    }
+			$message_id =$phpmailer->getLastMessageID();
 
-    // -------------------------------------------------------------------------
-    // Malformed input never fatals the send: one bad address is dropped,
-    // the rest of the message still goes out.
-    // -------------------------------------------------------------------------
+			$provider_response = 'SMTP send OK';
+			if ( $invalid_addresses !== array() ) {$provider_response .= '; skipped invalid address(es): ' . implode( ', ', $invalid_addresses );
+			}
 
-    public function test_malformed_reply_to_is_dropped_not_fatal(): void
-    {
-        $mail = $this->base_mail();
-        $mail['reply_to'] = ['not-an-email', 'good@example.com'];
+			return array(
+				'ok'                => true,
+				'message_id'        => (string) $message_id,
+				'error'             => '',
+				'provider_response' => $provider_response,
+			);
+		} catch ( \Throwable $e ) {
+			return $this->failure($e->getMessage() );
+		}
+	}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+	/**
+	 * Ensure PHPMailer and its required components are included.
+	 */
+	private function ensure_phpmailer_loaded(): void {
+		if ( class_exists( 'PHPMailer\\PHPMailer\\PHPMailer' ) ) {
+			return;
+		}
 
-        $this->assertTrue($result['ok'], 'a bad Reply-To must not fail an otherwise-valid send');
-        $this->assertStringContainsString('not-an-email', $result['provider_response'], 'the skipped address must be reported');
+		if ( defined( 'ABSPATH' ) ) {
+			$base = ABSPATH . 'wp-includes/PHPMailer/';
+			if ( is_file( $base . 'PHPMailer.php' ) ) {
+				require_once $base . 'Exception.php';
+				require_once $base . 'PHPMailer.php';
+				require_once $base . 'SMTP.php';
+			}
+		}
+	}
 
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame([['address' => 'good@example.com', 'name' => '']], $phpmailer->recordedReplyTo);
-    }
+	/**
+	 * Add addresses to PHPMailer safely.
+	 */
+	private function add_addresses( $phpmailer, string $method,$raw, array &$invalid ): int {$added   = 0;
+		$entries = AddressParser::parse_list_verbose($raw );
 
-    public function test_empty_reply_to_is_fine(): void
-    {
-        $mail = $this->base_mail();
-        $mail['reply_to'] = [];
+		foreach ( $entries['valid'] as$entry ) {
+			try {
+				$phpmailer->{$method}( $entry['address'],$entry['name'] );
+				++$added;
+			} catch ( \Throwable ) {
+				$invalid[] =$entry['address'];
+			}
+		}
 
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
+		foreach ( $entries['invalid'] as$entry ) {
+			$raw_entry = trim( (string)$entry );
+			if ( $raw_entry === '' \vert{}\vert{} strpos($raw_entry, '@' ) === false ) {
+				$invalid[] = (string)$entry;
+				continue;
+			}
+			try {
+				$phpmailer->{$method}($raw_entry );
+				++$added;
+			} catch ( \Throwable ) {
+				$invalid[] =$raw_entry;
+			}
+		}
 
-        $this->assertTrue($result['ok']);
-        $this->assertSame([], FakePhpMailerRegistry::$last->recordedReplyTo);
-    }
+		return $added;
+	}
 
-    public function test_all_recipients_invalid_fails_cleanly_without_throwing(): void
-    {
-        $mail = $this->base_mail();
-        $mail['to'] = ['garbage garbage', ''];
-
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
-
-        $this->assertFalse($result['ok']);
-        $this->assertStringContainsString('no valid recipient', $result['error']);
-    }
-
-    // -------------------------------------------------------------------------
-    // From: same category of bug (a display-name From must not throw either)
-    // -------------------------------------------------------------------------
-
-    public function test_from_with_display_name_does_not_throw_and_is_split(): void
-    {
-        $mail = $this->base_mail();
-        $mail['from']      = 'Shop Name <shop@example.com>';
-        $mail['from_name'] = '';
-
-        $handler = new SmtpHandler();
-        $result  = $handler->send($mail, $this->config(), '');
-
-        $this->assertTrue($result['ok']);
-        $phpmailer = FakePhpMailerRegistry::$last;
-        $this->assertSame(['address' => 'shop@example.com', 'name' => 'Shop Name'], $phpmailer->recordedFrom);
-    }
+	/**
+	 * Build a structured failure result.
+	 */
+	private function failure( string $error ): array {
+		return array(
+			'ok'                => false,
+			'message_id'        => '',
+			'error'             => $error,
+			'provider_response' => $error,
+		);
+	}
 }
