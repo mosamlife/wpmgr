@@ -211,7 +211,7 @@ any of them in `.env` with the `WPMGR_*_PORT` vars (`WPMGR_WEB_PORT`,
 
 ### Prebuilt GHCR images (no local build)
 
-Pre-built `linux/amd64` images are published on GitHub Container Registry:
+Pre-built images are published on GitHub Container Registry:
 `ghcr.io/mosamlife/wpmgr-api`, `-web`, and `-media-encoder` (each tagged
 `:vX.Y.Z` and `:latest`). If you already have the compose files (via the
 quickstart or a clone), bring up the stack with the pull-only overlay:
@@ -226,8 +226,12 @@ always`; everything else (Postgres, Redis, SeaweedFS, ClickHouse, env, volumes)
 is inherited from the base file, including `media-encoder` — it starts by
 default, no profile needed.
 
-> GHCR packages are public. `docker pull` needs no auth. arm64 multi-arch
-> images are a near-term follow-up.
+> GHCR packages are public. `docker pull` needs no auth. The api and web images
+> are multi-arch (`linux/amd64` + `linux/arm64`); the media encoder is
+> `linux/amd64` only, because its image codec library ships prebuilt static
+> libraries for that architecture alone. On arm64 that means running the stack
+> with `--scale media-encoder=0`, which costs you screenshots and the Media
+> Optimizer and nothing else.
 
 ## 3. Verify
 
