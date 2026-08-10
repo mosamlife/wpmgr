@@ -6690,6 +6690,41 @@ export type FileVersionRestoreResult = {
 };
 
 /**
+ * One external sign-in method linked to an account. `subject` and `issuer` (the provider's own identifiers for the person) are deliberately absent: they mean nothing to the person reading the page and they are what an attacker would need to forge a matching identity. `email` is what the provider asserted at the last sign-in, which is a record, not the account's own address, and may differ from it.
+ */
+export type ConnectedIdentity = {
+  /**
+   * The provider key, e.g. `google`, `github`, or `oidc` for an operator-configured issuer.
+   */
+  provider: string;
+  email: string;
+  /**
+   * Whether the PROVIDER vouched for the address at link time. Distinct from this install having seen the person open a verification link.
+   */
+  email_verified: boolean;
+  created_at: string;
+  /**
+   * Null until the method has been used to sign in at least once.
+   */
+  last_login_at?: string;
+};
+
+/**
+ * How the authenticated account can be signed in to.
+ */
+export type ConnectedAccounts = {
+  /**
+   * Whether a password is set. False means the account is social-only and can add one via `POST /auth/me/password/set`.
+   */
+  has_password: boolean;
+  /**
+   * Whether removing one identity would still leave a way in, which is true when a password is set or more than one identity is connected. A display hint mirroring the server's rule, never the enforcement.
+   */
+  can_unlink: boolean;
+  items: Array<ConnectedIdentity>;
+};
+
+/**
  * Current 2FA configuration summary for the authenticated user.
  */
 export type TwoFactorStatus = {
@@ -7521,6 +7556,38 @@ export type AdminAccountsTenancy = {
   }>;
 };
 
+export type AdminSystemAuditPage = {
+  /**
+   * Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back instead. On a log that is still being written to, a count and a page boundary disagree by design.
+   *
+   */
+  total: number;
+  /**
+   * Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only reliable end-of-list signal.
+   *
+   */
+  next_cursor?: string;
+  items: Array<{
+    id: string;
+    occurred_at: string;
+    actor_type: string;
+    /**
+     * Absent for an event with no user actor.
+     */
+    actor_id?: string;
+    action: string;
+    /**
+     * A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.
+     *
+     */
+    tenant_id?: string;
+    tenant_name: string;
+    metadata: {
+      [key: string]: unknown;
+    };
+  }>;
+};
+
 export type AdminVulnFeedStatus = {
   configured: boolean;
   source: "ui" | "env" | "none";
@@ -8247,6 +8314,112 @@ export type ChangeMyPasswordResponses = {
 export type ChangeMyPasswordResponse =
   ChangeMyPasswordResponses[keyof ChangeMyPasswordResponses];
 
+export type SetMyInitialPasswordData = {
+  body: {
+    password: string;
+  };
+  path?: never;
+  query?: never;
+  url: "/auth/me/password/set";
+};
+
+export type SetMyInitialPasswordErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * This account already has a password. Use `POST /auth/me/password`, which asks for the current one.
+   *
+   */
+  409: Error;
+  /**
+   * Validation failed
+   */
+  422: Error;
+};
+
+export type SetMyInitialPasswordError =
+  SetMyInitialPasswordErrors[keyof SetMyInitialPasswordErrors];
+
+export type SetMyInitialPasswordResponses = {
+  /**
+   * Password set
+   */
+  204: void;
+};
+
+export type SetMyInitialPasswordResponse =
+  SetMyInitialPasswordResponses[keyof SetMyInitialPasswordResponses];
+
+export type ListMyIdentitiesData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/me/identities";
+};
+
+export type ListMyIdentitiesErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+};
+
+export type ListMyIdentitiesError =
+  ListMyIdentitiesErrors[keyof ListMyIdentitiesErrors];
+
+export type ListMyIdentitiesResponses = {
+  /**
+   * The connected sign-in methods
+   */
+  200: ConnectedAccounts;
+};
+
+export type ListMyIdentitiesResponse =
+  ListMyIdentitiesResponses[keyof ListMyIdentitiesResponses];
+
+export type UnlinkMyIdentityData = {
+  body?: never;
+  path: {
+    /**
+     * The provider key, as returned by `GET /auth/me/identities`.
+     */
+    provider: string;
+  };
+  query?: never;
+  url: "/auth/me/identities/{provider}";
+};
+
+export type UnlinkMyIdentityErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * That provider is not connected to this account
+   */
+  404: Error;
+  /**
+   * Refused: this is the account's last sign-in method. Set a password first.
+   *
+   */
+  409: Error;
+};
+
+export type UnlinkMyIdentityError =
+  UnlinkMyIdentityErrors[keyof UnlinkMyIdentityErrors];
+
+export type UnlinkMyIdentityResponses = {
+  /**
+   * Provider disconnected
+   */
+  204: void;
+};
+
+export type UnlinkMyIdentityResponse =
+  UnlinkMyIdentityResponses[keyof UnlinkMyIdentityResponses];
+
 export type GetTwoFactorStatusData = {
   body?: never;
   path?: never;
@@ -8818,6 +8991,61 @@ export type OidcCallbackResponses = {
 
 export type OidcCallbackResponse =
   OidcCallbackResponses[keyof OidcCallbackResponses];
+
+export type ListSocialProvidersData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/auth/social/providers";
+};
+
+export type ListSocialProvidersResponses = {
+  /**
+   * The configured providers, possibly none
+   */
+  200: {
+    providers: Array<"google" | "github">;
+    /**
+     * Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page renders the SSO button only when it will work.
+     *
+     */
+    sso: boolean;
+  };
+};
+
+export type ListSocialProvidersResponse =
+  ListSocialProvidersResponses[keyof ListSocialProvidersResponses];
+
+export type SocialStartData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    /**
+     * Where to land after a successful sign-in, so a shared deep link survives the provider round trip. Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the sign-in lands on the default page. The value is sealed into the handshake cookie for the duration of the handshake and is never handed to the provider or read back off the callback URL.
+     *
+     */
+    redirect?: string;
+  };
+  url: "/auth/social/{provider}/start";
+};
+
+export type SocialCallbackData = {
+  body?: never;
+  path: {
+    provider: "google" | "github";
+  };
+  query?: {
+    code?: string;
+    state?: string;
+    /**
+     * Set by the provider when the user declines.
+     */
+    error?: string;
+  };
+  url: "/auth/social/{provider}/callback";
+};
 
 export type ListMembersData = {
   body?: never;
@@ -9478,6 +9706,13 @@ export type RegenerateSiteInvitationResponse =
 
 export type AcceptInvitationData = {
   body: AcceptInvitationRequest;
+  headers?: {
+    /**
+     * Any non-empty value. Required only when relying on an existing session instead of a password; ignored otherwise.
+     *
+     */
+    "X-WPMgr-Invite-Accept"?: string;
+  };
   path?: never;
   query?: never;
   url: "/api/v1/invitations/accept";
@@ -9488,6 +9723,15 @@ export type AcceptInvitationErrors = {
    * Invalid token, expired, already used, or email mismatch
    */
   400: Error;
+  /**
+   * Expired, or the address does not match the invitation.
+   * `invitation_email_mismatch` costs one of the invitation's attempts.
+   * `invitation_other_recipient` does not: it means the signed-in
+   * account's own address is not the invited one, which is a fact the
+   * caller already knew and so buys no enumeration.
+   *
+   */
+  403: Error;
   /**
    * Validation failed
    */
@@ -10523,6 +10767,46 @@ export type GetAdminAccountsTenancyResponses = {
 
 export type GetAdminAccountsTenancyResponse =
   GetAdminAccountsTenancyResponses[keyof GetAdminAccountsTenancyResponses];
+
+export type GetAdminSystemAuditData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
+     */
+    limit?: number;
+    /**
+     * Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
+     */
+    cursor?: string;
+  };
+  url: "/api/v1/admin/system-audit";
+};
+
+export type GetAdminSystemAuditErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * superadmin_required
+   */
+  403: Error;
+};
+
+export type GetAdminSystemAuditError =
+  GetAdminSystemAuditErrors[keyof GetAdminSystemAuditErrors];
+
+export type GetAdminSystemAuditResponses = {
+  /**
+   * One page of system audit events
+   */
+  200: AdminSystemAuditPage;
+};
+
+export type GetAdminSystemAuditResponse =
+  GetAdminSystemAuditResponses[keyof GetAdminSystemAuditResponses];
 
 export type GetAdminVulnFeedStatusData = {
   body?: never;

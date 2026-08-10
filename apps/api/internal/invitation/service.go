@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
@@ -165,6 +166,11 @@ type AcceptInput struct {
 	Email    string
 	Name     string
 	Password string // may be empty if user already exists
+	// SessionUserID is the user the CALLER is already signed in as, taken from
+	// the request principal and never from the body. uuid.Nil means anonymous.
+	// It is an alternative proof of identity to Password, and only for the exact
+	// account the invitation is addressed to; see Accept.
+	SessionUserID uuid.UUID
 }
 
 // AcceptResult is returned on success.
@@ -217,6 +223,25 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 	// FIX 6 (NIT): compare emails via subtle.ConstantTimeCompare on lowercased
 	// strings to prevent timing-based email enumeration attacks.
 	if subtle.ConstantTimeCompare([]byte(strings.ToLower(inv.Email)), []byte(strings.ToLower(in.Email))) != 1 {
+		// A SIGNED-IN CALLER SUBMITTING THEIR OWN ADDRESS IS NOT GUESSING, AND
+		// MUST NOT BE CHARGED AN ATTEMPT FOR IT.
+		//
+		// The counter exists to stop a link-holder from walking a list of
+		// addresses to discover who an invitation names. That attack needs many
+		// tries; this caller has exactly one, the address of an account they
+		// already hold a session for, whose value they knew before they started.
+		// Charging it does no security work and does real damage: people own more
+		// than one address, so someone invited at work and signed in at home lands
+		// here through no fault of their own, and ten arrivals burn a valid
+		// invitation permanently for the person it was actually sent to. The
+		// refusal still stands; only the penalty is dropped.
+		if in.SessionUserID != uuid.Nil {
+			if su, serr := s.authRepo.GetUserByID(ctx, in.SessionUserID); serr == nil &&
+				subtle.ConstantTimeCompare([]byte(strings.ToLower(su.Email)), []byte(strings.ToLower(in.Email))) == 1 {
+				return AcceptResult{}, domain.Forbidden("invitation_other_recipient",
+					"this invitation was sent to a different address than the one you are signed in with")
+			}
+		}
 		// Increment attempts before returning (rate-limit enumeration).
 		_ = s.incrementAttempts(ctx, inv.TenantID, inv.ID)
 		return AcceptResult{}, domain.Forbidden("invitation_email_mismatch", "email does not match the invitation")
@@ -244,14 +269,27 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		if err != nil {
 			return AcceptResult{}, err
 		}
-	} else {
-		// EXISTING user: authenticate before granting access + starting a
-		// session, otherwise possession of the invite link alone would log the
-		// caller in as an existing account (the token is email-bound but the
-		// link can still leak). A logged-in user simply re-enters their password.
+	} else if in.SessionUserID != u.ID {
+		// EXISTING user, and the caller is not already signed in as them:
+		// authenticate before granting access + starting a session, otherwise
+		// possession of the invite link alone would log the caller in as an
+		// existing account (the token is email-bound but the link can still leak).
+		//
+		// A LIVE SESSION FOR THIS EXACT ACCOUNT IS ACCEPTED IN PLACE OF THE
+		// PASSWORD, and it has to be. A social account has no password hash and
+		// can never be given one, so this branch used to answer it with "sign in
+		// first, then open the invite link again", advice that led back to the
+		// identical refusal, because the check could not see the session. The
+		// invitation was addressed to them, still valid, and unacceptable by them
+		// or by anyone else, permanently.
+		//
+		// What is NOT relaxed is consent. The invitation is still accepted only
+		// by the affirmative act of opening the link and submitting it, one
+		// invitation at a time, in the organisation that sent it. A session is a
+		// substitute for the password, not for the token.
 		if u.PasswordHash == "" {
 			return AcceptResult{}, domain.Validation("password_login_unavailable",
-				"this account uses single sign-on — sign in first, then open the invite link again")
+				"this account uses single sign-on. Sign in, then open the invite link again.")
 		}
 		if in.Password == "" {
 			return AcceptResult{}, domain.Validation("password_required", "enter your password to accept")
@@ -263,28 +301,14 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		}
 	}
 
-	// FIX 5 (CRITICAL): claim the invitation FIRST using RETURNING to make the
+	// FIX 5 (CRITICAL): claim the invitation using RETURNING to make the
 	// single-use guarantee atomic. The UPDATE ... WHERE accepted_at IS NULL
 	// RETURNING will return ErrNoRows if a concurrent Accept already claimed
-	// this token. We must NOT start a session or grant access if the claim fails.
+	// this token. We must NOT start a session or grant access if the claim fails,
+	// and the grant rides in the same transaction so a spent token always bought
+	// something (see acceptInvitation).
 	tenantID := inv.TenantID
-	var claimed bool
-	err = s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		_, txErr := sqlc.New(tx).MarkInvitationAccepted(ctx, sqlc.MarkInvitationAcceptedParams{
-			ID:             inv.ID,
-			AcceptedUserID: pgtype.UUID{Bytes: u.ID, Valid: true},
-		})
-		if txErr != nil {
-			if errors.Is(txErr, pgx.ErrNoRows) {
-				// 0 rows updated: already accepted by a concurrent request.
-				claimed = false
-				return nil
-			}
-			return domain.Internal("invitation_claim_failed", "failed to claim invitation").WithCause(txErr)
-		}
-		claimed = true
-		return nil
-	})
+	claimed, err := s.acceptInvitation(ctx, inv, u.ID)
 	if err != nil {
 		return AcceptResult{}, err
 	}
@@ -292,86 +316,7 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		// Another request claimed this token between our lookup and this UPDATE.
 		return AcceptResult{}, domain.Conflict("invitation_already_used", "this invitation has already been accepted")
 	}
-
-	// Grant the appropriate access (after a successful claim).
-	switch inv.Scope {
-	case "org":
-		if _, err := s.authRepo.CreateMembership(ctx, u.ID, tenantID, authz.Role(inv.Role)); err != nil {
-			// Conflict = already a member → still OK.
-			de, ok := domain.AsDomain(err)
-			if !ok || de.Kind != domain.KindConflict {
-				return AcceptResult{}, err
-			}
-		}
-		_, _ = s.audit.Record(ctx, audit.Event{
-			TenantID:   tenantID,
-			ActorType:  audit.ActorUser,
-			ActorID:    u.ID.String(),
-			Action:     "share.accepted",
-			TargetType: "tenant",
-			TargetID:   tenantID.String(),
-			Metadata:   map[string]any{"invitation_id": inv.ID.String(), "role": inv.Role},
-		})
-
-	case "site":
-		if !inv.SiteID.Valid {
-			return AcceptResult{}, domain.Internal("invitation_site_missing", "site invitation has no site_id")
-		}
-		siteID := uuid.UUID(inv.SiteID.Bytes)
-		err = s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-			_, err := sqlc.New(tx).CreateShare(ctx, sqlc.CreateShareParams{
-				TenantID:  tenantID,
-				SiteID:    siteID,
-				UserID:    u.ID,
-				Role:      inv.Role,
-				GrantedBy: inv.InvitedBy,
-				ExpiresAt: pgtype.Timestamptz{Valid: false},
-			})
-			return err
-		})
-		if err != nil {
-			return AcceptResult{}, domain.Internal("share_create_failed", "failed to grant site access").WithCause(err)
-		}
-		_, _ = s.audit.Record(ctx, audit.Event{
-			TenantID:   tenantID,
-			ActorType:  audit.ActorUser,
-			ActorID:    u.ID.String(),
-			Action:     "share.accepted",
-			TargetType: "site",
-			TargetID:   siteID.String(),
-			Metadata:   map[string]any{"invitation_id": inv.ID.String(), "role": inv.Role},
-		})
-
-	case "client":
-		if !inv.ClientID.Valid {
-			return AcceptResult{}, domain.Internal("invitation_client_missing", "client invitation has no client_id")
-		}
-		clientID := uuid.UUID(inv.ClientID.Bytes)
-		err = s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-			_, qerr := sqlc.New(tx).CreateClientMember(ctx, sqlc.CreateClientMemberParams{
-				TenantID:  tenantID,
-				ClientID:  clientID,
-				UserID:    u.ID,
-				InvitedBy: inv.InvitedBy,
-			})
-			return qerr
-		})
-		if err != nil {
-			return AcceptResult{}, domain.Internal("client_member_create_failed", "failed to grant portal access").WithCause(err)
-		}
-		_, _ = s.audit.Record(ctx, audit.Event{
-			TenantID:   tenantID,
-			ActorType:  audit.ActorUser,
-			ActorID:    u.ID.String(),
-			Action:     "client_member.accepted",
-			TargetType: "client",
-			TargetID:   clientID.String(),
-			Metadata:   map[string]any{"invitation_id": inv.ID.String(), "client_id": clientID.String()},
-		})
-
-	default:
-		return AcceptResult{}, domain.Internal("invitation_scope_unknown", "unknown invitation scope: "+inv.Scope)
-	}
+	s.recordInvitationAccepted(ctx, inv, u.ID)
 
 	// Start a session (after grant, after claim).
 	if err := s.sessions.Login(ctx, u.ID, tenantID); err != nil {
@@ -388,6 +333,132 @@ func (s *Service) Accept(ctx context.Context, in AcceptInput) (AcceptResult, err
 		result.ClientID = &id
 	}
 	return result, nil
+}
+
+// acceptInvitation marks one invitation accepted AND performs its
+// scope-specific grant, in a SINGLE transaction. It reports claimed=false (with
+// no error) when the row was already taken between the caller's read and this
+// UPDATE, which is what makes the single-use guarantee hold against a
+// concurrent accept rather than merely usually holding.
+//
+// THE ONE TRANSACTION IS THE POINT. These were two: the claim committed, then
+// the grant ran separately. An invitation is single-use, so anything that went
+// wrong in the gap spent the token and granted nothing, and the person it was
+// addressed to could not retry with a token the database now considered used.
+// The failure did not even need to be exotic: a dropped connection between the
+// two statements is enough. Rolling the grant into the claim's transaction
+// makes it what it always read as, one act with two outcomes.
+//
+// The audit record stays OUTSIDE, written by the caller after the commit: it
+// runs on its own connection, so keeping it inside would neither be covered by
+// this rollback nor be able to see the uncommitted rows, and a failed audit
+// write must never undo a completed grant.
+func (s *Service) acceptInvitation(ctx context.Context, inv sqlc.Invitation, userID uuid.UUID) (bool, error) {
+	var claimed bool
+	err := s.pool.InTenantTx(ctx, inv.TenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		if _, txErr := q.MarkInvitationAccepted(ctx, sqlc.MarkInvitationAcceptedParams{
+			ID:             inv.ID,
+			AcceptedUserID: pgtype.UUID{Bytes: userID, Valid: true},
+		}); txErr != nil {
+			if errors.Is(txErr, pgx.ErrNoRows) {
+				claimed = false
+				return nil
+			}
+			return domain.Internal("invitation_claim_failed", "failed to claim invitation").WithCause(txErr)
+		}
+		claimed = true
+		return grantInvitationTx(ctx, q, inv, userID)
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
+// grantInvitationTx performs the scope-specific grant on an OPEN transaction,
+// so it commits or rolls back with the claim that authorised it.
+//
+// "Already granted" is success on every scope, not a conflict: the grant an
+// invitation asks for is a state, not an increment, and refusing here would
+// roll back a claim over an outcome that already holds.
+func grantInvitationTx(ctx context.Context, q *sqlc.Queries, inv sqlc.Invitation, userID uuid.UUID) error {
+	tenantID := inv.TenantID
+	switch inv.Scope {
+	case "org":
+		if _, err := q.CreateMembership(ctx, sqlc.CreateMembershipParams{
+			UserID:   userID,
+			TenantID: tenantID,
+			Role:     inv.Role,
+		}); err != nil {
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+				return domain.Internal("membership_create_failed", "failed to grant membership").WithCause(err)
+			}
+			// 23505: already a member.
+		}
+
+	case "site":
+		if !inv.SiteID.Valid {
+			return domain.Internal("invitation_site_missing", "site invitation has no site_id")
+		}
+		if _, err := q.CreateShare(ctx, sqlc.CreateShareParams{
+			TenantID:  tenantID,
+			SiteID:    uuid.UUID(inv.SiteID.Bytes),
+			UserID:    userID,
+			Role:      inv.Role,
+			GrantedBy: inv.InvitedBy,
+			ExpiresAt: pgtype.Timestamptz{Valid: false},
+		}); err != nil {
+			return domain.Internal("share_create_failed", "failed to grant site access").WithCause(err)
+		}
+
+	case "client":
+		if !inv.ClientID.Valid {
+			return domain.Internal("invitation_client_missing", "client invitation has no client_id")
+		}
+		if _, err := q.CreateClientMember(ctx, sqlc.CreateClientMemberParams{
+			TenantID:  tenantID,
+			ClientID:  uuid.UUID(inv.ClientID.Bytes),
+			UserID:    userID,
+			InvitedBy: inv.InvitedBy,
+		}); err != nil {
+			// CreateClientMember is ON CONFLICT DO NOTHING RETURNING, so no rows
+			// means the membership was already there.
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("client_member_create_failed", "failed to grant portal access").WithCause(err)
+			}
+		}
+
+	default:
+		return domain.Internal("invitation_scope_unknown", "unknown invitation scope: "+inv.Scope)
+	}
+	return nil
+}
+
+// recordInvitationAccepted files the audit event for a committed acceptance.
+// Best effort, and deliberately after the commit: see acceptInvitation.
+func (s *Service) recordInvitationAccepted(ctx context.Context, inv sqlc.Invitation, userID uuid.UUID) {
+	ev := audit.Event{
+		TenantID:  inv.TenantID,
+		ActorType: audit.ActorUser,
+		ActorID:   userID.String(),
+		Action:    "share.accepted",
+		Metadata:  map[string]any{"invitation_id": inv.ID.String(), "role": inv.Role},
+	}
+	switch inv.Scope {
+	case "org":
+		ev.TargetType, ev.TargetID = "tenant", inv.TenantID.String()
+	case "site":
+		ev.TargetType, ev.TargetID = "site", uuid.UUID(inv.SiteID.Bytes).String()
+	case "client":
+		clientID := uuid.UUID(inv.ClientID.Bytes)
+		ev.Action, ev.TargetType, ev.TargetID = "client_member.accepted", "client", clientID.String()
+		ev.Metadata = map[string]any{"invitation_id": inv.ID.String(), "client_id": clientID.String()}
+	default:
+		return
+	}
+	_, _ = s.audit.Record(ctx, ev)
 }
 
 func (s *Service) incrementAttempts(ctx context.Context, tenantID, invID uuid.UUID) error {

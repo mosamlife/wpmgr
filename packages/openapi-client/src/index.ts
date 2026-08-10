@@ -23,6 +23,11 @@ export {
   getMe,
   oidcLogin,
   oidcCallback,
+  listSocialProviders,
+  // connected accounts (settings/security)
+  listMyIdentities,
+  unlinkMyIdentity,
+  setMyInitialPassword,
   // members
   listMembers,
   inviteMember,
@@ -276,6 +281,8 @@ export type {
   LoginRequest,
   RegisterRequest,
   InviteRequest,
+  ConnectedAccounts,
+  ConnectedIdentity,
   // api keys
   ApiKey,
   ApiKeyList,

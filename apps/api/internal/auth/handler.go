@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -54,6 +55,13 @@ type Handler struct {
 	// Optional: nil makes every Me response report true. Set after
 	// construction via SetManagedStorageResolver.
 	managedStorage ManagedStorageResolver
+	// logger receives the social sign-in failure lines (see social_log.go).
+	// Optional: nil falls back to slog.Default(), which cmd/wpmgr configures.
+	logger *slog.Logger
+	// handshake seals the social sign-in handshake into a cookie instead of a
+	// session record. NOT optional in effect: unset makes socialStart refuse
+	// rather than issue a handshake nobody signed. See social_handshake.go.
+	handshake *handshakeCodec
 }
 
 // NewHandler builds an auth Handler.
@@ -66,6 +74,12 @@ func NewHandler(svc *Service, sessions *SessionManager, oidc *OIDCProvider, newT
 // keeps the routes present but reporting nothing enabled, so a self-hosted
 // install that configures neither provider behaves exactly as before.
 func (h *Handler) SetSocialProviders(sp *SocialProviders) { h.social = sp }
+
+// SetLogger wires the logger the social sign-in path writes its failures to.
+// Call this after NewHandler, before serving. Leaving it unset falls back to
+// slog.Default(), so a test or an embedder that never calls it still gets the
+// lines rather than silence.
+func (h *Handler) SetLogger(l *slog.Logger) { h.logger = l }
 
 // SetSecureCookies configures whether the Secure flag is set on the
 // trusted-device cookie. Call this after NewHandler, before serving.
@@ -132,6 +146,9 @@ func (h *Handler) Register(r gin.IRouter) {
 	g.GET("/social/:provider/callback", h.socialCallback)
 	// ADR-056 Phase 3 — dashboard 2FA challenge-completion + management.
 	h.RegisterTwoFactor(g)
+	// Connected accounts: list/remove linked providers, and add a password to
+	// an account that only has a provider.
+	h.RegisterIdentities(g)
 }
 
 type loginBody struct {
@@ -283,12 +300,34 @@ func (h *Handler) register(c *gin.Context) {
 // <oidcRedirectBase>/login?two_factor_challenge=<challengeID> instead of
 // writing a JSON 202. For all other paths pass oidcRedirectBase="".
 func (h *Handler) issueSessionOrChallenge(c *gin.Context, res LoginResult, oidcRedirectBase string) (issued bool) {
+	return h.issueSessionOrChallengeThen(c, res, oidcRedirectBase, nil)
+}
+
+// issueSessionOrChallengeThen is issueSessionOrChallenge with one addition: a
+// hook that runs the moment a challenge exists and BEFORE the response carrying
+// it is written.
+//
+// Both halves of that timing are load-bearing. A caller that needs to remember
+// something ABOUT this challenge (the provider paths park an approved identity
+// link against it) can only bind to the challenge id once it has been minted,
+// and can only put anything in the session before the response is written,
+// because the session middleware saves on write and nothing after it lands.
+// Passing a nil hook is exactly the old behaviour.
+func (h *Handler) issueSessionOrChallengeThen(
+	c *gin.Context,
+	res LoginResult,
+	oidcRedirectBase string,
+	onChallengeIssued func(challengeID uuid.UUID),
+) (issued bool) {
 	if res.User.TwoFactorEnabled {
 		ip := clientAddr(c)
 		result, cherr := h.svc.RequestTwoFactorChallenge(c.Request.Context(), res.User.ID, &ip)
 		if cherr != nil {
 			httpx.Error(c, cherr)
 			return false
+		}
+		if onChallengeIssued != nil {
+			onChallengeIssued(result.ChallengeID)
 		}
 		if oidcRedirectBase != "" {
 			// Browser redirect flow (OIDC callback): redirect to the SPA 2FA
@@ -520,9 +559,16 @@ func (h *Handler) oidcLogin(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("oidc_disabled", "OIDC is not configured"))
 		return
 	}
-	url, state, nonce, verifier, err := h.oidc.AuthCodeURL()
+	url, state, nonce, verifier, err := h.oidc.AuthCodeURL(c.Request.Context())
 	if err != nil {
-		httpx.Error(c, domain.Internal("oidc_url_failed", "failed to build authorization URL").WithCause(err))
+		// Unavailable, not Internal: since discovery moved off the boot path this
+		// is where an unreachable identity provider first shows up, and that is
+		// somebody else's server being down rather than a fault in this one.
+		// Getting that wrong turns "your IdP is not answering" into a 500 that
+		// reads as a control-plane bug and gets escalated as one.
+		slog.ErrorContext(c.Request.Context(), "oidc authorization URL failed",
+			slog.String("issuer", h.oidc.cfg.Issuer), slog.Any("error", err))
+		httpx.Error(c, domain.Unavailable("oidc_url_failed", "the identity provider could not be reached").WithCause(err))
 		return
 	}
 	h.sessions.putOAuth(c.Request.Context(), state, nonce, verifier)
@@ -564,7 +610,11 @@ func (h *Handler) oidcCallback(c *gin.Context) {
 	// h.svc.baseURL is the public base URL (WPMGR_PUBLIC_BASE_URL). When 2FA is
 	// not enrolled issueSessionOrChallenge issues the session and returns true;
 	// we then redirect to the SPA home (the callback was always a browser redirect).
-	if !h.issueSessionOrChallenge(c, res, h.svc.baseURL) {
+	// Routed through the shared provider helper so this callback also defers an
+	// approved identity link until the second factor is proven, and writes it
+	// once it is. The generic OIDC path goes through the same policy as the
+	// consumer providers, so it must go through the same completion too.
+	if !h.issueProviderSessionOrChallenge(c, res) {
 		// 2FA challenge redirect was already written by issueSessionOrChallenge.
 		return
 	}

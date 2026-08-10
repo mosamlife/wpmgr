@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.129
+  version: 0.61.130
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -462,6 +462,128 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /auth/me/password/set:
+    post:
+      operationId: setMyInitialPassword
+      summary: Add a password to an account that has none
+      description: |
+        For an account created through a social provider, which has no password
+        at all. Adds one, so the account no longer depends on the provider.
+
+        Separate from `POST /auth/me/password` on purpose. That endpoint changes
+        an existing password and proves knowledge of the current one first; this
+        one has no current password to ask for, so an authenticated session is
+        the whole authorisation. Folding the two together would let a request
+        with no `current_password` reach the stronger operation.
+
+        This is also why password reset cannot do it: `POST
+        /auth/password/forgot` deliberately sends nothing for an account with no
+        password, because minting a set-password link for one would turn reset
+        into account creation for anyone who knows the address.
+
+        Refuses with 409 when a password already exists. The account address is
+        notified, and every other session for this user is invalidated
+        (`password_changed_at` moves); the calling session stays alive.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+                  maxLength: 200
+      responses:
+        "204":
+          description: Password set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: >
+            This account already has a password. Use `POST /auth/me/password`,
+            which asks for the current one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  # ---------------------------------------------------------------------------
+  # Connected accounts: the sign-in methods on the caller's own account
+  # ---------------------------------------------------------------------------
+
+  /auth/me/identities:
+    get:
+      operationId: listMyIdentities
+      summary: List the external sign-in methods connected to this account
+      description: |
+        Powers the connected accounts card at settings/security. Acts on the
+        caller's own account only: no user id appears anywhere in this route.
+
+        `has_password` and `can_unlink` describe the account as a whole.
+        `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
+        will give, so the page can avoid offering a button that would only be
+        refused. It is a display hint and never the enforcement: the server
+        re-decides on every delete.
+      tags: [auth]
+      responses:
+        "200":
+          description: The connected sign-in methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectedAccounts"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/me/identities/{provider}:
+    delete:
+      operationId: unlinkMyIdentity
+      summary: Disconnect one external sign-in method from this account
+      description: |
+        REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
+        which is the case where this is the only connected provider and no
+        password is set. That state is not recoverable: there would be no
+        password to reset and no provider to sign in with, and password reset
+        will not mint a set-password link for a passwordless account. The
+        refusal names the next step, which is to add a password first via
+        `POST /auth/me/password/set`.
+
+        The check and the delete happen inside one locked transaction, so two
+        requests disconnecting two different providers at the same moment cannot
+        each conclude that one may go.
+      tags: [auth]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: The provider key, as returned by `GET /auth/me/identities`.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Provider disconnected
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: That provider is not connected to this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Refused: this is the account's last sign-in method. Set a password
+            first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   # ---------------------------------------------------------------------------
   # ADR-056 Phase 3 — dashboard two-factor authentication
@@ -956,9 +1078,17 @@ paths:
       operationId: socialStart
       summary: Begin social sign-in (redirect to the provider)
       description: >
-        Redirects (302) to the provider's authorization endpoint with PKCE and a
-        state value held server-side in the session. Returns 503 when the
-        provider is not configured on this install.
+        Redirects (302) to the provider's authorization endpoint with PKCE.
+        ALWAYS redirects, never returns a JSON error body: the caller is a
+        browser doing a full-page navigation, so a provider that is not
+        configured, or an issuer that cannot be reached, sends it back to the
+        sign-in page with a `social_error` code exactly as the callback does.
+
+        The handshake (provider, state, nonce, PKCE verifier and the deep link)
+        travels in a short-lived signed cookie that is host-only, HttpOnly,
+        SameSite=Lax and Secure in production. NOTHING IS STORED SERVER-SIDE:
+        this endpoint needs no credential, so a session record per call was an
+        unauthenticated way to fill the store that every live session shares.
       tags: [auth]
       parameters:
         - name: provider
@@ -967,15 +1097,24 @@ paths:
           schema:
             type: string
             enum: [google, github]
+        - name: redirect
+          in: query
+          required: false
+          description: >
+            Where to land after a successful sign-in, so a shared deep link
+            survives the provider round trip. Must be a path on this origin;
+            anything else (absolute or protocol-relative) is discarded and the
+            sign-in lands on the default page. The value is sealed into the
+            handshake cookie for the duration of the handshake and is never
+            handed to the provider or read back off the callback URL.
+          schema:
+            type: string
       responses:
         "302":
-          description: Redirect to the provider
-        "503":
-          description: That provider is not configured
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: >
+            Redirect to the provider, or back to the sign-in page carrying a
+            social_error code (social_provider_disabled, social_url_failed,
+            social_start_failed).
   /auth/social/{provider}/callback:
     get:
       operationId: socialCallback
@@ -1631,7 +1770,29 @@ paths:
         Accepts both org-scope invitations (creates a membership) and site-scope
         invitations (creates a site_shares row). Validates token hash, email
         binding, expiry, single-use, and rate-limit.
+      description: |
+        The caller proves who they are in one of two ways. Anonymously, with the
+        password of the account the invitation names (or a new password, which
+        creates that account). Or, when already signed in as exactly that
+        account, with the session plus the `X-WPMgr-Invite-Accept` header, which
+        is what an account created through Google or GitHub uses because it has
+        no password to send.
+
+        The header is required for the session route and carries no secret: a
+        session cookie travels on requests the person did not initiate, and this
+        API sets no CORS policy, so a header is something only a script on this
+        install's own page can add. Without it the request is treated as
+        anonymous and a password is required, exactly as before.
       tags: [invitations]
+      parameters:
+        - name: X-WPMgr-Invite-Accept
+          in: header
+          required: false
+          description: >
+            Any non-empty value. Required only when relying on an existing
+            session instead of a password; ignored otherwise.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -1647,6 +1808,17 @@ paths:
                 $ref: "#/components/schemas/AcceptInvitationResponse"
         "400":
           description: Invalid token, expired, already used, or email mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            Expired, or the address does not match the invitation.
+            `invitation_email_mismatch` costs one of the invitation's attempts.
+            `invitation_other_recipient` does not: it means the signed-in
+            account's own address is not the invited one, which is a fact the
+            caller already knew and so buys no enumeration.
           content:
             application/json:
               schema:
@@ -2594,6 +2766,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AdminAccountsTenancy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: superadmin_required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/system-audit:
+    get:
+      operationId: getAdminSystemAudit
+      summary: The tenant-independent audit trail (superadmin, read-only)
+      description: |
+        Reads system_audit_log, which holds the events no single organisation's
+        own audit log can show: actions whose subject organisation is being
+        deleted, and authentication events for accounts that belong to no
+        organisation at all (a new social account, a site collaborator, a portal
+        user, anyone inside the org delete grace window). Newest first.
+
+        Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
+        the log grows at its head while it is being read, so a numbered page
+        boundary is already stale when it is handed out and the rows that moved
+        past it come back twice. Send the previous response's `next_cursor` to
+        get the rows that follow the last one you saw. `next_cursor` is absent
+        on the last page.
+      tags: [admin]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size, default 50, capped at 200. Bounds one request, never how far back you can page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque keyset cursor from a previous page's `next_cursor`. Absent starts at the newest row.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of system audit events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSystemAuditPage"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -21102,6 +21322,53 @@ components:
     # ---------------------------------------------------------------------------
     # ADR-056 Phase 3 — dashboard two-factor authentication
     # ---------------------------------------------------------------------------
+    ConnectedIdentity:
+      type: object
+      description: >-
+        One external sign-in method linked to an account. `subject` and `issuer`
+        (the provider's own identifiers for the person) are deliberately absent:
+        they mean nothing to the person reading the page and they are what an
+        attacker would need to forge a matching identity. `email` is what the
+        provider asserted at the last sign-in, which is a record, not the
+        account's own address, and may differ from it.
+      required: [provider, email, email_verified, created_at]
+      properties:
+        provider:
+          type: string
+          description: >-
+            The provider key, e.g. `google`, `github`, or `oidc` for an
+            operator-configured issuer.
+        email: { type: string }
+        email_verified:
+          type: boolean
+          description: >-
+            Whether the PROVIDER vouched for the address at link time. Distinct
+            from this install having seen the person open a verification link.
+        created_at: { type: string, format: date-time }
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null until the method has been used to sign in at least once.
+    ConnectedAccounts:
+      type: object
+      description: How the authenticated account can be signed in to.
+      required: [has_password, can_unlink, items]
+      properties:
+        has_password:
+          type: boolean
+          description: >-
+            Whether a password is set. False means the account is social-only
+            and can add one via `POST /auth/me/password/set`.
+        can_unlink:
+          type: boolean
+          description: >-
+            Whether removing one identity would still leave a way in, which is
+            true when a password is set or more than one identity is connected.
+            A display hint mirroring the server's rule, never the enforcement.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ConnectedIdentity" }
     TwoFactorStatus:
       type: object
       description: Current 2FA configuration summary for the authenticated user.
@@ -22160,6 +22427,48 @@ components:
               tenant_name: { type: string }
               site_count: { type: integer, format: int64 }
               member_count: { type: integer, format: int64 }
+    AdminSystemAuditPage:
+      type: object
+      required: [items, total]
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: >
+            Total rows in the log, as context for the reader. It is NOT how you
+            page: pass next_cursor back instead. On a log that is still being
+            written to, a count and a page boundary disagree by design.
+        next_cursor:
+          type: string
+          description: >
+            Pass as `cursor` to get the rows after this page. Absent on the last
+            page, which is the only reliable end-of-list signal.
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, occurred_at, actor_type, action, tenant_name, metadata]
+            properties:
+              id: { type: string, format: uuid }
+              occurred_at: { type: string, format: date-time }
+              actor_type: { type: string }
+              actor_id:
+                type: string
+                format: uuid
+                nullable: true
+                description: Absent for an event with no user actor.
+              action: { type: string }
+              tenant_id:
+                type: string
+                format: uuid
+                nullable: true
+                description: >
+                  A denormalized snapshot, not a reference: this log deliberately
+                  outlives the organisation an event concerned. Absent when the
+                  event had no organisation at all, which is the case for the
+                  authentication events of accounts with no membership.
+              tenant_name: { type: string }
+              metadata: { type: object, additionalProperties: true }
     AdminVulnFeedStatus:
       type: object
       required: [configured, source, feed_ok, record_count, enrichment_available]

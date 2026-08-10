@@ -6,7 +6,7 @@ import { useState } from "react";
 import { AlertCircle, AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
 
 import { AuthLayout } from "@/components/layout/auth-layout";
-import { SocialButtons } from "@/features/auth/social-buttons";
+import { SocialButtons, ensureSignInMethods } from "@/features/auth/social-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,9 +35,15 @@ const registerSearchSchema = z.object({
 
 export const Route = createFileRoute("/register")({
   validateSearch: registerSearchSchema,
-  // Already signed in? Nothing to bootstrap — go to the app.
+  // Already signed in? Nothing to bootstrap, go to the app.
   beforeLoad: async ({ context }) => {
-    const me = await ensureMe(context.queryClient);
+    // Alongside the session check, and bounded, so the provider buttons are
+    // part of first paint instead of being injected into the page a moment
+    // later. See ensureSignInMethods.
+    const [me] = await Promise.all([
+      ensureMe(context.queryClient),
+      ensureSignInMethods(context.queryClient),
+    ]);
     if (me) {
       throw redirect({ to: "/sites" });
     }

@@ -11,6 +11,57 @@ import (
 	"github.com/google/uuid"
 )
 
+const adoptLegacyIdentity = `-- name: AdoptLegacyIdentity :execrows
+INSERT INTO user_identities (user_id, provider, subject, issuer, email, email_verified, last_login_at)
+VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT DO NOTHING
+`
+
+type AdoptLegacyIdentityParams struct {
+	UserID        uuid.UUID `json:"user_id"`
+	Provider      string    `json:"provider"`
+	Subject       string    `json:"subject"`
+	Issuer        string    `json:"issuer"`
+	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
+}
+
+// Writes the user_identities row that m110's one-shot backfill never wrote.
+//
+// A migration backfill runs exactly once, and schema_migrations guarantees it is
+// never revisited. Anything the previous release wrote to users.oidc_subject
+// afterwards, during a rollback window, therefore has legacy columns and no
+// identity row forever. This is the runtime half of that repair: the sign-in
+// path notices the gap and closes it, which works whatever order the deploy and
+// the rollback happened in.
+//
+// Only ever called AFTER the policy has allowed the sign-in, so a refused
+// account cannot acquire a permanent identity binding on its way out.
+//
+// ON CONFLICT DO NOTHING covers both unique indexes on purpose. Two concurrent
+// sign-ins racing to heal the same row is a no-op, and a user who already holds
+// an 'oidc' identity under a DIFFERENT subject keeps it: in both cases the
+// legacy columns already told us who is signing in, so failing here would turn
+// a successful repair into a failed login.
+//
+// :execrows so the caller can tell a real repair from a no-op. One repair, one
+// audit entry: a conflict that repeats on every sign-in must not write an audit
+// entry on every sign-in.
+func (q *Queries) AdoptLegacyIdentity(ctx context.Context, arg AdoptLegacyIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, adoptLegacyIdentity,
+		arg.UserID,
+		arg.Provider,
+		arg.Subject,
+		arg.Issuer,
+		arg.Email,
+		arg.EmailVerified,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countIdentitiesForUser = `-- name: CountIdentitiesForUser :one
 SELECT count(*) FROM user_identities WHERE user_id = $1
 `
@@ -125,6 +176,13 @@ type GetUserByIdentityParams struct {
 // The ONLY lookup that authenticates. (provider, subject, issuer) is the
 // provider's immutable id for the human; email is never used to authenticate,
 // only to decide whether linking a NEW identity is permitted.
+//
+// ISSUER STAYS IN THE KEY. A subject is only unique WITHIN the issuer that
+// minted it: two identity providers can hand out the same opaque string for two
+// different people, and dropping issuer here would turn that collision into a
+// silent sign-in as somebody else. Continuity across an issuer change is
+// handled one level up, by ListIdentitiesBySubject plus an issuer the operator
+// has explicitly declared, never by widening this key.
 func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityParams) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByIdentity, arg.Provider, arg.Subject, arg.Issuer)
 	var i User
@@ -150,6 +208,61 @@ func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityPa
 		&i.TotpProvisionalExpiresAt,
 	)
 	return i, err
+}
+
+const listIdentitiesBySubject = `-- name: ListIdentitiesBySubject :many
+SELECT id, user_id, provider, subject, issuer, email, email_verified, created_at, last_login_at FROM user_identities
+WHERE provider = $1 AND subject = $2
+ORDER BY created_at, id
+LIMIT 10
+`
+
+type ListIdentitiesBySubjectParams struct {
+	Provider string `json:"provider"`
+	Subject  string `json:"subject"`
+}
+
+// The candidates for an issuer migration, and NOT an authenticating lookup on
+// its own: what comes back here is handed to a pure policy that decides whether
+// any of it may be used (see matchStoredIdentity).
+//
+// Reached only when the exact-issuer lookup above missed. The policy accepts a
+// row whose issuer differs from the current one in exactly two shapes: the
+// difference is cosmetic (a trailing slash, host case), or the stored issuer is
+// the one the operator DECLARED as this install's previous issuer. Everything
+// else, and any ambiguity at all, resolves to no match.
+//
+// The cap is a sanity bound, not part of the policy: more rows than this for
+// one subject is not a state any install reaches, and the policy refuses on
+// ambiguity anyway.
+func (q *Queries) ListIdentitiesBySubject(ctx context.Context, arg ListIdentitiesBySubjectParams) ([]UserIdentity, error) {
+	rows, err := q.db.Query(ctx, listIdentitiesBySubject, arg.Provider, arg.Subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserIdentity
+	for rows.Next() {
+		var i UserIdentity
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Provider,
+			&i.Subject,
+			&i.Issuer,
+			&i.Email,
+			&i.EmailVerified,
+			&i.CreatedAt,
+			&i.LastLoginAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listIdentitiesForUser = `-- name: ListIdentitiesForUser :many
@@ -186,6 +299,46 @@ func (q *Queries) ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const migrateIdentityIssuer = `-- name: MigrateIdentityIssuer :execrows
+UPDATE user_identities
+SET issuer = $4, last_login_at = now(), email = $5, email_verified = $6
+WHERE provider = $1 AND subject = $2 AND issuer = $3
+`
+
+type MigrateIdentityIssuerParams struct {
+	Provider      string `json:"provider"`
+	Subject       string `json:"subject"`
+	Issuer        string `json:"issuer"`
+	Issuer_2      string `json:"issuer_2"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+}
+
+// Moves ONE identity from the issuer it was stored under to the one that just
+// signed the token. The operator declared the old issuer, the sign-in path
+// decided this row is the unambiguous single candidate, and the caller audits
+// the move: this is the deliberate, recorded half of "an issuer change is a
+// migration", as opposed to a lookup that quietly ignores issuer.
+//
+// Matching on the OLD issuer, not just (provider, subject), is what keeps it
+// one row and makes a concurrent second sign-in a no-op rather than a double
+// move; :execrows so the caller only writes an audit entry when a row actually
+// moved.
+func (q *Queries) MigrateIdentityIssuer(ctx context.Context, arg MigrateIdentityIssuerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, migrateIdentityIssuer,
+		arg.Provider,
+		arg.Subject,
+		arg.Issuer,
+		arg.Issuer_2,
+		arg.Email,
+		arg.EmailVerified,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchIdentityLogin = `-- name: TouchIdentityLogin :exec

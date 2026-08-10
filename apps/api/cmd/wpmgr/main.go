@@ -128,10 +128,43 @@ func main() {
 		return
 	}
 
+	// Advisories are the problems that must NOT cost the operator their control
+	// plane: each one disables the single feature it names and nothing else. We
+	// still say so at the top of every boot, because the alternative for a
+	// half-configured feature is silence, and silence is what makes an operator
+	// spend an afternoon on it.
+	for _, iss := range config.Advisories(cfg) {
+		logger.Warn("config advisory: this feature is degraded, the control plane is not",
+			slog.String("setting", iss.Name), slog.String("reason", iss.Reason))
+	}
+
 	if err := run(ctx, cfg, logger); err != nil {
 		slog.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+// bootSocialConfig decides which social providers this boot will offer.
+//
+// It returns an EMPTY config, disabling every provider, when the operator has
+// configured one but WPMGR_PUBLIC_BASE_URL cannot produce an absolute
+// redirect_uri. The whole flow is dead in that state: the derived redirect_uri
+// is the relative path /auth/social/google/callback and every provider rejects
+// it, so the only thing a rendered button can do is send a person to an error
+// page on someone else's domain.
+//
+// DEGRADING THE FEATURE IS THE POINT. Refusing to boot on this would take the
+// entire control plane down, for every tenant, over one sign-in button, and it
+// would do it on the upgrade path where the operator changed nothing. The
+// reason is logged at ERROR (an operator who configured a provider deserves to
+// find out why it vanished) and repeated by wpmgr-cli validate-env.
+func bootSocialConfig(cfg config.Config, logger *slog.Logger) config.SocialConfig {
+	if !cfg.Social.Configured() || cfg.SocialSignInUsable() {
+		return cfg.Social
+	}
+	logger.Error("social sign-in DISABLED: WPMGR_PUBLIC_BASE_URL is not an absolute http(s) URL, so the derived OAuth redirect_uri would be a relative path that every provider rejects. Everything else on this control plane keeps running; run `wpmgr-cli validate-env` for the full text",
+		slog.String("setting", "WPMGR_PUBLIC_BASE_URL"))
+	return config.SocialConfig{}
 }
 
 // ageIdentityDeriveInfo is the fixed HKDF info label used to derive the
@@ -268,7 +301,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// emails. Never auto-demotes. Done before closing migPool (owner DSN, bypasses
 	// RLS). Runs after migrations so the is_superadmin column is guaranteed to exist.
 	if raw := os.Getenv("WPMGR_SUPERADMIN_EMAILS"); raw != "" {
-		saBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		saBaseURL := cfg.PublicBaseURL
 		for _, email := range strings.Split(raw, ",") {
 			// Emails are persisted lowercased (normalizeEmail), so match
 			// case-insensitively.
@@ -276,27 +309,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if email == "" {
 				continue
 			}
-			// Allowlisted superadmins are trusted at the infrastructure level, so
-			// also activate + mark them verified — they need not receive a
-			// verification email (their mailbox domain may not even accept mail).
-			tag, err := migPool.Pool.Exec(ctx,
-				`UPDATE users
-				    SET is_superadmin = true,
-				        status = 'active',
-				        email_verified_at = COALESCE(email_verified_at, now()),
-				        updated_at = now()
-				  WHERE lower(email) = $1`, email,
-			)
+			// Grants superadmin and ACTIVATES the account, and deliberately does
+			// not touch email_verified_at. See superadminGrantSQL for why that
+			// distinction is the whole point of this statement.
+			tag, err := migPool.Pool.Exec(ctx, superadminGrantSQL, email)
 			switch {
 			case err != nil:
 				logger.Warn("superadmin seed failed", slog.String("email", email), slog.Any("error", err))
 			case tag.RowsAffected() > 0:
 				logger.Info("superadmin granted to existing account", slog.String("email", email))
 			default:
-				// No account yet: create one (active + verified + superadmin) with
-				// a random password the operator never learns, and mint a one-time
-				// set-password link so they choose their own password. The link is
-				// logged because the account's mailbox may not accept mail.
+				// No account yet: create one (active + superadmin, and NOT
+				// email-verified) with a random password the operator never
+				// learns, and mint a one-time set-password link so they choose
+				// their own password. The link is logged because the account's
+				// mailbox may not accept mail.
 				if err := seedSuperadminAccount(ctx, migPool.Pool, logger, saBaseURL, email); err != nil {
 					logger.Warn("superadmin account create failed", slog.String("email", email), slog.Any("error", err))
 				}
@@ -340,7 +367,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// an account whose password is unknown — e.g. one seeded before a fix — then
 	// remove the env var so it does not mint a link on every boot.
 	if raw := os.Getenv("WPMGR_SUPERADMIN_RESET_EMAILS"); raw != "" {
-		rsBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		rsBaseURL := cfg.PublicBaseURL
 		for _, email := range strings.Split(raw, ",") {
 			email = strings.ToLower(strings.TrimSpace(email))
 			if email == "" {
@@ -363,7 +390,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// set-password link. Use this to recover an account whose org + sites are
 	// intact but whose user row was deleted. Idempotent. REMOVE the env after use, // it re-mints a link on every boot otherwise.
 	if raw := os.Getenv("WPMGR_RECOVER_ACCOUNTS"); raw != "" {
-		rcBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+		rcBaseURL := cfg.PublicBaseURL
 		for _, entry := range strings.Split(raw, ",") {
 			entry = strings.TrimSpace(entry)
 			if entry == "" {
@@ -503,15 +530,28 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	authSvc := auth.NewService(authRepo, auditRec, validator)
 	apiKeySvc := apikey.NewService(pool)
 
-	oidcProvider, err := auth.NewOIDCProvider(ctx, cfg.OIDC)
-	if err != nil {
-		// Discovery failure should not silently disable OIDC; surface it.
-		return err
-	}
+	// No network I/O, and no error to handle: the issuer is contacted on the
+	// first sign-in that needs it, not here. An unreachable identity provider
+	// used to be a fatal boot error, which took the whole control plane down for
+	// as long as somebody else's server was unwell. See NewOIDCProvider.
+	oidcProvider := auth.NewOIDCProvider(cfg.OIDC)
 	if oidcProvider.Enabled() {
 		logger.Info("OIDC relying party enabled", slog.String("issuer", cfg.OIDC.Issuer))
 	} else {
 		logger.Info("OIDC disabled (no issuer configured); email+password only")
+	}
+
+	// An identity is (provider, subject, issuer), so repointing the issuer
+	// strands every generic-OIDC identity unless the operator declares where
+	// they came from. Declaring it authorises a ONE-TIME, audited move of each
+	// identity to the new issuer; it never verifies a token. Logged loudly
+	// because a stale value left set is a standing relaxation nobody meant to
+	// keep.
+	authSvc.SetPreviousOIDCIssuer(cfg.OIDC.PreviousIssuer)
+	if cfg.OIDC.PreviousIssuer != "" {
+		logger.Warn("OIDC previous issuer declared: existing identities will be migrated to the current issuer on next sign-in; unset WPMGR_OIDC_PREVIOUS_ISSUER once the move is complete",
+			slog.String("previous_issuer", cfg.OIDC.PreviousIssuer),
+			slog.String("issuer", cfg.OIDC.Issuer))
 	}
 
 	// Consumer identity providers (Google, GitHub). Each is independently
@@ -522,9 +562,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// This does no network I/O. Google's discovery call happens on first use,
 	// because putting a third party's availability on our boot path means their
 	// outage stops this control plane from starting at all.
-	socialProviders := auth.NewSocialProviders(cfg.Social)
+	//
+	// See bootSocialConfig for what happens when the public base URL cannot
+	// produce a usable redirect_uri.
+	socialProviders := auth.NewSocialProviders(bootSocialConfig(cfg, logger))
 	if enabled := socialProviders.Enabled(); len(enabled) > 0 {
-		logger.Info("social sign-in enabled", slog.Any("providers", enabled))
+		logger.Info("social sign-in enabled", slog.Any("providers", enabled),
+			slog.String("redirect_uri_pattern", auth.SocialRedirectURL(cfg.PublicBaseURL, "<provider>")))
 	} else {
 		logger.Info("social sign-in disabled (no provider credentials configured)")
 	}
@@ -563,7 +607,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PriceStarter:    cfg.Billing.Stripe.PriceStarter,
 		PriceAgency:     cfg.Billing.Stripe.PriceAgency,
 		PriceScale:      cfg.Billing.Stripe.PriceScale,
-		PortalReturnURL: strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/") + "/billing",
+		PortalReturnURL: cfg.PublicBaseURL + "/billing",
 	}
 	if stripeCfg.Configured() {
 		billingProviders = append(billingProviders, billingstripe.New(stripeCfg))
@@ -599,7 +643,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// only MOUNTED when hosted billing is enabled (see the server.Deps wiring
 	// near the bottom of this function) — that nil/non-nil split is the
 	// routes-contract 404-when-unhosted guarantee.
-	billingPublicBaseURL := strings.TrimRight(os.Getenv("WPMGR_PUBLIC_BASE_URL"), "/")
+	billingPublicBaseURL := cfg.PublicBaseURL
 	billingH := billing.NewHandler(billingSvc, func(ctx context.Context, userID uuid.UUID) (string, error) {
 		u, err := authRepo.GetUserByID(ctx, userID)
 		if err != nil {
@@ -838,7 +882,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// m16 — Restore Runs + Logs: wire the restore-run repo into the backup
 		// service so CreateRestore + RecordProgress persist durable run entities.
 		backupSvc.SetRestoreRunStore(backup.NewRestoreRunRepo(pool))
-		cpBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+		cpBaseURL := cfg.PublicBaseURL
 		// River's default per-job context deadline is 60s — far too short for a
 		// real-site backup. Override with the configured backup HTTPTimeout plus
 		// a 2-minute buffer so the http.Client's per-attempt timeout (which has
@@ -958,7 +1002,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if supportEmail == "" {
 		supportEmail = "support@wpmgr.app"
 	}
-	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, os.Getenv("WPMGR_PUBLIC_BASE_URL"), supportEmail, logger)
+	mailerSvc := mailer.NewService(emailResolver, emailRenderer, pool, cfg.PublicBaseURL, supportEmail, logger)
 	sendEmailWorker := mailer.NewSendEmailWorker(mailerSvc)
 	smtpSettingsSvc := settings.NewService(settings.NewRepo(pool), siteDestAgeID, mailerSvc, logger)
 	smtpSettingsH := settings.NewHandler(smtpSettingsSvc, auditRec)
@@ -973,7 +1017,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	emailH := email.NewHandler(emailSvc, auditRec)
 	// m61: set the public base URL on the email handler so GET config responses
 	// can include the webhook_url field for the UI.
-	emailPublicBase := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	emailPublicBase := cfg.PublicBaseURL
 	if emailPublicBase != "" {
 		emailH.SetPublicBase(emailPublicBase)
 	}
@@ -1380,7 +1424,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		mediaStore = ms
 	}
-	mediaCPBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	mediaCPBaseURL := cfg.PublicBaseURL
 	mediaSvc := mediaservice.NewService(mediaRepo, mediaStore, siteEventsPub, auditRec, clock, mediaservice.Config{
 		PresignTTL:    cfg.Backup.PresignTTL,
 		CPBaseURL:     mediaCPBaseURL,
@@ -1986,7 +2030,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// River has started. The schedule worker finds due sites and enqueues
 	// DBCleanArgs River jobs; the dispatch worker calls perfSvc.DBCleanScheduled.
 	dbCleanEnqueuer := perf.NewDBCleanRiverEnqueuer(riverClient)
-	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	dbCleanScheduleWorker.SetEnqueuer(dbCleanEnqueuer, cfg.PublicBaseURL)
 
 	// ADR-046 Performance Suite: wire the RUCSS enqueuer + perf ingest service
 	// now that River has started. The ingest service stashes the agent-posted
@@ -2033,7 +2077,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		},
 	}
 	perfH := perf.NewHandler(perfSvc, perfRucssReader, auditRec)
-	perfH.SetCPBaseURL(os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	perfH.SetCPBaseURL(cfg.PublicBaseURL)
 	// P3.5 — wire the corpus reader so the orphans classification endpoint can
 	// classify stored scan candidates against the live plugin_signatures corpus.
 	perfH.SetCorpusSource(dbclean.NewCorpusPostgresReader(sqlc.New(pool)))
@@ -2062,7 +2106,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	perfH.SetRumResultsReader(perfRumResultsReader)
 	// M56 — Wire the RUM beacon key repo so UpdateConfig generates keys on first enable.
-	perfSvc.SetBeaconKeyRepo(rumBeaconRepo, os.Getenv("WPMGR_PUBLIC_BASE_URL"))
+	perfSvc.SetBeaconKeyRepo(rumBeaconRepo, cfg.PublicBaseURL)
 	// GH #174 — wire the ack-based reconcile enqueuer now that River has started.
 	perfSvc.SetRumBeaconReconcileEnqueuer(perf.NewRumBeaconReconcileRiverEnqueuer(riverClient))
 	fontResultsAgentH := perf.NewFontResultsAgentHandler(perfRepo)
@@ -2071,7 +2115,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// ADR-045 Phase 2 — wire the auth service's transactional mailer (password
 	// reset link + change-password notification) + an in-memory rate limiter now
 	// that River has started.
-	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), os.Getenv("WPMGR_PUBLIC_BASE_URL"), autologin.NewMemoryLimiter())
+	// cfg.PublicBaseURL, not os.Getenv, here and at every other public-base-URL
+	// consumer in this file: os.Getenv skips the YAML file entirely, so a
+	// file-configured install had a public_base_url nothing read, and any check
+	// of the variable judged a string no consumer used.
+	authSvc.SetMailer(mailer.NewEnqueuer(mailerSvc, riverClient), cfg.PublicBaseURL, autologin.NewMemoryLimiter())
 	// Track B (m49) — wire the backup-event mailer now that River has started.
 	// The BackupMailer interface is satisfied by *mailer.Enqueuer. Emails are
 	// best-effort (sendBackupEmail swallows errors); nil mailer = no emails.
@@ -2295,7 +2343,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 
 	// M5.7 — Orgs + Sharing + Invitations.
-	publicBaseURL := os.Getenv("WPMGR_PUBLIC_BASE_URL")
+	publicBaseURL := cfg.PublicBaseURL
 
 	// Build the sharing mailer (reuse SMTP config; may be nil/noop).
 	var sharingMailer sharing.Mailer
@@ -2424,7 +2472,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if cfg.Update.AgentPackageServeEnabled {
 			packageBase := strings.TrimRight(strings.TrimSpace(cfg.Update.AgentPackageBaseURL), "/")
 			if packageBase == "" {
-				packageBase = strings.TrimRight(strings.TrimSpace(os.Getenv("WPMGR_PUBLIC_BASE_URL")), "/")
+				packageBase = cfg.PublicBaseURL
 			}
 			updateAgentH.EnablePackageServing(manifestSigner, packageBase)
 			logger.Info("GH #302 control-plane agent package serving ENABLED",
@@ -2569,7 +2617,19 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 	authH.SetSocialProviders(socialProviders)
+	// Social sign-in is the one auth path whose outcome a third party decides,
+	// so its failures have to be readable in the operator's log rather than
+	// only in a redirect the browser follows away.
+	authH.SetLogger(logger)
 	authH.SetSecureCookies(cfg.IsProduction())
+	// The social handshake is sealed rather than stored, so the start endpoint
+	// writes nothing to the session store an unauthenticated caller could fill.
+	// Fatal if it cannot be keyed: the alternative is an install whose sign-in
+	// buttons all fail at the click, which is worse discovered here than there.
+	// The secret is already validated (cfg.ValidateSessionSecret) before boot.
+	if err := authH.SetHandshakeSecret(cfg.Auth.SessionSecret); err != nil {
+		return fmt.Errorf("social handshake key: %w", err)
+	}
 	authH.SetHosted(cfg.Hosted.Enabled)
 	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave
@@ -2779,13 +2839,52 @@ func agentSigningPublicKey(cfg config.AgentConfig) (string, error) {
 	return cfg.SigningPublicKey, nil
 }
 
+// WPMGR_SUPERADMIN_EMAILS GRANTS PRIVILEGE. IT DOES NOT VERIFY AN ADDRESS.
+//
+// Both statements below activate the account, because password login gates on
+// users.status and an operator whose mailbox domain does not accept mail must
+// still be able to get in. Neither writes email_verified_at, and that is the
+// point.
+//
+// email_verified_at means one narrow thing: this install watched a human open a
+// link it sent to that address. An environment variable is not that. The
+// difference is not bookkeeping, because email_verified_at is one half of the
+// rule that decides whether a provider-verified identity may attach itself to
+// an existing account (decideSocial, internal/auth/social.go). The other half is
+// the provider's own assertion.
+//
+// Stamping it here let the env var supply the local half on the single highest
+// privilege account on the install: anyone who could get a provider to assert
+// the allowlisted address, which a Workspace administrator over that domain can,
+// would have had their identity linked straight onto the superadmin account,
+// with no local password, no local link opened and nothing asked of them. The
+// operator now verifies their address the same way every other user does.
+//
+// This is additive, like the rest of the seeder: an account stamped verified by
+// an earlier release keeps that stamp. The seeder never demotes and never
+// un-verifies.
+const superadminGrantSQL = `UPDATE users
+	    SET is_superadmin = true,
+	        status        = 'active',
+	        updated_at    = now()
+	  WHERE lower(email) = $1`
+
+// superadminCreateSQL provisions the account when the allowlisted address has
+// none. Same rule as superadminGrantSQL: active, superadmin, and NOT verified.
+// email_verified_at is left NULL by omission rather than written as NULL, so
+// the column cannot be re-added by editing a value.
+const superadminCreateSQL = `INSERT INTO users (email, password_hash, name, status, is_superadmin)
+	 VALUES ($1, $2, '', 'active', true)
+	 RETURNING id`
+
 // migrateRiver applies River's own schema using the migration-owner pool.
 // seedSuperadminAccount provisions a superadmin account that does not exist yet
 // (the operator could not self-register, e.g. their mailbox domain does not
-// accept mail). It creates the user as active + email-verified + is_superadmin
-// with a RANDOM password no one is told, then mints a one-time, 24h
-// password-reset token and logs the set-password URL so the operator chooses
-// their own password. Runs on the owner pool (superuser, bypasses RLS).
+// accept mail). It creates the user as active + is_superadmin, with a RANDOM
+// password no one is told, then mints a one-time, 24h password-reset token and
+// logs the set-password URL so the operator chooses their own password. The
+// address is NOT marked verified (see superadminGrantSQL). Runs on the owner
+// pool (superuser, bypasses RLS).
 func seedSuperadminAccount(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, baseURL, email string) error {
 	pwBuf := make([]byte, 24)
 	if _, err := crand.Read(pwBuf); err != nil {
@@ -2796,10 +2895,7 @@ func seedSuperadminAccount(ctx context.Context, pool *pgxpool.Pool, logger *slog
 		return fmt.Errorf("hash password: %w", err)
 	}
 	var userID uuid.UUID
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO users (email, password_hash, name, status, email_verified_at, is_superadmin)
-		 VALUES ($1, $2, '', 'active', now(), true)
-		 RETURNING id`, email, hash).Scan(&userID); err != nil {
+	if err := pool.QueryRow(ctx, superadminCreateSQL, email, hash).Scan(&userID); err != nil {
 		return fmt.Errorf("insert user: %w", err)
 	}
 	return mintSetPasswordLink(ctx, pool, logger, baseURL, userID, email, "superadmin account CREATED")

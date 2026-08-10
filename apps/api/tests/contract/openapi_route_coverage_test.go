@@ -263,10 +263,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	authSvc := auth.NewService(authRepo, auditRec, validator)
 	apiKeySvc := apikey.NewService(pool)
 	authn := middleware.NewAuthenticator(sessions, authSvc, apiKeySvc, pool)
-	oidcProvider, err := auth.NewOIDCProvider(context.Background(), config.OIDCConfig{})
-	if err != nil {
-		t.Fatalf("NewOIDCProvider (disabled): %v", err)
-	}
+	oidcProvider := auth.NewOIDCProvider(config.OIDCConfig{})
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)

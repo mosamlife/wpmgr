@@ -3,6 +3,9 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -601,4 +604,132 @@ func (r *Repo) Stats(ctx context.Context) (AdminStats, error) {
 		return AdminStats{}, domain.Internal("admin_stats_failed", "failed to load stats").WithCause(err)
 	}
 	return out, nil
+}
+
+// SystemAuditEvent is one row of the tenant-INDEPENDENT audit trail.
+//
+// TenantID/TenantName are denormalized snapshots, not references: the whole
+// reason this table exists is to outlive the organisation an event concerned.
+// Both are empty for an event that never had an organisation at all, which is
+// the case for the auth events of accounts with no membership.
+type SystemAuditEvent struct {
+	ID         uuid.UUID
+	OccurredAt time.Time
+	ActorType  string
+	ActorID    *uuid.UUID
+	Action     string
+	TenantID   *uuid.UUID
+	TenantName string
+	Metadata   []byte
+}
+
+// SystemAuditPage is one keyset page of the tenant-independent audit trail.
+//
+// NextCursor is empty when the page reached the end of the log. Total is the
+// whole log's size, shown as context, never used to page.
+type SystemAuditPage struct {
+	Events     []SystemAuditEvent
+	Total      int64
+	NextCursor string
+}
+
+// systemAuditCursorStart is the first-page cursor: a timestamp no row can carry
+// and the maximum uuid, so `(occurred_at, id) < (ts, id)` admits every row.
+var (
+	systemAuditCursorStartTS = time.Date(2999, 12, 31, 23, 59, 59, 0, time.UTC)
+	systemAuditCursorStartID = uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+)
+
+// encodeSystemAuditCursor / decodeSystemAuditCursor move a (occurred_at, id)
+// pair through the wire as one opaque token, in the same
+// "<unix nanos>_<uuid>" shape the email log already uses.
+//
+// A malformed cursor decodes to the start of the log rather than erroring. The
+// value is opaque to the caller, so the only way to hold a bad one is to have
+// mangled it, and answering that with page one is more useful than a 400 that
+// leaves an ops console stuck.
+func encodeSystemAuditCursor(t time.Time, id uuid.UUID) string {
+	return fmt.Sprintf("%d_%s", t.UTC().UnixNano(), id.String())
+}
+
+func decodeSystemAuditCursor(cursor string) (time.Time, uuid.UUID) {
+	sep := strings.LastIndex(cursor, "_")
+	if sep <= 0 {
+		return systemAuditCursorStartTS, systemAuditCursorStartID
+	}
+	nanos, err := strconv.ParseInt(cursor[:sep], 10, 64)
+	if err != nil {
+		return systemAuditCursorStartTS, systemAuditCursorStartID
+	}
+	id, err := uuid.Parse(cursor[sep+1:])
+	if err != nil {
+		return systemAuditCursorStartTS, systemAuditCursorStartID
+	}
+	return time.Unix(0, nanos).UTC(), id
+}
+
+// ListSystemAuditEvents returns one keyset page of the tenant-independent audit
+// trail, newest first, plus the total row count as context.
+//
+// THE CURSOR IS NOT AN OFFSET, and the difference matters on exactly this list.
+// Rows arrive at the head of it continuously, so a numbered offset points at a
+// boundary that has already moved by the time page two is asked for, and the
+// reader silently sees the rows that shifted past it a second time. The cursor
+// names the last row this reader actually saw instead, which is stable no
+// matter what arrives above it.
+//
+// It fetches one row more than asked for and keeps the extra as the answer to
+// "is there more", so an exactly-full last page does not offer a next page that
+// turns out to be empty.
+//
+// system_audit_log carries no RLS (it is not tenant-scoped data, see its
+// schema.sql comment), so this reads on the bare pool. The gate is the
+// superadmin middleware on the route, and it is the only gate: these rows span
+// every account on the install.
+func (r *Repo) ListSystemAuditEvents(ctx context.Context, limit int32, cursor string) (SystemAuditPage, error) {
+	cursorTS, cursorID := decodeSystemAuditCursor(cursor)
+	rows, err := r.q.ListSystemAuditEvents(ctx, sqlc.ListSystemAuditEventsParams{
+		CursorTs: cursorTS,
+		CursorID: cursorID,
+		RowLimit: limit + 1,
+	})
+	if err != nil {
+		return SystemAuditPage{}, domain.Internal("system_audit_list_failed", "failed to load system audit log").WithCause(err)
+	}
+	total, err := r.q.CountSystemAuditEvents(ctx)
+	if err != nil {
+		return SystemAuditPage{}, domain.Internal("system_audit_count_failed", "failed to count system audit log").WithCause(err)
+	}
+
+	page := SystemAuditPage{Total: total}
+	if len(rows) > int(limit) {
+		last := rows[limit-1]
+		page.NextCursor = encodeSystemAuditCursor(last.OccurredAt, last.ID)
+		rows = rows[:limit]
+	}
+
+	page.Events = make([]SystemAuditEvent, 0, len(rows))
+	for _, row := range rows {
+		ev := SystemAuditEvent{
+			ID:         row.ID,
+			OccurredAt: row.OccurredAt,
+			ActorType:  row.ActorType,
+			Action:     row.Action,
+			TenantName: row.TenantName,
+			Metadata:   row.Metadata,
+		}
+		if row.ActorID.Valid {
+			id := uuid.UUID(row.ActorID.Bytes)
+			ev.ActorID = &id
+		}
+		// The nil UUID is how a tenantless event is stored (the column is NOT
+		// NULL and has no FK). Surfaced as absent rather than as a zero id that
+		// a reader could mistake for a real organisation.
+		if row.TenantID != uuid.Nil {
+			id := row.TenantID
+			ev.TenantID = &id
+		}
+		page.Events = append(page.Events, ev)
+	}
+	return page, nil
 }

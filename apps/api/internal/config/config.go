@@ -16,28 +16,40 @@ import (
 
 // Config is the fully-typed application configuration.
 type Config struct {
-	Env        string           `koanf:"env"`
-	HTTPAddr   string           `koanf:"http_addr"`
-	LogLevel   string           `koanf:"log_level"`
-	DB         DBConfig         `koanf:"db"`
-	Redis      RedisConfig      `koanf:"redis"`
-	Auth       AuthConfig       `koanf:"auth"`
-	OIDC       OIDCConfig       `koanf:"oidc"`
-	Social     SocialConfig     `koanf:"social"`
-	OTel       OTelConfig       `koanf:"otel"`
-	Shutdown   ShutdownConfig   `koanf:"shutdown"`
-	Agent      AgentConfig      `koanf:"agent"`
-	Update     UpdateConfig     `koanf:"update"`
-	S3         S3Config         `koanf:"s3"`
-	Backup     BackupConfig     `koanf:"backup"`
-	ClickHouse ClickHouseConfig `koanf:"clickhouse"`
-	SMTP       SMTPConfig       `koanf:"smtp"`
-	Uptime     UptimeConfig     `koanf:"uptime"`
-	River      RiverConfig      `koanf:"river"`
-	Autologin  AutologinConfig  `koanf:"autologin"`
-	Conn       ConnConfig       `koanf:"conn"`
-	Hosted     HostedConfig     `koanf:"hosted"`
-	Billing    BillingConfig    `koanf:"billing"`
+	Env      string `koanf:"env"`
+	HTTPAddr string `koanf:"http_addr"`
+	LogLevel string `koanf:"log_level"`
+	// PublicBaseURL (WPMGR_PUBLIC_BASE_URL) is the externally reachable origin
+	// of this control plane: the origin every link the product hands out is
+	// built from (password reset, invitations, agent callbacks, the derived
+	// social sign-in redirect_uri).
+	//
+	// It is typed here so there is ONE value. It used to be read with
+	// os.Getenv at sixteen call sites, which meant a YAML-configured install
+	// had a public_base_url nothing read, and any check of the variable judged
+	// a string no consumer used. Load normalizes it (see
+	// NormalizePublicBaseURL) so the value checked and the value used are the
+	// same string, byte for byte.
+	PublicBaseURL string           `koanf:"public_base_url"`
+	DB            DBConfig         `koanf:"db"`
+	Redis         RedisConfig      `koanf:"redis"`
+	Auth          AuthConfig       `koanf:"auth"`
+	OIDC          OIDCConfig       `koanf:"oidc"`
+	Social        SocialConfig     `koanf:"social"`
+	OTel          OTelConfig       `koanf:"otel"`
+	Shutdown      ShutdownConfig   `koanf:"shutdown"`
+	Agent         AgentConfig      `koanf:"agent"`
+	Update        UpdateConfig     `koanf:"update"`
+	S3            S3Config         `koanf:"s3"`
+	Backup        BackupConfig     `koanf:"backup"`
+	ClickHouse    ClickHouseConfig `koanf:"clickhouse"`
+	SMTP          SMTPConfig       `koanf:"smtp"`
+	Uptime        UptimeConfig     `koanf:"uptime"`
+	River         RiverConfig      `koanf:"river"`
+	Autologin     AutologinConfig  `koanf:"autologin"`
+	Conn          ConnConfig       `koanf:"conn"`
+	Hosted        HostedConfig     `koanf:"hosted"`
+	Billing       BillingConfig    `koanf:"billing"`
 }
 
 // BillingConfig gates the M16 Phase B payment-provider integration
@@ -533,6 +545,27 @@ type OIDCConfig struct {
 	ClientID     string `koanf:"client_id"`
 	ClientSecret string `koanf:"client_secret"`
 	RedirectURL  string `koanf:"redirect_url"`
+
+	// PreviousIssuer (WPMGR_OIDC_PREVIOUS_ISSUER) is the issuer this install
+	// used BEFORE Issuer, declared by the operator when they repoint SSO at a
+	// new IdP hostname. Empty on every install that has never moved, which is
+	// almost all of them.
+	//
+	// IT EXISTS BECAUSE THE ALTERNATIVES ARE BOTH BAD. An identity is
+	// (provider, subject, issuer), and subject is unique only within its
+	// issuer, so the key cannot drop issuer without letting two IdPs collide
+	// onto one account. But with issuer in the key, changing this variable
+	// strands every generic-OIDC identity at once: every SSO user on the
+	// install stops being recognised on the same deploy.
+	//
+	// Declaring the old value turns that into a migration the operator asked
+	// for. Each identity is moved to the new issuer once, on that person's next
+	// sign-in, and the move is audited. It is NEVER used to verify a token:
+	// only the current Issuer can do that. It only says "identities stored
+	// under this issuer are the same people as the ones arriving from the
+	// current one", which is a statement only the operator is in a position to
+	// make.
+	PreviousIssuer string `koanf:"previous_issuer"`
 }
 
 // Enabled reports whether OIDC is configured.
@@ -551,6 +584,19 @@ type SocialConfig struct {
 	GitHub GitHubConfig `koanf:"github"`
 }
 
+// Configured reports whether the operator has started configuring ANY social
+// provider, which is a different question from Enabled.
+//
+// Enabled asks "will this provider work", and is what decides whether a button
+// renders. Configured asks "did somebody intend social sign-in here", and is
+// what Validate uses to decide whether a half-entered credential or a missing
+// public base URL is a problem worth reporting. Keeping them apart is what
+// stops an install with no social configuration at all from being told about
+// requirements that do not apply to it.
+func (s SocialConfig) Configured() bool {
+	return s.Google.Configured() || s.GitHub.Configured()
+}
+
 // GoogleConfig is a standard OIDC relying-party registration. Google publishes
 // a discovery document and issues ID tokens carrying an email_verified claim,
 // so no bespoke handling is needed beyond checking that claim.
@@ -559,8 +605,14 @@ type GoogleConfig struct {
 	ClientSecret string `koanf:"client_secret"`
 }
 
-// Enabled reports whether Google sign-in is configured.
+// Enabled reports whether Google sign-in will work: both halves of the
+// credential are present. A half-entered credential is deliberately NOT enabled
+// (no button that fails at the provider), but it is also not silent: Validate
+// reports it, because the operator plainly meant to switch this on.
 func (g GoogleConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
+
+// Configured reports whether either half of the credential is present.
+func (g GoogleConfig) Configured() bool { return g.ClientID != "" || g.ClientSecret != "" }
 
 // GitHubConfig is a plain OAuth 2.0 registration. GitHub is NOT an OpenID
 // Connect provider: there is no discovery document, no ID token and no
@@ -571,8 +623,12 @@ type GitHubConfig struct {
 	ClientSecret string `koanf:"client_secret"`
 }
 
-// Enabled reports whether GitHub sign-in is configured.
+// Enabled reports whether GitHub sign-in will work. Same split as Google: see
+// GoogleConfig.Enabled and Configured.
 func (g GitHubConfig) Enabled() bool { return g.ClientID != "" && g.ClientSecret != "" }
+
+// Configured reports whether either half of the credential is present.
+func (g GitHubConfig) Configured() bool { return g.ClientID != "" || g.ClientSecret != "" }
 
 // OTelConfig holds OpenTelemetry export configuration.
 type OTelConfig struct {
@@ -665,9 +721,13 @@ func (c Config) ValidateAgentSigningKey() error {
 
 func defaults() map[string]any {
 	return map[string]any{
-		"env":                      "development",
-		"http_addr":                ":8080",
-		"log_level":                "info",
+		"env":       "development",
+		"http_addr": ":8080",
+		"log_level": "info",
+		// Empty rather than a guessed origin: a wrong public base URL mints
+		// links and redirect URIs pointing at somebody else's host, so the only
+		// safe default is one Validate can recognise as unset.
+		"public_base_url":          "",
 		"db.host":                  "localhost",
 		"db.port":                  5432,
 		"db.user":                  "wpmgr",
@@ -690,6 +750,7 @@ func defaults() map[string]any {
 		"oidc.client_id":                "",
 		"oidc.client_secret":            "",
 		"oidc.redirect_url":             "",
+		"oidc.previous_issuer":          "",
 		"otel.exporter_otlp_endpoint":   "",
 		"otel.service_name":             "wpmgr-api",
 		"shutdown.timeout":              "15s",
@@ -822,7 +883,20 @@ func Load(path string) (Config, error) {
 	if err := k.Unmarshal("", &cfg); err != nil {
 		return Config{}, fmt.Errorf("unmarshal config: %w", err)
 	}
+	// Normalize ONCE, here, so every consumer and every check sees the same
+	// string. Consumers append paths to this value; a check that trimmed and a
+	// consumer that did not would disagree about what was configured, and the
+	// check would then approve a value nothing uses.
+	cfg.PublicBaseURL = NormalizePublicBaseURL(cfg.PublicBaseURL)
 	return cfg, nil
+}
+
+// NormalizePublicBaseURL is the canonical form of WPMGR_PUBLIC_BASE_URL: no
+// surrounding whitespace (a stray space or newline survives .env parsing and
+// docker-compose interpolation) and no trailing slash (every consumer appends
+// an absolute path, so a trailing slash yields a doubled separator).
+func NormalizePublicBaseURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 // mapEnvKey maps the flat WPMGR_* env names (see .env.example) to the nested

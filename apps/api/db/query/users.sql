@@ -12,6 +12,21 @@ SELECT * FROM users WHERE email = $1;
 -- name: GetUserByOIDC :one
 SELECT * FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2;
 
+-- name: ListUsersByLegacyOIDCSubject :many
+-- The pre-m110 identity as it still sits on users.oidc_*, for a sign-in whose
+-- user_identities row was never written (see AdoptLegacyIdentity).
+--
+-- It selects by subject and NOT by (issuer, subject) so the caller can see the
+-- whole picture before deciding: the issuer rule is applied in Go, by the same
+-- pure policy that governs the user_identities lookup, rather than being half
+-- enforced in SQL and half in code. Nothing here authenticates on its own.
+--
+-- :many because the old users_oidc_identity_key was unique on (oidc_issuer,
+-- oidc_subject), so two users CAN legitimately share a subject under two
+-- issuers. The caller must be able to SEE that and refuse, instead of being
+-- handed one row by a :one and treating it as the answer.
+SELECT * FROM users WHERE oidc_subject = $1 ORDER BY created_at, id LIMIT 10;
+
 -- name: CountUsers :one
 SELECT count(*) FROM users;
 
@@ -19,6 +34,21 @@ SELECT count(*) FROM users;
 -- Stamps password_changed_at so the Authenticator invalidates the user's other
 -- sessions (ADR-045 Phase 2).
 UPDATE users SET password_hash = $2, password_changed_at = now(), updated_at = now() WHERE id = $1;
+
+-- name: SetUserInitialPassword :execrows
+-- Adds a FIRST password to an account that has none, for a social-only user who
+-- wants to be able to sign in without their provider.
+--
+-- The `password_hash IS NULL` predicate is the guard, not an optimisation: it
+-- makes "add a password" and "change a password" two different operations
+-- decided by the database in one statement, so this path can never overwrite an
+-- existing password. Overwriting is what the change-password path is for, and
+-- that one first proves knowledge of the current password. Zero rows affected
+-- therefore means "a password already exists", which the caller turns into a
+-- 409 rather than a silent success.
+UPDATE users
+SET password_hash = $2, password_changed_at = now(), updated_at = now()
+WHERE id = $1 AND password_hash IS NULL;
 
 -- name: GetUserPasswordChangedAt :one
 -- Lightweight per-request lookup for the session reject-stale check.

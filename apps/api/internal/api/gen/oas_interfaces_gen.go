@@ -449,6 +449,10 @@ type GetAdminStatsRes interface {
 	getAdminStatsRes()
 }
 
+type GetAdminSystemAuditRes interface {
+	getAdminSystemAuditRes()
+}
+
 type GetAdminVulnFeedStatusRes interface {
 	getAdminVulnFeedStatusRes()
 }
@@ -735,6 +739,10 @@ type ListFleetEmailSuppressionRes interface {
 
 type ListMembersRes interface {
 	listMembersRes()
+}
+
+type ListMyIdentitiesRes interface {
+	listMyIdentitiesRes()
 }
 
 type ListOrgsRes interface {
@@ -1105,6 +1113,10 @@ type SetAdminVulnFeedKeyRes interface {
 	setAdminVulnFeedKeyRes()
 }
 
+type SetMyInitialPasswordRes interface {
+	setMyInitialPasswordRes()
+}
+
 type SetSiteTagsRes interface {
 	setSiteTagsRes()
 }
@@ -1143,6 +1155,10 @@ type ToggleScanFindingIgnoreRes interface {
 
 type UnblockSiteIPRes interface {
 	unblockSiteIPRes()
+}
+
+type UnlinkMyIdentityRes interface {
+	unlinkMyIdentityRes()
 }
 
 type UnlockBackupRes interface {

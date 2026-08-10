@@ -11,6 +11,25 @@ import (
 	"github.com/google/uuid"
 )
 
+const countAllMembershipsForUser = `-- name: CountAllMembershipsForUser :one
+SELECT count(*) FROM memberships WHERE user_id = $1
+`
+
+// Deliberately does NOT join tenants, so a membership in a SOFT-DELETED org
+// still counts. ListMembershipsForUser hides those rows, which is right for
+// "what can this session act in" but wrong for "has this user ever belonged to
+// an org": the two questions differ for exactly the length of the delete grace
+// window, and social sign-in used the visible-membership answer to decide
+// whether to bootstrap a brand new org. That minted an org mid grace window
+// for a user who already had one in the bin, while the password path for the
+// same user created nothing. Runs under InUserTx (memberships_self_read).
+func (q *Queries) CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllMembershipsForUser, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createMembership = `-- name: CreateMembership :one
 INSERT INTO memberships (user_id, tenant_id, role)
 VALUES ($1, $2, $3)

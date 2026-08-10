@@ -1,0 +1,25 @@
+A new sign-in method was added to your {{.ProductName}} account
+==============================================================
+
+Hi {{.Name}},
+
+Your {{.ProductName}} account can now be signed in to with {{.Provider}}, in
+addition to the ways it already had.
+
+  Method: {{.Provider}}
+  When:   {{.When}}
+
+If you just signed in with {{.Provider}}, nothing more is needed. You can
+review every sign-in method on your account here:
+
+{{.SecurityURL}}
+
+If this wasn't you, someone else can now sign in to this account. Remove that
+method on the page above and change your password, then contact
+{{.SupportEmail}}.
+
+--
+{{.ProductName}}: fleet control for WordPress
+{{if .FooterNote}}{{.FooterNote}}
+{{end}}This is a security notification. Need help? Contact {{.SupportEmail}}.
+(c) {{.Year}} {{.ProductName}}.

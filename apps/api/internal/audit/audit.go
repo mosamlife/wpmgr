@@ -34,6 +34,14 @@ const (
 	ActionLogout       = "auth.logout"
 	ActionRegister     = "auth.register"
 	ActionOIDCLogin    = "auth.oidc.login"
+
+	// Sign-in methods added to or removed from an account, from the connected
+	// accounts settings card. Recorded because a change to how an account can
+	// be signed in to is the change an account owner most needs to be able to
+	// review after the fact. Metadata: provider (unlink only).
+	ActionIdentityUnlinked = "auth.identity.unlinked"
+	ActionPasswordSet      = "auth.password.set"
+
 	ActionMemberAdd    = "member.add"
 	ActionMemberUpdate = "member.update"
 	ActionMemberRemove = "member.remove"

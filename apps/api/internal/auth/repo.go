@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
@@ -109,6 +110,120 @@ func (r *Repo) CreateUser(ctx context.Context, email, passwordHash, name, oidcIs
 		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
 	}
 	return userToModel(row), nil
+}
+
+// CreateSocialUserTx creates a user, optionally marks the address verified, and
+// links the external identity, as ONE transaction.
+//
+// It replaces three independent statements, and the difference is not
+// theoretical. The account row is what holds the email address, and the address
+// is unique. A failure after the INSERT but before the identity link left a
+// user with no identity, no password, and email_verified_at NULL, sitting on
+// the address forever: the next social sign-in finds that row, sees an account
+// this install never verified, and correctly refuses to link onto it, so the
+// person who actually owns the address is locked out of it by the ghost of
+// their own first attempt. Recovery needed a verification email, which is the
+// one thing a fresh self-host install with no SMTP cannot send.
+//
+// Neither users nor user_identities is RLS-scoped (a user spans tenants), so
+// this needs no GUC, only atomicity.
+func (r *Repo) CreateSocialUserTx(ctx context.Context, email, name, oidcIssuer, oidcSubject string, verified bool, ident Identity) (User, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlc.New(tx)
+	row, err := q.CreateUser(ctx, sqlc.CreateUserParams{
+		Email:        email,
+		PasswordHash: nil,
+		OidcSubject:  strPtr(oidcSubject),
+		OidcIssuer:   strPtr(oidcIssuer),
+		Name:         name,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return User{}, domain.Conflict("user_exists", "a user with this email already exists").WithCause(err)
+		}
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+	u := userToModel(row)
+
+	if verified {
+		if err := q.MarkUserEmailVerified(ctx, u.ID); err != nil {
+			return User{}, domain.Internal("user_verify_failed", "failed to mark email verified").WithCause(err)
+		}
+	}
+
+	ident.UserID = u.ID
+	if _, err := q.CreateIdentity(ctx, sqlc.CreateIdentityParams{
+		UserID:        ident.UserID,
+		Provider:      ident.Provider,
+		Subject:       ident.Subject,
+		Issuer:        ident.Issuer,
+		Email:         ident.Email,
+		EmailVerified: ident.EmailVerified,
+	}); err != nil {
+		return User{}, domain.Internal("identity_create_failed", "failed to link identity").WithCause(err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, domain.Internal("user_create_failed", "failed to create user").WithCause(err)
+	}
+
+	// Re-read what the transaction just wrote rather than trusting the pre-update
+	// row: MarkUserEmailVerified also moves status, and returning a stale copy is
+	// how the caller ends up patching fields by hand.
+	if verified {
+		if fresh, ferr := r.GetUserByID(ctx, u.ID); ferr == nil {
+			return fresh, nil
+		}
+	}
+	return u, nil
+}
+
+// CountAllMembershipsForUser counts memberships INCLUDING those in
+// soft-deleted orgs. See the query comment: this answers "has this user ever
+// belonged to an org", which is a different question from
+// ListMembershipsForUser's "what can this session act in".
+func (r *Repo) CountAllMembershipsForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := r.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		count, qerr := sqlc.New(tx).CountAllMembershipsForUser(ctx, userID)
+		if qerr != nil {
+			return domain.Internal("membership_count_failed", "failed to count memberships").WithCause(qerr)
+		}
+		n = count
+		return nil
+	})
+	return n, err
+}
+
+// RecordTenantlessAuthEvent writes an authentication event that belongs to no
+// tenant to system_audit_log, which carries no FK to tenants.
+//
+// audit_log cannot hold it: its tenant_id references tenants, so an event
+// recorded against uuid.Nil is rejected by the database and thrown away by a
+// best-effort caller. That silently discarded exactly the accounts worth
+// watching, because "has no membership at all" describes a brand new social
+// account, a site collaborator, a portal user, and anyone whose only org is
+// mid soft-delete: the users with the least oversight, not the most.
+func (r *Repo) RecordTenantlessAuthEvent(ctx context.Context, actorID uuid.UUID, action string, meta []byte) error {
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	return r.q.InsertSystemAuditEvent(ctx, sqlc.InsertSystemAuditEventParams{
+		ActorType: "user",
+		ActorID:   pgtype.UUID{Bytes: actorID, Valid: actorID != uuid.Nil},
+		Action:    action,
+		// system_audit_log.tenant_id is a plain NOT NULL column, not a
+		// reference. The nil UUID is the honest value here: there is no tenant.
+		TenantID:   uuid.Nil,
+		TenantName: "",
+		Metadata:   meta,
+	})
 }
 
 // GetUserByEmail loads a user by email.
@@ -419,6 +534,28 @@ type Identity struct {
 	Issuer        string
 	Email         string
 	EmailVerified bool
+	// CreatedAt and LastLoginAt are read-only display facts for the connected
+	// accounts list. LastLoginAt is nil until the identity has been used to
+	// sign in at least once, which is the normal state for one just linked.
+	CreatedAt   time.Time
+	LastLoginAt *time.Time
+}
+
+func identityToModel(row sqlc.UserIdentity) Identity {
+	out := Identity{
+		UserID:        row.UserID,
+		Provider:      row.Provider,
+		Subject:       row.Subject,
+		Issuer:        row.Issuer,
+		Email:         row.Email,
+		EmailVerified: row.EmailVerified,
+		CreatedAt:     row.CreatedAt,
+	}
+	if row.LastLoginAt.Valid {
+		t := row.LastLoginAt.Time
+		out.LastLoginAt = &t
+	}
+	return out
 }
 
 // GetUserByIdentity resolves the local user behind an external identity. This
@@ -426,6 +563,12 @@ type Identity struct {
 // issuer) is the provider's immutable id for the person, and no email is
 // consulted. Email is used elsewhere to decide whether a NEW identity may be
 // linked, never to decide who is signing in.
+//
+// Issuer stays in the key because a subject is unique only within the issuer
+// that minted it. Continuity across an issuer change is handled by
+// ListIdentitiesBySubject plus an operator-declared previous issuer, not by
+// dropping issuer from this lookup: that would make two IdPs minting the same
+// opaque string resolve to one account.
 func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer string) (User, error) {
 	row, err := r.q.GetUserByIdentity(ctx, sqlc.GetUserByIdentityParams{
 		Provider: provider, Subject: subject, Issuer: issuer,
@@ -437,6 +580,84 @@ func (r *Repo) GetUserByIdentity(ctx context.Context, provider, subject, issuer 
 		return User{}, domain.Internal("identity_get_failed", "failed to load identity").WithCause(err)
 	}
 	return userToModel(row), nil
+}
+
+// ListIdentitiesBySubject returns every stored identity for (provider, subject),
+// across issuers. It does NOT authenticate anything on its own: it is the
+// candidate set for matchStoredIdentity, which decides whether any of it may be
+// used and refuses on any ambiguity.
+func (r *Repo) ListIdentitiesBySubject(ctx context.Context, provider, subject string) ([]Identity, error) {
+	rows, err := r.q.ListIdentitiesBySubject(ctx, sqlc.ListIdentitiesBySubjectParams{
+		Provider: provider, Subject: subject,
+	})
+	if err != nil {
+		return nil, domain.Internal("identity_list_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]Identity, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Identity{
+			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
+			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
+		})
+	}
+	return out, nil
+}
+
+// MigrateIdentityIssuer moves one identity row from the issuer it was stored
+// under to the one that just signed the token, and reports whether a row
+// actually moved. False means somebody else's concurrent sign-in got there
+// first, which is not an error and must not be audited twice.
+func (r *Repo) MigrateIdentityIssuer(ctx context.Context, provider, subject, fromIssuer, toIssuer, email string, verified bool) (bool, error) {
+	n, err := r.q.MigrateIdentityIssuer(ctx, sqlc.MigrateIdentityIssuerParams{
+		Provider: provider, Subject: subject, Issuer: fromIssuer,
+		Issuer_2: toIssuer, Email: email, EmailVerified: verified,
+	})
+	if err != nil {
+		return false, domain.Internal("identity_issuer_migrate_failed", "failed to move identity").WithCause(err)
+	}
+	return n > 0, nil
+}
+
+// ListUsersByLegacyOIDCSubject returns the pre-m110 users carrying this OIDC
+// subject on users.oidc_subject.
+//
+// Subject alone, because the caller has to be able to SEE that two users share
+// a subject under two issuers, which the old (oidc_issuer, oidc_subject) unique
+// index permitted. The issuer rule is applied by the same pure policy that
+// governs user_identities; nothing here authenticates on its own.
+func (r *Repo) ListUsersByLegacyOIDCSubject(ctx context.Context, subject string) ([]User, error) {
+	rows, err := r.q.ListUsersByLegacyOIDCSubject(ctx, &subject)
+	if err != nil {
+		return nil, domain.Internal("legacy_identity_lookup_failed", "failed to load identity").WithCause(err)
+	}
+	out := make([]User, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, userToModel(row))
+	}
+	return out, nil
+}
+
+// AdoptLegacyIdentity writes the user_identities row that m110's one-shot
+// backfill never wrote for this user. A conflict is success, not failure: see
+// the query for why both unique indexes are tolerated here.
+//
+// Called only after the policy has ALLOWED the sign-in. A refused account must
+// not acquire a permanent identity binding on its way out of the door.
+// It reports whether a row was actually written, so one repair produces one
+// audit entry rather than one per sign-in.
+func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) (bool, error) {
+	n, err := r.q.AdoptLegacyIdentity(ctx, sqlc.AdoptLegacyIdentityParams{
+		UserID:        in.UserID,
+		Provider:      in.Provider,
+		Subject:       in.Subject,
+		Issuer:        in.Issuer,
+		Email:         in.Email,
+		EmailVerified: in.EmailVerified,
+	})
+	if err != nil {
+		return false, domain.Internal("identity_adopt_failed", "failed to record identity").WithCause(err)
+	}
+	return n > 0, nil
 }
 
 // CreateIdentity links an external identity to an existing user.
@@ -472,28 +693,85 @@ func (r *Repo) ListIdentitiesForUser(ctx context.Context, userID uuid.UUID) ([]I
 	}
 	out := make([]Identity, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, Identity{
-			UserID: row.UserID, Provider: row.Provider, Subject: row.Subject,
-			Issuer: row.Issuer, Email: row.Email, EmailVerified: row.EmailVerified,
-		})
+		out = append(out, identityToModel(row))
 	}
 	return out, nil
 }
 
-// CountIdentitiesForUser is the unlink guard: dropping the last identity from a
-// user with no password would lock them out permanently.
-func (r *Repo) CountIdentitiesForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
-	n, err := r.q.CountIdentitiesForUser(ctx, userID)
-	if err != nil {
-		return 0, domain.Internal("identity_count_failed", "failed to count identities").WithCause(err)
-	}
-	return n, nil
+// UnlinkIdentity removes one external sign-in method, and only when the account
+// keeps at least one other way in. decideUnlink holds the rule; this function
+// exists to make the rule's inputs and the delete ATOMIC.
+//
+// WHY A TRANSACTION AND A ROW LOCK. Read-then-delete across two statements has
+// a gap, and the gap is reachable without an attacker: someone with two linked
+// providers and no password, disconnecting both from two browser tabs, has each
+// request read "two identities, removing one is safe" and then delete a
+// different row. The account ends with no password and no identity.
+//
+// Nothing recovers from that state. Password reset deliberately refuses to mint
+// a set-password link for an account with no password (that would turn reset
+// into account creation for anyone who knows the address), so there is no way
+// back in and no way to prove ownership. That is why this is a locked
+// transaction rather than a count followed by a delete.
+//
+// The lock is taken on the users row, which is also where password_hash lives,
+// so one statement both serialises concurrent unlinks for this user and reads
+// the password half of the rule on the same snapshot as the identity list. Any
+// concurrent unlink waits and then sees this one's result; SetInitialPassword
+// locks the same row, so a password being added mid-unlink cannot be missed
+// either way round.
+func (r *Repo) UnlinkIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
+	return r.pool.InUserTx(ctx, userID, func(tx pgx.Tx) error {
+		var hash *string
+		err := tx.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&hash)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("user_not_found", "user not found")
+			}
+			return domain.Internal("identity_unlink_failed", "failed to unlink identity").WithCause(err)
+		}
+
+		q := sqlc.New(tx)
+		// One read answers both halves of the rule: is this provider actually
+		// linked, and how many methods would be left. Counting separately would
+		// reintroduce the gap the lock exists to close.
+		rows, err := q.ListIdentitiesForUser(ctx, userID)
+		if err != nil {
+			return domain.Internal("identity_list_failed", "failed to list identities").WithCause(err)
+		}
+		linked := false
+		for _, row := range rows {
+			if row.Provider == provider {
+				linked = true
+				break
+			}
+		}
+		if err := decideUnlink(linked, len(rows), deref(hash) != "", provider); err != nil {
+			return err
+		}
+		if err := q.DeleteIdentity(ctx, sqlc.DeleteIdentityParams{UserID: userID, Provider: provider}); err != nil {
+			return domain.Internal("identity_delete_failed", "failed to unlink identity").WithCause(err)
+		}
+		return nil
+	})
 }
 
-// DeleteIdentity unlinks one provider from a user.
-func (r *Repo) DeleteIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
-	if err := r.q.DeleteIdentity(ctx, sqlc.DeleteIdentityParams{UserID: userID, Provider: provider}); err != nil {
-		return domain.Internal("identity_delete_failed", "failed to unlink identity").WithCause(err)
+// SetInitialPasswordHash writes a first password for an account that has none.
+// The "has none" half is decided by the UPDATE's own WHERE clause rather than by
+// a preceding read, so this can never overwrite a password that already exists:
+// see SetUserInitialPassword in db/query/users.sql. Zero rows affected is that
+// case, and it is a conflict, not a failure.
+func (r *Repo) SetInitialPasswordHash(ctx context.Context, userID uuid.UUID, hash string) error {
+	n, err := r.q.SetUserInitialPassword(ctx, sqlc.SetUserInitialPasswordParams{
+		ID:           userID,
+		PasswordHash: strPtr(hash),
+	})
+	if err != nil {
+		return domain.Internal("password_update_failed", "failed to set password").WithCause(err)
+	}
+	if n == 0 {
+		return domain.Conflict("password_already_set",
+			"this account already has a password. Change it from the change password form, which asks for the current one.")
 	}
 	return nil
 }

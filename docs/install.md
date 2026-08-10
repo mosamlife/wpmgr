@@ -73,7 +73,7 @@ the service:
 
 ```bash
 WPMGR_ENV=production                              # turns on the prod boot guards
-WPMGR_PUBLIC_BASE_URL=https://wpmgr.example.com   # this control plane, agent-reachable
+WPMGR_PUBLIC_BASE_URL=https://wpmgr.example.com   # this control plane: the origin browsers and agents use
 WPMGR_S3_ENDPOINT=https://s3.example.com          # MUST be reachable by remote agents
 WPMGR_DB_PASSWORD=...                             # not the dev default
 WPMGR_S3_SECRET_KEY=...                            # not the dev default
@@ -102,7 +102,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_S3_FORCE_PATH_STYLE` | required for SeaweedFS | `true` |
 | `WPMGR_CLICKHOUSE_ADDR` | ClickHouse | `localhost:9000` |
 | `WPMGR_OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector | `http://localhost:4318` |
-| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` at boot (unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`) | (empty) |
+| `WPMGR_SUPERADMIN_EMAILS` | one-shot: grants `is_superadmin` and activates the account at boot. It does NOT mark the address verified: the operator confirms their address like any other user. (Unset after it runs; revoke via `WPMGR_SUPERADMIN_REVOKE_EMAILS`.) | (empty) |
 | `WPMGR_WORDFENCE_API_KEY` | vulnerability-feed API key fallback (the key saved in the superadmin UI takes precedence) | (empty) |
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |

@@ -52,7 +52,7 @@ func (h *Handler) accountsList(c *gin.Context) {
 		Comped:       queryBool(c, "comped"),
 		Idle90d:      queryBool(c, "idle_90d"),
 		Limit:        int(parseInt32(c.Query("limit"), 50)),
-		Offset:       int(parseInt32(c.Query("offset"), 0)),
+		Offset:       int(parseOffset(c.Query("offset"))),
 	}
 	resp, err := h.svc.ListAccounts(c.Request.Context(), opts)
 	if err != nil {

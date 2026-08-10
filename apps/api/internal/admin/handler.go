@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -48,6 +49,8 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g.GET("/sites/:siteId/tenancy", h.siteTenancy)
 	g.POST("/sites/:siteId/grant-self-membership", h.grantSelfMembership)
 	g.GET("/accounts-tenancy", h.accountsTenancy)
+	// The reader for the tenant-independent audit trail; see systemAudit.
+	g.GET("/system-audit", h.systemAudit)
 	// M16 Phase C1 — superadmin billing-admin panel (accounts / account
 	// detail / revenue / manual controls). See billing_handler.go +
 	// billing_dto.go for the full contract.
@@ -220,6 +223,49 @@ func (h *Handler) userSites(c *gin.Context) {
 	})
 }
 
+// systemAudit serves the tenant-independent audit trail.
+//
+// It is the READER the system_audit_log finally has. The table holds two kinds
+// of event that no tenant's own audit_log can ever show: actions whose subject
+// organisation is being deleted, and authentication events for accounts that
+// belong to no organisation at all (a new social account, a site collaborator,
+// a portal user, anyone mid soft-delete grace window). Writing those somewhere
+// nothing reads is not oversight, it is a quieter version of dropping them.
+//
+// Paged by cursor, never by offset: this log grows at its head while it is being
+// read, so a numbered page boundary is stale as soon as it is handed out. The
+// caller sends back the previous response's next_cursor and gets what follows
+// the last row it actually saw.
+func (h *Handler) systemAudit(c *gin.Context) {
+	limit := parseInt32(c.Query("limit"), 50)
+	page, err := h.svc.ListSystemAuditEvents(c.Request.Context(), limit, c.Query("cursor"))
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(page.Events))
+	for _, e := range page.Events {
+		items = append(items, gin.H{
+			"id":          e.ID,
+			"occurred_at": e.OccurredAt,
+			"actor_type":  e.ActorType,
+			"actor_id":    e.ActorID,
+			"action":      e.Action,
+			"tenant_id":   e.TenantID,
+			"tenant_name": e.TenantName,
+			"metadata":    json.RawMessage(e.Metadata),
+		})
+	}
+	// next_cursor is absent, not empty, at the end of the log, so "there is more"
+	// is a question about the field's presence and never about counting items
+	// against total.
+	out := gin.H{"items": items, "total": page.Total}
+	if page.NextCursor != "" {
+		out["next_cursor"] = page.NextCursor
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handler) stats(c *gin.Context) {
 	s, err := h.svc.Stats(c.Request.Context())
 	if err != nil {
@@ -236,7 +282,7 @@ func (h *Handler) stats(c *gin.Context) {
 func (h *Handler) listUsers(c *gin.Context) {
 	search := c.Query("search")
 	limit := parseInt32(c.Query("limit"), 50)
-	offset := parseInt32(c.Query("offset"), 0)
+	offset := parseOffset(c.Query("offset"))
 	users, err := h.svc.ListUsers(c.Request.Context(), search, limit, offset)
 	if err != nil {
 		httpx.Error(c, err)
@@ -325,6 +371,8 @@ func userToJSON(u AdminUser) gin.H {
 	return m
 }
 
+// parseInt32 parses a PAGE SIZE. The 200 ceiling is what bounds the cost of one
+// request, so it belongs here and nowhere else; see parseOffset.
 func parseInt32(s string, def int32) int32 {
 	if s == "" {
 		return def
@@ -335,6 +383,25 @@ func parseInt32(s string, def int32) int32 {
 	}
 	if n > 200 {
 		return 200
+	}
+	return int32(n)
+}
+
+// parseOffset parses a STARTING POSITION, and deliberately does not share
+// parseInt32's ceiling.
+//
+// A page-size cap applied to an offset stops being a limit and becomes a lie:
+// ?offset=1000 silently answers with offset 200, so a list whose own total says
+// there are thousands of rows simply repeats the same window forever, and
+// nothing in the response says so. The two numbers mean different things and
+// only one of them has a reason to be capped.
+func parseOffset(s string) int32 {
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(s, 10, 32)
+	if err != nil || n < 0 {
+		return 0
 	}
 	return int32(n)
 }

@@ -32,7 +32,15 @@ overrides:
   # GHSA-r28c-9q8g-f849 path traversal in a previous source map, fixed in
   # 8.5.18). Next pulls postcss transitively; these are same-major bug fixes, so
   # no API change. Verified the marketing build.
-  postcss: 8.5.18
+  #
+  # Raised 8.5.18 -> 8.5.26 because THIS PIN was what held nanoid back. postcss
+  # 8.5.18 depends on an older nanoid range that resolves to 3.3.12, which two
+  # high-severity advisories cover (GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8);
+  # 8.5.26 declares nanoid ^3.3.17 and so pulls a patched one on its own. Fixing
+  # the pin that caused it beats adding a second override to paper over it, and
+  # it is why no `nanoid:` entry appears in this file. Both advisories published
+  # after the pin was written, so this reddened main with no code change at all.
+  postcss: 8.5.26
 # Documented audit exceptions. Every entry must state WHY the advisory cannot be
 # fixed by pinning and WHAT would let us drop the exception, so this list stays
 # short and reviewable rather than becoming a place to silence real findings.

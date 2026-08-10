@@ -49,6 +49,28 @@ type Service struct {
 	// Injected via SetPlanValidator after startup; nil treats every plan hint
 	// as no intent.
 	planValidator PaidTierValidator
+	// previousOIDCIssuer is the issuer this install used BEFORE the configured
+	// one, declared by the operator. Empty on every install that never moved.
+	// See SetPreviousOIDCIssuer.
+	previousOIDCIssuer string
+}
+
+// SetPreviousOIDCIssuer declares the generic-OIDC issuer this install used
+// before the current one, so identities stored under it can be migrated forward
+// on their owners' next sign-in.
+//
+// IT IS AN AUTHORISATION, NOT A HINT, AND IT NEVER VERIFIES A TOKEN. An
+// identity is (provider, subject, issuer) and subject is unique only within its
+// issuer, so nothing may cross an issuer boundary on its own. Only the operator
+// knows that the people arriving from the new issuer are the same people the old
+// one vouched for, so only the operator can say so, by setting
+// WPMGR_OIDC_PREVIOUS_ISSUER. Each identity is then moved once, and the move is
+// audited.
+//
+// Leaving it unset is always safe: an unset value means no identity can ever be
+// matched across an issuer change, which is the pre-existing behaviour.
+func (s *Service) SetPreviousOIDCIssuer(issuer string) {
+	s.previousOIDCIssuer = strings.TrimSpace(issuer)
 }
 
 // NewService builds an auth Service.
@@ -87,6 +109,17 @@ type LoginResult struct {
 	// just-consumed verification token). Every other path (Login,
 	// UpsertOIDCUser, Me/UpdateProfile) leaves this at its zero value "".
 	DesiredPlan string
+	// PendingSocialLink is an external identity that the sign-in policy has
+	// APPROVED for linking to User but that has deliberately NOT been written
+	// yet. Only the social paths ever set it, and only on the branch that
+	// attaches a new provider to an account that already exists.
+	//
+	// Linking changes how an account can be authenticated to, so it must not
+	// outlive a login that never completed. The caller writes it with
+	// CompleteSocialLink once, and only once, a session actually exists for
+	// User: immediately for an account with no second factor, or after the
+	// factor is proven for one that has.
+	PendingSocialLink *Identity
 }
 
 // loginInput validates the email/password login body.

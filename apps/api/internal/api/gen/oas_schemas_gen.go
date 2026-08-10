@@ -17,6 +17,10 @@ type AcceptInvitationBadRequest Error
 
 func (*AcceptInvitationBadRequest) acceptInvitationRes() {}
 
+type AcceptInvitationForbidden Error
+
+func (*AcceptInvitationForbidden) acceptInvitationRes() {}
+
 // Ref: #/components/schemas/AcceptInvitationRequest
 type AcceptInvitationRequest struct {
 	// The raw token from the accept link (?token=…).
@@ -2795,6 +2799,155 @@ func (s *AdminStats) SetSites(val int64) {
 }
 
 func (*AdminStats) getAdminStatsRes() {}
+
+// Ref: #/components/schemas/AdminSystemAuditPage
+type AdminSystemAuditPage struct {
+	// Total rows in the log, as context for the reader. It is NOT how you page: pass next_cursor back
+	// instead. On a log that is still being written to, a count and a page boundary disagree by design.
+	Total int64 `json:"total"`
+	// Pass as `cursor` to get the rows after this page. Absent on the last page, which is the only
+	// reliable end-of-list signal.
+	NextCursor OptString                       `json:"next_cursor"`
+	Items      []AdminSystemAuditPageItemsItem `json:"items"`
+}
+
+// GetTotal returns the value of Total.
+func (s *AdminSystemAuditPage) GetTotal() int64 {
+	return s.Total
+}
+
+// GetNextCursor returns the value of NextCursor.
+func (s *AdminSystemAuditPage) GetNextCursor() OptString {
+	return s.NextCursor
+}
+
+// GetItems returns the value of Items.
+func (s *AdminSystemAuditPage) GetItems() []AdminSystemAuditPageItemsItem {
+	return s.Items
+}
+
+// SetTotal sets the value of Total.
+func (s *AdminSystemAuditPage) SetTotal(val int64) {
+	s.Total = val
+}
+
+// SetNextCursor sets the value of NextCursor.
+func (s *AdminSystemAuditPage) SetNextCursor(val OptString) {
+	s.NextCursor = val
+}
+
+// SetItems sets the value of Items.
+func (s *AdminSystemAuditPage) SetItems(val []AdminSystemAuditPageItemsItem) {
+	s.Items = val
+}
+
+func (*AdminSystemAuditPage) getAdminSystemAuditRes() {}
+
+type AdminSystemAuditPageItemsItem struct {
+	ID         uuid.UUID `json:"id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ActorType  string    `json:"actor_type"`
+	// Absent for an event with no user actor.
+	ActorID OptNilUUID `json:"actor_id"`
+	Action  string     `json:"action"`
+	// A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event
+	// concerned. Absent when the event had no organisation at all, which is the case for the
+	// authentication events of accounts with no membership.
+	TenantID   OptNilUUID                            `json:"tenant_id"`
+	TenantName string                                `json:"tenant_name"`
+	Metadata   AdminSystemAuditPageItemsItemMetadata `json:"metadata"`
+}
+
+// GetID returns the value of ID.
+func (s *AdminSystemAuditPageItemsItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetOccurredAt returns the value of OccurredAt.
+func (s *AdminSystemAuditPageItemsItem) GetOccurredAt() time.Time {
+	return s.OccurredAt
+}
+
+// GetActorType returns the value of ActorType.
+func (s *AdminSystemAuditPageItemsItem) GetActorType() string {
+	return s.ActorType
+}
+
+// GetActorID returns the value of ActorID.
+func (s *AdminSystemAuditPageItemsItem) GetActorID() OptNilUUID {
+	return s.ActorID
+}
+
+// GetAction returns the value of Action.
+func (s *AdminSystemAuditPageItemsItem) GetAction() string {
+	return s.Action
+}
+
+// GetTenantID returns the value of TenantID.
+func (s *AdminSystemAuditPageItemsItem) GetTenantID() OptNilUUID {
+	return s.TenantID
+}
+
+// GetTenantName returns the value of TenantName.
+func (s *AdminSystemAuditPageItemsItem) GetTenantName() string {
+	return s.TenantName
+}
+
+// GetMetadata returns the value of Metadata.
+func (s *AdminSystemAuditPageItemsItem) GetMetadata() AdminSystemAuditPageItemsItemMetadata {
+	return s.Metadata
+}
+
+// SetID sets the value of ID.
+func (s *AdminSystemAuditPageItemsItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetOccurredAt sets the value of OccurredAt.
+func (s *AdminSystemAuditPageItemsItem) SetOccurredAt(val time.Time) {
+	s.OccurredAt = val
+}
+
+// SetActorType sets the value of ActorType.
+func (s *AdminSystemAuditPageItemsItem) SetActorType(val string) {
+	s.ActorType = val
+}
+
+// SetActorID sets the value of ActorID.
+func (s *AdminSystemAuditPageItemsItem) SetActorID(val OptNilUUID) {
+	s.ActorID = val
+}
+
+// SetAction sets the value of Action.
+func (s *AdminSystemAuditPageItemsItem) SetAction(val string) {
+	s.Action = val
+}
+
+// SetTenantID sets the value of TenantID.
+func (s *AdminSystemAuditPageItemsItem) SetTenantID(val OptNilUUID) {
+	s.TenantID = val
+}
+
+// SetTenantName sets the value of TenantName.
+func (s *AdminSystemAuditPageItemsItem) SetTenantName(val string) {
+	s.TenantName = val
+}
+
+// SetMetadata sets the value of Metadata.
+func (s *AdminSystemAuditPageItemsItem) SetMetadata(val AdminSystemAuditPageItemsItemMetadata) {
+	s.Metadata = val
+}
+
+type AdminSystemAuditPageItemsItemMetadata map[string]jx.Raw
+
+func (s *AdminSystemAuditPageItemsItemMetadata) init() AdminSystemAuditPageItemsItemMetadata {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
 
 // Ref: #/components/schemas/AdminTenancyRef
 type AdminTenancyRef struct {
@@ -13543,6 +13696,119 @@ type ConfirmTotpEnrollmentUnprocessableEntity Error
 
 func (*ConfirmTotpEnrollmentUnprocessableEntity) confirmTotpEnrollmentRes() {}
 
+// How the authenticated account can be signed in to.
+// Ref: #/components/schemas/ConnectedAccounts
+type ConnectedAccounts struct {
+	// Whether a password is set. False means the account is social-only and can add one via `POST
+	// /auth/me/password/set`.
+	HasPassword bool `json:"has_password"`
+	// Whether removing one identity would still leave a way in, which is true when a password is set or
+	// more than one identity is connected. A display hint mirroring the server's rule, never the
+	// enforcement.
+	CanUnlink bool                `json:"can_unlink"`
+	Items     []ConnectedIdentity `json:"items"`
+}
+
+// GetHasPassword returns the value of HasPassword.
+func (s *ConnectedAccounts) GetHasPassword() bool {
+	return s.HasPassword
+}
+
+// GetCanUnlink returns the value of CanUnlink.
+func (s *ConnectedAccounts) GetCanUnlink() bool {
+	return s.CanUnlink
+}
+
+// GetItems returns the value of Items.
+func (s *ConnectedAccounts) GetItems() []ConnectedIdentity {
+	return s.Items
+}
+
+// SetHasPassword sets the value of HasPassword.
+func (s *ConnectedAccounts) SetHasPassword(val bool) {
+	s.HasPassword = val
+}
+
+// SetCanUnlink sets the value of CanUnlink.
+func (s *ConnectedAccounts) SetCanUnlink(val bool) {
+	s.CanUnlink = val
+}
+
+// SetItems sets the value of Items.
+func (s *ConnectedAccounts) SetItems(val []ConnectedIdentity) {
+	s.Items = val
+}
+
+func (*ConnectedAccounts) listMyIdentitiesRes() {}
+
+// One external sign-in method linked to an account. `subject` and `issuer` (the provider's own
+// identifiers for the person) are deliberately absent: they mean nothing to the person reading the
+// page and they are what an attacker would need to forge a matching identity. `email` is what the
+// provider asserted at the last sign-in, which is a record, not the account's own address, and may
+// differ from it.
+// Ref: #/components/schemas/ConnectedIdentity
+type ConnectedIdentity struct {
+	// The provider key, e.g. `google`, `github`, or `oidc` for an operator-configured issuer.
+	Provider string `json:"provider"`
+	Email    string `json:"email"`
+	// Whether the PROVIDER vouched for the address at link time. Distinct from this install having seen
+	// the person open a verification link.
+	EmailVerified bool      `json:"email_verified"`
+	CreatedAt     time.Time `json:"created_at"`
+	// Null until the method has been used to sign in at least once.
+	LastLoginAt OptNilDateTime `json:"last_login_at"`
+}
+
+// GetProvider returns the value of Provider.
+func (s *ConnectedIdentity) GetProvider() string {
+	return s.Provider
+}
+
+// GetEmail returns the value of Email.
+func (s *ConnectedIdentity) GetEmail() string {
+	return s.Email
+}
+
+// GetEmailVerified returns the value of EmailVerified.
+func (s *ConnectedIdentity) GetEmailVerified() bool {
+	return s.EmailVerified
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *ConnectedIdentity) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetLastLoginAt returns the value of LastLoginAt.
+func (s *ConnectedIdentity) GetLastLoginAt() OptNilDateTime {
+	return s.LastLoginAt
+}
+
+// SetProvider sets the value of Provider.
+func (s *ConnectedIdentity) SetProvider(val string) {
+	s.Provider = val
+}
+
+// SetEmail sets the value of Email.
+func (s *ConnectedIdentity) SetEmail(val string) {
+	s.Email = val
+}
+
+// SetEmailVerified sets the value of EmailVerified.
+func (s *ConnectedIdentity) SetEmailVerified(val bool) {
+	s.EmailVerified = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *ConnectedIdentity) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetLastLoginAt sets the value of LastLoginAt.
+func (s *ConnectedIdentity) SetLastLoginAt(val OptNilDateTime) {
+	s.LastLoginAt = val
+}
+
 // Ref: #/components/schemas/CreateAgencyClientRequest
 type CreateAgencyClientRequest struct {
 	Name         string    `json:"name"`
@@ -17875,6 +18141,7 @@ func (*Error) getSiteUptimeRes()                  {}
 func (*Error) getTenantRes()                      {}
 func (*Error) getTwoFactorStatusRes()             {}
 func (*Error) getUpdateRunRes()                   {}
+func (*Error) listMyIdentitiesRes()               {}
 func (*Error) listOrgsRes()                       {}
 func (*Error) listRestoreRunsRes()                {}
 func (*Error) listScheduleRunsRes()               {}
@@ -21378,6 +21645,14 @@ type GetAdminStatsUnauthorized Error
 
 func (*GetAdminStatsUnauthorized) getAdminStatsRes() {}
 
+type GetAdminSystemAuditForbidden Error
+
+func (*GetAdminSystemAuditForbidden) getAdminSystemAuditRes() {}
+
+type GetAdminSystemAuditUnauthorized Error
+
+func (*GetAdminSystemAuditUnauthorized) getAdminSystemAuditRes() {}
+
 type GetAdminVulnFeedStatusForbidden Error
 
 func (*GetAdminVulnFeedStatusForbidden) getAdminVulnFeedStatusRes() {}
@@ -23158,6 +23433,74 @@ func (s *ListSitesTagsMatch) UnmarshalText(data []byte) error {
 		return nil
 	case ListSitesTagsMatchAll:
 		*s = ListSitesTagsMatchAll
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type ListSocialProvidersOK struct {
+	Providers []ListSocialProvidersOKProvidersItem `json:"providers"`
+	// Whether a generic operator-configured OIDC issuer is available. Reported here so the sign-in page
+	// renders the SSO button only when it will work.
+	SSO bool `json:"sso"`
+}
+
+// GetProviders returns the value of Providers.
+func (s *ListSocialProvidersOK) GetProviders() []ListSocialProvidersOKProvidersItem {
+	return s.Providers
+}
+
+// GetSSO returns the value of SSO.
+func (s *ListSocialProvidersOK) GetSSO() bool {
+	return s.SSO
+}
+
+// SetProviders sets the value of Providers.
+func (s *ListSocialProvidersOK) SetProviders(val []ListSocialProvidersOKProvidersItem) {
+	s.Providers = val
+}
+
+// SetSSO sets the value of SSO.
+func (s *ListSocialProvidersOK) SetSSO(val bool) {
+	s.SSO = val
+}
+
+type ListSocialProvidersOKProvidersItem string
+
+const (
+	ListSocialProvidersOKProvidersItemGoogle ListSocialProvidersOKProvidersItem = "google"
+	ListSocialProvidersOKProvidersItemGithub ListSocialProvidersOKProvidersItem = "github"
+)
+
+// AllValues returns all ListSocialProvidersOKProvidersItem values.
+func (ListSocialProvidersOKProvidersItem) AllValues() []ListSocialProvidersOKProvidersItem {
+	return []ListSocialProvidersOKProvidersItem{
+		ListSocialProvidersOKProvidersItemGoogle,
+		ListSocialProvidersOKProvidersItemGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListSocialProvidersOKProvidersItem) MarshalText() ([]byte, error) {
+	switch s {
+	case ListSocialProvidersOKProvidersItemGoogle:
+		return []byte(s), nil
+	case ListSocialProvidersOKProvidersItemGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListSocialProvidersOKProvidersItem) UnmarshalText(data []byte) error {
+	switch ListSocialProvidersOKProvidersItem(data) {
+	case ListSocialProvidersOKProvidersItemGoogle:
+		*s = ListSocialProvidersOKProvidersItemGoogle
+		return nil
+	case ListSocialProvidersOKProvidersItemGithub:
+		*s = ListSocialProvidersOKProvidersItemGithub
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -42123,6 +42466,37 @@ type SetAdminVulnFeedKeyUnauthorized Error
 
 func (*SetAdminVulnFeedKeyUnauthorized) setAdminVulnFeedKeyRes() {}
 
+type SetMyInitialPasswordConflict Error
+
+func (*SetMyInitialPasswordConflict) setMyInitialPasswordRes() {}
+
+// SetMyInitialPasswordNoContent is response for SetMyInitialPassword operation.
+type SetMyInitialPasswordNoContent struct{}
+
+func (*SetMyInitialPasswordNoContent) setMyInitialPasswordRes() {}
+
+type SetMyInitialPasswordReq struct {
+	Password string `json:"password"`
+}
+
+// GetPassword returns the value of Password.
+func (s *SetMyInitialPasswordReq) GetPassword() string {
+	return s.Password
+}
+
+// SetPassword sets the value of Password.
+func (s *SetMyInitialPasswordReq) SetPassword(val string) {
+	s.Password = val
+}
+
+type SetMyInitialPasswordUnauthorized Error
+
+func (*SetMyInitialPasswordUnauthorized) setMyInitialPasswordRes() {}
+
+type SetMyInitialPasswordUnprocessableEntity Error
+
+func (*SetMyInitialPasswordUnprocessableEntity) setMyInitialPasswordRes() {}
+
 // SilenceSitePHPErrorNoContent is response for SilenceSitePHPError operation.
 type SilenceSitePHPErrorNoContent struct{}
 
@@ -47989,6 +48363,94 @@ func (s *SmtpSettingsUpdate) SetPassword(val OptNilString) {
 	s.Password = val
 }
 
+// SocialCallbackFound is response for SocialCallback operation.
+type SocialCallbackFound struct{}
+
+type SocialCallbackProvider string
+
+const (
+	SocialCallbackProviderGoogle SocialCallbackProvider = "google"
+	SocialCallbackProviderGithub SocialCallbackProvider = "github"
+)
+
+// AllValues returns all SocialCallbackProvider values.
+func (SocialCallbackProvider) AllValues() []SocialCallbackProvider {
+	return []SocialCallbackProvider{
+		SocialCallbackProviderGoogle,
+		SocialCallbackProviderGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SocialCallbackProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case SocialCallbackProviderGoogle:
+		return []byte(s), nil
+	case SocialCallbackProviderGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SocialCallbackProvider) UnmarshalText(data []byte) error {
+	switch SocialCallbackProvider(data) {
+	case SocialCallbackProviderGoogle:
+		*s = SocialCallbackProviderGoogle
+		return nil
+	case SocialCallbackProviderGithub:
+		*s = SocialCallbackProviderGithub
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// SocialStartFound is response for SocialStart operation.
+type SocialStartFound struct{}
+
+type SocialStartProvider string
+
+const (
+	SocialStartProviderGoogle SocialStartProvider = "google"
+	SocialStartProviderGithub SocialStartProvider = "github"
+)
+
+// AllValues returns all SocialStartProvider values.
+func (SocialStartProvider) AllValues() []SocialStartProvider {
+	return []SocialStartProvider{
+		SocialStartProviderGoogle,
+		SocialStartProviderGithub,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SocialStartProvider) MarshalText() ([]byte, error) {
+	switch s {
+	case SocialStartProviderGoogle:
+		return []byte(s), nil
+	case SocialStartProviderGithub:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SocialStartProvider) UnmarshalText(data []byte) error {
+	switch SocialStartProvider(data) {
+	case SocialStartProviderGoogle:
+		*s = SocialStartProviderGoogle
+		return nil
+	case SocialStartProviderGithub:
+		*s = SocialStartProviderGithub
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Structured projection of a backup snapshot's SQL dump. Produced either
 // by the agent at backup time (preferred; "source": "agent") or by the
 // control plane's legacy streaming parser (fallback; "source":
@@ -48929,6 +49391,23 @@ func (*UnblockSiteIPServiceUnavailable) unblockSiteIPRes() {}
 type UnblockSiteIPUnprocessableEntity Error
 
 func (*UnblockSiteIPUnprocessableEntity) unblockSiteIPRes() {}
+
+type UnlinkMyIdentityConflict Error
+
+func (*UnlinkMyIdentityConflict) unlinkMyIdentityRes() {}
+
+// UnlinkMyIdentityNoContent is response for UnlinkMyIdentity operation.
+type UnlinkMyIdentityNoContent struct{}
+
+func (*UnlinkMyIdentityNoContent) unlinkMyIdentityRes() {}
+
+type UnlinkMyIdentityNotFound Error
+
+func (*UnlinkMyIdentityNotFound) unlinkMyIdentityRes() {}
+
+type UnlinkMyIdentityUnauthorized Error
+
+func (*UnlinkMyIdentityUnauthorized) unlinkMyIdentityRes() {}
 
 // All fields are optional (PATCH semantics).
 // Ref: #/components/schemas/UpdateAgencyClientRequest
