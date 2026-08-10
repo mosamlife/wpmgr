@@ -15,11 +15,13 @@ import type { ComparisonPageData, CostModel } from "@/lib/content/types";
  * the slider to their own number does that multiplication themselves, and a
  * figure you worked out yourself is worth more than one we assert.
  *
- * IT MUST NOT OVERSTATE A COMPETITOR. ManageWP is charged at the CHEAPEST of
- * per-site, per-add-on bundles, and their all-in-one package, because that is
- * what a real customer would pay. Quietly dropping the cheapest option would
- * inflate a named company's published price, which is the one mistake this
- * page cannot survive.
+ * IT MUST NOT OVERSTATE A COMPETITOR. Every vendor is charged at the CHEAPEST
+ * route to the same capability: per site, the add-on bundle, or any further
+ * package they publish, because that is what a real customer would pay.
+ * Quietly dropping the cheapest option would inflate a named company's
+ * published price, which is the one mistake this page cannot survive, so
+ * `alternatives` carries every additional package into the same comparison
+ * rather than leaving one of them described in prose and absent from the sum.
  *
  * The CTA lives here on purpose: this is the highest-intent moment on the page,
  * the instant the reader sees their own annual number.
@@ -36,6 +38,9 @@ function annualCost(m: CostModel, sites: number): number {
   const options = [bySite];
   if (m.bundle !== undefined && m.bundleCovers) {
     options.push(m.bundle * Math.ceil(sites / m.bundleCovers));
+  }
+  for (const alt of m.alternatives ?? []) {
+    options.push(alt.covers ? alt.amount * Math.ceil(sites / alt.covers) : alt.amount);
   }
   return perYear(Math.min(...options));
 }
@@ -124,7 +129,9 @@ export function CostModelSection({ data }: { data: ComparisonPageData }) {
                       className="ml-1 align-super underline underline-offset-2 hover:text-foreground"
                       aria-label={`Source, reference ${id}`}
                     >
-                      {id.split("-")[1]}
+                      {/* Full id: each product numbers its claims from one, so
+                          the bare number collides across columns. */}
+                      {id}
                     </a>
                   ))}
                 </p>

@@ -77,6 +77,12 @@ export function CompareHeroPanel() {
           >
             <span className="flex min-w-0 items-center gap-2.5">
               <Pulse status={r.status} />
+              {/* The dot is the only thing carrying up versus degraded, and it
+                  carries it in colour alone. The wrapper stays decorative
+                  rather than taking role="img", because labelling it would put
+                  the pulse ring back into the accessibility tree; the state
+                  goes in a sibling instead. */}
+              <span className="sr-only">{r.status === "up" ? "Up" : "Degraded"}: </span>
               <span className="truncate font-mono text-xs text-foreground">{r.host}</span>
             </span>
             <span className="shrink-0 text-[11px] text-[var(--muted-foreground)]">{r.meta}</span>

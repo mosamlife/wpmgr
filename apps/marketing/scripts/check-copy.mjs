@@ -139,10 +139,34 @@ const DISPARAGEMENT = [
 // Applied only where we actually quote vendors verbatim, so the dash rule
 // stays absolute on ordinary marketing copy, where a quoted span is far more
 // likely to be scare quotes than a citation.
+// THREE FORMS, BECAUSE A CLAIM IS NOT ALWAYS WRITTEN THE SAME WAY. Every
+// vendor quotation on the comparison page today sits inside a double-quoted TS
+// string, so the escaped form was the only one that had ever been hit. The
+// first claim written as a single-quoted string or a template literal would
+// have failed CI on the vendor's own em dash or on their own feature name, and
+// the fix under deadline is to edit the quotation, which is the exact outcome
+// this function exists to prevent.
+//
+// Deliberately NOT a blanket "..." pass. Blanking every plain double-quoted
+// span would exempt the whole body of an ordinary claim string, since the claim
+// itself is a double-quoted literal, and that is most of what the dash rule is
+// here to read.
 function stripQuotedSpans(text) {
-  // Inner quotes inside a TS string literal are escaped, so a vendor quotation
-  // reads as \"...\" in the raw source.
-  return text.replace(/\\"[\s\S]*?\\"/g, " [quoted] ");
+  // 1. Inside a double-quoted TS string, an inner quotation is escaped, so it
+  //    reads as \"...\" in the raw source.
+  let out = text.replace(/\\"[\s\S]*?\\"/g, " [quoted] ");
+  // 2. Curly quotation marks are never TS syntax, so a span between them is a
+  //    quotation wherever it appears.
+  out = out.replace(/“[^”\n]*”/g, " [quoted] ");
+  // 3. Inside a single-quoted string or a template literal, an inner quotation
+  //    needs no escaping and reads as a plain "...". Scoped to those two
+  //    literal forms. The boundary conditions on the opening and closing quote
+  //    keep an apostrophe in ordinary prose ("MainWP's own wording") from
+  //    pairing with the next one and swallowing whatever lies between.
+  out = out.replace(/(^|[^A-Za-z0-9_])('[^'\n]*'|`[^`\n]*`)(?![A-Za-z0-9_])/g, (all, before, lit) =>
+    before + lit.replace(/"[^"\n]*"/g, " [quoted] "),
+  );
+  return out;
 }
 
 function checkDisparagement(file, line, text) {
@@ -160,6 +184,118 @@ function checkDisparagement(file, line, text) {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Citation integrity on the comparison pages.
+//
+// Every matrix cell, cost model and locality lane may carry `cites: ["mw-24"]`,
+// and the sources page anchors on that exact id. A wrong id therefore does not
+// break anything a build can see: the link still resolves, to a real claim
+// about the wrong thing. Fourteen of them shipped that way, and on a page whose
+// entire value is that a reader can check us, a footnote pointing at somebody
+// else's fact is the one failure this page cannot afford.
+//
+// WHAT THIS CAN AND CANNOT CATCH. It catches the mechanical half: an id that
+// does not exist, a duplicate id, and an id borrowed from the other product's
+// column. It CANNOT tell that mw-20 is the wrong claim for a cell about Safe
+// Updates, because both are real ManageWP claims. Reading the claim you are
+// citing is still the job; this only stops the class of error a machine can
+// see, and stops a renamed or deleted claim from silently orphaning a footnote.
+const CITE_ID = /^[a-z]{2}-\d{2,}$/;
+
+function checkCitations(file) {
+  let src;
+  try {
+    src = readFileSync(file, "utf8");
+  } catch {
+    return 0;
+  }
+  return checkCitationsIn(file, src);
+}
+
+function checkCitationsIn(file, src) {
+  const lines = src.split("\n");
+
+  // Pass 1: every declared claim, and which product declared it.
+  const declared = new Map(); // id -> line
+  const prefixOf = new Map(); // productKey -> Set of id prefixes
+  let product = null;
+  lines.forEach((line, i) => {
+    const key = /^\s*key:\s*"([a-z0-9-]+)"/.exec(line);
+    if (key) product = key[1];
+    const id = /^\s*id:\s*"([^"]+)"/.exec(line);
+    if (!id) return;
+    if (!CITE_ID.test(id[1])) {
+      report(file, i + 1, `claim id "${id[1]}" is not of the form xx-00`);
+    }
+    if (declared.has(id[1])) {
+      report(file, i + 1, `duplicate claim id "${id[1]}", already declared on line ${declared.get(id[1])}`);
+    }
+    declared.set(id[1], i + 1);
+    if (product) {
+      if (!prefixOf.has(product)) prefixOf.set(product, new Set());
+      prefixOf.get(product).add(id[1].split("-")[0]);
+    }
+  });
+
+  // Pass 2: every citation, and the column it sits in. A matrix cell names its
+  // product on the same line as its cites; a cost model and a locality lane
+  // open with `productKey` a few lines above. Section keys reset the second
+  // form so a stale productKey cannot leak across a section boundary.
+  let owner = null;
+  let citations = 0;
+  // A `cites` array may be written across several lines, which prettier will do
+  // on its own as soon as the list is long enough. Read each one as the single
+  // logical line it is, still reported at the line the `cites` key sits on: a
+  // per-line regex silently matched nothing on a wrapped array, so the gate
+  // stopped applying to exactly the busiest cells, and no failure said so.
+  const logical = lines.map((line, i) => {
+    if (!/cites:\s*\[/.test(line) || /cites:\s*\[[^\]]*\]/.test(line)) return line;
+    let joined = line;
+    for (let j = i + 1; j < lines.length && !joined.includes("]"); j += 1) {
+      joined += " " + lines[j].trim();
+    }
+    return joined;
+  });
+  logical.forEach((line, i) => {
+    if (/^\s{2}[a-z]+:\s/.test(line)) owner = null;
+    const pk = /productKey:\s*"([a-z0-9-]+)"/.exec(line);
+    if (pk) owner = pk[1];
+    const cites = /cites:\s*\[([^\]]*)\]/.exec(line);
+    if (!cites) return;
+    // The column key is usually on the same line as `cites`. When the whole
+    // cell object wraps it is on an earlier one, and reading only this line
+    // dropped the column, so the ownership rule stopped applying to precisely
+    // the cells big enough to wrap. Walk back to the object this `cites`
+    // belongs to, stopping at a boundary so a sibling cell cannot be claimed.
+    let cell = /^\s*([a-z][a-z0-9-]*)\s*:\s*\{/.exec(line);
+    for (let j = i - 1; !cell && j >= 0; j -= 1) {
+      const prev = lines[j];
+      if (/^\s*[}\]],?\s*$/.test(prev)) break;
+      cell = /^\s*([a-z][a-z0-9-]*)\s*:\s*\{\s*$/.exec(prev);
+    }
+    const column = cell ? cell[1] : owner;
+    const ids = [...cites[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
+    for (const id of ids) {
+      citations += 1;
+      if (!declared.has(id)) {
+        report(file, i + 1, `cites "${id}", which is not a claim id in this file`);
+        continue;
+      }
+      const expected = column ? prefixOf.get(column) : undefined;
+      if (expected && expected.size === 1 && !expected.has(id.split("-")[0])) {
+        report(
+          file,
+          i + 1,
+          `the ${column} column cites "${id}", which belongs to another product ` +
+            `(expected the ${[...expected][0]}- prefix)`,
+        );
+      }
+    }
+  });
+
+  return citations;
 }
 
 function walk(dir, match) {
@@ -391,6 +527,123 @@ function walkAgentPhp(dir, out = []) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-check.
+//
+// This script is the only thing standing between a vendor quotation and an
+// editor "fixing" it, and there is no test runner in this app to hold it. Both
+// pieces of real logic therefore assert themselves against named fixtures on
+// every run, before any file is read. A gate that has quietly stopped matching
+// is worse than no gate, because the summary line still says it ran.
+// ---------------------------------------------------------------------------
+function selfTest() {
+  const cases = [];
+  const strips = (name, source, { exempt }) => {
+    const out = stripQuotedSpans(source);
+    const gone = !out.includes("—");
+    if (gone !== exempt) {
+      cases.push(
+        `${name}: expected the em dash to be ${exempt ? "blanked" : "left in place"}, got "${out.trim()}"`,
+      );
+    }
+  };
+
+  // The form every claim on the page uses today.
+  strips("escaped inner quote inside a double-quoted claim", 'claim: "they say \\"a—b\\" here",', {
+    exempt: true,
+  });
+  // The forms that would have failed CI on a vendor's own punctuation.
+  strips("inner quote inside a single-quoted claim", "claim: 'they say \"a—b\" here',", {
+    exempt: true,
+  });
+  strips("inner quote inside a template literal", "claim: `they say \"a—b\" here`,", {
+    exempt: true,
+  });
+  strips("curly quotation marks", "claim: “a—b”,", { exempt: true });
+  // The over-broad version of this function would pass the next two, and an
+  // em dash in our own copy would ship.
+  strips("our own copy in a double-quoted string is still checked", 'subhead: "a—b",', {
+    exempt: false,
+  });
+  strips("an apostrophe in prose does not open a quotation", "subhead: \"MainWP's own a—b\",", {
+    exempt: false,
+  });
+
+  // Shaped like the real content file: one key and one id per line, which is
+  // what the line-oriented reader above expects.
+  const CITED = [
+    "  products: [",
+    "    {",
+    '      key: "managewp",',
+    "      claims: [",
+    "        {",
+    '          id: "mw-01",',
+    "        },",
+    "      ],",
+    "    },",
+    "    {",
+    '      key: "mainwp",',
+    "      claims: [",
+    "        {",
+    '          id: "mn-01",',
+    "        },",
+    "      ],",
+    "    },",
+    "  ],",
+    "  matrix: [",
+  ];
+  const citeCase = (name, extra, expected) => {
+    const before = failures.length;
+    checkCitationsIn("fixture", [...CITED, ...extra].join("\n"));
+    const found = failures.length - before;
+    failures.length = before;
+    if (found !== expected) {
+      cases.push(`${name}: expected ${expected} failure(s), got ${found}`);
+    }
+  };
+  citeCase("a cell citing its own product", ['    managewp: { cites: ["mw-01"] },'], 0);
+  citeCase("a cell citing an id that does not exist", ['    managewp: { cites: ["mw-99"] },'], 1);
+  citeCase("a cell citing the other column's claim", ['    mainwp: { cites: ["mw-01"] },'], 1);
+
+  // A `cites` array wraps as soon as prettier decides it is long enough, and a
+  // per-line regex matched nothing at all on a wrapped one. The gate therefore
+  // stopped applying to exactly the cells carrying the most sources, and said
+  // nothing while it did. These three keep it applying whatever the formatting.
+  citeCase(
+    "a wrapped cites array is still read",
+    ['    managewp: {', '      cites: [', '        "mw-99",', '      ],', '    },'],
+    1,
+  );
+  citeCase(
+    "a wrapped cites array still has its column checked",
+    ['    mainwp: {', '      cites: [', '        "mw-01",', '      ],', '    },'],
+    1,
+  );
+  citeCase(
+    "a single-quoted id is still read",
+    ["    managewp: { cites: ['mw-99'] },"],
+    1,
+  );
+  citeCase(
+    "a wrapped cites array that is correct still passes",
+    ['    managewp: {', '      cites: [', '        "mw-01",', '      ],', '    },'],
+    0,
+  );
+  citeCase(
+    "a cost model citing across the product boundary",
+    ['    productKey: "mainwp",', '    cites: ["mw-01"],'],
+    1,
+  );
+
+  if (cases.length > 0) {
+    for (const c of cases) console.error(`check-copy SELF-CHECK failed: ${c}`);
+    console.error("\nThe gate itself is broken. Fix it before trusting a green run.");
+    process.exit(1);
+  }
+}
+
+selfTest();
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 const marketingFiles = SCAN_DIRS.flatMap((d) =>
@@ -431,6 +684,14 @@ for (const file of compareFiles) {
   } catch {
     // unreadable file already reported by the whole-file pass above
   }
+}
+
+// Citation integrity, over the comparison DATA files only. The components that
+// render a footnote hold no ids of their own.
+let citationsChecked = 0;
+for (const file of compareFiles) {
+  if (!file.includes("/content/compare/") || file.endsWith("/index.ts")) continue;
+  citationsChecked += checkCitations(file);
 }
 
 // 2a. The wordpress.org listing. KEEPS the competitor rule even though
@@ -517,5 +778,5 @@ console.log(
     `(${marketingFiles.length} marketing, ${agentReadmeScanned} agent readme, ` +
     `${agentHeaderScanned} plugin header, ${agentPhp.length} agent PHP of which ` +
     `${agentCopyFiles.length} carry copy, ${compareScanned} comparison files also ` +
-    `checked for disparagement).`,
+    `checked for disparagement, ${citationsChecked} citations resolved).`,
 );

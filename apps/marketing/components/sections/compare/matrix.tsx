@@ -58,7 +58,12 @@ function Cell({ cell, slug }: { cell: MatrixCell; slug: string }) {
             className="ml-1 align-super text-[10px] text-[var(--muted-foreground)] underline underline-offset-2 hover:text-foreground"
             aria-label={`Source for this figure, reference ${id}`}
           >
-            {id.split("-")[1]}
+            {/* THE WHOLE ID, not the number after the prefix. Each product
+                numbers its claims from one, so a bare "11" appears twice on the
+                same page pointing at two different sources. The sources page
+                prints the full id beside each claim, so this also matches what
+                the reader lands on. */}
+            {id}
           </a>
         ))}
       </span>
@@ -119,7 +124,7 @@ export function CompareMatrix({ data }: { data: ComparisonPageData }) {
                         {row.cells[c.key] ? (
                           <Cell cell={row.cells[c.key]!} slug={data.slug} />
                         ) : (
-                          <span className="text-[var(--muted-foreground)">Not stated</span>
+                          <span className="text-[var(--muted-foreground)]">Not stated</span>
                         )}
                       </td>
                     ))}

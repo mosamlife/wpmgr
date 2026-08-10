@@ -118,11 +118,16 @@ function TweenedMoney({ value, className }: { value: number; className?: string 
 
   return (
     <>
+      {/* ROUND ONLY WHAT IS MOVING. Whole dollars keep the digits from
+          flickering through cents mid-tween, but the SETTLED figure is printed
+          exactly, because several of the line items above carry cents and a
+          headline that does not equal the sum of the visible rows undoes the
+          one thing this page is for. */}
       <span className={className} aria-hidden>
-        {money(Math.round(tween ?? value))}
+        {tween !== null ? money(Math.round(tween)) : money(value)}
       </span>
       <span className="sr-only" aria-live="polite">
-        {money(Math.round(value))} per year
+        {money(value)} per year
       </span>
     </>
   );
@@ -423,10 +428,12 @@ export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] 
             </div>
             {saving !== null && saving > 0 && (
               <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                {/* Rounded to match the two headline totals it is the
-                    difference of. Printing exact cents here against rounded
-                    totals above produced a visible ten-cent contradiction. */}
-                {money(Math.round(saving))} less per year at {sites}{" "}
+                {/* Exact, to match the two headline totals it is the difference
+                    of. Both of those settle on the true figure including cents,
+                    so rounding here would reintroduce the contradiction from
+                    the other side: a reader subtracting the two numbers on
+                    screen must land on this one. */}
+                {money(saving)} less per year at {sites}{" "}
                 {sites === 1 ? "site" : "sites"}.
               </p>
             )}

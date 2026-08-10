@@ -16,6 +16,13 @@
 // publication gate. The audit caught a fabricated quotation in the first
 // draft. Do not add a claim here without a source you fetched yourself, and
 // re-check verifiedOn when prices move.
+//
+// A `cites` id IS the footnote the reader opens, and getting it wrong is
+// invisible: the link still resolves, to a real claim about something else.
+// Fourteen cells shipped that way. scripts/check-copy.mjs now rejects an id
+// that does not exist and an id borrowed from the other product's column, but
+// it cannot know that mw-20 is the wrong ManageWP claim for a cell about Safe
+// Updates. Read the claim you are citing.
 
 import type { ComparisonPageData } from "@/lib/content/types";
 
@@ -774,8 +781,8 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           label: "Bulk updates across sites",
           cells: {
             wpmgr: { value: "Yes, with a pre-update snapshot and rollback", tone: "included" },
-            managewp: { value: "Yes. Safe Updates adds a restore point and needs premium Backups", tone: "included", cites: ["mw-20"] },
-            mainwp: { value: "Yes, free, including automatic updates", tone: "included", cites: ["mn-30"] },
+            managewp: { value: "Yes. Safe Updates adds a restore point and needs premium Backups", tone: "included", cites: ["mw-24"] },
+            mainwp: { value: "Yes, free, including automatic updates", tone: "included", cites: ["mn-40"] },
           },
         },
         {
@@ -783,7 +790,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           cells: {
             wpmgr: { value: "Built in and free, with TLS expiry checks", tone: "included" },
             managewp: { value: "Add-on: $1 per site per month, or $25 for up to 100 sites", tone: "paid", cites: ["mw-08"] },
-            mainwp: { value: "Built in and free, off until enabled", tone: "included", cites: ["mn-33"] },
+            mainwp: { value: "Built in and free, off until enabled", tone: "included", cites: ["mn-30", "mn-31"] },
           },
         },
         {
@@ -791,7 +798,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           cells: {
             wpmgr: { value: "Built in, white label, with a client portal", tone: "included" },
             managewp: { value: "Free with a ManageWP watermark. Advanced is $1 per site per month", tone: "paid", cites: ["mw-09"] },
-            mainwp: { value: "Pro Reports add-on, needs a second plugin on each site", tone: "paid", cites: ["mn-38"] },
+            mainwp: { value: "Pro Reports add-on, needs a second plugin on each site", tone: "paid", cites: ["mn-33"] },
           },
         },
         {
@@ -799,7 +806,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           cells: {
             wpmgr: { value: "Yes, single use and audited", tone: "included" },
             managewp: { value: "Yes, in the free tier", tone: "included", cites: ["mw-01"] },
-            mainwp: { value: "Yes, in the free tier", tone: "included", cites: ["mn-30"] },
+            mainwp: { value: "Yes, in the free tier", tone: "included", cites: ["mn-40"] },
           },
         },
       ],
@@ -820,15 +827,15 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           cells: {
             wpmgr: { value: "Storage you choose, encrypted before it leaves the site", tone: "included" },
             managewp: { value: "The vendor's servers, with a US or EU region choice", tone: "neutral", cites: ["mw-11", "mw-12"] },
-            mainwp: { value: "Wherever the third-party plugin you configure sends them", tone: "neutral", cites: ["mn-19"] },
+            mainwp: { value: "Wherever the third-party plugin you configure sends them", tone: "neutral", cites: ["mn-25", "mn-26"] },
           },
         },
         {
           label: "Source you can read",
           cells: {
             wpmgr: { value: "All of it. AGPL-3.0 control plane, MIT agent", tone: "included" },
-            managewp: { value: "The connector plugin, GPLv3. The dashboard is not published", tone: "partial", cites: ["mw-16"] },
-            mainwp: { value: "Dashboard and child plugin, GPLv3, on GitHub", tone: "included", cites: ["mn-46"] },
+            managewp: { value: "The connector plugin, GPLv3. The dashboard is not published", tone: "partial", cites: ["mw-18"] },
+            mainwp: { value: "Dashboard and child plugin, GPLv3, on GitHub", tone: "included", cites: ["mn-21", "mn-22"] },
           },
         },
       ],
@@ -849,7 +856,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           cells: {
             wpmgr: { value: "$0", tone: "included" },
             managewp: { value: "$50 a month at $2 per site, or $75 for the bundle", tone: "paid", cites: ["mw-04"] },
-            mainwp: { value: "Included, but you supply the backup plugin", tone: "partial", cites: ["mn-19"] },
+            mainwp: { value: "Included, but you supply the backup plugin", tone: "partial", cites: ["mn-25"] },
           },
         },
       ],
@@ -861,24 +868,24 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
           label: "Backup engine",
           cells: {
             wpmgr: { value: "Built in. Incremental, client-side encrypted", tone: "included" },
-            managewp: { value: "Built in. Incremental, encrypted in transit and at rest", tone: "included", cites: ["mw-17", "mw-18"] },
-            mainwp: { value: "None of its own. It drives third-party backup plugins", tone: "partial", cites: ["mn-19"] },
+            managewp: { value: "Built in. Incremental, encrypted in transit and at rest", tone: "included", cites: ["mw-19", "mw-20"] },
+            mainwp: { value: "None of its own. It drives third-party backup plugins", tone: "partial", cites: ["mn-25", "mn-26"] },
           },
         },
         {
           label: "Security scanning",
           cells: {
             wpmgr: { value: "Built in: hardening, file integrity, vulnerability matching", tone: "included" },
-            managewp: { value: "Free check reports only. Vulnerability Protection is $2 per site per month and installs a second plugin", tone: "paid", cites: ["mw-24"] },
-            mainwp: { value: "Add-ons, some free and some paid", tone: "paid", cites: ["mn-24"] },
+            managewp: { value: "Free check reports only. Vulnerability Protection is $2 per site per month and installs a second plugin", tone: "paid", cites: ["mw-05", "mw-26", "mw-27"] },
+            mainwp: { value: "Add-ons, some free and some paid", tone: "paid", cites: ["mn-36"] },
           },
         },
         {
           label: "Database cleaning",
           cells: {
             wpmgr: { value: "Built in, with orphan classification and a preview", tone: "included" },
-            managewp: { value: "An optimization widget in the dashboard", tone: "included", cites: ["mw-28"] },
-            mainwp: { value: "The Maintenance add-on, labelled Pro", tone: "paid", cites: ["mn-27"] },
+            managewp: { value: "An optimization widget in the dashboard", tone: "included", cites: ["mw-30"] },
+            mainwp: { value: "The Maintenance add-on, labelled Pro", tone: "paid", cites: ["mn-34"] },
           },
         },
       ],
@@ -910,6 +917,12 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         perSite: 4,
         bundle: 125,
         bundleCovers: 100,
+        // The all-in-one package, which covers every bundle for $150 up to 100
+        // websites (mw-06). It is dearer than the $125 of the three bundles
+        // this row models, so it never wins today, and it is listed anyway: if
+        // one of those three prices rises past it, the widget must charge the
+        // package rather than quietly print a figure no customer would pay.
+        alternatives: [{ amount: 150, covers: 100 }],
         period: "month",
         note: "Backups $2, uptime $1, advanced reports $1 per site per month. Bundles are $75 plus $25 plus $25 for up to 100 sites, and their all-in-one package covering every bundle is $150.",
         cites: ["mw-04", "mw-06"],
@@ -921,7 +934,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         flat: 199,
         period: "year",
         note: "Flat for unlimited sites. You still supply and configure a backup plugin.",
-        cites: ["mn-01", "mn-19"],
+        cites: ["mn-01", "mn-25"],
       },
       {
         productKey: "wpmgr",
@@ -953,7 +966,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
         productKey: "mainwp",
         path: ["Your sites", "Your WordPress dashboard", "Plugin decides"],
         note: "The dashboard is yours. Where backups land depends on which third-party plugin you configure.",
-        cites: ["mn-11", "mn-19"],
+        cites: ["mn-11", "mn-25", "mn-26"],
       },
     ],
   },
