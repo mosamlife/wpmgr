@@ -245,15 +245,38 @@ function checkCitationsIn(file, src) {
   // form so a stale productKey cannot leak across a section boundary.
   let owner = null;
   let citations = 0;
-  lines.forEach((line, i) => {
+  // A `cites` array may be written across several lines, which prettier will do
+  // on its own as soon as the list is long enough. Read each one as the single
+  // logical line it is, still reported at the line the `cites` key sits on: a
+  // per-line regex silently matched nothing on a wrapped array, so the gate
+  // stopped applying to exactly the busiest cells, and no failure said so.
+  const logical = lines.map((line, i) => {
+    if (!/cites:\s*\[/.test(line) || /cites:\s*\[[^\]]*\]/.test(line)) return line;
+    let joined = line;
+    for (let j = i + 1; j < lines.length && !joined.includes("]"); j += 1) {
+      joined += " " + lines[j].trim();
+    }
+    return joined;
+  });
+  logical.forEach((line, i) => {
     if (/^\s{2}[a-z]+:\s/.test(line)) owner = null;
     const pk = /productKey:\s*"([a-z0-9-]+)"/.exec(line);
     if (pk) owner = pk[1];
     const cites = /cites:\s*\[([^\]]*)\]/.exec(line);
     if (!cites) return;
-    const cell = /^\s*([a-z][a-z0-9-]*)\s*:\s*\{/.exec(line);
+    // The column key is usually on the same line as `cites`. When the whole
+    // cell object wraps it is on an earlier one, and reading only this line
+    // dropped the column, so the ownership rule stopped applying to precisely
+    // the cells big enough to wrap. Walk back to the object this `cites`
+    // belongs to, stopping at a boundary so a sibling cell cannot be claimed.
+    let cell = /^\s*([a-z][a-z0-9-]*)\s*:\s*\{/.exec(line);
+    for (let j = i - 1; !cell && j >= 0; j -= 1) {
+      const prev = lines[j];
+      if (/^\s*[}\]],?\s*$/.test(prev)) break;
+      cell = /^\s*([a-z][a-z0-9-]*)\s*:\s*\{\s*$/.exec(prev);
+    }
     const column = cell ? cell[1] : owner;
-    const ids = [...cites[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const ids = [...cites[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
     for (const id of ids) {
       citations += 1;
       if (!declared.has(id)) {
@@ -580,6 +603,31 @@ function selfTest() {
   citeCase("a cell citing its own product", ['    managewp: { cites: ["mw-01"] },'], 0);
   citeCase("a cell citing an id that does not exist", ['    managewp: { cites: ["mw-99"] },'], 1);
   citeCase("a cell citing the other column's claim", ['    mainwp: { cites: ["mw-01"] },'], 1);
+
+  // A `cites` array wraps as soon as prettier decides it is long enough, and a
+  // per-line regex matched nothing at all on a wrapped one. The gate therefore
+  // stopped applying to exactly the cells carrying the most sources, and said
+  // nothing while it did. These three keep it applying whatever the formatting.
+  citeCase(
+    "a wrapped cites array is still read",
+    ['    managewp: {', '      cites: [', '        "mw-99",', '      ],', '    },'],
+    1,
+  );
+  citeCase(
+    "a wrapped cites array still has its column checked",
+    ['    mainwp: {', '      cites: [', '        "mw-01",', '      ],', '    },'],
+    1,
+  );
+  citeCase(
+    "a single-quoted id is still read",
+    ["    managewp: { cites: ['mw-99'] },"],
+    1,
+  );
+  citeCase(
+    "a wrapped cites array that is correct still passes",
+    ['    managewp: {', '      cites: [', '        "mw-01",', '      ],', '    },'],
+    0,
+  );
   citeCase(
     "a cost model citing across the product boundary",
     ['    productKey: "mainwp",', '    cites: ["mw-01"],'],
