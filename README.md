@@ -17,7 +17,9 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
+<!-- wpmgr-install-pins:start (the version below is a required pin; scripts/check-version-surfaces.sh keeps it current) -->
 **v0.61.131**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
+<!-- wpmgr-install-pins:end -->
 
 ---
 
@@ -307,11 +309,13 @@ The media encoder runs headless Chromium for screenshots, so it adds some RAM/CP
 docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
 ```
 
-Site screenshot cards then fall back to favicon/monogram and the Media Optimizer tab is unavailable; everything else works normally.
+Site screenshot cards then fall back to favicon/monogram, the Media Optimizer tab is unavailable, and WOFF2 font transcoding stops: the screenshot, image-encode, and font-transcode workers all run only in that image. Everything else, including backups, restores, updates, uptime, security, and the DB cleaner, is unaffected, because the control plane never encodes anything itself.
 
 ### Prebuilt container images
 
 The control plane, dashboard, and media encoder are published on GitHub Container Registry, for wiring into your own compose, Kubernetes, or Swarm setup. The api and web images are multi-arch (`linux/amd64` + `linux/arm64`); the media encoder is `linux/amd64` only, because its image codec library ships prebuilt static libraries for that architecture alone:
+
+<!-- wpmgr-install-pins:start (required pins; scripts/check-version-surfaces.sh keeps them current) -->
 
 ```bash
 docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.131
@@ -325,6 +329,8 @@ Or bring up the whole stack from the published images (no local build) with the 
 export WPMGR_VERSION=v0.61.131   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
+
+<!-- wpmgr-install-pins:end -->
 
 Migrations apply automatically on boot. The `validate-env` command (`make validate-env`) checks your configuration and prints every problem at once before the stack starts.
 

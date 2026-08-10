@@ -216,10 +216,14 @@ Pre-built images are published on GitHub Container Registry:
 `:vX.Y.Z` and `:latest`). If you already have the compose files (via the
 quickstart or a clone), bring up the stack with the pull-only overlay:
 
+<!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
+
 ```bash
 export WPMGR_VERSION=v0.61.131   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
+
+<!-- wpmgr-install-pins:end -->
 
 The overlay only swaps the three app services to `image:` + `pull_policy:
 always`; everything else (Postgres, Redis, SeaweedFS, ClickHouse, env, volumes)
@@ -280,8 +284,10 @@ docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
 
 or comment out the `media-encoder:` service block in `infra/docker-compose.yml`
 if you never want it built/pulled at all. Either way, screenshot cards fall back
-to favicon/monogram permanently and the Media Optimizer tab is unavailable —
-everything else in the dashboard is unaffected.
+to favicon/monogram permanently, the Media Optimizer tab is unavailable, and
+WOFF2 font transcoding stops. Everything else in the dashboard is unaffected:
+all three of those workers are registered only in the media encoder, and the
+control plane never encodes anything itself.
 
 The media-encoder runs its jobs in a dedicated River schema (default
 `media_encoder`), separate from the API's own default/public schema. This is

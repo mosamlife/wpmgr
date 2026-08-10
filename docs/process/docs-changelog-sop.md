@@ -34,7 +34,7 @@ Both rules are machine-enforced, in two different places, and neither covers eve
 - **File:** `CHANGELOG.md` at the repo root, alongside `README.md`.
 - **Format:** [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 - **Why root:** it is the conventional open-source artifact, it is the single edit point for the docs-writer, and it is the file GitHub Releases and every downstream surface are reconciled against.
-- **It is also the ordered list that every version guard measures distance in.** Position in it is the unit of "N releases behind" everywhere in CI. See §5.
+- **It is the ordered list the distance compares are counted in.** "N releases behind" means "this file lists N entries newer than that version", and that is the unit everywhere in CI. Three of the five checks use it: `info.version` must equal its top entry exactly, and the marketing changelog page and the install pins are held within a tolerance measured in it. The two agent-facing checks do not read it at all, on purpose: the hero badge is compared to the agent plugin, and the agent's three self-declarations are compared to each other (§5.2). See §5.
 - **Versioning anchor:** `info.version` in `packages/openapi/openapi.yaml` must equal the top `CHANGELOG.md` entry exactly. CI fails the build when they disagree. Do not invent a parallel version scheme.
 
 Structure (full template in §3.1):
@@ -57,9 +57,9 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### 1.2 The published changelog: `apps/marketing/app/(marketing)/changelog/page.tsx`
 
-The public `/changelog` page is a **hand-curated TSX page**, not a derived view. It carries a typed list of `ChangeEntry` objects, newest first, showing roughly the twenty most recent meaningful releases with a written summary each; the full history lives on GitHub Releases. Grouping several releases into one entry is normal and supported, written oldest first: `version: "0.61.49 - 0.61.53"`.
+The public `/changelog` page is a **hand-curated TSX page**, not a derived view. It carries a typed list of `ChangeEntry` objects, newest first, with a written summary each; the full history lives on GitHub Releases. Counted on 2026-08-10 it holds **72 entries, running from `0.61.131` back to `0.54.0`**, so it is a long curated history rather than a short recent window. Grouping several releases into one entry is normal and supported, written oldest first: `version: "0.61.49 - 0.61.53"`. The widest group it carries names eight versions, `0.61.41 - 0.61.48`.
 
-CI keeps it within **5 releases** of the top `CHANGELOG.md` entry, counted by position in that file, and it reads the newest version in a grouped entry rather than the first one on the line. See §5.1.
+CI keeps it within **5 releases** of the top `CHANGELOG.md` entry, and it reads the newest version in a grouped entry rather than the first one on the line. That detail is load-bearing: the two ends of `0.61.41 - 0.61.48` sit six releases apart in `CHANGELOG.md`'s list, so reading the first number would have failed an honest page. See §5.1.
 
 **Do not replace it with a build-time generator that reads root `CHANGELOG.md`.** `infra/Dockerfile.marketing` copies the workspace manifests, `packages/` and `apps/marketing/` into the build context and nothing else, so repo-root files are absent inside the image build. This is not hypothetical: `apps/marketing/scripts/sync-openapi.mjs` already tries to read `CHANGELOG.md` for a version stamp and takes its `catch` silently on every production build for exactly that reason. Anything tempted to reach outside `apps/marketing` at build time needs a `COPY` added first, and then needs that widened context to stay wide forever.
 
@@ -200,12 +200,33 @@ Enforcement is in three layers. Layers 1 and 2 are machine gates that exist and 
 
 Neither one covers dashes in `CHANGELOG.md` or `README.md`. That gap is deliberate for now and is held by hand.
 
-**Layer 2: the version-surface guards.** Same job, four steps, all described in §5:
+**Layer 2: the version-surface guard.** One script, `scripts/check-version-surfaces.sh`, run by one step in the `Security audit` job, plus a second step that runs the script's own regression suite first. All five of its checks are described in §5:
 
-- `Docs version drift guard (openapi + marketing changelog)`.
-- `Docs version drift guard (marketing badge + install pins)`, which also asserts that every required install pin **exists**, in the file it belongs to, the expected number of times.
-- `Agent version triple check (plugin header, constant, Stable tag)`.
-- `Agent release asset must not be stamped from the git tag`, in the PHP job.
+1. `packages/openapi/openapi.yaml` `info.version` against the top `CHANGELOG.md` entry.
+2. The marketing `/changelog` page against the top entry, within 5 releases.
+3. The marketing hero badge against the agent plugin, exactly.
+4. The agent version triple against itself, plus `release.yml` not stamping the agent zip from the git tag.
+5. The required install pins, plus a repo-wide sweep for any other concrete image tag or `WPMGR_VERSION` value.
+
+**Run it yourself before pushing. It needs nothing but a shell:**
+
+```
+make check-versions                          # or: scripts/check-version-surfaces.sh
+make check-versions-test                     # the regression suite (75 cases as of this commit)
+scripts/check-version-surfaces_test.sh badge # only cases matching "badge"
+scripts/check-version-surfaces.sh /some/tree # check a tree other than this one
+```
+
+The suite builds throwaway trees under `$TMPDIR`, mutates one thing in each, and asserts the guard's exit code and output. It covers every hole three review rounds found, so reopening one turns a test red rather than shipping. Both files run on bash 3.2 with BSD tools (macOS) and on bash 5 with GNU tools (the CI runner); both were run on both before this landed.
+
+Editing the guard means editing the script, and a behaviour change means a case in the suite. To check the suite is not vacuous, copy the script, put the old bug back, and run the suite against the copy:
+
+```
+WPMGR_VERSION_SURFACE_SCRIPT=/tmp/guard-with-the-bug-back.sh \
+  scripts/check-version-surfaces_test.sh
+```
+
+That check used to be 245 lines of shell inside YAML block scalars in `ci.yml`, 144 of them in one step, with no test at all. Three rounds of review found a real hole each time, because nobody could run it and nobody could see what the last person had proved.
 
 **Layer 3: the PR checklist.** Everything above is about surfaces that can be compared to each other mechanically. Whether the changelog entry is true, and whether the marketing copy describes the feature that actually shipped, cannot be. Every feature PR carries this block, and the reviewer blocks merge if a box is unchecked:
 
@@ -225,12 +246,19 @@ Neither one covers dashes in `CHANGELOG.md` or `README.md`. That gap is delibera
 
 ## 5. Version surfaces, and which ones CI enforces
 
-Sixteen files in this repo can name a version. Seven of them name one to a reader
-who acts on it, and those seven are checked by the `Security audit` job in
-`.github/workflows/ci.yml`. The rest are historical statements (a runbook
-describing a publish that happened, spec prose naming the agent version that
-introduced a field, a workflow comment citing an old version as an example) and
-are deliberately left alone: they were true when written and they stay true.
+Seven files name a version to a reader who acts on it, and all seven are checked
+by `scripts/check-version-surfaces.sh`, run by the `Security audit` job in
+`.github/workflows/ci.yml`: `packages/openapi/openapi.yaml`,
+`apps/marketing/app/(marketing)/changelog/page.tsx`,
+`apps/marketing/lib/content/home.ts`, `README.md`, `docs/install.md`,
+`apps/agent/wpmgr-agent.php` and `apps/agent/readme.txt`.
+
+Other files mention a version in passing: a runbook describing a publish that
+happened, spec prose naming the agent version that introduced a field, a
+changelog entry describing what a release fixed. Those are historical statements
+and are deliberately left alone; they were true when written and they stay true.
+What stops a NEW one of them from quietly becoming an install instruction is the
+sweep (§5.1), which reads the whole tree rather than a declared list.
 
 ### 5.1 What is checked, against what, with what tolerance
 
@@ -241,34 +269,67 @@ are deliberately left alone: they were true when written and they stay true.
 | GHCR pull tags, `WPMGR_VERSION` export and status line in `README.md`, plus the `WPMGR_VERSION` export in `docs/install.md` | top `CHANGELOG.md` entry, and each other | 1 release, and exact against each other |
 | `AGENT_VERSION` in `apps/marketing/lib/content/home.ts` | `WPMGR_AGENT_VERSION` in `apps/agent/wpmgr-agent.php` | exact |
 | `apps/agent/wpmgr-agent.php` plugin header, `WPMGR_AGENT_VERSION`, and `apps/agent/readme.txt` `Stable tag` | each other | exact |
+| any other concrete `ghcr.io/mosamlife/wpmgr-*` tag or `WPMGR_VERSION` value, anywhere in the tree | top `CHANGELOG.md` entry | 1 release |
 
-**Tolerance is counted in RELEASES, by position in `CHANGELOG.md`'s own ordered
-list**, not by subtracting patch numbers. So `0.61.131` is one release behind
-`0.62.0`, and a minor bump does not disable the compare. There is no version of
-"skip the check because the minor changed".
+**Tolerance is counted in RELEASES**, not by subtracting patch numbers, and "N
+releases behind" means "`CHANGELOG.md` lists N entries newer than this one". So
+`0.61.131` is one release behind `0.62.0`, a minor bump does not disable the
+compare, and a version the changelog has no heading for is still placed: on
+2026-08-10, 24 patch versions of `0.61.x` had no heading, and under the old
+lookup-by-heading rule a pin left on any of them passed forever.
 
-**The install pins are a REQUIRED SET, not whatever the guard happens to find.**
-Six pins are declared, one `expect_pin` line each, in the
-`Docs version drift guard (marketing badge + install pins)` step:
+**The install pins are a REQUIRED SET, and the set is anchored to a marker, not
+guessed from a pattern.** A required pin is one that sits between
+`<!-- wpmgr-install-pins:start -->` and `<!-- wpmgr-install-pins:end -->`. Six
+are declared, in `pin_specs()` in `scripts/check-version-surfaces.sh`:
 
-| File | Pin |
-| --- | --- |
-| `README.md` | the release status line under the title |
-| `README.md` | the `docker pull` tag for the api image |
-| `README.md` | the `docker pull` tag for the web image |
-| `README.md` | the `docker pull` tag for the media-encoder image |
-| `README.md` | the `WPMGR_VERSION` export in the compose quick start |
-| `docs/install.md` | the `WPMGR_VERSION` export in the install guide |
+| File | Pin | Must sit in |
+| --- | --- | --- |
+| `README.md` | the release status line under the title | prose |
+| `README.md` | the `docker pull` tag for the api image | a fenced code block |
+| `README.md` | the `docker pull` tag for the web image | a fenced code block |
+| `README.md` | the `docker pull` tag for the media-encoder image | a fenced code block |
+| `README.md` | the `WPMGR_VERSION` export in the compose quick start | a fenced code block |
+| `docs/install.md` | the `WPMGR_VERSION` export in the install guide | a fenced code block |
 
-A pin that is not found, in the file it belongs to, the declared number of times,
-is an **error naming that file and that pin**. It is not a warning and it is not
-a pass. That list in `ci.yml` is the specification: adding a pin to the docs
-means adding a line to it, and the count on each line is the only thing that can
-tell "the README lost one of its three pull commands" from "the README never had
-one". The patterns ignore decoration a formatter may add (quotes, backticks, an
-`export` keyword, extra spacing, indentation) and require the part a reader acts
-on (the variable name, the image path, the leading `v`), so a reformat is read
-rather than reported missing, and its version is still compared.
+Four rules follow from that, and each of them exists because its absence was a
+real hole:
+
+- **Absence is an error, never a warning.** A declared pin that is not there, or
+  a file with no `wpmgr-install-pins` region at all, names the file and the pin
+  and fails. The guard has not failed to read something; it has read the file and
+  established that a thing the reader needs is not in it.
+- **A commented-out pin does not count.** The guard is markdown-aware and shell
+  aware: HTML comment spans are removed, and inside a fenced block a line whose
+  first character is `#` is a comment, so neither
+  `<!-- export WPMGR_VERSION=v0.61.131 -->` nor a commented-out `docker pull` <!-- wpmgr-version-ignore -->
+  satisfies presence. A trailing comment beside a live line keeps its line.
+- **Inside a region the count is a MINIMUM.** Adding an honest "Upgrading"
+  section with a second current pin passes, and prose outside a region may name
+  any version it likes. Everything found is still version-compared, so a surplus
+  pin cannot go stale in silence.
+- **A malformed value is reported as malformed.** `v0.61.131-rc1` is not a
+  published tag and `WPMGR_VERSION=0.61.131` without the leading `v` is not one <!-- wpmgr-version-ignore -->
+  either; both are errors that say so, rather than reading as current or as
+  missing.
+
+Decoration a formatter may add is ignored (quotes, backticks, an `export`
+keyword, extra spacing, indentation, a blockquote marker, a tilde fence), and the
+part a reader acts on is required (the variable name, the image path, the leading
+`v`). A reformatted pin is still read, so its version is still compared: that is
+why `WPMGR_VERSION="v0.19.0"` fails as stale rather than passing as absent. <!-- wpmgr-version-ignore --> The
+same rule governs the badge and agent patterns, which is why WordPress's own
+`define( 'X', 'y' );` spacing no longer switches the agent check off.
+
+**The sweep is the backstop for everything nobody declared.** Any concrete
+`ghcr.io/mosamlife/wpmgr-*:vX.Y.Z` or `WPMGR_VERSION=vX.Y.Z` in any tracked file
+is held to the same 1 release tolerance, so a new doc with a stale pull command
+fails even though no list mentions it. Placeholders are ignored
+(`${WPMGR_VERSION:-latest}`, `:latest`, `vX.Y.Z`, an empty assignment).
+`CHANGELOG.md` is exempt because it is a historical record, the guard and its
+test are exempt because they carry the patterns as data, and any other single
+line can opt out by carrying the word `wpmgr-version-ignore` (this file uses that
+escape hatch three times, for the examples above).
 
 **The README plus `docs/install.md` tolerance of 1 is the one most likely to
 surprise you.** It exists so a release PR can add the CHANGELOG entry before the
@@ -279,8 +340,10 @@ distance. Bump the pins in the release commit.
 ### 5.2 The agent version is not the repo version
 
 The agent plugin version moves only when the agent itself changes, so a
-control-plane-only release leaves it frozen. `0.61.128` through `0.61.131`
-shipped in four days with the agent on `0.61.127`. Three consequences:
+control-plane-only release leaves it frozen. `0.61.128`, `0.61.129` and
+`0.61.130` shipped between 2026-08-07 and 2026-08-10 with the agent on
+`0.61.127`, which moved again in the `0.61.131` release commit. Three
+consequences:
 
 - Nothing that names the agent version is compared to `CHANGELOG.md`. The hero
   badge is compared to `apps/agent/wpmgr-agent.php`, and the agent's three
@@ -297,9 +360,10 @@ shipped in four days with the agent on `0.61.127`. Three consequences:
 - [ ] `CHANGELOG.md`: `[Unreleased]` becomes `## [X.Y.Z] - YYYY-MM-DD`, and a bare `[Unreleased]` heading is left behind.
 - [ ] `packages/openapi/openapi.yaml`: `info.version` to `X.Y.Z`.
 - [ ] `apps/marketing/app/(marketing)/changelog/page.tsx`: add the entry (grouping releases is fine, within 5).
-- [ ] `README.md`: three GHCR pull tags, the `WPMGR_VERSION` export, the status line.
+- [ ] `README.md`: three GHCR pull tags, the `WPMGR_VERSION` export, the status line (all inside the `wpmgr-install-pins` regions).
 - [ ] `docs/install.md`: the `WPMGR_VERSION` export.
 - [ ] Only if the agent changed: `apps/agent/wpmgr-agent.php` header and `WPMGR_AGENT_VERSION`, `apps/agent/readme.txt` `Stable tag` plus changelog and Upgrade Notice entries, and `AGENT_VERSION` in `apps/marketing/lib/content/home.ts`.
+- [ ] Run `scripts/check-version-surfaces.sh` before pushing. It reports every drifted surface in one pass, so you fix them in one commit rather than one CI cycle each.
 
 Anything not on that list does not get bumped. `infra/docker-compose.prod.yml`
 in particular names no version: its default is `${WPMGR_VERSION:-latest}` and

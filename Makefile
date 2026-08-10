@@ -68,6 +68,17 @@ lint: ## Lint everything
 	cd apps/api && go vet ./...
 	pnpm run lint
 
+# The same check CI runs, so a drifted install pin, hero badge or agent version
+# is a five second answer here instead of a red build later. check-versions-test
+# is the guard's own regression suite; run it after editing the guard.
+.PHONY: check-versions
+check-versions: ## Check every version-naming surface (docs, marketing, agent)
+	scripts/check-version-surfaces.sh
+
+.PHONY: check-versions-test
+check-versions-test: ## Run the version surface guard's regression suite
+	scripts/check-version-surfaces_test.sh
+
 # reproducible_zip: package $2 (a directory) inside $1 into $3, byte for byte
 # identically every time the same tree is packaged.
 #
