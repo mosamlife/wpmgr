@@ -195,15 +195,24 @@ jobs:
       # ran, never that Go replayed a cached result.
       #
       # -timeout 45m is deliberate and is the reason this lane is not flaky.
-      # Measured on a developer machine: 522s for the package alone, but 601s
-      # when run as part of `go test ./...`, which BLEW Go's 10m default and
-      # panicked. The package sits right on the default, so any lane that does
-      # not set an explicit timeout will flake, and a flaky required lane gets
-      # ignored and then deleted, which is worse than no lane. A two-vCPU hosted
-      # runner is slower again than that developer machine, so the budget is set
-      # at roughly 3x the measured solo time. The actual wall time is printed by
-      # the summary step below; if it ever creeps within 2x of this number,
-      # shard the lane rather than raising the ceiling.
+      #
+      # THE DEFAULT WOULD NOT WORK. Measured on a developer machine: 522s for
+      # the package alone, but 601s as part of `go test ./...`, which blew Go's
+      # 10m default and panicked. The package sits right on the default, so a
+      # lane that does not set an explicit timeout WILL flake, and a flaky
+      # required lane gets ignored and then deleted, which is worse than no lane.
+      #
+      # MEASURED HERE, on ubuntu-latest, on the two runs that introduced this
+      # file: 983s for the passing run and 1103s for a deliberately-failing one
+      # (a failing run is the slower case, since a failed test still leaves the
+      # rest of the package to execute). Call it 1100s observed worst case
+      # against a 2700s ceiling, so roughly 2.4x headroom, on a package whose
+      # run-to-run spread was about 12%.
+      #
+      # The wall time is printed to the step summary on every run. If it ever
+      # creeps past about 1800s, shard the lane by -run regex rather than
+      # raising this ceiling: at that point the feedback delay is the problem,
+      # and raising the timeout only hides it.
       - name: Integration tests
         shell: bash
         env:
@@ -213,14 +222,19 @@ jobs:
           # pipefail is load-bearing. Piping into tee makes the shell report
           # TEE's exit status, so a failed `go test` would read as success. That
           # false-green class (a pipe swallowing the real exit code) has bitten
-          # this project's build and release commands before.
+          # this project's build and release commands before. `shell: bash`
+          # already sets it; restating it means the guarantee does not quietly
+          # disappear if this step ever loses that shell line.
           set -o pipefail
           start=$(date +%s)
-          go test -v -count=1 -timeout 45m ./tests/ 2>&1 | tee "$RUNNER_TEMP/integration.log"
-          rc=$?
-          end=$(date +%s)
-          echo "elapsed_seconds=$(( end - start ))" >> "$GITHUB_ENV"
-          exit $rc
+          # `|| rc=$?` rather than a bare call plus `rc=$?`: the shell also runs
+          # with -e, so a bare failing pipeline would abort the step right there
+          # and the elapsed time would never be recorded. That is precisely the
+          # run where you want to know how long it took before it fell over.
+          rc=0
+          go test -v -count=1 -timeout 45m ./tests/ 2>&1 | tee "$RUNNER_TEMP/integration.log" || rc=$?
+          echo "elapsed_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          exit "$rc"
 
       # THE MOST IMPORTANT STEP IN THIS FILE.
       #

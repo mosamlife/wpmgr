@@ -395,7 +395,6 @@ BEGIN
             AS RESTRICTIVE FOR SELECT
             USING (
                 coalesce(current_setting('app.site_scope', true), '') <> 'on'
-                OR "tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid
                 OR "site_id" = ANY (
                     string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
                 )
