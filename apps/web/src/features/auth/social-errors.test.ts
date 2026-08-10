@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, it, expect } from "vitest";
 
 import { socialRefusal, sameOriginPath } from "./social-errors";
@@ -25,51 +28,14 @@ describe("socialRefusal", () => {
       // Nothing can be delivered to this address at all, so a resend offer
       // would be a button that cannot work.
       "social_email_unreachable",
-      "social_provider_already_linked",
-      "social_rate_limited",
-      "social_start_failed",
       "social_cancelled",
       "social_provider_disabled",
       "social_state_mismatch",
+      "social_url_failed",
+      "social_start_failed",
       "something_new_from_the_server",
     ]) {
       expect(socialRefusal(code).canResend, code).toBe(false);
-    }
-  });
-
-  // The server picks these codes; this list is the contract. Source of truth is
-  // apps/api/internal/auth/social_handler.go: actionableSocialCodes plus the
-  // socialFail call sites that name a code directly. A code that reaches the
-  // URL with no case here renders "Sign-in failed. Please try again.", which
-  // for a refusal a person could act on is the same dead end this whole file
-  // exists to remove.
-  const ACTIONABLE_SERVER_CODES = [
-    "social_link_requires_verification",
-    "social_email_unverified",
-    "social_email_unreachable",
-    "social_provider_already_linked",
-    "account_disabled",
-    "email_not_verified",
-    "social_provider_disabled",
-    "social_rate_limited",
-    "social_start_failed",
-    "social_state_mismatch",
-    "social_cancelled",
-  ];
-
-  it("has its own sentence for every code the server chooses deliberately", () => {
-    const generic = socialRefusal("a_code_that_will_never_exist").message;
-    for (const code of ACTIONABLE_SERVER_CODES) {
-      expect(socialRefusal(code).message, code).not.toBe(generic);
-    }
-  });
-
-  it("keeps the coarse failures generic", () => {
-    // Deliberately vague on the server: naming the failed verification step is
-    // a hint for whoever caused it. Nothing here should un-blur them.
-    const generic = socialRefusal("a_code_that_will_never_exist").message;
-    for (const code of ["social_exchange_failed", "social_no_code", "social_sign_in_failed"]) {
-      expect(socialRefusal(code).message, code).toBe(generic);
     }
   });
 
@@ -117,6 +83,97 @@ describe("socialRefusal", () => {
     expect(socialRefusal("social_email_unreachable").message).not.toEqual(
       socialRefusal("social_email_unverified").message,
     );
+  });
+});
+
+/**
+ * THE CONTRACT, READ FROM THE SERVER RATHER THAN RESTATED HERE.
+ *
+ * This block used to hold a hand-written ACTIONABLE_SERVER_CODES list that
+ * declared apps/api/internal/auth/social_handler.go as its source of truth and
+ * then disagreed with it: it named social_rate_limited, social_start_failed and
+ * social_provider_already_linked, none of which any server path emitted. The
+ * tests passed, because both ends of the "contract" were lists that only had to
+ * agree with themselves, and the invented social_rate_limited read as evidence
+ * that the unauthenticated start endpoint was rate limited when nothing limited
+ * it at all.
+ *
+ * So the list is no longer written down twice. It is parsed out of the server's
+ * socialErrorCodes table, which a Go test
+ * (TestSocialErrorCodesAreExactlyWhatTheHandlerEmits) holds to the handler's
+ * actual socialFail call sites. A code that appears on one side and not the
+ * other now fails here, in whichever direction it drifted.
+ */
+// Resolved from the vitest root (apps/web), which is where this suite runs.
+const SOCIAL_HANDLER_GO = resolve(process.cwd(), "../api/internal/auth/social_handler.go");
+const SOCIAL_ERRORS_TS = resolve(process.cwd(), "src/features/auth/social-errors.ts");
+
+/** Every code the server can put in ?social_error=, and whether its sentence is
+ * deliberately generic. */
+function serverCodes(): Map<string, "coarse" | "named"> {
+  const source = readFileSync(SOCIAL_HANDLER_GO, "utf8");
+  const table = /var socialErrorCodes = map\[string\]bool\{([\s\S]*?)\n\}/.exec(source);
+  if (!table) {
+    throw new Error(
+      `socialErrorCodes not found in ${SOCIAL_HANDLER_GO}. It is the source of truth for ?social_error=; if it moved, point this test at it rather than reinstating a hand-written list.`,
+    );
+  }
+  const codes = new Map<string, "coarse" | "named">();
+  for (const match of (table[1] ?? "").matchAll(
+    /"([a-z_]+)":\s*(coarseSentence|namedSentence),/g,
+  )) {
+    const [, code, kind] = match;
+    if (!code) continue;
+    codes.set(code, kind === "coarseSentence" ? "coarse" : "named");
+  }
+  return codes;
+}
+
+/** Every code this file's copy answers deliberately, parsed from its switch. */
+function uiCodes(): Set<string> {
+  const source = readFileSync(SOCIAL_ERRORS_TS, "utf8");
+  const codes = new Set<string>();
+  for (const [, code] of source.matchAll(/^\s*case "([a-z_]+)":/gm)) {
+    if (code) codes.add(code);
+  }
+  return codes;
+}
+
+describe("the ?social_error= contract", () => {
+  const server = serverCodes();
+  const ui = uiCodes();
+  const generic = socialRefusal("a_code_that_will_never_exist").message;
+
+  it("reads a non-empty table from the server", () => {
+    // A regex that silently matched nothing would make every assertion below
+    // vacuous, which is the failure mode this whole rewrite is about.
+    expect(server.size).toBeGreaterThan(5);
+    expect(ui.size).toBeGreaterThan(5);
+  });
+
+  it("has its own sentence for every code the server chooses deliberately", () => {
+    for (const [code, kind] of server) {
+      if (kind !== "named") continue;
+      expect(socialRefusal(code).message, code).not.toBe(generic);
+    }
+  });
+
+  it("keeps the deliberately coarse failures generic", () => {
+    // Vague on the server on purpose: naming the failed verification step is a
+    // hint for whoever caused it, and it travels in browser history and proxy
+    // logs. Nothing here should un-blur them.
+    for (const [code, kind] of server) {
+      if (kind !== "coarse") continue;
+      expect(socialRefusal(code).message, code).toBe(generic);
+    }
+  });
+
+  it("has no copy for a code the server cannot emit", () => {
+    const orphans = [...ui].filter((code) => !server.has(code));
+    expect(
+      orphans,
+      "copy for codes no server path emits: either the server stopped sending them or they were never sent",
+    ).toEqual([]);
   });
 });
 

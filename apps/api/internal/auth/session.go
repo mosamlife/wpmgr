@@ -21,23 +21,23 @@ const (
 	// Authenticator rejects sessions whose auth_at predates the user's
 	// password_changed_at (ADR-045 Phase 2 session invalidation).
 	sessKeyAuthAt = "auth_at"
-	// sessKeyOAuthState/Nonce/Verifier hold the transient OIDC handshake values.
+	// sessKeyOAuthState/Nonce/Verifier hold the transient handshake values for
+	// the operator's generic OIDC issuer.
+	//
+	// The CONSUMER providers (Google, GitHub) no longer keep anything here: their
+	// start endpoint is reachable by anybody with no credential at all, and
+	// writing a session record per call made it a way to fill the store every
+	// live session shares. See social_handshake.go.
 	sessKeyOAuthState    = "oauth_state"
 	sessKeyOAuthNonce    = "oauth_nonce"
 	sessKeyOAuthVerifier = "oauth_verifier"
-	// Which provider the in-flight handshake belongs to. Without this the
-	// callback cannot know whether to verify a Google ID token or call the
-	// GitHub API, and a single shared callback would have to guess.
-	sessKeyOAuthProvider = "oauth_provider"
 	// sessKeyPendingSocialLink parks an approved-but-unwritten identity link
 	// across the two-factor round trip. See putPendingSocialLink.
+	//
+	// This one stays in the session, and belongs there: it is written only after
+	// a provider has verified somebody, so reaching it costs a real handshake,
+	// and it must not be readable or replayable by the browser holding it.
 	sessKeyPendingSocialLink = "pending_social_link"
-	// Where the browser was heading when it started the handshake, so a shared
-	// deep link survives a provider round trip. Held here rather than round
-	// tripped through the provider (state, or a query parameter on the callback)
-	// because the callback would then have to trust a value an attacker controls,
-	// and the whole point of a redirect target is that we send the browser there.
-	sessKeyOAuthReturn = "oauth_return"
 )
 
 // pendingSocialLinkTTL bounds how long an approved link may sit unwritten. It
@@ -285,45 +285,25 @@ func (m *SessionManager) Current(ctx context.Context) (userID, activeTenant uuid
 	return uid, tid, true
 }
 
-// putOAuth stores the transient OIDC handshake values on the session.
+// putOAuth stores the transient handshake values for the generic OIDC issuer on
+// the session.
 func (m *SessionManager) putOAuth(ctx context.Context, state, nonce, verifier string) {
 	m.scs.Put(ctx, sessKeyOAuthState, state)
 	m.scs.Put(ctx, sessKeyOAuthNonce, nonce)
 	m.scs.Put(ctx, sessKeyOAuthVerifier, verifier)
-	// Clear any provider or return path left by an abandoned social handshake.
-	// The two flows share this state, so without it a generic-OIDC handshake
-	// started after a social one would carry the social values forward.
-	m.scs.Remove(ctx, sessKeyOAuthProvider)
-	m.scs.Remove(ctx, sessKeyOAuthReturn)
-	// A new handshake supersedes any link approved by an abandoned one. Without
-	// this, a link the person walked away from mid two-factor would still be
-	// sitting there waiting for their next challenge to apply it.
-	m.scs.Remove(ctx, sessKeyPendingSocialLink)
+	m.clearPendingSocialLink(ctx)
 }
 
-// putSocial stores the same handshake values plus the provider the flow was
-// started for and where to land afterwards. Both are server-side state on
-// purpose: taking the provider from the callback URL would let anyone who can
-// reach the callback nominate which adapter verifies their code, and taking the
-// return path from there would turn the callback into an open redirect.
+// clearPendingSocialLink discards a link approved by a handshake nobody
+// finished. A new handshake supersedes an abandoned one: without this, a link
+// the person walked away from mid two-factor would still be sitting there
+// waiting for their next challenge to apply it.
 //
-// returnTo must already be a validated same-origin path (see safeReturnPath);
-// an empty string means "land wherever the callback defaults to".
-func (m *SessionManager) putSocial(ctx context.Context, provider, state, nonce, verifier, returnTo string) {
-	m.putOAuth(ctx, state, nonce, verifier)
-	m.scs.Put(ctx, sessKeyOAuthProvider, provider)
-	if returnTo != "" {
-		m.scs.Put(ctx, sessKeyOAuthReturn, returnTo)
-	}
-}
-
-// takeSocial reads and clears the handshake, including the provider and the
-// return path.
-func (m *SessionManager) takeSocial(ctx context.Context) (provider, state, nonce, verifier, returnTo string) {
-	provider = m.scs.PopString(ctx, sessKeyOAuthProvider)
-	returnTo = m.scs.PopString(ctx, sessKeyOAuthReturn)
-	state, nonce, verifier = m.takeOAuth(ctx)
-	return
+// It writes nothing when there is nothing parked (scs.Remove is a no-op on an
+// absent key), which is what keeps it off the unauthenticated start path's
+// budget: a caller with no session cannot make this touch the store.
+func (m *SessionManager) clearPendingSocialLink(ctx context.Context) {
+	m.scs.Remove(ctx, sessKeyPendingSocialLink)
 }
 
 // pendingSocialLinkEnvelope is what gets parked.

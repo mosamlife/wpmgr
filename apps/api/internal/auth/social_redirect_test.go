@@ -16,6 +16,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +62,41 @@ func newStartContext(t *testing.T, sm *SessionManager, rawQuery string) (*gin.Co
 	return c, w
 }
 
+// newStartHandler is the handler the start tests drive: one working provider
+// and a handshake key, since a handler without one refuses to start at all.
+func newStartHandler(t *testing.T, sm *SessionManager) *Handler {
+	t.Helper()
+	h := &Handler{
+		svc:      &Service{baseURL: "https://manage.example"},
+		sessions: sm,
+		social: &SocialProviders{
+			byKey: map[string]SocialProviderAdapter{"google": fakeSocialAdapter{key: "google"}},
+			order: []string{"google"},
+		},
+	}
+	if err := h.SetHandshakeSecret(strings.Repeat("k", 32)); err != nil {
+		t.Fatalf("handshake key: %v", err)
+	}
+	return h
+}
+
+// startedHandshake opens the handshake cookie a start response set.
+func startedHandshake(t *testing.T, h *Handler, w *httptest.ResponseRecorder) handshake {
+	t.Helper()
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name != handshakeCookieName {
+			continue
+		}
+		hs, ok := h.handshake.open(ck.Value)
+		if !ok {
+			t.Fatal("the handshake cookie the start issued does not open")
+		}
+		return hs
+	}
+	t.Fatal("the start issued no handshake cookie")
+	return handshake{}
+}
+
 func TestSafeReturnPathAcceptsOnlySameOriginPaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -99,19 +135,12 @@ func TestSocialLandingPathFallsBackToSites(t *testing.T) {
 	}
 }
 
-// TestSocialStartCarriesDeepLinkThroughTheSession is the regression test for the
-// dropped ?redirect=: the value must land in the session, where the callback can
-// read it back, and must not be carried in the authorization URL.
-func TestSocialStartCarriesDeepLinkThroughTheSession(t *testing.T) {
+// TestSocialStartCarriesDeepLinkThroughTheHandshake is the regression test for
+// the dropped ?redirect=: the value must land in the handshake, where the
+// callback can read it back, and must not be carried in the authorization URL.
+func TestSocialStartCarriesDeepLinkThroughTheHandshake(t *testing.T) {
 	sm := newTestSessionManager(t)
-	h := &Handler{
-		svc:      &Service{baseURL: "https://manage.example"},
-		sessions: sm,
-		social: &SocialProviders{
-			byKey: map[string]SocialProviderAdapter{"google": fakeSocialAdapter{key: "google"}},
-			order: []string{"google"},
-		},
-	}
+	h := newStartHandler(t, sm)
 
 	c, w := newStartContext(t, sm, "redirect="+url.QueryEscape("/sites/abc/backups"))
 	h.socialStart(c)
@@ -119,12 +148,17 @@ func TestSocialStartCarriesDeepLinkThroughTheSession(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("socialStart status = %d, want 302", w.Code)
 	}
-	provider, state, _, _, returnTo := sm.takeSocial(c.Request.Context())
-	if provider != "google" || state != "state-1" {
-		t.Fatalf("handshake not stored: provider=%q state=%q", provider, state)
+	hs := startedHandshake(t, h, w)
+	if hs.Provider != "google" || hs.State != "state-1" {
+		t.Fatalf("handshake not carried: provider=%q state=%q", hs.Provider, hs.State)
 	}
-	if returnTo != "/sites/abc/backups" {
-		t.Fatalf("stored return path = %q, want the deep link", returnTo)
+	if hs.Return != "/sites/abc/backups" {
+		t.Fatalf("handshake return path = %q, want the deep link", hs.Return)
+	}
+	// It travels with us, not through the provider: a value handed to the
+	// provider comes back as a value an attacker can choose.
+	if loc := w.Header().Get("Location"); strings.Contains(loc, "sites") {
+		t.Fatalf("the deep link reached the authorization URL: %q", loc)
 	}
 }
 
@@ -132,20 +166,69 @@ func TestSocialStartCarriesDeepLinkThroughTheSession(t *testing.T) {
 // can never reach the Location header the callback writes.
 func TestSocialStartDropsOffSiteDeepLink(t *testing.T) {
 	sm := newTestSessionManager(t)
-	h := &Handler{
-		svc:      &Service{baseURL: "https://manage.example"},
-		sessions: sm,
-		social: &SocialProviders{
-			byKey: map[string]SocialProviderAdapter{"google": fakeSocialAdapter{key: "google"}},
-			order: []string{"google"},
-		},
-	}
+	h := newStartHandler(t, sm)
 
-	c, _ := newStartContext(t, sm, "redirect="+url.QueryEscape("https://evil.example/steal"))
+	c, w := newStartContext(t, sm, "redirect="+url.QueryEscape("https://evil.example/steal"))
 	h.socialStart(c)
 
-	if _, _, _, _, returnTo := sm.takeSocial(c.Request.Context()); returnTo != "" {
-		t.Fatalf("stored return path = %q, want it discarded", returnTo)
+	if got := startedHandshake(t, h, w).Return; got != "" {
+		t.Fatalf("carried return path = %q, want it discarded", got)
+	}
+}
+
+// A provider this install has not configured must not answer a browser with
+// JSON. It is mid-navigation with nothing else on the page, so the only useful
+// answer is the sign-in page and a code it can turn into a sentence.
+func TestSocialStartRedirectsForAnUnconfiguredProvider(t *testing.T) {
+	sm := newTestSessionManager(t)
+	h := newStartHandler(t, sm)
+
+	c, w := newStartContext(t, sm, "")
+	c.Params = gin.Params{{Key: "provider", Value: "gitlab"}}
+	h.socialStart(c)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 rather than a JSON body", w.Code)
+	}
+	if got := w.Header().Get("Location"); !strings.Contains(got, "social_error=social_provider_disabled") {
+		t.Fatalf("Location = %q, want the sign-in page carrying social_provider_disabled", got)
+	}
+}
+
+// An unreachable issuer is the other half of the same rule. For Google this is
+// discovery failing, which since discovery left the boot path is the ONLY place
+// an unreachable issuer shows up; answering it with a JSON 500 left a person
+// looking at raw text with no way back to the sign-in page.
+func TestSocialStartRedirectsWhenTheProviderCannotBeReached(t *testing.T) {
+	sm := newTestSessionManager(t)
+	h := newStartHandler(t, sm)
+	h.social = &SocialProviders{
+		byKey: map[string]SocialProviderAdapter{
+			"google": stubAdapter{key: "google", err: errors.New("discovery: dial tcp: i/o timeout")},
+		},
+		order: []string{"google"},
+	}
+
+	c, w := newStartContext(t, sm, "redirect="+url.QueryEscape("/sites/abc"))
+	h.socialStart(c)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 rather than a JSON body", w.Code)
+	}
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Path != "/login" {
+		t.Fatalf("landed on %q, want the sign-in page", loc.Path)
+	}
+	if got := loc.Query().Get("social_error"); got != "social_url_failed" {
+		t.Fatalf("social_error = %q, want social_url_failed", got)
+	}
+	// The refusal keeps the deep link, like every other refusal on this flow,
+	// so recovering with a password still lands where the person was going.
+	if got := loc.Query().Get("redirect"); got != "/sites/abc" {
+		t.Fatalf("redirect = %q, want the deep link preserved", got)
 	}
 }
 
@@ -248,17 +331,23 @@ func TestSocialCompleteLandsOnTheDeepLink(t *testing.T) {
 	}
 }
 
-// A generic OIDC handshake started after an abandoned social one must not
-// inherit that flow's landing page.
-func TestPutOAuthClearsAbandonedSocialReturnPath(t *testing.T) {
+// The handshake no longer touches the session, so a social flow started after
+// an abandoned one cannot inherit anything from it: there is nothing left in
+// the session to inherit, and each handshake cookie replaces the last.
+func TestASecondStartReplacesTheFirstHandshake(t *testing.T) {
 	sm := newTestSessionManager(t)
-	ctx := loadCtx(t, sm)
+	h := newStartHandler(t, sm)
 
-	sm.putSocial(ctx, "google", "s", "n", "v", "/sites/abc")
-	sm.putOAuth(ctx, "s2", "n2", "v2")
+	c, first := newStartContext(t, sm, "redirect="+url.QueryEscape("/sites/abc"))
+	h.socialStart(c)
+	if got := startedHandshake(t, h, first).Return; got != "/sites/abc" {
+		t.Fatalf("first handshake return path = %q", got)
+	}
 
-	if _, _, _, _, returnTo := sm.takeSocial(ctx); returnTo != "" {
-		t.Fatalf("return path survived a new handshake: %q", returnTo)
+	c2, second := newStartContext(t, sm, "")
+	h.socialStart(c2)
+	if got := startedHandshake(t, h, second).Return; got != "" {
+		t.Fatalf("the second handshake inherited the first one's landing page: %q", got)
 	}
 }
 

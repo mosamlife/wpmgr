@@ -9023,22 +9023,13 @@ export type SocialStartData = {
   };
   query?: {
     /**
-     * Where to land after a successful sign-in, so a shared deep link survives the provider round trip. Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the sign-in lands on the default page. The value is held in the session for the duration of the handshake and is never carried on the callback URL.
+     * Where to land after a successful sign-in, so a shared deep link survives the provider round trip. Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the sign-in lands on the default page. The value is sealed into the handshake cookie for the duration of the handshake and is never handed to the provider or read back off the callback URL.
      *
      */
     redirect?: string;
   };
   url: "/auth/social/{provider}/start";
 };
-
-export type SocialStartErrors = {
-  /**
-   * That provider is not configured
-   */
-  503: Error;
-};
-
-export type SocialStartError = SocialStartErrors[keyof SocialStartErrors];
 
 export type SocialCallbackData = {
   body?: never;

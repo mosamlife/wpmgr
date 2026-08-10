@@ -52135,8 +52135,14 @@ func (s *Server) handleSocialCallbackRequest(args [1]string, argsEscaped bool, w
 
 // handleSocialStartRequest handles socialStart operation.
 //
-// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
-// server-side in the session. Returns 503 when the provider is not configured on this install.
+// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
+// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
+// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
+// with a `social_error` code exactly as the callback does.
+// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
+// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
+// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
+// unauthenticated way to fill the store that every live session shares.
 //
 // GET /auth/social/{provider}/start
 func (s *Server) handleSocialStartRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
@@ -52223,7 +52229,7 @@ func (s *Server) handleSocialStartRequest(args [1]string, argsEscaped bool, w ht
 
 	var rawBody []byte
 
-	var response SocialStartRes
+	var response *SocialStartFound
 	if m := s.cfg.Middleware; m != nil {
 		mreq := middleware.Request{
 			Context:          ctx,
@@ -52248,7 +52254,7 @@ func (s *Server) handleSocialStartRequest(args [1]string, argsEscaped bool, w ht
 		type (
 			Request  = struct{}
 			Params   = SocialStartParams
-			Response = SocialStartRes
+			Response = *SocialStartFound
 		)
 		response, err = middleware.HookMiddleware[
 			Request,
@@ -52259,12 +52265,12 @@ func (s *Server) handleSocialStartRequest(args [1]string, argsEscaped bool, w ht
 			mreq,
 			unpackSocialStartParams,
 			func(ctx context.Context, request Request, params Params) (response Response, err error) {
-				response, err = s.h.SocialStart(ctx, params)
+				err = s.h.SocialStart(ctx, params)
 				return response, err
 			},
 		)
 	} else {
-		response, err = s.h.SocialStart(ctx, params)
+		err = s.h.SocialStart(ctx, params)
 	}
 	if err != nil {
 		defer recordError("Internal", err)

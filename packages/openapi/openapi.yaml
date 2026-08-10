@@ -1078,9 +1078,17 @@ paths:
       operationId: socialStart
       summary: Begin social sign-in (redirect to the provider)
       description: >
-        Redirects (302) to the provider's authorization endpoint with PKCE and a
-        state value held server-side in the session. Returns 503 when the
-        provider is not configured on this install.
+        Redirects (302) to the provider's authorization endpoint with PKCE.
+        ALWAYS redirects, never returns a JSON error body: the caller is a
+        browser doing a full-page navigation, so a provider that is not
+        configured, or an issuer that cannot be reached, sends it back to the
+        sign-in page with a `social_error` code exactly as the callback does.
+
+        The handshake (provider, state, nonce, PKCE verifier and the deep link)
+        travels in a short-lived signed cookie that is host-only, HttpOnly,
+        SameSite=Lax and Secure in production. NOTHING IS STORED SERVER-SIDE:
+        this endpoint needs no credential, so a session record per call was an
+        unauthenticated way to fill the store that every live session shares.
       tags: [auth]
       parameters:
         - name: provider
@@ -1096,20 +1104,17 @@ paths:
             Where to land after a successful sign-in, so a shared deep link
             survives the provider round trip. Must be a path on this origin;
             anything else (absolute or protocol-relative) is discarded and the
-            sign-in lands on the default page. The value is held in the session
-            for the duration of the handshake and is never carried on the
-            callback URL.
+            sign-in lands on the default page. The value is sealed into the
+            handshake cookie for the duration of the handshake and is never
+            handed to the provider or read back off the callback URL.
           schema:
             type: string
       responses:
         "302":
-          description: Redirect to the provider
-        "503":
-          description: That provider is not configured
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: >
+            Redirect to the provider, or back to the sign-in page carrying a
+            social_error code (social_provider_disabled, social_url_failed,
+            social_start_failed).
   /auth/social/{provider}/callback:
     get:
       operationId: socialCallback

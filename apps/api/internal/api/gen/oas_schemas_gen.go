@@ -18166,7 +18166,6 @@ func (*Error) revokeAllTrustedDevicesRes()        {}
 func (*Error) revokeSiteRes()                     {}
 func (*Error) setSiteTagsRes()                    {}
 func (*Error) silenceSitePHPErrorRes()            {}
-func (*Error) socialStartRes()                    {}
 func (*Error) unlockBackupRes()                   {}
 func (*Error) verifyEmailRes()                    {}
 
@@ -48410,8 +48409,6 @@ func (s *SocialCallbackProvider) UnmarshalText(data []byte) error {
 
 // SocialStartFound is response for SocialStart operation.
 type SocialStartFound struct{}
-
-func (*SocialStartFound) socialStartRes() {}
 
 type SocialStartProvider string
 

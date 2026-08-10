@@ -23,13 +23,19 @@
  * to verify (it is not one) but as the way to take back an account somebody
  * else may have created on that address. See the link refusal below.
  *
- * THE CODE LIST IS THE SERVER'S. Every value that can reach `?social_error=`
- * comes from a socialFail call site or actionableSocialCodes in
- * apps/api/internal/auth/social_handler.go. A code with no case here still
+ * THE CODE LIST IS THE SERVER'S, AND THE TEST READS IT FROM THERE. Every value
+ * that can reach `?social_error=` is declared in socialErrorCodes in
+ * apps/api/internal/auth/social_handler.go, which a Go test holds to the
+ * handler's actual socialFail call sites. A code with no case here still
  * renders, as the generic sentence, which is the right answer for the
  * deliberately coarse failures (exchange, no code) and the wrong one for a
- * refusal a person could act on. social-errors.test.ts pins the actionable set
- * so a code added on the server cannot quietly land in the generic bucket.
+ * refusal a person could act on.
+ *
+ * social-errors.test.ts parses that server table and checks BOTH directions,
+ * because the version of it that only checked one direction listed three codes
+ * (social_rate_limited among them) that no server path has ever emitted, and
+ * passed. Copy for a code nobody sends is not harmless: it reads as evidence
+ * that the server does something it does not.
  */
 export type SocialRefusal = {
   message: string;
@@ -92,27 +98,26 @@ export function socialRefusal(code: string): SocialRefusal {
           'That account keeps its email address private, so there is no address we can reach you at. In GitHub, open Settings then Emails and turn off "Keep my email addresses private", then try again.',
         canResend: false,
       };
-    case "social_provider_already_linked":
-      // A different account at the same provider is already connected to the
-      // local account for this address. Retrying reproduces it exactly, so the
-      // only useful answer names the other way in. Deliberately does NOT offer
-      // "disconnect it in account settings": there is no such screen in this
-      // app, and pointing at one is worse than saying nothing.
-      return {
-        message:
-          "A different account at that provider is already connected to the account for this email address. Sign in with the provider account you connected first, or use your email and password.",
-        canResend: false,
-      };
-    case "social_rate_limited":
-      return {
-        message:
-          "Too many sign-in attempts from this network. Wait a minute, then try again.",
-        canResend: false,
-      };
-    case "social_start_failed":
+    case "social_url_failed":
+      // The provider, or its OpenID discovery document, did not answer. Since
+      // discovery moved off the server's boot path this is the only place an
+      // unreachable issuer shows up, and it is somebody else's server being
+      // down rather than anything the person can fix, so the copy says "try
+      // again" and names the way in that does not depend on the provider.
       return {
         message:
           "That sign-in provider could not be reached. Try again in a moment, or use your email and password.",
+        canResend: false,
+      };
+    case "social_start_failed":
+      // NOT the same as the code above, even though both interrupt the same
+      // click. This one is THIS install failing to start the handshake at all
+      // (it has no key to seal one with), so retrying with the same provider
+      // will keep failing until an operator looks at it, and the sentence has
+      // to say so rather than blaming the provider.
+      return {
+        message:
+          "Sign-in could not be started on this instance. Use your email and password, and tell whoever runs this instance if it keeps happening.",
         canResend: false,
       };
     case "social_cancelled":

@@ -170,10 +170,10 @@ export function SocialButtons({
 /**
  * The provider handshake, carrying the deep link the visitor arrived with.
  *
- * The target rides as a query parameter on OUR start endpoint, which stores it
- * in the session for the duration of the handshake; it is never handed to the
- * provider and never read back off the callback URL, so the callback has
- * nothing to trust.
+ * The target rides as a query parameter on OUR start endpoint, which validates
+ * it and seals it into the handshake cookie for the duration of the handshake;
+ * it is never handed to the provider and never read back off the callback URL,
+ * so the callback has nothing to trust.
  */
 function socialStartUrl(provider: Provider, redirect: string | undefined): string {
   const target = sameOriginPath(redirect);

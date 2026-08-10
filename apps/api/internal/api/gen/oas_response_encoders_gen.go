@@ -15232,30 +15232,11 @@ func encodeSocialCallbackResponse(response *SocialCallbackFound, w http.Response
 	return nil
 }
 
-func encodeSocialStartResponse(response SocialStartRes, w http.ResponseWriter, span trace.Span) error {
-	switch response := response.(type) {
-	case *SocialStartFound:
-		w.WriteHeader(302)
-		span.SetStatus(codes.Ok, http.StatusText(302))
+func encodeSocialStartResponse(response *SocialStartFound, w http.ResponseWriter, span trace.Span) error {
+	w.WriteHeader(302)
+	span.SetStatus(codes.Ok, http.StatusText(302))
 
-		return nil
-
-	case *Error:
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(503)
-		span.SetStatus(codes.Error, http.StatusText(503))
-
-		e := new(jx.Encoder)
-		response.Encode(e)
-		if _, err := e.WriteTo(w); err != nil {
-			return errors.Wrap(err, "write")
-		}
-
-		return nil
-
-	default:
-		return errors.Errorf("unexpected response type: %T", response)
-	}
+	return nil
 }
 
 func encodeStartScanRunResponse(response StartScanRunRes, w http.ResponseWriter, span trace.Span) error {

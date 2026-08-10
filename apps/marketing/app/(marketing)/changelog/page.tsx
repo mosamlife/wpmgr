@@ -39,6 +39,34 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.130",
+    date: "2026-08-10",
+    summary:
+      "Signing in with Google or GitHub is finished: you can see and manage which sign-in methods your account has, you are told when one is added, and pressing a provider button no longer stores anything on the server. Email and password sign-in is unchanged, and both providers stay off until whoever runs the instance sets them up.",
+    items: [
+      {
+        tag: "Added",
+        text: "Account security settings now show which sign-in methods your account has, and let you disconnect one or connect another. An account created with a provider, which has no password at all, can set one there while signed in. Password reset deliberately will not do it: a reset link that could create a password where there was none would turn \"forgot password\" into a way for anyone who knows your address to take an account.",
+      },
+      {
+        tag: "Added",
+        text: "You are now told when a new way of signing in is added to your account. The message goes to the address this instance confirmed, names the provider and the time, and links to the page where sign-in methods are reviewed and removed. It used to happen in silence.",
+      },
+      {
+        tag: "Security",
+        text: "Pressing a Google or GitHub button no longer makes the instance store anything. That button needs no account and no session, so each press used to leave a record behind for a week, and one machine pressing it in a loop could fill the shared store that everybody's signed-in session lives in. The handshake now travels in a short-lived, tamper-proof cookie in your own browser, so there is nothing left to fill. A sign-in left half finished for more than ten minutes has to be started again.",
+      },
+      {
+        tag: "Fixed",
+        text: "A provider that cannot be reached now returns you to the sign-in page with a sentence saying so, instead of a page of raw error text with no way back. Every other failure on that route already did this.",
+      },
+      {
+        tag: "Fixed",
+        text: "Connecting a provider to an account with two-factor authentication now attaches nothing until the second factor has been entered, and disconnecting a provider is refused when it would leave the account with no way to sign in at all.",
+      },
+    ],
+  },
+  {
     version: "0.61.129",
     date: "2026-08-07",
     summary:

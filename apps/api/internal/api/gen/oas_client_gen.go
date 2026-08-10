@@ -3243,11 +3243,17 @@ type Invoker interface {
 	SocialCallback(ctx context.Context, params SocialCallbackParams) error
 	// SocialStart invokes socialStart operation.
 	//
-	// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
-	// server-side in the session. Returns 503 when the provider is not configured on this install.
+	// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
+	// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
+	// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
+	// with a `social_error` code exactly as the callback does.
+	// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
+	// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
+	// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
+	// unauthenticated way to fill the store that every live session shares.
 	//
 	// GET /auth/social/{provider}/start
-	SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error)
+	SocialStart(ctx context.Context, params SocialStartParams) error
 	// StartScanRun invokes startScanRun operation.
 	//
 	// Enqueues a scan against the site's WordPress core/plugin/theme files
@@ -38647,16 +38653,22 @@ func (c *Client) sendSocialCallback(ctx context.Context, params SocialCallbackPa
 
 // SocialStart invokes socialStart operation.
 //
-// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
-// server-side in the session. Returns 503 when the provider is not configured on this install.
+// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
+// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
+// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
+// with a `social_error` code exactly as the callback does.
+// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
+// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
+// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
+// unauthenticated way to fill the store that every live session shares.
 //
 // GET /auth/social/{provider}/start
-func (c *Client) SocialStart(ctx context.Context, params SocialStartParams) (SocialStartRes, error) {
-	res, err := c.sendSocialStart(ctx, params)
-	return res, err
+func (c *Client) SocialStart(ctx context.Context, params SocialStartParams) error {
+	_, err := c.sendSocialStart(ctx, params)
+	return err
 }
 
-func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) (res SocialStartRes, err error) {
+func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) (res *SocialStartFound, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("socialStart"),
 		semconv.HTTPRequestMethodKey.String("GET"),

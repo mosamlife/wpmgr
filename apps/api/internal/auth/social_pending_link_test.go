@@ -109,13 +109,21 @@ func TestPendingSocialLinkExpires(t *testing.T) {
 
 // Starting a new handshake supersedes an abandoned one, so a link the person
 // walked away from mid challenge is not still sitting there.
+//
+// Driven through socialStart rather than through the session helper, because
+// the handshake itself no longer touches the session (see social_handshake.go)
+// and this clearing is the one thing on that path that still does. Calling the
+// helper directly would pass even if the handler stopped calling it.
 func TestStartingANewHandshakeClearsAParkedLink(t *testing.T) {
-	m := NewSessionManagerWithStore(scs.New(), false)
-	ctx := loadCtx(t, m)
+	m := newTestSessionManager(t)
+	h := newStartHandler(t, m)
 
 	user, challenge := uuid.New(), uuid.New()
+	c, _ := newStartContext(t, m, "")
+	ctx := c.Request.Context()
 	m.putPendingSocialLink(ctx, user, challenge, parkedLink(user))
-	m.putSocial(ctx, "github", "state-2", "nonce-2", "verifier-2", "")
+
+	h.socialStart(c)
 
 	if _, ok := m.takePendingSocialLink(ctx, user, challenge); ok {
 		t.Fatal("a new handshake must discard the link approved by the abandoned one")

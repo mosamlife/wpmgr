@@ -1125,10 +1125,6 @@ type SilenceSitePHPErrorRes interface {
 	silenceSitePHPErrorRes()
 }
 
-type SocialStartRes interface {
-	socialStartRes()
-}
-
 type StartScanRunRes interface {
 	startScanRunRes()
 }

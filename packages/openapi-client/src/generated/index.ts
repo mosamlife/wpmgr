@@ -2343,8 +2343,6 @@ export {
   type SnapshotId,
   type SocialCallbackData,
   type SocialStartData,
-  type SocialStartError,
-  type SocialStartErrors,
   type SqlInspection,
   type StartScanRunData,
   type StartScanRunError,

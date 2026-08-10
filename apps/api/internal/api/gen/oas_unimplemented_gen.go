@@ -4252,12 +4252,18 @@ func (UnimplementedHandler) SocialCallback(ctx context.Context, params SocialCal
 
 // SocialStart implements socialStart operation.
 //
-// Redirects (302) to the provider's authorization endpoint with PKCE and a state value held
-// server-side in the session. Returns 503 when the provider is not configured on this install.
+// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
+// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
+// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
+// with a `social_error` code exactly as the callback does.
+// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
+// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
+// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
+// unauthenticated way to fill the store that every live session shares.
 //
 // GET /auth/social/{provider}/start
-func (UnimplementedHandler) SocialStart(ctx context.Context, params SocialStartParams) (r SocialStartRes, _ error) {
-	return r, ht.ErrNotImplemented
+func (UnimplementedHandler) SocialStart(ctx context.Context, params SocialStartParams) error {
+	return ht.ErrNotImplemented
 }
 
 // StartScanRun implements startScanRun operation.

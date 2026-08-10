@@ -25645,8 +25645,8 @@ type SocialStartParams struct {
 	Provider SocialStartProvider
 	// Where to land after a successful sign-in, so a shared deep link survives the provider round trip.
 	// Must be a path on this origin; anything else (absolute or protocol-relative) is discarded and the
-	// sign-in lands on the default page. The value is held in the session for the duration of the
-	// handshake and is never carried on the callback URL.
+	// sign-in lands on the default page. The value is sealed into the handshake cookie for the duration
+	// of the handshake and is never handed to the provider or read back off the callback URL.
 	Redirect OptString `json:",omitempty,omitzero"`
 }
 

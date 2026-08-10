@@ -87,7 +87,6 @@ func socialCallbackHarness(t *testing.T, adapter SocialProviderAdapter, query st
 
 	sessions := NewSessionManagerWithStore(scs.New(), false)
 	sctx := loadCtx(t, sessions)
-	sessions.putSocial(sctx, adapter.Key(), "st", "", "vf", "")
 
 	var buf bytes.Buffer
 	h := &Handler{
@@ -96,11 +95,18 @@ func socialCallbackHarness(t *testing.T, adapter SocialProviderAdapter, query st
 		social:   &SocialProviders{byKey: map[string]SocialProviderAdapter{adapter.Key(): adapter}},
 		logger:   slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
+	if err := h.SetHandshakeSecret(strings.Repeat("k", 32)); err != nil {
+		t.Fatalf("handshake key: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/auth/social/"+adapter.Key()+"/callback?"+query, nil).
-		WithContext(sctx)
+	// The handshake arrives in the browser's own sealed cookie, which is where
+	// it lives now: see social_handshake.go.
+	c.Request = withHandshake(t, h,
+		httptest.NewRequest(http.MethodGet, "/auth/social/"+adapter.Key()+"/callback?"+query, nil),
+		handshake{Provider: adapter.Key(), State: "st", Verifier: "vf"},
+	).WithContext(sctx)
 	c.Params = gin.Params{{Key: "provider", Value: adapter.Key()}}
 
 	h.socialCallback(c)

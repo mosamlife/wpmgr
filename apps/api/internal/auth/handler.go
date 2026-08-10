@@ -58,6 +58,10 @@ type Handler struct {
 	// logger receives the social sign-in failure lines (see social_log.go).
 	// Optional: nil falls back to slog.Default(), which cmd/wpmgr configures.
 	logger *slog.Logger
+	// handshake seals the social sign-in handshake into a cookie instead of a
+	// session record. NOT optional in effect: unset makes socialStart refuse
+	// rather than issue a handshake nobody signed. See social_handshake.go.
+	handshake *handshakeCodec
 }
 
 // NewHandler builds an auth Handler.

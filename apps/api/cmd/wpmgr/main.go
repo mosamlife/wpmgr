@@ -2622,6 +2622,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// only in a redirect the browser follows away.
 	authH.SetLogger(logger)
 	authH.SetSecureCookies(cfg.IsProduction())
+	// The social handshake is sealed rather than stored, so the start endpoint
+	// writes nothing to the session store an unauthenticated caller could fill.
+	// Fatal if it cannot be keyed: the alternative is an install whose sign-in
+	// buttons all fail at the click, which is worse discovered here than there.
+	// The secret is already validated (cfg.ValidateSessionSecret) before boot.
+	if err := authH.SetHandshakeSecret(cfg.Auth.SessionSecret); err != nil {
+		return fmt.Errorf("social handshake key: %w", err)
+	}
 	authH.SetHosted(cfg.Hosted.Enabled)
 	// M16 Phase B: Me.managed_storage_allowed. billingSvc.ManagedStorageAllowed
 	// no-ops to true when WPMGR_HOSTED is off, so this wiring is safe to leave

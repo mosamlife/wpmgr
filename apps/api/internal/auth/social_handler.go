@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -10,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
-	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
 // socialProviders lists what this install offers. The sign-in page calls it so
@@ -50,11 +50,22 @@ func (h *Handler) socialRedirectURL(provider string) string {
 	return SocialRedirectURL(h.svc.baseURL, provider)
 }
 
+// socialStart begins a handshake.
+//
+// LIKE THE CALLBACK, EVERY FAILURE REDIRECTS TO THE SIGN-IN PAGE WITH A CODE.
+// The caller is a browser doing a full-page navigation (the buttons set
+// window.location), so a JSON error body here leaves a person staring at raw
+// text on a blank page with no way back, which is exactly what an unreachable
+// provider used to produce.
+//
+// It writes NO server-side state. See social_handshake.go for why that is the
+// property that matters on an endpoint anybody can call.
 func (h *Handler) socialStart(c *gin.Context) {
 	provider := c.Param("provider")
+	returnTo := safeReturnPath(c.Query("redirect"))
 	adapter := h.social.Get(provider)
 	if adapter == nil {
-		httpx.Error(c, domain.Unavailable("social_provider_disabled", "this sign-in method is not configured"))
+		h.socialFail(c, "social_provider_disabled", returnTo)
 		return
 	}
 	url, state, nonce, verifier, err := adapter.AuthCodeURL(c.Request.Context(), h.socialRedirectURL(provider))
@@ -63,7 +74,7 @@ func (h *Handler) socialStart(c *gin.Context) {
 		// only symptom of an unreachable issuer: discovery moved off the boot
 		// path, so nothing else anywhere reports it.
 		h.logSocialFailure(c, "social authorization URL failed", provider, err)
-		httpx.Error(c, domain.Internal("social_url_failed", "failed to build authorization URL").WithCause(err))
+		h.socialFail(c, "social_url_failed", returnTo)
 		return
 	}
 	// Where the person was actually going. A shared link to a site, a report or
@@ -71,9 +82,24 @@ func (h *Handler) socialStart(c *gin.Context) {
 	// always honoured it; the social path dropped it and landed everyone on
 	// /sites, so following a link and signing in with Google lost the link.
 	//
-	// Validated here, at the only point where the value is still ours, and kept
-	// in the session rather than travelling to the provider and back.
-	h.sessions.putSocial(c.Request.Context(), provider, state, nonce, verifier, safeReturnPath(c.Query("redirect")))
+	// Validated above, at the only point where the value is still ours, and
+	// carried in the sealed handshake rather than travelling to the provider and
+	// back: a value returned by the provider is a value an attacker can choose.
+	if err := h.putHandshake(c, handshake{
+		Provider: provider, State: state, Nonce: nonce, Verifier: verifier, Return: returnTo,
+	}); err != nil {
+		// Only reachable on an instance with no handshake key, which the boot
+		// wiring and the session-secret validation between them do not allow.
+		// It fails closed rather than starting a handshake nobody sealed.
+		h.logSocialFailure(c, "social handshake could not be sealed", provider, err)
+		h.socialFail(c, "social_start_failed", returnTo)
+		return
+	}
+	// A new handshake supersedes a link approved by an abandoned one. This used
+	// to ride along with the handshake's own session write; it is now the one
+	// thing on this path that touches the session at all, and it writes nothing
+	// unless this browser really is carrying a parked link.
+	h.sessions.clearPendingSocialLink(c.Request.Context())
 	c.Redirect(http.StatusFound, url)
 }
 
@@ -88,23 +114,32 @@ func (h *Handler) socialCallback(c *gin.Context) {
 	provider := c.Param("provider")
 	adapter := h.social.Get(provider)
 	if adapter == nil {
+		// Clear whatever handshake this browser is carrying: the flow it belongs
+		// to cannot be completed on an instance where the provider is off.
+		h.clearHandshake(c)
 		h.socialFail(c, "social_provider_disabled", "")
 		return
 	}
 
-	wantProvider, state, nonce, verifier, returnTo := h.sessions.takeSocial(c.Request.Context())
-	// The handshake is single-use and bound to the provider it was started for.
-	// Checking the provider stops a code obtained for one provider being
-	// presented to another's callback.
-	if state == "" || c.Query("state") != state || wantProvider != provider {
-		// Usually a stale tab or a session that expired mid-flow, occasionally
+	// The handshake this browser started, read back out of its own sealed
+	// cookie and cleared in the same call, so it is single-use however this ends.
+	hs, ok := h.takeHandshake(c)
+	returnTo := hs.Return
+	// The handshake is bound to the provider it was started for. Checking the
+	// provider stops a code obtained for one provider being presented to
+	// another's callback. The state comparison is constant-time because state is
+	// the value that binds this callback to the browser that started it, and a
+	// comparison that returns early is a comparison that can be measured.
+	if !ok || hs.State == "" || !constantTimeEqual(c.Query("state"), hs.State) || hs.Provider != provider {
+		// Usually a stale tab or a handshake that expired mid-flow, occasionally
 		// somebody replaying a callback. Both are worth being able to count.
 		h.logSocialFailure(c, "social callback state mismatch", provider, nil,
-			slog.Bool("had_state", state != ""),
-			slog.String("started_for_provider", wantProvider))
+			slog.Bool("had_state", ok && hs.State != ""),
+			slog.String("started_for_provider", hs.Provider))
 		h.socialFail(c, "social_state_mismatch", returnTo)
 		return
 	}
+	nonce, verifier := hs.Nonce, hs.Verifier
 	// The provider reports a user refusal as an error parameter, which is not a
 	// failure worth alarming anyone about.
 	if e := c.Query("error"); e != "" {
@@ -191,6 +226,17 @@ func socialLandingPath(returnTo string) string {
 		return p
 	}
 	return "/sites"
+}
+
+// constantTimeEqual compares two strings without returning early on the first
+// differing byte. Used for the handshake state, which is the value that binds a
+// callback to the browser that started it.
+//
+// The length difference is still observable, as it is for every comparison of
+// this shape; the states this server mints are all the same length, so a length
+// oracle says nothing an attacker did not already know.
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // safeReturnPath accepts only a path on this origin, and returns "" for
@@ -302,6 +348,54 @@ var actionableSocialCodes = map[string]bool{
 	"social_email_unreachable":          true,
 	"account_disabled":                  true,
 	"email_not_verified":                true,
+}
+
+// Whether the sign-in page is meant to answer a code with its own sentence or
+// with the generic one. Named so the table below reads as the decision it is.
+const (
+	namedSentence  = false
+	coarseSentence = true
+)
+
+// socialErrorCodes IS THE CONTRACT for ?social_error=: every value this server
+// can put there, and nothing else.
+//
+// IT EXISTS BECAUSE THE OTHER END WAS PINNING A CONTRACT NOBODY IMPLEMENTED.
+// apps/web/src/features/auth/social-errors.test.ts named this file as its source
+// of truth and listed three codes (social_rate_limited, social_start_failed,
+// social_provider_already_linked) that no server path emitted. The test passed
+// by describing an agreement with itself, and one of those inventions
+// (social_rate_limited) read as evidence that the start endpoint was rate
+// limited when it was not. A list of strings in a test file cannot detect that;
+// this table plus the two tests that check it can:
+//
+//   - TestSocialErrorCodesAreExactlyWhatTheHandlerEmits reads this file's
+//     socialFail call sites and actionableSocialCodes and refuses any drift
+//     from this table, in either direction.
+//   - social-errors.test.ts reads THIS table and refuses any web copy for a
+//     code that is not in it, or any missing copy for a code that is.
+//
+// coarseSentence marks the failures that are deliberately vague. Naming the
+// verification step that failed tells whoever caused it which one to work on,
+// and the code travels in browser history and proxy logs, so those three get the
+// generic sentence on purpose and the web tests assert that they keep it.
+var socialErrorCodes = map[string]bool{
+	// Start.
+	"social_provider_disabled": namedSentence,
+	"social_url_failed":        namedSentence,
+	"social_start_failed":      namedSentence,
+	// Callback, before any identity exists.
+	"social_state_mismatch":  namedSentence,
+	"social_cancelled":       namedSentence,
+	"social_no_code":         coarseSentence,
+	"social_exchange_failed": coarseSentence,
+	// Sign-in policy.
+	"social_sign_in_failed":             coarseSentence,
+	"social_link_requires_verification": namedSentence,
+	"social_email_unverified":           namedSentence,
+	"social_email_unreachable":          namedSentence,
+	"account_disabled":                  namedSentence,
+	"email_not_verified":                namedSentence,
 }
 
 // socialFail sends the browser back to the sign-in page carrying a code the SPA
