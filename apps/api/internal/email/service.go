@@ -1031,9 +1031,11 @@ func ptrNow() *time.Time {
 // unresolved credential is never spelled as an empty string, which the agent
 // would once have read as "delete the stored secret" (GH #380).
 //
-// m62: when cfg.ID is non-zero, connections are loaded and their secrets
-// decrypted. Connection loading failures are logged but non-fatal — the push
-// proceeds without connections rather than blocking the save.
+// m62: when cfg.ID is non-zero, connections are loaded and each one's secret
+// resolved into the same three states (see connectionPushSecrets). Connection
+// loading failures are logged but non-fatal — the push proceeds without
+// connections rather than blocking the save, which leaves the agent's registry
+// exactly as it is.
 func (s *Service) buildAgentConfigReq(cfg Config, secret pushSecret) agentcmd.EmailConfigRequest {
 	req := agentcmd.EmailConfigRequest{
 		Provider:           cfg.Provider,
@@ -1060,39 +1062,20 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret pushSecret) agentcmd.Em
 		if err != nil {
 			s.log.Warn("email: could not load connection secrets for agent push", slog.Any("error", err))
 		} else {
-			// Build a map from connection_key → decrypted secret for the push.
-			// A row that will not decrypt is left OUT of the map so the wire
-			// omits that connection's secret rather than blanking it.
-			secretMap := make(map[string]string, len(secretRows))
-			for _, row := range secretRows {
-				if len(row.ProviderSecretEncrypted) > 0 {
-					plain, derr := s.enc.Decrypt(row.ProviderSecretEncrypted)
-					if derr == nil {
-						secretMap[row.ConnectionKey] = string(plain)
-					} else {
-						s.log.Error("email: stored connection secret could not be decrypted; the agent push will omit it",
-							slog.String("connection_key", row.ConnectionKey),
-							slog.Any("error", derr),
-						)
-					}
-				}
-			}
+			states := s.connectionPushSecrets(secretRows)
 			// Load full connection objects to build the registry.
 			conns, cerr := s.repo.ListConnections(ctx, cfg.TenantID, cfg.ID)
 			if cerr == nil && len(conns) > 0 {
 				registry := make(map[string]agentcmd.EmailConnectionWire, len(conns))
 				for _, c := range conns {
-					var connSecret *string
-					if plain, ok := secretMap[c.ConnectionKey]; ok && plain != "" {
-						connSecret = &plain
-					}
-					registry[c.ConnectionKey] = agentcmd.EmailConnectionWire{
+					wire := agentcmd.EmailConnectionWire{
 						Provider:    c.Provider,
 						Config:      c.Config,
-						Secret:      connSecret,
 						FromAddress: c.FromAddress,
 						FromName:    c.FromName,
 					}
+					states[c.ConnectionKey].applyConnection(&wire)
+					registry[c.ConnectionKey] = wire
 				}
 				req.Connections = registry
 			}
@@ -1100,6 +1083,48 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret pushSecret) agentcmd.Em
 	}
 
 	return req
+}
+
+// connectionPushSecrets resolves what one push says about each named
+// connection's secret, keyed by connection key.
+//
+// It is resolveSitePushSecret's three states applied per registry entry, and it
+// is what makes the per-connection clear_secret flag a live channel rather than
+// a declared one: before this, a connection whose credential had been removed in
+// the control plane was pushed with the secret merely omitted, which the agent
+// reads as "keep what you have", so a connection credential could never be
+// revoked at all.
+//
+//	stored ciphertext decrypts non-empty  replace
+//	no stored ciphertext                  clear: the control plane owns this
+//	                                      registry, so "none here" means none
+//	stored ciphertext decrypts to empty   clear (an explicit revoke at rest)
+//	stored ciphertext will not decrypt    say nothing
+//
+// The last line is the rule this whole issue turns on: unreadable is not absent.
+// A key that changed under the ciphertext must never be spelled as a revoke.
+func (s *Service) connectionPushSecrets(rows []ConnectionSecretRow) map[string]pushSecret {
+	states := make(map[string]pushSecret, len(rows))
+	for _, row := range rows {
+		if len(row.ProviderSecretEncrypted) == 0 {
+			states[row.ConnectionKey] = pushSecret{clear: true}
+			continue
+		}
+		plain, derr := s.enc.Decrypt(row.ProviderSecretEncrypted)
+		if derr != nil {
+			s.log.Error("email: stored connection secret could not be decrypted; the agent push will say nothing about it",
+				slog.String("connection_key", row.ConnectionKey),
+				slog.Any("error", derr),
+			)
+			continue // absent from the map is the say-nothing state
+		}
+		if p := string(plain); p != "" {
+			states[row.ConnectionKey] = pushSecret{plain: &p}
+			continue
+		}
+		states[row.ConnectionKey] = pushSecret{clear: true}
+	}
+	return states
 }
 
 // ptrStringVal returns the dereferenced value of a *string, or "" if nil.
@@ -1151,6 +1176,17 @@ func (s *Service) ListConnections(ctx context.Context, tenantID, configID uuid.U
 
 // UpsertConnection creates or updates a named connection. Validates the slug,
 // age-encrypts the secret when provided, and returns the updated Connection.
+//
+// The secret follows the same three states as the top-level config (GH #380),
+// and for the same reason: nothing may collapse "the operator said nothing"
+// into "delete it", and nothing may carry a credential across to an account it
+// was not issued for.
+//
+//	SecretRaw nil        keep the stored credential, unless the settings being
+//	                     saved move the account it authenticates as, in which
+//	                     case it is revoked here and cleared on the next push
+//	SecretRaw non-empty  replace the stored credential
+//	SecretRaw ""         an explicit revoke: the column is NULLed
 func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput) (Connection, error) {
 	if !validConnectionKey(in.ConnectionKey) {
 		return Connection{}, domain.Validation("email_invalid_connection_key",
@@ -1166,7 +1202,43 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 
 	var secretCiphertext []byte
 	setSecret := false
-	if in.SecretRaw != nil {
+	switch {
+	case in.SecretRaw == nil:
+		stored, getErr := s.repo.GetConnection(ctx, in.TenantID, in.ConfigID, in.ConnectionKey)
+		switch {
+		case errors.Is(getErr, ErrNotFound):
+			// A brand new connection: nothing is stored, so nothing can be
+			// rebound and nothing can be destroyed.
+		case getErr != nil:
+			// Without the previous settings there is no way to tell a
+			// correction from a move to another account. Refusing the write is
+			// the only answer that neither revokes a working credential nor
+			// re-points one, and it is reported rather than guessed at.
+			return Connection{}, domain.Internal("email_get_connection",
+				"failed to load the stored connection; the change was not saved").WithCause(getErr)
+		case stored.SecretSet && !sameConnectionAudience(stored, in):
+			// The credential stored on this row was issued for the settings
+			// being replaced. Preserving it would offer it to whatever endpoint
+			// this request supplies, which is the connection-registry spelling
+			// of the escalation closed on the top-level config.
+			s.log.Info("email: connection settings moved the account the stored credential authenticates as; it is revoked and must be re-entered",
+				slog.String("tenant_id", in.TenantID.String()),
+				slog.String("connection_key", in.ConnectionKey),
+				slog.String("stored_provider", stored.Provider),
+				slog.String("provider", in.Provider),
+			)
+			setSecret = true // with a nil ciphertext the SQL writes NULL
+		}
+
+	case *in.SecretRaw == "":
+		// An explicit revoke. Storing the ciphertext of an empty string instead
+		// left the row reporting secret_set=true for a credential that is not
+		// there. No encryptor is needed to write a NULL, so this is deliberately
+		// outside the age-guard below: revoking must work even on an instance
+		// whose key went missing.
+		setSecret = true
+
+	default:
 		if s.enc == nil {
 			return Connection{}, domain.ServiceUnavailable(
 				"email_crypto_unwired",
@@ -1378,6 +1450,14 @@ func (p pushSecret) apply(req *agentcmd.EmailConfigRequest) {
 	req.ClearSecret = p.clear
 }
 
+// applyConnection writes this resolution onto one entry of the named-connection
+// registry. The registry speaks the same three states through its own per-entry
+// flag, so the two must not drift apart.
+func (p pushSecret) applyConnection(w *agentcmd.EmailConnectionWire) {
+	w.Secret = p.plain
+	w.ClearSecret = p.clear
+}
+
 // resolveEffectiveSecret resolves what UpsertSiteConfig's push should say about
 // the secret. override is in.SecretRaw: non-nil means the operator just typed
 // something on the form, which takes precedence over anything stored.
@@ -1561,25 +1641,32 @@ func (s *Service) resolveOrgPushSecret(ctx context.Context, tenantID uuid.UUID, 
 // track_opens, message_stream, return_path…) are deliberately absent: they
 // cannot redirect a credential, and including them would break inheritance for
 // a site that legitimately tweaks one.
-func credentialAudienceFields(provider string) []string {
+//
+// The second return says whether this table has an answer for the provider at
+// all. It exists so that adding a provider to the catalog and forgetting this
+// table fails CLOSED: without it, a new slug fell to the default, returned no
+// fields, and every config of that provider compared as the same audience,
+// which is the loosest possible answer on the one path that lends out the org
+// credential. TestCredentialAudienceFieldsCoverTheCatalog keeps the two in step.
+func credentialAudienceFields(provider string) ([]string, bool) {
 	switch provider {
 	case "smtp":
 		// host and port are the destination; username is the identity;
 		// encryption decides whether the password crosses the network in clear.
-		return []string{"host", "port", "username", "encryption", "auth"}
+		return []string{"host", "port", "username", "encryption", "auth"}, true
 	case "ses":
 		// The secret access key is meaningless apart from its access key ID,
 		// and the region selects the endpoint.
-		return []string{"access_key", "region"}
+		return []string{"access_key", "region"}, true
 	case "mailgun":
-		return []string{"domain_name", "region"}
+		return []string{"domain_name", "region"}, true
 	case "sendgrid", "postmark":
 		// The endpoint is the provider's own and is not operator-supplied.
-		return nil
+		return nil, true
 	default:
-		// An unknown provider gets the strictest answer available: see
-		// sameCredentialAudience, which refuses to share on an unknown slug.
-		return nil
+		// An unknown provider gets the strictest answer available: no shared
+		// credential at all (see sameCredentialAudience).
+		return nil, false
 	}
 }
 
@@ -1593,8 +1680,39 @@ func sameCredentialAudience(site, org Config) bool {
 		// Never share a credential with a config we cannot reason about.
 		return false
 	}
-	for _, key := range credentialAudienceFields(site.Provider) {
+	fields, known := credentialAudienceFields(site.Provider)
+	if !known {
+		return false
+	}
+	for _, key := range fields {
 		if !sameConfigValue(site.Config[key], org.Config[key]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameConnectionAudience reports whether the credential already stored against a
+// named connection may still be presented using the settings now being saved
+// onto it.
+//
+// It is sameCredentialAudience for the connection registry. The registry stores
+// each connection's credential on the connection's own row, and the upsert
+// preserves that ciphertext whenever the request carries no secret
+// (site_email.sql, UpsertEmailConnection). So an operator can rewrite the host,
+// port or username of a connection, send no password, and have the credential
+// issued for the old account carried forward to the new one — the same rebinding
+// the top-level config closes by clearing on divergence.
+func sameConnectionAudience(stored Connection, in ConnectionUpsertInput) bool {
+	if stored.Provider != in.Provider {
+		return false
+	}
+	fields, known := credentialAudienceFields(in.Provider)
+	if !known {
+		return false
+	}
+	for _, key := range fields {
+		if !sameConfigValue(in.Config[key], stored.Config[key]) {
 			return false
 		}
 	}
@@ -1621,28 +1739,8 @@ func configValueKey(v any) string {
 // recovered by any code change; re-entering it is the only repair.
 const secretDecryptFailedDetail = "the stored email credential could not be decrypted (the secrets-at-rest key changed); re-enter the SMTP password"
 
-// decryptSecret decrypts the stored ciphertext for a site config. Called only
-// when building a config-push command (not in any handler response path).
-// Returns nil when no secret is stored.
-func (s *Service) decryptSecret(ctx context.Context, tenantID, siteID uuid.UUID) ([]byte, error) {
-	if s.enc == nil {
-		return nil, nil // no encryptor → no decryption
-	}
-	var (
-		ct  []byte
-		err error
-	)
-	if siteID == uuid.Nil {
-		ct, err = s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-	} else {
-		ct, err = s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-	}
-	if err != nil || len(ct) == 0 {
-		return nil, err
-	}
-	plain, err := s.enc.Decrypt(ct)
-	if err != nil {
-		return nil, domain.Internal("email_decrypt_secret", "failed to decrypt provider secret").WithCause(err)
-	}
-	return plain, nil
-}
+// decryptSecret is deliberately gone. It had no callers left once the push paths
+// moved onto resolveSitePushSecret / resolveOrgPushSecret, and it read the ORG
+// ciphertext on siteID == uuid.Nil with no audience check at all: the exact
+// read this issue closed everywhere else. Leaving an unused, ungated way in
+// would have been an invitation to wire it back up.

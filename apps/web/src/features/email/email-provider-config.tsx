@@ -347,8 +347,14 @@ export function DynamicField({
  * organisation credential to a site whose config still matches the
  * organisation's on every one of these, so this is what the page watches in
  * order to warn honestly rather than promise a credential that will not be sent.
+ *
+ * It is exported so that credential-audience-contract.test.ts can hold it
+ * against the Go table it mirrors, in both directions. A copy of a security rule
+ * that only has to agree with itself is how a warning drifts into promising a
+ * credential the server will refuse to send, or into staying silent about one it
+ * is about to revoke.
  */
-const CREDENTIAL_AUDIENCE_FIELDS: Record<string, string[]> = {
+export const CREDENTIAL_AUDIENCE_FIELDS: Record<string, string[]> = {
   smtp: ["host", "port", "username", "encryption", "auth"],
   ses: ["access_key", "region"],
   mailgun: ["domain_name", "region"],
