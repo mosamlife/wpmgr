@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 0.61.127
+Stable tag: 0.61.131
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -276,6 +276,10 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.131 =
+* Fixed: sending email from this site could silently stop working days after it had been set up and used successfully, showing as "SMTP Error: Could not authenticate" (GH #380). Saving, testing or syncing this site's email settings from the dashboard could send an empty password, and the site read that as an instruction to delete the working password it already had. This site no longer deletes a stored password unless the dashboard actually sends a real replacement, and it now refuses an email settings update it cannot make sense of instead of acting on the part it understood. If this site lost its password this way, the dashboard restores it the next time it syncs this site's email settings, with nothing for you to re-enter.
+* Security: a password belonging to your dashboard account is no longer sent to a mail server you choose from this site's own settings page, and a stored password is no longer carried over automatically when you point this site's email at a different mail server, mailbox user or provider.
+
 = 0.61.127 =
 * Fixed: a password policy can now target the roles the site actually has, not only the five roles a stock WordPress install ships with. On a WooCommerce store the roles that matter are the ones the store added, and a shop manager who can edit orders, refund customers and read every buyer's address could not be required to hold a strong password, because that role could not be selected. The same applied to membership, LMS and booking plugins, and to roles an agency created by hand. Enforcement was never the problem: the agent has always applied a policy to whatever role a user really holds. What was missing was any way to write the rule. Role names now also read the way they read on the site itself, in the site's own language, while the rule stays bound to the underlying role identifier, so renaming or translating a role never changes who it covers.
 
@@ -412,6 +416,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.131 =
+Fixes a bug that could silently delete this site's working SMTP password when its email settings were saved, tested or synced from the dashboard, breaking outgoing email. Update now if this site sends mail through SMTP, SES, SendGrid, Mailgun or Postmark; the dashboard restores the password automatically on its next sync with this site.
 
 = 0.61.127 =
 Password policies can now target the roles your site actually has, including roles added by WooCommerce, membership, LMS and booking plugins, shown in the site's own language. Safe to update in place.

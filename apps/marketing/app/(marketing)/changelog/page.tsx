@@ -39,6 +39,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.131",
+    date: "2026-08-10",
+    summary:
+      "A routine save, test or sync of a site's email settings could silently delete the site's working SMTP password, and outgoing email then failed with \"SMTP Error: Could not authenticate,\" the same message a wrong password gives. This release stops the deletion, restores an already affected site's password automatically the next time its settings sync, and closes off your organisation's own email password being reachable from a single site's settings page. Sites are not fixed until their plugin updates to this version.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Saving, testing or syncing a site's email settings could send the site an empty password, which the site read as an instruction to delete the working one it already had. The dashboard now says nothing about the password unless it has a real one to send, so a site keeps the credential it already holds. A site that uses your organisation's password, rather than one of its own, now keeps using it instead of losing it the moment anything was saved on that site's own email page.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site now refuses an email settings update it cannot read, instead of acting on the part it understood, and reports it as a failure when your settings cannot actually be written to it rather than reporting success regardless. A save or an organisation-wide update is no longer sent to your sites at all when the stored password cannot be read back, which used to be able to empty the password on every site in the organisation from one unreadable record.",
+      },
+      {
+        tag: "Security",
+        text: "Your organisation's email password can no longer be sent to a mail server chosen on a single site, and somebody invited to only one site can no longer change your organisation's email settings from that site's page. A password saved against a mail connection, a site or your organisation is now dropped rather than carried across whenever the mail server, mailbox user or provider it was issued for changes.",
+      },
+    ],
+  },
+  {
     version: "0.61.130",
     date: "2026-08-10",
     summary:
