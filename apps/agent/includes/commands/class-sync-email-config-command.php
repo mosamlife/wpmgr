@@ -42,6 +42,19 @@
  * identical settings changes no identity and so never clears anything, which
  * is what keeps the #380 fix intact.
  *
+ * WRITE ORDER. These are two separate stores with no transaction between them,
+ * so the order decides what a half-finished push leaves behind. The credential
+ * is settled in the keystore first and the settings are written only once that
+ * succeeded, because the failure that ordering produces is a site still running
+ * on the settings its credential was issued for. The reverse order produces the
+ * opposite: settings already pointing at a new endpoint while the keystore
+ * still holds the credential the clear was meant to retire, which is exactly
+ * the rebinding clear_secret exists to prevent. A keystore write this push
+ * asked for is therefore fatal to the whole command: nothing is persisted, the
+ * control plane sees the failure and retries. The one exception is a pure
+ * carry-forward of connection secrets, which rewrites the values already
+ * stored and so cannot diverge from them by failing.
+ *
  * @package WPMgr\Agent\Commands
  */
 
@@ -194,6 +207,12 @@ final class SyncEmailConfigCommand implements CommandInterface {
 				// Strip the secret from the wire payload before it reaches the wp-option.
 				unset( $params['connections'][ $conn_key ]['secret'], $params['connections'][ $conn_key ]['clear_secret'] );
 			}
+			// An emptied registry drops every stored connection secret, which is
+			// a deliberate replace-all rather than a read-back that found
+			// nothing. Nothing is carried forward, so nothing can be lost.
+			if ( $conn_entries === 0 ) {
+				$conn_push_is_authoritative = true;
+			}
 		}
 
 		// Build a clean config map from the known keys only.
@@ -205,26 +224,29 @@ final class SyncEmailConfigCommand implements CommandInterface {
 			}
 		}
 
-		// Persist the non-secret config.
+		// Build and validate the config object before anything is persisted.
+		// This is a pure construction: a malformed push is rejected here, with
+		// neither store touched.
 		try {
 			$cfg = new EmailConfig( $clean );
-			if ( function_exists( 'update_option' ) ) {
-				update_option( EmailConfig::OPTION, $cfg->to_array(), false );
-			}
 		} catch ( \Throwable $e ) {
 			return array( 'ok' => false, 'detail' => 'failed to persist email config' );
 		}
 
-		// Persist the primary secret into the keystore, but only when this push
+		// Settle the primary secret in the keystore, but only when this push
 		// actually carried one (or explicitly asked to clear it). The secret was
 		// transmitted only in the signed JWT body over HTTPS; we never log it.
+		// This runs before the settings are written: see WRITE ORDER above.
 		if ( $secret !== null ) {
 			try {
 				$this->keystore->storeEmailSecret( $secret );
 			} catch ( \Throwable $e ) {
-				// Secret storage failure is non-fatal for the config itself; the
-				// operator will see send failures and can retry.
-				return array( 'ok' => true, 'detail' => 'email config saved; secret storage failed: keystore unavailable' );
+				return array(
+					'ok'     => false,
+					'detail' => $secret === ''
+						? 'email config not saved; the stored secret could not be cleared'
+						: 'email config not saved; secret storage failed',
+				);
 			}
 		}
 
@@ -247,9 +269,27 @@ final class SyncEmailConfigCommand implements CommandInterface {
 			try {
 				$this->keystore->store_connection_secrets( $conn_secrets );
 			} catch ( \Throwable $e ) {
-				// Non-fatal: connections will still work; secrets missing means
-				// sends will attempt with empty credential (provider will error).
+				if ( $conn_push_is_authoritative ) {
+					// This push meant to supply or retire a connection
+					// credential and could not. Writing the settings now would
+					// leave the map this push meant to change bound to
+					// endpoints it did not choose, so nothing is written.
+					return array( 'ok' => false, 'detail' => 'email config not saved; connection secrets could not be stored' );
+				}
+				// A pure carry-forward rewrites what is already stored, so
+				// failing it leaves the stored map exactly where the settings
+				// expect it. Sends keep working; the config write goes ahead.
 			}
+		}
+
+		// Persist the non-secret config, now that every credential this push
+		// asked to change is settled in the keystore.
+		try {
+			if ( function_exists( 'update_option' ) ) {
+				update_option( EmailConfig::OPTION, $cfg->to_array(), false );
+			}
+		} catch ( \Throwable $e ) {
+			return array( 'ok' => false, 'detail' => 'failed to persist email config' );
 		}
 
 		if ( $secret === null ) {

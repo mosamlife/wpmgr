@@ -287,4 +287,158 @@ class SmtpEmptySecretReproTest extends TestCase
         $this->assertSame('the-working-password', $keystore->get_email_secret());
         $this->assertSame([], $keystore->stored);
     }
+
+    // -------------------------------------------------------------------------
+    // Leg 4: a half-finished push must not rebind the credential either
+    // -------------------------------------------------------------------------
+    //
+    // The settings and the credential live in two options with no transaction
+    // between them, so a push that dies between the two writes decides on its
+    // own what the site is left holding. Writing the settings first and failing
+    // on the keystore reproduces leg 3's hazard from the inside: the site ends
+    // up pointed at the new endpoint while still holding the credential the
+    // clear was meant to retire. The credential is therefore settled first, and
+    // if that cannot be done the settings are not written at all.
+
+    /**
+     * Records every EmailConfig::OPTION write, and what the keystore held at
+     * the moment of the write.
+     *
+     * @param array<int,array<string,mixed>> $writes Collected writes, by reference.
+     */
+    private function stub_options_recording(array &$writes, FakeKeystore $keystore): void
+    {
+        Functions\when('get_option')->alias(
+            fn($key) => $key === EmailConfig::OPTION ? [] : false
+        );
+        Functions\when('update_option')->alias(
+            function (string $key, $value) use (&$writes, $keystore) {
+                if ($key === EmailConfig::OPTION) {
+                    $writes[] = [
+                        'value'            => $value,
+                        'secret_at_write'  => $keystore->get_email_secret(),
+                    ];
+                }
+                return true;
+            }
+        );
+    }
+
+    public function test_the_credential_is_settled_before_the_settings_are_written(): void
+    {
+        $writes   = [];
+        $keystore = new FakeKeystore('the-working-password');
+        $this->stub_options_recording($writes, $keystore);
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'     => 'smtp',
+            'config'       => ['host' => 'smtp.elsewhere.example', 'port' => 587, 'auth' => true, 'username' => 'someone-else'],
+            'clear_secret' => true,
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertCount(1, $writes);
+        $this->assertSame(
+            '',
+            $writes[0]['secret_at_write'],
+            'the retired credential must already be gone by the time the new endpoint is written'
+        );
+    }
+
+    public function test_a_clear_that_fails_leaves_the_old_settings_in_place(): void
+    {
+        $writes   = [];
+        $keystore = new FakeKeystore('the-working-password');
+        $this->stub_options_recording($writes, $keystore);
+        $keystore->fail_store_email_secret = true;
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'     => 'smtp',
+            'config'       => ['host' => 'smtp.elsewhere.example', 'port' => 587, 'auth' => true, 'username' => 'someone-else'],
+            'clear_secret' => true,
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame(
+            [],
+            $writes,
+            'a credential that could not be retired must not be left pointed at a new endpoint'
+        );
+        $this->assertSame(
+            'the-working-password',
+            $keystore->get_email_secret(),
+            'the site keeps working on the settings its credential was issued for'
+        );
+    }
+
+    public function test_a_replacement_that_fails_leaves_the_old_settings_in_place(): void
+    {
+        $writes   = [];
+        $keystore = new FakeKeystore('the-working-password');
+        $this->stub_options_recording($writes, $keystore);
+        $keystore->fail_store_email_secret = true;
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider' => 'smtp',
+            'config'   => ['host' => 'smtp.elsewhere.example', 'port' => 587, 'auth' => true, 'username' => 'someone-else'],
+            'secret'   => 'the-new-password',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame([], $writes, 'the new endpoint must not be written without the credential it needs');
+        $this->assertSame('the-working-password', $keystore->get_email_secret());
+    }
+
+    public function test_a_connection_clear_that_fails_leaves_the_old_settings_in_place(): void
+    {
+        $writes   = [];
+        $keystore = new FakeKeystore();
+        $keystore->conn_secrets['relay'] = 'relay-password';
+        $this->stub_options_recording($writes, $keystore);
+        $keystore->fail_store_connection_secrets = true;
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'    => 'smtp',
+            'connections' => [
+                'relay' => [
+                    'provider'     => 'smtp',
+                    'config'       => ['host' => 'relay.elsewhere.example'],
+                    'clear_secret' => true,
+                ],
+            ],
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame([], $writes, 'a connection whose credential could not be retired must not be repointed');
+        $this->assertSame('relay-password', $keystore->get_connection_secret('relay'));
+    }
+
+    public function test_a_carry_forward_that_fails_still_saves_the_settings(): void
+    {
+        $writes   = [];
+        $keystore = new FakeKeystore();
+        $keystore->conn_secrets['relay'] = 'relay-password';
+        $this->stub_options_recording($writes, $keystore);
+        $keystore->fail_store_connection_secrets = true;
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'    => 'smtp',
+            'connections' => [
+                'relay' => ['provider' => 'smtp', 'config' => ['host' => 'relay.example.com']],
+            ],
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertCount(
+            1,
+            $writes,
+            'rewriting the values already stored cannot diverge from them by failing, so the config still saves'
+        );
+        $this->assertSame('relay-password', $keystore->get_connection_secret('relay'));
+    }
 }
