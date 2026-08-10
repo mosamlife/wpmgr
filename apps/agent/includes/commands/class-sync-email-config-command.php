@@ -53,7 +53,11 @@
  * asked for is therefore fatal to the whole command: nothing is persisted, the
  * control plane sees the failure and retries. The one exception is a pure
  * carry-forward of connection secrets, which rewrites the values already
- * stored and so cannot diverge from them by failing.
+ * stored and so cannot diverge from them by failing. The settings write is the
+ * second half of that pair and is verified for the same reason: by the time it
+ * runs the credential has already committed, so a settings write that does not
+ * land leaves the new credential pointed at the old endpoint, and this command
+ * reports that rather than a save that did not happen.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -131,9 +135,27 @@ final class SyncEmailConfigCommand implements CommandInterface {
 			return array( 'ok' => false, 'detail' => 'mappings must be an object' );
 		}
 
-		// Validate connections is an object/array if present.
-		if ( array_key_exists( 'connections', $params ) && ! is_array( $params['connections'] ) ) {
-			return array( 'ok' => false, 'detail' => 'connections must be an object' );
+		// Validate connections is an object/array if present, and that every
+		// entry in it is one too.
+		//
+		// The registry is replace-all, so an entry this command cannot read is
+		// an entry it would silently drop, and a dropped connection
+		// legitimately loses its secret. That makes an unreadable entry
+		// indistinguishable from "the operator removed this connection" — the
+		// same collapse of "I could not read it" into "delete it" that cost
+		// sites their credentials in the first place. A payload we cannot read
+		// is therefore refused whole rather than applied in part: the control
+		// plane sees a failure it can retry, and nothing is destroyed in the
+		// meantime. Refusing costs a retry; guessing costs a credential.
+		if ( array_key_exists( 'connections', $params ) ) {
+			if ( ! is_array( $params['connections'] ) ) {
+				return array( 'ok' => false, 'detail' => 'connections must be an object' );
+			}
+			foreach ( $params['connections'] as $wire ) {
+				if ( ! is_array( $wire ) ) {
+					return array( 'ok' => false, 'detail' => 'every entry in connections must be an object' );
+				}
+			}
 		}
 
 		// Validate default_connection if present.
@@ -187,10 +209,16 @@ final class SyncEmailConfigCommand implements CommandInterface {
 		$conn_entries               = 0;
 		if ( array_key_exists( 'connections', $params ) && is_array( $params['connections'] ) ) {
 			foreach ( $params['connections'] as $conn_key => $wire ) {
+				// Count what arrived, not what parsed. An entry that is present
+				// but unusable must never leave the map looking deliberately
+				// emptied, because that reading ends in a replace-all write of
+				// an empty map. The validation above already refuses such a
+				// payload; counting first is what keeps this tally honest if
+				// that check is ever loosened.
+				++$conn_entries;
 				if ( ! is_array( $wire ) ) {
 					continue;
 				}
-				++$conn_entries;
 				$key   = (string) $conn_key;
 				$clear = ( $wire['clear_secret'] ?? null ) === true;
 				if ( isset( $wire['secret'] ) && is_string( $wire['secret'] ) && $wire['secret'] !== '' ) {
@@ -284,9 +312,30 @@ final class SyncEmailConfigCommand implements CommandInterface {
 
 		// Persist the non-secret config, now that every credential this push
 		// asked to change is settled in the keystore.
+		//
+		// update_option() answers false for two unrelated reasons: the write
+		// failed, and the value it was handed already equals the stored one. The
+		// second is the ordinary case here — rotating only a password changes no
+		// setting — so a bare false cannot be read as a failure without breaking
+		// every routine rotation. Re-reading the option settles it by asking the
+		// only question that matters: does the store now hold what this push
+		// asked for? If it does, whichever reason produced the false, the site is
+		// in the intended state. If it does not, the credential is already
+		// rotated in the keystore while the option still names the old endpoint,
+		// and the next send would offer the new credential to the old server.
+		//
+		// The comparison is against what the option store returns, not against
+		// $current: $current has been through EmailConfig's normalisation and a
+		// value stored by an older build may not have, so they can differ while
+		// the stored value is perfectly current. Without a reader there is no
+		// observation to make, and an unobserved write is not a failed one.
 		try {
 			if ( function_exists( 'update_option' ) ) {
-				update_option( EmailConfig::OPTION, $cfg->to_array(), false );
+				$settings = $cfg->to_array();
+				$written  = update_option( EmailConfig::OPTION, $settings, false );
+				if ( $written === false && function_exists( 'get_option' ) && get_option( EmailConfig::OPTION ) !== $settings ) {
+					return array( 'ok' => false, 'detail' => 'email config not saved; the settings could not be written' );
+				}
 			}
 		} catch ( \Throwable $e ) {
 			return array( 'ok' => false, 'detail' => 'failed to persist email config' );
