@@ -230,8 +230,10 @@ default, no profile needed.
 > are multi-arch (`linux/amd64` + `linux/arm64`); the media encoder is
 > `linux/amd64` only, because its image codec library ships prebuilt static
 > libraries for that architecture alone. On arm64 that means running the stack
-> with `--scale media-encoder=0`, which costs you screenshots and the Media
-> Optimizer and nothing else.
+> with `--scale media-encoder=0`, which costs you site screenshots, the Media
+> Optimizer, and WOFF2 font transcoding. Everything else, including backups,
+> restores, updates, uptime, security, and the DB cleaner, is unaffected: the
+> control plane never encodes anything itself.
 
 ## 3. Verify
 

@@ -213,6 +213,7 @@ The DoD for **any** WPMgr feature includes both documentation surfaces. Enforce 
 **Layer 4 — release ritual.** Cutting a release is the moment the `[Unreleased]` block becomes a dated `[X.Y.Z]` section, the version surfaces are bumped, and the landing is rebuilt + redeployed via §1.4. No feature is "released" until it appears under a dated version heading in `CHANGELOG.md` and on the live `/changelog`.
 
 **The single bright line that overrides all convenience:** no competitor name may appear in the landing site, README, CHANGELOG, or any code or comment. The lone exception is the GitHub repository **description** field. If in doubt, leave the competitor out and describe WPMgr on its own terms.
+
 ---
 
 ## 5. Version surfaces, and which ones CI enforces

@@ -350,11 +350,16 @@ jobs:
 
           # --- the marketing hero badge, against the agent it names ---
           # Anchored at the start of the line so a differently named constant
-          # sitting above the real one cannot be matched instead.
+          # sitting above the real one cannot be matched instead, but matching
+          # only the NAME rather than the whole assignment: pinning the exact
+          # spelling of the line means an `export` keyword, a quote-style change
+          # or a reformat turns this check off and prints a WARN nobody reads.
+          # A guard that a formatter can silently disable is the same defect as
+          # a guard that skips forever after a minor bump.
           home='apps/marketing/lib/content/home.ts'
           agent_main='apps/agent/wpmgr-agent.php'
-          badge=$(grep -m1 -oE '^const AGENT_VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' "$home" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          agent=$(grep -m1 -oE "^define\('WPMGR_AGENT_VERSION', *'[0-9]+\.[0-9]+\.[0-9]+'\)" "$agent_main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          badge=$(grep -m1 -E '^(export )?const AGENT_VERSION[[:space:]]*=' "$home" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          agent=$(grep -m1 -E "^define\('WPMGR_AGENT_VERSION'" "$agent_main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
           if [ -z "$badge" ] || [ -z "$agent" ]; then
             echo "WARN: could not parse both the badge and the agent version (badge='$badge' agent='$agent'); skipping that check."
           elif [ "$badge" != "$agent" ]; then
@@ -420,7 +425,7 @@ jobs:
           main='apps/agent/wpmgr-agent.php'
           readme='apps/agent/readme.txt'
           header=$(grep -m1 -oE '^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          constant=$(grep -m1 -oE "^define\('WPMGR_AGENT_VERSION',[[:space:]]*'[0-9]+\.[0-9]+\.[0-9]+'\)" "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          constant=$(grep -m1 -E "^define\('WPMGR_AGENT_VERSION'" "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
           stable=$(grep -m1 -oE '^Stable tag:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$readme" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
           if [ -z "$header" ] || [ -z "$constant" ] || [ -z "$stable" ]; then
             echo "WARN: could not parse the agent version from all three places (header='$header' constant='$constant' stable='$stable'); skipping the agent triple check."
