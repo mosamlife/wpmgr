@@ -284,6 +284,45 @@ func (h *Handler) putOrgConfig(c *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
+// per-site writes that can land on the org-wide row
+// ---------------------------------------------------------------------------
+
+// configForSiteWrite resolves the config row a per-site write must target, and
+// refuses when that row is the ORG-wide one and the caller is site-scoped.
+//
+// SECURITY (GH #380). GetConfig falls back to the org row for a site that has no
+// config of its own, and the fallback carries the ORG row's ID. Every per-site
+// write that takes an ID from it therefore writes to the org row: the named
+// connection registry and the webhook security fields both did, and PermEmailManage
+// is not an org-level permission, so somebody invited to one site could reach them.
+//
+// On the connection registry that is the escalation the org-credential audience
+// check closes, arriving through another door: repoint an org connection at your
+// own mail server, send no secret so UpsertEmailConnection preserves the org
+// credential underneath it (site_email.sql), then have the next push to your own
+// site hand that credential to your endpoint. On the webhook fields it hands the
+// same collaborator the org's freshly rotated route token, which is what
+// authenticates inbound provider events for every site in the organisation, and
+// invalidates the old one for all of them on the way past.
+//
+// Org-scoped members keep exactly the behaviour they had. A site-scoped one is
+// told to give the site a config of its own first, which is also the honest
+// answer for what they were really doing: editing every inheriting site at once.
+func (h *Handler) configForSiteWrite(c *gin.Context, p domain.Principal, siteID uuid.UUID) (Config, bool) {
+	cfg, err := h.svc.GetConfig(c.Request.Context(), p.TenantID, siteID)
+	if err != nil {
+		httpx.Error(c, err)
+		return Config{}, false
+	}
+	if cfg.Inherited && p.Scope == domain.ScopeSite {
+		httpx.Error(c, domain.Forbidden("email_org_row_requires_org_scope",
+			"this site has no email config of its own, so this change would edit the organisation-wide one and every site inheriting it; save an email config for this site first, or ask an organisation member to make the change"))
+		return Config{}, false
+	}
+	return cfg, true
+}
+
+// ---------------------------------------------------------------------------
 // m61 — webhook config handlers
 // ---------------------------------------------------------------------------
 
@@ -302,9 +341,8 @@ func (h *Handler) putWebhookConfig(c *gin.Context) {
 		return
 	}
 	// Resolve the config row ID first — SetWebhookFields needs the surrogate PK.
-	cfg, err := h.svc.GetConfig(c.Request.Context(), p.TenantID, siteID)
-	if err != nil {
-		httpx.Error(c, err)
+	cfg, ok2 := h.configForSiteWrite(c, p, siteID)
+	if !ok2 {
 		return
 	}
 	result, serr := h.svc.UpsertWebhookConfig(c.Request.Context(), UpsertWebhookInput{
@@ -899,9 +937,8 @@ func (h *Handler) putConnection(c *gin.Context) {
 	}
 	connKey := c.Param("connKey")
 
-	cfg, err := h.svc.GetConfig(c.Request.Context(), p.TenantID, siteID)
-	if err != nil {
-		httpx.Error(c, err)
+	cfg, ok2 := h.configForSiteWrite(c, p, siteID)
+	if !ok2 {
 		return
 	}
 
@@ -941,9 +978,8 @@ func (h *Handler) deleteConnection(c *gin.Context) {
 	}
 	connKey := c.Param("connKey")
 
-	cfg, err := h.svc.GetConfig(c.Request.Context(), p.TenantID, siteID)
-	if err != nil {
-		httpx.Error(c, err)
+	cfg, ok2 := h.configForSiteWrite(c, p, siteID)
+	if !ok2 {
 		return
 	}
 

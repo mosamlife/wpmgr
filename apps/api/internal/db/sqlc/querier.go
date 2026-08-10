@@ -498,8 +498,15 @@ type Querier interface {
 	// The worker calls this in a loop until 0 rows are deleted.
 	// Cross-tenant (InAgentTx): the agent policy allows full-table access.
 	DeleteEmailLogsOlderThan(ctx context.Context, arg DeleteEmailLogsOlderThanParams) (int64, error)
-	// Operator delete (un-suppress). Must be tenant-scoped (InTenantTx).
-	DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSuppressionParams) error
+	// Operator delete (un-suppress). Runs under scopedTenantTx.
+	//
+	// :execrows, not :exec (GH #380). Under the m112 site-scope policies a
+	// site-scoped collaborator can SEE a fleet-wide entry (site_id IS NULL) but not
+	// delete one, and Postgres expresses that refusal as zero rows affected rather
+	// than as an error. With :exec the caller could not tell the two apart and the
+	// API answered 204 for a delete that removed nothing. The repo needs the count
+	// to tell the caller the truth.
+	DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSuppressionParams) (int64, error)
 	// Periodic GC: purge all expired registration sessions.
 	DeleteExpiredWebAuthnRegistrationSessions(ctx context.Context) error
 	// Deletes a single file_transfers row by id (InAgentTx). Used by the GC worker

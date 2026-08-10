@@ -30,6 +30,11 @@ type configDTO struct {
 	// SecretSet reports whether an encrypted provider secret is stored.
 	SecretSet bool `json:"secret_set"`
 
+	// Inherited is true when this row is the org-wide default returned for a
+	// site that has no config of its own. When it is true, secret_set describes
+	// the ORG credential, not one belonging to this site.
+	Inherited bool `json:"inherited"`
+
 	Mappings           map[string]any `json:"mappings"`
 	DefaultConnection  *string        `json:"default_connection,omitempty"`
 	FallbackConnection *string        `json:"fallback_connection,omitempty"`
@@ -86,6 +91,7 @@ func toConfigDTO(c Config, baseURL string) configDTO {
 		ReturnPath:           c.ReturnPath,
 		Config:               c.Config,
 		SecretSet:            c.SecretSet,
+		Inherited:            c.Inherited,
 		Mappings:             c.Mappings,
 		DefaultConnection:    c.DefaultConnection,
 		FallbackConnection:   c.FallbackConnection,

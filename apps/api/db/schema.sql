@@ -3012,6 +3012,71 @@ CREATE POLICY site_email_config_agent ON site_email_config
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- m112 (GH #380): the app.site_scope RESTRICTIVE policies, SPLIT into a read
+-- policy and three write policies. The split is the whole point and is not a
+-- stylistic choice.
+--
+-- The org-wide row (site_id IS NULL) is inherited by every site that has no
+-- config of its own, and that inherited row is what the site actually sends
+-- mail with. A site-scoped collaborator must therefore be able to READ it
+-- (GET /sites/:siteId/email/config and the connections list both surface it
+-- legitimately) and must NOT be able to WRITE it. site_destinations_site_scope
+-- is a single FOR ALL policy with one predicate, which can only do one or the
+-- other: permit the org row and the collaborator can repoint the organisation's
+-- mail server, or refuse it and inheritance breaks.
+--
+-- RESTRICTIVE policies AND together, so a FOR ALL write policy would also
+-- narrow SELECT. Four operation-specific policies are the only shape that
+-- separates the two. See migrations/20260814000000_m112_email_site_scope_rls.sql
+-- for the door history that produced this.
+--
+-- All four are no-ops whenever app.site_scope is not 'on', which is every
+-- org-member, worker and agent transaction.
+CREATE POLICY site_email_config_site_scope_read ON site_email_config
+    AS RESTRICTIVE FOR SELECT
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id IS NULL
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY site_email_config_site_scope_insert ON site_email_config
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+-- USING refuses the org row as an update target; WITH CHECK refuses turning
+-- one's own site row into an org row (the two-step route to the same place).
+CREATE POLICY site_email_config_site_scope_update ON site_email_config
+    AS RESTRICTIVE FOR UPDATE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY site_email_config_site_scope_delete ON site_email_config
+    AS RESTRICTIVE FOR DELETE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
 -- site_email_log — per-send audit trail; agent pushes rows, CP stores them.
 -- Queried in Phase 3 (ingest + viewer). Created now so RLS + indexes exist.
 CREATE TABLE IF NOT EXISTS site_email_log (
@@ -3065,6 +3130,51 @@ CREATE POLICY site_email_log_agent ON site_email_log
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- m112 (GH #380): site_id is NOT NULL here, so there is no org row and nothing
+-- to inherit. The read/write split is kept anyway so all four email tables read
+-- identically; the read predicate simply has no IS NULL branch.
+CREATE POLICY site_email_log_site_scope_read ON site_email_log
+    AS RESTRICTIVE FOR SELECT
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY site_email_log_site_scope_insert ON site_email_log
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY site_email_log_site_scope_update ON site_email_log
+    AS RESTRICTIVE FOR UPDATE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY site_email_log_site_scope_delete ON site_email_log
+    AS RESTRICTIVE FOR DELETE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
 -- email_suppression — org-wide and per-site bounce/complaint/unsubscribe list.
 -- Queried in Phase 4 (webhooks + pre-send check). Created now for RLS.
 CREATE TABLE IF NOT EXISTS email_suppression (
@@ -3102,6 +3212,55 @@ CREATE POLICY email_suppression_tenant_isolation ON email_suppression
 CREATE POLICY email_suppression_agent ON email_suppression
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- m112 (GH #380): fleet-wide entries carry site_id IS NULL and are read by
+-- every site (IsSuppressed matches site_id IS NULL OR site_id = @site_id), so
+-- this is site_email_config's shape and gets its split. The DELETE policy is
+-- the load-bearing one: a fleet-wide suppression row is what stops the whole
+-- organisation mailing an address that complained, and removing it is an
+-- organisation-level act, not a per-site one.
+CREATE POLICY email_suppression_site_scope_read ON email_suppression
+    AS RESTRICTIVE FOR SELECT
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id IS NULL
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY email_suppression_site_scope_insert ON email_suppression
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY email_suppression_site_scope_update ON email_suppression
+    AS RESTRICTIVE FOR UPDATE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+CREATE POLICY email_suppression_site_scope_delete ON email_suppression
+    AS RESTRICTIVE FOR DELETE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- email_webhook_events — dedup + audit table for provider webhook events (m60).
@@ -3184,6 +3343,79 @@ CREATE POLICY site_email_connection_tenant_isolation ON site_email_connection
 CREATE POLICY site_email_connection_agent ON site_email_connection
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- m112 (GH #380): this table has NO site_id column, so the site-scope
+-- predicate reaches through config_id to site_email_config (the indirect-join
+-- approach m19 uses for its own child tables). The read predicate resolves the
+-- org row and the write predicates require a non-NULL site_id in the
+-- allowlist, so an org connection is readable and not writable, exactly
+-- matching its parent. This table stores provider_secret_encrypted per
+-- connection, so gating the parent while leaving the child open would have
+-- left the credential reachable through the child.
+CREATE POLICY site_email_connection_site_scope_read ON site_email_connection
+    AS RESTRICTIVE FOR SELECT
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR EXISTS (
+            SELECT 1 FROM site_email_config c
+            WHERE c.id = site_email_connection.config_id
+              AND (
+                  c.site_id IS NULL
+                  OR c.site_id = ANY (
+                      string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+                  )
+              )
+        )
+    );
+
+CREATE POLICY site_email_connection_site_scope_insert ON site_email_connection
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR EXISTS (
+            SELECT 1 FROM site_email_config c
+            WHERE c.id = site_email_connection.config_id
+              AND c.site_id = ANY (
+                  string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+              )
+        )
+    );
+
+CREATE POLICY site_email_connection_site_scope_update ON site_email_connection
+    AS RESTRICTIVE FOR UPDATE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR EXISTS (
+            SELECT 1 FROM site_email_config c
+            WHERE c.id = site_email_connection.config_id
+              AND c.site_id = ANY (
+                  string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+              )
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR EXISTS (
+            SELECT 1 FROM site_email_config c
+            WHERE c.id = site_email_connection.config_id
+              AND c.site_id = ANY (
+                  string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+              )
+        )
+    );
+
+CREATE POLICY site_email_connection_site_scope_delete ON site_email_connection
+    AS RESTRICTIVE FOR DELETE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR EXISTS (
+            SELECT 1 FROM site_email_config c
+            WHERE c.id = site_email_connection.config_id
+              AND c.site_id = ANY (
+                  string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+              )
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- m62 — email_notify_settings (org-level alert + digest preferences)

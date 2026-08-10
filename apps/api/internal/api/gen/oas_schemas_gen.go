@@ -45480,6 +45480,11 @@ type SiteEmailConfig struct {
 	ReturnPath bool `json:"return_path"`
 	// True when an encrypted provider secret is stored for this row.
 	SecretSet bool `json:"secret_set"`
+	// True when this row is the org-wide default returned for a site that has no config of its own.
+	// `site_id` is rewritten to the queried site in that case, so without this flag an inherited row is
+	// indistinguishable from a per-site one. When it is true, `secret_set` describes the ORG credential,
+	// not one belonging to this site.
+	Inherited OptBool `json:"inherited"`
 	// Slug of the connection to use for regular mail (for providers that support multiple connections, e.
 	// g. SMTP-Multi — Phase 2+).
 	DefaultConnection OptNilString `json:"default_connection"`
@@ -45559,6 +45564,11 @@ func (s *SiteEmailConfig) GetReturnPath() bool {
 // GetSecretSet returns the value of SecretSet.
 func (s *SiteEmailConfig) GetSecretSet() bool {
 	return s.SecretSet
+}
+
+// GetInherited returns the value of Inherited.
+func (s *SiteEmailConfig) GetInherited() OptBool {
+	return s.Inherited
 }
 
 // GetDefaultConnection returns the value of DefaultConnection.
@@ -45674,6 +45684,11 @@ func (s *SiteEmailConfig) SetReturnPath(val bool) {
 // SetSecretSet sets the value of SecretSet.
 func (s *SiteEmailConfig) SetSecretSet(val bool) {
 	s.SecretSet = val
+}
+
+// SetInherited sets the value of Inherited.
+func (s *SiteEmailConfig) SetInherited(val OptBool) {
+	s.Inherited = val
 }
 
 // SetDefaultConnection sets the value of DefaultConnection.

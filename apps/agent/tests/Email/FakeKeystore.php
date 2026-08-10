@@ -34,6 +34,12 @@ final class FakeKeystore implements EmailKeystoreInterface
     /** @var array<array<string,string>> Captured store_connection_secrets() calls. */
     public array $stored_conn_secrets = [];
 
+    /** @var bool When true, storeEmailSecret() throws instead of storing. */
+    public bool $fail_store_email_secret = false;
+
+    /** @var bool When true, store_connection_secrets() throws instead of storing. */
+    public bool $fail_store_connection_secrets = false;
+
     public function __construct(string $initial_secret = '')
     {
         $this->secret = $initial_secret;
@@ -46,6 +52,9 @@ final class FakeKeystore implements EmailKeystoreInterface
 
     public function storeEmailSecret(string $secret): void
     {
+        if ($this->fail_store_email_secret) {
+            throw new \RuntimeException('keystore unavailable');
+        }
         $this->stored[] = $secret;
         $this->secret   = $secret;
     }
@@ -58,6 +67,9 @@ final class FakeKeystore implements EmailKeystoreInterface
      */
     public function store_connection_secrets( array $secrets ): void
     {
+        if ($this->fail_store_connection_secrets) {
+            throw new \RuntimeException('keystore unavailable');
+        }
         $this->stored_conn_secrets[] = $secrets;
         $this->conn_secrets          = $secrets;
     }

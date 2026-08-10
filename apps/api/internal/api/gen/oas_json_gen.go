@@ -108797,6 +108797,12 @@ func (s *SiteEmailConfig) encodeFields(e *jx.Encoder) {
 		e.Bool(s.SecretSet)
 	}
 	{
+		if s.Inherited.Set {
+			e.FieldStart("inherited")
+			s.Inherited.Encode(e)
+		}
+	}
+	{
 		if s.DefaultConnection.Set {
 			e.FieldStart("default_connection")
 			s.DefaultConnection.Encode(e)
@@ -108870,7 +108876,7 @@ func (s *SiteEmailConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSiteEmailConfig = [23]string{
+var jsonFieldsNameOfSiteEmailConfig = [24]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "site_id",
@@ -108881,19 +108887,20 @@ var jsonFieldsNameOfSiteEmailConfig = [23]string{
 	7:  "force_from_name",
 	8:  "return_path",
 	9:  "secret_set",
-	10: "default_connection",
-	11: "fallback_connection",
-	12: "log_emails",
-	13: "store_body",
-	14: "retention_days",
-	15: "config",
-	16: "mappings",
-	17: "connections",
-	18: "webhook_url",
-	19: "webhook_signing_key_set",
-	20: "ses_topic_arns",
-	21: "created_at",
-	22: "updated_at",
+	10: "inherited",
+	11: "default_connection",
+	12: "fallback_connection",
+	13: "log_emails",
+	14: "store_body",
+	15: "retention_days",
+	16: "config",
+	17: "mappings",
+	18: "connections",
+	19: "webhook_url",
+	20: "webhook_signing_key_set",
+	21: "ses_topic_arns",
+	22: "created_at",
+	23: "updated_at",
 }
 
 // Decode decodes SiteEmailConfig from json.
@@ -109023,6 +109030,16 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"secret_set\"")
 			}
+		case "inherited":
+			if err := func() error {
+				s.Inherited.Reset()
+				if err := s.Inherited.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"inherited\"")
+			}
 		case "default_connection":
 			if err := func() error {
 				s.DefaultConnection.Reset()
@@ -109044,7 +109061,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"fallback_connection\"")
 			}
 		case "log_emails":
-			requiredBitSet[1] |= 1 << 4
+			requiredBitSet[1] |= 1 << 5
 			if err := func() error {
 				v, err := d.Bool()
 				s.LogEmails = bool(v)
@@ -109056,7 +109073,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"log_emails\"")
 			}
 		case "store_body":
-			requiredBitSet[1] |= 1 << 5
+			requiredBitSet[1] |= 1 << 6
 			if err := func() error {
 				v, err := d.Bool()
 				s.StoreBody = bool(v)
@@ -109068,7 +109085,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"store_body\"")
 			}
 		case "retention_days":
-			requiredBitSet[1] |= 1 << 6
+			requiredBitSet[1] |= 1 << 7
 			if err := func() error {
 				v, err := d.Int()
 				s.RetentionDays = int(v)
@@ -109080,7 +109097,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"retention_days\"")
 			}
 		case "config":
-			requiredBitSet[1] |= 1 << 7
+			requiredBitSet[2] |= 1 << 0
 			if err := func() error {
 				if err := s.Config.Decode(d); err != nil {
 					return err
@@ -109090,7 +109107,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"config\"")
 			}
 		case "mappings":
-			requiredBitSet[2] |= 1 << 0
+			requiredBitSet[2] |= 1 << 1
 			if err := func() error {
 				if err := s.Mappings.Decode(d); err != nil {
 					return err
@@ -109156,7 +109173,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"ses_topic_arns\"")
 			}
 		case "created_at":
-			requiredBitSet[2] |= 1 << 5
+			requiredBitSet[2] |= 1 << 6
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -109168,7 +109185,7 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[2] |= 1 << 6
+			requiredBitSet[2] |= 1 << 7
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -109190,8 +109207,8 @@ func (s *SiteEmailConfig) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [3]uint8{
 		0b11111011,
-		0b11110011,
-		0b01100001,
+		0b11100011,
+		0b11000011,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

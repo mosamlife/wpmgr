@@ -202,8 +202,11 @@ func (s *Service) GetConfig(ctx context.Context, tenantID, siteID uuid.UUID) (Co
 		return Config{}, domain.Internal("email_get_org_config", "failed to load org email config").WithCause(err)
 	}
 	// Surface inherited config with the site's perspective (SiteID points to the
-	// queried site so the frontend knows what was inherited).
+	// queried site so the frontend knows what was inherited). Inherited says so
+	// explicitly, because the rewritten SiteID alone makes an org row
+	// indistinguishable from a per-site one.
 	orgCfg.SiteID = &siteID
+	orgCfg.Inherited = true
 	return orgCfg, nil
 }
 
@@ -255,13 +258,15 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 		}
 		secret, secretErr := s.resolveEffectiveSecret(ctx, in, saved)
 		if secretErr != nil {
-			s.log.Warn("email: saved config but could not resolve secret for agent sync",
+			// The config is saved; the push is not attempted. Pushing a config
+			// with no resolvable credential is exactly the shape that deleted
+			// working passwords on agents in the field, whose published
+			// versions read an omitted secret as a delete (GH #380).
+			s.log.Error("email: saved config but the stored credential could not be decrypted; the agent push is skipped",
 				slog.String("site_id", in.SiteID.String()),
 				slog.Any("error", secretErr),
 			)
-			// Push without the secret — the agent will be configured for the
-			// provider/from fields; the secret push will retry on next save.
-			secret = ""
+			return saved, nil
 		}
 		req := s.buildAgentConfigReq(saved, secret)
 		if _, syncErr := s.agent.SyncEmailConfig(ctx, *in.SiteID, siteURL, req); syncErr != nil {
@@ -351,28 +356,13 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	if cfgErr != nil {
 		return TestSendResult{OK: false, Detail: "could not load email config for agent sync: " + cfgErr.Error()}, nil
 	}
-	// Resolve the effective secret: try per-site first, then fall back to org
-	// secret when the config was inherited (SiteID from GetConfig points to the
-	// queried site in both cases, so we check SecretSet to know if there is
-	// anything stored).
-	var syncSecret string
-	if s.enc != nil && cfg.SecretSet {
-		// Per-site secret first.
-		ct, ctErr := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-		if ctErr == nil && len(ct) > 0 {
-			if plain, dErr := s.enc.Decrypt(ct); dErr == nil {
-				syncSecret = string(plain)
-			}
-		}
-		// If no per-site ciphertext (inherited org config), try the org secret.
-		if syncSecret == "" {
-			orgCt, orgCtErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-			if orgCtErr == nil && len(orgCt) > 0 {
-				if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-					syncSecret = string(plain)
-				}
-			}
-		}
+	// Resolve the effective secret: per-site first, then the org secret for a
+	// site that still shares the org's endpoint.
+	syncSecret, decryptFailed := s.resolveSitePushSecret(ctx, tenantID, siteID, cfg, nil)
+	if decryptFailed {
+		// Report the real problem instead of pre-syncing a config the site
+		// cannot authenticate with and then testing it (GH #380).
+		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 	syncReq := s.buildAgentConfigReq(cfg, syncSecret)
 	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq); syncErr != nil {
@@ -423,25 +413,13 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 		return TestSendResult{OK: false, Detail: "no email config to sync"}, nil
 	}
 
-	// Resolve the effective decrypted secret: per-site first, then org fallback
-	// for inherited configs. ErrNotFound → empty secret (non-fatal).
-	var secret string
-	if s.enc != nil && cfg.SecretSet {
-		ct, ctErr := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-		if ctErr == nil && len(ct) > 0 {
-			if plain, dErr := s.enc.Decrypt(ct); dErr == nil {
-				secret = string(plain)
-			}
-		}
-		// No per-site ciphertext (inherited org config) — try the org secret.
-		if secret == "" {
-			orgCt, orgCtErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-			if orgCtErr == nil && len(orgCt) > 0 {
-				if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-					secret = string(plain)
-				}
-			}
-		}
+	// Resolve the effective decrypted secret: per-site first, then org fallback.
+	// An operator pressed "Sync to site", so an unresolvable credential is
+	// reported to them rather than returned as a success that quietly synced
+	// everything except the one field that matters.
+	secret, decryptFailed := s.resolveSitePushSecret(ctx, tenantID, siteID, cfg, nil)
+	if decryptFailed {
+		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 
 	siteURL, urlErr := s.siteLook.GetSiteURL(ctx, tenantID, siteID)
@@ -495,8 +473,33 @@ func (s *Service) buildRepoInput(ctx context.Context, in UpsertInput) (upsertRep
 		RetentionDays:      in.RetentionDays,
 	}
 
-	if in.SecretRaw != nil {
-		// Age-guard: refuse to store when no encryptor is configured.
+	switch {
+	case in.SecretRaw == nil:
+		// The nil-sentinel: SetSecret=false leaves the stored ciphertext alone.
+		// That is the right default for a save that only changes the from-name
+		// or the retention window, and the wrong one for a save that changes
+		// WHERE the credential will be presented. See preserveOrRevokeSecret.
+		revoke, err := s.preserveOrRevokeSecret(ctx, in)
+		if err != nil {
+			return upsertRepoInput{}, err
+		}
+		if revoke {
+			ri.SetSecret = true
+			ri.SecretCiphertext = nil
+		}
+
+	case *in.SecretRaw == "":
+		// An explicit clear. Write the column and null it, so secret_set stops
+		// claiming a credential exists (GH #380). Storing the ciphertext of an
+		// empty string instead left the row reporting secret_set=true for a
+		// secret that is not there. No encryptor is needed to store a NULL, so
+		// this path is deliberately outside the age-guard: revoking a
+		// credential must work even on an instance whose key went missing.
+		ri.SetSecret = true
+		ri.SecretCiphertext = nil
+
+	default:
+		// Age-guard: refuse to store a plaintext secret with no encryptor.
 		if s.enc == nil {
 			return upsertRepoInput{}, domain.ServiceUnavailable(
 				"email_crypto_unwired",
@@ -511,9 +514,106 @@ func (s *Service) buildRepoInput(ctx context.Context, in UpsertInput) (upsertRep
 		ri.SetSecret = true
 		ri.SecretCiphertext = ct
 	}
-	// SetSecret=false → the nil-sentinel in the SQL query preserves existing.
 
 	return ri, nil
+}
+
+// preserveOrRevokeSecret decides whether a save that carries NO secret may keep
+// the credential already stored on the row it is about to overwrite. It returns
+// true when that credential must instead be revoked.
+//
+// THE TWO DOORS THIS CLOSES (GH #380, sixth and seventh).
+//
+// Everything else on this issue has been about the ORG credential reaching a
+// site that should not have it, and the org fallback in resolveSitePushSecret
+// is gated by sameCredentialAudience for exactly that reason. Both remaining
+// doors are the same rebinding performed on a row the actor is genuinely
+// entitled to edit, which is why an entitlement check could never have caught
+// them:
+//
+//	SIXTH.   resolveSitePushSecret step 3 returns the SITE's own stored
+//	         credential with no comparison against the settings being saved,
+//	         and buildRepoInput's nil-sentinel preserves the ciphertext
+//	         underneath it. So an actor entitled to edit that very row can
+//	         rewrite host or username, send no new password, and have the
+//	         credential issued for the old account offered to the new endpoint.
+//
+//	SEVENTH. resolveOrgPushSecret has the identical gap on the org row.
+//	         PermEmailManage is RoleOperator, so an org-scoped operator who
+//	         sits BELOW the admin or owner that entered the credential can
+//	         repoint the organisation's config and take the credential with it,
+//	         to a mail server of their choosing, for the whole fleet.
+//
+// Both are closed in one place because both are one bug: the preserve branch
+// never asked whether the preserved credential still belongs to the settings
+// being written. Comparing at SAVE time rather than at push time is deliberate.
+// The push paths receive the config AFTER the upsert, by which point the
+// endpoint has already changed and the previous one is gone, so the comparison
+// is no longer available to them. Here both sides still exist.
+//
+// This is sameConnectionAudience's logic (UpsertConnection already does exactly
+// this for the connection registry) applied to the top-level config, and it
+// reaches the same verdict on divergence: revoke rather than preserve. Leaving
+// the ciphertext in place and merely declining to push it would leave a
+// credential at rest that the row no longer describes, ready for whatever the
+// next push decides to do with it.
+//
+// A load failure is never resolved by guessing. Without the previous settings
+// there is no way to tell a typo correction from a move to another account, so
+// the write is refused and reported, matching UpsertConnection.
+func (s *Service) preserveOrRevokeSecret(ctx context.Context, in UpsertInput) (bool, error) {
+	// The settings being saved, in the shape the audience comparison wants.
+	// Provider validity was already established by validateUpsert.
+	incoming := Config{Provider: in.Provider, Config: in.Config}
+
+	var (
+		stored   Config
+		getErr   error
+		rowLabel string
+	)
+	if in.SiteID != nil {
+		// The site's OWN row. GetSiteConfig deliberately, not GetConfig: the
+		// inheritance fallback would hand back the ORG row here, and comparing
+		// the incoming site settings against the org's would both give the
+		// wrong verdict and reintroduce the org row into a per-site write path,
+		// which is the shape of the first five doors.
+		stored, getErr = s.repo.GetSiteConfig(ctx, in.TenantID, *in.SiteID)
+		rowLabel = "site"
+	} else {
+		stored, getErr = s.repo.GetOrgConfig(ctx, in.TenantID)
+		rowLabel = "org"
+	}
+
+	switch {
+	case errors.Is(getErr, ErrNotFound):
+		// A brand new row: nothing is stored, so nothing can be rebound and
+		// nothing can be destroyed.
+		return false, nil
+	case getErr != nil:
+		return false, domain.Internal("email_get_stored_config",
+			"failed to load the stored email config; the change was not saved").WithCause(getErr)
+	}
+
+	if !stored.SecretSet {
+		// No credential to rebind.
+		return false, nil
+	}
+	field, diverged := credentialAudienceDivergence(incoming, stored)
+	if !diverged {
+		// Same provider, same destination, same identity: the credential still
+		// belongs to these settings. Preserve it, which is what makes editing
+		// the from-name without retyping the password keep working.
+		return false, nil
+	}
+
+	s.log.Info("email: the saved settings moved the endpoint the stored credential authenticates to; it is revoked and must be re-entered",
+		slog.String("tenant_id", in.TenantID.String()),
+		slog.String("row", rowLabel),
+		slog.String("diverging_field", field),
+		slog.String("stored_provider", stored.Provider),
+		slog.String("provider", in.Provider),
+	)
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -770,11 +870,32 @@ func (s *Service) ListFleetSuppression(ctx context.Context, tenantID uuid.UUID, 
 }
 
 // DeleteSuppression removes a suppression entry by id.
+//
+// The two named outcomes are the point (GH #380). A site-scoped collaborator
+// sees fleet-wide entries in their site's suppression list, because the
+// pre-send check matches site_id IS NULL and hiding them would let their site
+// mail an address the organisation stopped. m112 then refuses the DELETE, and
+// Postgres reports that refusal as zero rows rather than as an error, so the
+// endpoint used to answer 204 for a delete that removed nothing.
+//
+// Refused is 403 and says WHY, because the operator can act on it: ask an
+// organisation member, or use the fleet-scope route. Absent is 404. Neither is
+// reported as success, and neither is reported as an internal error, which
+// would be its own small lie.
 func (s *Service) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID) error {
-	if err := s.repo.DeleteSuppression(ctx, tenantID, id); err != nil {
+	err := s.repo.DeleteSuppression(ctx, tenantID, id)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrSuppressionRefused):
+		return domain.Forbidden("suppression_delete_forbidden",
+			"this suppression entry applies to the whole organisation, so it can only be "+
+				"removed by an organisation member; it is still in force")
+	case errors.Is(err, ErrNotFound):
+		return domain.NotFound("suppression_not_found", "suppression entry not found")
+	default:
 		return domain.Internal("suppression_delete", "failed to delete suppression").WithCause(err)
 	}
-	return nil
 }
 
 // ListSuppressionDeltas returns suppression entries created after the cursor
@@ -1031,16 +1152,21 @@ func ptrNow() *time.Time {
 	return &t
 }
 
-// buildAgentConfigReq maps a Config domain value and an already-decrypted
-// plaintext secret into the wire shape sent to the agent. Both UpsertSiteConfig
-// and SendTest use this so the mapping stays in one place.
-// secret is the plaintext provider secret; empty string means "no secret
-// configured" — the agent will clear any previously stored secret.
+// buildAgentConfigReq maps a Config domain value and an already-resolved
+// pushSecret into the wire shape sent to the agent. All four push paths use this
+// so the mapping stays in one place.
 //
-// m62: when cfg.ID is non-zero, connections are loaded and their secrets
-// decrypted. Connection loading failures are logged but non-fatal — the push
-// proceeds without connections rather than blocking the save.
-func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailConfigRequest {
+// secret carries the three-state contract documented on
+// agentcmd.EmailConfigRequest.Secret: say nothing, replace, or clear. An
+// unresolved credential is never spelled as an empty string, which the agent
+// would once have read as "delete the stored secret" (GH #380).
+//
+// m62: when cfg.ID is non-zero, connections are loaded and each one's secret
+// resolved into the same three states (see connectionPushSecrets). Connection
+// loading failures are logged but non-fatal — the push proceeds without
+// connections rather than blocking the save, which leaves the agent's registry
+// exactly as it is.
+func (s *Service) buildAgentConfigReq(cfg Config, secret pushSecret) agentcmd.EmailConfigRequest {
 	req := agentcmd.EmailConfigRequest{
 		Provider:           cfg.Provider,
 		FromAddress:        cfg.FromAddress,
@@ -1049,7 +1175,6 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailC
 		ForceFromName:      cfg.ForceFromName,
 		ReturnPath:         cfg.ReturnPath,
 		Config:             cfg.Config,
-		Secret:             secret,
 		Mappings:           cfg.Mappings,
 		LogEmails:          cfg.LogEmails,
 		StoreBody:          cfg.StoreBody,
@@ -1057,37 +1182,40 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailC
 		DefaultConnection:  ptrStringVal(cfg.DefaultConnection),
 		FallbackConnection: ptrStringVal(cfg.FallbackConnection),
 	}
+	secret.apply(&req)
 
 	// m62: attach the named-connections registry if the config has an ID
 	// (i.e. it was loaded from the DB, not a zero-value fallback).
 	if cfg.ID != uuid.Nil && s.enc != nil {
-		ctx := context.Background() // background — called outside a request
+		// Background, not the caller's context: this runs on the propagation
+		// worker as well as on request paths, so there is not always a principal
+		// to carry. That costs nothing today because m112's read policy admits
+		// exactly the rows these two reads can ask for, the org config row and
+		// site rows already in the caller's allowlist, which is the only thing
+		// any reachable call site passes. A scoped read returns the same rows.
+		//
+		// If that read policy is ever narrowed, this stops being equivalent and
+		// keeps full visibility while every other read narrows around it. Thread
+		// the caller's context through at that point rather than leaving it.
+		ctx := context.Background()
 		secretRows, err := s.repo.GetConnectionSecretCiphertexts(ctx, cfg.TenantID, cfg.ID)
 		if err != nil {
 			s.log.Warn("email: could not load connection secrets for agent push", slog.Any("error", err))
 		} else {
-			// Build a map from connection_key → decrypted secret for the push.
-			secretMap := make(map[string]string, len(secretRows))
-			for _, row := range secretRows {
-				if len(row.ProviderSecretEncrypted) > 0 {
-					plain, derr := s.enc.Decrypt(row.ProviderSecretEncrypted)
-					if derr == nil {
-						secretMap[row.ConnectionKey] = string(plain)
-					}
-				}
-			}
+			states := s.connectionPushSecrets(secretRows)
 			// Load full connection objects to build the registry.
 			conns, cerr := s.repo.ListConnections(ctx, cfg.TenantID, cfg.ID)
 			if cerr == nil && len(conns) > 0 {
 				registry := make(map[string]agentcmd.EmailConnectionWire, len(conns))
 				for _, c := range conns {
-					registry[c.ConnectionKey] = agentcmd.EmailConnectionWire{
+					wire := agentcmd.EmailConnectionWire{
 						Provider:    c.Provider,
 						Config:      c.Config,
-						Secret:      secretMap[c.ConnectionKey],
 						FromAddress: c.FromAddress,
 						FromName:    c.FromName,
 					}
+					states[c.ConnectionKey].applyConnection(&wire)
+					registry[c.ConnectionKey] = wire
 				}
 				req.Connections = registry
 			}
@@ -1095,6 +1223,48 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailC
 	}
 
 	return req
+}
+
+// connectionPushSecrets resolves what one push says about each named
+// connection's secret, keyed by connection key.
+//
+// It is resolveSitePushSecret's three states applied per registry entry, and it
+// is what makes the per-connection clear_secret flag a live channel rather than
+// a declared one: before this, a connection whose credential had been removed in
+// the control plane was pushed with the secret merely omitted, which the agent
+// reads as "keep what you have", so a connection credential could never be
+// revoked at all.
+//
+//	stored ciphertext decrypts non-empty  replace
+//	no stored ciphertext                  clear: the control plane owns this
+//	                                      registry, so "none here" means none
+//	stored ciphertext decrypts to empty   clear (an explicit revoke at rest)
+//	stored ciphertext will not decrypt    say nothing
+//
+// The last line is the rule this whole issue turns on: unreadable is not absent.
+// A key that changed under the ciphertext must never be spelled as a revoke.
+func (s *Service) connectionPushSecrets(rows []ConnectionSecretRow) map[string]pushSecret {
+	states := make(map[string]pushSecret, len(rows))
+	for _, row := range rows {
+		if len(row.ProviderSecretEncrypted) == 0 {
+			states[row.ConnectionKey] = pushSecret{clear: true}
+			continue
+		}
+		plain, derr := s.enc.Decrypt(row.ProviderSecretEncrypted)
+		if derr != nil {
+			s.log.Error("email: stored connection secret could not be decrypted; the agent push will say nothing about it",
+				slog.String("connection_key", row.ConnectionKey),
+				slog.Any("error", derr),
+			)
+			continue // absent from the map is the say-nothing state
+		}
+		if p := string(plain); p != "" {
+			states[row.ConnectionKey] = pushSecret{plain: &p}
+			continue
+		}
+		states[row.ConnectionKey] = pushSecret{clear: true}
+	}
+	return states
 }
 
 // ptrStringVal returns the dereferenced value of a *string, or "" if nil.
@@ -1146,6 +1316,17 @@ func (s *Service) ListConnections(ctx context.Context, tenantID, configID uuid.U
 
 // UpsertConnection creates or updates a named connection. Validates the slug,
 // age-encrypts the secret when provided, and returns the updated Connection.
+//
+// The secret follows the same three states as the top-level config (GH #380),
+// and for the same reason: nothing may collapse "the operator said nothing"
+// into "delete it", and nothing may carry a credential across to an account it
+// was not issued for.
+//
+//	SecretRaw nil        keep the stored credential, unless the settings being
+//	                     saved move the account it authenticates as, in which
+//	                     case it is revoked here and cleared on the next push
+//	SecretRaw non-empty  replace the stored credential
+//	SecretRaw ""         an explicit revoke: the column is NULLed
 func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput) (Connection, error) {
 	if !validConnectionKey(in.ConnectionKey) {
 		return Connection{}, domain.Validation("email_invalid_connection_key",
@@ -1161,7 +1342,43 @@ func (s *Service) UpsertConnection(ctx context.Context, in ConnectionUpsertInput
 
 	var secretCiphertext []byte
 	setSecret := false
-	if in.SecretRaw != nil {
+	switch {
+	case in.SecretRaw == nil:
+		stored, getErr := s.repo.GetConnection(ctx, in.TenantID, in.ConfigID, in.ConnectionKey)
+		switch {
+		case errors.Is(getErr, ErrNotFound):
+			// A brand new connection: nothing is stored, so nothing can be
+			// rebound and nothing can be destroyed.
+		case getErr != nil:
+			// Without the previous settings there is no way to tell a
+			// correction from a move to another account. Refusing the write is
+			// the only answer that neither revokes a working credential nor
+			// re-points one, and it is reported rather than guessed at.
+			return Connection{}, domain.Internal("email_get_connection",
+				"failed to load the stored connection; the change was not saved").WithCause(getErr)
+		case stored.SecretSet && !sameConnectionAudience(stored, in):
+			// The credential stored on this row was issued for the settings
+			// being replaced. Preserving it would offer it to whatever endpoint
+			// this request supplies, which is the connection-registry spelling
+			// of the escalation closed on the top-level config.
+			s.log.Info("email: connection settings moved the account the stored credential authenticates as; it is revoked and must be re-entered",
+				slog.String("tenant_id", in.TenantID.String()),
+				slog.String("connection_key", in.ConnectionKey),
+				slog.String("stored_provider", stored.Provider),
+				slog.String("provider", in.Provider),
+			)
+			setSecret = true // with a nil ciphertext the SQL writes NULL
+		}
+
+	case *in.SecretRaw == "":
+		// An explicit revoke. Storing the ciphertext of an empty string instead
+		// left the row reporting secret_set=true for a credential that is not
+		// there. No encryptor is needed to write a NULL, so this is deliberately
+		// outside the age-guard below: revoking must work even on an instance
+		// whose key went missing.
+		setSecret = true
+
+	default:
 		if s.enc == nil {
 			return Connection{}, domain.ServiceUnavailable(
 				"email_crypto_unwired",
@@ -1228,14 +1445,12 @@ func (s *Service) PropagateOrgConfig(ctx context.Context, tenantID uuid.UUID) (P
 		}
 		return PropagateResult{}, domain.Internal("propagate_get_org_cfg", "failed to load org config").WithCause(err)
 	}
-	var orgSecret string
-	if s.enc != nil && orgCfg.SecretSet {
-		orgCt, ctErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-		if ctErr == nil && len(orgCt) > 0 {
-			if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-				orgSecret = string(plain)
-			}
-		}
+	orgSecret, decryptFailed := s.resolveOrgPushSecret(ctx, tenantID, orgCfg)
+	if decryptFailed {
+		// Fanning a config out to every inheriting site without the credential
+		// it needs is the fleet-wide version of GH #380. Abort, loudly.
+		return PropagateResult{}, domain.Internal("propagate_org_secret",
+			"the stored org email credential could not be decrypted; no site was updated")
 	}
 	req := s.buildAgentConfigReq(orgCfg, orgSecret)
 
@@ -1352,58 +1567,370 @@ func errCodeValidation(code, msg string) error {
 }
 
 // ---------------------------------------------------------------------------
-// resolveEffectiveSecret decrypts the stored per-site ciphertext for use in an
-// agent push. When in.SecretRaw is non-nil (the operator just supplied a fresh
-// secret), it is used directly — no DB round-trip needed. Otherwise the stored
-// ciphertext is loaded and decrypted. Returns an empty string when no secret is
-// configured (not an error).
-func (s *Service) resolveEffectiveSecret(ctx context.Context, in UpsertInput, saved Config) (string, error) {
-	// Operator just supplied a fresh plaintext secret — use it directly.
-	if in.SecretRaw != nil {
-		return *in.SecretRaw, nil
-	}
-	// No encryptor: cannot decrypt.
-	if s.enc == nil {
-		return "", nil
-	}
-	// No secret stored: nothing to decrypt.
-	if !saved.SecretSet || in.SiteID == nil {
-		return "", nil
-	}
-	ct, err := s.repo.GetSecretCiphertext(ctx, in.TenantID, *in.SiteID)
-	if err != nil || len(ct) == 0 {
-		// Tolerate ErrNotFound: some provider configs legitimately have no secret.
-		return "", nil
-	}
-	plain, err := s.enc.Decrypt(ct)
-	if err != nil {
-		return "", fmt.Errorf("decrypt stored secret: %w", err)
-	}
-	return string(plain), nil
+// Secret resolution for agent pushes (GH #380)
+// ---------------------------------------------------------------------------
+
+// pushSecret is everything one agent push says about the provider secret. It is
+// the CP-side spelling of the three-state wire contract documented on
+// agentcmd.EmailConfigRequest.Secret:
+//
+//	{}                  say nothing; the site keeps the credential it has
+//	{plain: &value}     replace the stored credential
+//	{clear: true}       delete the stored credential
+//
+// plain and clear are never both set.
+type pushSecret struct {
+	plain *string
+	clear bool
 }
 
-// decryptSecret decrypts the stored ciphertext for a site config. Called only
-// when building a config-push command (not in any handler response path).
-// Returns nil when no secret is stored.
-func (s *Service) decryptSecret(ctx context.Context, tenantID, siteID uuid.UUID) ([]byte, error) {
-	if s.enc == nil {
-		return nil, nil // no encryptor → no decryption
-	}
-	var (
-		ct  []byte
-		err error
-	)
-	if siteID == uuid.Nil {
-		ct, err = s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-	} else {
-		ct, err = s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-	}
-	if err != nil || len(ct) == 0 {
-		return nil, err
-	}
-	plain, err := s.enc.Decrypt(ct)
-	if err != nil {
-		return nil, domain.Internal("email_decrypt_secret", "failed to decrypt provider secret").WithCause(err)
-	}
-	return plain, nil
+// apply writes this resolution onto an outbound request.
+func (p pushSecret) apply(req *agentcmd.EmailConfigRequest) {
+	req.Secret = p.plain
+	req.ClearSecret = p.clear
 }
+
+// applyConnection writes this resolution onto one entry of the named-connection
+// registry. The registry speaks the same three states through its own per-entry
+// flag, so the two must not drift apart.
+func (p pushSecret) applyConnection(w *agentcmd.EmailConnectionWire) {
+	w.Secret = p.plain
+	w.ClearSecret = p.clear
+}
+
+// resolveEffectiveSecret resolves what UpsertSiteConfig's push should say about
+// the secret. override is in.SecretRaw: non-nil means the operator just typed
+// something on the form, which takes precedence over anything stored.
+func (s *Service) resolveEffectiveSecret(ctx context.Context, in UpsertInput, saved Config) (pushSecret, error) {
+	// An org-wide row is not pushed from here; nothing site-specific to resolve.
+	if in.SiteID == nil {
+		return pushSecret{}, nil
+	}
+	push, decryptFailed := s.resolveSitePushSecret(ctx, in.TenantID, *in.SiteID, saved, in.SecretRaw)
+	if decryptFailed {
+		return pushSecret{}, errors.New("stored provider secret could not be decrypted")
+	}
+	return push, nil
+}
+
+// resolveSitePushSecret decides what a push to one site says about the secret.
+//
+// The order is: what the operator just typed, then the site's own stored
+// credential, then the org-wide credential — but the org credential is only
+// ever handed to a config that is still the org's own (sameCredentialAudience).
+//
+// SECURITY (GH #380). PermEmailManage is not an org-level permission, so a
+// site-scoped collaborator can PUT a per-site email config. An ungated org
+// fallback let them name any SMTP host, save with no secret, and have the
+// control plane pair the ORG credential with their endpoint; a test send then
+// made the agent AUTH LOGIN to it. The audience check is what makes that
+// impossible: a credential only travels to the endpoint it was issued for.
+//
+// The same check is why a divergent config CLEARS rather than omits. Omitting
+// leaves the agent using a credential it already stored against an endpoint its
+// owner never chose, which is the same escalation one push later. Clearing on
+// divergence is also what the pre-fix code did by accident, via the empty-string
+// secret that this whole issue is about; here it is deliberate and narrow.
+//
+// The second return is true when a stored ciphertext exists but will not
+// decrypt. That is never resolved by substituting some other credential — the
+// caller aborts the push and reports it.
+func (s *Service) resolveSitePushSecret(ctx context.Context, tenantID, siteID uuid.UUID, cfg Config, override *string) (pushSecret, bool) {
+	// 1. The operator just typed something. An empty box is an explicit revoke.
+	if override != nil {
+		if *override == "" {
+			return pushSecret{clear: true}, false
+		}
+		return pushSecret{plain: override}, false
+	}
+
+	// 2. No encryptor wired: nothing can be resolved, and nothing may be
+	// destroyed on a guess. Say nothing.
+	if s.enc == nil {
+		return pushSecret{}, false
+	}
+
+	// 3. The site's own stored credential. cfg.Inherited matters here: for an
+	// inherited row SecretSet describes the ORG's secret, not the site's.
+	if !cfg.Inherited && cfg.SecretSet {
+		ct, err := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
+		if err != nil || len(ct) == 0 {
+			// The row says a credential is stored but we could not read it.
+			// "We do not know" is not "there is none": a transient database
+			// error must never be allowed to revoke a working credential.
+			s.log.Warn("email: could not read the stored provider secret; the push will say nothing about it",
+				slog.String("site_id", siteID.String()),
+				slog.Any("error", err),
+			)
+			return pushSecret{}, false
+		}
+		plain, dErr := s.enc.Decrypt(ct)
+		if dErr != nil {
+			s.log.Error("email: stored provider secret could not be decrypted; the agent push is aborted",
+				slog.String("site_id", siteID.String()),
+				slog.Any("error", dErr),
+			)
+			return pushSecret{}, true
+		}
+		if p := string(plain); p != "" {
+			return pushSecret{plain: &p}, false
+		}
+		// A stored credential that decrypts to empty is an explicit clear at
+		// rest. It must not fall through to the org credential.
+		return pushSecret{clear: true}, false
+	}
+
+	// 4. The org-wide credential, for a site that has none of its own.
+	orgCfg, orgErr := s.repo.GetOrgConfig(ctx, tenantID)
+	switch {
+	case errors.Is(orgErr, ErrNotFound):
+		// No org config at all: there is no credential anywhere for this site,
+		// so anything the site still holds is revoked.
+		return pushSecret{clear: true}, false
+	case orgErr != nil:
+		// Same rule as above: an unreadable org row is not an absent one.
+		s.log.Warn("email: could not read the org email config; the push will say nothing about the secret",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", orgErr),
+		)
+		return pushSecret{}, false
+	}
+	if field, diverged := credentialAudienceDivergence(cfg, orgCfg); !cfg.Inherited && diverged {
+		// diverging_field is what makes this line actionable. Without it the two
+		// provider slugs below are usually identical and the operator is left
+		// with "it stopped working" and no next step. Note that an ABSENT field
+		// diverges from a set one on purpose: see sameConfigValue.
+		s.log.Info("email: site config no longer matches the org endpoint; the org credential is withheld and the site's stored one revoked",
+			slog.String("site_id", siteID.String()),
+			slog.String("diverging_field", field),
+			slog.String("site_provider", cfg.Provider),
+			slog.String("org_provider", orgCfg.Provider),
+		)
+		return pushSecret{clear: true}, false
+	}
+	orgCt, ctErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
+	if ctErr != nil {
+		s.log.Warn("email: could not read the org provider secret; the push will say nothing about it",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", ctErr),
+		)
+		return pushSecret{}, false
+	}
+	if len(orgCt) == 0 {
+		// The org genuinely has no credential, so neither may this site.
+		return pushSecret{clear: true}, false
+	}
+	plain, dErr := s.enc.Decrypt(orgCt)
+	if dErr != nil {
+		s.log.Error("email: stored org provider secret could not be decrypted; the agent push is aborted",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", dErr),
+		)
+		return pushSecret{}, true
+	}
+	if p := string(plain); p != "" {
+		return pushSecret{plain: &p}, false
+	}
+	return pushSecret{clear: true}, false
+}
+
+// resolveOrgPushSecret decides what an org-wide push says about the secret.
+//
+// It is only used by PropagateOrgConfig, whose targets are sites with no config
+// row of their own (see ListEmailInheritingSites). Two things follow: there is
+// no site-supplied endpoint to check the credential against, and any credential
+// those sites hold can only have arrived from an earlier org push. So when the
+// org has no secret, propagation revokes rather than stays quiet — otherwise
+// clearing the org credential would leave it live on every inheriting site.
+func (s *Service) resolveOrgPushSecret(ctx context.Context, tenantID uuid.UUID, orgCfg Config) (pushSecret, bool) {
+	// No encryptor: nothing can be resolved, and nothing may be destroyed on a
+	// guess. This is the one case that stays quiet.
+	if s.enc == nil {
+		return pushSecret{}, false
+	}
+	if !orgCfg.SecretSet {
+		return pushSecret{clear: true}, false
+	}
+	ct, err := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
+	if err != nil {
+		// Unreadable is not absent; do not revoke a fleet on a database blip.
+		s.log.Warn("email: could not read the org provider secret; the propagation will say nothing about it",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", err),
+		)
+		return pushSecret{}, false
+	}
+	if len(ct) == 0 {
+		return pushSecret{clear: true}, false
+	}
+	plain, dErr := s.enc.Decrypt(ct)
+	if dErr != nil {
+		s.log.Error("email: stored org provider secret could not be decrypted; the propagation is aborted",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", dErr),
+		)
+		return pushSecret{}, true
+	}
+	if p := string(plain); p != "" {
+		return pushSecret{plain: &p}, false
+	}
+	return pushSecret{clear: true}, false
+}
+
+// credentialAudienceFields lists, per provider, the non-secret config fields
+// that decide WHERE a credential is presented and WHO it authenticates as. Two
+// configs that agree on the provider and on every one of these fields are the
+// same audience, so a credential issued for one is safe to present to the other.
+//
+// Fields that only change formatting or provider-side behaviour (auto_tls,
+// track_opens, message_stream, return_path…) are deliberately absent: they
+// cannot redirect a credential, and including them would break inheritance for
+// a site that legitimately tweaks one.
+//
+// The second return says whether this table has an answer for the provider at
+// all. It exists so that adding a provider to the catalog and forgetting this
+// table fails CLOSED: without it, a new slug fell to the default, returned no
+// fields, and every config of that provider compared as the same audience,
+// which is the loosest possible answer on the one path that lends out the org
+// credential. TestCredentialAudienceFieldsCoverTheCatalog keeps the two in step.
+func credentialAudienceFields(provider string) ([]string, bool) {
+	switch provider {
+	case "smtp":
+		// host and port are the destination; username is the identity;
+		// encryption decides whether the password crosses the network in clear.
+		return []string{"host", "port", "username", "encryption", "auth"}, true
+	case "ses":
+		// The secret access key is meaningless apart from its access key ID,
+		// and the region selects the endpoint.
+		return []string{"access_key", "region"}, true
+	case "mailgun":
+		return []string{"domain_name", "region"}, true
+	case "sendgrid", "postmark":
+		// The endpoint is the provider's own and is not operator-supplied.
+		return nil, true
+	default:
+		// An unknown provider gets the strictest answer available: no shared
+		// credential at all (see sameCredentialAudience).
+		return nil, false
+	}
+}
+
+// sameCredentialAudience reports whether a credential stored against org may be
+// presented using site's config.
+func sameCredentialAudience(site, org Config) bool {
+	_, diverged := credentialAudienceDivergence(site, org)
+	return !diverged
+}
+
+// credentialAudienceDivergence is sameCredentialAudience with its reason. It
+// returns the name of the first thing the two configs disagree about, and
+// whether they disagree at all.
+//
+// The reason is not decoration. When this check withholds the org credential
+// the site stops sending mail, and the log line that reported it used to print
+// only the two provider slugs, which for every case except an actual provider
+// switch are IDENTICAL. An operator reading "site config no longer matches the
+// org endpoint: smtp vs smtp" learns nothing at all about why their site went
+// quiet. Naming the field turns that into a one-line diagnosis.
+func credentialAudienceDivergence(site, org Config) (string, bool) {
+	if site.Provider != org.Provider {
+		return "provider", true
+	}
+	if !ValidProviderSlug(site.Provider) {
+		// Never share a credential with a config we cannot reason about.
+		return "provider", true
+	}
+	fields, known := credentialAudienceFields(site.Provider)
+	if !known {
+		return "provider", true
+	}
+	for _, key := range fields {
+		if !sameConfigValue(site.Config[key], org.Config[key]) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// sameConnectionAudience reports whether the credential already stored against a
+// named connection may still be presented using the settings now being saved
+// onto it.
+//
+// It is sameCredentialAudience for the connection registry. The registry stores
+// each connection's credential on the connection's own row, and the upsert
+// preserves that ciphertext whenever the request carries no secret
+// (site_email.sql, UpsertEmailConnection). So an operator can rewrite the host,
+// port or username of a connection, send no password, and have the credential
+// issued for the old account carried forward to the new one — the same rebinding
+// the top-level config closes by clearing on divergence.
+func sameConnectionAudience(stored Connection, in ConnectionUpsertInput) bool {
+	if stored.Provider != in.Provider {
+		return false
+	}
+	fields, known := credentialAudienceFields(in.Provider)
+	if !known {
+		return false
+	}
+	for _, key := range fields {
+		if !sameConfigValue(in.Config[key], stored.Config[key]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameConfigValue compares two values out of the provider config map. Both
+// sides come from the same JSONB column so their Go types already agree;
+// formatting them is a cheap way to stay correct for the string/number/bool mix
+// the map holds.
+//
+// AN OMITTED FIELD MEANS "DIFFERENT", NOT "UNCHANGED". This is a decision, not
+// an accident, and it is the one place in the audience check where the two
+// readings actually diverge:
+//
+//   - absent compares EQUAL to empty. Omitting a field and sending it blank are
+//     the same statement, and treating them differently would make the check
+//     depend on which client serialised the request.
+//
+//   - absent compares UNEQUAL to any non-empty value. A PUT here replaces the
+//     config; it is not a patch. So a request that omits "encryption" while the
+//     organisation has "tls" is not silent about encryption, it is asking for
+//     none, and the config that gets stored has none.
+//
+// Reading that omission as "unchanged" would be the more forgiving behaviour
+// and it is exactly the wrong one. credentialAudienceFields is the set of
+// fields that decide WHERE a credential is presented and WHO it authenticates
+// as: host and port are the destination, username is the identity, and
+// encryption decides whether the password crosses the network in clear. If an
+// omitted field compared equal, a client could drop "encryption" from the
+// payload, pass the audience check on the strength of the fields it did send,
+// and be handed the organisation's password to present over an unencrypted
+// connection. Dropping "host" would do the same for the destination. That is
+// GH #380's whole class, reintroduced through the comparison that closes it.
+//
+// The cost of the strict reading is real and is accepted: a non-UI client doing
+// a partial update loses the inherited credential and has to re-enter it. That
+// is a recoverable inconvenience, announced in the log line that
+// credentialAudienceDivergence now names the field for, and it is the correct
+// side to fail on. The dashboard sends every field, so it never trips.
+func sameConfigValue(a, b any) bool {
+	return configValueKey(a) == configValueKey(b)
+}
+
+func configValueKey(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// secretDecryptFailedDetail is what an operator is told when a stored email
+// credential will not decrypt. Plaintext that cannot be decrypted cannot be
+// recovered by any code change; re-entering it is the only repair.
+const secretDecryptFailedDetail = "the stored email credential could not be decrypted (the secrets-at-rest key changed); re-enter the SMTP password"
+
+// decryptSecret is deliberately gone. It had no callers left once the push paths
+// moved onto resolveSitePushSecret / resolveOrgPushSecret, and it read the ORG
+// ciphertext on siteID == uuid.Nil with no audience check at all: the exact
+// read this issue closed everywhere else. Leaving an unused, ungated way in
+// would have been an invitation to wire it back up.

@@ -31,10 +31,14 @@ type EmailConnectionWire struct {
 	Provider string `json:"provider"`
 	// Config holds non-secret provider settings (same shape as EmailConfigRequest.Config).
 	Config map[string]any `json:"config"`
-	// Secret is the DECRYPTED plaintext per-connection secret. Same trust boundary
-	// as EmailConfigRequest.Secret — HTTPS + Ed25519 signed body.
-	// Empty string means "no secret configured".
-	Secret string `json:"secret"`
+	// Secret is the DECRYPTED plaintext per-connection secret. Same trust
+	// boundary and same three-state contract as EmailConfigRequest.Secret:
+	// omitted means "keep the stored one", a non-empty value replaces it, and
+	// ClearSecret removes it.
+	Secret *string `json:"secret,omitempty"`
+	// ClearSecret asks the agent to delete this connection's stored secret.
+	// See EmailConfigRequest.ClearSecret for the full contract.
+	ClearSecret bool `json:"clear_secret,omitempty"`
 	// FromAddress is an optional per-connection sender address override.
 	// When non-empty, outgoing mail routes through this connection using this address.
 	FromAddress string `json:"from_address,omitempty"`
@@ -70,11 +74,38 @@ type EmailConfigRequest struct {
 	Config map[string]any `json:"config"`
 
 	// Secret is the DECRYPTED provider secret (SMTP password / API key / AWS
-	// secret access key). Empty string means "no secret configured"; the agent
-	// should remove any previously stored secret from its keystore.
+	// secret access key).
+	//
+	// GH #380 — THE SECRET WIRE CONTRACT. The three states a push can be in are
+	// three distinct values on the wire, because collapsing "could not resolve"
+	// and "delete it" into one empty string is what destroyed working
+	// credentials on routine config pushes:
+	//
+	//	Secret omitted, ClearSecret false  keep the stored credential
+	//	Secret non-empty                   replace the stored credential
+	//	ClearSecret true                   delete the stored credential
+	//
+	// The CP never sends a non-nil empty Secret; an explicit clear is always
+	// expressed as ClearSecret. The two are never both set (see pushSecret in
+	// internal/email), but if they somehow both arrive the agent takes the
+	// non-empty Secret: it is the newer credential and it is bound to the
+	// settings travelling beside it.
+	//
+	// This mirrors the nil-sentinel the database column already speaks (see
+	// site_email.sql, where a nil secret preserves the stored ciphertext) plus
+	// the explicit revoke the column expresses as NULL.
+	//
 	// SECURITY: this field travels in the signed JWT-protected body over HTTPS.
 	// The CP decrypts from age ciphertext in-memory and never logs this value.
-	Secret string `json:"secret"`
+	Secret *string `json:"secret,omitempty"`
+
+	// ClearSecret asks the agent to delete the credential it has stored for
+	// this site. It is the only way the control plane can revoke a credential
+	// it already pushed, and it is sent whenever the config being pushed is no
+	// longer the one the stored credential was issued for: an explicit clear
+	// from the operator, a provider switch, or an endpoint the credential's
+	// owner did not choose.
+	ClearSecret bool `json:"clear_secret,omitempty"`
 
 	// Mappings is a JSON object mapping From-email addresses to connection keys
 	// for per-sender routing. Values are connection key strings (not arrays).

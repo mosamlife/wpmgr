@@ -163,6 +163,17 @@ if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
                 }
                 return false;
             }
+            // A real server answers an AUTH exchange carrying an empty password
+            // with a rejection, which the bundled PHPMailer surfaces as this
+            // exact string (wp-includes/PHPMailer/PHPMailer.php). Modelling it
+            // here is what makes an empty credential distinguishable from a
+            // wrong one in a unit test: to the sender they look identical.
+            if ($this->SMTPAuth && $this->Password === '') {
+                if ($this->exceptionsEnabled) {
+                    throw new Exception('SMTP Error: Could not authenticate.');
+                }
+                return false;
+            }
             return true;
         }
 

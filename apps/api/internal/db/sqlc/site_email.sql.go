@@ -205,7 +205,7 @@ func (q *Queries) DeleteEmailLogsOlderThan(ctx context.Context, arg DeleteEmailL
 	return result.RowsAffected(), nil
 }
 
-const deleteEmailSuppression = `-- name: DeleteEmailSuppression :exec
+const deleteEmailSuppression = `-- name: DeleteEmailSuppression :execrows
 DELETE FROM email_suppression
 WHERE id        = $1
   AND tenant_id = $2
@@ -216,10 +216,20 @@ type DeleteEmailSuppressionParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 }
 
-// Operator delete (un-suppress). Must be tenant-scoped (InTenantTx).
-func (q *Queries) DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSuppressionParams) error {
-	_, err := q.db.Exec(ctx, deleteEmailSuppression, arg.ID, arg.TenantID)
-	return err
+// Operator delete (un-suppress). Runs under scopedTenantTx.
+//
+// :execrows, not :exec (GH #380). Under the m112 site-scope policies a
+// site-scoped collaborator can SEE a fleet-wide entry (site_id IS NULL) but not
+// delete one, and Postgres expresses that refusal as zero rows affected rather
+// than as an error. With :exec the caller could not tell the two apart and the
+// API answered 204 for a delete that removed nothing. The repo needs the count
+// to tell the caller the truth.
+func (q *Queries) DeleteEmailSuppression(ctx context.Context, arg DeleteEmailSuppressionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEmailSuppression, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getConnectionSecretCiphertexts = `-- name: GetConnectionSecretCiphertexts :many

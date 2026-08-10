@@ -170,10 +170,13 @@ class MultiConnectionEmailTest extends TestCase {
 	}
 
 	/**
-	 * A connections payload with an empty secrets map should call
-	 * store_connection_secrets([]) which removes existing entries.
+	 * A connections payload that says nothing about any secret must leave the
+	 * stored map alone (GH #380). This test asserted the opposite until the
+	 * secret lifecycle was fixed: it required store_connection_secrets([]),
+	 * which deletes the option, so a routine registry re-push destroyed every
+	 * connection credential. Clearing now needs a per-connection clear_secret.
 	 */
-	public function test_sync_connections_no_secrets_clears_map(): void {
+	public function test_sync_connections_with_no_secrets_leaves_the_stored_map_alone(): void {
 		Functions\when( 'get_option' )->alias( fn( $k ) => $k === EmailConfig::OPTION ? [] : false );
 		Functions\when( 'update_option' )->justReturn( true );
 		Functions\when( 'wp_json_encode' )->alias( static fn( $v ) => json_encode( $v ) );
@@ -191,9 +194,9 @@ class MultiConnectionEmailTest extends TestCase {
 			),
 		) );
 
-		// store_connection_secrets called once with empty map (no secrets).
-		$this->assertCount( 1, $keystore->stored_conn_secrets );
-		$this->assertSame( array(), $keystore->stored_conn_secrets[0] );
+		// The keystore must not be written at all: an empty map here would be a
+		// delete_option(), and the read-back cannot prove the map is empty.
+		$this->assertSame( array(), $keystore->stored_conn_secrets );
 	}
 
 	/**

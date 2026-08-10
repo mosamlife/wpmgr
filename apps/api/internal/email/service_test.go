@@ -50,12 +50,53 @@ type fakeRepo struct {
 	storedCt []byte
 	// storedSetSecret tracks whether SetSecret was true on the last upsert
 	storedSetSecret bool
+	// corruptCt makes every stored ciphertext undecryptable, simulating a
+	// secrets-at-rest key that changed after the secrets were written.
+	corruptCt bool
+	// sitePlain / orgPlain are the plaintexts the two secret ciphertexts
+	// decrypt to. They differ so a test can tell WHICH credential a push
+	// carried, which is the whole point of the org-fallback tests.
+	sitePlain string
+	orgPlain  string
+	// inheriting is what ListEmailInheritingSites returns: sites with no
+	// config row of their own, which is who org propagation pushes to.
+	inheriting []InheritingSite
+	// secretReadErr makes the ciphertext reads fail, simulating a database
+	// that will not answer rather than one that answers "no secret".
+	secretReadErr error
+	// siteGetErr makes GetSiteConfig fail outright (not ErrNotFound), which is
+	// the "cannot tell a correction from a move to another account" case on the
+	// save-time credential rebind check.
+	siteGetErr error
+
+	// m62 named connections, keyed by configID+connection_key. connCiphertext
+	// holds what the provider_secret_encrypted column stores, keyed by
+	// connection key, so a test can seed a credential that will not decrypt.
+	conns          map[string]Connection
+	connCiphertext map[string][]byte
+	// connGetErr makes the read of a stored connection fail, which is the
+	// "cannot tell a correction from a move" case.
+	connGetErr error
+	// What UpsertConnection was last asked to write, and how often.
+	connUpserts        int
+	lastConnSetSecret  bool
+	lastConnCiphertext []byte
+	// Which config rows SetWebhookFields was asked to write, in order.
+	webhookWrites []uuid.UUID
+	// suppressionDeleteErr is what DeleteSuppression returns. The repo can now
+	// say "refused" and "absent" as well as "done", and the service has to turn
+	// each into a different answer (see suppression_delete_refusal_test.go).
+	suppressionDeleteErr error
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		site: make(map[string]Config),
-		org:  make(map[uuid.UUID]Config),
+		site:           make(map[string]Config),
+		org:            make(map[uuid.UUID]Config),
+		conns:          make(map[string]Connection),
+		connCiphertext: make(map[string][]byte),
+		sitePlain:      "stored_secret",
+		orgPlain:       "org_secret",
 	}
 }
 
@@ -64,6 +105,12 @@ func siteKey(tenantID, siteID uuid.UUID) string {
 }
 
 func (r *fakeRepo) GetSiteConfig(_ context.Context, tenantID, siteID uuid.UUID) (Config, error) {
+	// siteGetErr simulates a database that will not answer, as distinct from
+	// one that answers "no row". The rebind check must refuse the write in that
+	// case rather than guess (see credential_rebind_test.go).
+	if r.siteGetErr != nil {
+		return Config{}, r.siteGetErr
+	}
 	if cfg, ok := r.site[siteKey(tenantID, siteID)]; ok {
 		return cfg, nil
 	}
@@ -78,9 +125,14 @@ func (r *fakeRepo) GetOrgConfig(_ context.Context, tenantID uuid.UUID) (Config, 
 }
 
 func (r *fakeRepo) GetSecretCiphertext(_ context.Context, tenantID, siteID uuid.UUID) ([]byte, error) {
+	if r.secretReadErr != nil {
+		return nil, r.secretReadErr
+	}
 	if cfg, ok := r.site[siteKey(tenantID, siteID)]; ok && cfg.SecretSet {
-		// Return a fake ciphertext representing stored secret "stored_secret".
-		b, _ := (&fakeEncryptor{}).Encrypt([]byte("stored_secret"))
+		if r.corruptCt {
+			return []byte("undecryptable"), nil
+		}
+		b, _ := (&fakeEncryptor{}).Encrypt([]byte(r.sitePlain))
 		return b, nil
 	}
 	return nil, nil
@@ -88,7 +140,10 @@ func (r *fakeRepo) GetSecretCiphertext(_ context.Context, tenantID, siteID uuid.
 
 func (r *fakeRepo) GetOrgSecretCiphertext(_ context.Context, tenantID uuid.UUID) ([]byte, error) {
 	if cfg, ok := r.org[tenantID]; ok && cfg.SecretSet {
-		b, _ := (&fakeEncryptor{}).Encrypt([]byte("stored_secret"))
+		if r.corruptCt {
+			return []byte("undecryptable"), nil
+		}
+		b, _ := (&fakeEncryptor{}).Encrypt([]byte(r.orgPlain))
 		return b, nil
 	}
 	return nil, nil
@@ -97,6 +152,14 @@ func (r *fakeRepo) GetOrgSecretCiphertext(_ context.Context, tenantID uuid.UUID)
 func (r *fakeRepo) UpsertSiteConfig(_ context.Context, in upsertRepoInput) (Config, error) {
 	r.storedSetSecret = in.SetSecret
 	r.storedCt = in.SecretCiphertext
+	// Mirror the nil-sentinel in site_email.sql: SetSecret=false preserves the
+	// stored ciphertext, so a row that already had a secret still reports one.
+	secretSet := in.SetSecret && len(in.SecretCiphertext) > 0
+	if !in.SetSecret && in.SiteID != nil {
+		if prev, ok := r.site[siteKey(in.TenantID, *in.SiteID)]; ok {
+			secretSet = prev.SecretSet
+		}
+	}
 	id := uuid.New()
 	cfg := Config{
 		ID:             id,
@@ -109,7 +172,7 @@ func (r *fakeRepo) UpsertSiteConfig(_ context.Context, in upsertRepoInput) (Conf
 		ForceFromName:  in.ForceFromName,
 		ReturnPath:     in.ReturnPath,
 		Config:         in.Config,
-		SecretSet:      in.SetSecret && len(in.SecretCiphertext) > 0,
+		SecretSet:      secretSet,
 		Mappings:       in.Mappings,
 		LogEmails:      in.LogEmails,
 		StoreBody:      in.StoreBody,
@@ -232,7 +295,7 @@ func (r *fakeRepo) ListFleetSuppression(_ context.Context, _ uuid.UUID, _ Suppre
 }
 
 func (r *fakeRepo) DeleteSuppression(_ context.Context, _, _ uuid.UUID) error {
-	return nil
+	return r.suppressionDeleteErr
 }
 
 func (r *fakeRepo) ListSuppressionDeltas(_ context.Context, _, _ uuid.UUID, _ string, _ int) (SuppressionDeltaPage, error) {
@@ -255,7 +318,8 @@ func (r *fakeRepo) GetConfigByRouteTokenHashWithSecret(_ context.Context, _ []by
 	return Config{}, nil, ErrNotFound
 }
 
-func (r *fakeRepo) SetWebhookFields(_ context.Context, _, _ uuid.UUID, _, _ []byte, _ bool, _ []string) (Config, error) {
+func (r *fakeRepo) SetWebhookFields(_ context.Context, _, configID uuid.UUID, _, _ []byte, _ bool, _ []string) (Config, error) {
+	r.webhookWrites = append(r.webhookWrites, configID)
 	return Config{}, nil
 }
 
@@ -275,30 +339,92 @@ func (r *fakeRepo) DeleteEmailLogsBulk(_ context.Context, _, _ uuid.UUID, _ []uu
 	return 0, nil
 }
 
-// m62 stubs — required to satisfy the extended repository interface.
+// m62 — named-connection registry.
 
-func (r *fakeRepo) ListConnections(_ context.Context, _, _ uuid.UUID) ([]Connection, error) {
-	return nil, nil
+func connRowKey(configID uuid.UUID, key string) string {
+	return configID.String() + "/" + key
 }
 
-func (r *fakeRepo) GetConnection(_ context.Context, _, _ uuid.UUID, _ string) (Connection, error) {
+func (r *fakeRepo) ListConnections(_ context.Context, _, configID uuid.UUID) ([]Connection, error) {
+	var out []Connection
+	for _, c := range r.conns {
+		if c.ConfigID == configID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) GetConnection(_ context.Context, _, configID uuid.UUID, key string) (Connection, error) {
+	if r.connGetErr != nil {
+		return Connection{}, r.connGetErr
+	}
+	if c, ok := r.conns[connRowKey(configID, key)]; ok {
+		return c, nil
+	}
 	return Connection{}, ErrNotFound
 }
 
-func (r *fakeRepo) UpsertConnection(_ context.Context, _ ConnectionUpsertInput, _ []byte, _ bool) (Connection, error) {
-	return Connection{}, nil
+func (r *fakeRepo) UpsertConnection(_ context.Context, in ConnectionUpsertInput, ct []byte, setSecret bool) (Connection, error) {
+	r.connUpserts++
+	r.lastConnSetSecret = setSecret
+	r.lastConnCiphertext = ct
+	prev := r.conns[connRowKey(in.ConfigID, in.ConnectionKey)]
+	// Mirror UpsertEmailConnection: set_secret=false preserves the stored
+	// ciphertext, set_secret=true writes exactly what was handed over (NULL
+	// included).
+	stored := prev.SecretSet
+	if setSecret {
+		stored = len(ct) > 0
+		r.connCiphertext[in.ConnectionKey] = ct
+	}
+	c := Connection{
+		ID:            uuid.New(),
+		TenantID:      in.TenantID,
+		ConfigID:      in.ConfigID,
+		ConnectionKey: in.ConnectionKey,
+		Provider:      in.Provider,
+		FromAddress:   in.FromAddress,
+		FromName:      in.FromName,
+		Config:        in.Config,
+		SecretSet:     stored,
+	}
+	r.conns[connRowKey(in.ConfigID, in.ConnectionKey)] = c
+	return c, nil
 }
 
-func (r *fakeRepo) DeleteConnection(_ context.Context, _, _ uuid.UUID, _ string) error {
+func (r *fakeRepo) DeleteConnection(_ context.Context, _, configID uuid.UUID, key string) error {
+	delete(r.conns, connRowKey(configID, key))
 	return nil
 }
 
-func (r *fakeRepo) GetConnectionSecretCiphertexts(_ context.Context, _, _ uuid.UUID) ([]ConnectionSecretRow, error) {
-	return nil, nil
+func (r *fakeRepo) GetConnectionSecretCiphertexts(_ context.Context, _, configID uuid.UUID) ([]ConnectionSecretRow, error) {
+	var out []ConnectionSecretRow
+	for _, c := range r.conns {
+		if c.ConfigID != configID {
+			continue
+		}
+		out = append(out, ConnectionSecretRow{
+			ConnectionKey:           c.ConnectionKey,
+			ProviderSecretEncrypted: r.connCiphertext[c.ConnectionKey],
+		})
+	}
+	return out, nil
+}
+
+// addConnection seeds a stored connection plus the ciphertext of its credential.
+// plain == "" seeds a connection with no credential at all.
+func (r *fakeRepo) addConnection(c Connection, plain string) {
+	if plain != "" {
+		ct, _ := (&fakeEncryptor{}).Encrypt([]byte(plain))
+		r.connCiphertext[c.ConnectionKey] = ct
+		c.SecretSet = true
+	}
+	r.conns[connRowKey(c.ConfigID, c.ConnectionKey)] = c
 }
 
 func (r *fakeRepo) ListEmailInheritingSites(_ context.Context, _ uuid.UUID) ([]InheritingSite, error) {
-	return nil, nil
+	return r.inheriting, nil
 }
 
 func (r *fakeRepo) GetSiteRef(_ context.Context, _, _ uuid.UUID) (SiteRef, error) {
@@ -631,8 +757,8 @@ func TestService_UpsertSiteConfig_DispatchesSyncEmailConfig(t *testing.T) {
 	if agent.syncLastReq.Provider != "smtp" {
 		t.Errorf("expected provider 'smtp' in sync req, got %q", agent.syncLastReq.Provider)
 	}
-	if agent.syncLastReq.Secret != secret {
-		t.Errorf("expected decrypted secret %q in sync req, got %q", secret, agent.syncLastReq.Secret)
+	if agent.syncLastReq.Secret == nil || *agent.syncLastReq.Secret != secret {
+		t.Errorf("expected decrypted secret %q in sync req, got %v", secret, agent.syncLastReq.Secret)
 	}
 }
 
@@ -782,6 +908,710 @@ func TestService_SendTest_SyncFailureReturnsClearError(t *testing.T) {
 	// SendTestEmail must NOT be called when sync fails (agent has stale config).
 	if agent.sendTestCalled != 0 {
 		t.Errorf("SendTestEmail must not be called when sync fails, called %d times", agent.sendTestCalled)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #380 — a config push must never carry an unresolved secret as an empty one
+// ---------------------------------------------------------------------------
+
+// A stored ciphertext that will not decrypt must resolve to "say nothing", and
+// must report the failure. Sending an empty string is what deleted working
+// credentials; sending some other credential would hide the failure.
+func TestService_ResolveSitePushSecret_DecryptFailureSaysNothingAndReports(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.corruptCt = true
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+	cfg := Config{TenantID: tenantID, SiteID: &siteID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+	repo.site[siteKey(tenantID, siteID)] = cfg
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	push, decryptFailed := svc.resolveSitePushSecret(context.Background(), tenantID, siteID, cfg, nil)
+	if !decryptFailed {
+		t.Error("expected the decrypt failure to be reported, not swallowed")
+	}
+	if push.plain != nil {
+		t.Errorf("expected no secret so the push omits the field, got %q", *push.plain)
+	}
+	if push.clear {
+		t.Error("a decrypt failure must not be turned into a revoke: the credential may still be fine on the site")
+	}
+}
+
+// Pressing "Send test" used to pre-sync an empty secret and then report the
+// authentication failure it had just caused. It must report the real problem
+// and touch the agent not at all.
+func TestService_SendTest_UndecryptableSecretNeitherSyncsNorTests(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.corruptCt = true
+	repo.site[siteKey(tenantID, siteID)] = Config{
+		TenantID: tenantID, SiteID: &siteID, Provider: "smtp", SecretSet: true,
+	}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	result, err := svc.SendTest(context.Background(), tenantID, siteID, TestSendInput{To: "someone@example.com"})
+	if err != nil {
+		t.Fatalf("SendTest: unexpected error: %v", err)
+	}
+	if result.OK {
+		t.Error("expected ok=false when the stored credential cannot be decrypted")
+	}
+	if result.Detail != secretDecryptFailedDetail {
+		t.Errorf("expected the actionable detail, got %q", result.Detail)
+	}
+	if agent.syncCalled != 0 {
+		t.Errorf("sync_email_config must not be dispatched, called %d times", agent.syncCalled)
+	}
+	if agent.sendTestCalled != 0 {
+		t.Errorf("send_test_email must not be dispatched, called %d times", agent.sendTestCalled)
+	}
+}
+
+// GetConfig's org fallback rewrites SiteID to the queried site, which makes an
+// inherited row look like a per-site one. The flag is the only thing that says
+// the credential belongs to the org.
+func TestService_GetConfig_OrgFallbackIsMarkedInherited(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", SecretSet: true}
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	cfg, err := svc.GetConfig(context.Background(), tenantID, siteID)
+	if err != nil {
+		t.Fatalf("GetConfig: unexpected error: %v", err)
+	}
+	if !cfg.Inherited {
+		t.Error("expected the org fallback to be marked inherited")
+	}
+
+	repo.site[siteKey(tenantID, siteID)] = Config{TenantID: tenantID, SiteID: &siteID, Provider: "smtp"}
+	own, err := svc.GetConfig(context.Background(), tenantID, siteID)
+	if err != nil {
+		t.Fatalf("GetConfig: unexpected error: %v", err)
+	}
+	if own.Inherited {
+		t.Error("a site's own config row must not be marked inherited")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #380 — the org credential must never be paired with a site-supplied endpoint
+// ---------------------------------------------------------------------------
+
+// THE ATTACK. PermEmailManage is not an org-level permission, so a site-scoped
+// collaborator reaches PUT /sites/:id/email/config. They save a config for the
+// one site they hold, naming a collector they control as the SMTP host and
+// supplying no secret. The org credential must not travel to it, and the site
+// must not be left able to use one it already holds against the new host.
+func TestService_UpsertSiteConfig_SiteSuppliedHostNeverReceivesOrgSecret(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.orgPlain = "SG.org-sendgrid-api-key"
+	repo.org[tenantID] = Config{
+		TenantID:  tenantID,
+		Provider:  "smtp",
+		Config:    map[string]any{"host": "smtp.org-relay.example", "port": float64(587), "username": "org@example.com", "encryption": "tls"},
+		SecretSet: true,
+	}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	_, err := svc.UpsertSiteConfig(context.Background(), UpsertInput{
+		TenantID:      tenantID,
+		SiteID:        &siteID,
+		Provider:      "smtp",
+		LogEmails:     true,
+		RetentionDays: 14,
+		Config: map[string]any{
+			"host":       "collector.attacker.example",
+			"port":       float64(587),
+			"username":   "org@example.com",
+			"encryption": "tls",
+		},
+		Mappings: map[string]any{},
+		// No secret: the whole point is to make the CP supply one.
+	})
+	if err != nil {
+		t.Fatalf("UpsertSiteConfig: unexpected error: %v", err)
+	}
+	if agent.syncCalled != 1 {
+		t.Fatalf("expected one sync, got %d", agent.syncCalled)
+	}
+	if got := agent.syncLastReq.Secret; got != nil {
+		t.Fatalf("the org credential reached a site-supplied endpoint: secret %q pushed with host %v",
+			*got, agent.syncLastReq.Config["host"])
+	}
+	if !agent.syncLastReq.ClearSecret {
+		t.Error("a push to an endpoint the stored credential was not issued for must clear it, " +
+			"otherwise the site keeps authenticating to the new host with the old password")
+	}
+}
+
+// The same attack through the test-send door, which is the one that actually
+// makes the agent perform AUTH LOGIN against the attacker's collector.
+func TestService_SendTest_SiteSuppliedHostNeverReceivesOrgSecret(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.orgPlain = "SG.org-sendgrid-api-key"
+	repo.org[tenantID] = Config{
+		TenantID:  tenantID,
+		Provider:  "smtp",
+		Config:    map[string]any{"host": "smtp.org-relay.example", "port": float64(587)},
+		SecretSet: true,
+	}
+	// The site row the attacker just saved: their host, no secret of its own.
+	repo.site[siteKey(tenantID, siteID)] = Config{
+		TenantID: tenantID,
+		SiteID:   &siteID,
+		Provider: "smtp",
+		Config:   map[string]any{"host": "collector.attacker.example", "port": float64(587)},
+	}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	if _, err := svc.SendTest(context.Background(), tenantID, siteID, TestSendInput{To: "drop@attacker.example"}); err != nil {
+		t.Fatalf("SendTest: unexpected error: %v", err)
+	}
+	if got := agent.syncLastReq.Secret; got != nil {
+		t.Fatalf("the org credential reached a site-supplied endpoint: secret %q pushed with host %v",
+			*got, agent.syncLastReq.Config["host"])
+	}
+	if !agent.syncLastReq.ClearSecret {
+		t.Error("the pre-test sync must clear the stored credential rather than let the agent " +
+			"AUTH LOGIN to the attacker's host with it")
+	}
+}
+
+// The legitimate inheritance case the GH #380 fix exists for: the operator
+// opens a site that inherits the org config, changes nothing about the
+// endpoint, and saves. The site now has a row of its own with no secret, and
+// the org credential is exactly the right one to keep using.
+func TestService_UpsertSiteConfig_UnchangedInheritedEndpointKeepsOrgSecret(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	orgConfig := map[string]any{
+		"host": "smtp.org-relay.example", "port": float64(587),
+		"username": "org@example.com", "encryption": "tls", "auth": true,
+	}
+
+	repo := newFakeRepo()
+	repo.orgPlain = "org-relay-password"
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: orgConfig, SecretSet: true}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	// The page round-trips the inherited config back, plus a per-site toggle.
+	siteConfig := map[string]any{}
+	for k, v := range orgConfig {
+		siteConfig[k] = v
+	}
+	_, err := svc.UpsertSiteConfig(context.Background(), UpsertInput{
+		TenantID:      tenantID,
+		SiteID:        &siteID,
+		Provider:      "smtp",
+		LogEmails:     true,
+		StoreBody:     true,
+		RetentionDays: 30,
+		Config:        siteConfig,
+		Mappings:      map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSiteConfig: unexpected error: %v", err)
+	}
+	got := agent.syncLastReq.Secret
+	if got == nil {
+		t.Fatal("a site row that only mirrors the org endpoint must keep using the org credential, got nil")
+	}
+	if *got != "org-relay-password" {
+		t.Errorf("expected the org credential, got %q", *got)
+	}
+	if agent.syncLastReq.ClearSecret {
+		t.Error("clear_secret must not be set when a credential is being pushed")
+	}
+}
+
+// Switching a site to a different provider is a different credential audience
+// even when no endpoint field changed, so the org credential must not follow.
+func TestService_UpsertSiteConfig_ProviderSwitchDoesNotInheritOrgSecret(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.orgPlain = "SG.org-sendgrid-api-key"
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "sendgrid", Config: map[string]any{}, SecretSet: true}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	_, err := svc.UpsertSiteConfig(context.Background(), UpsertInput{
+		TenantID:      tenantID,
+		SiteID:        &siteID,
+		Provider:      "smtp",
+		LogEmails:     true,
+		RetentionDays: 14,
+		Config:        map[string]any{"host": "smtp.somewhere.example"},
+		Mappings:      map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSiteConfig: unexpected error: %v", err)
+	}
+	if got := agent.syncLastReq.Secret; got != nil {
+		t.Fatalf("a sendgrid org key must not be pushed to an smtp site config, got %q", *got)
+	}
+	if !agent.syncLastReq.ClearSecret {
+		t.Error("a provider switch must revoke the credential the old provider was using")
+	}
+}
+
+// An explicit clear from the API must reach the agent as clear_secret and must
+// null the stored column, not store the ciphertext of an empty string.
+func TestService_UpsertSiteConfig_ExplicitClearEmitsClearSecret(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	empty := ""
+	saved, err := svc.UpsertSiteConfig(context.Background(), UpsertInput{
+		TenantID:      tenantID,
+		SiteID:        &siteID,
+		Provider:      "smtp",
+		LogEmails:     true,
+		RetentionDays: 14,
+		Config:        map[string]any{},
+		Mappings:      map[string]any{},
+		SecretRaw:     &empty,
+	})
+	if err != nil {
+		t.Fatalf("UpsertSiteConfig: unexpected error: %v", err)
+	}
+	if !agent.syncLastReq.ClearSecret {
+		t.Error("an explicit clear must reach the agent as clear_secret:true")
+	}
+	if agent.syncLastReq.Secret != nil {
+		t.Errorf("an explicit clear must not also carry a secret, got %q", *agent.syncLastReq.Secret)
+	}
+	if !repo.storedSetSecret {
+		t.Error("an explicit clear must write the secret column, not preserve it")
+	}
+	if repo.storedCt != nil {
+		t.Error("an explicit clear must null the secret column, not store the ciphertext of an empty string")
+	}
+	if saved.SecretSet {
+		t.Error("secret_set must be false after an explicit clear")
+	}
+}
+
+// A site whose own stored credential decrypts to an empty string has an
+// explicit clear at rest. It must never fall through to the org credential.
+func TestService_ResolveSitePushSecret_EmptyStoredSecretDoesNotFallThroughToOrg(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.sitePlain = ""
+	repo.orgPlain = "SG.org-sendgrid-api-key"
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+	cfg := Config{TenantID: tenantID, SiteID: &siteID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+	repo.site[siteKey(tenantID, siteID)] = cfg
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	push, decryptFailed := svc.resolveSitePushSecret(context.Background(), tenantID, siteID, cfg, nil)
+	if decryptFailed {
+		t.Fatal("an empty stored secret is not a decrypt failure")
+	}
+	if push.plain != nil {
+		t.Fatalf("expected no credential, got %q", *push.plain)
+	}
+	if !push.clear {
+		t.Error("an empty stored secret is an explicit clear at rest")
+	}
+}
+
+// Revoking is destructive, so it may only follow from knowing there is no
+// credential. A database that would not answer is not an answer.
+func TestService_ResolveSitePushSecret_UnreadableSecretIsNotTreatedAsAbsent(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.secretReadErr = errors.New("connection reset by peer")
+	cfg := Config{TenantID: tenantID, SiteID: &siteID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+	repo.site[siteKey(tenantID, siteID)] = cfg
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	push, decryptFailed := svc.resolveSitePushSecret(context.Background(), tenantID, siteID, cfg, nil)
+	if decryptFailed {
+		t.Error("a read failure is not a decrypt failure")
+	}
+	if push.clear {
+		t.Error("a database error must never revoke a working credential")
+	}
+	if push.plain != nil {
+		t.Errorf("expected the push to say nothing, got %q", *push.plain)
+	}
+}
+
+// PropagateOrgConfig must not push a config it could not resolve the org
+// credential for: every agent in the field before this fix reads an omitted
+// secret the way it read an empty one.
+func TestService_PropagateOrgConfig_AbortsWhenOrgSecretWillNotDecrypt(t *testing.T) {
+	tenantID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.corruptCt = true
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: map[string]any{}, SecretSet: true}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	res, err := svc.PropagateOrgConfig(context.Background(), tenantID)
+	if err == nil {
+		t.Error("expected the undecryptable org credential to be reported, not swallowed")
+	}
+	if res.Synced != 0 {
+		t.Errorf("expected no site to be pushed, got %d", res.Synced)
+	}
+	if agent.syncCalled != 0 {
+		t.Errorf("no config may be pushed without a resolvable credential, sync called %d times", agent.syncCalled)
+	}
+}
+
+// Clearing the org credential must revoke it from the sites it was pushed to.
+// Inheriting sites have no config row of their own, so any credential they hold
+// came from an org push and nothing else can take it back.
+func TestService_PropagateOrgConfig_ClearedOrgSecretRevokesFromInheritingSites(t *testing.T) {
+	tenantID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.org[tenantID] = Config{TenantID: tenantID, Provider: "smtp", Config: map[string]any{}, SecretSet: false}
+	repo.inheriting = []InheritingSite{{ID: uuid.New(), URL: "https://a.example"}}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	if _, err := svc.PropagateOrgConfig(context.Background(), tenantID); err != nil {
+		t.Fatalf("PropagateOrgConfig: unexpected error: %v", err)
+	}
+	if agent.syncCalled != 1 {
+		t.Fatalf("expected one push, got %d", agent.syncCalled)
+	}
+	if !agent.syncLastReq.ClearSecret {
+		t.Error("an org config with no secret must revoke the credential it previously pushed")
+	}
+	if agent.syncLastReq.Secret != nil {
+		t.Errorf("expected no secret on the wire, got %q", *agent.syncLastReq.Secret)
+	}
+}
+
+// UpsertSiteConfig must not push either: the save still succeeds, the agent is
+// left alone.
+func TestService_UpsertSiteConfig_UndecryptableSecretSkipsThePush(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.corruptCt = true
+	repo.site[siteKey(tenantID, siteID)] = Config{
+		TenantID: tenantID, SiteID: &siteID, Provider: "smtp", Config: map[string]any{}, SecretSet: true,
+	}
+
+	agent := &fakeAgentClient{}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	svc.SetAgentClient(agent, &fakeSiteLookup{})
+
+	if _, err := svc.UpsertSiteConfig(context.Background(), UpsertInput{
+		TenantID:      tenantID,
+		SiteID:        &siteID,
+		Provider:      "smtp",
+		LogEmails:     true,
+		RetentionDays: 14,
+		Config:        map[string]any{},
+		Mappings:      map[string]any{},
+	}); err != nil {
+		t.Fatalf("UpsertSiteConfig: the save must still succeed: %v", err)
+	}
+	if agent.syncCalled != 0 {
+		t.Errorf("a config with no resolvable credential must not be pushed, sync called %d times", agent.syncCalled)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The named-connection registry: the same credential rules, per entry (GH #380)
+// ---------------------------------------------------------------------------
+
+// THE ATTACK, through the connection registry. The stored connection credential
+// is preserved by UpsertEmailConnection whenever a request carries no secret, so
+// rewriting the host of an existing connection and sending nothing re-points
+// that credential at the new host on the next push. This is the top-level
+// escalation with a connection key on it.
+func TestService_UpsertConnection_MovedEndpointRevokesThePreservedCredential(t *testing.T) {
+	tenantID := uuid.New()
+	configID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.addConnection(Connection{
+		TenantID:      tenantID,
+		ConfigID:      configID,
+		ConnectionKey: "billing",
+		Provider:      "smtp",
+		Config: map[string]any{
+			"host": "smtp.org-relay.example", "port": float64(587),
+			"username": "billing@example.com", "encryption": "tls",
+		},
+	}, "org-relay-password")
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	conn, err := svc.UpsertConnection(context.Background(), ConnectionUpsertInput{
+		TenantID:      tenantID,
+		ConfigID:      configID,
+		ConnectionKey: "billing",
+		Provider:      "smtp",
+		Config: map[string]any{
+			"host": "collector.attacker.example", "port": float64(587),
+			"username": "billing@example.com", "encryption": "tls",
+		},
+		// No secret: the whole point is to make the control plane supply one.
+	})
+	if err != nil {
+		t.Fatalf("UpsertConnection: unexpected error: %v", err)
+	}
+	if !repo.lastConnSetSecret || len(repo.lastConnCiphertext) != 0 {
+		t.Fatalf("a connection pointed at a new endpoint must have its stored credential revoked, "+
+			"got set_secret=%v ciphertext_len=%d", repo.lastConnSetSecret, len(repo.lastConnCiphertext))
+	}
+	if conn.SecretSet {
+		t.Error("the saved connection still reports a credential that was revoked")
+	}
+}
+
+// The legitimate edit: same account, different label. Nothing about the
+// credential moves, so nothing may be destroyed either. This is the assertion
+// that stops the guard above being written as "any change clears".
+func TestService_UpsertConnection_UnchangedAudienceKeepsTheStoredCredential(t *testing.T) {
+	tenantID := uuid.New()
+	configID := uuid.New()
+	cfg := map[string]any{
+		"host": "smtp.org-relay.example", "port": float64(587),
+		"username": "billing@example.com", "encryption": "tls", "auth": true,
+	}
+
+	repo := newFakeRepo()
+	repo.addConnection(Connection{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "billing",
+		Provider: "smtp", Config: cfg,
+	}, "org-relay-password")
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	same := map[string]any{}
+	for k, v := range cfg {
+		same[k] = v
+	}
+	same["auto_tls"] = true // a setting that cannot redirect a credential
+
+	conn, err := svc.UpsertConnection(context.Background(), ConnectionUpsertInput{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "billing",
+		Provider: "smtp", Config: same, FromName: "Billing",
+	})
+	if err != nil {
+		t.Fatalf("UpsertConnection: unexpected error: %v", err)
+	}
+	if repo.lastConnSetSecret {
+		t.Error("re-saving the same account must preserve the stored credential, not rewrite the column")
+	}
+	if !conn.SecretSet {
+		t.Error("the connection lost its credential on an edit that moved nothing")
+	}
+}
+
+// Emptying the field is an explicit revoke, and it has to work on an instance
+// whose encryption key is not wired: writing a NULL needs no key, and refusing
+// to revoke because of a missing key leaves the credential live on the site.
+func TestService_UpsertConnection_ExplicitClearNullsTheColumnWithoutAnEncryptor(t *testing.T) {
+	tenantID := uuid.New()
+	configID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.addConnection(Connection{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "billing",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+	}, "org-relay-password")
+
+	svc := NewService(&Repo{}, nil, nil) // no encryptor
+	svc.repo = repo
+
+	empty := ""
+	conn, err := svc.UpsertConnection(context.Background(), ConnectionUpsertInput{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "billing",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+		SecretRaw: &empty,
+	})
+	if err != nil {
+		t.Fatalf("an explicit revoke must not need an encryptor: %v", err)
+	}
+	if !repo.lastConnSetSecret || len(repo.lastConnCiphertext) != 0 {
+		t.Fatalf("an explicit clear must NULL the column, got set_secret=%v ciphertext_len=%d",
+			repo.lastConnSetSecret, len(repo.lastConnCiphertext))
+	}
+	if conn.SecretSet {
+		t.Error("a cleared connection still reports secret_set=true")
+	}
+}
+
+// Unreadable is not absent, and it is not unchanged either. If the previous
+// settings cannot be read there is no way to tell a correction from a move, so
+// the write is refused rather than guessed at in either direction.
+func TestService_UpsertConnection_UnreadablePreviousSettingsRefuseTheWrite(t *testing.T) {
+	repo := newFakeRepo()
+	repo.connGetErr = errors.New("connection reset by peer")
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	_, err := svc.UpsertConnection(context.Background(), ConnectionUpsertInput{
+		TenantID: uuid.New(), ConfigID: uuid.New(), ConnectionKey: "billing",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal when the stored connection cannot be read")
+	}
+	if !containsCode(err, "email_get_connection") {
+		t.Errorf("expected email_get_connection, got %v", err)
+	}
+	if repo.connUpserts != 0 {
+		t.Errorf("nothing may be written when the previous settings are unknown, wrote %d times", repo.connUpserts)
+	}
+}
+
+// A brand new connection has no stored credential to rebind, so the audience
+// check must not turn a first save into an error or a pointless revoke.
+func TestService_UpsertConnection_NewConnectionIsNotTreatedAsARebind(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	if _, err := svc.UpsertConnection(context.Background(), ConnectionUpsertInput{
+		TenantID: uuid.New(), ConfigID: uuid.New(), ConnectionKey: "billing",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+	}); err != nil {
+		t.Fatalf("UpsertConnection: unexpected error: %v", err)
+	}
+	if repo.lastConnSetSecret {
+		t.Error("a first save must say nothing about a credential that does not exist yet")
+	}
+}
+
+// The wire half of the same contract: what a push says about each connection.
+func TestService_BuildAgentConfigReq_ConnectionSecretsSpeakTheThreeStates(t *testing.T) {
+	tenantID := uuid.New()
+	configID := uuid.New()
+
+	repo := newFakeRepo()
+	repo.addConnection(Connection{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "live",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+	}, "live-password")
+	// Revoked in the control plane: the column is NULL. Before this fix the push
+	// merely omitted the secret, which the agent reads as "keep what you have",
+	// so a connection credential could never be revoked at all.
+	repo.addConnection(Connection{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "revoked",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"},
+	}, "")
+	// Stored but undecryptable: the encryption key changed under it. That says
+	// nothing about whether the site should still have a credential.
+	repo.addConnection(Connection{
+		TenantID: tenantID, ConfigID: configID, ConnectionKey: "unreadable",
+		Provider: "smtp", Config: map[string]any{"host": "smtp.example"}, SecretSet: true,
+	}, "")
+	repo.connCiphertext["unreadable"] = []byte("undecryptable")
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+
+	req := svc.buildAgentConfigReq(Config{ID: configID, TenantID: tenantID, Provider: "smtp"}, pushSecret{})
+
+	live, ok := req.Connections["live"]
+	if !ok || live.Secret == nil || *live.Secret != "live-password" {
+		t.Fatalf("a stored connection credential must be pushed, got %+v", live)
+	}
+	if live.ClearSecret {
+		t.Error("a connection with a credential must not also ask for it to be cleared")
+	}
+	revoked := req.Connections["revoked"]
+	if !revoked.ClearSecret || revoked.Secret != nil {
+		t.Errorf("a connection with no stored credential must ask the site to drop the one it holds, got %+v", revoked)
+	}
+	unreadable := req.Connections["unreadable"]
+	if unreadable.ClearSecret || unreadable.Secret != nil {
+		t.Errorf("an unreadable credential must say nothing rather than revoke, got %+v", unreadable)
+	}
+}
+
+// A provider added to the catalog and forgotten here used to fall to the
+// default, come back with no audience fields, and compare as the same audience
+// as any config of that provider, which is the loosest possible answer on the
+// one path that lends out the organisation credential.
+func TestCredentialAudienceFieldsCoverTheCatalog(t *testing.T) {
+	for _, p := range Catalog {
+		if _, known := credentialAudienceFields(p.Slug); !known {
+			t.Errorf("provider %q is in the catalog but has no entry in credentialAudienceFields; "+
+				"add the fields that decide where its credential goes (an empty list is a deliberate answer)", p.Slug)
+		}
+	}
+	if _, known := credentialAudienceFields("a_provider_that_does_not_exist"); known {
+		t.Error("an unknown provider must not be reported as a known audience")
 	}
 }
 

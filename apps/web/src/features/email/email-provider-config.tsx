@@ -1,5 +1,12 @@
 import { useState, useId } from "react";
-import { Eye, EyeOff, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  ExternalLink,
+  RefreshCw,
+  Building2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,6 +81,19 @@ export interface DynamicFieldProps {
   secretValue: string;
   /** Whether the secret is already stored (secret_set from the GET) */
   secretSet: boolean;
+  /**
+   * Whether the stored secret belongs to the organisation rather than this
+   * site (`inherited` from the GET). When it is true, `secretSet` describes a
+   * credential this site does not own, so the field says so instead of
+   * claiming the site is configured.
+   */
+  inherited?: boolean;
+  /**
+   * Whether the endpoint has been edited away from the organisation's. The
+   * organisation credential is only sent to the endpoint it was issued for, so
+   * a diverged config needs a password of its own.
+   */
+  endpointDiverged?: boolean;
   /** Whether the operator has opened the "Replace" affordance */
   replacingSecret: boolean;
   onConfigChange: (key: string, value: unknown) => void;
@@ -87,6 +107,8 @@ export function DynamicField({
   config,
   secretValue,
   secretSet,
+  inherited = false,
+  endpointDiverged = false,
   replacingSecret,
   onConfigChange,
   onSecretChange,
@@ -97,9 +119,10 @@ export function DynamicField({
   const [showSecret, setShowSecret] = useState(false);
 
   if (field.is_secret) {
-    // Secret fields are write-only. Show a "configured" badge when set, and a
-    // "Replace" button to open an input. The GET response NEVER returns the
-    // actual value — only secret_set.
+    // Secret fields are write-only. Show an indicator when one is stored and an
+    // affordance to enter a new value. The GET response NEVER returns the
+    // actual value — only secret_set, plus inherited to say whose it is.
+    const showStoredIndicator = secretSet && !replacingSecret;
     return (
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={id}>
@@ -108,12 +131,19 @@ export function DynamicField({
             <span className="ml-1 text-[var(--color-destructive)]">*</span>
           )}
         </Label>
-        {secretSet && !replacingSecret ? (
+        {showStoredIndicator ? (
           <div className="flex items-center gap-2">
-            <Badge variant="success" className="gap-1">
-              <CheckCircle2 aria-hidden="true" className="size-3" />
-              Configured
-            </Badge>
+            {inherited ? (
+              <Badge variant="muted" className="gap-1">
+                <Building2 aria-hidden="true" className="size-3" />
+                From organisation
+              </Badge>
+            ) : (
+              <Badge variant="success" className="gap-1">
+                <CheckCircle2 aria-hidden="true" className="size-3" />
+                Configured
+              </Badge>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -121,7 +151,7 @@ export function DynamicField({
               onClick={onStartReplaceSecret}
               disabled={disabled}
             >
-              Replace
+              {inherited ? "Use a different one" : "Replace"}
             </Button>
           </div>
         ) : (
@@ -153,6 +183,19 @@ export function DynamicField({
             </button>
           </div>
         )}
+        {inherited && endpointDiverged && secretValue.trim() === "" ? (
+          <p className="text-xs text-[var(--color-destructive)]">
+            These settings no longer match the organisation&rsquo;s, so the
+            organisation credential will not be sent to them. Enter a{" "}
+            {field.label.toLowerCase()} for this site, or restore the
+            organisation settings.
+          </p>
+        ) : inherited && showStoredIndicator ? (
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            This site uses the organisation credential. It is only sent while
+            the settings above still match the organisation&rsquo;s.
+          </p>
+        ) : null}
         {field.help ? (
           <p
             id={`${id}-help`}
@@ -294,6 +337,64 @@ export function DynamicField({
 }
 
 // ---------------------------------------------------------------------------
+// Inherited-credential rules (mirror of the control plane)
+// ---------------------------------------------------------------------------
+
+/**
+ * The config fields that decide where a credential is sent and who it
+ * authenticates as, per provider. This mirrors credentialAudienceFields in
+ * apps/api/internal/email/service.go: the control plane only lends the
+ * organisation credential to a site whose config still matches the
+ * organisation's on every one of these, so this is what the page watches in
+ * order to warn honestly rather than promise a credential that will not be sent.
+ *
+ * It is exported so that credential-audience-contract.test.ts can hold it
+ * against the Go table it mirrors, in both directions. A copy of a security rule
+ * that only has to agree with itself is how a warning drifts into promising a
+ * credential the server will refuse to send, or into staying silent about one it
+ * is about to revoke.
+ */
+export const CREDENTIAL_AUDIENCE_FIELDS: Record<string, string[]> = {
+  smtp: ["host", "port", "username", "encryption", "auth"],
+  ses: ["access_key", "region"],
+  mailgun: ["domain_name", "region"],
+  sendgrid: [],
+  postmark: [],
+};
+
+/**
+ * Normalises one config value for comparison. Every audience field in the
+ * catalog is a string, number or boolean, and the two sides come from the same
+ * JSONB column, so comparing their printed form is enough. It also absorbs the
+ * one real mismatch: a number input writes back the string "587" over an
+ * organisation row holding the number 587.
+ */
+function audienceValue(v: unknown): string {
+  if (v === undefined || v === null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  // No audience field is a structured value; comparing the serialised form is
+  // the honest fallback rather than "[object Object]" for everything.
+  return JSON.stringify(v) ?? "";
+}
+
+export function endpointDivergedFromOrg(
+  provider: string,
+  config: Record<string, unknown>,
+  orgProvider: string,
+  orgConfig: Record<string, unknown>,
+): boolean {
+  if (provider !== orgProvider) return true;
+  const fields = CREDENTIAL_AUDIENCE_FIELDS[provider];
+  // An unknown provider slug is never treated as a match, exactly as the
+  // control plane refuses to share a credential it cannot reason about.
+  if (fields === undefined) return true;
+  return fields.some(
+    (key) => audienceValue(config[key]) !== audienceValue(orgConfig[key]),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Provider Config Card (main export)
 // ---------------------------------------------------------------------------
 
@@ -325,6 +426,16 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
   const [secretValue, setSecretValue] = useState("");
   const [replacingSecret, setReplacingSecret] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  /**
+   * The organisation's provider + config as first loaded, kept only when this
+   * site has no config of its own. An inherited GET response IS the org row, so
+   * this needs no second request, and it is what the divergence warning
+   * compares against as the operator edits.
+   */
+  const [orgBaseline, setOrgBaseline] = useState<{
+    provider: string;
+    config: Record<string, unknown>;
+  } | null>(null);
 
   // Populate local state from server data once on first load
   const serverConfig = configQuery.data;
@@ -339,8 +450,26 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
     setStoreBody(serverConfig.store_body ?? false);
     setRetentionDays(serverConfig.retention_days ?? 14);
     setProviderConfig(serverConfig.config ?? {});
+    if (serverConfig.inherited === true) {
+      setOrgBaseline({
+        provider: serverConfig.provider ?? "",
+        config: serverConfig.config ?? {},
+      });
+    }
     setInitialized(true);
   }
+
+  // True while the stored credential shown on this page belongs to the
+  // organisation rather than to this site.
+  const inherited = serverConfig?.inherited === true;
+  const endpointDiverged =
+    orgBaseline !== null &&
+    endpointDivergedFromOrg(
+      selectedProvider,
+      providerConfig,
+      orgBaseline.provider,
+      orgBaseline.config,
+    );
 
   function handleProviderChange(slug: string) {
     setSelectedProvider(slug);
@@ -424,6 +553,17 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
         </div>
       ) : null}
 
+      {/* This site has no config of its own; everything below is the org's. */}
+      {inherited ? (
+        <div className="rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-muted)]/40 px-4 py-3 text-sm text-[var(--color-muted-foreground)]">
+          These are your organisation&rsquo;s email settings. This site has none
+          of its own, and it sends using the organisation credential. Saving
+          gives the site its own copy; it keeps using the organisation
+          credential only while these settings still match the
+          organisation&rsquo;s.
+        </div>
+      ) : null}
+
       {/* Provider selection */}
       <Card>
         <CardHeader>
@@ -467,6 +607,8 @@ export function EmailProviderConfig({ siteId }: EmailProviderConfigProps) {
                 config={providerConfig}
                 secretValue={secretValue}
                 secretSet={serverConfig?.secret_set ?? false}
+                inherited={inherited}
+                endpointDiverged={endpointDiverged}
                 replacingSecret={replacingSecret}
                 onConfigChange={handleConfigChange}
                 onSecretChange={setSecretValue}

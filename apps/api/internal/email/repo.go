@@ -23,10 +23,10 @@ import (
 // ---------------------------------------------------------------------------
 
 // ListConnections returns all named connections for a config row. Ordered by
-// created_at ASC, id ASC (stable insertion order). Runs under InTenantTx.
+// created_at ASC, id ASC (stable insertion order). Runs under scopedTenantTx.
 func (r *Repo) ListConnections(ctx context.Context, tenantID, configID uuid.UUID) ([]Connection, error) {
 	var out []Connection
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListEmailConnections(ctx, sqlc.ListEmailConnectionsParams{
 			ConfigID: configID,
 			TenantID: tenantID,
@@ -43,10 +43,10 @@ func (r *Repo) ListConnections(ctx context.Context, tenantID, configID uuid.UUID
 }
 
 // GetConnection returns a single named connection by key. Returns ErrNotFound
-// when absent. Runs under InTenantTx.
+// when absent. Runs under scopedTenantTx.
 func (r *Repo) GetConnection(ctx context.Context, tenantID, configID uuid.UUID, key string) (Connection, error) {
 	var c Connection
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).GetEmailConnection(ctx, sqlc.GetEmailConnectionParams{
 			ConfigID:      configID,
 			ConnectionKey: key,
@@ -66,14 +66,14 @@ func (r *Repo) GetConnection(ctx context.Context, tenantID, configID uuid.UUID, 
 
 // UpsertConnection creates or updates a named connection. Uses the nil-sentinel
 // pattern: when in.SecretCiphertext is nil the existing ciphertext is preserved.
-// Runs under InTenantTx.
+// Runs under scopedTenantTx.
 func (r *Repo) UpsertConnection(ctx context.Context, in ConnectionUpsertInput, secretCiphertext []byte, setSecret bool) (Connection, error) {
 	cfgJSON, err := jsonMarshal(in.Config)
 	if err != nil {
 		return Connection{}, err
 	}
 	var c Connection
-	dbErr := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+	dbErr := r.scopedTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).UpsertEmailConnection(ctx, sqlc.UpsertEmailConnectionParams{
 			TenantID:                in.TenantID,
 			ConfigID:                in.ConfigID,
@@ -94,9 +94,9 @@ func (r *Repo) UpsertConnection(ctx context.Context, in ConnectionUpsertInput, s
 	return c, dbErr
 }
 
-// DeleteConnection deletes a named connection by key. Runs under InTenantTx.
+// DeleteConnection deletes a named connection by key. Runs under scopedTenantTx.
 func (r *Repo) DeleteConnection(ctx context.Context, tenantID, configID uuid.UUID, key string) error {
-	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	return r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		return sqlc.New(tx).DeleteEmailConnection(ctx, sqlc.DeleteEmailConnectionParams{
 			ConfigID:      configID,
 			ConnectionKey: key,
@@ -107,10 +107,10 @@ func (r *Repo) DeleteConnection(ctx context.Context, tenantID, configID uuid.UUI
 
 // GetConnectionSecretCiphertexts fetches (connection_key, provider_secret_encrypted)
 // for all connections under a config row. Used by buildAgentConfigReq to decrypt and
-// build the connections registry. Runs under InTenantTx.
+// build the connections registry. Runs under scopedTenantTx.
 func (r *Repo) GetConnectionSecretCiphertexts(ctx context.Context, tenantID, configID uuid.UUID) ([]ConnectionSecretRow, error) {
 	var out []ConnectionSecretRow
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).GetConnectionSecretCiphertexts(ctx, sqlc.GetConnectionSecretCiphertextsParams{
 			ConfigID: configID,
 			TenantID: tenantID,
@@ -471,10 +471,20 @@ var (
 // ErrNotFound is returned when no config row exists yet for the given key.
 var ErrNotFound = errors.New("email: not found")
 
+// ErrSuppressionRefused is returned when a suppression delete targeted a row
+// the caller can read but may not remove. It exists because that outcome is
+// otherwise indistinguishable from success: RLS refuses the DELETE by matching
+// no rows, which is not an error in Postgres. See Repo.DeleteSuppression.
+var ErrSuppressionRefused = errors.New("email: suppression entry exists but the delete was refused")
+
 // Repo is the persistence layer for per-site email config. Every operator
-// read/write runs under pool.InTenantTx (app.tenant_id GUC). The
-// provider_secret_encrypted column is NEVER returned to callers — only the
-// SecretSet bool is surfaced (mirrors perf repo CDN credentials pattern).
+// read/write runs under scopedTenantTx, which is plain InTenantTx
+// (app.tenant_id GUC) for org-scoped principals and workers, and
+// InScopedTenantTx (which additionally sets app.site_scope and
+// app.allowed_site_ids, activating the m112 RESTRICTIVE policies) for a
+// site-scoped collaborator. The provider_secret_encrypted column is NEVER
+// returned to callers; only the SecretSet bool is surfaced (mirrors the perf
+// repo's CDN credentials pattern).
 type Repo struct {
 	pool *db.Pool
 }
@@ -482,11 +492,41 @@ type Repo struct {
 // NewRepo wires a Repo with the shared pgx pool.
 func NewRepo(pool *db.Pool) *Repo { return &Repo{pool: pool} }
 
+// scopedTenantTx is the transaction wrapper every operator-path email query
+// runs under. It exists because the m112 RESTRICTIVE policies are inert unless
+// something actually sets app.site_scope, and nothing in this package ever did:
+// every method here called InTenantTx directly, which sets app.tenant_id and
+// nothing else. A policy no transaction activates is decoration.
+//
+// The dispatch is deliberately narrower than db.Pool.RunTenantTx. RunTenantTx
+// routes org-scoped principals to InTenantTxAsUser, which sets an additional
+// app.user_id GUC; adopting that here would change the transaction every
+// existing org-member email read and write runs in, for no security gain, in
+// the same change that adds new policies. Instead ONLY a site-scoped principal
+// is routed anywhere new. For everyone else, and for every path with no
+// principal in context at all (River workers, the digest job, the agent
+// ingest, tests), this is InTenantTx exactly as before, so org-scoped
+// behaviour is unchanged to the byte.
+//
+// The tenant equality check is not ceremony. A background job can carry a
+// principal in a context it inherited while operating on some other tenant's
+// rows; scoping that transaction to the inherited principal's site allowlist
+// would filter the wrong tenant's data. When the principal is not the owner of
+// the tenant being queried, it tells us nothing and is ignored.
+func (r *Repo) scopedTenantTx(ctx context.Context, tenantID uuid.UUID, fn func(tx pgx.Tx) error) error {
+	if p, ok := domain.PrincipalFromContext(ctx); ok &&
+		p.Scope == domain.ScopeSite &&
+		p.TenantID == tenantID {
+		return r.pool.InScopedTenantTx(ctx, tenantID, p.UserID, p.AllowedSiteIDs, fn)
+	}
+	return r.pool.InTenantTx(ctx, tenantID, fn)
+}
+
 // GetSiteConfig returns the per-site config row (without the encrypted secret).
 // Returns ErrNotFound when no row exists yet.
 func (r *Repo) GetSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID) (Config, error) {
 	var cfg Config
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		sid := pgtype.UUID{Bytes: siteID, Valid: true}
 		row, qerr := sqlc.New(tx).GetSiteEmailConfig(ctx, sqlc.GetSiteEmailConfigParams{
 			TenantID: tenantID,
@@ -508,7 +548,7 @@ func (r *Repo) GetSiteConfig(ctx context.Context, tenantID, siteID uuid.UUID) (C
 // Returns ErrNotFound when no org-wide default is configured.
 func (r *Repo) GetOrgConfig(ctx context.Context, tenantID uuid.UUID) (Config, error) {
 	var cfg Config
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).GetOrgEmailConfig(ctx, tenantID)
 		if qerr != nil {
 			if errors.Is(qerr, pgx.ErrNoRows) {
@@ -527,7 +567,7 @@ func (r *Repo) GetOrgConfig(ctx context.Context, tenantID uuid.UUID) (Config, er
 // service's responsibility.
 func (r *Repo) GetSecretCiphertext(ctx context.Context, tenantID, siteID uuid.UUID) ([]byte, error) {
 	var ct []byte
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		sid := pgtype.UUID{Bytes: siteID, Valid: true}
 		row, qerr := sqlc.New(tx).GetSiteEmailConfig(ctx, sqlc.GetSiteEmailConfigParams{
 			TenantID: tenantID,
@@ -548,7 +588,7 @@ func (r *Repo) GetSecretCiphertext(ctx context.Context, tenantID, siteID uuid.UU
 // GetOrgSecretCiphertext returns the age-encrypted secret for the org-wide row.
 func (r *Repo) GetOrgSecretCiphertext(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
 	var ct []byte
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).GetOrgEmailConfig(ctx, tenantID)
 		if qerr != nil {
 			if errors.Is(qerr, pgx.ErrNoRows) {
@@ -603,10 +643,10 @@ func (r *Repo) GetConfigByRouteTokenHashWithSecret(ctx context.Context, tokenHas
 }
 
 // SetWebhookFields writes the webhook security columns on a config row.
-// Runs under InTenantTx (operator path).
+// Runs under scopedTenantTx (operator path).
 func (r *Repo) SetWebhookFields(ctx context.Context, tenantID, configID uuid.UUID, tokenHash, signingKeyCT []byte, setSigningKey bool, sesTopicArns []string) (Config, error) {
 	var cfg Config
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).SetEmailConfigWebhookFields(ctx, sqlc.SetEmailConfigWebhookFieldsParams{
 			TokenHash:     tokenHash,
 			SesTopicArns:  sesTopicArns,
@@ -637,7 +677,7 @@ func (r *Repo) UpsertSiteConfig(ctx context.Context, in upsertRepoInput) (Config
 	}
 
 	var cfg Config
-	dbErr := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+	dbErr := r.scopedTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
 		sid := pgtype.UUID{Bytes: *in.SiteID, Valid: true}
 		row, qerr := sqlc.New(tx).UpsertSiteEmailConfigByTenantSite(ctx,
 			sqlc.UpsertSiteEmailConfigByTenantSiteParams{
@@ -680,7 +720,7 @@ func (r *Repo) UpsertOrgConfig(ctx context.Context, in upsertRepoInput) (Config,
 	}
 
 	var cfg Config
-	dbErr := r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+	dbErr := r.scopedTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).UpsertOrgEmailConfig(ctx,
 			sqlc.UpsertOrgEmailConfigParams{
 				TenantID:                in.TenantID,
@@ -713,7 +753,7 @@ func (r *Repo) UpsertOrgConfig(ctx context.Context, in upsertRepoInput) (Config,
 // org-wide default). Used by the portfolio overview.
 func (r *Repo) ListSiteConfigs(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Config, error) {
 	var out []Config
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListSiteEmailConfigs(ctx, sqlc.ListSiteEmailConfigsParams{
 			TenantID:  tenantID,
 			RowLimit:  limit,
@@ -902,7 +942,7 @@ func (r *Repo) ListSiteLog(ctx context.Context, tenantID, siteID uuid.UUID, f Lo
 	rangeFrom, rangeTo := resolveRange(f.From, f.To)
 
 	var page LogListPage
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListSiteEmailLog(ctx, sqlc.ListSiteEmailLogParams{
 			TenantID:     tenantID,
 			SiteID:       siteID,
@@ -933,7 +973,7 @@ func (r *Repo) ListSiteLog(ctx context.Context, tenantID, siteID uuid.UUID, f Lo
 // GetLogEntry returns a single email log entry including body (if stored).
 func (r *Repo) GetLogEntry(ctx context.Context, tenantID, siteID, id uuid.UUID) (LogDetail, error) {
 	var detail LogDetail
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		row, qerr := q.GetEmailLog(ctx, sqlc.GetEmailLogParams{
 			TenantID: tenantID,
@@ -982,7 +1022,7 @@ func (r *Repo) ListFleetLog(ctx context.Context, tenantID uuid.UUID, f LogListFi
 	rangeFrom, rangeTo := resolveRange(f.From, f.To)
 
 	var page LogListPage
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListFleetEmailLog(ctx, sqlc.ListFleetEmailLogParams{
 			TenantID:     tenantID,
 			CursorTs:     cursorTs,
@@ -1013,7 +1053,7 @@ func (r *Repo) ListFleetLog(ctx context.Context, tenantID uuid.UUID, f LogListFi
 func (r *Repo) GetSiteStats(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) (EmailStats, error) {
 	rangeFrom, rangeTo := resolveRange(from, to)
 	var stats EmailStats
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		sumRow, serr := q.GetEmailStats(ctx, sqlc.GetEmailStatsParams{
 			TenantID:  tenantID,
@@ -1077,7 +1117,7 @@ func (r *Repo) GetSiteStats(ctx context.Context, tenantID, siteID uuid.UUID, fro
 func (r *Repo) GetFleetStats(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (EmailStats, error) {
 	rangeFrom, rangeTo := resolveRange(from, to)
 	var stats EmailStats
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		sumRow, serr := q.GetFleetEmailStats(ctx, sqlc.GetFleetEmailStatsParams{
 			TenantID:  tenantID,
@@ -1123,7 +1163,7 @@ func (r *Repo) GetFleetStats(ctx context.Context, tenantID uuid.UUID, from, to t
 // ---------------------------------------------------------------------------
 
 // GetFleetDelivery returns per-site deliverability aggregates + sparklines for
-// the given window (days). Runs under InTenantTx.
+// the given window (days). Runs under scopedTenantTx.
 func (r *Repo) GetFleetDelivery(ctx context.Context, tenantID uuid.UUID, windowDays int) (DeliverabilityReport, error) {
 	if windowDays < 1 {
 		windowDays = 30
@@ -1138,7 +1178,7 @@ func (r *Repo) GetFleetDelivery(ctx context.Context, tenantID uuid.UUID, windowD
 	var report DeliverabilityReport
 	report.WindowDays = windowDays
 
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 
 		// Fetch per-site aggregates (includes joined name/url/provider).
@@ -1225,7 +1265,7 @@ func (r *Repo) GetFleetDelivery(ctx context.Context, tenantID uuid.UUID, windowD
 
 // UpsertSuppression upserts a suppression entry. When in.SiteID is nil the
 // fleet-wide variant is used (different partial-index conflict target).
-// Runs under InAgentTx (webhook path) or InTenantTx (operator manual-add).
+// Runs under InAgentTx (webhook path) or scopedTenantTx (operator manual-add).
 func (r *Repo) UpsertSuppression(ctx context.Context, in UpsertSuppressionInput) (Suppression, error) {
 	hash := suppressionHash(in.Email)
 	var emailPtr *string
@@ -1279,7 +1319,7 @@ func (r *Repo) UpsertSuppression(ctx context.Context, in UpsertSuppressionInput)
 	return suppressionFromRow(row), nil
 }
 
-// UpsertSuppressionTenantTx upserts a suppression entry using InTenantTx
+// UpsertSuppressionTenantTx upserts a suppression entry using scopedTenantTx
 // (operator manual-add path). Same logic but runs under tenant context.
 func (r *Repo) UpsertSuppressionTenantTx(ctx context.Context, in UpsertSuppressionInput) (Suppression, error) {
 	hash := suppressionHash(in.Email)
@@ -1297,7 +1337,7 @@ func (r *Repo) UpsertSuppressionTenantTx(ctx context.Context, in UpsertSuppressi
 	var err error
 
 	if in.SiteID == nil {
-		err = r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		err = r.scopedTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
 			var qerr error
 			row, qerr = sqlc.New(tx).UpsertEmailSuppressionFleet(ctx, sqlc.UpsertEmailSuppressionFleetParams{
 				TenantID:        in.TenantID,
@@ -1312,7 +1352,7 @@ func (r *Repo) UpsertSuppressionTenantTx(ctx context.Context, in UpsertSuppressi
 		})
 	} else {
 		sid := pgtype.UUID{Bytes: *in.SiteID, Valid: true}
-		err = r.pool.InTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
+		err = r.scopedTenantTx(ctx, in.TenantID, func(tx pgx.Tx) error {
 			var qerr error
 			row, qerr = sqlc.New(tx).UpsertEmailSuppression(ctx, sqlc.UpsertEmailSuppressionParams{
 				TenantID:        in.TenantID,
@@ -1336,7 +1376,7 @@ func (r *Repo) UpsertSuppressionTenantTx(ctx context.Context, in UpsertSuppressi
 // GetSuppression fetches a single suppression row by id.
 func (r *Repo) GetSuppression(ctx context.Context, tenantID, id uuid.UUID) (Suppression, error) {
 	var s Suppression
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).GetEmailSuppression(ctx, sqlc.GetEmailSuppressionParams{
 			ID:       id,
 			TenantID: tenantID,
@@ -1354,11 +1394,11 @@ func (r *Repo) GetSuppression(ctx context.Context, tenantID, id uuid.UUID) (Supp
 }
 
 // IsSuppressed returns true when email is suppressed for the given tenant/site
-// (including fleet-wide entries). Runs under InTenantTx.
+// (including fleet-wide entries). Runs under scopedTenantTx.
 func (r *Repo) IsSuppressed(ctx context.Context, tenantID, siteID uuid.UUID, email string) (bool, error) {
 	hash := suppressionHash(email)
 	var suppressed bool
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		var qerr error
 		suppressed, qerr = sqlc.New(tx).IsSuppressed(ctx, sqlc.IsSuppressedParams{
 			TenantID:  tenantID,
@@ -1377,7 +1417,7 @@ func (r *Repo) ListSiteSuppression(ctx context.Context, tenantID, siteID uuid.UU
 	cursorTs, cursorID := parseCursor(f.Cursor)
 
 	var page SuppressionPage
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListEmailSuppression(ctx, sqlc.ListEmailSuppressionParams{
 			TenantID:     tenantID,
 			SiteID:       pgtype.UUID{Bytes: siteID, Valid: true},
@@ -1409,7 +1449,7 @@ func (r *Repo) ListFleetSuppression(ctx context.Context, tenantID uuid.UUID, f S
 	cursorTs, cursorID := parseCursor(f.Cursor)
 
 	var page SuppressionPage
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, qerr := sqlc.New(tx).ListFleetEmailSuppression(ctx, sqlc.ListFleetEmailSuppressionParams{
 			TenantID:     tenantID,
 			CursorTs:     cursorTs,
@@ -1433,13 +1473,59 @@ func (r *Repo) ListFleetSuppression(ctx context.Context, tenantID uuid.UUID, f S
 	return page, err
 }
 
-// DeleteSuppression deletes a suppression entry by id. Runs under InTenantTx.
+// DeleteSuppression deletes a suppression entry by id. Runs under
+// scopedTenantTx. Returns ErrSuppressionRefused when the row exists and is
+// visible but the delete was refused, and ErrNotFound when there is no such row.
+//
+// WHY THIS IS NOT A PLAIN EXEC (GH #380).
+//
+// The route resolves a suppression entry by id with tenant scope only; there is
+// no site check on the id, and there deliberately is none on the READ, because
+// a fleet-wide entry (site_id IS NULL) has to stay visible to every site or the
+// pre-send check would start mailing addresses the organisation suppressed.
+// m112 then refuses the DELETE of that same row for a site-scoped principal.
+//
+// Postgres expresses that refusal as zero rows affected, not as an error. So
+// the honest-looking code path was a lie: the delete removed nothing, the
+// handler returned 204, and the caller was told a fleet-wide suppression entry
+// had been lifted while it was still in force. A caller acting on that answer
+// (a support tool marking the address deliverable, an operator moving on)
+// believes something about the system that is not true.
+//
+// The two outcomes are told apart by re-reading the row inside the SAME
+// transaction, so the answer describes one consistent snapshot rather than a
+// second, later state of the world:
+//
+//	deleted 1        -> success.
+//	deleted 0, row visible     -> the policy refused it. ErrSuppressionRefused,
+//	                              which the service maps to 403 with an
+//	                              explanation the operator can act on.
+//	deleted 0, row not visible -> there is nothing here for this principal.
+//	                              ErrNotFound -> 404.
 func (r *Repo) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID) error {
-	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		return sqlc.New(tx).DeleteEmailSuppression(ctx, sqlc.DeleteEmailSuppressionParams{
+	return r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		rows, qerr := q.DeleteEmailSuppression(ctx, sqlc.DeleteEmailSuppressionParams{
 			ID:       id,
 			TenantID: tenantID,
 		})
+		if qerr != nil {
+			return qerr
+		}
+		if rows > 0 {
+			return nil
+		}
+		if _, gerr := q.GetEmailSuppression(ctx, sqlc.GetEmailSuppressionParams{
+			ID:       id,
+			TenantID: tenantID,
+		}); gerr != nil {
+			if errors.Is(gerr, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return gerr
+		}
+		// Readable, and still here: the delete was refused, not a no-op.
+		return ErrSuppressionRefused
 	})
 }
 
@@ -1564,7 +1650,7 @@ func (r *Repo) PruneWebhookDedup(ctx context.Context, cutoffTs time.Time) (int64
 // GetEmailLogBodyStored fetches the body_stored flag for a log entry (resend gate).
 func (r *Repo) GetEmailLogBodyStored(ctx context.Context, tenantID, siteID, id uuid.UUID) (bool, error) {
 	var bodyStored bool
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).GetEmailLogBodyStored(ctx, sqlc.GetEmailLogBodyStoredParams{
 			ID:       id,
 			TenantID: tenantID,
@@ -1582,9 +1668,9 @@ func (r *Repo) GetEmailLogBodyStored(ctx context.Context, tenantID, siteID, id u
 	return bodyStored, err
 }
 
-// IncrEmailLogResentCount increments resent_count on a log entry. Runs under InTenantTx.
+// IncrEmailLogResentCount increments resent_count on a log entry. Runs under scopedTenantTx.
 func (r *Repo) IncrEmailLogResentCount(ctx context.Context, tenantID, siteID, id uuid.UUID) error {
-	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	return r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		return sqlc.New(tx).IncrEmailLogResentCount(ctx, sqlc.IncrEmailLogResentCountParams{
 			ID:       id,
 			TenantID: tenantID,
@@ -1593,11 +1679,11 @@ func (r *Repo) IncrEmailLogResentCount(ctx context.Context, tenantID, siteID, id
 	})
 }
 
-// DeleteEmailLogsBulk bulk-deletes log entries by id list. Runs under InTenantTx.
+// DeleteEmailLogsBulk bulk-deletes log entries by id list. Runs under scopedTenantTx.
 // Returns the number of rows deleted.
 func (r *Repo) DeleteEmailLogsBulk(ctx context.Context, tenantID, siteID uuid.UUID, ids []uuid.UUID) (int64, error) {
 	var deleted int64
-	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		n, qerr := sqlc.New(tx).DeleteEmailLogsBulk(ctx, sqlc.DeleteEmailLogsBulkParams{
 			TenantID: tenantID,
 			SiteID:   siteID,
