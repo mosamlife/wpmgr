@@ -30,10 +30,20 @@ mkdirSync(assetsDir, { recursive: true });
 //    Minified is smaller and faster for the browser to parse.
 const spec = parse(readFileSync(specYaml, "utf8"));
 
-// Self-healing version stamp: the rendered doc always shows the release
-// version from the top CHANGELOG.md entry, so info.version can never drift
-// on wpmgr.app/docs even if the yaml bump is forgotten. Falls back to the
-// yaml's own value when the CHANGELOG cannot be parsed.
+// Version stamp: prefer the release version from the top CHANGELOG.md entry
+// over whatever info.version the yaml carries. Falls back to the yaml's own
+// value when the CHANGELOG cannot be read.
+//
+// THIS DOES NOT RUN IN THE IMAGE THAT SHIPS, and calling it self-healing was
+// wrong. infra/Dockerfile.marketing copies the workspace manifests, packages/
+// and apps/marketing/ into the build context and nothing else, so repo-root
+// CHANGELOG.md is absent and every production build takes the catch below
+// silently. What actually keeps info.version honest is the CI guard in
+// .github/workflows/ci.yml, which fails the build when openapi.yaml
+// info.version and the top CHANGELOG.md entry disagree. This block is a local
+// convenience, not a guarantee. Anything else tempted to reach outside
+// apps/marketing at build time has the same problem and needs a COPY added
+// first.
 try {
   const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
   const m = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m);

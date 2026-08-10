@@ -213,3 +213,68 @@ The DoD for **any** WPMgr feature includes both documentation surfaces. Enforce 
 **Layer 4 — release ritual.** Cutting a release is the moment the `[Unreleased]` block becomes a dated `[X.Y.Z]` section, the version surfaces are bumped, and the landing is rebuilt + redeployed via §1.4. No feature is "released" until it appears under a dated version heading in `CHANGELOG.md` and on the live `/changelog`.
 
 **The single bright line that overrides all convenience:** no competitor name may appear in the landing site, README, CHANGELOG, or any code or comment. The lone exception is the GitHub repository **description** field. If in doubt, leave the competitor out and describe WPMgr on its own terms.
+---
+
+## 5. Version surfaces, and which ones CI enforces
+
+> **Note on `apps/landing`.** Sections 1 to 4 above were written when the public
+> site was `apps/landing`. That app is retired and is no longer built or
+> deployed. Read every `apps/landing` reference above as `apps/marketing`. This
+> section is written against the current tree.
+
+Sixteen files in this repo can name a version. Six of them name one to a reader
+who acts on it, and those six are checked by the `Security audit` job in
+`.github/workflows/ci.yml`. The rest are historical statements (a runbook
+describing a publish that happened, spec prose naming the agent version that
+introduced a field, a workflow comment citing an old version as an example) and
+are deliberately left alone: they were true when written and they stay true.
+
+### 5.1 What is checked, against what, with what tolerance
+
+| Surface | Compared to | Tolerance |
+| --- | --- | --- |
+| `packages/openapi/openapi.yaml` `info.version` | top `CHANGELOG.md` entry | exact |
+| `apps/marketing/app/(marketing)/changelog/page.tsx` newest entry | top `CHANGELOG.md` entry | 5 releases |
+| GHCR pull tags, `WPMGR_VERSION` export and status line in `README.md`, plus the `WPMGR_VERSION` export in `docs/install.md` | top `CHANGELOG.md` entry, and each other | 1 release, and exact against each other |
+| `AGENT_VERSION` in `apps/marketing/lib/content/home.ts` | `WPMGR_AGENT_VERSION` in `apps/agent/wpmgr-agent.php` | exact |
+| `apps/agent/wpmgr-agent.php` plugin header, `WPMGR_AGENT_VERSION`, and `apps/agent/readme.txt` `Stable tag` | each other | exact |
+
+**Tolerance is counted in RELEASES, by position in `CHANGELOG.md`'s own ordered
+list**, not by subtracting patch numbers. So `0.61.131` is one release behind
+`0.62.0`, and a minor bump does not disable the compare. There is no version of
+"skip the check because the minor changed".
+
+**The README plus `docs/install.md` tolerance of 1 is the one most likely to
+surprise you.** It exists so a release PR can add the CHANGELOG entry before the
+tag is pushed. It does not stretch to two. If you skip the install-pin bump on
+one release, the next release fails CI, and the failure names the files and the
+distance. Bump the pins in the release commit.
+
+### 5.2 The agent version is not the repo version
+
+The agent plugin version moves only when the agent itself changes, so a
+control-plane-only release leaves it frozen. `0.61.128` through `0.61.131`
+shipped in four days with the agent on `0.61.127`. Three consequences:
+
+- Nothing that names the agent version is compared to `CHANGELOG.md`. The hero
+  badge is compared to `apps/agent/wpmgr-agent.php`, and the agent's three
+  self-declarations are compared to each other.
+- `make agent-zip VERSION=` stamps a staged copy and never the source tree, so
+  the checked-in agent version is the last released one, on purpose.
+- When the agent version does move, it moves in the release commit, and
+  `AGENT_VERSION` in `apps/marketing/lib/content/home.ts` moves in that same
+  commit. That is the only thing keeping the badge and the wordpress.org listing
+  in agreement.
+
+### 5.3 Release-commit checklist for version surfaces
+
+- [ ] `CHANGELOG.md`: `[Unreleased]` becomes `## [X.Y.Z] - YYYY-MM-DD`, and a bare `[Unreleased]` heading is left behind.
+- [ ] `packages/openapi/openapi.yaml`: `info.version` to `X.Y.Z`.
+- [ ] `apps/marketing/app/(marketing)/changelog/page.tsx`: add the entry (grouping releases is fine, within 5).
+- [ ] `README.md`: three GHCR pull tags, the `WPMGR_VERSION` export, the status line.
+- [ ] `docs/install.md`: the `WPMGR_VERSION` export.
+- [ ] Only if the agent changed: `apps/agent/wpmgr-agent.php` header and `WPMGR_AGENT_VERSION`, `apps/agent/readme.txt` `Stable tag` plus changelog and Upgrade Notice entries, and `AGENT_VERSION` in `apps/marketing/lib/content/home.ts`.
+
+Anything not on that list does not get bumped. `infra/docker-compose.prod.yml`
+in particular names no version: its default is `${WPMGR_VERSION:-latest}` and
+its usage comment says `vX.Y.Z`, so there is nothing there to go stale.

@@ -349,9 +349,14 @@ SVN=https://plugins.svn.wordpress.org/fleet-agent-site-manager
 V=0.61.127
 
 # Build the exact artifact. Never copy apps/agent/readme.txt from the source
-# tree: it carries a placeholder Stable tag and only the build stamps the real
-# value. Publishing the source copy points Stable tag at a tag that does not
-# exist and makes the plugin uninstallable.
+# tree. Its Stable tag is not a placeholder, it is maintained in the release
+# commit and CI fails if it disagrees with the plugin header or with
+# WPMGR_AGENT_VERSION, but it is the value for the version currently in the
+# tree, not for whatever $V you are publishing. make agent-zip-wporg stamps
+# Stable tag from the STAGED plugin header, so the published pair cannot
+# disagree even when you publish with a VERSION override. Copying the source
+# file by hand bypasses that and can point Stable tag at a tag that does not
+# exist, which makes the plugin uninstallable.
 make agent-zip-wporg
 make agent-plugincheck
 rm -rf /tmp/wporg && mkdir -p /tmp/wporg

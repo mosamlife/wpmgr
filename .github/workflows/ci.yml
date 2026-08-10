@@ -143,141 +143,265 @@ jobs:
       #     (the marketing build self-heals the rendered doc, but the source of
       #     truth should never drift).
       #  2. The newest RELEASES entry in the marketing changelog page must be
-      #     within 5 patch versions of it (catches the changelog page silently
-      #     falling behind, without demanding an entry for every single tag).
-      # Both checks are forgiving: if any version fails to parse we warn and
-      # skip rather than false-positive-block a PR.
+      #     within 5 RELEASES of it (catches the changelog page silently falling
+      #     behind, without demanding an entry for every single tag).
+      #
+      # DISTANCE IS COUNTED IN RELEASES, BY POSITION IN CHANGELOG.md's OWN LIST,
+      # never by subtracting patch numbers. Subtracting patch numbers is only
+      # meaningful while major.minor match, so the previous version of this check
+      # skipped the compare whenever they did not. That was described as "the
+      # first release after a minor bump warns and skips", which was false:
+      # nothing ever brings a stale surface back into the current minor, so ONE
+      # minor bump disabled the compare permanently and silently. With CHANGELOG
+      # top at 0.66.4 and a surface left on 0.61.131 it would have warned and
+      # skipped forever. Counting positions has no such hole: 0.61.131 sits
+      # exactly one release behind 0.62.0, and six releases later it sits six
+      # behind and fails.
+      #
+      # Forgiveness rule, unchanged: anything that fails to PARSE warns and skips
+      # rather than blocking a PR on a false positive. Two situations are errors
+      # rather than tolerances, because neither can be a parse accident: a
+      # surface naming a version NEWER than the top CHANGELOG entry (a reader
+      # cannot look it up), and a surface further behind than its tolerance.
+      # A version that parses but that CHANGELOG.md has no entry for cannot be
+      # placed in the ordering at all, so that one warns and skips.
       - name: Docs version drift guard (openapi + marketing changelog)
         run: |
-          top=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ' || true)
+          # Every released version, newest first. Position in this list is the
+          # unit that "N behind" is measured in, everywhere in this workflow.
+          releases=$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md 2>/dev/null | tr -d '#[] ' || true)
+          top=$(printf '%s\n' "$releases" | sed -n 1p)
           if [ -z "$top" ]; then
-            echo "WARN: could not parse the top CHANGELOG.md version; skipping the drift guard."
+            echo "WARN: could not parse any released version from CHANGELOG.md; skipping the drift guard."
             exit 0
           fi
-          spec=$(grep -m1 -E '^[[:space:]]+version:' packages/openapi/openapi.yaml | awk '{print $2}' | tr -d '"' || true)
+
+          # How many releases $1 sits behind the top entry. Prints nothing when
+          # CHANGELOG.md has no entry for that version.
+          releases_behind() {
+            printf '%s\n' "$releases" | grep -n -x -F -m1 -e "$1" | cut -d: -f1 | awk '{print $1 - 1}' || true
+          }
+
+          # 1 when $1 is a strictly newer version than $2, else 0. Compares every
+          # component numerically, so it is correct across a minor or major bump.
+          is_newer() {
+            awk -v a="$1" -v b="$2" 'BEGIN{
+              na=split(a,x,"."); nb=split(b,y,".");
+              n=(na>nb)?na:nb;
+              for(i=1;i<=n;i++){
+                xi=(i<=na)?x[i]+0:0; yi=(i<=nb)?y[i]+0:0;
+                if(xi>yi){print 1; exit}
+                if(xi<yi){print 0; exit}
+              }
+              print 0}'
+          }
+
+          # compare_surface <label> <version> <tolerance-in-releases> <remedy>
+          # Returns 1 on a real drift, 0 when in tolerance or unmeasurable.
+          compare_surface() {
+            _label="$1"; _v="$2"; _tol="$3"; _fix="$4"
+            if [ "$(is_newer "$_v" "$top")" = "1" ]; then
+              echo "ERROR: $_label names $_v, which is newer than the top CHANGELOG.md entry ($top)."
+              echo "Nothing may name a release the CHANGELOG has no entry for. $_fix"
+              return 1
+            fi
+            _behind=$(releases_behind "$_v")
+            if [ -z "$_behind" ]; then
+              echo "WARN: CHANGELOG.md has no entry for $_v ($_label), so the distance cannot be measured; skipping that compare."
+              return 0
+            fi
+            if [ "$_behind" -gt "$_tol" ]; then
+              echo "ERROR: $_label names $_v, which is $_behind releases behind the top CHANGELOG.md entry ($top). Tolerance is $_tol."
+              echo "$_fix"
+              return 1
+            fi
+            echo "OK: $_label ($_v) is $_behind releases behind $top, tolerance $_tol."
+            return 0
+          }
+
+          fail=0
+
+          # Shape-checked, not just non-empty: a value that is not MAJOR.MINOR.PATCH
+          # did not parse, and the rule everywhere in this guard is that a parse
+          # failure warns and skips. Only two real versions that differ is an error.
+          spec=$(grep -m1 -E '^[[:space:]]+version:' packages/openapi/openapi.yaml 2>/dev/null | awk '{print $2}' | tr -d '"' | grep -xE '[0-9]+\.[0-9]+\.[0-9]+' || true)
           if [ -z "$spec" ]; then
-            echo "WARN: could not parse packages/openapi/openapi.yaml info.version; skipping that check."
+            echo "WARN: could not parse packages/openapi/openapi.yaml info.version as MAJOR.MINOR.PATCH; skipping that check."
           elif [ "$spec" != "$top" ]; then
             echo "ERROR: packages/openapi/openapi.yaml info.version is $spec but the top CHANGELOG.md entry is $top."
             echo "Bump openapi.yaml info.version alongside the CHANGELOG."
-            exit 1
+            fail=1
+          else
+            echo "OK: openapi.yaml info.version matches the top CHANGELOG.md entry ($top)."
           fi
+
           page='apps/marketing/app/(marketing)/changelog/page.tsx'
           # Newest RELEASES entry; may be a range like "0.61.64 - 0.61.65", take the first number.
           mk=$(grep -m1 -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+' "$page" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
           if [ -z "$mk" ]; then
             echo "WARN: could not parse the newest marketing changelog version from $page; skipping that check."
-            exit 0
-          fi
-          if [ "${top%.*}" = "${mk%.*}" ]; then
-            top_patch=${top##*.}
-            mk_patch=${mk##*.}
-            behind=$((top_patch - mk_patch))
-            if [ "$behind" -gt 5 ]; then
-              echo "ERROR: the marketing changelog's newest entry ($mk) is $behind patch versions behind the top CHANGELOG.md entry ($top)."
-              echo "Backfill apps/marketing/app/(marketing)/changelog/page.tsx (grouped entries are fine)."
-              exit 1
-            fi
-            echo "Marketing changelog newest entry $mk is within tolerance of $top."
           else
-            echo "WARN: major/minor differ between marketing changelog ($mk) and CHANGELOG.md ($top); skipping the drift compare."
+            compare_surface "the marketing changelog's newest entry" "$mk" 5 \
+              "Backfill $page (grouped entries are fine)." || fail=1
           fi
-          echo "openapi.yaml info.version matches the top CHANGELOG.md entry ($top)."
+
+          exit "$fail"
 
       # Docs-version drift guard, part two: the surfaces that name a version to a
       # reader and drifted anyway because nothing compared them to anything. This
-      # is a separate step on purpose. The step above exits 0 early when the
-      # marketing changelog cannot be parsed, so anything appended to it would be
-      # skipped along with it, silently, which is exactly the failure mode being
-      # fixed here. It re-parses the top CHANGELOG entry for the same reason: one
-      # unparseable surface must never take the others down with it.
+      # is a separate step on purpose. The step above exits early when CHANGELOG
+      # itself cannot be parsed, so anything appended to it would be skipped along
+      # with it, silently, which is exactly the failure mode being fixed here.
+      # It re-derives the release ordering for the same reason: one unparseable
+      # surface must never take the others down with it.
       #
-      # The tolerances differ per surface, and the numbers are deliberate:
+      # Two surfaces, and they are compared to DIFFERENT references on purpose:
       #
       #  * apps/marketing/lib/content/home.ts AGENT_VERSION drives the hero badge
-      #    and the provenance fact row. It names the release the wordpress.org
-      #    listing serves, and that listing is published by a separate, manually
-      #    gated workflow, so the badge may legitimately trail the version being
-      #    prepared in the CHANGELOG. Tolerance 2, not the 5 the changelog page
-      #    gets, because the drift this check exists to catch was 4 (badge on
-      #    0.61.127 while 0.61.131 was live and served by wordpress.org) and a
-      #    tolerance of 5 would have waved it straight through. It may never lead:
-      #    a badge naming a version the CHANGELOG has no entry for is wrong in
-      #    every direction, so that is an error, not a tolerance.
+      #    and the provenance fact row, both of which name the AGENT plugin
+      #    version that wordpress.org serves. Its reference is therefore
+      #    apps/agent/wpmgr-agent.php, NOT the CHANGELOG.
       #
-      #  * README.md names GHCR image tags that a self-hoster copies and pulls
-      #    verbatim. Trailing here hands somebody a build without whatever the
-      #    newest release fixed, so tolerance is 1: enough to forgive the window
-      #    inside a release PR where the CHANGELOG entry exists but the tag has
-      #    not been pushed yet, and nothing more. The versions inside README.md
-      #    (the three docker pull tags, the WPMGR_VERSION export, the status line)
-      #    must additionally agree with each other exactly. That is an internal
-      #    invariant with no tolerance question in it.
+      #    Comparing it to the CHANGELOG was wrong, and expensively so. The agent
+      #    version deliberately does not track the repo release version: it moves
+      #    only when the agent itself changes, which release.yml states outright
+      #    where it refuses to re-publish a moved artifact under a frozen agent
+      #    version. Control-plane-only bursts are this project's normal cadence,
+      #    0.61.128 through 0.61.131 shipped in four days with the agent frozen at
+      #    0.61.127, and through all of it a badge reading 0.61.127 was telling
+      #    visitors the exact truth. Measured against the CHANGELOG it looked four
+      #    releases stale and would have reddened main on an honest tree. A guard
+      #    that cries wolf gets switched off, and then it guards nothing.
       #
-      # Same forgiveness rule as above throughout: anything that fails to parse
-      # warns and skips instead of blocking a PR on a false positive. Known and
-      # accepted blind spot, identical to the check above: both compares only run
-      # when major.minor match, so the first release after a minor bump warns and
-      # skips instead of failing. Bump these surfaces in the minor release PR.
-      - name: Docs version drift guard (marketing badge + README install tags)
+      #    Against the agent version the rule is exact equality, with no
+      #    tolerance, because there is nothing legitimate for a tolerance to
+      #    forgive. Checked against the live directory on 2026-08-10: the repo's
+      #    agent was 0.61.131 and wordpress.org served 0.61.131. The publish is
+      #    manually gated (wporg-deploy.yml) but it follows the agent bump within
+      #    days, and the agent bump lands in the release commit, so the badge
+      #    belongs in that same commit. Equality also catches the drift this whole
+      #    guard exists for: at the 0.61.131 release commit the agent moved and
+      #    the badge did not.
+      #
+      #    NOT DERIVED FROM apps/agent/wpmgr-agent.php AT BUILD TIME, deliberately,
+      #    even though sync-openapi.mjs shows the shape of how that would work.
+      #    infra/Dockerfile.marketing copies only the workspace manifests,
+      #    packages/ and apps/marketing/ into the build context, so a read outside
+      #    those paths does not resolve in the image that actually ships. That is
+      #    not hypothetical: sync-openapi.mjs's own CHANGELOG.md read already
+      #    falls into its catch on every production build for exactly this reason,
+      #    silently. Deriving would mean widening a live image's build context and
+      #    depending on it staying wide, where the failure mode is a silently
+      #    stale badge and no guard left to catch it. Fifteen lines of comparison
+      #    here cost less and fail loudly.
+      #
+      #  * The install pins a self-hoster copies verbatim: the GHCR pull tags and
+      #    the status line in README.md, and the WPMGR_VERSION export in BOTH
+      #    README.md and docs/install.md. They are checked as ONE set, because
+      #    README.md links docs/install.md as the full install guide directly
+      #    under its own pull block, so a reader crosses between them mid-install.
+      #    Guarding only README.md is why docs/install.md was still handing people
+      #    v0.19.0, 42 releases behind, one link away from the block this guard
+      #    was written to protect. They must agree with each other exactly, and
+      #    sit within 1 release of the top CHANGELOG entry: enough to forgive the
+      #    window inside a release PR where the entry exists but the tag has not
+      #    been pushed, and nothing more.
+      #
+      #    infra/docker-compose.prod.yml is deliberately NOT in this set. Its
+      #    functional default, image: ...:${WPMGR_VERSION:-latest}, names no
+      #    version and needs no guard. Its header comment did name one, and had
+      #    rotted to the same v0.19.0, but it is a comment about the mechanism
+      #    rather than an install step anyone follows, and the step it duplicated
+      #    is the guarded one in docs/install.md. So the concrete version was
+      #    removed from that comment instead of adding a fourth surface to bump
+      #    every release. Guard the copy people follow; delete the copy that only
+      #    exists to be duplicated.
+      #
+      # Same forgiveness rule throughout: anything that fails to parse warns and
+      # skips instead of blocking a PR on a false positive. Both sub-checks always
+      # run and the step exits once at the end, so a tree with two stale surfaces
+      # reports both in one CI cycle rather than one per push.
+      - name: Docs version drift guard (marketing badge + install pins)
         run: |
-          top=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ' || true)
+          releases=$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md 2>/dev/null | tr -d '#[] ' || true)
+          top=$(printf '%s\n' "$releases" | sed -n 1p)
           if [ -z "$top" ]; then
-            echo "WARN: could not parse the top CHANGELOG.md version; skipping the drift guard."
+            echo "WARN: could not parse any released version from CHANGELOG.md; skipping the drift guard."
             exit 0
           fi
 
+          releases_behind() {
+            printf '%s\n' "$releases" | grep -n -x -F -m1 -e "$1" | cut -d: -f1 | awk '{print $1 - 1}' || true
+          }
+
+          is_newer() {
+            awk -v a="$1" -v b="$2" 'BEGIN{
+              na=split(a,x,"."); nb=split(b,y,".");
+              n=(na>nb)?na:nb;
+              for(i=1;i<=n;i++){
+                xi=(i<=na)?x[i]+0:0; yi=(i<=nb)?y[i]+0:0;
+                if(xi>yi){print 1; exit}
+                if(xi<yi){print 0; exit}
+              }
+              print 0}'
+          }
+
+          fail=0
+
+          # --- the marketing hero badge, against the agent it names ---
+          # Anchored at the start of the line so a differently named constant
+          # sitting above the real one cannot be matched instead.
           home='apps/marketing/lib/content/home.ts'
-          badge=$(grep -m1 -oE 'AGENT_VERSION *= *"[0-9]+\.[0-9]+\.[0-9]+' "$home" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          if [ -z "$badge" ]; then
-            echo "WARN: could not parse AGENT_VERSION from $home; skipping that check."
-          elif [ "${top%.*}" != "${badge%.*}" ]; then
-            echo "WARN: major/minor differ between the marketing hero badge ($badge) and CHANGELOG.md ($top); skipping the drift compare."
+          agent_main='apps/agent/wpmgr-agent.php'
+          badge=$(grep -m1 -oE '^const AGENT_VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' "$home" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          agent=$(grep -m1 -oE "^define\('WPMGR_AGENT_VERSION', *'[0-9]+\.[0-9]+\.[0-9]+'\)" "$agent_main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$badge" ] || [ -z "$agent" ]; then
+            echo "WARN: could not parse both the badge and the agent version (badge='$badge' agent='$agent'); skipping that check."
+          elif [ "$badge" != "$agent" ]; then
+            echo "ERROR: the marketing hero badge names agent $badge but $agent_main is on $agent."
+            echo "The badge and the provenance fact row tell visitors which agent version wordpress.org serves,"
+            echo "so they must name the agent release this repo carries. Bump AGENT_VERSION in $home."
+            fail=1
           else
-            behind=$(( ${top##*.} - ${badge##*.} ))
-            if [ "$behind" -lt 0 ]; then
-              echo "ERROR: the marketing hero badge (AGENT_VERSION $badge) is ahead of the top CHANGELOG.md entry ($top)."
-              echo "The badge must never name a release the CHANGELOG has no entry for."
-              exit 1
-            fi
-            if [ "$behind" -gt 2 ]; then
-              echo "ERROR: the marketing hero badge (AGENT_VERSION $badge) is $behind patch versions behind the top CHANGELOG.md entry ($top)."
-              echo "Bump AGENT_VERSION in $home; it is what the hero badge tells visitors wordpress.org serves."
-              exit 1
-            fi
-            echo "Marketing hero badge $badge is within tolerance of $top."
+            echo "OK: the marketing hero badge names agent $badge, matching $agent_main."
           fi
 
-          tags=$(grep -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          envtag=$(grep -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          status=$(grep -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          seen=$(printf '%s\n%s\n%s\n' "$tags" "$envtag" "$status" | grep -E '^[0-9]' | sort -u || true)
+          # --- the install pins a self-hoster copies, README.md + docs/install.md ---
+          pin_files='README.md docs/install.md'
+          pins=$( { grep -Hn -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
+                    grep -Hn -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
+                    grep -Hn -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' $pin_files; } 2>/dev/null || true )
+          seen=$( { grep -h -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
+                    grep -h -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
+                    grep -h -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' $pin_files; } 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u || true )
           if [ -z "$seen" ]; then
-            echo "WARN: could not parse any version from README.md (no ghcr.io pull tag, no WPMGR_VERSION export); skipping that check."
-            exit 0
+            echo "WARN: could not parse any install pin from $pin_files (no ghcr.io pull tag, no WPMGR_VERSION export); skipping that check."
+          elif [ "$(printf '%s\n' "$seen" | wc -l | tr -d ' ')" -gt 1 ]; then
+            echo "ERROR: the install instructions name more than one version:"
+            echo "$pins"
+            echo "The GHCR pull tags, the WPMGR_VERSION exports and the README status line must all name the same release."
+            fail=1
+          else
+            compare_fix="Update the ghcr.io pull tags, the WPMGR_VERSION exports and the README status line in $pin_files."
+            if [ "$(is_newer "$seen" "$top")" = "1" ]; then
+              echo "ERROR: the install instructions name v$seen, which is newer than the top CHANGELOG.md entry ($top)."
+              echo "They must never hand a self-hoster a tag that was never released. $compare_fix"
+              fail=1
+            else
+              behind=$(releases_behind "$seen")
+              if [ -z "$behind" ]; then
+                echo "WARN: CHANGELOG.md has no entry for $seen, so the distance cannot be measured; skipping that compare."
+              elif [ "$behind" -gt 1 ]; then
+                echo "ERROR: the install instructions still tell self-hosters to pull v$seen, $behind releases behind the top CHANGELOG.md entry ($top)."
+                echo "$compare_fix"
+                fail=1
+              else
+                echo "OK: install pin $seen is $behind releases behind $top, tolerance 1."
+              fi
+            fi
           fi
-          if [ "$(printf '%s\n' "$seen" | wc -l | tr -d ' ')" -gt 1 ]; then
-            echo "ERROR: README.md names more than one version:"
-            echo "$seen"
-            echo "The docker pull tags, the WPMGR_VERSION export and the status line must all name the same release."
-            exit 1
-          fi
-          if [ "${top%.*}" != "${seen%.*}" ]; then
-            echo "WARN: major/minor differ between README.md ($seen) and CHANGELOG.md ($top); skipping the drift compare."
-            exit 0
-          fi
-          behind=$(( ${top##*.} - ${seen##*.} ))
-          if [ "$behind" -lt 0 ]; then
-            echo "ERROR: README.md names v$seen, which is ahead of the top CHANGELOG.md entry ($top)."
-            echo "The install instructions must never name a tag the CHANGELOG has no entry for."
-            exit 1
-          fi
-          if [ "$behind" -gt 1 ]; then
-            echo "ERROR: README.md still tells self-hosters to pull v$seen, $behind releases behind the top CHANGELOG.md entry ($top)."
-            echo "Update the ghcr.io pull tags, the WPMGR_VERSION export and the status line in README.md."
-            exit 1
-          fi
-          echo "README.md install version $seen is within tolerance of $top."
+
+          exit "$fail"
 
       # Agent version triple. apps/agent/wpmgr-agent.php carries its version twice
       # (the plugin header WordPress reads, and the WPMGR_AGENT_VERSION constant
@@ -296,7 +420,7 @@ jobs:
           main='apps/agent/wpmgr-agent.php'
           readme='apps/agent/readme.txt'
           header=$(grep -m1 -oE '^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          constant=$(grep -m1 -oE "WPMGR_AGENT_VERSION'[[:space:]]*,[[:space:]]*'[0-9]+\.[0-9]+\.[0-9]+" "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          constant=$(grep -m1 -oE "^define\('WPMGR_AGENT_VERSION',[[:space:]]*'[0-9]+\.[0-9]+\.[0-9]+'\)" "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
           stable=$(grep -m1 -oE '^Stable tag:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$readme" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
           if [ -z "$header" ] || [ -z "$constant" ] || [ -z "$stable" ]; then
             echo "WARN: could not parse the agent version from all three places (header='$header' constant='$constant' stable='$stable'); skipping the agent triple check."

@@ -311,7 +311,7 @@ Site screenshot cards then fall back to favicon/monogram and the Media Optimizer
 
 ### Prebuilt container images
 
-The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images, for wiring into your own compose, Kubernetes, or Swarm setup:
+The control plane, dashboard, and media encoder are published on GitHub Container Registry, for wiring into your own compose, Kubernetes, or Swarm setup. The api and web images are multi-arch (`linux/amd64` + `linux/arm64`); the media encoder is `linux/amd64` only, because its image codec library ships prebuilt static libraries for that architecture alone:
 
 ```bash
 docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.131

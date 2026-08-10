@@ -217,7 +217,7 @@ Pre-built `linux/amd64` images are published on GitHub Container Registry:
 quickstart or a clone), bring up the stack with the pull-only overlay:
 
 ```bash
-export WPMGR_VERSION=v0.19.0   # omit to track :latest
+export WPMGR_VERSION=v0.61.131   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
