@@ -578,8 +578,13 @@ export const POST_ART = {
 
 export type PostArtName = keyof typeof POST_ART;
 
+// `hasOwn`, not `in`. The value arrives as MDX frontmatter, so the guard is
+// asked about arbitrary author-supplied strings, and `in` also answers true for
+// everything on Object.prototype. `art: __proto__` would have passed the guard,
+// indexed to Object.prototype, and thrown "element type is invalid" during
+// static generation instead of falling back to the category illustration.
 export function isPostArtName(value: unknown): value is PostArtName {
-  return typeof value === "string" && value in POST_ART;
+  return typeof value === "string" && Object.hasOwn(POST_ART, value);
 }
 
 /**

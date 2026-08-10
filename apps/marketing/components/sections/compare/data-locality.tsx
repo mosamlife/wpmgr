@@ -84,7 +84,9 @@ export function DataLocality({ data }: { data: ComparisonPageData }) {
                       className="ml-1 align-super text-[10px] underline underline-offset-2 hover:text-foreground"
                       aria-label={`Source, reference ${id}`}
                     >
-                      {id.split("-")[1]}
+                      {/* Full id: this section cites mw-11 and mn-11 on the
+                          same screen, and both rendered as "11". */}
+                      {id}
                     </a>
                   ))}
                 </p>

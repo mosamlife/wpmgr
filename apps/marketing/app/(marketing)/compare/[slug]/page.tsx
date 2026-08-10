@@ -40,10 +40,11 @@ export default async function ComparePage({
   ]);
 
   return (
+    // No <main> here: the (marketing) group layout already renders one, and a
+    // second nested landmark is invalid HTML and duplicates the target of
+    // landmark navigation.
     <>
-      <main>
-        <ComparisonPage data={page} />
-      </main>
+      <ComparisonPage data={page} />
       <JsonLd data={breadcrumbLd} />
       {page.faq.length > 0 && <JsonLd data={buildFAQPageLd(page.faq)} />}
     </>

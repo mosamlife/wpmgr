@@ -109,13 +109,16 @@ export default async function PricingPage() {
                 Get started for free
                 <Icon name="ArrowRight" size={18} />
               </Link>
+              {/* Goes to /self-host, not to the repo. Every other surface
+                  carrying this exact label points at that page, and a reader
+                  who is weighing the hosted price against running it themselves
+                  wants the how, not a source tree. The repo link stays on this
+                  page, below the tier cards. */}
               <Link
-                href={SITE_CONFIG.github}
-                target="_blank"
-                rel="noreferrer noopener"
+                href="/self-host"
                 className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-card px-6 py-3 text-base font-medium text-foreground transition-colors hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
               >
-                <Icon name="Github" size={18} />
+                <Icon name="Server" size={18} />
                 Or self-host it
               </Link>
             </div>

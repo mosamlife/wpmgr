@@ -16,37 +16,38 @@ export default function CompareIndexPage() {
   const pages = Object.values(COMPARE_REGISTRY);
 
   return (
+    // No <main> here: the (marketing) group layout already renders one, and a
+    // second nested landmark is invalid HTML and duplicates the target of
+    // landmark navigation.
     <>
-      <main>
-        <Section>
-          <Container>
-            <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
-              Compare WordPress management tools
-            </h1>
-            <p className="mt-5 max-w-[70ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
-              We build one of the products on these pages, so every factual claim links to the
-              page it came from and the date we checked it. That includes the claims that do not
-              favour us.
-            </p>
+      <Section>
+        <Container>
+          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+            Compare WordPress management tools
+          </h1>
+          <p className="mt-5 max-w-[70ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
+            We build one of the products on these pages, so every factual claim links to the page
+            it came from and the date we checked it. That includes the claims that do not favour
+            us.
+          </p>
 
-            <ul className="mt-10 flex flex-col gap-4">
-              {pages.map((p) => (
-                <li key={p.slug}>
-                  <Link
-                    href={`/compare/${p.slug}`}
-                    className="block rounded-xl border border-[var(--border)] bg-card p-6 shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
-                  >
-                    <span className="text-lg font-semibold text-foreground">{p.title}</span>
-                    <span className="mt-2 block text-sm leading-relaxed text-[var(--muted-foreground)]">
-                      {p.metaDescription}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </Container>
-        </Section>
-      </main>
+          <ul className="mt-10 flex flex-col gap-4">
+            {pages.map((p) => (
+              <li key={p.slug}>
+                <Link
+                  href={`/compare/${p.slug}`}
+                  className="block rounded-xl border border-[var(--border)] bg-card p-6 shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+                >
+                  <span className="text-lg font-semibold text-foreground">{p.title}</span>
+                  <span className="mt-2 block text-sm leading-relaxed text-[var(--muted-foreground)]">
+                    {p.metaDescription}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Container>
+      </Section>
       <JsonLd
         data={buildBreadcrumbLd([
           { name: "Home", href: "/" },

@@ -18,11 +18,28 @@ import { POSTHOG_KEY, POSTHOG_HOST, analyticsEnabled } from "./analytics";
 let pending: Promise<PostHog | null> | null = null;
 
 /**
+ * How long to wait before re-attempting an import that failed.
+ *
+ * A FAILURE MUST NOT BE PERMANENT, AND MUST NOT THRASH. An earlier version
+ * cached the rejected attempt forever, so one flaky chunk fetch on a slow
+ * connection silently disabled every event for the rest of the page's life.
+ * Clearing the cache alone would swing to the other failure: the dominant real
+ * cause of this import failing is an ad blocker or a network-level block, where
+ * every retry is guaranteed to fail too, and a click handler that re-attempts a
+ * dynamic import on every click is worse than no analytics.
+ */
+const RETRY_AFTER_MS = 30_000;
+let failedAt = 0;
+
+/**
  * Resolves to an initialised PostHog instance, or null when analytics is not
  * configured. Safe to call repeatedly: the import and init happen once.
  */
 export function getPostHog(): Promise<PostHog | null> {
   if (typeof window === "undefined" || !analyticsEnabled.posthog) {
+    return Promise.resolve(null);
+  }
+  if (!pending && failedAt !== 0 && Date.now() - failedAt < RETRY_AFTER_MS) {
     return Promise.resolve(null);
   }
   if (!pending) {
@@ -45,9 +62,16 @@ export function getPostHog(): Promise<PostHog | null> {
           // recording form contents by surprise.
           session_recording: { maskAllInputs: true },
         });
+        failedAt = 0;
         return posthog;
       })
-      .catch(() => null);
+      .catch(() => {
+        // Drop the cached rejection so a later event can try again, after the
+        // cooldown above.
+        pending = null;
+        failedAt = Date.now();
+        return null;
+      });
   }
   return pending;
 }

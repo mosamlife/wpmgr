@@ -197,6 +197,16 @@ export type CostModel = {
   /** Flat fee covering `bundleCovers` sites, when the vendor offers one. */
   bundle?: number;
   bundleCovers?: number;
+  /**
+   * Any further packages the same customer could buy instead, each covering
+   * `covers` sites (omit `covers` for unlimited). The cost widget charges a
+   * vendor the CHEAPEST route to the same capability, so a package that is not
+   * modelled here is a package we may be overcharging them for. It exists as a
+   * list rather than a second bundle field because a vendor can publish several
+   * at once, and because the failure mode is silent: nothing on the page looks
+   * wrong when the cheapest option is simply absent from the arithmetic.
+   */
+  alternatives?: Array<{ amount: number; covers?: number }>;
   /** A single flat fee for unlimited sites. */
   flat?: number;
   period: "month" | "year";
