@@ -230,6 +230,76 @@ func TestRepairIdentity_WritesNothingUnlessTheSignInWasAllowed(t *testing.T) {
 	s.repairIdentity(context.Background(), socialSignIn, oidcIn(acmeNew, "123"), socialFacts{})
 }
 
+// TestTouchIssuer_FindsTheRowTheStampMustUpdate is the other half of
+// repairIdentity: once the repair has run, the login stamp has to look the row
+// up under the issuer it now lives under, and the stamp is an EXACT match on
+// (provider, subject, issuer).
+//
+// The case that was wrong is the fold. matchStoredIdentity treats a case or
+// trailing-slash difference as no difference, so the sign-in is correctly
+// recognised through the stored spelling and repairIdentity deliberately writes
+// nothing, because there is nothing to repair. The stamp then went looking for
+// the INBOUND spelling and matched no rows at all: last_login_at stayed null for
+// the life of that identity, the provider's current address was never recorded,
+// and every later sign-in repeated the same two-query miss.
+//
+// The two repair paths are the opposite case and must not be folded in with it.
+// Both write the row under the issuer that just signed the token, so stamping
+// those under the stored one would miss for the very same reason.
+func TestTouchIssuer_FindsTheRowTheStampMustUpdate(t *testing.T) {
+	cases := []struct {
+		name  string
+		facts socialFacts
+		in    SocialIdentity
+		want  string
+	}{
+		{
+			// The ordinary path: every issuer in play is the same string.
+			name:  "exact match stamps the issuer that signed",
+			facts: socialFacts{match: matchExact, storedIssuer: acme},
+			in:    oidcIn(acme, "123"),
+			want:  acme,
+		},
+		{
+			// THE ONE THAT WAS BROKEN. Same issuer, different spelling; the row
+			// keeps the spelling it was stored with.
+			name:  "cosmetic fold stamps the stored spelling",
+			facts: socialFacts{match: matchExact, storedIssuer: "https://IDP.acme.com"},
+			in:    oidcIn("https://idp.acme.com/", "123"),
+			want:  "https://IDP.acme.com",
+		},
+		{
+			// The row moved to the new issuer, so the stamp follows it.
+			name:  "a migrated issuer stamps where the row moved to",
+			facts: socialFacts{match: matchIssuerMigrated, storedIssuer: acme},
+			in:    oidcIn(acmeNew, "123"),
+			want:  acmeNew,
+		},
+		{
+			// Adoption INSERTS under the current issuer, whatever the legacy
+			// columns said.
+			name:  "an adopted legacy row stamps the current issuer",
+			facts: socialFacts{match: matchExact, storedIssuer: acme, fromLegacy: true},
+			in:    oidcIn(acmeNew, "123"),
+			want:  acmeNew,
+		},
+		{
+			// Consumer providers mint a constant issuer and store nothing here.
+			name:  "no stored issuer falls back to the inbound one",
+			facts: socialFacts{match: matchExact},
+			in:    SocialIdentity{Provider: "google", Subject: "123", Issuer: googleIssuer},
+			want:  googleIssuer,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.facts.touchIssuer(tc.in); got != tc.want {
+				t.Errorf("touchIssuer = %q, want %q; the stamp is an exact match, so a wrong issuer updates no rows at all", got, tc.want)
+			}
+		})
+	}
+}
+
 // The legacy users.oidc_* mirror is a courtesy to a rollback that may never
 // happen. Writing it blind makes that courtesy fatal: the column pair is
 // unique, so a taken slot fails the whole sign-in with a duplicate-key error

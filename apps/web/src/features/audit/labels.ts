@@ -26,6 +26,10 @@ const ACTION_LABELS: Record<string, string> = {
   "auth.oidc.login": "Signed in with SSO",
   "auth.identity.unlinked": "Disconnected a sign-in provider",
   "auth.password.set": "Added a password",
+  "auth.social.linked": "Connected a sign-in provider",
+  "auth.social.registered": "Registered account with a sign-in provider",
+  "auth.identity.issuer_moved": "Moved a sign-in provider to a new issuer",
+  "auth.identity.adopted": "Repaired a stored sign-in provider record",
 
   // Members & organization
   "member.add": "Added member",
@@ -311,6 +315,10 @@ const SENSITIVE_ACTIONS = new Set<string>([
   // one an owner most needs to spot if it was not them.
   "auth.identity.unlinked",
   "auth.password.set",
+  "auth.social.linked",
+  "auth.social.registered",
+  "auth.identity.issuer_moved",
+  "auth.identity.adopted",
   "site_destination.create",
   "site_destination.update",
   "site_destination.delete",

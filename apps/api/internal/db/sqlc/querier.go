@@ -2168,6 +2168,18 @@ type Querier interface {
 	// may report a changed address, and keeping the last-seen value makes an
 	// unexpected change visible instead of silently discarding it. This never
 	// changes users.email, which stays the account's own address.
+	//
+	// NO ADDRESS REPORTED IS NOT AN ADDRESS OF "". A provider can decline to tell
+	// us anything this time while still being the same identity: GitHub reports an
+	// empty address whenever /user/emails carries no primary verified entry, which
+	// is what a user who makes their address private looks like on their next
+	// sign-in. Writing that through blanked a previously stored, verified address,
+	// so the last-seen value was destroyed by the very sign-in that was meant to
+	// keep it current. An empty report therefore leaves both columns alone and
+	// stamps only the login, which is the one fact this sign-in actually
+	// established. email_verified moves with the address it describes, never on its
+	// own: keeping a stored address while flipping its verified flag to false would
+	// be a worse record than either value alone.
 	TouchIdentityLogin(ctx context.Context, arg TouchIdentityLoginParams) error
 	TouchRucssResultLastUsed(ctx context.Context, arg TouchRucssResultLastUsedParams) error
 	// ---------------------------------------------------------------------------

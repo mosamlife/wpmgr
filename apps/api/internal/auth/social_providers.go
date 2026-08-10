@@ -73,11 +73,21 @@ func (s *SocialProviders) Get(key string) SocialProviderAdapter {
 
 // Enabled lists the configured providers, in a stable order, so the sign-in
 // page can render exactly the buttons that will work.
+//
+// NEVER NIL, because this is serialised straight into the providers field of
+// GET /auth/social/providers, and openapi.yaml declares that field required,
+// type array and not nullable. A nil slice marshals as JSON null, so the
+// DEFAULT install, the one with no social credentials configured, which is
+// every self-host until an operator sets some, was the case that violated the
+// published contract. The web client happens to be defensive about it, which is
+// exactly why this could sit there unnoticed by anything except a generated
+// client that trusts the spec.
 func (s *SocialProviders) Enabled() []string {
 	if s == nil {
-		return nil
+		return []string{}
 	}
-	return append([]string(nil), s.order...)
+	out := make([]string, 0, len(s.order))
+	return append(out, s.order...)
 }
 
 // ---------------------------------------------------------------------------
@@ -91,12 +101,34 @@ type googleAdapter struct {
 	// bounded and shared between concurrent sign-ins. See oidc_discovery.go for
 	// why each of those three words is load-bearing.
 	disc *oidcDiscovery
+
+	// httpTimeout is a test seam, exactly as it is on githubAdapter. Nothing
+	// outside a test changes it.
+	httpTimeout time.Duration
 }
 
 const googleIssuer = "https://accounts.google.com"
 
+// googleHTTPTimeout bounds the two outbound calls this adapter makes AFTER
+// discovery: the code exchange and the ID token verification.
+//
+// Neither had any bound at all. Both ran under whatever context the inbound Gin
+// request carried, and the exchange ran on http.DefaultClient, which has no
+// timeout, because oauth2 takes its client from the context and nothing
+// installed one. Discovery was bounded (see discoveryTimeout) and the GitHub
+// adapter was fixed, so Google was the last unbounded outbound call on the
+// sign-in path. This server sets no WriteTimeout by deliberate design, so
+// nothing else stood behind it: a Google endpoint that accepted the connection
+// and then stopped talking held a request handler open until the browser gave
+// up.
+const googleHTTPTimeout = 15 * time.Second
+
 func newGoogleAdapter(cfg config.GoogleConfig) *googleAdapter {
-	return &googleAdapter{cfg: cfg, disc: newOIDCDiscovery(googleIssuer)}
+	return &googleAdapter{
+		cfg:         cfg,
+		disc:        newOIDCDiscovery(googleIssuer),
+		httpTimeout: googleHTTPTimeout,
+	}
 }
 
 func (g *googleAdapter) Key() string { return "google" }
@@ -137,7 +169,16 @@ func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifie
 	if err != nil {
 		return SocialIdentity{}, err
 	}
-	tok, err := g.oauth(redirectURL, provider.Endpoint()).Exchange(ctx, code, oauth2.VerifierOption(verifier))
+	// One bounded context for everything that leaves this process from here on.
+	// oidc.ClientContext and oauth2.HTTPClient are the same context key, so this
+	// single call replaces http.DefaultClient for the exchange; the deadline is
+	// what bounds the verification, whose key fetch waits on the caller's
+	// context. See googleHTTPTimeout.
+	httpClient := &http.Client{Timeout: g.httpTimeout}
+	bctx, cancel := context.WithTimeout(oidc.ClientContext(ctx, httpClient), g.httpTimeout)
+	defer cancel()
+
+	tok, err := g.oauth(redirectURL, provider.Endpoint()).Exchange(bctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return SocialIdentity{}, fmt.Errorf("code exchange: %w", err)
 	}
@@ -148,7 +189,7 @@ func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifie
 	// Verifies signature, issuer, audience and expiry. The verifier is built per
 	// call rather than memoised: it is a thin wrapper, and the JWKS cache that
 	// actually matters lives on the shared provider behind it.
-	idTok, err := provider.Verifier(&oidc.Config{ClientID: g.cfg.ClientID}).Verify(ctx, rawID)
+	idTok, err := provider.Verifier(&oidc.Config{ClientID: g.cfg.ClientID}).Verify(bctx, rawID)
 	if err != nil {
 		return SocialIdentity{}, fmt.Errorf("id token verification: %w", err)
 	}

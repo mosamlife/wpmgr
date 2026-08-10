@@ -242,7 +242,11 @@ func TestSocialAuditSurvivesAUserWithNoMembership(t *testing.T) {
 	if err := pool.QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM system_audit_log WHERE action = $1 AND actor_id = $2)
 		      + (SELECT count(*) FROM audit_log        WHERE action = $1 AND actor_id = $3)`,
-		audit.ActionOIDCLogin, res.User.ID, res.User.ID.String(),
+		// The registration action, not the login one. Creating an account out of
+		// a provider assertion is a credential change and is recorded as such;
+		// asserting on auth.oidc.login here would be asserting on the very
+		// mislabelling that was fixed.
+		audit.ActionSocialRegistered, res.User.ID, res.User.ID.String(),
 	).Scan(&n); err != nil {
 		t.Fatalf("count audit rows: %v", err)
 	}

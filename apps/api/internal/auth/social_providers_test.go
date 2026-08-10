@@ -2,6 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -180,5 +183,108 @@ func TestGoogleDiscoveryFailureIsNotPermanent(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Errorf("outbound discovery attempts = %d, want a retry once the cooldown expired", attempts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The response the sign-in page is built from
+// ---------------------------------------------------------------------------
+
+// TestEnabledIsNeverNil pins the shape of the providers field, which
+// openapi.yaml declares required, type array and not nullable.
+//
+// A nil slice marshals as JSON null, and the case that produced one was the
+// DEFAULT install: no social credentials configured, which is every self-host
+// until an operator sets some. The published contract was therefore violated by
+// the most common configuration there is, and nothing caught it because the web
+// client happens to be defensive about the field. A generated client that
+// trusts the spec would not be.
+func TestEnabledIsNeverNil(t *testing.T) {
+	cases := []struct {
+		name string
+		sp   *SocialProviders
+	}{
+		{"nil provider set", nil},
+		{"configured with nothing", NewSocialProviders(config.SocialConfig{})},
+		{"constructed but empty", &SocialProviders{byKey: map[string]SocialProviderAdapter{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.sp.Enabled()
+			if got == nil {
+				t.Fatal("Enabled() returned a nil slice; it serialises as JSON null against a spec that declares a required array")
+			}
+			if len(got) != 0 {
+				t.Fatalf("Enabled() = %v, want empty", got)
+			}
+			raw, err := json.Marshal(map[string]any{"providers": got})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(raw) != `{"providers":[]}` {
+				t.Fatalf("serialised as %s, want {\"providers\":[]}", raw)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Google's outbound calls must be bounded
+// ---------------------------------------------------------------------------
+
+// TestGoogleCodeExchangeIsBounded is the Google half of
+// TestGitHubCodeExchangeIsBounded, which was fixed while this one was left.
+//
+// The exchange ran on http.DefaultClient, which has no timeout, under whatever
+// context the inbound Gin request carried, and this server sets no WriteTimeout
+// by deliberate design. So nothing at all bounded it: a token endpoint that
+// accepted the connection and then went quiet held a request handler open until
+// the browser gave up. Discovery was already bounded, which is exactly why this
+// one was easy to miss.
+func TestGoogleCodeExchangeIsBounded(t *testing.T) {
+	// Answers nothing until the test releases it. httptest's Close waits for
+	// outstanding handlers, and a handler waiting only on the request context
+	// can outlive the client that gave up on it.
+	stop := make(chan struct{})
+	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-stop:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(stop)
+		hang.Close()
+	}()
+
+	g := newGoogleAdapter(config.GoogleConfig{ClientID: "id", ClientSecret: "secret"})
+	g.httpTimeout = 200 * time.Millisecond
+	// Discovery is the seam: it succeeds instantly and points the exchange at
+	// the endpoint that never answers, so what this measures is the exchange and
+	// nothing else.
+	g.disc.discover = func(ctx context.Context, _ string) (*oidc.Provider, error) {
+		return (&oidc.ProviderConfig{
+			IssuerURL: googleIssuer,
+			AuthURL:   hang.URL + "/authorize",
+			TokenURL:  hang.URL + "/token",
+			JWKSURL:   hang.URL + "/jwks",
+		}).NewProvider(ctx), nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		// context.Background() has no deadline of its own on purpose: the bound
+		// has to come from the adapter, not from a caller who might not set one.
+		_, err := g.Exchange(context.Background(), "https://app.test/cb", "code", "verifier", "nonce")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a token endpoint that never answers must not produce a successful exchange")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the code exchange never gave up: it is running unbounded")
 	}
 }

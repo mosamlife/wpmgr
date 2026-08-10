@@ -393,7 +393,17 @@ func (s *Service) SignInWithSocial(
 		// unverified one) still mutated authentication state on its way out.
 		// A refusal must leave the database exactly as it found it.
 		s.repairIdentity(ctx, action, in, facts)
-		s.repo.TouchIdentityLogin(ctx, in.Provider, in.Subject, in.Issuer, in.Email, in.EmailVerified)
+		// Stamped under the issuer the row is stored with, not the one that
+		// arrived. Those differ whenever the match came through the
+		// normalization fold: the token said "https://idp.example.com/" and the
+		// row still says "https://idp.example.com", the sign-in is correctly
+		// recognised, and repairIdentity deliberately writes nothing for a
+		// difference that denotes nothing. The stamp then went looking for the
+		// inbound spelling under an exact predicate and updated no rows at all,
+		// so last_login_at stayed null for the life of the identity and the
+		// provider's current address was never recorded. See touchIssuer for why
+		// this is not simply facts.storedIssuer.
+		s.repo.TouchIdentityLogin(ctx, in.Provider, in.Subject, facts.touchIssuer(in), in.Email, in.EmailVerified)
 		return s.finishSocialLogin(ctx, *identityUser, createTenant)
 
 	case socialLinkExisting:
@@ -609,6 +619,27 @@ func (s *Service) repairIdentity(ctx context.Context, action socialAction, in So
 	}
 }
 
+// touchIssuer is the issuer the identity row lives under once repairIdentity
+// has run, which is the only value an exact-match stamp can find it by.
+//
+// It is not always the stored issuer, and that is the whole subtlety. Both
+// repairs write the row under the issuer that just signed the token: the legacy
+// adoption inserts it there, and the migration moves it there. Stamping those
+// under the OLD issuer would miss for exactly the same reason stamping a fold
+// match under the inbound one does. Only the fold match leaves the row where it
+// was, because nothing repairs a difference that denotes nothing.
+//
+// On the ordinary path every one of these is the same string.
+func (f socialFacts) touchIssuer(in SocialIdentity) string {
+	if f.fromLegacy || f.match == matchIssuerMigrated {
+		return in.Issuer
+	}
+	if f.storedIssuer == "" {
+		return in.Issuer
+	}
+	return f.storedIssuer
+}
+
 // issuerMoveMeta records where an identity was and where it went, omitting the
 // pair when nothing actually moved.
 func issuerMoveMeta(from, to string) map[string]any {
@@ -737,12 +768,43 @@ func (s *Service) recordSocialAudit(ctx context.Context, userID uuid.UUID, provi
 	s.recordSocialAuditWith(ctx, userID, provider, action, nil)
 }
 
+// socialAuditAction maps what happened onto the action the audit log is keyed
+// and filtered by.
+//
+// EVERY ONE OF THESE USED TO BE auth.oidc.login, which is the one thing none of
+// them is. The log rendered "Signed in with SSO" for a provider being bound to
+// an existing account, for an account being created out of a provider
+// assertion, and for a stored identity changing issuer; the distinguishing fact
+// existed only inside metadata.event, so nothing an owner could filter or scan
+// on told these apart from an ordinary sign-in. Every entry recorded here is a
+// credential change, which is exactly what recordSocialAuditWith's own
+// documentation says it exists to capture.
+//
+// An unrecognised event keeps the old action rather than inventing one: this
+// only ever runs on a genuine sign-in, so filing an unknown event as a login is
+// the honest fallback, and a new event type is expected to add its own case.
+func socialAuditAction(event string) string {
+	switch event {
+	case "link":
+		return audit.ActionSocialLinked
+	case "register":
+		return audit.ActionSocialRegistered
+	case "identity_issuer_migrated":
+		return audit.ActionIdentityIssuerMoved
+	case "legacy_identity_adopted":
+		return audit.ActionIdentityAdopted
+	default:
+		return audit.ActionOIDCLogin
+	}
+}
+
 // recordSocialAuditWith carries the extra facts that make an entry worth
 // reading: which issuer an identity moved from and to, above all, because that
 // is the one event here that changes what a stored credential means.
 func (s *Service) recordSocialAuditWith(ctx context.Context, userID uuid.UUID, provider, action string, extra map[string]any) {
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, userID)
 	tenantID := s.resolveActiveTenant(ctx, userID, memberships)
+	auditAction := socialAuditAction(action)
 
 	// Built once and used by whichever sink takes the event, so the issuer-move
 	// facts survive on the tenantless path too. That path is exactly where they
@@ -758,7 +820,7 @@ func (s *Service) recordSocialAuditWith(ctx context.Context, userID uuid.UUID, p
 			TenantID:   tenantID,
 			ActorType:  audit.ActorUser,
 			ActorID:    userID.String(),
-			Action:     audit.ActionOIDCLogin,
+			Action:     auditAction,
 			TargetType: "user",
 			TargetID:   userID.String(),
 			Metadata:   meta,
@@ -773,7 +835,7 @@ func (s *Service) recordSocialAuditWith(ctx context.Context, userID uuid.UUID, p
 	if err != nil {
 		raw = nil
 	}
-	if err := s.repo.RecordTenantlessAuthEvent(ctx, userID, audit.ActionOIDCLogin, raw); err != nil {
+	if err := s.repo.RecordTenantlessAuthEvent(ctx, userID, auditAction, raw); err != nil {
 		slog.ErrorContext(ctx, "social audit record failed",
 			slog.String("event", action), slog.String("provider", provider),
 			slog.String("user_id", userID.String()), slog.Any("error", err))
@@ -935,11 +997,21 @@ func (s *Service) isFirstRunBootstrap(ctx context.Context, u User) bool {
 // sendVerificationForSocialLink mails the link that unblocks a refused social
 // link. Best effort and deliberately silent: whether an address received mail
 // is not something an unauthenticated caller should be able to observe.
+//
+// It carries the prior plan intent forward, like every other resend, because
+// minting a token DESTROYS the intent rather than merely omitting it:
+// sendVerificationEmail invalidates the user's existing tokens and then inserts
+// the new one, and priorDesiredPlan reads the most recent token. Passing "" here
+// therefore made the empty token the latest, so the plan a paid registration
+// chose was lost for good, including to any LATER resend that would otherwise
+// have recovered it. Someone who signed up for a paid plan, never verified, then
+// tried the social button landed on the free path after verifying, having done
+// nothing wrong.
 func (s *Service) sendVerificationForSocialLink(ctx context.Context, u User) {
 	if s.limiter != nil {
 		if ok, _ := s.limiter.Allow(ctx, "verify-social-link:"+u.Email, forgotPerMinute); !ok {
 			return
 		}
 	}
-	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, "")
+	s.sendVerificationEmail(ctx, u.ID, u.Email, u.Name, s.priorDesiredPlan(ctx, u.ID))
 }

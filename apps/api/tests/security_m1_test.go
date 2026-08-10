@@ -207,11 +207,22 @@ func TestOIDCLinkingRequiresBothSidesVerified(t *testing.T) {
 
 // assertIdentityNotBoundTo fails when the given external identity resolves to
 // the account it must not have been attached to.
+//
+// ONLY "no such identity" is a pass. This helper carries the account-takeover
+// assertions in this file, so it is the one place where passing by accident is
+// worst: any error at all used to satisfy it, which means a dropped connection
+// or a broken query reported the takeover defence as working without ever
+// having tested it. GetUserByIdentity returns a domain not-found for no rows
+// and a domain internal for everything else, and only the former proves the
+// identity was never created.
 func assertIdentityNotBoundTo(t *testing.T, ctx context.Context, repo *auth.Repo, subject, issuer string, mustNotBe uuid.UUID) {
 	t.Helper()
 	linked, err := repo.GetUserByIdentity(ctx, "oidc", subject, issuer)
 	if err != nil {
-		return // no such identity at all, which is the strongest pass
+		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
+			return // no such identity at all, which is the strongest pass
+		}
+		t.Fatalf("looking up identity %q: %v", subject, err)
 	}
 	if linked.ID == mustNotBe {
 		t.Fatalf("identity %q was linked to the pre-existing account", subject)

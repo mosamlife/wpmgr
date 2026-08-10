@@ -339,6 +339,65 @@ func TestSocialCallbackClearsTheHandshakeCookie(t *testing.T) {
 	}
 }
 
+// TestDisabledProviderCallbackKeepsTheDeepLink covers the one callback branch
+// that threw the return path away.
+//
+// The window is narrow, a provider switched off between the start and the
+// callback, and the consequence is pure UX: the person is dropped on a bare
+// sign-in page having lost the deep link they followed in the first place.
+// Every other failure branch on this handler hands the return path to
+// socialFail, so this one was simply an omission, and the sealed handshake is
+// the only carrier of that link. Reading it before failing costs nothing:
+// takeHandshake clears the cookie either way, so the handshake stays
+// single-use, and socialFail re-validates the path through safeReturnPath.
+func TestDisabledProviderCallbackKeepsTheDeepLink(t *testing.T) {
+	sm, _ := newCountingSessionManager(t)
+	_, h := newSocialTestHandler(t, sm)
+
+	// github was never configured on this handler, which is what a provider
+	// switched off mid-flow looks like at the callback.
+	w := newCallbackRequest(t, h, sm, "github", "state=state-1&code=abc",
+		handshake{Provider: "github", State: "state-1", Nonce: "n", Verifier: "v", Return: "/sites/abc"})
+
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if got := loc.Query().Get("social_error"); got != "social_provider_disabled" {
+		t.Fatalf("social_error = %q, want social_provider_disabled", got)
+	}
+	if got := loc.Query().Get("redirect"); got != "/sites/abc" {
+		t.Fatalf("redirect = %q, want the deep link the handshake was carrying", got)
+	}
+
+	// Still single-use: the cookie has to go however this branch ends.
+	ck := findCookie(t, w.Result().Cookies(), handshakeCookieName)
+	if ck.Value != "" || ck.MaxAge >= 0 {
+		t.Fatalf("handshake cookie = %+v, want it expired", ck)
+	}
+}
+
+// TestDisabledProviderCallbackStillRefusesAnOffSiteReturn is the guard on the
+// test above. The handshake is sealed, so its contents are authentic, but
+// authentic is not the same as safe: this branch must go through the same
+// same-origin check as every other, or a value that got into a handshake would
+// become an open redirect on the way out.
+func TestDisabledProviderCallbackStillRefusesAnOffSiteReturn(t *testing.T) {
+	sm, _ := newCountingSessionManager(t)
+	_, h := newSocialTestHandler(t, sm)
+
+	w := newCallbackRequest(t, h, sm, "github", "state=state-1&code=abc",
+		handshake{Provider: "github", State: "state-1", Nonce: "n", Verifier: "v", Return: "https://evil.example/steal"})
+
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if got := loc.Query().Get("redirect"); got != "" {
+		t.Fatalf("redirect = %q, want it dropped", got)
+	}
+}
+
 // withHandshake attaches a handshake this handler sealed to req, which is what
 // a browser returning from a provider carries. Shared by the callback tests.
 func withHandshake(t *testing.T, h *Handler, req *http.Request, hs handshake) *http.Request {

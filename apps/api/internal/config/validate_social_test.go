@@ -353,3 +353,52 @@ func TestValidatePublicBaseURLJudgesTheStringItIsGiven(t *testing.T) {
 		t.Errorf("the normalized value must be approved; got: %s", issue.Reason)
 	}
 }
+
+// TestValidatePublicBaseURLRejectsWhatCannotBeAppendedTo pins the other thing a
+// base has to be, beyond absolute: a PREFIX. Every consumer concatenates onto
+// it, so anything that must come last in a URL cannot appear in one.
+//
+// The two that got through were a query string and a fragment, and neither is
+// cosmetic. https://host/?x=1 turns the verification mail's
+// base+"/verify-email?token=..." into a token sitting inside somebody else's
+// query on the wrong path, and turns the derived redirect_uri into a string no
+// provider registration will ever match. The validator exists to name exactly
+// this class of misconfiguration and was passing it.
+func TestValidatePublicBaseURLRejectsWhatCannotBeAppendedTo(t *testing.T) {
+	rejected := []struct {
+		name string
+		in   string
+	}{
+		{"query string", "https://manage.example.com/?x=1"},
+		{"bare query marker", "https://manage.example.com?"},
+		{"fragment", "https://manage.example.com/#/login"},
+		{"user info", "https://user:pass@manage.example.com"},
+		{"query on a sub-path", "https://manage.example.com/wpmgr?x=1"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			if validatePublicBaseURL(tc.in) == nil {
+				t.Errorf("validatePublicBaseURL(%q) was approved; appending to it produces a URL nothing will match", tc.in)
+			}
+		})
+	}
+
+	// A SUB-PATH DEPLOYMENT IS NOT THE BUG. It concatenates perfectly well and
+	// nothing in this install forbids it, so a rule that rejected every non-empty
+	// path would break a legitimate operator to catch an illegitimate value.
+	accepted := []struct {
+		name string
+		in   string
+	}{
+		{"plain origin", "https://manage.example.com"},
+		{"sub-path deployment", "https://example.com/wpmgr"},
+		{"localhost for self-host testing", "http://localhost:8080"},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			if issue := validatePublicBaseURL(tc.in); issue != nil {
+				t.Errorf("validatePublicBaseURL(%q) was refused: %s", tc.in, issue.Reason)
+			}
+		})
+	}
+}
