@@ -211,23 +211,33 @@ any of them in `.env` with the `WPMGR_*_PORT` vars (`WPMGR_WEB_PORT`,
 
 ### Prebuilt GHCR images (no local build)
 
-Pre-built `linux/amd64` images are published on GitHub Container Registry:
+Pre-built images are published on GitHub Container Registry:
 `ghcr.io/mosamlife/wpmgr-api`, `-web`, and `-media-encoder` (each tagged
 `:vX.Y.Z` and `:latest`). If you already have the compose files (via the
 quickstart or a clone), bring up the stack with the pull-only overlay:
 
+<!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
+
 ```bash
-export WPMGR_VERSION=v0.19.0   # omit to track :latest
+export WPMGR_VERSION=v0.61.131   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
+
+<!-- wpmgr-install-pins:end -->
 
 The overlay only swaps the three app services to `image:` + `pull_policy:
 always`; everything else (Postgres, Redis, SeaweedFS, ClickHouse, env, volumes)
 is inherited from the base file, including `media-encoder` — it starts by
 default, no profile needed.
 
-> GHCR packages are public. `docker pull` needs no auth. arm64 multi-arch
-> images are a near-term follow-up.
+> GHCR packages are public. `docker pull` needs no auth. The api and web images
+> are multi-arch (`linux/amd64` + `linux/arm64`); the media encoder is
+> `linux/amd64` only, because its image codec library ships prebuilt static
+> libraries for that architecture alone. On arm64 that means running the stack
+> with `--scale media-encoder=0`, which costs you site screenshots, the Media
+> Optimizer, and WOFF2 font transcoding. Everything else, including backups,
+> restores, updates, uptime, security, and the DB cleaner, is unaffected: the
+> control plane never encodes anything itself.
 
 ## 3. Verify
 
@@ -274,8 +284,10 @@ docker compose -f infra/docker-compose.yml up -d --scale media-encoder=0
 
 or comment out the `media-encoder:` service block in `infra/docker-compose.yml`
 if you never want it built/pulled at all. Either way, screenshot cards fall back
-to favicon/monogram permanently and the Media Optimizer tab is unavailable —
-everything else in the dashboard is unaffected.
+to favicon/monogram permanently, the Media Optimizer tab is unavailable, and
+WOFF2 font transcoding stops. Everything else in the dashboard is unaffected:
+all three of those workers are registered only in the media encoder, and the
+control plane never encodes anything itself.
 
 The media-encoder runs its jobs in a dedicated River schema (default
 `media_encoder`), separate from the API's own default/public schema. This is

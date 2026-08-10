@@ -6,6 +6,15 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Changed
+
+- The docs version guard is a script you can run, `scripts/check-version-surfaces.sh`, instead of shell embedded in the CI workflow, and it ships with `scripts/check-version-surfaces_test.sh`: 75 cases that build throwaway trees and assert the guard's exit code. Running the guard before you push now takes one command and no CI cycle. Four defects found by review are closed and covered by tests: a version with no `CHANGELOG.md` heading is now placed in the ordering rather than skipped (24 patch versions of 0.61.x had no heading, so a stale pin could sit on one of them forever), the badge and agent checks survive a reformat instead of switching themselves off, a commented-out install pin no longer counts as present, and required pins are anchored to an explicit marker so ordinary prose and an extra current pin cannot fail the build. A repo-wide sweep also holds any other concrete image tag or `WPMGR_VERSION` value to the same freshness rule, so a new file with a stale pull command is caught even though no list names it.
+
+### Fixed
+
+- The README said that turning the media encoder off costs you site screenshots and the Media Optimizer and nothing else. WOFF2 font transcoding stops too; all three of those workers run only in that image. The install guide did not say so either, and now both do.
+- The self-host install guide no longer hands you a stack from 190 releases ago. `docs/install.md`, which the README links as the full install guide directly under its own pull instructions, still told you to `export WPMGR_VERSION=v0.19.0`, so following the link rather than the README got you a control plane predating a long list of fixes. The README also described all three published images as multi-arch; the media encoder is `linux/amd64` only, because the image codec library it uses ships prebuilt libraries for that architecture alone. The install guide now also says what running without the media encoder actually costs: site screenshots, the Media Optimizer, and WOFF2 font transcoding, and nothing else.
+
 ## [0.61.131] - 2026-08-10
 
 ### Fixed

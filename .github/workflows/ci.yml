@@ -138,51 +138,31 @@ jobs:
       - name: Shipped copy check (no em/en dashes, no competitor names)
         run: node apps/marketing/scripts/check-copy.mjs
 
-      # Docs-version drift guard. Two checks against the top CHANGELOG.md entry:
-      #  1. packages/openapi/openapi.yaml info.version must equal it exactly
-      #     (the marketing build self-heals the rendered doc, but the source of
-      #     truth should never drift).
-      #  2. The newest RELEASES entry in the marketing changelog page must be
-      #     within 5 patch versions of it (catches the changelog page silently
-      #     falling behind, without demanding an entry for every single tag).
-      # Both checks are forgiving: if any version fails to parse we warn and
-      # skip rather than false-positive-block a PR.
-      - name: Docs version drift guard (openapi + marketing changelog)
-        run: |
-          top=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ' || true)
-          if [ -z "$top" ]; then
-            echo "WARN: could not parse the top CHANGELOG.md version; skipping the drift guard."
-            exit 0
-          fi
-          spec=$(grep -m1 -E '^[[:space:]]+version:' packages/openapi/openapi.yaml | awk '{print $2}' | tr -d '"' || true)
-          if [ -z "$spec" ]; then
-            echo "WARN: could not parse packages/openapi/openapi.yaml info.version; skipping that check."
-          elif [ "$spec" != "$top" ]; then
-            echo "ERROR: packages/openapi/openapi.yaml info.version is $spec but the top CHANGELOG.md entry is $top."
-            echo "Bump openapi.yaml info.version alongside the CHANGELOG."
-            exit 1
-          fi
-          page='apps/marketing/app/(marketing)/changelog/page.tsx'
-          # Newest RELEASES entry; may be a range like "0.61.64 - 0.61.65", take the first number.
-          mk=$(grep -m1 -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+' "$page" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          if [ -z "$mk" ]; then
-            echo "WARN: could not parse the newest marketing changelog version from $page; skipping that check."
-            exit 0
-          fi
-          if [ "${top%.*}" = "${mk%.*}" ]; then
-            top_patch=${top##*.}
-            mk_patch=${mk##*.}
-            behind=$((top_patch - mk_patch))
-            if [ "$behind" -gt 5 ]; then
-              echo "ERROR: the marketing changelog's newest entry ($mk) is $behind patch versions behind the top CHANGELOG.md entry ($top)."
-              echo "Backfill apps/marketing/app/(marketing)/changelog/page.tsx (grouped entries are fine)."
-              exit 1
-            fi
-            echo "Marketing changelog newest entry $mk is within tolerance of $top."
-          else
-            echo "WARN: major/minor differ between marketing changelog ($mk) and CHANGELOG.md ($top); skipping the drift compare."
-          fi
-          echo "openapi.yaml info.version matches the top CHANGELOG.md entry ($top)."
+      # ---- Version surfaces -------------------------------------------------
+      # Every place that names a version to a reader, checked against the thing
+      # it claims to describe: the openapi spec version, the published
+      # changelog page, the marketing hero badge, the agent's three
+      # self-declarations, the install pins a self-hoster copies verbatim, and
+      # a repo-wide sweep for any other concrete image tag or WPMGR_VERSION
+      # value that has gone stale.
+      #
+      # THE LOGIC LIVES IN A SCRIPT, NOT IN THIS FILE, and that is the point.
+      # It grew across three review rounds from 112 to 168 to 245 lines of
+      # shell inside YAML block scalars here, with no test, and each round
+      # found a real hole
+      # because nobody could run it and check their work. It is now
+      # scripts/check-version-surfaces.sh, it runs on a developer machine with
+      # no CI (`scripts/check-version-surfaces.sh`), and the suite below builds
+      # trees and asserts exit codes against it, so reopening a hole turns a
+      # test red here instead of shipping.
+      #
+      # The suite runs FIRST: if the guard's own behaviour has regressed, that
+      # is the more useful failure to read.
+      - name: Version surface guard self-test
+        run: scripts/check-version-surfaces_test.sh
+
+      - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
+        run: scripts/check-version-surfaces.sh
 
       - uses: actions/setup-go@v5
         with:
@@ -255,24 +235,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The agent plugin carries its own WPMGR_AGENT_VERSION, which changes only
-      # when the agent changes. release.yml fires on EVERY tag, including the
-      # many that touch only the control plane or the dashboard, so stamping the
-      # release asset with the tag published identical agent code under a
-      # different number each time. The object-storage channel reads the source
-      # version instead, so the two channels drifted apart, and because the
-      # agent's downgrade guard refuses anything not strictly newer, a site that
-      # installed a tag-stamped asset would refuse every later real release.
-      # Passing VERSION here is what caused that, so it must not come back.
-      - name: Agent release asset must not be stamped from the git tag
-        working-directory: .
-        run: |
-          if grep -nE 'make +agent-zip[^\n]*VERSION=' .github/workflows/release.yml; then
-            echo "::error::release.yml passes VERSION to agent-zip. The published asset would carry the git tag instead of WPMGR_AGENT_VERSION, which desynchronises the GitHub and object-storage channels and can permanently strand sites behind the downgrade guard." >&2
-            exit 1
-          fi
-          echo "ok: release.yml lets the agent zip carry its own source version"
-
+      # The check that release.yml must not stamp the agent zip from the git tag
+      # used to live here, on its own, which is why the process doc describing
+      # the version guards as one set was wrong about where they run. It is now
+      # one of the checks in scripts/check-version-surfaces.sh, with the other
+      # four, in the Security audit job, and it has a regression test.
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:

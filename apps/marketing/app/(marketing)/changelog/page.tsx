@@ -16,8 +16,12 @@ export const metadata: Metadata = buildMetadata({
 
 // ---------------------------------------------------------------------------
 // Curated release entries (newest first, harvested from CHANGELOG.md).
-// We show the ~20 most recent meaningful releases. The full history is
-// available on GitHub Releases.
+// This is a long curated history, not a recent window: 72 entries as of
+// 2026-08-10, running from 0.61.131 back to 0.54.0, some of them grouping
+// several releases into one. Anything older lives on GitHub Releases.
+// CI keeps the newest entry within 5 releases of the top CHANGELOG.md entry
+// (scripts/check-version-surfaces.sh), reading the newest version in a grouped
+// entry rather than the first one on the line.
 // ---------------------------------------------------------------------------
 
 type ChangeTag = "Added" | "Changed" | "Fixed" | "Security";

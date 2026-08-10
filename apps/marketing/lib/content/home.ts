@@ -5,10 +5,16 @@
 import type { Cta, Chip, Step, FaqItem, FeatureCluster } from "./types";
 import { SITE_CONFIG, signupHref } from "@/lib/site";
 
-// Bumped by hand on every agent release, alongside the /changelog RELEASES list.
-// Source of truth is the wordpress.org listing. One constant so the hero badge and
-// the provenance fact row cannot drift apart and contradict the listing they link to.
-const AGENT_VERSION = "0.61.127";
+// The AGENT plugin version, which is what the wordpress.org listing serves. One
+// constant so the hero badge and the provenance fact row cannot drift apart and
+// contradict the listing they link to.
+//
+// Must equal WPMGR_AGENT_VERSION in apps/agent/wpmgr-agent.php, exactly. CI
+// enforces it. Bump it in the release commit that moves the agent version, not
+// on every release: the agent version deliberately does not track the repo
+// release version, so a control-plane-only release leaves this alone and the
+// badge stays true.
+const AGENT_VERSION = "0.61.131";
 
 export const HOME_HERO = {
   badge: `v${AGENT_VERSION} / open source`,
@@ -435,6 +441,13 @@ export const HOME_STATS = {
 // Every fact below is copied from the live wordpress.org listing and is checkable
 // against it in one click, which is the whole point of the section. If one of these
 // drifts, the section argues against itself. Version comes from AGENT_VERSION above.
+//
+// "Tested up to" is the value apps/agent/readme.txt declares, not the value the
+// listing page renders. WordPress.org rolls a declaration of 7.0 forward to the
+// newest 7.0.x and renders that, so a point release of WordPress can restate the
+// listing with no change here. Naming the minor is the only form of this fact
+// that stays true without anybody watching it; it read 7.0.2 for exactly that
+// reason and had gone stale by the time anyone looked.
 export const HOME_PROVENANCE = {
   eyebrow: "Provenance",
   heading: "You do not have to take our word for it",
@@ -455,7 +468,7 @@ export const HOME_PROVENANCE = {
     { label: "Slug", value: "fleet-agent-site-manager", mono: true },
     { label: "Version", value: AGENT_VERSION, mono: true },
     { label: "Requires", value: "WordPress 6.2, PHP 8.1" },
-    { label: "Tested up to", value: "WordPress 7.0.2" },
+    { label: "Tested up to", value: "WordPress 7.0" },
   ],
   repository: {
     icon: "Github",

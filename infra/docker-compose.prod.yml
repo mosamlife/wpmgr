@@ -1,8 +1,13 @@
 # Pull-only overlay — run the published GHCR images instead of building locally.
 #
 # Usage (combine with the base compose):
-#   export WPMGR_VERSION=v0.19.0     # omit to track :latest
+#   export WPMGR_VERSION=vX.Y.Z      # a published release tag; omit to track :latest
 #   docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
+#
+# vX.Y.Z is a placeholder on purpose. A concrete version here is a fact with
+# nothing keeping it true: this comment sat on v0.19.0 for 190 releases. The
+# copy-and-paste install step that names a real tag lives in docs/install.md and
+# in README.md, and CI compares both against the top CHANGELOG.md entry.
 #
 # media-encoder is part of the base stack's default service set (no profile
 # needed) — this overlay just swaps its image for the published GHCR one like
