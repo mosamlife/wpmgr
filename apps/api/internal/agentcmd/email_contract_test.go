@@ -44,6 +44,37 @@ func TestEmailConfigRequest_SecretIsCarriedWhenResolved(t *testing.T) {
 	}
 }
 
+// The third state. "Delete the stored credential" is a flag of its own, never
+// an empty `secret`, because an empty `secret` is indistinguishable from the
+// control plane failing to resolve one. Without this flag nothing can revoke a
+// credential the control plane already pushed.
+func TestEmailConfigRequest_ClearSecretIsItsOwnFlag(t *testing.T) {
+	body, err := json.Marshal(EmailConfigRequest{Provider: "smtp", ClearSecret: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded["clear_secret"] != true {
+		t.Errorf("expected clear_secret:true on the wire, got %v", decoded["clear_secret"])
+	}
+	if _, present := decoded["secret"]; present {
+		t.Error("a clear must not also carry a secret key")
+	}
+
+	// The quiet state must stay quiet: no flag at all when nothing is revoked.
+	quiet, err := json.Marshal(EmailConfigRequest{Provider: "smtp"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(quiet), "clear_secret") {
+		t.Errorf("a push that revokes nothing must not mention clear_secret, got %s", quiet)
+	}
+}
+
 // The same rule applies per named connection: a connection whose secret could
 // not be resolved is pushed without one rather than with a blank one.
 func TestEmailConnectionWire_NilSecretIsAbsentFromTheWire(t *testing.T) {
