@@ -6,6 +6,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.131] - 2026-08-10
+
 ### Fixed
 
 - Sending email from a site no longer stops working on its own, days after it was set up and used successfully. Saving, testing or syncing that site's email settings could send the site an empty password, which the site read as an instruction to delete the working one it already had. The site then tried to sign in to the mail server with nothing, the mail server refused, and what everybody saw was "SMTP Error: Could not authenticate", which is the same thing a wrong password looks like. That is why re-typing the same password fixed some sites: it put back what had just been deleted. The dashboard now says nothing at all about the password unless it has a real one to send, so a site keeps the credential it already holds.
