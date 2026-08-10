@@ -1187,7 +1187,17 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret pushSecret) agentcmd.Em
 	// m62: attach the named-connections registry if the config has an ID
 	// (i.e. it was loaded from the DB, not a zero-value fallback).
 	if cfg.ID != uuid.Nil && s.enc != nil {
-		ctx := context.Background() // background — called outside a request
+		// Background, not the caller's context: this runs on the propagation
+		// worker as well as on request paths, so there is not always a principal
+		// to carry. That costs nothing today because m112's read policy admits
+		// exactly the rows these two reads can ask for, the org config row and
+		// site rows already in the caller's allowlist, which is the only thing
+		// any reachable call site passes. A scoped read returns the same rows.
+		//
+		// If that read policy is ever narrowed, this stops being equivalent and
+		// keeps full visibility while every other read narrows around it. Thread
+		// the caller's context through at that point rather than leaving it.
+		ctx := context.Background()
 		secretRows, err := s.repo.GetConnectionSecretCiphertexts(ctx, cfg.TenantID, cfg.ID)
 		if err != nil {
 			s.log.Warn("email: could not load connection secrets for agent push", slog.Any("error", err))

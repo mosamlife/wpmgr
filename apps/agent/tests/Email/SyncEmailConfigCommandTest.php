@@ -343,11 +343,13 @@ class SyncEmailConfigCommandTest extends TestCase
      */
     public function test_a_rotation_that_changes_no_setting_still_reports_success(): void
     {
-        $store = null;
+        // false is what WordPress answers for an option that is not set, so it
+        // doubles as the initial state here.
+        $store = false;
 
         Functions\when('get_option')->alias(
             function (string $key) use (&$store) {
-                return $key === EmailConfig::OPTION ? ($store ?? false) : false;
+                return $key === EmailConfig::OPTION ? $store : false;
             }
         );
         // Mirrors WP: false when the new value equals the stored one, and no write.
