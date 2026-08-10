@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -48,8 +47,9 @@ type SocialProviders struct {
 // render a button that leads to a provider error page.
 //
 // This performs NO network I/O and cannot fail. Google's discovery call happens
-// on first use instead: see googleAdapter.ensure for why it must not be on the
-// boot path.
+// on first use instead: see oidc_discovery.go for why it must not be on the
+// boot path, and for what a lazy call has to get right that a boot-time one
+// never faced.
 func NewSocialProviders(cfg config.SocialConfig) *SocialProviders {
 	sp := &SocialProviders{byKey: map[string]SocialProviderAdapter{}}
 	if cfg.Google.Enabled() {
@@ -87,67 +87,33 @@ func (s *SocialProviders) Enabled() []string {
 type googleAdapter struct {
 	cfg config.GoogleConfig
 
-	// Discovery result, filled lazily. See ensure.
-	mu       sync.Mutex
-	endpoint oauth2.Endpoint
-	verifier *oidc.IDTokenVerifier
-	ready    bool
+	// disc holds the issuer metadata, resolved on first use rather than at boot,
+	// bounded and shared between concurrent sign-ins. See oidc_discovery.go for
+	// why each of those three words is load-bearing.
+	disc *oidcDiscovery
 }
 
 const googleIssuer = "https://accounts.google.com"
 
-// googleDiscoveryTimeout bounds the one outbound call this adapter makes before
-// it can do anything. Unbounded, it inherits whatever context it is handed.
-const googleDiscoveryTimeout = 10 * time.Second
-
 func newGoogleAdapter(cfg config.GoogleConfig) *googleAdapter {
-	return &googleAdapter{cfg: cfg}
-}
-
-// ensure performs OIDC discovery once, on first use rather than at boot.
-//
-// DISCOVERY MUST NOT BE ON THE BOOT PATH. It was: NewSocialProviders called
-// oidc.NewProvider directly and main returned the error, so an unreachable or
-// merely slow accounts.google.com would stop the entire control plane from
-// starting. Backups, updates, uptime and every dashboard would be down because
-// a third party was having a bad morning, in exchange for learning ten seconds
-// earlier that a sign-in button might not work.
-//
-// Doing it lazily also means a transient failure is not permanent: the next
-// sign-in attempt retries, where a boot-time failure would have needed a
-// redeploy to clear.
-func (g *googleAdapter) ensure(ctx context.Context) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.ready {
-		return nil
-	}
-	dctx, cancel := context.WithTimeout(ctx, googleDiscoveryTimeout)
-	defer cancel()
-	provider, err := oidc.NewProvider(dctx, googleIssuer)
-	if err != nil {
-		return fmt.Errorf("google discovery: %w", err)
-	}
-	g.endpoint = provider.Endpoint()
-	g.verifier = provider.Verifier(&oidc.Config{ClientID: g.cfg.ClientID})
-	g.ready = true
-	return nil
+	return &googleAdapter{cfg: cfg, disc: newOIDCDiscovery(googleIssuer)}
 }
 
 func (g *googleAdapter) Key() string { return "google" }
 
-func (g *googleAdapter) oauth(redirectURL string) *oauth2.Config {
+func (g *googleAdapter) oauth(redirectURL string, endpoint oauth2.Endpoint) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     g.cfg.ClientID,
 		ClientSecret: g.cfg.ClientSecret,
 		RedirectURL:  redirectURL,
-		Endpoint:     g.endpoint,
+		Endpoint:     endpoint,
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 }
 
 func (g *googleAdapter) AuthCodeURL(ctx context.Context, redirectURL string) (string, string, string, string, error) {
-	if err := g.ensure(ctx); err != nil {
+	provider, err := g.disc.get(ctx)
+	if err != nil {
 		return "", "", "", "", err
 	}
 	state, err := randString()
@@ -159,7 +125,7 @@ func (g *googleAdapter) AuthCodeURL(ctx context.Context, redirectURL string) (st
 		return "", "", "", "", err
 	}
 	verifier := oauth2.GenerateVerifier()
-	url := g.oauth(redirectURL).AuthCodeURL(state,
+	url := g.oauth(redirectURL, provider.Endpoint()).AuthCodeURL(state,
 		oidc.Nonce(nonce),
 		oauth2.S256ChallengeOption(verifier),
 	)
@@ -167,10 +133,11 @@ func (g *googleAdapter) AuthCodeURL(ctx context.Context, redirectURL string) (st
 }
 
 func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifier, nonce string) (SocialIdentity, error) {
-	if err := g.ensure(ctx); err != nil {
+	provider, err := g.disc.get(ctx)
+	if err != nil {
 		return SocialIdentity{}, err
 	}
-	tok, err := g.oauth(redirectURL).Exchange(ctx, code, oauth2.VerifierOption(verifier))
+	tok, err := g.oauth(redirectURL, provider.Endpoint()).Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return SocialIdentity{}, fmt.Errorf("code exchange: %w", err)
 	}
@@ -178,8 +145,10 @@ func (g *googleAdapter) Exchange(ctx context.Context, redirectURL, code, verifie
 	if !ok || rawID == "" {
 		return SocialIdentity{}, fmt.Errorf("no id_token in google response")
 	}
-	// Verifies signature, issuer, audience and expiry.
-	idTok, err := g.verifier.Verify(ctx, rawID)
+	// Verifies signature, issuer, audience and expiry. The verifier is built per
+	// call rather than memoised: it is a thin wrapper, and the JWKS cache that
+	// actually matters lives on the shared provider behind it.
+	idTok, err := provider.Verifier(&oidc.Config{ClientID: g.cfg.ClientID}).Verify(ctx, rawID)
 	if err != nil {
 		return SocialIdentity{}, fmt.Errorf("id token verification: %w", err)
 	}

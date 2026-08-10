@@ -3,6 +3,9 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/config"
 )
@@ -138,28 +141,44 @@ func TestNewSocialProvidersDoesNoNetworkIO(t *testing.T) {
 	if !ok {
 		t.Fatal("expected the google adapter type")
 	}
-	if g.ready {
+	if g.disc.ready() {
 		t.Error("google adapter reports ready before any discovery call; construction is doing I/O")
 	}
 }
 
 // A discovery failure must surface as a failed sign-in, not a failed boot, and
-// must not be cached as permanent: the next attempt retries.
+// must not be cached as permanent: an attempt past the cooldown retries.
+//
+// The cooldown itself is exercised in oidc_discovery_test.go; this asserts the
+// Google adapter is wired to it rather than to something of its own.
 func TestGoogleDiscoveryFailureIsNotPermanent(t *testing.T) {
 	g := newGoogleAdapter(config.GoogleConfig{ClientID: "id", ClientSecret: "secret"})
+	attempts := 0
+	g.disc.discover = func(context.Context, string) (*oidc.Provider, error) {
+		attempts++
+		return nil, errIssuerDown
+	}
 
-	// A context already past its deadline stands in for an unreachable issuer.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if _, _, _, _, err := g.AuthCodeURL(ctx, "https://example.test/cb"); err == nil {
+	if _, _, _, _, err := g.AuthCodeURL(context.Background(), "https://example.test/cb"); err == nil {
 		t.Fatal("a failed discovery must surface as an error from AuthCodeURL")
 	}
-	if g.ready {
+	if g.disc.ready() {
 		t.Error("a failed discovery must not mark the adapter ready")
 	}
-	// Nothing was cached, so a later attempt is free to succeed.
-	if g.verifier != nil {
-		t.Error("a failed discovery must leave no half-built verifier behind")
+	// The failure is remembered, so the flood of retries behind it costs the
+	// issuer nothing.
+	if _, _, _, _, err := g.AuthCodeURL(context.Background(), "https://example.test/cb"); err == nil {
+		t.Fatal("the remembered failure must still surface as an error")
+	}
+	if attempts != 1 {
+		t.Errorf("outbound discovery attempts = %d, want 1 while inside the cooldown", attempts)
+	}
+	// And it clears itself: the issuer coming back needs no redeploy.
+	g.disc.now = func() time.Time { return time.Now().Add(discoveryCooldown + time.Minute) }
+	if _, _, _, _, err := g.AuthCodeURL(context.Background(), "https://example.test/cb"); err == nil {
+		t.Fatal("a failed discovery must not be permanent")
+	}
+	if attempts != 2 {
+		t.Errorf("outbound discovery attempts = %d, want a retry once the cooldown expired", attempts)
 	}
 }

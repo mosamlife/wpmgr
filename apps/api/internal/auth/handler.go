@@ -555,9 +555,16 @@ func (h *Handler) oidcLogin(c *gin.Context) {
 		httpx.Error(c, domain.Unavailable("oidc_disabled", "OIDC is not configured"))
 		return
 	}
-	url, state, nonce, verifier, err := h.oidc.AuthCodeURL()
+	url, state, nonce, verifier, err := h.oidc.AuthCodeURL(c.Request.Context())
 	if err != nil {
-		httpx.Error(c, domain.Internal("oidc_url_failed", "failed to build authorization URL").WithCause(err))
+		// Unavailable, not Internal: since discovery moved off the boot path this
+		// is where an unreachable identity provider first shows up, and that is
+		// somebody else's server being down rather than a fault in this one.
+		// Getting that wrong turns "your IdP is not answering" into a 500 that
+		// reads as a control-plane bug and gets escalated as one.
+		slog.ErrorContext(c.Request.Context(), "oidc authorization URL failed",
+			slog.String("issuer", h.oidc.cfg.Issuer), slog.Any("error", err))
+		httpx.Error(c, domain.Unavailable("oidc_url_failed", "the identity provider could not be reached").WithCause(err))
 		return
 	}
 	h.sessions.putOAuth(c.Request.Context(), state, nonce, verifier)

@@ -530,11 +530,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	authSvc := auth.NewService(authRepo, auditRec, validator)
 	apiKeySvc := apikey.NewService(pool)
 
-	oidcProvider, err := auth.NewOIDCProvider(ctx, cfg.OIDC)
-	if err != nil {
-		// Discovery failure should not silently disable OIDC; surface it.
-		return err
-	}
+	// No network I/O, and no error to handle: the issuer is contacted on the
+	// first sign-in that needs it, not here. An unreachable identity provider
+	// used to be a fatal boot error, which took the whole control plane down for
+	// as long as somebody else's server was unwell. See NewOIDCProvider.
+	oidcProvider := auth.NewOIDCProvider(cfg.OIDC)
 	if oidcProvider.Enabled() {
 		logger.Info("OIDC relying party enabled", slog.String("issuer", cfg.OIDC.Issuer))
 	} else {
