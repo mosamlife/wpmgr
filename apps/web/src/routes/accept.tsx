@@ -265,8 +265,15 @@ function AcceptPage() {
           if (signedInEmail) {
             // No attempt was spent on this one (invitation_other_recipient), so
             // the offer to try the right address is real and not a trap.
+            //
+            // The message describes the page the person is about to be looking
+            // at, because the same handler switches it. setUseOtherAddress(true)
+            // drops the signed-in branch and with it the button that offers the
+            // switch, so naming that button here would point at a control that
+            // cannot be on screen while this sentence is. What IS on screen is
+            // the email + password form, so that is what this names.
             setServerError(
-              `This invitation was not sent to ${signedInEmail}. If it went to another of your addresses, choose "Use a different address" below; otherwise sign out and open this link again with the account it was addressed to.`,
+              `This invitation was not sent to ${signedInEmail}. Enter the address it was sent to below, with its password if you already have an account or a new one to create it, or sign out and open this link again with the account it was addressed to.`,
             );
             setUseOtherAddress(true);
             return;
