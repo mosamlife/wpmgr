@@ -34,9 +34,6 @@ final class FakeKeystore implements EmailKeystoreInterface
     /** @var array<array<string,string>> Captured store_connection_secrets() calls. */
     public array $stored_conn_secrets = [];
 
-    /** Set by a test to simulate a stored secret that will not decrypt. */
-    public bool $decrypt_failed = false;
-
     public function __construct(string $initial_secret = '')
     {
         $this->secret = $initial_secret;
@@ -45,11 +42,6 @@ final class FakeKeystore implements EmailKeystoreInterface
     public function get_email_secret(): string
     {
         return $this->secret;
-    }
-
-    public function email_secret_decrypt_failed(): bool
-    {
-        return $this->decrypt_failed;
     }
 
     public function storeEmailSecret(string $secret): void

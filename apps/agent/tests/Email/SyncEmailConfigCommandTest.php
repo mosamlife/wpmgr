@@ -170,6 +170,58 @@ class SyncEmailConfigCommandTest extends TestCase
         $this->assertSame('relay-password', $keystore->get_connection_secret('relay'));
     }
 
+    /**
+     * The carry-forward is a read-modify-write over an option with replace-all
+     * semantics, so a read-back that comes up empty must not be written. The
+     * keystore answers '' both for "nothing stored" and for "stored but it
+     * would not decrypt this request", and writing the resulting empty map
+     * deletes the ciphertext outright: the exact loss the carry-forward exists
+     * to prevent.
+     */
+    public function test_a_carry_forward_push_that_reads_back_nothing_writes_nothing(): void
+    {
+        Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);
+        Functions\when('update_option')->justReturn(true);
+
+        // The keystore reports no readable secret for 'relay'.
+        $keystore = new FakeKeystore();
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'    => 'smtp',
+            'connections' => [
+                'relay' => ['provider' => 'smtp', 'config' => ['host' => 'relay.example.com']],
+            ],
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame(
+            [],
+            $keystore->stored_conn_secrets,
+            'a push carrying no connection secret must not overwrite the stored map with an empty one'
+        );
+    }
+
+    public function test_an_emptied_registry_still_clears_the_connection_secrets(): void
+    {
+        Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);
+        Functions\when('update_option')->justReturn(true);
+
+        $keystore                        = new FakeKeystore();
+        $keystore->conn_secrets['relay'] = 'relay-password';
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], ['provider' => 'smtp', 'connections' => []]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame(
+            [[]],
+            $keystore->stored_conn_secrets,
+            'dropping every connection is a deliberate replace-all, not a failed read-back'
+        );
+        $this->assertSame('', $keystore->get_connection_secret('relay'));
+    }
+
     public function test_connection_secret_is_dropped_on_explicit_clear(): void
     {
         Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);

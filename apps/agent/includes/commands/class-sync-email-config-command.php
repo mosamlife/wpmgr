@@ -19,9 +19,28 @@
  * carries no credential", NOT "delete the stored credential": a control plane
  * that cannot resolve a site's secret sends exactly the same empty value, so
  * treating it as a delete destroyed working passwords on routine config
- * pushes. The stored secret is replaced only by a non-empty value, and removed
- * only on an explicit `clear_secret: true`. Named connections follow the same
- * rule via their own per-entry `clear_secret` flag.
+ * pushes. The three signals are therefore:
+ *
+ *   secret: "<non-empty>"   replace the stored secret
+ *   clear_secret: true      remove the stored secret
+ *   neither of those        leave the stored secret exactly as it is
+ *
+ * A non-empty `secret` wins if both arrive in one push: it is the newer
+ * credential and it is bound to the settings travelling beside it. Named
+ * connections follow the same three rules via their own per-entry
+ * `clear_secret` flag.
+ *
+ * WHY THE CONTROL PLANE MUST SEND clear_secret. The stored secret is a single
+ * keystore entry with no binding to the provider, host or username it was
+ * issued for, and this command cannot see whether a pushed setting is a
+ * correction or a move to a different account. So a push that changes the
+ * authenticating identity (the provider slug, or for a host-based provider its
+ * host, port or username) and carries no new secret MUST also carry
+ * `clear_secret: true`, or the old credential is offered to the new endpoint.
+ * The control plane holds both the previous and the incoming settings and is
+ * the only side that can compare them; it owns that decision. Re-pushing
+ * identical settings changes no identity and so never clears anything, which
+ * is what keeps the #380 fix intact.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -130,7 +149,10 @@ final class SyncEmailConfigCommand implements CommandInterface {
 				$secret = $params['secret'];
 			}
 		}
-		if ( isset( $params['clear_secret'] ) && $params['clear_secret'] === true ) {
+		// Only a strict boolean true clears; a truthy string or 1 is a
+		// serialisation accident, and guessing at one deletes a credential.
+		// A secret supplied in the same push takes precedence (see the class docblock).
+		if ( $secret === null && ( $params['clear_secret'] ?? null ) === true ) {
 			$secret = '';
 		}
 
@@ -143,16 +165,27 @@ final class SyncEmailConfigCommand implements CommandInterface {
 		// read back and carried forward. A connection dropped from the registry
 		// still loses its secret; one merely pushed without a secret does not.
 		$conn_secrets = array();
+		// True once this push says something of its own about a connection
+		// secret: it supplied one, or it asked for one to be cleared. While this
+		// stays false every entry in $conn_secrets came from a read-back, and an
+		// empty result means the read-back found nothing rather than that the
+		// operator removed anything.
+		$conn_push_is_authoritative = false;
+		$conn_entries               = 0;
 		if ( array_key_exists( 'connections', $params ) && is_array( $params['connections'] ) ) {
 			foreach ( $params['connections'] as $conn_key => $wire ) {
 				if ( ! is_array( $wire ) ) {
 					continue;
 				}
+				++$conn_entries;
 				$key   = (string) $conn_key;
-				$clear = isset( $wire['clear_secret'] ) && $wire['clear_secret'] === true;
+				$clear = ( $wire['clear_secret'] ?? null ) === true;
 				if ( isset( $wire['secret'] ) && is_string( $wire['secret'] ) && $wire['secret'] !== '' ) {
-					$conn_secrets[ $key ] = $wire['secret'];
-				} elseif ( ! $clear ) {
+					$conn_secrets[ $key ]       = $wire['secret'];
+					$conn_push_is_authoritative = true;
+				} elseif ( $clear ) {
+					$conn_push_is_authoritative = true;
+				} else {
 					$existing = $this->keystore->get_connection_secret( $key );
 					if ( $existing !== '' ) {
 						$conn_secrets[ $key ] = $existing;
@@ -198,7 +231,19 @@ final class SyncEmailConfigCommand implements CommandInterface {
 		// Persist per-connection secrets atomically (replace-all semantics).
 		// If the payload has no connections key at all, leave the existing
 		// connection secrets untouched (old-CP compat: payload has no 'connections').
-		if ( array_key_exists( 'connections', $params ) ) {
+		//
+		// One case must not be written: connections were pushed, none of them
+		// said anything about a secret, and the carry-forward read-back came up
+		// empty. The keystore returns '' both for "nothing stored" and for
+		// "stored but it would not decrypt", so that result may mean the whole
+		// map is still there and merely unreadable this request. Writing the
+		// empty map deletes the option, which is the very destruction the
+		// carry-forward exists to prevent. Leaving it alone costs nothing: a
+		// genuinely empty store stays empty.
+		$carry_forward_came_up_empty = $conn_entries > 0
+			&& ! $conn_push_is_authoritative
+			&& $conn_secrets === array();
+		if ( array_key_exists( 'connections', $params ) && ! $carry_forward_came_up_empty ) {
 			try {
 				$this->keystore->store_connection_secrets( $conn_secrets );
 			} catch ( \Throwable $e ) {
@@ -207,9 +252,12 @@ final class SyncEmailConfigCommand implements CommandInterface {
 			}
 		}
 
-		$detail = $secret === '' ? 'email config saved; secret cleared' : 'email config saved';
 		if ( $secret === null ) {
 			$detail = 'email config saved; stored secret preserved';
+		} elseif ( $secret === '' ) {
+			$detail = 'email config saved; secret cleared';
+		} else {
+			$detail = 'email config saved';
 		}
 		return array( 'ok' => true, 'detail' => $detail );
 	}

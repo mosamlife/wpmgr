@@ -156,9 +156,6 @@ final class Keystore implements EmailKeystoreInterface
     /** Cached resolved master key for the lifetime of this request. */
     private ?string $cachedKey = null;
 
-    /** Whether the last get_email_secret() read hit a stored-but-undecryptable value. */
-    private bool $email_secret_decrypt_failed = false;
-
     /**
      * Encrypt a plaintext blob with AES-256-GCM using the master key.
      *
@@ -358,18 +355,10 @@ final class Keystore implements EmailKeystoreInterface
      * Retrieve and decrypt the per-site email provider secret.
      * Returns an empty string when no secret has been stored.
      *
-     * A stored secret that will not decrypt also returns '', so the flag below
-     * records which of the two happened; email_secret_decrypt_failed() reports
-     * it. Both look identical to a caller holding only the return value, and
-     * telling them apart is the difference between "re-enter the password" and
-     * "the site encryption key changed" (GH #380).
-     *
      * @return string Decrypted secret, or '' when absent.
      */
     public function get_email_secret(): string
     {
-        $this->email_secret_decrypt_failed = false;
-
         $stored = get_option(self::OPTION_EMAIL_SECRET);
         if (!is_string($stored) || $stored === '') {
             return '';
@@ -377,20 +366,8 @@ final class Keystore implements EmailKeystoreInterface
         try {
             return $this->decrypt($stored);
         } catch (\Throwable $e) {
-            $this->email_secret_decrypt_failed = true;
             return '';
         }
-    }
-
-    /**
-     * Whether the most recent get_email_secret() call found a stored secret it
-     * could not decrypt (as opposed to finding no stored secret at all).
-     *
-     * @return bool
-     */
-    public function email_secret_decrypt_failed(): bool
-    {
-        return $this->email_secret_decrypt_failed;
     }
 
     /**

@@ -121,10 +121,7 @@ class ProviderRouter {
 			return array( 'ok' => false, 'message_id' => '', 'detail' => $error );
 		}
 
-		$cred_error = $this->credential_error( $connection, $secret );
-		$result     = $cred_error !== ''
-			? array( 'ok' => false, 'message_id' => '', 'error' => $cred_error, 'provider_response' => $cred_error )
-			: $handler->send( $mail, $connection['config'], $secret );
+		$result = $handler->send( $mail, $connection['config'], $secret );
 
 		if ( $result['ok'] ) {
 			$this->maybe_log( $mail, $connection['key'], $connection['provider'], 'sent', $result['message_id'], '', (string) ( $result['provider_response'] ?? '' ), 0, $cfg );
@@ -143,13 +140,10 @@ class ProviderRouter {
 				$fb_secret  = $this->get_secret_for_connection( $fallback );
 				$fb_handler = $this->handlers[ $fallback['provider'] ] ?? null;
 				if ( $fb_handler !== null ) {
-					$fb_cred_error = $this->credential_error( $fallback, $fb_secret );
-					$fb_result     = $fb_cred_error !== ''
-						? array( 'ok' => false, 'message_id' => '', 'error' => $fb_cred_error, 'provider_response' => $fb_cred_error )
-						: $fb_handler->send( $fb_mail, $fallback['config'], $fb_secret );
-					$fb_ok         = (bool) ( $fb_result['ok'] ?? false );
-					$fb_status     = $fb_ok ? 'sent' : 'failed';
-					$fb_response   = (string) ( $fb_result['provider_response'] ?? '' );
+					$fb_result   = $fb_handler->send( $fb_mail, $fallback['config'], $fb_secret );
+					$fb_ok       = (bool) ( $fb_result['ok'] ?? false );
+					$fb_status   = $fb_ok ? 'sent' : 'failed';
+					$fb_response = (string) ( $fb_result['provider_response'] ?? '' );
 					// Prefix the error with the primary failure detail so the CP log shows both legs.
 					$fb_error = $fb_ok ? ''
 						: 'primary(' . $connection['key'] . ') failed: ' . $primary_error . ' | ' . (string) ( $fb_result['error'] ?? '' );
@@ -211,15 +205,12 @@ class ProviderRouter {
 			return array( 'ok' => false, 'message_id' => '', 'detail' => $error );
 		}
 
-		$cred_error = $this->credential_error( $connection, $secret );
-		$result     = $cred_error !== ''
-			? array( 'ok' => false, 'message_id' => '', 'error' => $cred_error, 'provider_response' => $cred_error )
-			: $handler->send( $mail, $connection['config'], $secret );
-		$ok         = (bool) ( $result['ok'] ?? false );
-		$status     = $ok ? 'sent' : 'failed';
-		$err_str    = $ok ? '' : (string) ( $result['error'] ?? '' );
-		$resp_str   = (string) ( $result['provider_response'] ?? '' );
-		$msg_id     = (string) ( $result['message_id'] ?? '' );
+		$result   = $handler->send( $mail, $connection['config'], $secret );
+		$ok       = (bool) ( $result['ok'] ?? false );
+		$status   = $ok ? 'sent' : 'failed';
+		$err_str  = $ok ? '' : (string) ( $result['error'] ?? '' );
+		$resp_str = (string) ( $result['provider_response'] ?? '' );
+		$msg_id   = (string) ( $result['message_id'] ?? '' );
 		$this->maybe_log( $mail, $connection['key'], $connection['provider'], $status, $msg_id, $err_str, $resp_str, 0, $cfg );
 
 		return array(
@@ -392,30 +383,6 @@ class ProviderRouter {
 			return $this->keystore->get_email_secret();
 		}
 		return $this->keystore->get_connection_secret( $connection['key'] );
-	}
-
-	/**
-	 * Report why a resolved secret is empty, when the reason is knowable.
-	 *
-	 * A stored secret that will not decrypt reads back as '', exactly like no
-	 * stored secret at all. Only the keystore knows which happened, and the two
-	 * call for different operator actions, so name it here rather than letting
-	 * the provider report a generic authentication failure (GH #380). Returns
-	 * '' when there is nothing to report, in which case the send proceeds and
-	 * the handler applies its own missing-credential rule.
-	 *
-	 * @param array{key:string,provider:string,config:array<string,mixed>,from_address:string,from_name:string} $connection Resolved connection.
-	 * @param string                                                                                            $secret     Secret just resolved for it.
-	 * @return string Error string, or '' when the send should proceed.
-	 */
-	private function credential_error( array $connection, string $secret ): string {
-		if ( $secret !== '' || $connection['key'] !== 'default' ) {
-			return '';
-		}
-		if ( ! $this->keystore->email_secret_decrypt_failed() ) {
-			return '';
-		}
-		return 'stored email credential could not be decrypted (the site encryption key changed); re-enter the password in the dashboard';
 	}
 
 	/**

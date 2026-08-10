@@ -18,6 +18,10 @@
  *      password, which is why re-typing the same password sometimes appeared
  *      to fix it (it re-populated what had been deleted).
  *
+ * Leg 3 covers the hazard the fix itself opens: a preserved credential must
+ * not follow the settings to a different provider or endpoint. The control
+ * plane detects that move and says clear_secret; the agent honours it.
+ *
  * @package WPMgr\Agent\Tests\Email
  */
 
@@ -31,10 +35,7 @@ use PHPMailer\PHPMailer\FakePhpMailerRegistry;
 use PHPUnit\Framework\TestCase;
 use WPMgr\Agent\Commands\SyncEmailConfigCommand;
 use WPMgr\Agent\Email\EmailConfig;
-use WPMgr\Agent\Email\EmailLogger;
 use WPMgr\Agent\Email\Handlers\SmtpHandler;
-use WPMgr\Agent\Email\ProviderHandlerInterface;
-use WPMgr\Agent\Email\ProviderRouter;
 
 require_once __DIR__ . '/fake-phpmailer.php';
 
@@ -192,31 +193,98 @@ class SmtpEmptySecretReproTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // Diagnostic: a stored credential that will not decrypt reads back as ''
-    // exactly like no credential at all. Say which one it was.
+    // Leg 3: preserving the credential must not let it be re-pointed
     // -------------------------------------------------------------------------
+    //
+    // The stored secret is one keystore entry with no binding to the provider,
+    // host or username it was issued for. Preserving it across a push that
+    // moves the authenticating identity would offer an SMTP password to a
+    // different host, or to a provider that reads it as an API key. This
+    // command cannot tell a corrected setting from a move, so the control plane
+    // decides and says so with clear_secret; these tests pin the agent half of
+    // that contract.
 
-    public function test_undecryptable_stored_credential_is_named_and_never_dispatched(): void
+    public function test_clear_secret_removes_the_credential_when_the_endpoint_moves(): void
     {
-        $keystore                 = new FakeKeystore('');
-        $keystore->decrypt_failed = true;
+        $this->stub_options();
 
-        $logger = $this->createMock(EmailLogger::class);
-        $logger->method('write')->willReturn(1);
+        $keystore = new FakeKeystore('the-working-password');
+        $cmd      = new SyncEmailConfigCommand($keystore);
 
-        $handler = $this->createMock(ProviderHandlerInterface::class);
-        $handler->method('provider')->willReturn('smtp');
-        $handler->expects($this->never())->method('send');
+        // The operator repointed the connection at a different host and did not
+        // supply a new password, so the control plane marks the old one dead.
+        $result = $cmd->execute([], [
+            'provider'     => 'smtp',
+            'config'       => ['host' => 'smtp.elsewhere.example', 'port' => 587, 'auth' => true, 'username' => 'someone-else'],
+            'clear_secret' => true,
+        ]);
 
-        $router = new ProviderRouter($keystore, $logger);
-        $router->register($handler);
+        $this->assertTrue($result['ok']);
+        $this->assertSame('', $keystore->get_email_secret(), 'a repointed endpoint must not inherit the old credential');
+        $this->assertContains('', $keystore->stored, 'the keystore must be told to drop the secret');
+    }
 
-        $result = $router->send(
-            $this->base_mail(),
-            new EmailConfig(['provider' => 'smtp', 'config' => $this->smtp_config(), 'log_emails' => false])
+    public function test_a_supplied_secret_outranks_clear_secret_in_the_same_push(): void
+    {
+        $this->stub_options();
+
+        $keystore = new FakeKeystore('the-old-password');
+        $cmd      = new SyncEmailConfigCommand($keystore);
+
+        $result = $cmd->execute([], [
+            'provider'     => 'smtp',
+            'config'       => $this->smtp_config(),
+            'secret'       => 'the-new-password',
+            'clear_secret' => true,
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame(
+            'the-new-password',
+            $keystore->get_email_secret(),
+            'a credential supplied beside the settings it belongs to must win over a clear'
         );
+    }
 
-        $this->assertFalse($result['ok']);
-        $this->assertStringContainsString('could not be decrypted', $result['detail']);
+    public function test_only_a_boolean_true_clears_the_credential(): void
+    {
+        foreach (['true', 1, 'yes', 'false', 0] as $truthy) {
+            $this->stub_options();
+
+            $keystore = new FakeKeystore('the-working-password');
+            $cmd      = new SyncEmailConfigCommand($keystore);
+
+            $result = $cmd->execute([], [
+                'provider'     => 'smtp',
+                'config'       => $this->smtp_config(),
+                'clear_secret' => $truthy,
+            ]);
+
+            $this->assertTrue($result['ok']);
+            $this->assertSame(
+                'the-working-password',
+                $keystore->get_email_secret(),
+                'a non-boolean clear_secret is a serialisation accident, not an instruction to delete: ' . var_export($truthy, true)
+            );
+        }
+    }
+
+    public function test_a_routine_repush_of_identical_settings_still_preserves_the_credential(): void
+    {
+        $this->stub_options();
+
+        $keystore = new FakeKeystore('the-working-password');
+        $cmd      = new SyncEmailConfigCommand($keystore);
+
+        // No identity change, so the control plane sends no clear_secret. This
+        // is the GH #380 path and it must stay untouched by leg 3.
+        $result = $cmd->execute([], [
+            'provider' => 'smtp',
+            'config'   => $this->smtp_config(),
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('the-working-password', $keystore->get_email_secret());
+        $this->assertSame([], $keystore->stored);
     }
 }
