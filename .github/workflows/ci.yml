@@ -23,6 +23,8 @@ jobs:
         working-directory: apps/api
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -81,11 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
+        # Version comes from the root package.json packageManager field, so the
+        # lockfile and CI cannot drift apart.
         uses: pnpm/action-setup@v4
-        with:
-          version: 11.1.1
 
       - uses: actions/setup-node@v4
         with:
@@ -127,11 +131,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
+        # Version comes from the root package.json packageManager field, so the
+        # lockfile and CI cannot drift apart.
         uses: pnpm/action-setup@v4
-        with:
-          version: 11.1.1
 
       - uses: actions/setup-node@v4
         with:
@@ -156,6 +162,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # House rule: competitor products are never named in docs or root markdown.
       # Functional source references (conflict-detection slugs, plugin-signature
@@ -227,9 +235,9 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" ./cmd/wpmgr/...
 
       - name: Install pnpm
+        # Version comes from the root package.json packageManager field, so the
+        # lockfile and CI cannot drift apart.
         uses: pnpm/action-setup@v4
-        with:
-          version: 11.1.1
 
       # No `cache: pnpm` here: this job never runs `pnpm install`, so the pnpm
       # store is empty and setup-node's cache-save post-step fails on a missing
@@ -258,6 +266,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: nginx -t (syntax)
         run: |
@@ -277,6 +287,8 @@ jobs:
         working-directory: apps/agent
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # The check that release.yml must not stamp the agent zip from the git tag
       # used to live here, on its own, which is why the process doc describing
