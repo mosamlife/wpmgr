@@ -223,8 +223,8 @@ The DoD for **any** WPMgr feature includes both documentation surfaces. Enforce 
 > deployed. Read every `apps/landing` reference above as `apps/marketing`. This
 > section is written against the current tree.
 
-Sixteen files in this repo can name a version. Six of them name one to a reader
-who acts on it, and those six are checked by the `Security audit` job in
+Sixteen files in this repo can name a version. Seven of them name one to a reader
+who acts on it, and those seven are checked by the `Security audit` job in
 `.github/workflows/ci.yml`. The rest are historical statements (a runbook
 describing a publish that happened, spec prose naming the agent version that
 introduced a field, a workflow comment citing an old version as an example) and

@@ -307,7 +307,7 @@ jobs:
       #    README.md links docs/install.md as the full install guide directly
       #    under its own pull block, so a reader crosses between them mid-install.
       #    Guarding only README.md is why docs/install.md was still handing people
-      #    v0.19.0, 42 releases behind, one link away from the block this guard
+      #    v0.19.0, 190 releases behind, one link away from the block this guard
       #    was written to protect. They must agree with each other exactly, and
       #    sit within 1 release of the top CHANGELOG entry: enough to forgive the
       #    window inside a release PR where the entry exists but the tag has not
