@@ -258,8 +258,17 @@ jobs:
       # is a separate step on purpose. The step above exits early when CHANGELOG
       # itself cannot be parsed, so anything appended to it would be skipped along
       # with it, silently, which is exactly the failure mode being fixed here.
-      # It re-derives the release ordering for the same reason: one unparseable
-      # surface must never take the others down with it.
+      #
+      # NOTHING IN THIS STEP EXITS EARLY ON AN UNPARSEABLE CHANGELOG. The step
+      # above may, because both of its checks compare a surface against the top
+      # CHANGELOG entry and have nothing to say without one. Neither check here is
+      # like that. The badge compares two files, neither of which is the CHANGELOG.
+      # The install pins are first checked for PRESENCE and for AGREEMENT, both of
+      # which are facts about README.md and docs/install.md alone. Only the last
+      # few lines, the distance compare, need the release ordering, so the read of
+      # CHANGELOG.md sits there and only that compare warns and skips when it fails.
+      # An unrelated parse failure must not be able to switch off a check that
+      # never needed the thing that failed to parse.
       #
       # Two surfaces, and they are compared to DIFFERENT references on purpose:
       #
@@ -313,6 +322,51 @@ jobs:
       #    window inside a release PR where the entry exists but the tag has not
       #    been pushed, and nothing more.
       #
+      #    THE PINS ARE A REQUIRED SET, NOT WHATEVER TURNS UP. Every expect_pin
+      #    line below names one pin, the file it lives in, and how many times it
+      #    must appear. A pin that cannot be found is an ERROR that names the file
+      #    and what was expected. It is not a warning, and it is not a pass.
+      #
+      #    The first version of this check had that backwards, and the hole was
+      #    wide enough to reopen the exact harm the check exists to close. It
+      #    collected every pin it could find across BOTH files, reduced them to a
+      #    set of distinct versions, and asserted the set had one member. Every
+      #    way of losing a pin was therefore silent. Rewrite the export in
+      #    docs/install.md as WPMGR_VERSION="v0.19.0", which is ordinary shell and
+      #    a reformat nobody would think twice about, and that pin stops matching:
+      #    the README pins still agree with each other, the set still has one
+      #    member, and CI goes green over an install guide handing out a tag from
+      #    190 releases ago. Deleting a pin outright passed the same way, and
+      #    deleting every pin in both files merely warned and returned success.
+      #    A count was never asserted anywhere, so a README that had lost one of
+      #    its three pull commands was indistinguishable from one that never had it.
+      #
+      #    PRESENCE AND REFORMAT TOLERANCE PULL AGAINST EACH OTHER. The split is
+      #    ANCHOR versus DECORATION. The anchor is the part the reader acts on:
+      #    the variable name WPMGR_VERSION, the image path
+      #    ghcr.io/mosamlife/wpmgr-api, and the leading v on the tag. Change any of
+      #    those and the line no longer does what it claims (an image tag without
+      #    the v does not exist in GHCR), so the patterns require them exactly, and
+      #    losing one reads as a missing pin, which is the correct reading.
+      #    Decoration is everything a formatter may touch without changing what
+      #    gets copied: quotes around the value, backticks around the line, an
+      #    export keyword, spaces around the =, indentation, a blockquote marker.
+      #    The patterns ignore all of it.
+      #
+      #    Tolerance is not a concession here, it is what makes presence work. A
+      #    reformatted pin that is still READ is a pin whose version is still
+      #    COMPARED, which is why WPMGR_VERSION="v0.19.0" now fails as a stale pin
+      #    rather than passing as an absent one. The reverse also matters: a guard
+      #    that reddened CI over a quote character would be deleted by the next
+      #    person to touch these files, and a deleted guard guards nothing.
+      #
+      #    THE LIST IS THE SPECIFICATION, and it is meant to be read and edited by
+      #    hand. Adding a pin to the docs means adding a line to it. The count in
+      #    each line is the only thing that can tell "the README lost one of its
+      #    three pull commands" from "the README never had it". Nothing outside the
+      #    list is required, but everything found is still version-compared, so an
+      #    extra pin cannot go stale in silence either.
+      #
       #    infra/docker-compose.prod.yml is deliberately NOT in this set. Its
       #    functional default, image: ...:${WPMGR_VERSION:-latest}, names no
       #    version and needs no guard. Its header comment did name one, and had
@@ -323,19 +377,24 @@ jobs:
       #    every release. Guard the copy people follow; delete the copy that only
       #    exists to be duplicated.
       #
-      # Same forgiveness rule throughout: anything that fails to parse warns and
-      # skips instead of blocking a PR on a false positive. Both sub-checks always
-      # run and the step exits once at the end, so a tree with two stale surfaces
-      # reports both in one CI cycle rather than one per push.
+      # Forgiveness rule, with one deliberate exception. Anything that fails to
+      # PARSE still warns and skips instead of blocking a PR on a false positive:
+      # an unreadable CHANGELOG, a badge or an agent version that cannot be read,
+      # a pin naming a version CHANGELOG.md has no entry for. A MISSING REQUIRED
+      # PIN is not one of those. It is not the guard failing to read something, it
+      # is the guard having read the file and established that a thing a reader
+      # needs is not in it, which is the finding itself. That errors. The line is
+      # whether the guard is being asked to judge something it cannot see (warn)
+      # or has just proved something is absent (error).
+      #
+      # Both sub-checks always run and the step exits once at the end, so a tree
+      # with two stale surfaces reports both in one CI cycle rather than one per
+      # push.
       - name: Docs version drift guard (marketing badge + install pins)
         run: |
-          releases=$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md 2>/dev/null | tr -d '#[] ' || true)
-          top=$(printf '%s\n' "$releases" | sed -n 1p)
-          if [ -z "$top" ]; then
-            echo "WARN: could not parse any released version from CHANGELOG.md; skipping the drift guard."
-            exit 0
-          fi
-
+          # Both helpers are used only by the distance compare at the very end.
+          # $releases is deliberately not read here: the badge check and the pin
+          # presence check must not depend on CHANGELOG.md parsing at all.
           releases_behind() {
             printf '%s\n' "$releases" | grep -n -x -F -m1 -e "$1" | cut -d: -f1 | awk '{print $1 - 1}' || true
           }
@@ -378,36 +437,108 @@ jobs:
           fi
 
           # --- the install pins a self-hoster copies, README.md + docs/install.md ---
-          pin_files='README.md docs/install.md'
-          pins=$( { grep -Hn -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
-                    grep -Hn -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
-                    grep -Hn -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' $pin_files; } 2>/dev/null || true )
-          seen=$( { grep -h -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
-                    grep -h -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' $pin_files;
-                    grep -h -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' $pin_files; } 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u || true )
-          if [ -z "$seen" ]; then
-            echo "WARN: could not parse any install pin from $pin_files (no ghcr.io pull tag, no WPMGR_VERSION export); skipping that check."
-          elif [ "$(printf '%s\n' "$seen" | wc -l | tr -d ' ')" -gt 1 ]; then
+          # expect_pin <file> <required occurrences> <what a reader does with it> <pattern>
+          #
+          # Asserts the pin is THERE, the stated number of times, and records the
+          # version it names for the agreement and distance compares below. A
+          # shortfall and a surplus are both errors: a shortfall is a pin a reader
+          # can no longer copy, a surplus is a pin this list does not know about,
+          # and the remedy for the second is one number on one line.
+          pin_seen=''
+          pin_where=''
+          pin_incomplete=0
+          expect_pin() {
+            _file="$1"; _want="$2"; _what="$3"; _re="$4"
+            if [ ! -f "$_file" ]; then
+              echo "ERROR: $_file does not exist, so its required install pin ($_what) is missing."
+              fail=1; pin_incomplete=1
+              return 0
+            fi
+            _hits=$(grep -noE "$_re" "$_file" || true)
+            _n=$(printf '%s' "$_hits" | grep -c . || true)
+            if [ "$_n" -lt "$_want" ]; then
+              echo "ERROR: $_file is missing a required install pin: $_what."
+              echo "  expected $_want, found $_n. Self-hosters copy this line verbatim, so it has to be present AND current."
+              echo "  it must match: $_re"
+              echo "  Decoration is tolerated (quotes, backticks, an export keyword, extra spacing, indentation). The name in the pattern and the leading v are not."
+              fail=1; pin_incomplete=1
+            elif [ "$_n" -gt "$_want" ]; then
+              echo "ERROR: $_file carries more copies of an install pin than the expected set declares: $_what."
+              echo "  expected $_want, found $_n:"
+              printf '%s\n' "$_hits" | sed "s|^|  $_file:|"
+              echo "  If the extra copy is intended, raise the count on that expect_pin line in .github/workflows/ci.yml."
+              fail=1; pin_incomplete=1
+            fi
+            # `return 0`, not a bare `return`: with the default `bash -e` shell a
+            # bare one would hand back the status of the test above it, and a
+            # function returning 1 aborts the step on the spot. Every missing pin
+            # has to get its own line before the step exits, or fixing one pin
+            # just uncovers the next one a CI cycle later.
+            [ -n "$_hits" ] || return 0
+            # $'\n' rather than a literal newline inside the quotes: a
+            # continuation line at column 0 would close this YAML block scalar
+            # and take the rest of the step with it.
+            pin_where="$pin_where$(printf '%s\n' "$_hits" | sed "s|^|  $_file:|" || true)"$'\n'
+            pin_seen="$pin_seen$(printf '%s\n' "$_hits" | sed 's|^[0-9]*:||' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"$'\n'
+            return 0
+          }
+
+          # THE EXPECTED INSTALL PIN SET. This list is the specification: a pin
+          # that is not here is not required, and a pin that is here must exist.
+          # Adding a pin to the docs means adding a line here.
+          expect_pin README.md 1 'the release status line under the title' \
+            '^[[:space:]>]*\*\*[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*\*\*'
+          expect_pin README.md 1 'the docker pull tag for the api image' \
+            'ghcr\.io/mosamlife/wpmgr-api:v[0-9]+\.[0-9]+\.[0-9]+'
+          expect_pin README.md 1 'the docker pull tag for the web image' \
+            'ghcr\.io/mosamlife/wpmgr-web:v[0-9]+\.[0-9]+\.[0-9]+'
+          expect_pin README.md 1 'the docker pull tag for the media-encoder image' \
+            'ghcr\.io/mosamlife/wpmgr-media-encoder:v[0-9]+\.[0-9]+\.[0-9]+'
+          expect_pin README.md 1 'the WPMGR_VERSION export in the compose quick start' \
+            "WPMGR_VERSION[[:space:]]*=[[:space:]]*[\"'\`]?v[0-9]+\.[0-9]+\.[0-9]+"
+          expect_pin docs/install.md 1 'the WPMGR_VERSION export in the install guide' \
+            "WPMGR_VERSION[[:space:]]*=[[:space:]]*[\"'\`]?v[0-9]+\.[0-9]+\.[0-9]+"
+
+          pin_versions=$(printf '%s\n' "$pin_seen" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)
+          pin_distinct=$(printf '%s' "$pin_versions" | grep -c . || true)
+
+          if [ "$pin_distinct" -eq 0 ]; then
+            echo "ERROR: not one install pin could be read from README.md or docs/install.md."
+            echo "The install instructions are the copy a self-hoster runs verbatim. Unpinned, they hand out whatever :latest happens to be that day."
+            fail=1
+          elif [ "$pin_distinct" -gt 1 ]; then
             echo "ERROR: the install instructions name more than one version:"
-            echo "$pins"
+            printf '%s' "$pin_where"
             echo "The GHCR pull tags, the WPMGR_VERSION exports and the README status line must all name the same release."
             fail=1
           else
-            compare_fix="Update the ghcr.io pull tags, the WPMGR_VERSION exports and the README status line in $pin_files."
-            if [ "$(is_newer "$seen" "$top")" = "1" ]; then
-              echo "ERROR: the install instructions name v$seen, which is newer than the top CHANGELOG.md entry ($top)."
+            # Only this compare needs the release ordering, so only this compare
+            # reads CHANGELOG.md, and only this compare can be skipped by failing
+            # to parse it. Everything above has already run and already reported.
+            releases=$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md 2>/dev/null | tr -d '#[] ' || true)
+            top=$(printf '%s\n' "$releases" | sed -n 1p)
+            compare_fix="Update the ghcr.io pull tags, the WPMGR_VERSION exports and the README status line in README.md and docs/install.md."
+            if [ -z "$top" ]; then
+              echo "WARN: could not parse any released version from CHANGELOG.md; the install pins all name $pin_versions, but the distance cannot be measured."
+            elif [ "$(is_newer "$pin_versions" "$top")" = "1" ]; then
+              echo "ERROR: the install instructions name v$pin_versions, which is newer than the top CHANGELOG.md entry ($top)."
               echo "They must never hand a self-hoster a tag that was never released. $compare_fix"
               fail=1
             else
-              behind=$(releases_behind "$seen")
+              behind=$(releases_behind "$pin_versions")
               if [ -z "$behind" ]; then
-                echo "WARN: CHANGELOG.md has no entry for $seen, so the distance cannot be measured; skipping that compare."
+                echo "WARN: CHANGELOG.md has no entry for $pin_versions, so the distance cannot be measured; skipping that compare."
               elif [ "$behind" -gt 1 ]; then
-                echo "ERROR: the install instructions still tell self-hosters to pull v$seen, $behind releases behind the top CHANGELOG.md entry ($top)."
+                echo "ERROR: the install instructions still tell self-hosters to pull v$pin_versions, $behind releases behind the top CHANGELOG.md entry ($top)."
                 echo "$compare_fix"
                 fail=1
+              elif [ "$pin_incomplete" -eq 0 ]; then
+                echo "OK: every required install pin is present and names $pin_versions, $behind releases behind $top, tolerance 1."
               else
-                echo "OK: install pin $seen is $behind releases behind $top, tolerance 1."
+                # Never print a reassuring line under a missing-pin error. The
+                # agreement and distance compares can only speak for the pins
+                # that were actually found.
+                echo "NOTE: the install pins that were found all name $pin_versions, $behind releases behind $top. The pin-set errors above still stand."
               fi
             fi
           fi
