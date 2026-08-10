@@ -273,7 +273,7 @@ function AcceptPage() {
             // cannot be on screen while this sentence is. What IS on screen is
             // the email + password form, so that is what this names.
             setServerError(
-              `This invitation was not sent to ${signedInEmail}. Enter the address it was sent to and that account's password below, or sign out and open this link again with the account it was addressed to.`,
+              `This invitation was not sent to ${signedInEmail}. Enter the address it was sent to below, with its password if you already have an account or a new one to create it, or sign out and open this link again with the account it was addressed to.`,
             );
             setUseOtherAddress(true);
             return;
