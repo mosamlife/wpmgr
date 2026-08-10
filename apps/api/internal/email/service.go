@@ -476,6 +476,17 @@ func (s *Service) buildRepoInput(ctx context.Context, in UpsertInput) (upsertRep
 	switch {
 	case in.SecretRaw == nil:
 		// The nil-sentinel: SetSecret=false leaves the stored ciphertext alone.
+		// That is the right default for a save that only changes the from-name
+		// or the retention window, and the wrong one for a save that changes
+		// WHERE the credential will be presented. See preserveOrRevokeSecret.
+		revoke, err := s.preserveOrRevokeSecret(ctx, in)
+		if err != nil {
+			return upsertRepoInput{}, err
+		}
+		if revoke {
+			ri.SetSecret = true
+			ri.SecretCiphertext = nil
+		}
 
 	case *in.SecretRaw == "":
 		// An explicit clear. Write the column and null it, so secret_set stops
@@ -505,6 +516,102 @@ func (s *Service) buildRepoInput(ctx context.Context, in UpsertInput) (upsertRep
 	}
 
 	return ri, nil
+}
+
+// preserveOrRevokeSecret decides whether a save that carries NO secret may keep
+// the credential already stored on the row it is about to overwrite. It returns
+// true when that credential must instead be revoked.
+//
+// THE TWO DOORS THIS CLOSES (GH #380, sixth and seventh).
+//
+// Everything else on this issue has been about the ORG credential reaching a
+// site that should not have it, and the org fallback in resolveSitePushSecret
+// is gated by sameCredentialAudience for exactly that reason. Both remaining
+// doors are the same rebinding performed on a row the actor is genuinely
+// entitled to edit, which is why an entitlement check could never have caught
+// them:
+//
+//	SIXTH.   resolveSitePushSecret step 3 returns the SITE's own stored
+//	         credential with no comparison against the settings being saved,
+//	         and buildRepoInput's nil-sentinel preserves the ciphertext
+//	         underneath it. So an actor entitled to edit that very row can
+//	         rewrite host or username, send no new password, and have the
+//	         credential issued for the old account offered to the new endpoint.
+//
+//	SEVENTH. resolveOrgPushSecret has the identical gap on the org row.
+//	         PermEmailManage is RoleOperator, so an org-scoped operator who
+//	         sits BELOW the admin or owner that entered the credential can
+//	         repoint the organisation's config and take the credential with it,
+//	         to a mail server of their choosing, for the whole fleet.
+//
+// Both are closed in one place because both are one bug: the preserve branch
+// never asked whether the preserved credential still belongs to the settings
+// being written. Comparing at SAVE time rather than at push time is deliberate.
+// The push paths receive the config AFTER the upsert, by which point the
+// endpoint has already changed and the previous one is gone, so the comparison
+// is no longer available to them. Here both sides still exist.
+//
+// This is sameConnectionAudience's logic (UpsertConnection already does exactly
+// this for the connection registry) applied to the top-level config, and it
+// reaches the same verdict on divergence: revoke rather than preserve. Leaving
+// the ciphertext in place and merely declining to push it would leave a
+// credential at rest that the row no longer describes, ready for whatever the
+// next push decides to do with it.
+//
+// A load failure is never resolved by guessing. Without the previous settings
+// there is no way to tell a typo correction from a move to another account, so
+// the write is refused and reported, matching UpsertConnection.
+func (s *Service) preserveOrRevokeSecret(ctx context.Context, in UpsertInput) (bool, error) {
+	// The settings being saved, in the shape the audience comparison wants.
+	// Provider validity was already established by validateUpsert.
+	incoming := Config{Provider: in.Provider, Config: in.Config}
+
+	var (
+		stored   Config
+		getErr   error
+		rowLabel string
+	)
+	if in.SiteID != nil {
+		// The site's OWN row. GetSiteConfig deliberately, not GetConfig: the
+		// inheritance fallback would hand back the ORG row here, and comparing
+		// the incoming site settings against the org's would both give the
+		// wrong verdict and reintroduce the org row into a per-site write path,
+		// which is the shape of the first five doors.
+		stored, getErr = s.repo.GetSiteConfig(ctx, in.TenantID, *in.SiteID)
+		rowLabel = "site"
+	} else {
+		stored, getErr = s.repo.GetOrgConfig(ctx, in.TenantID)
+		rowLabel = "org"
+	}
+
+	switch {
+	case errors.Is(getErr, ErrNotFound):
+		// A brand new row: nothing is stored, so nothing can be rebound and
+		// nothing can be destroyed.
+		return false, nil
+	case getErr != nil:
+		return false, domain.Internal("email_get_stored_config",
+			"failed to load the stored email config; the change was not saved").WithCause(getErr)
+	}
+
+	if !stored.SecretSet {
+		// No credential to rebind.
+		return false, nil
+	}
+	if sameCredentialAudience(incoming, stored) {
+		// Same provider, same destination, same identity: the credential still
+		// belongs to these settings. Preserve it, which is what makes editing
+		// the from-name without retyping the password keep working.
+		return false, nil
+	}
+
+	s.log.Info("email: the saved settings moved the endpoint the stored credential authenticates to; it is revoked and must be re-entered",
+		slog.String("tenant_id", in.TenantID.String()),
+		slog.String("row", rowLabel),
+		slog.String("stored_provider", stored.Provider),
+		slog.String("provider", in.Provider),
+	)
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------

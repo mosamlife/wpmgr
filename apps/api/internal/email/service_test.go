@@ -64,6 +64,10 @@ type fakeRepo struct {
 	// secretReadErr makes the ciphertext reads fail, simulating a database
 	// that will not answer rather than one that answers "no secret".
 	secretReadErr error
+	// siteGetErr makes GetSiteConfig fail outright (not ErrNotFound), which is
+	// the "cannot tell a correction from a move to another account" case on the
+	// save-time credential rebind check.
+	siteGetErr error
 
 	// m62 named connections, keyed by configID+connection_key. connCiphertext
 	// holds what the provider_secret_encrypted column stores, keyed by
@@ -97,6 +101,12 @@ func siteKey(tenantID, siteID uuid.UUID) string {
 }
 
 func (r *fakeRepo) GetSiteConfig(_ context.Context, tenantID, siteID uuid.UUID) (Config, error) {
+	// siteGetErr simulates a database that will not answer, as distinct from
+	// one that answers "no row". The rebind check must refuse the write in that
+	// case rather than guess (see credential_rebind_test.go).
+	if r.siteGetErr != nil {
+		return Config{}, r.siteGetErr
+	}
 	if cfg, ok := r.site[siteKey(tenantID, siteID)]; ok {
 		return cfg, nil
 	}

@@ -172,6 +172,30 @@ func (s dbAgeSecretSampler) Sample(ctx context.Context) ([]ageSecretSample, erro
 	// failing to send mail one at a time (GH #380). site_email_config is
 	// RLS-forced with an app.agent='on' escape policy, exactly like
 	// smtp_settings, so this read runs under InAgentTx for the same reason.
+	//
+	// ON THIS BEING A RAW, CROSS-TENANT READ THAT GOES AROUND
+	// email.Repo.GetOrgSecretCiphertext. It is, deliberately, and the m112
+	// review re-examined it. Three properties are what make it acceptable, and
+	// all three must hold for any future edit to this block:
+	//
+	//  1. RLS APPLIES TO IT. This runs on the shared pool, as the application's
+	//     plain wpmgr_app role, which is neither superuser nor BYPASSRLS. It is
+	//     permitted by the existing site_email_config_agent policy and by
+	//     nothing else. The m112 RESTRICTIVE site-scope policies do not bite
+	//     here because they are gated on app.site_scope, which InAgentTx never
+	//     sets and which no boot path could set: this executes once at startup
+	//     with no request, no principal and no collaborator anywhere in scope.
+	//     Bypassing the repo is not bypassing the database's opinion.
+	//  2. NOTHING IS DISCLOSED. The plaintext is discarded at the point of
+	//     decryption (the blank identifier in runAgeIdentitySelfCheck) and only
+	//     counts are ever logged. No ciphertext, no plaintext, no tenant and no
+	//     site identifier reaches the log, on any branch.
+	//  3. IT IS NOT REACHABLE FROM A REQUEST. It has one caller, in main.go's
+	//     boot sequence.
+	//
+	// Copying this shape into anything that serves a request would be a
+	// cross-tenant read of a stored credential with no tenant gate, which is
+	// the whole class GH #380 is about. Use email.Repo there.
 	_ = s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		var ct []byte
 		qErr := tx.QueryRow(ctx,
