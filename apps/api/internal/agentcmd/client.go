@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -963,6 +964,15 @@ func (c *Client) SyncEmailConfig(ctx context.Context, siteID uuid.UUID, siteURL 
 	}
 	if !out.OK {
 		return out, fmt.Errorf("sync_email_config rejected by agent: %s", out.Detail)
+	}
+	// An ok=true detail is otherwise discarded. A push that DELETED the site's
+	// stored credential must not be recorded as a silent success (GH #380):
+	// that is how a fleet lost working SMTP passwords without a single warning.
+	if strings.Contains(out.Detail, "secret cleared") {
+		slog.WarnContext(ctx, "email: agent reports its stored email secret was cleared by this config push",
+			slog.String("site_id", siteID.String()),
+			slog.String("detail", out.Detail),
+		)
 	}
 	return out, nil
 }

@@ -121,14 +121,14 @@ class SyncEmailConfigCommandTest extends TestCase
         $this->assertContains('my-api-key', $keystore->stored);
     }
 
-    public function test_empty_secret_clears_keystore_entry(): void
+    public function test_explicit_clear_secret_clears_keystore_entry(): void
     {
         Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);
         Functions\when('update_option')->justReturn(true);
 
         $keystore = new FakeKeystore('existing-secret');
         $cmd      = new SyncEmailConfigCommand($keystore);
-        $result   = $cmd->execute([], ['provider' => 'smtp', 'secret' => '']);
+        $result   = $cmd->execute([], ['provider' => 'smtp', 'secret' => '', 'clear_secret' => true]);
 
         $this->assertTrue($result['ok']);
         $this->assertStringContainsString('cleared', $result['detail']);
@@ -145,7 +145,48 @@ class SyncEmailConfigCommandTest extends TestCase
         $result   = $cmd->execute([], ['provider' => 'postmark']);
 
         $this->assertTrue($result['ok']);
-        // When 'secret' key is absent, storeEmailSecret should be called with ''.
-        $this->assertContains('', $keystore->stored);
+        // GH #380: an absent 'secret' must not touch the keystore at all. This
+        // test previously asserted the opposite, which is how the defect shipped.
+        $this->assertSame([], $keystore->stored);
+    }
+
+    public function test_connection_secret_survives_a_push_that_omits_it(): void
+    {
+        Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);
+        Functions\when('update_option')->justReturn(true);
+
+        $keystore                        = new FakeKeystore();
+        $keystore->conn_secrets['relay'] = 'relay-password';
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'    => 'smtp',
+            'connections' => [
+                'relay' => ['provider' => 'smtp', 'config' => ['host' => 'relay.example.com']],
+            ],
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('relay-password', $keystore->get_connection_secret('relay'));
+    }
+
+    public function test_connection_secret_is_dropped_on_explicit_clear(): void
+    {
+        Functions\when('get_option')->alias(fn($key) => $key === EmailConfig::OPTION ? [] : false);
+        Functions\when('update_option')->justReturn(true);
+
+        $keystore                        = new FakeKeystore();
+        $keystore->conn_secrets['relay'] = 'relay-password';
+
+        $cmd    = new SyncEmailConfigCommand($keystore);
+        $result = $cmd->execute([], [
+            'provider'    => 'smtp',
+            'connections' => [
+                'relay' => ['provider' => 'smtp', 'config' => [], 'clear_secret' => true],
+            ],
+        ]);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('', $keystore->get_connection_secret('relay'));
     }
 }

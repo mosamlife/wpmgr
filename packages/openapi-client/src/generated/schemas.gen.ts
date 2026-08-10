@@ -7925,6 +7925,11 @@ export const SiteEmailConfigSchema = {
       description:
         "True when an encrypted provider secret is stored for this row.",
     },
+    inherited: {
+      type: "boolean",
+      description:
+        "True when this row is the org-wide default returned for a site that has no config of its own. `site_id` is rewritten to the queried site in that case, so without this flag an inherited row is indistinguishable from a per-site one. When it is true, `secret_set` describes the ORG credential, not one belonging to this site.\n",
+    },
     default_connection: {
       type: "string",
       nullable: true,

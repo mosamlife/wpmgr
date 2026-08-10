@@ -63,6 +63,13 @@ type Config struct {
 	// WebhookRouteTokenHashSet is true when webhook_route_token_hash is non-null.
 	WebhookRouteTokenHashSet bool
 
+	// Inherited is true when this value is the org-wide row returned for a site
+	// that has no config row of its own. It is set only by GetConfig, which
+	// rewrites SiteID to the queried site; without this flag the caller cannot
+	// tell an inherited row from a per-site one, and SecretSet then describes a
+	// credential the site does not own (GH #380).
+	Inherited bool
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

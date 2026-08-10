@@ -161,6 +161,31 @@ func (s dbAgeSecretSampler) Sample(ctx context.Context) ([]ageSecretSample, erro
 		return nil
 	})
 
+	if len(samples) >= ageSelfCheckSampleLimit {
+		return samples, nil
+	}
+
+	// Best-effort third source: the per-site email provider secrets. Without
+	// this an instance with no confirmed-TOTP user and no instance SMTP row
+	// samples nothing at all and the self-check returns silently, which is how
+	// a rotated secrets-at-rest key stayed invisible until sites started
+	// failing to send mail one at a time (GH #380). site_email_config is
+	// RLS-forced with an app.agent='on' escape policy, exactly like
+	// smtp_settings, so this read runs under InAgentTx for the same reason.
+	_ = s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		var ct []byte
+		qErr := tx.QueryRow(ctx,
+			`SELECT provider_secret_encrypted
+			   FROM site_email_config
+			  WHERE provider_secret_encrypted IS NOT NULL
+			  LIMIT 1`).Scan(&ct)
+		if qErr != nil {
+			return nil //nolint:nilerr // best-effort third source; see comment above
+		}
+		samples = append(samples, ageSecretSample{source: "site_email_config.provider_secret_encrypted", ciphertext: ct})
+		return nil
+	})
+
 	return samples, nil
 }
 

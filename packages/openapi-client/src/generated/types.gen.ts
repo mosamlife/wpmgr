@@ -4580,6 +4580,11 @@ export type SiteEmailConfig = {
    */
   secret_set: boolean;
   /**
+   * True when this row is the org-wide default returned for a site that has no config of its own. `site_id` is rewritten to the queried site in that case, so without this flag an inherited row is indistinguishable from a per-site one. When it is true, `secret_set` describes the ORG credential, not one belonging to this site.
+   *
+   */
+  inherited?: boolean;
+  /**
    * Slug of the connection to use for regular mail (for providers that support multiple connections, e.g. SMTP-Multi — Phase 2+).
    *
    */

@@ -87,6 +87,16 @@ final class SmtpHandler implements ProviderHandlerInterface {
 
 			$use_auth = ! isset( $config['auth'] ) || (bool) $config['auth'];
 			if ( $use_auth ) {
+				// GH #380: never open an authenticated session with no password.
+				// A server answers that with its own generic "Could not
+				// authenticate", which is indistinguishable from a password the
+				// provider rejected, so the operator cannot tell a missing
+				// credential from a wrong one. Say which it is instead. The
+				// other provider handlers already refuse to dispatch without
+				// their credential; this one did not.
+				if ( $secret === '' ) {
+					return $this->failure( 'SMTP password not configured for this site; re-enter it in the dashboard' );
+				}
 				$phpmailer->SMTPAuth = true;
 				$phpmailer->Username = isset( $config['username'] ) && is_string( $config['username'] )
 					? $config['username'] : '';

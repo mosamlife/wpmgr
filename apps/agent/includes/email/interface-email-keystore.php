@@ -26,6 +26,15 @@ interface EmailKeystoreInterface
     public function get_email_secret(): string;
 
     /**
+     * Whether the most recent get_email_secret() call found a stored secret it
+     * could not decrypt, as opposed to finding no stored secret at all. Both
+     * return '', and only this tells the operator which happened.
+     *
+     * @return bool
+     */
+    public function email_secret_decrypt_failed(): bool;
+
+    /**
      * Persist the per-site email provider secret, encrypted.
      * Passing an empty string removes any stored secret.
      *

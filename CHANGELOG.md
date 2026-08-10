@@ -6,6 +6,14 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+### Fixed
+
+- Sending email from a site no longer stops working on its own, days after it was set up and used successfully. Saving, testing or syncing that site's email settings could send the site an empty password, which the site read as an instruction to delete the working one it already had. The site then tried to sign in to the mail server with nothing, the mail server refused, and what everybody saw was "SMTP Error: Could not authenticate", which is the same thing a wrong password looks like. That is why re-typing the same password fixed some sites: it put back what had just been deleted. The dashboard now says nothing at all about the password unless it has a real one to send, so a site keeps the credential it already holds.
+- A site that uses your organisation's email settings rather than its own now keeps using your organisation's password. The moment anything was saved on that site's email page it got a settings record of its own with no password in it, and the password was then looked for only on that record, so a site that had never had its own password came away with none.
+- A site with no email password now says so. It used to hand the empty password to the mail server and report whatever the mail server said, which made a credential this product had lost indistinguishable from one your email provider had expired. Sending now stops before that with "SMTP password not configured for this site; re-enter it in the dashboard", and a stored password that can no longer be decrypted says that instead, naming the encryption key as the cause.
+- "Send test" no longer reports a failure it caused itself. It pushed the site's settings before testing, so on an affected site it deleted the password and then reported that the password did not work. When the stored password cannot be decrypted it now says so and sends nothing.
+- The startup check that warns when the secrets encryption key has changed now also looks at per-site email passwords. An instance with no confirmed two-factor user and no instance-wide SMTP settings had nothing to check, so it warned about nothing and the sites failed one at a time instead.
+
 ## [0.61.130] - 2026-08-10
 
 Finishes signing in with Google and GitHub. Nothing here changes how you sign in with an email address and a password, and nothing here needs anything done to an existing account.

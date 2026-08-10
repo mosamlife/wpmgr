@@ -32,9 +32,10 @@ type EmailConnectionWire struct {
 	// Config holds non-secret provider settings (same shape as EmailConfigRequest.Config).
 	Config map[string]any `json:"config"`
 	// Secret is the DECRYPTED plaintext per-connection secret. Same trust boundary
-	// as EmailConfigRequest.Secret — HTTPS + Ed25519 signed body.
-	// Empty string means "no secret configured".
-	Secret string `json:"secret"`
+	// and same nil-sentinel as EmailConfigRequest.Secret: nil (omitted) means
+	// "this push carries no secret for this connection, keep the stored one";
+	// a non-nil empty string is an explicit clear.
+	Secret *string `json:"secret,omitempty"`
 	// FromAddress is an optional per-connection sender address override.
 	// When non-empty, outgoing mail routes through this connection using this address.
 	FromAddress string `json:"from_address,omitempty"`
@@ -70,11 +71,19 @@ type EmailConfigRequest struct {
 	Config map[string]any `json:"config"`
 
 	// Secret is the DECRYPTED provider secret (SMTP password / API key / AWS
-	// secret access key). Empty string means "no secret configured"; the agent
-	// should remove any previously stored secret from its keystore.
+	// secret access key).
+	//
+	// GH #380: this carries the SAME nil-sentinel the database column already
+	// speaks (see site_email.sql, where a nil secret preserves the stored
+	// ciphertext). nil, and therefore omitted from the JSON, means "this push
+	// has nothing to say about the secret, leave the stored one alone" — the
+	// value sent whenever the CP could not resolve a credential. A non-nil
+	// empty string is an explicit clear. Sending "" for an unresolved secret is
+	// what deleted working credentials on routine config pushes.
+	//
 	// SECURITY: this field travels in the signed JWT-protected body over HTTPS.
 	// The CP decrypts from age ciphertext in-memory and never logs this value.
-	Secret string `json:"secret"`
+	Secret *string `json:"secret,omitempty"`
 
 	// Mappings is a JSON object mapping From-email addresses to connection keys
 	// for per-sender routing. Values are connection key strings (not arrays).

@@ -13,8 +13,15 @@
  *
  * The secret field travels in the signed JWT-protected body over HTTPS.
  * The agent immediately AES-256-GCM-encrypts it into the keystore option
- * wpmgr_agent_email_secret and never echoes or logs it. Passing secret=""
- * removes any previously stored secret.
+ * wpmgr_agent_email_secret and never echoes or logs it.
+ *
+ * SECRET LIFECYCLE (GH #380). An absent or empty `secret` means "this push
+ * carries no credential", NOT "delete the stored credential": a control plane
+ * that cannot resolve a site's secret sends exactly the same empty value, so
+ * treating it as a delete destroyed working passwords on routine config
+ * pushes. The stored secret is replaced only by a non-empty value, and removed
+ * only on an explicit `clear_secret: true`. Named connections follow the same
+ * rule via their own per-entry `clear_secret` flag.
  *
  * @package WPMgr\Agent\Commands
  */
@@ -109,29 +116,50 @@ final class SyncEmailConfigCommand implements CommandInterface {
 
 		// Extract the primary secret BEFORE building the config array; it is never
 		// stored in the wp-option, only in the keystore.
-		$secret = '';
+		//
+		// $secret stays null unless this push carries something to act on:
+		//   null           leave whatever is already stored untouched
+		//   '<non-empty>'  replace the stored secret
+		//   ''             remove the stored secret (explicit clear_secret only)
+		$secret = null;
 		if ( array_key_exists( 'secret', $params ) ) {
 			if ( ! is_string( $params['secret'] ) ) {
 				return array( 'ok' => false, 'detail' => 'secret must be a string' );
 			}
-			$secret = $params['secret'];
+			if ( $params['secret'] !== '' ) {
+				$secret = $params['secret'];
+			}
+		}
+		if ( isset( $params['clear_secret'] ) && $params['clear_secret'] === true ) {
+			$secret = '';
 		}
 
 		// Extract and validate per-connection secrets from the connections map.
 		// Secrets are stripped from the config before writing to wp-options;
 		// they are persisted separately via store_connection_secrets().
 		// The secrets travel only in the signed JWT body over HTTPS; never logged.
+		// store_connection_secrets() has replace-all semantics, so a connection
+		// whose secret this push did not carry has its currently stored secret
+		// read back and carried forward. A connection dropped from the registry
+		// still loses its secret; one merely pushed without a secret does not.
 		$conn_secrets = array();
 		if ( array_key_exists( 'connections', $params ) && is_array( $params['connections'] ) ) {
 			foreach ( $params['connections'] as $conn_key => $wire ) {
 				if ( ! is_array( $wire ) ) {
 					continue;
 				}
+				$key   = (string) $conn_key;
+				$clear = isset( $wire['clear_secret'] ) && $wire['clear_secret'] === true;
 				if ( isset( $wire['secret'] ) && is_string( $wire['secret'] ) && $wire['secret'] !== '' ) {
-					$conn_secrets[ (string) $conn_key ] = $wire['secret'];
+					$conn_secrets[ $key ] = $wire['secret'];
+				} elseif ( ! $clear ) {
+					$existing = $this->keystore->get_connection_secret( $key );
+					if ( $existing !== '' ) {
+						$conn_secrets[ $key ] = $existing;
+					}
 				}
 				// Strip the secret from the wire payload before it reaches the wp-option.
-				unset( $params['connections'][ $conn_key ]['secret'] );
+				unset( $params['connections'][ $conn_key ]['secret'], $params['connections'][ $conn_key ]['clear_secret'] );
 			}
 		}
 
@@ -154,15 +182,17 @@ final class SyncEmailConfigCommand implements CommandInterface {
 			return array( 'ok' => false, 'detail' => 'failed to persist email config' );
 		}
 
-		// Persist the primary secret into the keystore (empty string removes it).
-		// The secret was transmitted only in the signed JWT body over HTTPS;
-		// we never log it.
-		try {
-			$this->keystore->storeEmailSecret( $secret );
-		} catch ( \Throwable $e ) {
-			// Secret storage failure is non-fatal for the config itself; the
-			// operator will see send failures and can retry.
-			return array( 'ok' => true, 'detail' => 'email config saved; secret storage failed: keystore unavailable' );
+		// Persist the primary secret into the keystore, but only when this push
+		// actually carried one (or explicitly asked to clear it). The secret was
+		// transmitted only in the signed JWT body over HTTPS; we never log it.
+		if ( $secret !== null ) {
+			try {
+				$this->keystore->storeEmailSecret( $secret );
+			} catch ( \Throwable $e ) {
+				// Secret storage failure is non-fatal for the config itself; the
+				// operator will see send failures and can retry.
+				return array( 'ok' => true, 'detail' => 'email config saved; secret storage failed: keystore unavailable' );
+			}
 		}
 
 		// Persist per-connection secrets atomically (replace-all semantics).
@@ -178,6 +208,9 @@ final class SyncEmailConfigCommand implements CommandInterface {
 		}
 
 		$detail = $secret === '' ? 'email config saved; secret cleared' : 'email config saved';
+		if ( $secret === null ) {
+			$detail = 'email config saved; stored secret preserved';
+		}
 		return array( 'ok' => true, 'detail' => $detail );
 	}
 }

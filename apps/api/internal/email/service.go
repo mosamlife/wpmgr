@@ -202,8 +202,11 @@ func (s *Service) GetConfig(ctx context.Context, tenantID, siteID uuid.UUID) (Co
 		return Config{}, domain.Internal("email_get_org_config", "failed to load org email config").WithCause(err)
 	}
 	// Surface inherited config with the site's perspective (SiteID points to the
-	// queried site so the frontend knows what was inherited).
+	// queried site so the frontend knows what was inherited). Inherited says so
+	// explicitly, because the rewritten SiteID alone makes an org row
+	// indistinguishable from a per-site one.
 	orgCfg.SiteID = &siteID
+	orgCfg.Inherited = true
 	return orgCfg, nil
 }
 
@@ -259,9 +262,9 @@ func (s *Service) UpsertSiteConfig(ctx context.Context, in UpsertInput) (Config,
 				slog.String("site_id", in.SiteID.String()),
 				slog.Any("error", secretErr),
 			)
-			// Push without the secret — the agent will be configured for the
-			// provider/from fields; the secret push will retry on next save.
-			secret = ""
+			// Push the provider/from fields and say nothing about the secret,
+			// so the site keeps the credential it already has.
+			secret = nil
 		}
 		req := s.buildAgentConfigReq(saved, secret)
 		if _, syncErr := s.agent.SyncEmailConfig(ctx, *in.SiteID, siteURL, req); syncErr != nil {
@@ -351,28 +354,13 @@ func (s *Service) SendTest(ctx context.Context, tenantID, siteID uuid.UUID, in T
 	if cfgErr != nil {
 		return TestSendResult{OK: false, Detail: "could not load email config for agent sync: " + cfgErr.Error()}, nil
 	}
-	// Resolve the effective secret: try per-site first, then fall back to org
-	// secret when the config was inherited (SiteID from GetConfig points to the
-	// queried site in both cases, so we check SecretSet to know if there is
-	// anything stored).
-	var syncSecret string
-	if s.enc != nil && cfg.SecretSet {
-		// Per-site secret first.
-		ct, ctErr := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-		if ctErr == nil && len(ct) > 0 {
-			if plain, dErr := s.enc.Decrypt(ct); dErr == nil {
-				syncSecret = string(plain)
-			}
-		}
-		// If no per-site ciphertext (inherited org config), try the org secret.
-		if syncSecret == "" {
-			orgCt, orgCtErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-			if orgCtErr == nil && len(orgCt) > 0 {
-				if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-					syncSecret = string(plain)
-				}
-			}
-		}
+	// Resolve the effective secret: per-site first, then the org secret for a
+	// site that has none of its own.
+	syncSecret, decryptFailed := s.resolvePushSecret(ctx, tenantID, siteID, cfg)
+	if decryptFailed {
+		// Report the real problem instead of pre-syncing a config the site
+		// cannot authenticate with and then testing it (GH #380).
+		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 	syncReq := s.buildAgentConfigReq(cfg, syncSecret)
 	if _, syncErr := s.agent.SyncEmailConfig(ctx, siteID, siteURL, syncReq); syncErr != nil {
@@ -423,25 +411,13 @@ func (s *Service) SyncConfigToAgent(ctx context.Context, tenantID, siteID uuid.U
 		return TestSendResult{OK: false, Detail: "no email config to sync"}, nil
 	}
 
-	// Resolve the effective decrypted secret: per-site first, then org fallback
-	// for inherited configs. ErrNotFound → empty secret (non-fatal).
-	var secret string
-	if s.enc != nil && cfg.SecretSet {
-		ct, ctErr := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
-		if ctErr == nil && len(ct) > 0 {
-			if plain, dErr := s.enc.Decrypt(ct); dErr == nil {
-				secret = string(plain)
-			}
-		}
-		// No per-site ciphertext (inherited org config) — try the org secret.
-		if secret == "" {
-			orgCt, orgCtErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-			if orgCtErr == nil && len(orgCt) > 0 {
-				if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-					secret = string(plain)
-				}
-			}
-		}
+	// Resolve the effective decrypted secret: per-site first, then org fallback.
+	// An operator pressed "Sync to site", so an unresolvable credential is
+	// reported to them rather than returned as a success that quietly synced
+	// everything except the one field that matters.
+	secret, decryptFailed := s.resolvePushSecret(ctx, tenantID, siteID, cfg)
+	if decryptFailed {
+		return TestSendResult{OK: false, Detail: secretDecryptFailedDetail}, nil
 	}
 
 	siteURL, urlErr := s.siteLook.GetSiteURL(ctx, tenantID, siteID)
@@ -1032,15 +1008,18 @@ func ptrNow() *time.Time {
 }
 
 // buildAgentConfigReq maps a Config domain value and an already-decrypted
-// plaintext secret into the wire shape sent to the agent. Both UpsertSiteConfig
-// and SendTest use this so the mapping stays in one place.
-// secret is the plaintext provider secret; empty string means "no secret
-// configured" — the agent will clear any previously stored secret.
+// plaintext secret into the wire shape sent to the agent. All four push paths
+// use this so the mapping stays in one place.
+//
+// secret is the plaintext provider secret, or nil when this push has no
+// credential to send. nil is omitted from the JSON entirely and the agent keeps
+// whatever it already stored; it is never turned into an empty string, which
+// the agent would once have read as "delete the stored secret" (GH #380).
 //
 // m62: when cfg.ID is non-zero, connections are loaded and their secrets
 // decrypted. Connection loading failures are logged but non-fatal — the push
 // proceeds without connections rather than blocking the save.
-func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailConfigRequest {
+func (s *Service) buildAgentConfigReq(cfg Config, secret *string) agentcmd.EmailConfigRequest {
 	req := agentcmd.EmailConfigRequest{
 		Provider:           cfg.Provider,
 		FromAddress:        cfg.FromAddress,
@@ -1067,12 +1046,19 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailC
 			s.log.Warn("email: could not load connection secrets for agent push", slog.Any("error", err))
 		} else {
 			// Build a map from connection_key → decrypted secret for the push.
+			// A row that will not decrypt is left OUT of the map so the wire
+			// omits that connection's secret rather than blanking it.
 			secretMap := make(map[string]string, len(secretRows))
 			for _, row := range secretRows {
 				if len(row.ProviderSecretEncrypted) > 0 {
 					plain, derr := s.enc.Decrypt(row.ProviderSecretEncrypted)
 					if derr == nil {
 						secretMap[row.ConnectionKey] = string(plain)
+					} else {
+						s.log.Error("email: stored connection secret could not be decrypted; the agent push will omit it",
+							slog.String("connection_key", row.ConnectionKey),
+							slog.Any("error", derr),
+						)
 					}
 				}
 			}
@@ -1081,10 +1067,14 @@ func (s *Service) buildAgentConfigReq(cfg Config, secret string) agentcmd.EmailC
 			if cerr == nil && len(conns) > 0 {
 				registry := make(map[string]agentcmd.EmailConnectionWire, len(conns))
 				for _, c := range conns {
+					var connSecret *string
+					if plain, ok := secretMap[c.ConnectionKey]; ok && plain != "" {
+						connSecret = &plain
+					}
 					registry[c.ConnectionKey] = agentcmd.EmailConnectionWire{
 						Provider:    c.Provider,
 						Config:      c.Config,
-						Secret:      secretMap[c.ConnectionKey],
+						Secret:      connSecret,
 						FromAddress: c.FromAddress,
 						FromName:    c.FromName,
 					}
@@ -1228,15 +1218,7 @@ func (s *Service) PropagateOrgConfig(ctx context.Context, tenantID uuid.UUID) (P
 		}
 		return PropagateResult{}, domain.Internal("propagate_get_org_cfg", "failed to load org config").WithCause(err)
 	}
-	var orgSecret string
-	if s.enc != nil && orgCfg.SecretSet {
-		orgCt, ctErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
-		if ctErr == nil && len(orgCt) > 0 {
-			if plain, dErr := s.enc.Decrypt(orgCt); dErr == nil {
-				orgSecret = string(plain)
-			}
-		}
-	}
+	orgSecret, _ := s.resolvePushSecret(ctx, tenantID, uuid.Nil, orgCfg)
 	req := s.buildAgentConfigReq(orgCfg, orgSecret)
 
 	// Enumerate inheriting sites.
@@ -1355,32 +1337,88 @@ func errCodeValidation(code, msg string) error {
 // resolveEffectiveSecret decrypts the stored per-site ciphertext for use in an
 // agent push. When in.SecretRaw is non-nil (the operator just supplied a fresh
 // secret), it is used directly — no DB round-trip needed. Otherwise the stored
-// ciphertext is loaded and decrypted. Returns an empty string when no secret is
-// configured (not an error).
-func (s *Service) resolveEffectiveSecret(ctx context.Context, in UpsertInput, saved Config) (string, error) {
+// per-site secret is used, falling back to the org-wide secret for a site that
+// has none of its own. Returns nil when there is no secret to push; the caller
+// MUST send nil rather than an empty string (see resolvePushSecret).
+func (s *Service) resolveEffectiveSecret(ctx context.Context, in UpsertInput, saved Config) (*string, error) {
 	// Operator just supplied a fresh plaintext secret — use it directly.
 	if in.SecretRaw != nil {
-		return *in.SecretRaw, nil
+		return in.SecretRaw, nil
 	}
-	// No encryptor: cannot decrypt.
-	if s.enc == nil {
-		return "", nil
+	// No encryptor, or an org-wide row: nothing site-specific to resolve.
+	if s.enc == nil || in.SiteID == nil {
+		return nil, nil
 	}
-	// No secret stored: nothing to decrypt.
-	if !saved.SecretSet || in.SiteID == nil {
-		return "", nil
+	secret, decryptFailed := s.resolvePushSecret(ctx, in.TenantID, *in.SiteID, saved)
+	if decryptFailed {
+		return nil, errors.New("stored provider secret could not be decrypted")
 	}
-	ct, err := s.repo.GetSecretCiphertext(ctx, in.TenantID, *in.SiteID)
-	if err != nil || len(ct) == 0 {
-		// Tolerate ErrNotFound: some provider configs legitimately have no secret.
-		return "", nil
-	}
-	plain, err := s.enc.Decrypt(ct)
-	if err != nil {
-		return "", fmt.Errorf("decrypt stored secret: %w", err)
-	}
-	return string(plain), nil
+	return secret, nil
 }
+
+// resolvePushSecret resolves the plaintext provider secret to send to the agent
+// for one config row: the row's own stored secret first, then the org-wide
+// secret when the row has none of its own.
+//
+// The org fallback is NOT conditional on cfg.SecretSet (GH #380). A site that
+// inherits the org email config acquires its own config row with a NULL secret
+// the first time anything is saved on its email page; that row has SecretSet
+// false, and gating the fallback on SecretSet left it with no credential at all
+// while the UI still showed one as configured.
+//
+// Returns:
+//
+//	(nil, false)    nothing to say about the secret; the push MUST omit it
+//	(&plain, false) a real credential to push
+//	(nil, true)     a ciphertext exists but would not decrypt
+//
+// A per-site ciphertext that will not decrypt deliberately does NOT fall
+// through to the org secret: silently sending a different credential than the
+// one the operator stored would hide the failure instead of reporting it.
+func (s *Service) resolvePushSecret(ctx context.Context, tenantID, siteID uuid.UUID, cfg Config) (*string, bool) {
+	if s.enc == nil {
+		return nil, false
+	}
+
+	if siteID != uuid.Nil && cfg.SecretSet {
+		ct, err := s.repo.GetSecretCiphertext(ctx, tenantID, siteID)
+		if err == nil && len(ct) > 0 {
+			plain, dErr := s.enc.Decrypt(ct)
+			if dErr != nil {
+				s.log.Error("email: stored provider secret could not be decrypted; the agent push will omit it",
+					slog.String("site_id", siteID.String()),
+					slog.Any("error", dErr),
+				)
+				return nil, true
+			}
+			if p := string(plain); p != "" {
+				return &p, false
+			}
+		}
+	}
+
+	orgCt, orgErr := s.repo.GetOrgSecretCiphertext(ctx, tenantID)
+	if orgErr != nil || len(orgCt) == 0 {
+		return nil, false
+	}
+	plain, dErr := s.enc.Decrypt(orgCt)
+	if dErr != nil {
+		s.log.Error("email: stored org provider secret could not be decrypted; the agent push will omit it",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", dErr),
+		)
+		return nil, true
+	}
+	if p := string(plain); p != "" {
+		return &p, false
+	}
+	return nil, false
+}
+
+// secretDecryptFailedDetail is what an operator is told when a stored email
+// credential will not decrypt. Plaintext that cannot be decrypted cannot be
+// recovered by any code change; re-entering it is the only repair.
+const secretDecryptFailedDetail = "the stored email credential could not be decrypted (the secrets-at-rest key changed); re-enter the SMTP password"
 
 // decryptSecret decrypts the stored ciphertext for a site config. Called only
 // when building a config-push command (not in any handler response path).
