@@ -493,7 +493,10 @@ check_release_stamp() {
     warn "$F_RELEASE_WF does not exist; skipping the agent asset stamping check."
     return
   fi
-  hits="$(grep -nE 'make[[:space:]]+agent-zip[^#]*VERSION=' "$F_RELEASE_WF" || true)"
+  # Skip YAML comment lines. A comment explaining WHY the version is not passed
+  # names the same two tokens as the thing it warns against, so reading comments
+  # here makes the guard fail on a tree that documents its own rule.
+  hits="$(grep -vE '^[[:space:]]*#' "$F_RELEASE_WF" 2>/dev/null | grep -nE 'make[[:space:]]+agent-zip[^#]*VERSION=' || true)"
   if [ -n "$hits" ]; then
     err "$F_RELEASE_WF passes VERSION to agent-zip."
     printf '%s\n' "$hits" | sed "s|^|  $F_RELEASE_WF:|"

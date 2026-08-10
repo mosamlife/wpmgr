@@ -260,6 +260,22 @@ tree() {
 # ---------------------------------------------------------------------------
 # Mutation helpers (portable: no sed -i, which differs between BSD and GNU)
 # ---------------------------------------------------------------------------
+
+# Several fixtures below build a multi-line CHANGELOG by putting \n in a sed
+# REPLACEMENT. GNU sed expands that, and so does the sed shipped with current
+# macOS, but it is not guaranteed: a sed that leaves it literal would build a
+# single-line CHANGELOG, the guard would parse one release instead of six, and
+# the minor-bump and major-bump cases would pass while testing nothing.
+# That is the exact failure this suite exists to prevent, so assert it once and
+# refuse to run rather than reporting a green that proved nothing.
+if [ "$(printf 'a\n' | sed -E 's/a/x\ny/' | wc -l | tr -d ' ')" != "2" ]; then
+  echo "ERROR: this sed does not expand \\n in a replacement." >&2
+  echo "       The multi-line fixtures would be built wrong and several cases" >&2
+  echo "       would pass without testing anything. Put GNU sed first on PATH" >&2
+  echo "       (brew install gnu-sed) or run this suite in the CI container." >&2
+  exit 2
+fi
+
 sub() { # sub FILE SED-EXPR
   sed -E "$2" "$1" >"$1.tmp" && mv "$1.tmp" "$1"
 }
