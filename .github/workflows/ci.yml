@@ -184,6 +184,134 @@ jobs:
           fi
           echo "openapi.yaml info.version matches the top CHANGELOG.md entry ($top)."
 
+      # Docs-version drift guard, part two: the surfaces that name a version to a
+      # reader and drifted anyway because nothing compared them to anything. This
+      # is a separate step on purpose. The step above exits 0 early when the
+      # marketing changelog cannot be parsed, so anything appended to it would be
+      # skipped along with it, silently, which is exactly the failure mode being
+      # fixed here. It re-parses the top CHANGELOG entry for the same reason: one
+      # unparseable surface must never take the others down with it.
+      #
+      # The tolerances differ per surface, and the numbers are deliberate:
+      #
+      #  * apps/marketing/lib/content/home.ts AGENT_VERSION drives the hero badge
+      #    and the provenance fact row. It names the release the wordpress.org
+      #    listing serves, and that listing is published by a separate, manually
+      #    gated workflow, so the badge may legitimately trail the version being
+      #    prepared in the CHANGELOG. Tolerance 2, not the 5 the changelog page
+      #    gets, because the drift this check exists to catch was 4 (badge on
+      #    0.61.127 while 0.61.131 was live and served by wordpress.org) and a
+      #    tolerance of 5 would have waved it straight through. It may never lead:
+      #    a badge naming a version the CHANGELOG has no entry for is wrong in
+      #    every direction, so that is an error, not a tolerance.
+      #
+      #  * README.md names GHCR image tags that a self-hoster copies and pulls
+      #    verbatim. Trailing here hands somebody a build without whatever the
+      #    newest release fixed, so tolerance is 1: enough to forgive the window
+      #    inside a release PR where the CHANGELOG entry exists but the tag has
+      #    not been pushed yet, and nothing more. The versions inside README.md
+      #    (the three docker pull tags, the WPMGR_VERSION export, the status line)
+      #    must additionally agree with each other exactly. That is an internal
+      #    invariant with no tolerance question in it.
+      #
+      # Same forgiveness rule as above throughout: anything that fails to parse
+      # warns and skips instead of blocking a PR on a false positive. Known and
+      # accepted blind spot, identical to the check above: both compares only run
+      # when major.minor match, so the first release after a minor bump warns and
+      # skips instead of failing. Bump these surfaces in the minor release PR.
+      - name: Docs version drift guard (marketing badge + README install tags)
+        run: |
+          top=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ' || true)
+          if [ -z "$top" ]; then
+            echo "WARN: could not parse the top CHANGELOG.md version; skipping the drift guard."
+            exit 0
+          fi
+
+          home='apps/marketing/lib/content/home.ts'
+          badge=$(grep -m1 -oE 'AGENT_VERSION *= *"[0-9]+\.[0-9]+\.[0-9]+' "$home" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$badge" ]; then
+            echo "WARN: could not parse AGENT_VERSION from $home; skipping that check."
+          elif [ "${top%.*}" != "${badge%.*}" ]; then
+            echo "WARN: major/minor differ between the marketing hero badge ($badge) and CHANGELOG.md ($top); skipping the drift compare."
+          else
+            behind=$(( ${top##*.} - ${badge##*.} ))
+            if [ "$behind" -lt 0 ]; then
+              echo "ERROR: the marketing hero badge (AGENT_VERSION $badge) is ahead of the top CHANGELOG.md entry ($top)."
+              echo "The badge must never name a release the CHANGELOG has no entry for."
+              exit 1
+            fi
+            if [ "$behind" -gt 2 ]; then
+              echo "ERROR: the marketing hero badge (AGENT_VERSION $badge) is $behind patch versions behind the top CHANGELOG.md entry ($top)."
+              echo "Bump AGENT_VERSION in $home; it is what the hero badge tells visitors wordpress.org serves."
+              exit 1
+            fi
+            echo "Marketing hero badge $badge is within tolerance of $top."
+          fi
+
+          tags=$(grep -oE 'ghcr\.io/mosamlife/wpmgr-[a-z-]+:v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          envtag=$(grep -oE 'WPMGR_VERSION=v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          status=$(grep -oE '^\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*:' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          seen=$(printf '%s\n%s\n%s\n' "$tags" "$envtag" "$status" | grep -E '^[0-9]' | sort -u || true)
+          if [ -z "$seen" ]; then
+            echo "WARN: could not parse any version from README.md (no ghcr.io pull tag, no WPMGR_VERSION export); skipping that check."
+            exit 0
+          fi
+          if [ "$(printf '%s\n' "$seen" | wc -l | tr -d ' ')" -gt 1 ]; then
+            echo "ERROR: README.md names more than one version:"
+            echo "$seen"
+            echo "The docker pull tags, the WPMGR_VERSION export and the status line must all name the same release."
+            exit 1
+          fi
+          if [ "${top%.*}" != "${seen%.*}" ]; then
+            echo "WARN: major/minor differ between README.md ($seen) and CHANGELOG.md ($top); skipping the drift compare."
+            exit 0
+          fi
+          behind=$(( ${top##*.} - ${seen##*.} ))
+          if [ "$behind" -lt 0 ]; then
+            echo "ERROR: README.md names v$seen, which is ahead of the top CHANGELOG.md entry ($top)."
+            echo "The install instructions must never name a tag the CHANGELOG has no entry for."
+            exit 1
+          fi
+          if [ "$behind" -gt 1 ]; then
+            echo "ERROR: README.md still tells self-hosters to pull v$seen, $behind releases behind the top CHANGELOG.md entry ($top)."
+            echo "Update the ghcr.io pull tags, the WPMGR_VERSION export and the status line in README.md."
+            exit 1
+          fi
+          echo "README.md install version $seen is within tolerance of $top."
+
+      # Agent version triple. apps/agent/wpmgr-agent.php carries its version twice
+      # (the plugin header WordPress reads, and the WPMGR_AGENT_VERSION constant
+      # the agent code reads) and apps/agent/readme.txt carries it a third time as
+      # the wordpress.org Stable tag. Nothing here compares them to the CHANGELOG,
+      # deliberately: `make agent-zip VERSION=` stamps a staged copy and never the
+      # source, so the checked-in values legitimately sit at the last released
+      # version rather than the one being prepared. What is never legitimate is
+      # the three disagreeing with each other. Self-update compares the constant
+      # against the version the release manifest advertises while WordPress reads
+      # the header, so a mismatch produces an update that either never offers
+      # itself or offers itself forever, with no error message anywhere. No
+      # tolerance applies to this one, only the usual parse forgiveness.
+      - name: Agent version triple check (plugin header, constant, Stable tag)
+        run: |
+          main='apps/agent/wpmgr-agent.php'
+          readme='apps/agent/readme.txt'
+          header=$(grep -m1 -oE '^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          constant=$(grep -m1 -oE "WPMGR_AGENT_VERSION'[[:space:]]*,[[:space:]]*'[0-9]+\.[0-9]+\.[0-9]+" "$main" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          stable=$(grep -m1 -oE '^Stable tag:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "$readme" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$header" ] || [ -z "$constant" ] || [ -z "$stable" ]; then
+            echo "WARN: could not parse the agent version from all three places (header='$header' constant='$constant' stable='$stable'); skipping the agent triple check."
+            exit 0
+          fi
+          if [ "$header" != "$constant" ] || [ "$header" != "$stable" ]; then
+            echo "ERROR: the agent version disagrees with itself."
+            echo "  $main plugin header:      $header"
+            echo "  $main WPMGR_AGENT_VERSION: $constant"
+            echo "  $readme Stable tag:        $stable"
+            echo "All three must name the same version, or self-update version comparison breaks silently."
+            exit 1
+          fi
+          echo "Agent version triple agrees ($header)."
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"

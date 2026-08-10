@@ -8,7 +8,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 // Bumped by hand on every agent release, alongside the /changelog RELEASES list.
 // Source of truth is the wordpress.org listing. One constant so the hero badge and
 // the provenance fact row cannot drift apart and contradict the listing they link to.
-const AGENT_VERSION = "0.61.127";
+const AGENT_VERSION = "0.61.131";
 
 export const HOME_HERO = {
   badge: `v${AGENT_VERSION} / open source`,

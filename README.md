@@ -17,7 +17,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
   <a href="https://wpmgr.app/docs/">API reference</a>
 </p>
 
-**v0.61.127**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
+**v0.61.131**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
 
 ---
 
@@ -314,15 +314,15 @@ Site screenshot cards then fall back to favicon/monogram and the Media Optimizer
 The control plane, dashboard, and media encoder are published on GitHub Container Registry as multi-arch (`linux/amd64` + `linux/arm64`) images, for wiring into your own compose, Kubernetes, or Swarm setup:
 
 ```bash
-docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.127
-docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.127
-docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.127
+docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.131
+docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.131
+docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.131
 ```
 
 Or bring up the whole stack from the published images (no local build) with the pull-only Compose overlay:
 
 ```bash
-export WPMGR_VERSION=v0.61.127   # omit to track :latest
+export WPMGR_VERSION=v0.61.131   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
