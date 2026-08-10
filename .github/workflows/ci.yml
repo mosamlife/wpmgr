@@ -107,6 +107,49 @@ jobs:
       - name: Test
         run: pnpm --filter @wpmgr/web test
 
+  # ---- Marketing site (the public wpmgr.app) ----
+  # Separate from the web job so a failure says which app broke, and because
+  # these two deploy independently.
+  #
+  # WHY THIS EXISTS. apps/marketing was never typechecked or built by CI. Only
+  # its lint ran, and only as a side effect of the workspace-wide `turbo run
+  # lint` inside the web job, so a type error or a broken build in the most
+  # public thing this project ships would first appear during `gcloud builds
+  # submit`, at deploy time, by which point the release is already out
+  # everywhere else. It shipped that way on 0.61.131: the hero badge was edited
+  # in a .ts file that nothing verified until the deploy build ran.
+  #
+  # No test step: apps/marketing has no test script. Copy is gated separately in
+  # the Security audit job, which runs check-copy.mjs on plain node so it needs
+  # no install and also covers the agent readme.
+  marketing:
+    name: JS (marketing)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter @wpmgr/marketing typecheck
+
+      # Runs scripts/sync-openapi.mjs then next build, which is exactly what the
+      # deploy image does, so a build that only breaks in the real pipeline
+      # cannot pass here.
+      - name: Build
+        run: pnpm --filter @wpmgr/marketing build
+
   # ---- Dependency vulnerability scanning ----
   security:
     name: Security audit
