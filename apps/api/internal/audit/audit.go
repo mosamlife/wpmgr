@@ -42,6 +42,21 @@ const (
 	ActionIdentityUnlinked = "auth.identity.unlinked"
 	ActionPasswordSet      = "auth.password.set"
 
+	// The other half of the same story, from the social path. These are NOT
+	// logins and must not be filed as one: linking binds a new credential to an
+	// existing account, registering mints an account from a provider assertion,
+	// and an issuer move changes what a stored credential means. All three were
+	// recorded as ActionOIDCLogin, so the log rendered a credential change as
+	// "Signed in with SSO" and the only thing distinguishing them lived inside
+	// the metadata, where no filter and no reader looks first. An account owner
+	// scanning for "did someone attach themselves to my account" saw a list of
+	// ordinary sign-ins. Metadata: provider, event, and from_issuer/to_issuer on
+	// the move.
+	ActionSocialLinked        = "auth.social.linked"
+	ActionSocialRegistered    = "auth.social.registered"
+	ActionIdentityIssuerMoved = "auth.identity.issuer_moved"
+	ActionIdentityAdopted     = "auth.identity.adopted"
+
 	ActionMemberAdd    = "member.add"
 	ActionMemberUpdate = "member.update"
 	ActionMemberRemove = "member.remove"

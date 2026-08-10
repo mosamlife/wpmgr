@@ -56,9 +56,26 @@ RETURNING *;
 -- may report a changed address, and keeping the last-seen value makes an
 -- unexpected change visible instead of silently discarding it. This never
 -- changes users.email, which stays the account's own address.
+--
+-- NO ADDRESS REPORTED IS NOT AN ADDRESS OF "". A provider can decline to tell
+-- us anything this time while still being the same identity: GitHub reports an
+-- empty address whenever /user/emails carries no primary verified entry, which
+-- is what a user who makes their address private looks like on their next
+-- sign-in. Writing that through blanked a previously stored, verified address,
+-- so the last-seen value was destroyed by the very sign-in that was meant to
+-- keep it current. An empty report therefore leaves both columns alone and
+-- stamps only the login, which is the one fact this sign-in actually
+-- established. email_verified moves with the address it describes, never on its
+-- own: keeping a stored address while flipping its verified flag to false would
+-- be a worse record than either value alone.
 UPDATE user_identities
-SET last_login_at = now(), email = $4, email_verified = $5
-WHERE provider = $1 AND subject = $2 AND issuer = $3;
+SET last_login_at = now(),
+    email = COALESCE(NULLIF(sqlc.arg(email)::text, ''), email),
+    email_verified = CASE
+        WHEN sqlc.arg(email)::text = '' THEN email_verified
+        ELSE sqlc.arg(email_verified)::boolean
+    END
+WHERE provider = sqlc.arg(provider) AND subject = sqlc.arg(subject) AND issuer = sqlc.arg(issuer);
 
 -- name: MigrateIdentityIssuer :execrows
 -- Moves ONE identity from the issuer it was stored under to the one that just

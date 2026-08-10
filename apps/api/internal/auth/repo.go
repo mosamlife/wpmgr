@@ -661,6 +661,17 @@ func (r *Repo) AdoptLegacyIdentity(ctx context.Context, in Identity) (bool, erro
 }
 
 // CreateIdentity links an external identity to an existing user.
+//
+// A unique violation here is a CONFLICT, not an internal error, and the
+// distinction is not pedantry: the two neighbouring writers already make it,
+// and the class decides whether the caller can say anything useful. The obvious
+// duplicate, the same (provider, subject, issuer) already linked elsewhere, is
+// pre-checked by CompleteSocialLink. The one that reaches this line is the
+// SECOND unique index, user_identities_user_provider_key on (user_id,
+// provider): a user who already has one GitHub identity linking a different
+// GitHub account that carries the same verified address. That is a person doing
+// something specific and answerable, and it was being reported as "failed to
+// link identity", which describes nothing and suggests a broken server.
 func (r *Repo) CreateIdentity(ctx context.Context, in Identity) error {
 	_, err := r.q.CreateIdentity(ctx, sqlc.CreateIdentityParams{
 		UserID:        in.UserID,
@@ -671,6 +682,11 @@ func (r *Repo) CreateIdentity(ctx context.Context, in Identity) error {
 		EmailVerified: in.EmailVerified,
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return domain.Conflict("identity_already_linked",
+				"that sign-in method is already linked to an account").WithCause(err)
+		}
 		return domain.Internal("identity_create_failed", "failed to link identity").WithCause(err)
 	}
 	return nil

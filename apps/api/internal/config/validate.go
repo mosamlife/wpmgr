@@ -187,6 +187,24 @@ func Validate(cfg Config) []Issue {
 // provider.
 func Advisories(cfg Config) []Issue {
 	issues := validateSocialConfig(cfg)
+
+	// The public base URL is checked here rather than inside the social
+	// validator, because it is not a social question. The derived redirect_uri
+	// is its loudest consumer but far from its only one: password reset and
+	// invitation links, the billing portal return and the media encoder's
+	// callback are all built by appending to it, and every one of those is live
+	// on an instance with no provider configured, which is the ordinary case.
+	// Checking it only when social happened to be switched on left the installs
+	// most likely to be holding a malformed value as the ones nothing looked at.
+	//
+	// An EMPTY value stays a social-only complaint. Nothing else here demands
+	// one, and newly failing every self-host install that never set it would be
+	// a guard crying wolf. A value that IS set is judged for everyone.
+	if cfg.Social.Configured() || cfg.PublicBaseURL != "" {
+		if issue := validatePublicBaseURL(cfg.PublicBaseURL); issue != nil {
+			issues = append(issues, *issue)
+		}
+	}
 	if cfg.IsProduction() {
 		if issue := insecurePublicBaseURLIssue(cfg.PublicBaseURL); issue != nil {
 			issues = append(issues, *issue)
@@ -255,12 +273,6 @@ func validateSocialConfig(cfg Config) []Issue {
 		}
 	}
 
-	if cfg.Social.Configured() {
-		if issue := validatePublicBaseURL(cfg.PublicBaseURL); issue != nil {
-			issues = append(issues, *issue)
-		}
-	}
-
 	return issues
 }
 
@@ -292,7 +304,27 @@ func validatePublicBaseURL(raw string) *Issue {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return &Issue{
 			Name:   publicBaseURLName,
-			Reason: "must be an absolute URL with an http or https scheme and a host, for example https://manage.example.com, because the social sign-in redirect_uri is derived from it. Social sign-in stays switched off until it is",
+			Reason: "must be an absolute URL with an http or https scheme and a host, for example https://manage.example.com: password reset and invitation links, the billing portal return, the media encoder callback and the social redirect_uri are all built by appending to it, and a value that is not absolute silently produces a relative one",
+		}
+	}
+	// A BASE IS A PREFIX, AND EVERY CONSUMER TREATS IT AS ONE. Each of them
+	// concatenates: the redirect_uri appends /auth/social/<provider>/callback,
+	// and the mail paths append /verify-email?token=... and /login. Anything
+	// that must come LAST in a URL therefore cannot appear in a base. A query
+	// string swallows the appended path (the verification token lands in a query
+	// on the wrong path), a fragment truncates it outright, and either one makes
+	// the derived redirect_uri something no provider registration will match.
+	// Same-origin throughout, so nothing leaks off-host; this is precisely the
+	// misconfiguration this validator exists to name, and it was passing it.
+	//
+	// The PATH is deliberately left alone. A sub-path deployment
+	// (https://example.com/wpmgr) concatenates perfectly well and nothing here
+	// forbids it, so rejecting every non-empty path would break a legitimate
+	// install to catch an illegitimate one.
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return &Issue{
+			Name:   publicBaseURLName,
+			Reason: "must be a plain origin, optionally with a path prefix, and must not carry user info, a query string or a fragment, for example https://manage.example.com: every URL is built by appending to it, so a query or fragment swallows the path appended after it and breaks reset links, invitation links and the social redirect_uri alike",
 		}
 	}
 	return nil

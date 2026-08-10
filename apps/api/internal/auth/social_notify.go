@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -46,12 +47,23 @@ func (s *Service) sendSignInMethodAdded(ctx context.Context, u User, in SocialId
 		// mail merge on a message whose whole job is to be taken seriously.
 		name = "there"
 	}
-	_ = s.email.Enqueue(ctx, uuid.Nil, []string{u.Email}, "sign_in_method_added", map[string]any{
+	// Best effort, but not SILENT. Dropping the error is the repo-wide convention
+	// for mail nobody is waiting on; this particular message is the sole control
+	// that lets an account holder catch a link they did not make, so an operator
+	// asked "why did I never get that notice" needs something to read. The
+	// address never goes in the log: the user id identifies the account for
+	// anyone entitled to look it up, and a log line is a much wider audience than
+	// the mailbox it would name.
+	if err := s.email.Enqueue(ctx, uuid.Nil, []string{u.Email}, "sign_in_method_added", map[string]any{
 		"Name":        name,
 		"Provider":    signInMethodLabel(in),
 		"When":        time.Now().UTC().Format("2006-01-02 15:04 MST"),
 		"SecurityURL": s.baseURL + "/settings/security",
-	})
+	}); err != nil {
+		slog.WarnContext(ctx, "sign-in method added notification not queued",
+			slog.String("user_id", u.ID.String()),
+			slog.String("provider", in.Provider), slog.Any("error", err))
+	}
 }
 
 // NotifySignInMethodAdded is the same notification addressed by user id, for a
@@ -65,6 +77,12 @@ func (s *Service) NotifySignInMethodAdded(ctx context.Context, userID uuid.UUID,
 	}
 	u, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
+		// The account just gained a way in and nobody will be told. Same reason
+		// as above: silence is the failure mode this notification exists to
+		// prevent, so it must not fail silently itself.
+		slog.WarnContext(ctx, "sign-in method added notification skipped: user lookup failed",
+			slog.String("user_id", userID.String()),
+			slog.String("provider", provider), slog.Any("error", err))
 		return
 	}
 	s.sendSignInMethodAdded(ctx, u, SocialIdentity{Provider: provider, Issuer: issuer})

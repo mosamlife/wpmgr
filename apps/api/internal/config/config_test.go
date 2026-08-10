@@ -555,6 +555,10 @@ func TestLoadSocialProvidersFromEnv(t *testing.T) {
 // Half-configured must stay off rather than half-on.
 func TestLoadSocialProviderNeedsBothCredentials(t *testing.T) {
 	t.Setenv("WPMGR_SOCIAL_GOOGLE_CLIENT_ID", "123.apps.googleusercontent.com")
+	// Explicitly empty, because Load reads the PROCESS environment: a developer
+	// who happens to have the secret exported turns this into a false alarm
+	// about a provider that is, in that environment, correctly enabled.
+	t.Setenv("WPMGR_SOCIAL_GOOGLE_CLIENT_SECRET", "")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)

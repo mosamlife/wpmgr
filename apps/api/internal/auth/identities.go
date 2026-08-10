@@ -18,6 +18,8 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/netip"
 	"strings"
 
@@ -147,23 +149,51 @@ func (s *Service) SetInitialPassword(ctx context.Context, userID uuid.UUID, newP
 	return nil
 }
 
-// recordIdentityAudit records a sign-in-method change against the user's first
-// tenant, mirroring recordSocialAudit. The audit chain is per-tenant, so a user
-// with no membership at all (a site collaborator, a portal user, or somebody
-// mid-onboarding) has no chain to append to and the event is skipped rather
-// than written against a nil tenant.
+// recordIdentityAudit records a sign-in-method change: removing an identity, or
+// setting the first password on a social-only account. Both callers are
+// credential changes, so neither may go unrecorded.
+//
+// IT USED TO BE DROPPED EXACTLY WHERE IT MATTERED MOST. The tenant came from
+// memberships[0] and the event was skipped outright when that list was empty,
+// which is not an edge case: it is a site collaborator, a portal user, a brand
+// new social account, and anyone whose only org is inside its soft-delete grace
+// window. The accounts with the least oversight got the least audit, and the
+// event skipped is the one that removes a way in.
+//
+// So this mirrors recordSocialAuditWith: the tenant is resolved the same way
+// the session's active tenant is (org membership, then site share, then client
+// membership), and when there is genuinely no tenant the event goes to the
+// tenant-independent sink rather than being thrown away.
 func (s *Service) recordIdentityAudit(ctx context.Context, userID uuid.UUID, action string, meta map[string]any) {
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, userID)
-	if len(memberships) == 0 {
+	tenantID := s.resolveActiveTenant(ctx, userID, memberships)
+
+	if tenantID != uuid.Nil {
+		_, _ = s.audit.Record(ctx, audit.Event{
+			TenantID:   tenantID,
+			ActorType:  audit.ActorUser,
+			ActorID:    userID.String(),
+			Action:     action,
+			TargetType: "user",
+			TargetID:   userID.String(),
+			Metadata:   meta,
+		})
 		return
 	}
-	_, _ = s.audit.Record(ctx, audit.Event{
-		TenantID:   memberships[0].TenantID,
-		ActorType:  audit.ActorUser,
-		ActorID:    userID.String(),
-		Action:     action,
-		TargetType: "user",
-		TargetID:   userID.String(),
-		Metadata:   meta,
-	})
+
+	// The tenant-independent sink has no actor column of its own, so the subject
+	// travels in the payload, alongside whatever the caller supplied.
+	payload := map[string]any{"event": action, "user_id": userID.String()}
+	for k, v := range meta {
+		payload[k] = v
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		raw = nil
+	}
+	if err := s.repo.RecordTenantlessAuthEvent(ctx, userID, action, raw); err != nil {
+		slog.ErrorContext(ctx, "identity audit record failed",
+			slog.String("event", action),
+			slog.String("user_id", userID.String()), slog.Any("error", err))
+	}
 }

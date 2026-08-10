@@ -114,10 +114,17 @@ func (h *Handler) socialCallback(c *gin.Context) {
 	provider := c.Param("provider")
 	adapter := h.social.Get(provider)
 	if adapter == nil {
-		// Clear whatever handshake this browser is carrying: the flow it belongs
-		// to cannot be completed on an instance where the provider is off.
-		h.clearHandshake(c)
-		h.socialFail(c, "social_provider_disabled", "")
+		// Take rather than merely clear. The flow cannot be completed on an
+		// instance where the provider is off, but the handshake is the only
+		// carrier of where this person was trying to go, and dropping it landed
+		// them on a bare sign-in page having lost the deep link they started
+		// from. Every other failure branch below hands the return path to
+		// socialFail; there is no reason this one is the exception. takeHandshake
+		// clears the cookie either way, so the handshake stays single-use, and
+		// socialFail re-validates the path through safeReturnPath, so a sealed
+		// value is not trusted merely because it was sealed.
+		hs, _ := h.takeHandshake(c)
+		h.socialFail(c, "social_provider_disabled", hs.Return)
 		return
 	}
 
