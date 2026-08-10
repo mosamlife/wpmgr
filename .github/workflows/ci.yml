@@ -147,8 +147,9 @@ jobs:
       # value that has gone stale.
       #
       # THE LOGIC LIVES IN A SCRIPT, NOT IN THIS FILE, and that is the point.
-      # It spent three review rounds as 245 lines of shell inside YAML block
-      # scalars here, with no test, and each round found a real hole
+      # It grew across three review rounds from 112 to 168 to 245 lines of
+      # shell inside YAML block scalars here, with no test, and each round
+      # found a real hole
       # because nobody could run it and check their work. It is now
       # scripts/check-version-surfaces.sh, it runs on a developer machine with
       # no CI (`scripts/check-version-surfaces.sh`), and the suite below builds

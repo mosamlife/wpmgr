@@ -12,7 +12,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ### Fixed
 
-- The README said that turning the media encoder off costs you site screenshots and the Media Optimizer and nothing else. WOFF2 font transcoding stops too; all three of those workers run only in that image. The install guide already said so in one place and not the other.
+- The README said that turning the media encoder off costs you site screenshots and the Media Optimizer and nothing else. WOFF2 font transcoding stops too; all three of those workers run only in that image. The install guide did not say so either, and now both do.
 - The self-host install guide no longer hands you a stack from 190 releases ago. `docs/install.md`, which the README links as the full install guide directly under its own pull instructions, still told you to `export WPMGR_VERSION=v0.19.0`, so following the link rather than the README got you a control plane predating a long list of fixes. The README also described all three published images as multi-arch; the media encoder is `linux/amd64` only, because the image codec library it uses ships prebuilt libraries for that architecture alone. The install guide now also says what running without the media encoder actually costs: site screenshots, the Media Optimizer, and WOFF2 font transcoding, and nothing else.
 
 ## [0.61.131] - 2026-08-10

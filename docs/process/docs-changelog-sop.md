@@ -48,7 +48,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
-## [0.61.131] - 2026-08-09
+## [0.61.131] - 2026-08-10
 ### Added
 - ...
 ```

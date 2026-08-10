@@ -588,6 +588,24 @@ MD
 case_run "tail: a NEW file carrying a stale WPMGR_VERSION is caught by the sweep" \
   fail "$t" "+docs/deploy.md"
 
+# The sweep used to announce success over its own errors. `fail` is a 0/1 flag,
+# so once any earlier check had set it, the sweep's before-and-after comparison
+# read the same on both sides and the OK line printed regardless. The exit code
+# was still right, which is what made it survive: only the log lied, and it lied
+# in the reassuring direction. This asserts the contradiction cannot come back,
+# so an earlier failure must be present for the case to mean anything.
+t="$(tree tail-sweep-no-false-ok)"
+sub "$t/packages/openapi/openapi.yaml" 's/^  version: 0\.61\.131/  version: 0.61.130/'
+cat >"$t/docs/deploy.md" <<'MD'
+# Deploy
+
+```bash
+export WPMGR_VERSION=v0.19.0
+```
+MD
+case_run "tail: the sweep never reports success in a run where it raised an error" \
+  fail "$t" "+docs/deploy.md" "+info.version" "-OK: swept"
+
 t="$(tree tail-sweep-opt-out)"
 cat >"$t/docs/history.md" <<'MD'
 # History

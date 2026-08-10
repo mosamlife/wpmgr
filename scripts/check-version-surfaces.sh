@@ -115,9 +115,14 @@ PIN_MARKER='wpmgr-install-pins'
 SWEEP_OPT_OUT='wpmgr-version-ignore'
 
 fail=0
+# errors counts every error raised; fail is only whether any were. A caller that
+# wants to know "did MY section raise anything" must compare the counter, since
+# the flag saturates at 1 and then reads the same before and after.
+errors=0
 err() {
   printf 'ERROR: %s\n' "$1"
   fail=1
+  errors=$((errors + 1))
 }
 detail() { printf '  %s\n' "$1"; }
 warn() { printf 'WARN: %s\n' "$1"; }
@@ -731,7 +736,7 @@ sweep() {
   [ -n "$hits" ] || return 0
 
   swept=0
-  fail_before="$fail"
+  errors_before="$errors"
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     hfile="${hit%%:*}"
@@ -786,7 +791,7 @@ sweep() {
   done <<EOF
 $hits
 EOF
-  if [ "$fail" -eq "$fail_before" ] && [ -n "$TOP" ]; then
+  if [ "$errors" -eq "$errors_before" ] && [ -n "$TOP" ]; then
     ok "swept the tree: $swept concrete version mentions outside $F_CHANGELOG, all within $TOL_SWEEP release of $TOP."
   fi
   return 0
