@@ -402,3 +402,44 @@ func TestValidatePublicBaseURLRejectsWhatCannotBeAppendedTo(t *testing.T) {
 		})
 	}
 }
+
+// A configured public base URL is judged whether or not social sign-in is on.
+//
+// The check used to sit behind cfg.Social.Configured(), which is off on almost
+// every install, so the value went unexamined on exactly the instances most
+// likely to be holding a bad one. It is not a social setting: password reset
+// and invitation links, the billing portal return and the media encoder's
+// callback are all built by appending to it.
+func TestPublicBaseURLIsJudgedWithoutSocialSignIn(t *testing.T) {
+	for _, raw := range []string{
+		"https://manage.example.com/?next=x", // a query swallows the appended path
+		"https://manage.example.com/#frag",   // so does a fragment
+		"manage.example.com",                 // not absolute: yields a relative link
+	} {
+		var cfg Config
+		cfg.PublicBaseURL = raw
+
+		found := false
+		for _, issue := range Advisories(cfg) {
+			if issue.Name == publicBaseURLName {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q passed while social sign-in was off; it is malformed for every consumer, not just the redirect_uri", raw)
+		}
+	}
+}
+
+// The empty case stays a social-only complaint, and this is the line between
+// the two. Nothing outside social demands that this be set, so newly failing
+// every self-hosted install that never set it would be a guard crying wolf, and
+// a guard that cries wolf gets switched off.
+func TestUnsetPublicBaseURLIsStillOnlyASocialConcern(t *testing.T) {
+	var cfg Config
+	for _, issue := range Advisories(cfg) {
+		if issue.Name == publicBaseURLName {
+			t.Fatalf("an unset base URL must not be an advisory without social sign-in: %s", issue.Reason)
+		}
+	}
+}
