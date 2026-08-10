@@ -471,6 +471,12 @@ var (
 // ErrNotFound is returned when no config row exists yet for the given key.
 var ErrNotFound = errors.New("email: not found")
 
+// ErrSuppressionRefused is returned when a suppression delete targeted a row
+// the caller can read but may not remove. It exists because that outcome is
+// otherwise indistinguishable from success: RLS refuses the DELETE by matching
+// no rows, which is not an error in Postgres. See Repo.DeleteSuppression.
+var ErrSuppressionRefused = errors.New("email: suppression entry exists but the delete was refused")
+
 // Repo is the persistence layer for per-site email config. Every operator
 // read/write runs under scopedTenantTx, which is plain InTenantTx
 // (app.tenant_id GUC) for org-scoped principals and workers, and
@@ -1467,13 +1473,59 @@ func (r *Repo) ListFleetSuppression(ctx context.Context, tenantID uuid.UUID, f S
 	return page, err
 }
 
-// DeleteSuppression deletes a suppression entry by id. Runs under scopedTenantTx.
+// DeleteSuppression deletes a suppression entry by id. Runs under
+// scopedTenantTx. Returns ErrSuppressionRefused when the row exists and is
+// visible but the delete was refused, and ErrNotFound when there is no such row.
+//
+// WHY THIS IS NOT A PLAIN EXEC (GH #380).
+//
+// The route resolves a suppression entry by id with tenant scope only; there is
+// no site check on the id, and there deliberately is none on the READ, because
+// a fleet-wide entry (site_id IS NULL) has to stay visible to every site or the
+// pre-send check would start mailing addresses the organisation suppressed.
+// m112 then refuses the DELETE of that same row for a site-scoped principal.
+//
+// Postgres expresses that refusal as zero rows affected, not as an error. So
+// the honest-looking code path was a lie: the delete removed nothing, the
+// handler returned 204, and the caller was told a fleet-wide suppression entry
+// had been lifted while it was still in force. A caller acting on that answer
+// (a support tool marking the address deliverable, an operator moving on)
+// believes something about the system that is not true.
+//
+// The two outcomes are told apart by re-reading the row inside the SAME
+// transaction, so the answer describes one consistent snapshot rather than a
+// second, later state of the world:
+//
+//	deleted 1        -> success.
+//	deleted 0, row visible     -> the policy refused it. ErrSuppressionRefused,
+//	                              which the service maps to 403 with an
+//	                              explanation the operator can act on.
+//	deleted 0, row not visible -> there is nothing here for this principal.
+//	                              ErrNotFound -> 404.
 func (r *Repo) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		return sqlc.New(tx).DeleteEmailSuppression(ctx, sqlc.DeleteEmailSuppressionParams{
+		q := sqlc.New(tx)
+		rows, qerr := q.DeleteEmailSuppression(ctx, sqlc.DeleteEmailSuppressionParams{
 			ID:       id,
 			TenantID: tenantID,
 		})
+		if qerr != nil {
+			return qerr
+		}
+		if rows > 0 {
+			return nil
+		}
+		if _, gerr := q.GetEmailSuppression(ctx, sqlc.GetEmailSuppressionParams{
+			ID:       id,
+			TenantID: tenantID,
+		}); gerr != nil {
+			if errors.Is(gerr, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return gerr
+		}
+		// Readable, and still here: the delete was refused, not a no-op.
+		return ErrSuppressionRefused
 	})
 }
 

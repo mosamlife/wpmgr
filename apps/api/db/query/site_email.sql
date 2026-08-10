@@ -506,8 +506,15 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at DESC, id DESC
 LIMIT @row_limit;
 
--- name: DeleteEmailSuppression :exec
--- Operator delete (un-suppress). Must be tenant-scoped (InTenantTx).
+-- name: DeleteEmailSuppression :execrows
+-- Operator delete (un-suppress). Runs under scopedTenantTx.
+--
+-- :execrows, not :exec (GH #380). Under the m112 site-scope policies a
+-- site-scoped collaborator can SEE a fleet-wide entry (site_id IS NULL) but not
+-- delete one, and Postgres expresses that refusal as zero rows affected rather
+-- than as an error. With :exec the caller could not tell the two apart and the
+-- API answered 204 for a delete that removed nothing. The repo needs the count
+-- to tell the caller the truth.
 DELETE FROM email_suppression
 WHERE id        = @id
   AND tenant_id = @tenant_id;

@@ -83,6 +83,10 @@ type fakeRepo struct {
 	lastConnCiphertext []byte
 	// Which config rows SetWebhookFields was asked to write, in order.
 	webhookWrites []uuid.UUID
+	// suppressionDeleteErr is what DeleteSuppression returns. The repo can now
+	// say "refused" and "absent" as well as "done", and the service has to turn
+	// each into a different answer (see suppression_delete_refusal_test.go).
+	suppressionDeleteErr error
 }
 
 func newFakeRepo() *fakeRepo {
@@ -291,7 +295,7 @@ func (r *fakeRepo) ListFleetSuppression(_ context.Context, _ uuid.UUID, _ Suppre
 }
 
 func (r *fakeRepo) DeleteSuppression(_ context.Context, _, _ uuid.UUID) error {
-	return nil
+	return r.suppressionDeleteErr
 }
 
 func (r *fakeRepo) ListSuppressionDeltas(_ context.Context, _, _ uuid.UUID, _ string, _ int) (SuppressionDeltaPage, error) {

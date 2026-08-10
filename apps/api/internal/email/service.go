@@ -598,7 +598,8 @@ func (s *Service) preserveOrRevokeSecret(ctx context.Context, in UpsertInput) (b
 		// No credential to rebind.
 		return false, nil
 	}
-	if sameCredentialAudience(incoming, stored) {
+	field, diverged := credentialAudienceDivergence(incoming, stored)
+	if !diverged {
 		// Same provider, same destination, same identity: the credential still
 		// belongs to these settings. Preserve it, which is what makes editing
 		// the from-name without retyping the password keep working.
@@ -608,6 +609,7 @@ func (s *Service) preserveOrRevokeSecret(ctx context.Context, in UpsertInput) (b
 	s.log.Info("email: the saved settings moved the endpoint the stored credential authenticates to; it is revoked and must be re-entered",
 		slog.String("tenant_id", in.TenantID.String()),
 		slog.String("row", rowLabel),
+		slog.String("diverging_field", field),
 		slog.String("stored_provider", stored.Provider),
 		slog.String("provider", in.Provider),
 	)
@@ -868,11 +870,32 @@ func (s *Service) ListFleetSuppression(ctx context.Context, tenantID uuid.UUID, 
 }
 
 // DeleteSuppression removes a suppression entry by id.
+//
+// The two named outcomes are the point (GH #380). A site-scoped collaborator
+// sees fleet-wide entries in their site's suppression list, because the
+// pre-send check matches site_id IS NULL and hiding them would let their site
+// mail an address the organisation stopped. m112 then refuses the DELETE, and
+// Postgres reports that refusal as zero rows rather than as an error, so the
+// endpoint used to answer 204 for a delete that removed nothing.
+//
+// Refused is 403 and says WHY, because the operator can act on it: ask an
+// organisation member, or use the fleet-scope route. Absent is 404. Neither is
+// reported as success, and neither is reported as an internal error, which
+// would be its own small lie.
 func (s *Service) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID) error {
-	if err := s.repo.DeleteSuppression(ctx, tenantID, id); err != nil {
+	err := s.repo.DeleteSuppression(ctx, tenantID, id)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrSuppressionRefused):
+		return domain.Forbidden("suppression_delete_forbidden",
+			"this suppression entry applies to the whole organisation, so it can only be "+
+				"removed by an organisation member; it is still in force")
+	case errors.Is(err, ErrNotFound):
+		return domain.NotFound("suppression_not_found", "suppression entry not found")
+	default:
 		return domain.Internal("suppression_delete", "failed to delete suppression").WithCause(err)
 	}
-	return nil
 }
 
 // ListSuppressionDeltas returns suppression entries created after the cursor
@@ -1662,9 +1685,14 @@ func (s *Service) resolveSitePushSecret(ctx context.Context, tenantID, siteID uu
 		)
 		return pushSecret{}, false
 	}
-	if !cfg.Inherited && !sameCredentialAudience(cfg, orgCfg) {
+	if field, diverged := credentialAudienceDivergence(cfg, orgCfg); !cfg.Inherited && diverged {
+		// diverging_field is what makes this line actionable. Without it the two
+		// provider slugs below are usually identical and the operator is left
+		// with "it stopped working" and no next step. Note that an ABSENT field
+		// diverges from a set one on purpose: see sameConfigValue.
 		s.log.Info("email: site config no longer matches the org endpoint; the org credential is withheld and the site's stored one revoked",
 			slog.String("site_id", siteID.String()),
+			slog.String("diverging_field", field),
 			slog.String("site_provider", cfg.Provider),
 			slog.String("org_provider", orgCfg.Provider),
 		)
@@ -1780,23 +1808,38 @@ func credentialAudienceFields(provider string) ([]string, bool) {
 // sameCredentialAudience reports whether a credential stored against org may be
 // presented using site's config.
 func sameCredentialAudience(site, org Config) bool {
+	_, diverged := credentialAudienceDivergence(site, org)
+	return !diverged
+}
+
+// credentialAudienceDivergence is sameCredentialAudience with its reason. It
+// returns the name of the first thing the two configs disagree about, and
+// whether they disagree at all.
+//
+// The reason is not decoration. When this check withholds the org credential
+// the site stops sending mail, and the log line that reported it used to print
+// only the two provider slugs, which for every case except an actual provider
+// switch are IDENTICAL. An operator reading "site config no longer matches the
+// org endpoint: smtp vs smtp" learns nothing at all about why their site went
+// quiet. Naming the field turns that into a one-line diagnosis.
+func credentialAudienceDivergence(site, org Config) (string, bool) {
 	if site.Provider != org.Provider {
-		return false
+		return "provider", true
 	}
 	if !ValidProviderSlug(site.Provider) {
 		// Never share a credential with a config we cannot reason about.
-		return false
+		return "provider", true
 	}
 	fields, known := credentialAudienceFields(site.Provider)
 	if !known {
-		return false
+		return "provider", true
 	}
 	for _, key := range fields {
 		if !sameConfigValue(site.Config[key], org.Config[key]) {
-			return false
+			return key, true
 		}
 	}
-	return true
+	return "", false
 }
 
 // sameConnectionAudience reports whether the credential already stored against a
@@ -1829,7 +1872,37 @@ func sameConnectionAudience(stored Connection, in ConnectionUpsertInput) bool {
 // sameConfigValue compares two values out of the provider config map. Both
 // sides come from the same JSONB column so their Go types already agree;
 // formatting them is a cheap way to stay correct for the string/number/bool mix
-// the map holds, and an absent key compares equal to an empty one.
+// the map holds.
+//
+// AN OMITTED FIELD MEANS "DIFFERENT", NOT "UNCHANGED". This is a decision, not
+// an accident, and it is the one place in the audience check where the two
+// readings actually diverge:
+//
+//   - absent compares EQUAL to empty. Omitting a field and sending it blank are
+//     the same statement, and treating them differently would make the check
+//     depend on which client serialised the request.
+//
+//   - absent compares UNEQUAL to any non-empty value. A PUT here replaces the
+//     config; it is not a patch. So a request that omits "encryption" while the
+//     organisation has "tls" is not silent about encryption, it is asking for
+//     none, and the config that gets stored has none.
+//
+// Reading that omission as "unchanged" would be the more forgiving behaviour
+// and it is exactly the wrong one. credentialAudienceFields is the set of
+// fields that decide WHERE a credential is presented and WHO it authenticates
+// as: host and port are the destination, username is the identity, and
+// encryption decides whether the password crosses the network in clear. If an
+// omitted field compared equal, a client could drop "encryption" from the
+// payload, pass the audience check on the strength of the fields it did send,
+// and be handed the organisation's password to present over an unencrypted
+// connection. Dropping "host" would do the same for the destination. That is
+// GH #380's whole class, reintroduced through the comparison that closes it.
+//
+// The cost of the strict reading is real and is accepted: a non-UI client doing
+// a partial update loses the inherited credential and has to re-enter it. That
+// is a recoverable inconvenience, announced in the log line that
+// credentialAudienceDivergence now names the field for, and it is the correct
+// side to fail on. The dashboard sends every field, so it never trips.
 func sameConfigValue(a, b any) bool {
 	return configValueKey(a) == configValueKey(b)
 }
