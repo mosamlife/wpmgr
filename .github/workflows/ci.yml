@@ -236,8 +236,14 @@ jobs:
           fi
 
           page='apps/marketing/app/(marketing)/changelog/page.tsx'
-          # Newest RELEASES entry; may be a range like "0.61.64 - 0.61.65", take the first number.
-          mk=$(grep -m1 -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+' "$page" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          # The newest RELEASES entry may group several releases into a range,
+          # written oldest first: version: "0.61.49 - 0.61.53". Take the NEWEST
+          # version in that entry, not the first one on the line. Reading the
+          # first number measures the distance from the oldest end of the group,
+          # so a page that truthfully covers up to the top release still reads as
+          # stale once a group is wider than the tolerance. Groups of five have
+          # shipped already; seven would have failed an honest page.
+          mk=$(grep -m1 -oE 'version: "[^"]+"' "$page" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
           if [ -z "$mk" ]; then
             echo "WARN: could not parse the newest marketing changelog version from $page; skipping that check."
           else
