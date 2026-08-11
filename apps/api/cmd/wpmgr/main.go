@@ -3773,10 +3773,28 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// GH #402: reclaim the object-storage prefix a deleted site leaves behind.
 	// Hourly rather than daily: the work is a list plus a handful of deletes per
 	// deleted site, and until it runs the operator is paying for storage they
-	// have already told us to stop keeping. MaxWorkers 1 so two ticks can never
-	// walk the same prefix concurrently. RunOnStart is true because a rolling
+	// have already told us to stop keeping. RunOnStart is true because a rolling
 	// deploy is the cheapest moment to drain whatever accumulated, and the sweep
 	// is a no-op when there is nothing due.
+	//
+	// MaxWorkers 1 bounds this queue to ONE sweep at a time WITHIN THIS PROCESS.
+	// It is not a fleet-wide lock, and prod runs several instances, so two
+	// instances can walk the same prefix at the same time. That is safe rather
+	// than merely unlikely, and by construction rather than by timing:
+	//
+	//   - blobstore.Store.Delete treats a missing key as success, so the loser of
+	//     any race deletes nothing and reports no error.
+	//   - the worker re-LISTS the prefix at the start of every attempt, so it
+	//     never acts on a stale key set.
+	//   - CompleteSiteObjectReclaim is guarded WHERE completed_at IS NULL, so the
+	//     second closer affects zero rows instead of overwriting the first.
+	//   - the prefix is derived from the task row, never stored, so two instances
+	//     cannot disagree about which bytes are in scope.
+	//
+	// The org purge worker takes a real cross-instance advisory lock because its
+	// steps are NOT idempotent in that way (it revokes sites, marks a
+	// point of no return, and then hard-deletes a tenant). This sweep needs no
+	// equivalent, and claiming MaxWorkers gave it one would be false comfort.
 	if d.siteObjectReclaimWorker != nil {
 		river.AddWorker(workers, d.siteObjectReclaimWorker)
 		queues[backup.ReclaimQueue] = river.QueueConfig{MaxWorkers: 1}

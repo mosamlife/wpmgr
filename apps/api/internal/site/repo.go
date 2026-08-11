@@ -480,14 +480,19 @@ func (r *pgRepo) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 
-		// Read the destination kind BEFORE the delete: site_destinations.site_id
-		// is also ON DELETE CASCADE, so after the next statement this is gone
-		// too. Diagnostic only (never a credential): it lets the reclaim log say
-		// plainly that a site's backups lived in the operator's own bucket and
-		// were not touched by a control-plane-store reclaimer.
+		// Read the DEFAULT destination's kind before the delete:
+		// site_destinations.site_id is also ON DELETE CASCADE, so after the next
+		// statement this is gone too. Diagnostic only (never a credential): it
+		// lets the reclaim log say plainly where the site's backup payload
+		// lived. It says nothing about the manifests this delete is about, which
+		// always sit in the control-plane bucket (main.go wires
+		// SetIndexPutter(defStore)) whatever the destination is.
 		//
-		// No rows is the ordinary case (the site used the legacy
-		// control-plane-global bucket) and leaves destKind nil. A REAL error is
+		// The query filters is_default deliberately: a new snapshot only ever
+		// resolves the site's DEFAULT destination, so a non-default row names a
+		// place this site's backups never went. No rows therefore means "no
+		// default destination", which is the control-plane bucket, and leaves
+		// destKind nil. That is the ordinary case. A REAL error is
 		// surfaced rather than swallowed: a failed statement aborts the
 		// enclosing Postgres transaction, so ignoring it here would only move
 		// the failure to the DELETE below and report it as a confusing

@@ -52,6 +52,16 @@
 // restorable and partial object deletion would resurrect a tenant pointing at
 // missing objects. Here nothing is restorable: the site row is hard-gone before
 // the task ever exists, so there is no restore to interlock with.
+//
+// THE TASK OUTLIVES ITS TENANT, ON PURPOSE. m113 carries no foreign key to
+// tenants either, so a hard-deleted tenant leaves the task row standing and
+// TenantGone is a reclaim signal rather than a skip. That is not tidiness lost,
+// it is the entire point: admin_delete_empty_tenant (org delete Lane A, and the
+// superadmin orphan cleanup) destroys a tenant row with ZERO object-storage
+// cleanup, so a cascade here would have deleted the record by exactly the
+// operation that should have triggered it. Only Lane B (the grace-window
+// org.PurgeWorker) sweeps the seven tenant roots before its hard delete, and
+// TenantPendingPurge is what stands off for it.
 package backup
 
 import (
@@ -127,18 +137,55 @@ type ReclaimTask struct {
 	Kind            string
 	DestinationKind string
 	Attempts        int32
+	// LastError is the reason the previous attempt failed. Carried so the
+	// stuck-task report can say WHY a task gave up without a second query.
+	LastError string
 }
+
+// TenantReclaimState is the tenant's lifecycle as this worker must read it.
+// Three states, not two: "the tenant row is missing" and "the tenant row is
+// soft-deleted" call for OPPOSITE actions, and collapsing them is what made an
+// earlier version of this worker strand a task forever.
+type TenantReclaimState int
+
+const (
+	// TenantLive: the tenant row is present and not scheduled for deletion.
+	// Ordinary case, proceed to the site guard.
+	TenantLive TenantReclaimState = iota
+
+	// TenantPendingPurge: deleted_at or purge_started_at is set. The org
+	// grace-window PurgeWorker owns the whole tenant/<id>/ root for these and
+	// holds a SESSION advisory lock in a different namespace, so this worker
+	// stands off rather than trying to serialise across two lock namespaces.
+	// Nothing is lost: Lane B sweeps every one of these prefixes itself.
+	TenantPendingPurge
+
+	// TenantGone: no tenant row at all. Since m113 dropped the tenant foreign
+	// key, the task row OUTLIVES its tenant, and this is the state that makes
+	// that worth doing. It is reached from admin_delete_empty_tenant (org
+	// delete Lane A and the superadmin orphan cleanup), which hard-deletes a
+	// tenant with ZERO object-storage cleanup. The task is now the only record
+	// naming those objects, so the worker proceeds. Treating this as a skip,
+	// which the first version did, means the objects are never reclaimed and
+	// GH #402 is merely relocated.
+	TenantGone
+)
 
 // ReclaimStore is the persistence half of the worker, split out so the guards
 // can be tested without a container.
 type ReclaimStore interface {
 	// ListDue returns open tasks that are due and still under the attempt cap.
 	ListDue(ctx context.Context, maxAttempts, limit int32) ([]ReclaimTask, error)
+	// ListStuck returns open tasks that have exhausted the attempt cap and so
+	// no longer appear in ListDue. They are never deleted; this is how they
+	// stay visible.
+	ListStuck(ctx context.Context, maxAttempts, limit int32) ([]ReclaimTask, error)
 	// SiteExists reports whether the site row is STILL present. Reads the raw
 	// sites table, not a filtered helper: see reclaimOne.
 	SiteExists(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error)
-	// TenantSoftDeleted reports whether the tenant is itself pending purge.
-	TenantSoftDeleted(ctx context.Context, tenantID uuid.UUID) (bool, error)
+	// TenantState reports the tenant's lifecycle state, distinguishing a
+	// soft-deleted tenant (skip) from an absent one (proceed).
+	TenantState(ctx context.Context, tenantID uuid.UUID) (TenantReclaimState, error)
 	// Complete closes a task that fully drained.
 	Complete(ctx context.Context, id uuid.UUID) error
 	// Cancel closes a task WITHOUT any storage deletion, recording why.
@@ -266,7 +313,44 @@ func (w *ReclaimWorker) Work(ctx context.Context, _ *river.Job[ReclaimArgs]) err
 			slog.Int("reclaimed", done), slog.Int("skipped", skipped),
 			slog.Int("cancelled", cancelled), slog.Int("failed", failed))
 	}
+	w.reportStuck(ctx)
 	return nil
+}
+
+// reportStuck re-announces every task that has exhausted the attempt cap.
+//
+// Those rows are kept on purpose (they are the last record that the objects
+// exist), but keeping is not the same as surfacing. Without this, a task that
+// gave up produced exactly one Error line at the moment of its eighth failure
+// and then went quiet forever, so a permanently stuck prefix looked identical
+// to a healthy fleet. Re-reading and re-logging every tick makes the condition
+// persist in the logs for as long as it persists in the table, which is what
+// makes it alertable. It never mutates anything.
+func (w *ReclaimWorker) reportStuck(ctx context.Context) {
+	stuck, err := w.state.ListStuck(ctx, w.max, w.batch)
+	if err != nil {
+		w.logger.Warn("site object reclaim: could not read the stuck-task list", slog.Any("error", err))
+		return
+	}
+	if len(stuck) == 0 {
+		return
+	}
+	w.logger.Error("site object reclaim: tasks past the attempt cap are NOT being retried; "+
+		"their objects are still in storage and these rows are the only record of them",
+		slog.Int("stuck", len(stuck)), slog.Int("max_attempts", int(w.max)))
+	for _, t := range stuck {
+		prefix, perr := SiteObjectPrefix(t.Kind, t.TenantID, t.SiteID)
+		if perr != nil {
+			prefix = "(underivable: " + perr.Error() + ")"
+		}
+		w.logger.Error("site object reclaim: stuck task",
+			slog.String("task_id", t.ID.String()),
+			slog.String("tenant_id", t.TenantID.String()),
+			slog.String("site_id", t.SiteID.String()),
+			slog.String("prefix", prefix),
+			slog.Int("attempts", int(t.Attempts)),
+			slog.String("last_error", t.LastError))
+	}
 }
 
 type reclaimOutcome int
@@ -292,18 +376,25 @@ func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOu
 		return reclaimCancelled
 	}
 
-	// GUARD 2: skip a tenant that is itself soft-deleted. The org purge worker
-	// owns the whole tenant/<id>/ root for those and holds a session advisory
-	// lock in a DIFFERENT namespace, so skipping avoids a concurrent-delete race
-	// rather than trying to serialise across two lock namespaces. This must come
-	// BEFORE guard 3: a soft-deleted tenant's other sites are still present, and
-	// the org purge will cascade this task away when it hard-deletes the tenant.
-	softDeleted, terr := w.state.TenantSoftDeleted(ctx, t.TenantID)
+	// GUARD 2: stand off a tenant that Lane B already owns, and ONLY that one.
+	//
+	// TenantPendingPurge means the org grace-window purge worker is going to
+	// delete the whole tenant/<id>/ root itself, holding a session advisory lock
+	// in a DIFFERENT namespace; skipping avoids a concurrent-delete race rather
+	// than trying to serialise across two lock namespaces. This must come BEFORE
+	// guard 3, because a soft-deleted tenant's other sites are still present.
+	//
+	// TenantGone is NOT a skip. admin_delete_empty_tenant (org delete Lane A and
+	// the superadmin orphan cleanup) hard-deletes a tenant row and sweeps no
+	// storage at all, so a task whose tenant has vanished is the last record
+	// naming those objects. Skipping it would leave them orphaned forever, which
+	// is the same defect this worker exists to fix, only at tenant level.
+	tstate, terr := w.state.TenantState(ctx, t.TenantID)
 	if terr != nil {
 		w.fail(ctx, t, fmt.Sprintf("tenant state lookup failed: %v", terr))
 		return reclaimFailed
 	}
-	if softDeleted {
+	if tstate == TenantPendingPurge {
 		return reclaimSkipped
 	}
 
@@ -336,9 +427,13 @@ func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOu
 		return reclaimCancelled
 	}
 
-	// Storage. Control-plane store only: a site whose backups went to a
-	// customer-owned bucket has bytes this worker deliberately does not touch,
-	// which is why destination_kind is carried on the task and logged.
+	// Storage. Control-plane store only, and that is enough for this job: the
+	// manifest index object is written to the control-plane bucket for EVERY
+	// site whatever its backup destination is (main.go wires SetIndexPutter to
+	// that store), so no deleted site's manifests fall outside this sweep. What
+	// a customer-owned destination holds is the backup payload, which this
+	// worker has no credentials for and never reaches into, which is why
+	// destination_kind rides on the task and is logged.
 	if rerr := w.reclaimKindPrefix(ctx, t.Kind, t.TenantID, t.SiteID); rerr != nil {
 		w.fail(ctx, t, rerr.Error())
 		return reclaimFailed
@@ -413,20 +508,44 @@ func (s *pgReclaimStore) ListDue(ctx context.Context, maxAttempts, limit int32) 
 		if err != nil {
 			return err
 		}
-		out = make([]ReclaimTask, 0, len(rows))
-		for _, r := range rows {
-			t := ReclaimTask{
-				ID: r.ID, TenantID: r.TenantID, SiteID: r.SiteID,
-				Kind: r.Kind, Attempts: r.Attempts,
-			}
-			if r.DestinationKind != nil {
-				t.DestinationKind = *r.DestinationKind
-			}
-			out = append(out, t)
-		}
+		out = reclaimTasksFromRows(rows)
 		return nil
 	})
 	return out, err
+}
+
+func (s *pgReclaimStore) ListStuck(ctx context.Context, maxAttempts, limit int32) ([]ReclaimTask, error) {
+	var out []ReclaimTask
+	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListStuckSiteObjectReclaims(ctx, sqlc.ListStuckSiteObjectReclaimsParams{
+			MaxAttempts: maxAttempts,
+			RowLimit:    limit,
+		})
+		if err != nil {
+			return err
+		}
+		out = reclaimTasksFromRows(rows)
+		return nil
+	})
+	return out, err
+}
+
+func reclaimTasksFromRows(rows []sqlc.SiteObjectReclaim) []ReclaimTask {
+	out := make([]ReclaimTask, 0, len(rows))
+	for _, r := range rows {
+		t := ReclaimTask{
+			ID: r.ID, TenantID: r.TenantID, SiteID: r.SiteID,
+			Kind: r.Kind, Attempts: r.Attempts,
+		}
+		if r.DestinationKind != nil {
+			t.DestinationKind = *r.DestinationKind
+		}
+		if r.LastError != nil {
+			t.LastError = *r.LastError
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func (s *pgReclaimStore) SiteExists(ctx context.Context, tenantID, siteID uuid.UUID) (bool, error) {
@@ -444,23 +563,27 @@ func (s *pgReclaimStore) SiteExists(ctx context.Context, tenantID, siteID uuid.U
 	return exists, err
 }
 
-func (s *pgReclaimStore) TenantSoftDeleted(ctx context.Context, tenantID uuid.UUID) (bool, error) {
-	var soft bool
+func (s *pgReclaimStore) TenantState(ctx context.Context, tenantID uuid.UUID) (TenantReclaimState, error) {
+	state := TenantLive
 	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		row, err := sqlc.New(tx).GetTenantDeletionStateForReclaim(ctx, tenantID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				// The tenant is already hard-purged. The task row is cascading
-				// away with it; treat as skip, never as licence to delete.
-				soft = true
+				// No tenant row. The task did NOT cascade away with it (m113
+				// carries no tenant foreign key, deliberately), so this is the
+				// state in which the task is the only surviving name for those
+				// objects. Reclaim, do not skip.
+				state = TenantGone
 				return nil
 			}
 			return err
 		}
-		soft = row.DeletedAt.Valid || row.PurgeStartedAt.Valid
+		if row.DeletedAt.Valid || row.PurgeStartedAt.Valid {
+			state = TenantPendingPurge
+		}
 		return nil
 	})
-	return soft, err
+	return state, err
 }
 
 func (s *pgReclaimStore) Complete(ctx context.Context, id uuid.UUID) error {

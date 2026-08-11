@@ -1078,11 +1078,24 @@ CREATE POLICY site_destinations_site_scope ON site_destinations
 -- repo's Delete), so it exists if and only if the site row is really gone, and
 -- an async worker reclaims the site's storage prefix afterwards.
 --
--- NO FOREIGN KEY TO sites, DELIBERATELY. A site_id FK with ON DELETE CASCADE
--- would destroy this row in the very statement it exists to survive. The FK is
--- to tenants only, so a tenant hard-purge cleans these up, which is correct
--- because the org purge worker has already swept every tenant-scoped root by
--- then.
+-- NO FOREIGN KEY AT ALL, DELIBERATELY, TO EITHER sites OR tenants.
+--
+-- A site_id FK with ON DELETE CASCADE would destroy this row in the very
+-- statement it exists to survive. A tenant_id FK with ON DELETE CASCADE is the
+-- same mistake one level up, and it was real: admin_delete_empty_tenant (org
+-- delete Lane A, and the superadmin orphan cleanup) hard-deletes a tenant row
+-- with ZERO object-storage cleanup, because an org with no sites and no members
+-- was assumed to own no objects. An org whose sites were all deleted first is
+-- exactly that shape and does own objects, so the cascade destroyed the
+-- reclaim record by precisely the operation that should have triggered it. Only
+-- the grace-window PurgeWorker (Lane B) sweeps the seven tenant-scoped roots
+-- before its hard delete; Lane A does not, and cannot without putting unbounded
+-- network work inside an HTTP request.
+--
+-- The rule this table exists to embody: a record of what to clean up must
+-- outlive the deletion it describes. Referential tidiness is worth less than
+-- that. The tenant may be gone by the time the worker runs, and that is a
+-- reclaim signal, not an error (see the worker's tenant-state guard).
 --
 -- The row stores IDENTITY, never a prefix string: the worker derives the
 -- prefix from a code constant plus two validated UUIDs, because a stored prefix
@@ -1096,7 +1109,9 @@ CREATE POLICY site_destinations_site_scope ON site_destinations
 -- only remaining record that those objects exist.
 CREATE TABLE site_object_reclaim (
     id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    -- No REFERENCES. See the header: a cascade from either parent destroys the
+    -- record in the operation it is supposed to survive.
+    tenant_id        uuid        NOT NULL,
     site_id          uuid        NOT NULL,
     -- Which site-scoped storage root to reclaim ('backup_manifest' today).
     kind             text        NOT NULL DEFAULT 'backup_manifest',
@@ -1127,6 +1142,32 @@ CREATE POLICY site_object_reclaim_tenant_isolation ON site_object_reclaim
 CREATE POLICY site_object_reclaim_agent ON site_object_reclaim
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- m19 AS RESTRICTIVE collaborator site-scope policy, the same shape
+-- site_destinations carries a few hundred lines up. This table is site-keyed,
+-- so without it the only thing the database would refuse is another TENANT, and
+-- a collaborator invited to exactly one site could read or write reclaim rows
+-- naming every other site in the organisation. That is the class m112 closed
+-- for the email domain after seven separate handler-level doors kept appearing;
+-- this is the same class, and it gets the policy on the way in rather than
+-- after the eighth. site_id is NOT NULL here, so unlike the email tables there
+-- is no inheriting row to keep readable and one FOR ALL policy is the whole
+-- answer. Both the operator enqueue (InTenantTx) and the worker (InAgentTx)
+-- leave app.site_scope unset, so for them the first branch is a tautology.
+CREATE POLICY site_object_reclaim_site_scope ON site_object_reclaim
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- backup_snapshots  (M4)

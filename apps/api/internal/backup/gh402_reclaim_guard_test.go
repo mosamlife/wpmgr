@@ -10,6 +10,8 @@ package backup
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +28,10 @@ type fakeReclaimStore struct {
 	// deliberately does NOT filter archived sites, so an archived (LIVE) site
 	// answers true here, which is the whole point of the archived test below.
 	siteExists map[uuid.UUID]bool
-	softTenant map[uuid.UUID]bool
+	// tenantState is the three-way lifecycle answer. The zero value is
+	// TenantLive, so a test only names the tenants it wants to be unusual.
+	// TenantPendingPurge means skip; TenantGone means reclaim.
+	tenantState map[uuid.UUID]TenantReclaimState
 
 	completed map[uuid.UUID]bool
 	cancelled map[uuid.UUID]string
@@ -40,13 +45,13 @@ type fakeReclaimStore struct {
 
 func newFakeReclaimStore() *fakeReclaimStore {
 	return &fakeReclaimStore{
-		siteExists: map[uuid.UUID]bool{},
-		softTenant: map[uuid.UUID]bool{},
-		completed:  map[uuid.UUID]bool{},
-		cancelled:  map[uuid.UUID]string{},
-		failures:   map[uuid.UUID]int{},
-		lastError:  map[uuid.UUID]string{},
-		backoffs:   map[uuid.UUID]time.Duration{},
+		siteExists:  map[uuid.UUID]bool{},
+		tenantState: map[uuid.UUID]TenantReclaimState{},
+		completed:   map[uuid.UUID]bool{},
+		cancelled:   map[uuid.UUID]string{},
+		failures:    map[uuid.UUID]int{},
+		lastError:   map[uuid.UUID]string{},
+		backoffs:    map[uuid.UUID]time.Duration{},
 	}
 }
 
@@ -78,11 +83,30 @@ func (f *fakeReclaimStore) SiteExists(_ context.Context, _, siteID uuid.UUID) (b
 	return f.siteExists[siteID], nil
 }
 
-func (f *fakeReclaimStore) TenantSoftDeleted(_ context.Context, tenantID uuid.UUID) (bool, error) {
-	if f.tenantErr != nil {
-		return false, f.tenantErr
+func (f *fakeReclaimStore) ListStuck(_ context.Context, maxAttempts, limit int32) ([]ReclaimTask, error) {
+	var out []ReclaimTask
+	for _, t := range f.tasks {
+		if f.completed[t.ID] || f.cancelled[t.ID] != "" {
+			continue
+		}
+		if int32(f.failures[t.ID]) < maxAttempts {
+			continue
+		}
+		t.Attempts = int32(f.failures[t.ID])
+		t.LastError = f.lastError[t.ID]
+		out = append(out, t)
+		if int32(len(out)) >= limit {
+			break
+		}
 	}
-	return f.softTenant[tenantID], nil
+	return out, nil
+}
+
+func (f *fakeReclaimStore) TenantState(_ context.Context, tenantID uuid.UUID) (TenantReclaimState, error) {
+	if f.tenantErr != nil {
+		return TenantLive, f.tenantErr
+	}
+	return f.tenantState[tenantID], nil
 }
 
 func (f *fakeReclaimStore) Complete(_ context.Context, id uuid.UUID) error {
@@ -240,7 +264,7 @@ func TestGH402_ReclaimWorker_SkipsSoftDeletedTenant(t *testing.T) {
 	state := newFakeReclaimStore()
 	task := newReclaimTask(tenantID, siteID)
 	state.tasks = []ReclaimTask{task}
-	state.softTenant[tenantID] = true
+	state.tenantState[tenantID] = TenantPendingPurge
 
 	w := NewReclaimWorker(state, store, nil)
 	if err := w.Work(context.Background(), nil); err != nil {
@@ -256,6 +280,104 @@ func TestGH402_ReclaimWorker_SkipsSoftDeletedTenant(t *testing.T) {
 	if state.failures[task.ID] != 0 {
 		t.Error("a skip must not burn a retry attempt")
 	}
+}
+
+// A tenant that is GONE is the opposite case, and the distinction is the whole
+// blocking finding of the second review round.
+//
+// admin_delete_empty_tenant (org delete Lane A, and the superadmin orphan
+// cleanup) hard-deletes a tenant row and sweeps NO object storage. m113
+// therefore carries no tenant foreign key, so the task survives that delete, and
+// it is then the only thing in the database that names those objects. An earlier
+// version of this worker read "no tenant row" as "already purged, skip", which
+// would have left every one of those prefixes in the bucket forever: GH #402
+// relocated one level up rather than fixed.
+func TestGH402_ReclaimWorker_ReclaimsWhenTenantIsHardDeleted(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	store := newGCStore()
+	key := manifestIndexKey(tenantID, siteID, uuid.New())
+	store.put(key)
+	// A neighbouring tenant's object, to prove the sweep stays inside its own
+	// derived prefix even with no tenant row to check against.
+	other := manifestIndexKey(uuid.New(), uuid.New(), uuid.New())
+	store.put(other)
+
+	state := newFakeReclaimStore()
+	task := newReclaimTask(tenantID, siteID)
+	state.tasks = []ReclaimTask{task}
+	state.tenantState[tenantID] = TenantGone
+
+	w := NewReclaimWorker(state, store, nil)
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	if store.has(key) {
+		t.Error("the manifest of a site whose TENANT was hard-deleted was not reclaimed. " +
+			"Lane A (admin_delete_empty_tenant) frees no storage at all, so nothing else ever will")
+	}
+	if !store.has(other) {
+		t.Error("the sweep reached outside its derived prefix")
+	}
+	if !state.completed[task.ID] {
+		t.Error("the task did not close after a clean drain")
+	}
+	if state.failures[task.ID] != 0 {
+		t.Errorf("expected no failed attempts, got %d", state.failures[task.ID])
+	}
+}
+
+// Past the cap a task stops being retried but must not go quiet. reportStuck
+// re-reads and re-logs it every tick, so a permanently stuck prefix stays
+// visible for as long as it is stuck rather than producing one line, once.
+func TestGH402_ReclaimWorker_StuckTasksAreReportedEveryTick(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	store := newGCStore()
+	store.put(manifestIndexKey(tenantID, siteID, uuid.New()))
+	store.failEvery = 1 // every delete fails, forever
+
+	state := newFakeReclaimStore()
+	task := newReclaimTask(tenantID, siteID)
+	state.tasks = []ReclaimTask{task}
+
+	var logged []string
+	w := NewReclaimWorker(state, store, slog.New(slog.NewTextHandler(&recordingWriter{lines: &logged},
+		&slog.HandlerOptions{Level: slog.LevelError})))
+
+	for i := 0; i < reclaimMaxAttempts; i++ {
+		if err := w.Work(context.Background(), nil); err != nil {
+			t.Fatalf("Work tick %d: %v", i, err)
+		}
+	}
+	// The task is now past the cap and out of the due query entirely.
+	before := len(logged)
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("post-cap Work: %v", err)
+	}
+	after := len(logged)
+	if after <= before {
+		t.Fatal("a task past the attempt cap produced no log output at all on a later tick; " +
+			"it is retained but invisible, which is how a permanently stuck prefix gets forgotten")
+	}
+	joined := strings.Join(logged[before:], "\n")
+	if !strings.Contains(joined, siteID.String()) {
+		t.Errorf("the stuck-task report does not name the site: %s", joined)
+	}
+	if !strings.Contains(joined, "tenant/"+tenantID.String()+"/site/"+siteID.String()+"/") {
+		t.Errorf("the stuck-task report does not carry the exact storage prefix an operator needs: %s", joined)
+	}
+}
+
+// recordingWriter captures slog output line by line.
+type recordingWriter struct{ lines *[]string }
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	*w.lines = append(*w.lines, string(p))
+	return len(p), nil
 }
 
 // ---------------------------------------------------------------------------

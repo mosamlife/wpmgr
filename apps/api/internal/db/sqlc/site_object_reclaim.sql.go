@@ -56,7 +56,13 @@ const enqueueSiteObjectReclaim = `-- name: EnqueueSiteObjectReclaim :execrows
 
 INSERT INTO site_object_reclaim (tenant_id, site_id, kind, destination_kind)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (tenant_id, site_id, kind) DO NOTHING
+ON CONFLICT (tenant_id, site_id, kind) DO UPDATE
+SET completed_at     = NULL,
+    attempts         = 0,
+    next_attempt_at  = now(),
+    last_error       = NULL,
+    destination_kind = EXCLUDED.destination_kind,
+    updated_at       = now()
 `
 
 type EnqueueSiteObjectReclaimParams struct {
@@ -75,8 +81,20 @@ type EnqueueSiteObjectReclaimParams struct {
 // Records the storage prefix work for a site that is being deleted. MUST be
 // called in the SAME transaction as the DELETE, and only when that DELETE
 // actually affected a row: the record must exist if and only if the site is
-// really gone. ON CONFLICT DO NOTHING makes it safely re-runnable (a future
-// backfill of already-orphaned sites needs that too).
+// really gone.
+//
+// The conflict clause REOPENS rather than doing nothing. DO NOTHING was the
+// first shape and it quietly falsified the invariant above: against an already
+// COMPLETED or CANCELLED row for the same (tenant, site, kind) it dropped the
+// new work on the floor, so a site row that came back (a restored dump, an
+// operator re-creating a site with a preserved id) and was deleted again would
+// leave its second generation of manifests orphaned exactly as before. Silently
+// discarding reclamation work is the failure mode this whole table exists to
+// remove, so it must not be the conflict behaviour.
+//
+// Reopening is cheap and safe in the other direction: the worker re-lists the
+// prefix, finds it already empty, and closes the task again. That also makes an
+// operator backfill of already-orphaned sites a single re-runnable statement.
 func (q *Queries) EnqueueSiteObjectReclaim(ctx context.Context, arg EnqueueSiteObjectReclaimParams) (int64, error) {
 	result, err := q.db.Exec(ctx, enqueueSiteObjectReclaim,
 		arg.TenantID,
@@ -126,11 +144,17 @@ type GetSiteDefaultDestinationKindParams struct {
 	SiteID   pgtype.UUID `json:"site_id"`
 }
 
-// The site's default backup destination kind, read in the delete's own
+// The kind of the site's DEFAULT backup destination, read in the delete's own
 // transaction BEFORE the cascade takes the row away. Diagnostic only: it lets
-// the reclaim log and a future delete response say plainly that a site's
-// backups lived in the operator's own bucket and were not touched. No rows
-// means the site used the legacy control-plane-global bucket.
+// the reclaim log say plainly where a site's backup payload lived.
+//
+// is_default = true is the correct filter and not an oversight: a new snapshot
+// only ever resolves the default destination (backup.Service.CreateBackup and
+// EnqueueScheduledBackup both go through resolveDefaultDestination), so a
+// non-default row is a destination the site's backups never used and reporting
+// it would be actively misleading. No row therefore means "no default
+// destination", which is the control-plane bucket, whether the site has no
+// destination rows at all or only non-default ones.
 func (q *Queries) GetSiteDefaultDestinationKind(ctx context.Context, arg GetSiteDefaultDestinationKindParams) (string, error) {
 	row := q.db.QueryRow(ctx, getSiteDefaultDestinationKind, arg.TenantID, arg.SiteID)
 	var kind string
@@ -147,10 +171,15 @@ type GetTenantDeletionStateForReclaimRow struct {
 	PurgeStartedAt pgtype.Timestamptz `json:"purge_started_at"`
 }
 
-// Whether the tenant is itself soft-deleted. The org purge worker owns the
-// whole tenant/<id>/ root for those and holds its own session advisory lock in
-// a different namespace, so this worker skips them rather than trying to
-// serialise across two lock namespaces.
+// The tenant's deletion state, which the worker reads as THREE outcomes, not
+// two. A row with deleted_at or purge_started_at set means Lane B (the org
+// purge worker) owns the whole tenant/<id>/ root and holds its own session
+// advisory lock in a different namespace, so this worker skips rather than
+// trying to serialise across two lock namespaces. NO ROW AT ALL means the
+// tenant was hard-deleted, which since m113 dropped the tenant foreign key is
+// the Lane A case (admin_delete_empty_tenant sweeps no storage): the task row
+// survived on purpose and is now the only thing that names those objects, so
+// the worker proceeds. Treating a missing tenant as "skip" would strand it.
 func (q *Queries) GetTenantDeletionStateForReclaim(ctx context.Context, tenantID uuid.UUID) (GetTenantDeletionStateForReclaimRow, error) {
 	row := q.db.QueryRow(ctx, getTenantDeletionStateForReclaim, tenantID)
 	var i GetTenantDeletionStateForReclaimRow
@@ -179,6 +208,59 @@ type ListDueSiteObjectReclaimsParams struct {
 // those objects exist, so it stays visible for an operator to find.
 func (q *Queries) ListDueSiteObjectReclaims(ctx context.Context, arg ListDueSiteObjectReclaimsParams) ([]SiteObjectReclaim, error) {
 	rows, err := q.db.Query(ctx, listDueSiteObjectReclaims, arg.MaxAttempts, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SiteObjectReclaim
+	for rows.Next() {
+		var i SiteObjectReclaim
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.Kind,
+			&i.DestinationKind,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastError,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStuckSiteObjectReclaims = `-- name: ListStuckSiteObjectReclaims :many
+SELECT id, tenant_id, site_id, kind, destination_kind, attempts,
+       next_attempt_at, last_error, completed_at, created_at, updated_at
+FROM site_object_reclaim
+WHERE completed_at IS NULL
+  AND attempts >= $1
+ORDER BY created_at, id
+LIMIT $2
+`
+
+type ListStuckSiteObjectReclaimsParams struct {
+	MaxAttempts int32 `json:"max_attempts"`
+	RowLimit    int32 `json:"row_limit"`
+}
+
+// The tasks that have exhausted @max_attempts and therefore no longer appear in
+// the due query above. The rows are kept deliberately (they are the last record
+// that those objects exist), but kept is not the same as visible: without this
+// a task that gave up produced one Error log line, once, and then nothing ever
+// again. The sweep re-reads this every tick and logs it, so the condition
+// persists in the logs for as long as it persists in the table.
+func (q *Queries) ListStuckSiteObjectReclaims(ctx context.Context, arg ListStuckSiteObjectReclaimsParams) ([]SiteObjectReclaim, error) {
+	rows, err := q.db.Query(ctx, listStuckSiteObjectReclaims, arg.MaxAttempts, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

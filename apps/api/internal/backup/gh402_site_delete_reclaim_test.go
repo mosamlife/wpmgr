@@ -166,6 +166,125 @@ func TestGH402_SiteDelete_SharedChunkSurvivesForLiveSite(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CARDINAL, HARD VARIANT: two sites deleted in the SAME sweep batch, while a
+// third, LIVE site shares a chunk with both of them.
+//
+// The single-deletion case above can pass for the wrong reason: with one site
+// gone there is always exactly one live referent for the shared chunk, so any
+// mark phase that is even roughly correct keeps it. Deleting two sites in one
+// batch is where a reclaimer that accumulated state across tasks, or a mark
+// phase that walked per-site rather than per-tenant, would drop the shared
+// chunk. It is also the shape an operator actually produces: selecting several
+// sites and deleting them together.
+//
+// Every chunk here is introduced by a site that is about to be deleted, so the
+// only thing keeping "shared" alive is site C's reference to it through
+// tenant-wide dedup.
+// ---------------------------------------------------------------------------
+
+func TestGH402_SiteDelete_SharedChunkSurvivesTwoSiteBatchDelete(t *testing.T) {
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	tenantID := uuid.New()
+	siteA := uuid.New() // deleted, in the same batch as B
+	siteB := uuid.New() // deleted, in the same batch as A
+	siteC := uuid.New() // LIVE, and shares a chunk with both
+
+	old := now.Add(-90 * 24 * time.Hour)
+	fresh := now.Add(-24 * time.Hour)
+
+	snapA := gcSnap(tenantID, siteA, uuid.New(), 0, false, old)
+	snapB := gcSnap(tenantID, siteB, uuid.New(), 0, false, old)
+	snapC := gcSnap(tenantID, siteC, uuid.New(), 0, false, fresh)
+
+	repo := newGCFakeRepo(now)
+	repo.addSnap(snapA)
+	repo.addSnap(snapB)
+	repo.addSnap(snapC)
+
+	// "shared" is referenced by all three. "ab_only" is referenced by the two
+	// doomed sites and by nothing else, so it must go. The per-site exclusives
+	// must go too.
+	repo.manifest[snapA.ID] = []ManifestEntry{
+		{Path: "a.zip", EntryKind: EntryKindFile, ChunkHashes: []string{"shared", "ab_only", "a_only"}},
+	}
+	repo.manifest[snapB.ID] = []ManifestEntry{
+		{Path: "b.zip", EntryKind: EntryKindFile, ChunkHashes: []string{"shared", "ab_only", "b_only"}},
+	}
+	repo.manifest[snapC.ID] = []ManifestEntry{
+		{Path: "c.zip", EntryKind: EntryKindFile, ChunkHashes: []string{"shared"}},
+	}
+	for _, h := range []string{"shared", "ab_only", "a_only", "b_only"} {
+		repo.addChunk(h, old)
+	}
+
+	store := newGCStore()
+	seedSnapshotObjects(store, tenantID, siteA, snapA.ID, "shared", "ab_only", "a_only")
+	seedSnapshotObjects(store, tenantID, siteB, snapB.ID, "shared", "ab_only", "b_only")
+	seedSnapshotObjects(store, tenantID, siteC, snapC.ID, "shared")
+
+	// Both deletes land, then both reclaim tasks are worked in ONE sweep, which
+	// is what the batched due query produces.
+	cascadeSiteDelete(repo, siteA)
+	cascadeSiteDelete(repo, siteB)
+
+	w := NewReclaimWorker(nil, store, nil)
+	for _, s := range []uuid.UUID{siteA, siteB} {
+		if err := w.ReclaimPrefix(context.Background(), tenantID, s); err != nil {
+			t.Fatalf("ReclaimPrefix(%s): %v", s, err)
+		}
+	}
+
+	svc := buildGCSvc(repo, store, now)
+	if _, _, err := svc.RunRetentionGC(context.Background(), tenantID); err != nil {
+		t.Fatalf("RunRetentionGC error: %v", err)
+	}
+
+	// 1. THE ASSERTION THAT MATTERS. The shared chunk survives both deletions.
+	if _, ok := repo.chunks["shared"]; !ok {
+		t.Error("the shared chunk ROW was deleted when two sites went in one batch; " +
+			"live site C still references it")
+	}
+	if !store.has(chunkS3Key(uuid.Nil, "shared")) {
+		t.Error("the shared chunk OBJECT was deleted when two sites went in one batch; " +
+			"live site C can no longer restore")
+	}
+
+	// 2. Site C is intact end to end.
+	for _, e := range repo.manifest[snapC.ID] {
+		for _, h := range e.ChunkHashes {
+			if _, ok := repo.chunks[h]; !ok {
+				t.Errorf("site C restore broken: chunk row %q is gone", h)
+			}
+			if !store.has(chunkS3Key(uuid.Nil, h)) {
+				t.Errorf("site C restore broken: chunk object for %q is gone", h)
+			}
+		}
+	}
+	if !store.has(manifestIndexKey(tenantID, siteC, snapC.ID)) {
+		t.Error("live site C's manifest object was deleted by the batch reclamation")
+	}
+
+	// 3. Chunks no live site references are still reclaimed. A test that keeps
+	//    everything proves nothing.
+	for _, h := range []string{"ab_only", "a_only", "b_only"} {
+		if _, ok := repo.chunks[h]; ok {
+			t.Errorf("chunk row %q should have been swept: no live site references it", h)
+		}
+		if store.has(chunkS3Key(uuid.Nil, h)) {
+			t.Errorf("chunk object %q should have been swept: no live site references it", h)
+		}
+	}
+
+	// 4. And both deleted sites' manifest roots are empty.
+	for _, s := range []uuid.UUID{siteA, siteB} {
+		prefix := "tenant/" + tenantID.String() + "/site/" + s.String() + "/"
+		for _, k := range store.list(prefix) {
+			t.Errorf("orphan left under a deleted site's prefix: %s", k)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The reclaimer deletes ONLY under the derived manifest prefix. Chunk objects
 // sit under a disjoint root and must be untouched no matter what.
 // ---------------------------------------------------------------------------

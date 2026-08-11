@@ -557,8 +557,20 @@ type Querier interface {
 	// Records the storage prefix work for a site that is being deleted. MUST be
 	// called in the SAME transaction as the DELETE, and only when that DELETE
 	// actually affected a row: the record must exist if and only if the site is
-	// really gone. ON CONFLICT DO NOTHING makes it safely re-runnable (a future
-	// backfill of already-orphaned sites needs that too).
+	// really gone.
+	//
+	// The conflict clause REOPENS rather than doing nothing. DO NOTHING was the
+	// first shape and it quietly falsified the invariant above: against an already
+	// COMPLETED or CANCELLED row for the same (tenant, site, kind) it dropped the
+	// new work on the floor, so a site row that came back (a restored dump, an
+	// operator re-creating a site with a preserved id) and was deleted again would
+	// leave its second generation of manifests orphaned exactly as before. Silently
+	// discarding reclamation work is the failure mode this whole table exists to
+	// remove, so it must not be the conflict behaviour.
+	//
+	// Reopening is cheap and safe in the other direction: the worker re-lists the
+	// prefix, finds it already empty, and closes the task again. That also makes an
+	// operator backfill of already-orphaned sites a single re-runnable statement.
 	EnqueueSiteObjectReclaim(ctx context.Context, arg EnqueueSiteObjectReclaimParams) (int64, error)
 	// Lock a challenge by setting used_at (reached attempt limit or timeout).
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
@@ -987,11 +999,17 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
-	// The site's default backup destination kind, read in the delete's own
+	// The kind of the site's DEFAULT backup destination, read in the delete's own
 	// transaction BEFORE the cascade takes the row away. Diagnostic only: it lets
-	// the reclaim log and a future delete response say plainly that a site's
-	// backups lived in the operator's own bucket and were not touched. No rows
-	// means the site used the legacy control-plane-global bucket.
+	// the reclaim log say plainly where a site's backup payload lived.
+	//
+	// is_default = true is the correct filter and not an oversight: a new snapshot
+	// only ever resolves the default destination (backup.Service.CreateBackup and
+	// EnqueueScheduledBackup both go through resolveDefaultDestination), so a
+	// non-default row is a destination the site's backups never used and reporting
+	// it would be actively misleading. No row therefore means "no default
+	// destination", which is the control-plane bucket, whether the site has no
+	// destination rows at all or only non-default ones.
 	GetSiteDefaultDestinationKind(ctx context.Context, arg GetSiteDefaultDestinationKindParams) (string, error)
 	// M59 — Per-site Email / SMTP Management queries (Phase 1: config CRUD).
 	//
@@ -1088,10 +1106,15 @@ type Querier interface {
 	// GetTenantBilling (the tight entitlement-resolution hot path) does not
 	// select.
 	GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error)
-	// Whether the tenant is itself soft-deleted. The org purge worker owns the
-	// whole tenant/<id>/ root for those and holds its own session advisory lock in
-	// a different namespace, so this worker skips them rather than trying to
-	// serialise across two lock namespaces.
+	// The tenant's deletion state, which the worker reads as THREE outcomes, not
+	// two. A row with deleted_at or purge_started_at set means Lane B (the org
+	// purge worker) owns the whole tenant/<id>/ root and holds its own session
+	// advisory lock in a different namespace, so this worker skips rather than
+	// trying to serialise across two lock namespaces. NO ROW AT ALL means the
+	// tenant was hard-deleted, which since m113 dropped the tenant foreign key is
+	// the Lane A case (admin_delete_empty_tenant sweeps no storage): the task row
+	// survived on purpose and is now the only thing that names those objects, so
+	// the worker proceeds. Treating a missing tenant as "skip" would strand it.
 	GetTenantDeletionStateForReclaim(ctx context.Context, tenantID uuid.UUID) (GetTenantDeletionStateForReclaimRow, error)
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
@@ -1752,6 +1775,13 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// The tasks that have exhausted @max_attempts and therefore no longer appear in
+	// the due query above. The rows are kept deliberately (they are the last record
+	// that those objects exist), but kept is not the same as visible: without this
+	// a task that gave up produced one Error log line, once, and then nothing ever
+	// again. The sweep re-reads this every tick and logs it, so the condition
+	// persists in the logs for as long as it persists in the table.
+	ListStuckSiteObjectReclaims(ctx context.Context, arg ListStuckSiteObjectReclaimsParams) ([]SiteObjectReclaim, error)
 	// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
 	//
 	// A log with no reader is not oversight. This table now carries the auth events

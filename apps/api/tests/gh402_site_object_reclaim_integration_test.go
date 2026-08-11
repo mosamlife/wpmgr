@@ -23,6 +23,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	// adminpkg, not admin: every test in this file already names its superuser
+	// pool `admin`.
+	adminpkg "github.com/mosamlife/wpmgr/apps/api/internal/admin"
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -638,5 +641,312 @@ func TestGH402_GCRoster_ExcludesTenantWithNoBackupState(t *testing.T) {
 	}
 	if containsTenant(ids, bare) {
 		t.Error("a tenant with no snapshots and no chunks is on the GC roster")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 7. THE BLOCKING FINDING OF THE SECOND REVIEW ROUND.
+//
+// The first version of m113 gave site_object_reclaim a tenant foreign key with
+// ON DELETE CASCADE, on the reasoning that a tenant hard-purge happens only
+// after the org purge worker has swept every tenant-scoped object root. That is
+// true of ONE of the two tenant-delete lanes.
+//
+//	Lane B, the grace-window org.PurgeWorker, deletes all seven tenant object
+//	roots (tenant/<id>/ among them) and only then calls admin_purge_tenant.
+//
+//	Lane A, admin_delete_empty_tenant, frees NOTHING. It is reached from
+//	DELETE /orgs/{orgId} for an org with no sites and no other members, and
+//	from the superadmin orphan cleanup. Its guard is "no memberships and no
+//	sites", which was read as "owns no objects". An org whose sites were all
+//	deleted first satisfies that guard and owns objects.
+//
+// So the cascade destroyed the reclaim record by exactly the operation that
+// should have triggered it, and GH #402 came back one level up. This is the
+// reviewer's probe, kept as a test: seed a tenant, a site, a completed snapshot
+// and its manifest object; delete the site; confirm the record is there; run
+// Lane A; confirm the record is STILL there and still does its job.
+// ---------------------------------------------------------------------------
+
+func TestGH402_ReclaimTaskSurvivesTenantHardDelete(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "gh402-lane-a-"+uuid.NewString()[:8])
+	siteID := gh402SeedSite(t, admin, tenant)
+	snap := gh402SeedSnapshot(t, admin, tenant, siteID, "completed")
+
+	store := newGH402Store()
+	manifest := gh402ManifestKey(tenant, siteID, snap)
+	store.put(manifest)
+	// A neighbouring tenant's manifest, and a client report PDF under the
+	// PLURAL tenants/ root that is one character away. Both must survive a
+	// sweep that runs with no tenant row left to check anything against.
+	neighbour := seedTenant(t, pool, "gh402-lane-a-nb-"+uuid.NewString()[:8])
+	neighbourSite := gh402SeedSite(t, admin, neighbour)
+	neighbourKey := gh402ManifestKey(neighbour, neighbourSite, uuid.New())
+	store.put(neighbourKey)
+	pii := "tenants/" + tenant.String() + "/reports/2026-08/client.pdf"
+	store.put(pii)
+
+	// BEFORE: the site delete writes the record in its own transaction.
+	if err := site.NewRepo(pool).Delete(ctx, tenant, siteID); err != nil {
+		t.Fatalf("delete site: %v", err)
+	}
+	if got := gh402CountTasks(t, admin, tenant, siteID); got != 1 {
+		t.Fatalf("expected 1 reclaim task after the site delete, got %d; this probe's premise is wrong", got)
+	}
+	if !store.has(manifest) {
+		t.Fatal("the manifest object vanished before the tenant delete; this probe's premise is wrong")
+	}
+
+	// LANE A. Called as the app role through the EXECUTE grant, exactly how
+	// admin.Repo.DeleteEmptyTenant and org's delete handler both reach it.
+	if deleted := callDeleteEmptyTenant(t, pool, tenant); !deleted {
+		t.Fatal("admin_delete_empty_tenant refused a tenant with no sites and no memberships; " +
+			"this probe's premise is wrong")
+	}
+	if tenantExists(t, admin, tenant) {
+		t.Fatal("the tenant row survived admin_delete_empty_tenant; this probe's premise is wrong")
+	}
+
+	// AFTER: the record must have OUTLIVED its tenant. With a tenant foreign
+	// key this count is 0 and the manifest is orphaned with nothing left in the
+	// database that names it.
+	if got := gh402CountTasks(t, admin, tenant, siteID); got != 1 {
+		t.Fatalf("the reclaim record did not survive admin_delete_empty_tenant (count %d, want 1). "+
+			"Lane A frees no object storage at all, so destroying the record destroys the only "+
+			"thing that names those objects, and GH #402 returns at tenant level", got)
+	}
+
+	// And it must still be actionable: a missing tenant row is a RECLAIM
+	// signal, not a skip. An earlier worker read it as "already purged" and
+	// would have left every one of these prefixes in the bucket forever.
+	worker := backup.NewReclaimWorker(backup.NewReclaimStore(pool), store, nil)
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("reclaim sweep: %v", err)
+	}
+	if store.has(manifest) {
+		t.Error("the manifest of a site whose TENANT was then hard-deleted was not reclaimed")
+	}
+	if !store.has(neighbourKey) {
+		t.Error("the sweep reached into another tenant's prefix")
+	}
+	if !store.has(pii) {
+		t.Error("the sweep reached the plural tenants/ root, which holds client report PDFs")
+	}
+	var completedAt *time.Time
+	if err := admin.QueryRow(ctx,
+		`SELECT completed_at FROM site_object_reclaim WHERE tenant_id = $1 AND site_id = $2`,
+		tenant, siteID).Scan(&completedAt); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if completedAt == nil {
+		t.Error("the task did not close after a clean drain")
+	}
+}
+
+// The same, driven through the SUPERADMIN ORPHAN CLEANUP rather than the SQL
+// function directly: deleting the last account in an organisation deletes the
+// organisation it orphans, by the same Lane A route, with the same consequence
+// for anything cascading off the tenant row.
+func TestGH402_ReclaimTaskSurvivesSuperadminOrphanCleanup(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "gh402-orphan-"+uuid.NewString()[:8])
+	siteID := gh402SeedSite(t, admin, tenant)
+	snap := gh402SeedSnapshot(t, admin, tenant, siteID, "completed")
+
+	store := newGH402Store()
+	manifest := gh402ManifestKey(tenant, siteID, snap)
+	store.put(manifest)
+
+	// The sole member, whose deletion orphans the org.
+	sole := seedUserRow(t, admin, "gh402-sole-"+uuid.NewString()[:8]+"@example.com")
+	seedMembershipRow(t, admin, sole, tenant)
+	actor := seedUserRow(t, admin, "gh402-actor-"+uuid.NewString()[:8]+"@example.com")
+
+	if err := site.NewRepo(pool).Delete(ctx, tenant, siteID); err != nil {
+		t.Fatalf("delete site: %v", err)
+	}
+	if got := gh402CountTasks(t, admin, tenant, siteID); got != 1 {
+		t.Fatalf("expected 1 reclaim task after the site delete, got %d", got)
+	}
+
+	// The real path: admin.Service.DeleteUser captures the orgs the delete
+	// orphans and calls DeleteEmptyTenant on each one that owns no sites.
+	res, err := adminpkg.NewService(adminpkg.NewRepo(pool), nil).DeleteUser(ctx, actor, sole)
+	if err != nil {
+		t.Fatalf("superadmin DeleteUser: %v", err)
+	}
+	if res.DeletedOrgs != 1 {
+		t.Fatalf("the orphan cleanup deleted %d orgs, want 1; this probe's premise is wrong", res.DeletedOrgs)
+	}
+	if tenantExists(t, admin, tenant) {
+		t.Fatal("the orphaned org survived the cleanup; this probe's premise is wrong")
+	}
+
+	if got := gh402CountTasks(t, admin, tenant, siteID); got != 1 {
+		t.Fatalf("the reclaim record did not survive the superadmin orphan cleanup (count %d, want 1). "+
+			"That path frees no object storage either, so the manifests would be orphaned forever", got)
+	}
+
+	worker := backup.NewReclaimWorker(backup.NewReclaimStore(pool), store, nil)
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("reclaim sweep: %v", err)
+	}
+	if store.has(manifest) {
+		t.Error("the manifest of a site whose org was removed by the orphan cleanup was not reclaimed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. Lane B is unchanged, and the leftover record is self-closing.
+//
+// The grace-window purge worker deletes the whole tenant/<id>/ root itself, so
+// while a tenant is pending purge this sweep stands off rather than racing it
+// across two advisory-lock namespaces. Dropping the tenant foreign key means a
+// record can now outlive a Lane B purge too; that record must not become
+// permanent litter, so the next sweep after the purge must close it.
+// ---------------------------------------------------------------------------
+
+func TestGH402_ReclaimStandsOffPendingPurgeThenSelfCloses(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "gh402-lane-b-"+uuid.NewString()[:8])
+	siteID := gh402SeedSite(t, admin, tenant)
+	snap := gh402SeedSnapshot(t, admin, tenant, siteID, "completed")
+
+	store := newGH402Store()
+	manifest := gh402ManifestKey(tenant, siteID, snap)
+	store.put(manifest)
+
+	if err := site.NewRepo(pool).Delete(ctx, tenant, siteID); err != nil {
+		t.Fatalf("delete site: %v", err)
+	}
+	// The org is now soft-deleted and inside its grace window: Lane B owns the
+	// whole root from here.
+	if _, err := admin.Exec(ctx, `UPDATE tenants SET deleted_at = now() WHERE id = $1`, tenant); err != nil {
+		t.Fatalf("soft-delete tenant: %v", err)
+	}
+
+	worker := backup.NewReclaimWorker(backup.NewReclaimStore(pool), store, nil)
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("sweep during grace window: %v", err)
+	}
+	if !store.has(manifest) {
+		t.Error("the sweep deleted objects inside a tenant the purge worker owns; " +
+			"that is the two-deleters race the stand-off exists to avoid")
+	}
+	var completedAt *time.Time
+	if err := admin.QueryRow(ctx,
+		`SELECT completed_at FROM site_object_reclaim WHERE tenant_id = $1 AND site_id = $2`,
+		tenant, siteID).Scan(&completedAt); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if completedAt != nil {
+		t.Error("a skipped task was closed; nothing swept its objects")
+	}
+
+	// Lane B completes: it clears the root and hard-deletes the tenant. The
+	// record survives that too, and the next sweep finds an empty prefix and
+	// closes it instead of leaving it open forever.
+	for k := range store.objects {
+		if strings.HasPrefix(k, "tenant/"+tenant.String()+"/") {
+			delete(store.objects, k)
+		}
+	}
+	if _, err := admin.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant); err != nil {
+		t.Fatalf("hard-delete tenant: %v", err)
+	}
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("sweep after purge: %v", err)
+	}
+	if err := admin.QueryRow(ctx,
+		`SELECT completed_at FROM site_object_reclaim WHERE tenant_id = $1 AND site_id = $2`,
+		tenant, siteID).Scan(&completedAt); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if completedAt == nil {
+		t.Error("a record left behind by a Lane B purge never closes; " +
+			"dropping the foreign key must not turn these rows into permanent litter")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 9. Re-deleting a site id that came back must not be silently dropped.
+//
+// The enqueue's conflict clause was ON CONFLICT DO NOTHING, which quietly
+// falsified the invariant the whole table is built on. Against an already
+// COMPLETED row for the same (tenant, site, kind) it discarded the new work, so
+// a site id that returned (a restored dump, an operator recreating a site with
+// a preserved id) and was deleted again left its second generation of manifests
+// orphaned exactly as before.
+// ---------------------------------------------------------------------------
+
+func TestGH402_ReDeletedSiteReopensACompletedTask(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	tenant := seedTenant(t, pool, "gh402-reopen-"+uuid.NewString()[:8])
+	siteID := gh402SeedSite(t, admin, tenant)
+	firstSnap := gh402SeedSnapshot(t, admin, tenant, siteID, "completed")
+
+	store := newGH402Store()
+	store.put(gh402ManifestKey(tenant, siteID, firstSnap))
+
+	if err := site.NewRepo(pool).Delete(ctx, tenant, siteID); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+	worker := backup.NewReclaimWorker(backup.NewReclaimStore(pool), store, nil)
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+
+	// The same site id comes back and takes another backup.
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO sites (id, tenant_id, url, name) VALUES ($1, $2, $3, 'gh402-restored')`,
+		siteID, tenant, "https://"+uuid.NewString()+".example.com"); err != nil {
+		t.Fatalf("restore site row: %v", err)
+	}
+	secondSnap := gh402SeedSnapshot(t, admin, tenant, siteID, "completed")
+	secondKey := gh402ManifestKey(tenant, siteID, secondSnap)
+	store.put(secondKey)
+
+	if err := site.NewRepo(pool).Delete(ctx, tenant, siteID); err != nil {
+		t.Fatalf("second delete: %v", err)
+	}
+
+	var completedAt *time.Time
+	var attempts int
+	if err := admin.QueryRow(ctx,
+		`SELECT completed_at, attempts FROM site_object_reclaim WHERE tenant_id = $1 AND site_id = $2`,
+		tenant, siteID).Scan(&completedAt, &attempts); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if completedAt != nil {
+		t.Fatal("the second delete did not reopen the completed task. ON CONFLICT DO NOTHING " +
+			"drops the new work on the floor, and this generation of manifests is orphaned " +
+			"exactly as GH #402 described")
+	}
+	if attempts != 0 {
+		t.Errorf("a reopened task carries %d attempts from its previous life, want 0", attempts)
+	}
+
+	if err := worker.Work(ctx, nil); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if store.has(secondKey) {
+		t.Error("the second generation of manifests was not reclaimed")
 	}
 }
