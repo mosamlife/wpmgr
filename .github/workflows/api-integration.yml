@@ -1,0 +1,397 @@
+name: api-integration
+
+# The container-backed integration lane for apps/api/tests.
+#
+# WHY THIS FILE EXISTS.
+#
+# ci.yml's Go job excludes `/apps/api/tests` from `go test` and its comment said
+# those tests "belong in a separate lane". That lane did not exist. From the day
+# the exclusion landed until this file, 343 tests were compile-checked by Vet
+# and never executed by anything. (Vet, not Build: ci.yml's Build step excludes
+# this package too, because every file in it is a _test.go file and `go build`
+# errors on a package with no buildable non-test files. Vet compiles the test
+# files, so it is the only thing standing between this package and bit rot.)
+# Among them are the m112 (GH #380)
+# site-scope RLS policy proofs in tests/email_site_scope_rls_integration_test.go,
+# which are the entire defence for seven closed privilege-escalation doors where
+# a one-site collaborator could reach the whole organisation. A regression in
+# those merged silently and still type-checked.
+#
+# Note on scope, so nobody reads more into this lane than is true: the m112
+# proofs that go THROUGH the repo (TestEveryOperatorPathRunsThroughScopedTenantTx,
+# TestRepoRefusesOrgConfigUpsertForSiteScopedPrincipal,
+# TestAgentTransactionNeverCarriesSiteScope and their siblings) live in
+# internal/email, which ci.yml has always run, and they still run there in about
+# a minute. What was unprotected is the other half of m112: the direct-SQL
+# proofs that the POLICIES THEMSELVES are right, asserted against the real
+# schema as a non-superuser. Both halves are needed. Neither is redundant: the
+# repo half fails when the dispatch stops setting app.site_scope, the policy
+# half fails when the policy stops refusing. This lane covers the policy half,
+# plus the other ~320 container tests in the package (billing, backups, audit
+# chain, uptime, tenant isolation, social identity).
+#
+# COST AND RISK, stated so the next person can revisit this knowingly.
+# Cost: one ubuntu-latest runner for the wall time reported in the PR that added
+# this file, plus about 425MB of compressed image layers pulled (110 postgres,
+# 254 clickhouse, 47 minio, 15 redis), on PRs that touch
+# apps/api. Risk it buys down: a silent regression in privilege-escalation RLS
+# is a security incident, not a bug. That asymmetry is why this runs per PR and
+# not only nightly. If the wall time ever grows past the point where it is
+# tolerable, shard it by -run regex before you demote it to nightly, because a
+# nightly-only lane finds the incident after the merge that caused it.
+
+on:
+  # Per PR, so a regression is caught before it reaches main rather than after.
+  # Deliberately NOT `push: branches: ["**"]` like ci.yml: for a same-repo PR
+  # that would run this expensive lane twice per push, once for each event.
+  pull_request:
+  # On main as well. A PR can be green and main still go red, because main is
+  # the merge result and because some gates read live external state. Cheap
+  # insurance on the branch that ships.
+  push:
+    branches: [main]
+  # Nightly at 03:00 UTC. Catches rot that no diff touches: a base image tag
+  # that changed under us, a testcontainers or Docker behaviour change on the
+  # runner image, a flake that only shows up over repeated runs. Also means the
+  # lane's health is known even in a week where nobody touched apps/api.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: api-integration-${{ github.ref }}
+  # Cancel superseded PR runs (the later push is the one that matters), but
+  # never cancel a main or nightly run: on those refs the result IS the record.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Should the lane run at all? -----------------------------------------
+  # This exists to solve one specific problem. Putting a `paths:` filter on the
+  # `pull_request:` trigger above would be the obvious way to skip web-only and
+  # docs-only PRs, and it would DEADLOCK the repo the moment this lane is added
+  # to branch protection: a workflow skipped by a path filter never posts a
+  # check at all, so a required check stays pending forever and the PR can never
+  # merge. A job skipped by an `if:` condition does post, as "skipped", which
+  # GitHub counts as satisfying a required check. So the filter has to be a job
+  # condition, which means it has to be computed by a job.
+  #
+  # It fails OPEN, at both levels, and the second one is easy to miss.
+  #
+  #   1. Inside the script: if the diff cannot be computed, it prints why and
+  #      emits api=true rather than guessing.
+  #   2. If this whole JOB fails or is skipped: the lane's `if:` below is written
+  #      so the lane still runs. That is not a nicety. A job whose `needs`
+  #      failed is reported as SKIPPED, and GitHub counts a skipped required
+  #      check as satisfied, so without that the sequence "checkout flakes ->
+  #      changes fails -> integration skipped -> required check green" would let
+  #      an unverified apps/api change merge, which is the precise false-green
+  #      this lane exists to prevent.
+  #
+  # For a lane guarding privilege-escalation RLS, wasting nine minutes is the
+  # cheaper mistake.
+  changes:
+    name: Detect apps/api changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # Full history so the PR base commit is present for the diff below.
+          fetch-depth: 0
+
+      - id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # push to main, schedule and manual dispatch always run: there is no
+          # meaningful "base" to diff against and those are the runs whose whole
+          # point is to check the branch as it stands.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "event is $EVENT_NAME, running the lane unconditionally"
+            echo "api=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" 2>/dev/null); then
+            echo "could not diff $BASE_SHA...$HEAD_SHA; failing open and running the lane"
+            echo "api=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed files:"
+          echo "$changed"
+
+          # apps/api holds the code, the migrations and the tests themselves.
+          # This workflow file is included so a change to the lane is always
+          # exercised by the lane.
+          if echo "$changed" | grep -qE '^(apps/api/|\.github/workflows/api-integration\.yml$)'; then
+            echo "api=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no apps/api changes; skipping the integration lane"
+            echo "api=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---- The lane ------------------------------------------------------------
+  integration:
+    name: Go integration (apps/api/tests)
+    needs: changes
+    # Reads as "run unless we positively established there is nothing to test",
+    # NOT "run if we established there is". The difference only shows up when
+    # the `changes` job itself dies: its output is then empty, which is not
+    # 'false', so the lane runs anyway. Written the obvious way round
+    # (`== 'true'`) a dead `changes` job would skip the lane, and a skipped job
+    # counts as a satisfied required check, so a checkout flake would silently
+    # buy a free pass on an apps/api change.
+    #
+    # !cancelled() rather than always(): `needs` alone would skip this on a
+    # failed dependency, so the condition has to survive that, but a genuinely
+    # cancelled run (superseded push, manual cancel) should not resurrect a
+    # 20-minute job.
+    if: ${{ !cancelled() && needs.changes.outputs.api != 'false' }}
+    runs-on: ubuntu-latest
+    # MUST stay strictly greater than the `go test -timeout` below. If the job
+    # timeout fires first the runner kills the process and you get no output at
+    # all; if Go's timeout fires first you get the panic with the full goroutine
+    # dump naming the test that hung, which is the difference between a
+    # diagnosable failure and a mystery.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache-dependency-path: apps/api/go.sum
+
+      # The tests build their containers with testcontainers-go talking to the
+      # local Docker daemon (tcpostgres.Run / minio.Run / testcontainers.Run in
+      # tests/rls_integration_test.go, blobstore_integration_test.go,
+      # autologin_integration_test.go, metrics_integration_test.go). No `services:`
+      # block can substitute for that: the tests choose their own images, wait
+      # strategies and per-test lifecycle. ubuntu-latest ships a running daemon.
+      # This step asserts it rather than assuming it, because of the failure mode
+      # documented on the verification step below.
+      - name: Docker preflight
+        run: |
+          docker version
+          docker info --format 'server={{.ServerVersion}} driver={{.Driver}}'
+
+      # Pull the four images the package uses up front. Not required for
+      # correctness (testcontainers pulls on demand) but it moves that ~425MB
+      # of network into a named step, so a registry problem reads as a pull
+      # failure instead of surfacing later as an inscrutable container start
+      # timeout inside some unrelated test. If a test adds a fifth image this
+      # list going stale costs nothing: that image just gets pulled inline.
+      - name: Pre-pull test container images
+        run: |
+          set -euo pipefail
+          for img in \
+            postgres:16-alpine \
+            redis:7-alpine \
+            minio/minio:RELEASE.2024-01-16T16-07-38Z \
+            clickhouse/clickhouse-server:24.3-alpine
+          do
+            echo "pulling $img"
+            docker pull --quiet "$img"
+          done
+
+      # GOWORK=off and CGO_ENABLED=0 mirror ci.yml's Go job and the production
+      # main-API image. One honest consequence: tests/media_encode_integration_test.go
+      # carries a `//go:build cgo` tag, so it is excluded here exactly as it is
+      # excluded everywhere else today. 343 of the package's 344 test functions
+      # run. Covering that last one means building lilliput's CGO codecs, which
+      # is what infra/Dockerfile.media-encoder exists for, and dragging that
+      # toolchain in here would trade a real flake risk for one test.
+      #
+      # -count=1 defeats the build cache so a green tick always means the tests
+      # ran, never that Go replayed a cached result.
+      #
+      # -timeout 45m is deliberate and is the reason this lane is not flaky.
+      #
+      # THE DEFAULT WOULD NOT WORK. Measured on a developer machine: 522s for
+      # the package alone, but 601s as part of `go test ./...`, which blew Go's
+      # 10m default and panicked. The package sits right on the default, so a
+      # lane that does not set an explicit timeout WILL flake, and a flaky
+      # required lane gets ignored and then deleted, which is worse than no lane.
+      #
+      # MEASURED HERE, on ubuntu-latest, while building this lane: `go test`
+      # spans of roughly 970s to 1120s, worst 1121s against the 2700s ceiling,
+      # so better than 2x headroom at the worst observed, on a run-to-run spread
+      # comfortably under 20%. Those two shape figures are stated loosely on
+      # purpose: an exact percentage is derived from the min and the max, so it
+      # goes stale the first time a run lands outside the sample, which is the
+      # re-counting trap described in the next paragraph. It already happened
+      # once here, to a "14%" computed over the first five runs.
+      #
+      # Passing runs and the deliberately-broken ones INTERLEAVE across that
+      # range, so failing does not measurably change the duration: a failed test
+      # still leaves the rest of the package to execute. Do not read a slow run
+      # as a sign of trouble; read its elapsed number against the ceiling.
+      #
+      # THAT RANGE IS A HISTORICAL SAMPLE, not a live maximum, and it is stated
+      # without a run count on purpose. The whole reason this file exists is
+      # that ci.yml carried a hand-counted "262" that had drifted to 344 while
+      # nobody noticed, so a comment here that has to be re-counted after every
+      # run would repeat the same mistake. A later run landing outside this
+      # range falsifies nothing. Every run prints its own wall time (see the
+      # Summary step): read that for anything current, and treat this range as
+      # the reason the ceiling is 45m rather than as a live measurement.
+      #
+      # TWO DIFFERENT NUMBERS, AND THEY DO NOT CONTRADICT EACH OTHER. The
+      # figures above are what `go test` reports for the package, which is
+      # exactly the span this -timeout governs. The "wall time" the Summary step
+      # prints is the whole STEP, module download and compile included, so it
+      # lands roughly 80s to 130s higher (observed about 1050s to 1220s). The
+      # ceiling on that larger number is not this -timeout at all, it is the
+      # job's timeout-minutes: 60 above, against which the worst job time seen
+      # here was about 1255s of 3600s. If you are auditing the margin, compare
+      # like with like: step wall against the job ceiling, `go test` against
+      # this one.
+      #
+      # The wall time is reported on every run, to the step summary and to
+      # stdout, so it can be read without a browser. If it ever creeps past
+      # about 1800s, shard the lane by -run regex rather than raising this
+      # ceiling: at that point the feedback delay is the problem, and raising
+      # the timeout only hides it.
+      - name: Integration tests
+        shell: bash
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: |
+          # pipefail is load-bearing. Piping into tee makes the shell report
+          # TEE's exit status, so a failed `go test` would read as success. That
+          # false-green class (a pipe swallowing the real exit code) has bitten
+          # this project's build and release commands before. `shell: bash`
+          # already sets it; restating it means the guarantee does not quietly
+          # disappear if this step ever loses that shell line.
+          set -o pipefail
+          start=$(date +%s)
+          # `|| rc=$?` rather than a bare call plus `rc=$?`: the shell also runs
+          # with -e, so a bare failing pipeline would abort the step right there
+          # and the elapsed time would never be recorded. That is precisely the
+          # run where you want to know how long it took before it fell over.
+          rc=0
+          go test -v -count=1 -timeout 45m ./tests/ 2>&1 | tee "$RUNNER_TEMP/integration.log" || rc=$?
+          echo "elapsed_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          exit "$rc"
+
+      # THE MOST IMPORTANT STEP IN THIS FILE.
+      #
+      # Every container helper in the package (startPostgres, its 11 siblings,
+      # and one test that inlines the same setup: 13 call sites today) does
+      # t.Skipf("skipping: cannot start ... container (docker unavailable?)")
+      # when it cannot reach a daemon. It SKIPS, it does not fail. So a runner
+      # image that one day ships without Docker, or a daemon that dies mid-job,
+      # produces 343 skips, `ok`, exit 0 and a green tick, and this lane would go
+      # on protecting nothing while looking like it protects everything. Green
+      # has to mean the tests ran.
+      #
+      # Three layers, weakest to strongest:
+      #   1. no test may have skipped for the docker-unavailable reason (today
+      #      that is the ONLY t.Skip reason anywhere in the package),
+      #   2. a floor on the number of passes, which catches a mass-skip through
+      #      some future route this check did not anticipate,
+      #   3. four m112 policy proofs named explicitly, because those are the
+      #      privilege-escalation guarantees this lane was built for and "they
+      #      ran and passed" is the claim worth asserting by name.
+      - name: Verify the lane really executed (a skipped lane is a false green)
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/integration.log"
+
+          if grep -q 'docker unavailable' "$log"; then
+            echo "::error::tests skipped because Docker was unreachable; this lane proved nothing"
+            grep -n 'docker unavailable' "$log" | head -20
+            exit 1
+          fi
+
+          passed=$(grep -cE '^--- PASS: ' "$log" || true)
+          echo "passing tests: $passed"
+          # 343 run today. The floor leaves headroom for tests being renamed or
+          # retired without becoming a maintenance tax, while still being far
+          # above anything a mass-skip could produce.
+          if [ "$passed" -lt 320 ]; then
+            echo "::error::only $passed tests passed, expected at least 320; the package did not really run"
+            exit 1
+          fi
+
+          # m112 (GH #380) site-scope RLS policy proofs, by name.
+          for t in \
+            TestCollaboratorCannotUpdateTheOrgConfig \
+            TestCollaboratorCannotDeleteFleetSuppression \
+            TestEveryEmailTableCarriesTheSiteScopePolicies \
+            TestTenantIsolationStillHolds
+          do
+            if ! grep -qE "^--- PASS: ${t}( |\$)" "$log"; then
+              echo "::error::m112 proof ${t} did not pass in this run"
+              exit 1
+            fi
+            echo "m112 proof ok: ${t}"
+          done
+
+      # Written to BOTH the step summary and stdout, deliberately. The summary
+      # renders for a human in the browser, but there is no API for reading step
+      # summaries, so from a terminal the wall time this lane reports about
+      # itself was unreadable. Anyone auditing the timeout margin needs it
+      # without a browser. stdout lands in `gh run view --log` and in the
+      # uploaded artifact below.
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/integration.log"
+
+          # `grep -c` PRINTS 0 and EXITS 1 when it matches nothing, so the
+          # obvious `$(grep -c ... || echo 0)` runs BOTH sides and emits the
+          # count twice, on exactly the runs that matter most: every green one,
+          # where the failing count is zero. That shipped a stray "0" line into
+          # the summary of both passing runs before anyone could see it, because
+          # the summary only rendered in the browser. `|| true` swallows the
+          # exit status without contributing a second value, which is the form
+          # the verification step above already uses.
+          passed=0
+          failed=0
+          if [ -f "$log" ]; then
+            passed=$(grep -cE '^--- PASS: ' "$log" || true)
+            failed=$(grep -cE '^--- FAIL: ' "$log" || true)
+          fi
+
+          # Not "${elapsed_seconds:-unknown}s", which renders as "unknowns".
+          if [ -n "${elapsed_seconds:-}" ]; then wall="${elapsed_seconds}s"; else wall="unknown"; fi
+
+          {
+            echo "### apps/api integration lane"
+            echo
+            echo "- wall time: $wall (ceiling: go test -timeout 45m, so 2700s)"
+            echo "- passing: $passed"
+            echo "- failing: $failed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # A 20-minute lane that fails should not make you re-run it to find out
+      # why. Keep the full -v log.
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-integration-log
+          path: ${{ runner.temp }}/integration.log
+          retention-days: 14
+          if-no-files-found: warn

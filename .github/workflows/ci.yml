@@ -63,11 +63,23 @@ jobs:
           GOWORK: "off"
           CGO_ENABLED: "0"
         # Also exclude apps/api/tests here: those are container-based integration
-        # tests (testcontainers — postgres/redis/minio/clickhouse) that belong in a
-        # separate lane, not the fast unit CI. 262 of them stand up their own
-        # ephemeral Postgres, so the cost, not any missing Docker daemon, is why
-        # they sit out this lane. They are still COMPILE-checked above by
-        # Build + Vet, so they can't silently rot.
+        # tests (testcontainers: postgres, redis, minio, clickhouse) that belong
+        # in a separate lane, not the fast unit CI. 344 test functions live
+        # there, 343 of which run under CGO_ENABLED=0 (one is //go:build cgo),
+        # and most stand up their own ephemeral Postgres, so the cost, not any
+        # missing Docker daemon, is why they sit out this lane.
+        #
+        # THE SEPARATE LANE IS .github/workflows/api-integration.yml. It really
+        # runs them, per PR touching apps/api plus on main and nightly. This
+        # comment previously claimed a lane that did not exist, and for as long
+        # as that was true the package's security proofs (the m112 site-scope
+        # RLS policy tests) were compile-checked and never executed. If you are
+        # about to delete or weaken that workflow, that is what you are giving
+        # back up.
+        #
+        # Compile-checking here is still worth having: it stops the package
+        # rotting between integration runs. Note that is VET doing it, not
+        # Build, for the reason given on the Build step above.
         #
         # The pattern is anchored with $ so it excludes ONLY that package.
         # apps/api/tests/contract holds the containerless spec-versus-code gates
