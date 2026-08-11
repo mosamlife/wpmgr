@@ -202,12 +202,12 @@ jobs:
       # lane that does not set an explicit timeout WILL flake, and a flaky
       # required lane gets ignored and then deleted, which is worse than no lane.
       #
-      # MEASURED HERE, on ubuntu-latest, on the two runs that introduced this
-      # file: 983s for the passing run and 1103s for a deliberately-failing one
-      # (a failing run is the slower case, since a failed test still leaves the
-      # rest of the package to execute). Call it 1100s observed worst case
-      # against a 2700s ceiling, so roughly 2.4x headroom, on a package whose
-      # run-to-run spread was about 12%.
+      # MEASURED HERE, on ubuntu-latest, across the four runs that introduced
+      # this file: 983s and 1089s for the two passing runs, 1103s and 1121s for
+      # the two deliberately-failing ones (a failing run is the slower case,
+      # since a failed test still leaves the rest of the package to execute).
+      # Worst observed 1121s against a 2700s ceiling, so 2.4x headroom, on a
+      # package whose run-to-run spread across those four was 14%.
       #
       # The wall time is printed to the step summary on every run. If it ever
       # creeps past about 1800s, shard the lane by -run regex rather than
@@ -290,17 +290,43 @@ jobs:
             echo "m112 proof ok: ${t}"
           done
 
+      # Written to BOTH the step summary and stdout, deliberately. The summary
+      # renders for a human in the browser, but there is no API for reading step
+      # summaries, so from a terminal the wall time this lane reports about
+      # itself was unreadable. Anyone auditing the timeout margin needs it
+      # without a browser. stdout lands in `gh run view --log` and in the
+      # uploaded artifact below.
       - name: Summary
         if: always()
         shell: bash
         run: |
+          log="$RUNNER_TEMP/integration.log"
+
+          # `grep -c` PRINTS 0 and EXITS 1 when it matches nothing, so the
+          # obvious `$(grep -c ... || echo 0)` runs BOTH sides and emits the
+          # count twice, on exactly the runs that matter most: every green one,
+          # where the failing count is zero. That shipped a stray "0" line into
+          # the summary of both passing runs before anyone could see it, because
+          # the summary only rendered in the browser. `|| true` swallows the
+          # exit status without contributing a second value, which is the form
+          # the verification step above already uses.
+          passed=0
+          failed=0
+          if [ -f "$log" ]; then
+            passed=$(grep -cE '^--- PASS: ' "$log" || true)
+            failed=$(grep -cE '^--- FAIL: ' "$log" || true)
+          fi
+
+          # Not "${elapsed_seconds:-unknown}s", which renders as "unknowns".
+          if [ -n "${elapsed_seconds:-}" ]; then wall="${elapsed_seconds}s"; else wall="unknown"; fi
+
           {
             echo "### apps/api integration lane"
             echo
-            echo "- wall time: ${elapsed_seconds:-unknown}s (go test -timeout 45m)"
-            echo "- passing: $(grep -cE '^--- PASS: ' "$RUNNER_TEMP/integration.log" 2>/dev/null || echo 0)"
-            echo "- failing: $(grep -cE '^--- FAIL: ' "$RUNNER_TEMP/integration.log" 2>/dev/null || echo 0)"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "- wall time: $wall (ceiling: go test -timeout 45m, so 2700s)"
+            echo "- passing: $passed"
+            echo "- failing: $failed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # A 20-minute lane that fails should not make you re-run it to find out
       # why. Keep the full -v log.
