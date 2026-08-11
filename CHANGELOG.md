@@ -6,6 +6,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.132] - 2026-08-11
+
 ### Changed
 
 - The docs version guard is a script you can run, `scripts/check-version-surfaces.sh`, instead of shell embedded in the CI workflow, and it ships with `scripts/check-version-surfaces_test.sh`: 76 cases that build throwaway trees and assert the guard's exit code. Running the guard before you push now takes one command and no CI cycle. Four defects found by review are closed and covered by tests: a version with no `CHANGELOG.md` heading is now placed in the ordering rather than skipped (24 patch versions of 0.61.x had no heading, so a stale pin could sit on one of them forever), the badge and agent checks survive a reformat instead of switching themselves off, a commented-out install pin no longer counts as present, and required pins are anchored to an explicit marker so ordinary prose and an extra current pin cannot fail the build. A repo-wide sweep also holds any other concrete image tag or `WPMGR_VERSION` value to the same freshness rule, so a new file with a stale pull command is caught even though no list names it.
