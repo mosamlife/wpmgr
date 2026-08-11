@@ -73,7 +73,18 @@ jobs:
   # GitHub counts as satisfying a required check. So the filter has to be a job
   # condition, which means it has to be computed by a job.
   #
-  # It fails OPEN. If the diff cannot be computed for any reason, the lane runs.
+  # It fails OPEN, at both levels, and the second one is easy to miss.
+  #
+  #   1. Inside the script: if the diff cannot be computed, it prints why and
+  #      emits api=true rather than guessing.
+  #   2. If this whole JOB fails or is skipped: the lane's `if:` below is written
+  #      so the lane still runs. That is not a nicety. A job whose `needs`
+  #      failed is reported as SKIPPED, and GitHub counts a skipped required
+  #      check as satisfied, so without that the sequence "checkout flakes ->
+  #      changes fails -> integration skipped -> required check green" would let
+  #      an unverified apps/api change merge, which is the precise false-green
+  #      this lane exists to prevent.
+  #
   # For a lane guarding privilege-escalation RLS, wasting nine minutes is the
   # cheaper mistake.
   changes:
@@ -130,7 +141,19 @@ jobs:
   integration:
     name: Go integration (apps/api/tests)
     needs: changes
-    if: needs.changes.outputs.api == 'true'
+    # Reads as "run unless we positively established there is nothing to test",
+    # NOT "run if we established there is". The difference only shows up when
+    # the `changes` job itself dies: its output is then empty, which is not
+    # 'false', so the lane runs anyway. Written the obvious way round
+    # (`== 'true'`) a dead `changes` job would skip the lane, and a skipped job
+    # counts as a satisfied required check, so a checkout flake would silently
+    # buy a free pass on an apps/api change.
+    #
+    # !cancelled() rather than always(): `needs` alone would skip this on a
+    # failed dependency, so the condition has to survive that, but a genuinely
+    # cancelled run (superseded push, manual cancel) should not resurrect a
+    # 20-minute job.
+    if: ${{ !cancelled() && needs.changes.outputs.api != 'false' }}
     runs-on: ubuntu-latest
     # MUST stay strictly greater than the `go test -timeout` below. If the job
     # timeout fires first the runner kills the process and you get no output at
