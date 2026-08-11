@@ -118,8 +118,13 @@ type Repo interface {
 	// is silently skipped, preventing duplicate fires across concurrent CP instances
 	// and RunOnStart re-fires.
 	ClaimAndAdvanceDueSchedules(ctx context.Context, now time.Time, nextAt map[uuid.UUID]time.Time) ([]Schedule, error)
-	// ListTenantsForGC enumerates tenants with completed snapshots across ALL
-	// tenants for the periodic retention GC (cross-tenant, under app.agent).
+	// ListTenantsForGC enumerates the tenants the periodic retention GC should
+	// visit, cross-tenant under app.agent. GH #402: that is tenants with a
+	// completed snapshot UNION tenants with chunk rows, not the former alone.
+	// Deleting the site that held a tenant's LAST completed snapshot used to
+	// drop the tenant off this roster permanently, so its chunk bytes were
+	// never swept again. This widens ENUMERATION only; every delete guard in
+	// gc.go still applies unchanged to a newly-visited tenant.
 	ListTenantsForGC(ctx context.Context) ([]uuid.UUID, error)
 	// AdvanceScheduleRun records an enqueued scheduled backup and advances
 	// next_run_at, tenant-scoped.
@@ -1080,7 +1085,7 @@ func (r *pgRepo) ListDueSchedules(ctx context.Context, now time.Time, limit int3
 func (r *pgRepo) ListTenantsForGC(ctx context.Context) ([]uuid.UUID, error) {
 	var out []uuid.UUID
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
-		rows, err := sqlc.New(tx).ListTenantsWithCompletedSnapshots(ctx)
+		rows, err := sqlc.New(tx).ListTenantsForBackupGC(ctx)
 		if err != nil {
 			return domain.Internal("backup_gc_tenants_failed", "failed to list tenants for GC").WithCause(err)
 		}

@@ -937,11 +937,35 @@ CREATE POLICY update_tasks_agent ON update_tasks
 -- One row per UNIQUE (tenant, blake3) ciphertext chunk stored in object
 -- storage. Chunks are content-addressed by the BLAKE3 hash of their CIPHERTEXT
 -- (the agent encrypts client-side with age, then hashes; the CP and S3 only
--- ever see ciphertext). refcount tracks how many manifest entries across all of
--- the tenant's snapshots reference the chunk; GC deletes a chunk from S3 only
--- when refcount reaches zero. Tenant-scoped + RLS: a tenant can never see or
--- target another tenant's chunks, and the s3_key is namespaced by tenant so a
--- presign for one tenant cannot address another's chunk prefix.
+-- ever see ciphertext). Tenant-scoped + RLS: a tenant can never see or target
+-- another tenant's chunks, and the s3_key is namespaced by tenant so a presign
+-- for one tenant cannot address another's chunk prefix.
+--
+-- refcount IS OBSERVABILITY ONLY. It counts ORIGIN references (how many
+-- manifest entries introduced the chunk), not live ones, and ADR-050 retracted
+-- the rule this comment used to state, that "GC deletes a chunk from S3 only
+-- when refcount reaches zero". It was wrong in the dangerous direction: the
+-- agent only re-submits changed or new files, so a carry-forward chunk's origin
+-- row lives in exactly ONE generation and its refcount can sit at zero while a
+-- live snapshot still needs it. No delete decision consults refcount. The real
+-- rule is mark-and-sweep (internal/backup/gc.go): a chunk is deleted only when
+-- it is unreachable from EVERY retained snapshot across ALL sites in the tenant
+-- (dedup is tenant-global), AND its GREATEST(created_at, last_referenced_at)
+-- predates the grace floor, AND a ground-truth re-check against live
+-- backup_manifest_entries under the row lock agrees. Anyone designing near this
+-- table should read that file, not this column.
+--
+-- NOTE for GH #402: there is deliberately NO foreign key from here to sites.
+-- Deleting one site cascades its backup_snapshots away but leaves this
+-- inventory intact, which is exactly what lets the tenant-wide sweep recompute
+-- reachability and spare a chunk the deleted site shared with a LIVE one.
+--
+-- The tenant_id foreign key below IS a cascade, and that one is a live gap.
+-- admin_delete_empty_tenant hard-deletes a tenant row while freeing no object
+-- storage, so deleting an org's last site and then the emptied org destroys
+-- this inventory and strands every chunk object it named. site_object_reclaim
+-- (m113) survives that delete precisely because it has no foreign key to either
+-- parent; this table does not. Tracked as GH #408, not addressed by m113.
 CREATE TABLE backup_chunks (
     id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -1035,6 +1059,120 @@ CREATE POLICY site_destinations_agent ON site_destinations
 -- explicitly granted. site_id is nullable so the ANY check is skipped safely
 -- for a (V1-unused) tenant-wide NULL-site_id row.
 CREATE POLICY site_destinations_site_scope ON site_destinations
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+-- ---------------------------------------------------------------------------
+-- site_object_reclaim  (m113 / GH #402)
+-- ---------------------------------------------------------------------------
+-- The durable record of object-storage work that outlives a site delete.
+--
+-- DELETE /sites/{id} cascades backup_snapshots away, and those rows were the
+-- only database record naming the site's per-snapshot manifest.json objects.
+-- After the cascade nothing could name them again, so they leaked forever. A
+-- row here is INSERTed in the SAME TRANSACTION as the delete (see the site
+-- repo's Delete), so it exists if and only if the site row is really gone, and
+-- an async worker reclaims the site's storage prefix afterwards.
+--
+-- NO FOREIGN KEY AT ALL, DELIBERATELY, TO EITHER sites OR tenants.
+--
+-- A site_id FK with ON DELETE CASCADE would destroy this row in the very
+-- statement it exists to survive. A tenant_id FK with ON DELETE CASCADE is the
+-- same mistake one level up, and it was real: admin_delete_empty_tenant (org
+-- delete Lane A, and the superadmin orphan cleanup) hard-deletes a tenant row
+-- with ZERO object-storage cleanup, because an org with no sites and no members
+-- was assumed to own no objects. An org whose sites were all deleted first is
+-- exactly that shape and does own objects, so the cascade destroyed the
+-- reclaim record by precisely the operation that should have triggered it. Only
+-- the grace-window PurgeWorker (Lane B) sweeps the seven tenant-scoped roots
+-- before its hard delete; Lane A does not, and cannot without putting unbounded
+-- network work inside an HTTP request.
+--
+-- The rule this table exists to embody: a record of what to clean up must
+-- outlive the deletion it describes. Referential tidiness is worth less than
+-- that. The tenant may be gone by the time the worker runs, and that is a
+-- reclaim signal, not an error (see the worker's tenant-state guard).
+--
+-- The row stores IDENTITY, never a prefix string: the worker derives the
+-- prefix from a code constant plus two validated UUIDs, because a stored prefix
+-- would turn a corrupt row into an arbitrary-prefix delete instruction and the
+-- adjacency is one character ("tenant/" backups, "tenants/" client report PDFs
+-- with client PII). kind is the extension point for the other site-scoped
+-- roots (rucss/, screenshots/). destination_kind is diagnostic only and never a
+-- credential.
+--
+-- Past the retry cap a task is LEFT VISIBLE, never deleted: a stuck task is the
+-- only remaining record that those objects exist.
+CREATE TABLE site_object_reclaim (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- No REFERENCES. See the header: a cascade from either parent destroys the
+    -- record in the operation it is supposed to survive.
+    tenant_id        uuid        NOT NULL,
+    site_id          uuid        NOT NULL,
+    -- Which site-scoped storage root to reclaim ('backup_manifest' today).
+    --
+    -- A CLOSED SET, enforced here rather than only in the worker. The operator
+    -- remedy for objects orphaned before m113 is a hand-written INSERT into this
+    -- table (the statement is in the m113 header), so a typo in this column is a
+    -- realistic event with an unrealistic cost: the worker cannot derive a prefix
+    -- for a kind it does not know, and those objects have no other record
+    -- anywhere. Refusing the row outright puts the failure in front of the person
+    -- typing it, at the moment they can fix it, instead of parking it in a table
+    -- nobody reads. backup.ReclaimKinds is the code-side set and tests/contract
+    -- holds the two together.
+    kind             text        NOT NULL DEFAULT 'backup_manifest'
+        CONSTRAINT site_object_reclaim_kind_check CHECK (kind IN ('backup_manifest')),
+    -- 'cp' | 'local' | 's3_compat' | NULL for the legacy CP-global bucket.
+    destination_kind text,
+    attempts         int         NOT NULL DEFAULT 0,
+    next_attempt_at  timestamptz NOT NULL DEFAULT now(),
+    last_error       text,
+    completed_at     timestamptz,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX site_object_reclaim_site_kind_key
+    ON site_object_reclaim (tenant_id, site_id, kind);
+CREATE INDEX site_object_reclaim_tenant_idx ON site_object_reclaim (tenant_id);
+CREATE INDEX site_object_reclaim_due_idx ON site_object_reclaim (next_attempt_at)
+    WHERE completed_at IS NULL;
+
+ALTER TABLE site_object_reclaim ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_object_reclaim FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_object_reclaim_tenant_isolation ON site_object_reclaim
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The reclaim sweep is cross-tenant and runs under InAgentTx.
+CREATE POLICY site_object_reclaim_agent ON site_object_reclaim
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- m19 AS RESTRICTIVE collaborator site-scope policy, the same shape
+-- site_destinations carries a few hundred lines up. This table is site-keyed,
+-- so without it the only thing the database would refuse is another TENANT, and
+-- a collaborator invited to exactly one site could read or write reclaim rows
+-- naming every other site in the organisation. That is the class m112 closed
+-- for the email domain after seven separate handler-level doors kept appearing;
+-- this is the same class, and it gets the policy on the way in rather than
+-- after the eighth. site_id is NOT NULL here, so unlike the email tables there
+-- is no inheriting row to keep readable and one FOR ALL policy is the whole
+-- answer. Both the operator enqueue (InTenantTx) and the worker (InAgentTx)
+-- leave app.site_scope unset, so for them the first branch is a tautology.
+CREATE POLICY site_object_reclaim_site_scope ON site_object_reclaim
     AS RESTRICTIVE FOR ALL
     USING (
         coalesce(current_setting('app.site_scope', true), '') <> 'on'

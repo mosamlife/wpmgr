@@ -268,6 +268,11 @@ type Querier interface {
 	// contacted". That is still exactly what 'cancelled' is allowed to mean:
 	// nothing on the site changed as a result, whichever of those two it was.
 	CancelPendingUpdateTask(ctx context.Context, arg CancelPendingUpdateTaskParams) (UpdateTask, error)
+	// Closes a task WITHOUT deleting anything from storage. Used when the guard
+	// finds the site row still present (a restored dump, or a staging control plane
+	// pointed at a production bucket). last_error carries the reason so the row
+	// reads as a refusal rather than a success.
+	CancelSiteObjectReclaim(ctx context.Context, arg CancelSiteObjectReclaimParams) (int64, error)
 	// Advance next_digest_at to the next period as a conditional claim.
 	// Returns the updated row if the claim succeeds (next_digest_at still <= now(),
 	// guard against double-claim by concurrent workers). Runs under InAgentTx.
@@ -314,6 +319,10 @@ type Querier interface {
 	CloseIncident(ctx context.Context, arg CloseIncidentParams) error
 	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
 	CompleteReport(ctx context.Context, arg CompleteReportParams) (GeneratedReport, error)
+	// Marks a task done. Set ONLY after the whole prefix drained with no error, so
+	// a crash partway leaves completed_at NULL and the next tick re-lists (a
+	// shorter list) and finishes.
+	CompleteSiteObjectReclaim(ctx context.Context, id uuid.UUID) (int64, error)
 	// Consume path (app.agent). Atomic single-shot UPDATE that wins exactly once
 	// across concurrent agent callbacks: the (consumed_at IS NULL) predicate makes
 	// the second consume a 0-row update; RETURNING tells the caller it lost. The
@@ -539,10 +548,37 @@ type Querier interface {
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
 	// Remove the registration session after FinishRegistration (or on failure).
 	DeleteWebAuthnRegistrationSession(ctx context.Context, id uuid.UUID) error
+	// site_object_reclaim (m113 / GH #402): the durable record of object-storage
+	// work that outlives a site delete.
+	//
+	// The enqueue runs inside DELETE /sites/{id}'s own InTenantTx (operator path,
+	// app.tenant_id). Everything else runs cross-tenant in the reclaim worker under
+	// InAgentTx (app.agent), which is why this table carries both policies.
+	// Records the storage prefix work for a site that is being deleted. MUST be
+	// called in the SAME transaction as the DELETE, and only when that DELETE
+	// actually affected a row: the record must exist if and only if the site is
+	// really gone.
+	//
+	// The conflict clause REOPENS rather than doing nothing. DO NOTHING was the
+	// first shape and it quietly falsified the invariant above: against an already
+	// COMPLETED or CANCELLED row for the same (tenant, site, kind) it dropped the
+	// new work on the floor, so a site row that came back (a restored dump, an
+	// operator re-creating a site with a preserved id) and was deleted again would
+	// leave its second generation of manifests orphaned exactly as before. Silently
+	// discarding reclamation work is the failure mode this whole table exists to
+	// remove, so it must not be the conflict behaviour.
+	//
+	// Reopening is cheap and safe in the other direction: the worker re-lists the
+	// prefix, finds it already empty, and closes the task again. That also makes an
+	// operator backfill of already-orphaned sites a single re-runnable statement.
+	EnqueueSiteObjectReclaim(ctx context.Context, arg EnqueueSiteObjectReclaimParams) (int64, error)
 	// Lock a challenge by setting used_at (reached attempt limit or timeout).
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
 	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
 	FailReport(ctx context.Context, arg FailReportParams) (GeneratedReport, error)
+	// Records a failed attempt and backs the task off. The row is left incomplete
+	// so the next tick retries; it is never deleted.
+	FailSiteObjectReclaim(ctx context.Context, arg FailSiteObjectReclaimParams) (int64, error)
 	// TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
 	// Identical to FailBackupSnapshot except for the added "AND status='running'"
 	// guard: ListStalledRunningSnapshots commits, then each hard row is failed in
@@ -963,6 +999,18 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// The kind of the site's DEFAULT backup destination, read in the delete's own
+	// transaction BEFORE the cascade takes the row away. Diagnostic only: it lets
+	// the reclaim log say plainly where a site's backup payload lived.
+	//
+	// is_default = true is the correct filter and not an oversight: a new snapshot
+	// only ever resolves the default destination (backup.Service.CreateBackup and
+	// EnqueueScheduledBackup both go through resolveDefaultDestination), so a
+	// non-default row is a destination the site's backups never used and reporting
+	// it would be actively misleading. No row therefore means "no default
+	// destination", which is the control-plane bucket, whether the site has no
+	// destination rows at all or only non-default ones.
+	GetSiteDefaultDestinationKind(ctx context.Context, arg GetSiteDefaultDestinationKindParams) (string, error)
 	// M59 — Per-site Email / SMTP Management queries (Phase 1: config CRUD).
 	//
 	// All operator reads/writes run under pool.InTenantTx (app.tenant_id GUC).
@@ -1058,6 +1106,16 @@ type Querier interface {
 	// GetTenantBilling (the tight entitlement-resolution hot path) does not
 	// select.
 	GetTenantBillingProfile(ctx context.Context, tenantID uuid.UUID) (GetTenantBillingProfileRow, error)
+	// The tenant's deletion state, which the worker reads as THREE outcomes, not
+	// two. A row with deleted_at or purge_started_at set means Lane B (the org
+	// purge worker) owns the whole tenant/<id>/ root and holds its own session
+	// advisory lock in a different namespace, so this worker skips rather than
+	// trying to serialise across two lock namespaces. NO ROW AT ALL means the
+	// tenant was hard-deleted, which since m113 dropped the tenant foreign key is
+	// the Lane A case (admin_delete_empty_tenant sweeps no storage): the task row
+	// survived on purpose and is now the only thing that names those objects, so
+	// the worker proceeds. Treating a missing tenant as "skip" would strand it.
+	GetTenantDeletionStateForReclaim(ctx context.Context, tenantID uuid.UUID) (GetTenantDeletionStateForReclaimRow, error)
 	// GetTenantForUser returns a tenant by id only when the given user is a member.
 	// Like ListTenantsForUser it relies on the memberships_self_read policy and must
 	// be run via InUserTx; a non-member (or unknown tenant) yields no rows.
@@ -1430,6 +1488,10 @@ type Querier interface {
 	// Returns up to @limit enabled schedules where next_run_at <= now(), JOINed
 	// with the client for timezone/name/contact_email. Runs under InAgentTx.
 	ListDueReportSchedules(ctx context.Context, rowLimit int32) ([]ListDueReportSchedulesRow, error)
+	// The worker's batch. Cross-tenant (app.agent). Past @max_attempts a task drops
+	// out of this query but is NEVER deleted: it is the only remaining record that
+	// those objects exist, so it stays visible for an operator to find.
+	ListDueSiteObjectReclaims(ctx context.Context, arg ListDueSiteObjectReclaimsParams) ([]SiteObjectReclaim, error)
 	// ---------------------------------------------------------------------------
 	// site_email_connection  (m62 — multi-connection + failover)
 	// ---------------------------------------------------------------------------
@@ -1713,6 +1775,13 @@ type Querier interface {
 	// makes the predicate selective. Cross-tenant select via the GC RLS policy
 	// (app.agent='on').
 	ListStalledRunningSnapshots(ctx context.Context, arg ListStalledRunningSnapshotsParams) ([]ListStalledRunningSnapshotsRow, error)
+	// The tasks that have exhausted @max_attempts and therefore no longer appear in
+	// the due query above. The rows are kept deliberately (they are the last record
+	// that those objects exist), but kept is not the same as visible: without this
+	// a task that gave up produced one Error log line, once, and then nothing ever
+	// again. The sweep re-reads this every tick and logs it, so the condition
+	// persists in the logs for as long as it persists in the table.
+	ListStuckSiteObjectReclaims(ctx context.Context, arg ListStuckSiteObjectReclaimsParams) ([]SiteObjectReclaim, error)
 	// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
 	//
 	// A log with no reader is not oversight. This table now carries the auth events
@@ -1757,6 +1826,37 @@ type Querier interface {
 	// authoritative, complete counts.
 	ListTenantAppDownSites(ctx context.Context, arg ListTenantAppDownSitesParams) ([]string, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	// Distinct tenant IDs the periodic retention GC should visit. Runs cross-tenant
+	// under the app.agent GUC (the backup_snapshots_gc and backup_chunks_agent
+	// SELECT policies); the prune then runs per tenant.
+	//
+	// GH #402: this used to be "tenants with a completed snapshot" alone, which had
+	// a second-order leak in it. Deleting the site that held a tenant's LAST
+	// completed snapshot dropped that tenant off this roster permanently, so its
+	// chunk bytes were never swept again. backup_chunks has no FK to sites and so
+	// survives the cascade intact; unioning it in is what lets the sweep reach a
+	// tenant whose sites are all gone and reclaim those bytes.
+	//
+	// THE TENANT ROW ITSELF STILL HAS TO EXIST FOR THIS TO HELP, AND THAT GAP IS
+	// NOT CLOSED HERE. backup_chunks.tenant_id is ON DELETE CASCADE (m4), so the
+	// chunk inventory is destroyed with the tenant row, and admin_delete_empty_tenant
+	// (org delete Lane A, and the superadmin orphan cleanup) hard-deletes a tenant
+	// while freeing no object storage at all. Delete an organisation's last site and
+	// then the now-empty organisation, and this roster loses the tenant along with
+	// every row naming its chunk objects: GH #402 at tenant level, for chunks, still
+	// open. site_object_reclaim survives that delete because it has no foreign key
+	// to either parent, so the deleted site's MANIFESTS are still reclaimed; the
+	// chunks are not. Tracked as GH #408, deliberately out of scope for this change.
+	//
+	// This widens ENUMERATION only, never the delete decision. A newly-visited
+	// tenant is one with chunk rows and no completed snapshot, and every existing
+	// guard still applies to it: the in-flight floor pins effectiveFloor to a
+	// running snapshot's created_at so newer chunks are kept, the dedup oracle
+	// bumps last_referenced_at on any old chunk a running backup re-references, the
+	// ground-truth manifest-entries guard keeps anything a not-yet-completed
+	// snapshot already references, and Phase 3 is fail-closed so an empty live set
+	// caused by an ERROR can never reach the sweep at all.
+	ListTenantsForBackupGC(ctx context.Context) ([]uuid.UUID, error)
 	// ListTenantsForUser returns only the tenants the given user is a member of.
 	// It joins memberships under the memberships_self_read policy (app.user_id GUC),
 	// so it MUST be run via InUserTx; the join itself restricts the result to the
@@ -1769,10 +1869,6 @@ type Querier interface {
 	// trusted background job, never a per-request handler. Includes tenants whose
 	// purge_started_at is already set (a resumed, previously-interrupted purge).
 	ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Timestamptz) ([]Tenant, error)
-	// Distinct tenant IDs that have at least one completed snapshot, for the
-	// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
-	// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
-	ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error)
 	// The M16 Phase B daily reconcile sweep's tenant set: every tenant with a
 	// live provider subscription reference, excluding comped tenants (immune to
 	// any provider-driven mutation, webhook or reconcile alike) and any tenant
@@ -2110,6 +2206,11 @@ type Querier interface {
 	// Toggle two_factor_enabled without touching the secret (disable path).
 	// The secret and confirmed_at are intentionally retained for audit purposes.
 	SetUserTwoFactorEnabled(ctx context.Context, arg SetUserTwoFactorEnabledParams) error
+	// The reclaim worker's re-verify guard: is the site GENUINELY gone? Reads the
+	// raw sites table cross-tenant under app.agent. Deliberately NOT ListAllSiteIDs,
+	// which filters connection_state <> 'archived' and would make a LIVE archived
+	// site's manifests look orphaned.
+	SiteExistsForReclaim(ctx context.Context, arg SiteExistsForReclaimParams) (bool, error)
 	// GH #328 per-site serialisation pre-check (INVARIANT R). Is a command
 	// CURRENTLY IN FLIGHT to this site? Deliberately best-effort and read-only:
 	// the AGENT's own site-update lock is the authoritative bound (WP_Upgrader::

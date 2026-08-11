@@ -1332,6 +1332,27 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	orgPurgeWorker := org.NewPurgeWorker(pool, siteSvc, connSvc, orgPurgeStore,
 		time.Duration(orgPurgeGraceDays)*24*time.Hour, logger)
+
+	// GH #402: the site-object reclaim sweep. DELETE /sites/{id} records a
+	// site_object_reclaim row in its own transaction (the cascade destroys the
+	// backup_snapshot rows that were the only record naming the site's manifest
+	// objects); this worker walks the site's storage prefix afterwards.
+	//
+	// Same store instance as the org purge: *blobstore.Store satisfies both
+	// narrow interfaces, and both operate on the CONTROL-PLANE bucket only. A
+	// site whose backups went to a customer-owned bucket has bytes neither of
+	// them touches, which is why destination_kind rides along on the task and
+	// is logged.
+	//
+	// With no object storage configured the worker is wired with a nil store
+	// and its sweep is a clean no-op that leaves tasks OPEN, so configuring
+	// storage later still gets the work done.
+	var siteObjectReclaimStore backup.ObjectReclaimer
+	if s, ok := orgPurgeStore.(*blobstore.Store); ok {
+		siteObjectReclaimStore = s
+	}
+	siteObjectReclaimWorker := backup.NewReclaimWorker(
+		backup.NewReclaimStore(pool), siteObjectReclaimStore, logger)
 	// Timeout sweeper (every 15s) + site_events prune (every minute).
 	// M58: wire env-configurable thresholds (WPMGR_CONN_DEGRADE_AFTER,
 	// WPMGR_CONN_DISCONNECT_AFTER, WPMGR_CONN_DEGRADE_MISS_THRESHOLD) and the
@@ -1882,6 +1903,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		billingReconcileWorker: billingReconcileWorker,
 		// GH #152 part 2 — daily org grace-window purge sweep (always wired).
 		orgPurgeWorker: orgPurgeWorker,
+		// GH #402: site-object reclaim sweep (always wired; no-ops with no
+		// object storage).
+		siteObjectReclaimWorker: siteObjectReclaimWorker,
 	})
 	if err != nil {
 		return err
@@ -3210,6 +3234,10 @@ type riverDeps struct {
 	// billingReconcileWorker above): PurgeWorker.Work no-ops cleanly when
 	// there are zero tenants past their grace window.
 	orgPurgeWorker *org.PurgeWorker
+	// GH #402: the site-object reclaim sweep. Always wired, since Work no-ops
+	// cleanly when there are no due tasks, and leaves them open when there is
+	// no object storage to reclaim from.
+	siteObjectReclaimWorker *backup.ReclaimWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -3739,6 +3767,41 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return org.PurgeArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
+
+	// GH #402: reclaim the object-storage prefix a deleted site leaves behind.
+	// Hourly rather than daily: the work is a list plus a handful of deletes per
+	// deleted site, and until it runs the operator is paying for storage they
+	// have already told us to stop keeping. RunOnStart is true because a rolling
+	// deploy is the cheapest moment to drain whatever accumulated, and the sweep
+	// is a no-op when there is nothing due.
+	//
+	// MaxWorkers 1 bounds this queue to ONE sweep at a time WITHIN THIS PROCESS.
+	// It is not a fleet-wide lock, and prod runs several instances, so two
+	// instances can walk the same prefix at the same time. That is safe rather
+	// than merely unlikely, and by construction rather than by timing:
+	//
+	//   - blobstore.Store.Delete treats a missing key as success, so the loser of
+	//     any race deletes nothing and reports no error.
+	//   - the worker re-LISTS the prefix at the start of every attempt, so it
+	//     never acts on a stale key set.
+	//   - CompleteSiteObjectReclaim is guarded WHERE completed_at IS NULL, so the
+	//     second closer affects zero rows instead of overwriting the first.
+	//   - the prefix is derived from the task row, never stored, so two instances
+	//     cannot disagree about which bytes are in scope.
+	//
+	// The org purge worker takes a real cross-instance advisory lock because its
+	// steps are NOT idempotent in that way (it revokes sites, marks a
+	// point of no return, and then hard-deletes a tenant). This sweep needs no
+	// equivalent, and claiming MaxWorkers gave it one would be false comfort.
+	if d.siteObjectReclaimWorker != nil {
+		river.AddWorker(workers, d.siteObjectReclaimWorker)
+		queues[backup.ReclaimQueue] = river.QueueConfig{MaxWorkers: 1}
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return backup.ReclaimArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 

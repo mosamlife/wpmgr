@@ -891,6 +891,20 @@ type SiteObjectCacheStatsHistory struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
+type SiteObjectReclaim struct {
+	ID              uuid.UUID          `json:"id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	SiteID          uuid.UUID          `json:"site_id"`
+	Kind            string             `json:"kind"`
+	DestinationKind *string            `json:"destination_kind"`
+	Attempts        int32              `json:"attempts"`
+	NextAttemptAt   time.Time          `json:"next_attempt_at"`
+	LastError       *string            `json:"last_error"`
+	CompletedAt     pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
 type SitePerfConfig struct {
 	SiteID                     uuid.UUID          `json:"site_id"`
 	TenantID                   uuid.UUID          `json:"tenant_id"`
