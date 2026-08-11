@@ -372,14 +372,32 @@ func (w *ReclaimWorker) reportStuck(ctx context.Context) {
 		if perr != nil {
 			prefix = "(underivable: " + perr.Error() + ")"
 		}
+		// These are the lines an operator actually alerts on, so they carry the
+		// same supported command the failure reason does, and for the same reason
+		// (GH #408 finding 3): a pastable statement here would be one the
+		// application role silently discards.
 		w.logger.Error("site object reclaim: stuck task",
 			slog.String("task_id", t.ID.String()),
 			slog.String("tenant_id", t.TenantID.String()),
 			slog.String("site_id", t.SiteID.String()),
 			slog.String("prefix", prefix),
 			slog.Int("attempts", int(t.Attempts)),
-			slog.String("last_error", t.LastError))
+			slog.String("last_error", t.LastError),
+			slog.String("recovery", "wpmgr-cli reclaim retry --task "+t.ID.String()))
 	}
+}
+
+// ReclaimRetryHint is the supported way to reopen a stuck site task, and it is
+// deliberately NOT a SQL statement (GH #408 finding 3).
+//
+// It is a function rather than a literal at each call site so the three places
+// an operator meets this advice (the guard-1 failure reason, the every-tick
+// stuck report, and the tenant worker's equivalent) cannot drift apart.
+func ReclaimRetryHint(taskID uuid.UUID) string {
+	return " (the task is kept and retried, never cancelled: its objects are still in storage and " +
+		"this row is the only record of them. Correct it with: wpmgr-cli reclaim retry --task " +
+		taskID.String() + " which runs as the ordinary application role and exits non-zero if it " +
+		"changes nothing)"
 }
 
 type reclaimOutcome int
@@ -414,21 +432,20 @@ func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOu
 	// every-tick stuck report with this reason attached, where an operator can
 	// see the bad value and correct it.
 	//
-	// The UPDATE printed below needs a SUPERUSER CONNECTION, and says so. As the
-	// wpmgr_app role, with no app.tenant_id set, RLS makes the row invisible and
-	// the statement reports success having changed nothing: measured, "rows=0
-	// err=<nil>". A recovery instruction that silently no-ops is worse than none,
-	// so the caveat travels with the statement. Making it work for the ordinary
-	// application role is GH #408.
+	// This used to print a bare UPDATE with an "ON A SUPERUSER CONNECTION"
+	// caveat. GH #408 finding 3: run verbatim as the wpmgr_app role with no GUC
+	// that statement is err=nil, rows=0, and the row is byte-for-byte unchanged,
+	// because the RLS USING clause hides it and Postgres has nothing to complain
+	// about. The defect was never a missing warning (the caveat was right there
+	// in the string) but a remedy that cannot work on the connection the operator
+	// has, so a longer caveat would have been a different fix from the right one.
+	// The message now names a command that runs as the ordinary application role
+	// and exits non-zero if it changes nothing.
+	// TestGH408_WorkerPrintsNoRunnableSQL fails the moment a pastable statement
+	// goes back in.
 	prefix, perr := SiteObjectPrefix(t.Kind, t.TenantID, t.SiteID)
 	if perr != nil {
-		w.fail(ctx, t, perr.Error()+
-			" (the task is kept and retried, never cancelled: its objects are still in storage "+
-			"and this row is the only record of them. Correct the row and it resumes, ON A "+
-			"SUPERUSER CONNECTION: as the application role RLS hides this row and the statement "+
-			"reports success while changing nothing, see GH #408. "+
-			"UPDATE site_object_reclaim SET kind = '"+ReclaimKindBackupManifest+
-			"', attempts = 0, next_attempt_at = now() WHERE id = '"+t.ID.String()+"')")
+		w.fail(ctx, t, perr.Error()+ReclaimRetryHint(t.ID))
 		return reclaimFailed
 	}
 

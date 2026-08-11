@@ -143,13 +143,22 @@ func (w *PurgeWorker) Work(ctx context.Context, _ *river.Job[PurgeArgs]) error {
 	return nil
 }
 
-// objectStoragePrefixes returns the SEVEN tenant-scoped object-storage roots
+// ObjectStoragePrefixes returns the SEVEN tenant-scoped object-storage roots
 // that must be purged for tenantID (adversarial-review fast-follow H1). Every
 // root is a fixed 36-char-UUID prefix with a trailing "/", so the existing
-// no-empty-prefix / no-cross-tenant guarantees hold for each. Exported as its
-// own function (rather than inlined in purgeOne) so a unit test can assert
-// the exact set without needing a live Postgres.
-func objectStoragePrefixes(tenantID uuid.UUID) []string {
+// no-empty-prefix / no-cross-tenant guarantees hold for each. Its own function
+// (rather than inlined in purgeOne) so a unit test can assert the exact set
+// without needing a live Postgres.
+//
+// EXPORTED for GH #408, and shared rather than copied. The Lane A tenant drain
+// (backup.TenantReclaimWorker) frees the same roots for a tenant that was HARD
+// deleted with no grace window, so the two lanes must agree about what a tenant
+// owns down to the last root. A second list would drift, and the direction it
+// drifts in is a silent leak: a root added here and forgotten there is storage
+// nothing ever frees again once the tenant row is gone.
+// TestGH408_TenantDrainRootsAreLaneBsRoots asserts the two are the same set,
+// element for element, so adding a root anywhere is a single edit here.
+func ObjectStoragePrefixes(tenantID uuid.UUID) []string {
 	id := tenantID.String()
 	return []string{
 		"chunks/" + id + "/",      // backup chunk ciphertext (backup/model.go chunkS3Key)
@@ -268,7 +277,7 @@ func (w *PurgeWorker) purgeOne(ctx context.Context, tenantID uuid.UUID) (purgeOu
 	}
 
 	// Step (b): delete object-storage prefixes across all SEVEN tenant-scoped
-	// roots (objectStoragePrefixes — see the H1 fast-follow doc comment at the
+	// roots (ObjectStoragePrefixes, see the H1 fast-follow doc comment at the
 	// top of this file). This is the ONLY thing that frees these bytes —
 	// admin_purge_tenant's DB cascade frees zero storage. Idempotent: Delete
 	// on an already-missing key is a no-op success (blobstore.Store.Delete
@@ -279,7 +288,7 @@ func (w *PurgeWorker) purgeOne(ctx context.Context, tenantID uuid.UUID) (purgeOu
 	// its storage prefixes are still only partially freed, or tenantID (the
 	// only thing that names those prefixes) becomes unrecoverable.
 	if w.store != nil {
-		for _, prefix := range objectStoragePrefixes(tenantID) {
+		for _, prefix := range ObjectStoragePrefixes(tenantID) {
 			keys, lerr := w.store.List(ctx, prefix)
 			if lerr != nil {
 				return purgeDone, fmt.Errorf("list object prefix %q: %w", prefix, lerr)

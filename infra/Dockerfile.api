@@ -48,12 +48,28 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/wpmgr ./cmd/wpmgr
 
+# wpmgr-cli is the admin tooling: migrate, gen-secrets, validate-env, and the
+# GH #408 `reclaim` family an operator needs when object storage has to be
+# reclaimed by hand. docs/install.md has instructed operators to run
+# `--entrypoint wpmgr-cli` inside this image since long before that existed, and
+# only the server binary was ever copied in, so that instruction could not work.
+# It is a second static binary from the same source tree and the same layer
+# cache; the image ENTRYPOINT is unchanged.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd apps/api && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/wpmgr-cli ./cmd/wpmgr-cli
+
 # ---- final stage ----
 # Distroless static, running as the built-in nonroot user (uid 65532).
 FROM gcr.io/distroless/static:nonroot
 
 WORKDIR /
 COPY --from=build /out/wpmgr /usr/local/bin/wpmgr
+COPY --from=build /out/wpmgr-cli /usr/local/bin/wpmgr-cli
 
 USER nonroot:nonroot
 EXPOSE 8080

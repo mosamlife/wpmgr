@@ -556,8 +556,18 @@ func TestGH402_ReclaimWorker_UnknownKindIsRetriedAndStaysVisible(t *testing.T) {
 		t.Errorf("the recorded reason does not quote the bad kind, so an operator cannot see the "+
 			"typo: %q", reason)
 	}
-	if !strings.Contains(reason, "UPDATE site_object_reclaim") {
-		t.Errorf("the recorded reason does not tell the operator how to correct the row: %q", reason)
+	// The correction it names must be one that WORKS on the connection an
+	// operator has. This assertion used to demand "UPDATE site_object_reclaim",
+	// which is the statement RLS silently discards as wpmgr_app (rows=0,
+	// err=nil), so it was pinning GH #408 finding 3 in place. The full guard,
+	// including the direction that fails if pastable SQL comes back, is
+	// TestGH408_WorkerPrintsNoRunnableSQL.
+	if !strings.Contains(reason, "wpmgr-cli reclaim retry --task "+task.ID.String()) {
+		t.Errorf("the recorded reason does not tell the operator how to correct the row with a "+
+			"command that works as the application role: %q", reason)
+	}
+	if sql := runnableSQLIn(reason); sql != "" {
+		t.Errorf("the recorded reason hands the operator SQL (%q), which RLS discards silently: %q", sql, reason)
 	}
 
 	// Past the cap it must keep showing up, every tick, with the bad value in it.

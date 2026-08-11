@@ -273,6 +273,10 @@ type Querier interface {
 	// pointed at a production bucket). last_error carries the reason so the row
 	// reads as a refusal rather than a success.
 	CancelSiteObjectReclaim(ctx context.Context, arg CancelSiteObjectReclaimParams) (int64, error)
+	// Drain GUARD: does any chunk row still name this tenant? If the inventory is
+	// back then something restored it, and the mark-and-sweep owns those objects
+	// again, not this drain.
+	ChunkRowsExistForTenantReclaim(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	// Advance next_digest_at to the next period as a conditional claim.
 	// Returns the updated row if the claim succeeds (next_digest_at still <= now(),
 	// guard against double-claim by concurrent workers). Runs under InAgentTx.
@@ -323,6 +327,9 @@ type Querier interface {
 	// a crash partway leaves completed_at NULL and the next tick re-lists (a
 	// shorter list) and finishes.
 	CompleteSiteObjectReclaim(ctx context.Context, id uuid.UUID) (int64, error)
+	// Set ONLY after a FRESH re-list of every root returned zero keys. A partial
+	// drain marked complete is GH #402 recreated exactly.
+	CompleteTenantObjectReclaim(ctx context.Context, id uuid.UUID) (int64, error)
 	// Consume path (app.agent). Atomic single-shot UPDATE that wins exactly once
 	// across concurrent agent callbacks: the (consumed_at IS NULL) predicate makes
 	// the second consume a 0-row update; RETURNING tells the caller it lost. The
@@ -572,6 +579,40 @@ type Querier interface {
 	// prefix, finds it already empty, and closes the task again. That also makes an
 	// operator backfill of already-orphaned sites a single re-runnable statement.
 	EnqueueSiteObjectReclaim(ctx context.Context, arg EnqueueSiteObjectReclaimParams) (int64, error)
+	// tenant_object_reclaim (m116 / GH #408): the durable record of tenant-wide
+	// object-storage work that outlives a Lane A tenant delete.
+	//
+	// The enqueue is NOT here. It lives inside admin_delete_empty_tenant's own body
+	// (m116), so it rides the delete's transaction and covers BOTH Lane A callers
+	// without either of them having to remember. The only enqueue in this file is
+	// the operator backfill, for tenants deleted before m116 existed.
+	//
+	// Everything here runs cross-tenant under InAgentTx (app.agent), which is the
+	// policy this table carries for the drain, for the function's in-body insert,
+	// and for `wpmgr-cli reclaim`.
+	// The OPERATOR backfill: hand an already-deleted tenant to the drain rather than
+	// deleting its prefixes by hand, so every worker guard stays in play.
+	//
+	// The conflict clause REOPENS rather than doing nothing, for the reason m113
+	// spells out: DO NOTHING against an already completed row silently drops the new
+	// work, and silently dropping reclamation work is the failure this table exists
+	// to remove. Reopening is safe in the other direction, because the drain
+	// re-lists, finds the roots already empty, and closes the task again.
+	//
+	// next_attempt_at is now(), NOT the 24 hour floor: the floor protects an
+	// operator from a delete they did not mean to make, and this row IS the operator
+	// saying they meant it. The caller checks that no tenants row exists first.
+	//
+	// next_attempt_at is named EXPLICITLY in the INSERT, and that is load-bearing
+	// rather than tidy. The column's DEFAULT is the m116 floor, now() + 24 hours, so
+	// an INSERT that omits it takes the floor, and the INSERT branch is exactly the
+	// population this command exists for: a tenant hard-deleted BEFORE m116 has no
+	// row to conflict with, so the DO UPDATE clause below never runs for it. Omitted,
+	// the operator's explicit instruction reported success and then did nothing for a
+	// day, while the ON CONFLICT path they never take was immediate.
+	// TestGH408_BackfillFromSystemAuditLogFindsLaneAOrgDeletes drains after
+	// backfilling for this reason.
+	EnqueueTenantObjectReclaim(ctx context.Context, arg EnqueueTenantObjectReclaimParams) (int64, error)
 	// Lock a challenge by setting used_at (reached attempt limit or timeout).
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
 	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
@@ -591,6 +632,12 @@ type Querier interface {
 	// and the failure notification on an actual state change rather than firing
 	// them for a row that already moved on.
 	FailStalledBackupSnapshot(ctx context.Context, arg FailStalledBackupSnapshotParams) (int64, error)
+	// Records a failed or refused attempt and backs the task off. Never deletes the
+	// row. There is no Cancel for this table: cancelling would close the only record
+	// naming those objects, and unlike the site case there is no outcome here that
+	// PROVES there is nothing to reclaim. A guard refusal leaves the task open on
+	// purpose, so a restored dump makes the drain stand off rather than forget.
+	FailTenantObjectReclaim(ctx context.Context, arg FailTenantObjectReclaimParams) (int64, error)
 	// The "unknown tenant" fallback attribution path: resolves a tenant from
 	// (provider, provider_customer_id) when a webhook event's payload carries no
 	// tenant metadata (e.g. an invoice/charge event whose subscription was not
@@ -1492,6 +1539,9 @@ type Querier interface {
 	// out of this query but is NEVER deleted: it is the only remaining record that
 	// those objects exist, so it stays visible for an operator to find.
 	ListDueSiteObjectReclaims(ctx context.Context, arg ListDueSiteObjectReclaimsParams) ([]SiteObjectReclaim, error)
+	// The drain's batch. Past @max_attempts a task drops out of this query but is
+	// NEVER deleted: it is the only remaining record that those objects exist.
+	ListDueTenantObjectReclaims(ctx context.Context, arg ListDueTenantObjectReclaimsParams) ([]TenantObjectReclaim, error)
 	// ---------------------------------------------------------------------------
 	// site_email_connection  (m62 — multi-connection + failover)
 	// ---------------------------------------------------------------------------
@@ -1557,6 +1607,25 @@ type Querier interface {
 	// convention; batch inserts share updated_at so id breaks ties deterministically).
 	// Runs under InTenantTx (operator path).
 	ListFontResultsForSite(ctx context.Context, arg ListFontResultsForSiteParams) ([]FontResult, error)
+	// `wpmgr-cli reclaim backfill-tenants`: the tenants that Lane A hard-deleted
+	// BEFORE m116 existed, recovered from the database rather than from a bucket
+	// scan.
+	//
+	// DELETE /orgs/{orgId} writes org.deleted to system_audit_log with the lane in
+	// its metadata, and m93 gave that table a tenant_id column with NO foreign key
+	// to tenants precisely so the record survives the delete it describes. So every
+	// Lane A hard delete since m93 left a durable, tenant-independent record of its
+	// tenant id, and this query is that population exactly.
+	//
+	// It does NOT cover the superadmin orphan cleanup, which writes no system audit
+	// event at all; those tenant ids exist nowhere in the database and the only
+	// surviving evidence is the bucket. That is what `reclaim discover` is for, and
+	// it is report-only on purpose.
+	//
+	// NOT EXISTS against tenants is what makes this evidence-based rather than a
+	// guess: a soft-deleted org that was later restored still has its row and is
+	// skipped, and so is any tenant that is merely mid-grace-window.
+	ListHardDeletedTenantsFromSystemAudit(ctx context.Context) ([]uuid.UUID, error)
 	// The candidates for an issuer migration, and NOT an authenticating lookup on
 	// its own: what comes back here is handed to a pure policy that decides whether
 	// any of it may be used (see matchStoredIdentity).
@@ -1620,6 +1689,20 @@ type Querier interface {
 	// invisible to ALL of those call sites in one place, the instant DELETE
 	// /orgs/{orgId} commits, without a per-call-site patch.
 	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]Membership, error)
+	// Everything still open, whatever its attempt count. What
+	// `wpmgr-cli reclaim list` shows an operator (GH #408).
+	//
+	// It exists because with no GUC set this table reads as EMPTY to the application
+	// role, so an operator cannot discover the task id that a hand-written
+	// correction needs them to supply. That chicken-and-egg is why documenting
+	// "SET app.tenant_id first" was not an adequate answer to GH #408 finding 3.
+	ListOpenSiteObjectReclaims(ctx context.Context, rowLimit int32) ([]SiteObjectReclaim, error)
+	// Everything still open, whatever its attempt count. This is what
+	// `wpmgr-cli reclaim list` shows an operator, and it is the answer to the
+	// chicken-and-egg the GUC documentation option could not solve: with no GUC set
+	// the table reads as empty, so an operator cannot discover the id that a
+	// "SET app.tenant_id first" instruction would need them to supply.
+	ListOpenTenantObjectReclaims(ctx context.Context, rowLimit int32) ([]TenantObjectReclaim, error)
 	// ListOrgsForUser returns the user's organisations with their role in each, for
 	// the org switcher + settings (real names, not bare ids). Joins memberships under
 	// the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
@@ -1782,6 +1865,10 @@ type Querier interface {
 	// again. The sweep re-reads this every tick and logs it, so the condition
 	// persists in the logs for as long as it persists in the table.
 	ListStuckSiteObjectReclaims(ctx context.Context, arg ListStuckSiteObjectReclaimsParams) ([]SiteObjectReclaim, error)
+	// The tasks that exhausted @max_attempts and so no longer appear above. Kept is
+	// not the same as visible: the sweep re-reads this every tick and logs it, so a
+	// stuck task is loud for as long as it is stuck.
+	ListStuckTenantObjectReclaims(ctx context.Context, arg ListStuckTenantObjectReclaimsParams) ([]TenantObjectReclaim, error)
 	// The READER for system_audit_log, served by GET /api/v1/admin/system-audit.
 	//
 	// A log with no reader is not oversight. This table now carries the auth events
@@ -2087,6 +2174,28 @@ type Querier interface {
 	// tag in the same tenant — the repo maps that to either 409 tag_name_exists
 	// or drives the merge path, per the caller's `merge` flag.
 	RenameTagRow(ctx context.Context, arg RenameTagRowParams) (SiteTag, error)
+	// `wpmgr-cli reclaim retry --task`: put a stuck task back in the due queue,
+	// correcting its kind on the way (GH #408 finding 3).
+	//
+	// This replaces the bare UPDATE the worker used to print into last_error. That
+	// statement was authored for a superuser connection: as the application role
+	// with no GUC the RLS USING clause hides the row, so it matched nothing and
+	// Postgres reported no error, and the operator was told the correction had been
+	// applied when the row was byte-for-byte unchanged. This statement is identical
+	// in effect and runs under InAgentTx, where the m113 _agent policy makes the row
+	// visible and writable; the caller reports rows=0 as a failure and exits
+	// non-zero, so it cannot repeat the trick.
+	//
+	// kind is set rather than left alone because the realistic reason a task is
+	// stuck is a kind the worker cannot derive a prefix for, which is exactly what
+	// the worker's GUARD 1 reports. The kind check constraint still applies, so a
+	// wrong value here is refused by the database rather than silently accepted.
+	ReopenSiteObjectReclaim(ctx context.Context, arg ReopenSiteObjectReclaimParams) (int64, error)
+	// `wpmgr-cli reclaim retry --task`: put a stuck task back in the due queue. The
+	// caller reports rows=0 as a failure and exits non-zero, which is the property
+	// that makes this a recovery path rather than another statement that reports
+	// success having done nothing.
+	ReopenTenantObjectReclaim(ctx context.Context, id uuid.UUID) (int64, error)
 	// Replays events after a client cursor (?since / Last-Event-ID). ULIDs sort
 	// lexicographically, so event_id > $2 is monotonic-after.
 	ReplaySiteEvents(ctx context.Context, arg ReplaySiteEventsParams) ([]SiteEvent, error)
@@ -2251,6 +2360,11 @@ type Querier interface {
 	// the row is bounded to one site at a time by that existing index, so no
 	// schema migration is needed for this gate.
 	SiteHasRunningUpdateTask(ctx context.Context, arg SiteHasRunningUpdateTaskParams) (bool, error)
+	// Drain GUARD: does any site still name this tenant? Impossible via the cascade,
+	// and cheap belt and braces against a partial dump restore. Reads the raw sites
+	// table cross-tenant under app.agent, deliberately NOT a helper that filters
+	// connection_state: an archived site is LIVE and restorable.
+	SitesExistForTenantReclaim(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	// SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
 	// path filters above (plus ListMembershipsForUser / GetAPIKeyByPrefix) hide the
 	// org everywhere the instant this commits. The WHERE guard makes a concurrent
@@ -2258,6 +2372,12 @@ type Querier interface {
 	// run this under the per-tenant org_lifecycle advisory lock (see
 	// internal/org/delete_handler.go) so the guard is authoritative, not racy.
 	SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, error)
+	// Drain GUARD: is the tenant row BACK? A restored dump, or a control plane whose
+	// database is older than the bucket it is pointed at (the control-plane store is
+	// built with no PathPrefix, so every key sits at bucket root and there is no
+	// second containment layer). The tenant-level analogue of the site guard m113
+	// calls GUARD 3.
+	TenantExistsForReclaim(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	// Top failure samples for the digest (subject + truncated error, no bodies).
 	// Runs under InAgentTx.
 	TopFailureSamples(ctx context.Context, arg TopFailureSamplesParams) ([]TopFailureSamplesRow, error)

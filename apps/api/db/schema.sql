@@ -960,12 +960,15 @@ CREATE POLICY update_tasks_agent ON update_tasks
 -- inventory intact, which is exactly what lets the tenant-wide sweep recompute
 -- reachability and spare a chunk the deleted site shared with a LIVE one.
 --
--- The tenant_id foreign key below IS a cascade, and that one is a live gap.
--- admin_delete_empty_tenant hard-deletes a tenant row while freeing no object
--- storage, so deleting an org's last site and then the emptied org destroys
--- this inventory and strands every chunk object it named. site_object_reclaim
--- (m113) survives that delete precisely because it has no foreign key to either
--- parent; this table does not. Tracked as GH #408, not addressed by m113.
+-- The tenant_id foreign key below IS a cascade, and it still is: deleting an
+-- org's last site and then the emptied org destroys this inventory outright,
+-- because admin_delete_empty_tenant hard-deletes the tenant row while freeing no
+-- object storage. That WAS a permanent leak (GH #408). It is closed by
+-- tenant_object_reclaim (m116) rather than by changing this key: the same
+-- statement now writes a record naming the tenant, in its own transaction and
+-- with no foreign key of its own, and the tenant drain frees chunks/<tenant>/
+-- afterwards. Removing the cascade here is NOT the fix and would leave chunk
+-- rows pointing at a tenant that no longer exists.
 CREATE TABLE backup_chunks (
     id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -1186,6 +1189,78 @@ CREATE POLICY site_object_reclaim_site_scope ON site_object_reclaim
             string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
         )
     );
+
+-- ---------------------------------------------------------------------------
+-- tenant_object_reclaim  (m116 / GH #408)
+-- ---------------------------------------------------------------------------
+-- The durable record of object-storage work that outlives a TENANT delete.
+--
+-- The sibling of site_object_reclaim above, one level up, for the same reason.
+-- backup_chunks.tenant_id is ON DELETE CASCADE (m4), so admin_delete_empty_tenant
+-- destroys the whole chunk inventory for a tenant while freeing zero object
+-- storage: after it, chunks/<tenant_id>/ is named by nothing. A row here is
+-- INSERTed by admin_delete_empty_tenant itself, in the delete's own transaction
+-- and gated on the delete having affected a row, so it exists if and only if the
+-- tenants row is really gone. The drain runs asynchronously afterwards.
+--
+-- NO FOREIGN KEY, DELIBERATELY. A tenant_id FK with ON DELETE CASCADE would
+-- destroy this row in the exact statement it exists to survive. That is not
+-- hypothetical: it is what m113's first version did, and it reinstated GH #402
+-- at tenant level.
+--
+-- The row stores IDENTITY, one uuid, never a prefix string. The worker derives
+-- every root from org.ObjectStoragePrefixes, shared with the Lane B purge so the
+-- two can never disagree, because a stored prefix would turn a corrupt row into
+-- an arbitrary-prefix delete instruction and the adjacency is one character.
+--
+-- NO SITE-SCOPE POLICY, and that is deliberate rather than the m112 omission:
+-- there is no site_id column here, so these rows name no site a collaborator
+-- could be denied. m113's restrictive policy exists because ITS rows name other
+-- sites. tenant_isolation is vestigial by construction (these rows' tenants are
+-- gone) and is kept because a tenant_id column with no isolation policy is the
+-- pattern the house rule forbids.
+--
+-- Past the retry cap a task is LEFT VISIBLE, never deleted: it is the only
+-- remaining record that those objects exist.
+CREATE TABLE tenant_object_reclaim (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- No REFERENCES. See the header.
+    tenant_id       uuid        NOT NULL,
+    -- 'tenant_storage' means all seven roots org.ObjectStoragePrefixes returns,
+    -- which is every root Lane B sweeps, including chunks/<tenant>/. A CLOSED
+    -- set for the same reason site_object_reclaim.kind is closed; the code-side
+    -- copy is backup.TenantReclaimKinds and tests/contract holds them together.
+    kind            text        NOT NULL DEFAULT 'tenant_storage'
+        CONSTRAINT tenant_object_reclaim_kind_check CHECK (kind IN ('tenant_storage')),
+    attempts        int         NOT NULL DEFAULT 0,
+    -- The 24 hour floor: defence in depth, not the safety proof, so an operator
+    -- who deleted the wrong organisation has a day to restore a pre-delete dump
+    -- before the bytes go. Lane B effectively has seven days; Lane A has none.
+    next_attempt_at timestamptz NOT NULL DEFAULT now() + interval '24 hours',
+    last_error      text,
+    completed_at    timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX tenant_object_reclaim_tenant_kind_key
+    ON tenant_object_reclaim (tenant_id, kind);
+CREATE INDEX tenant_object_reclaim_due_idx ON tenant_object_reclaim (next_attempt_at)
+    WHERE completed_at IS NULL;
+
+ALTER TABLE tenant_object_reclaim ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_object_reclaim FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_object_reclaim_tenant_isolation ON tenant_object_reclaim
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The drain is cross-tenant and runs under InAgentTx; so does the enqueue inside
+-- admin_delete_empty_tenant (m91 sets app.agent='on' in-body) and the
+-- `wpmgr-cli reclaim` operator path.
+CREATE POLICY tenant_object_reclaim_agent ON tenant_object_reclaim
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- backup_snapshots  (M4)
