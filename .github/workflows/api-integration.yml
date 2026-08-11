@@ -232,11 +232,17 @@ jobs:
       #
       # MEASURED HERE, on ubuntu-latest, while building this lane: `go test`
       # spans of roughly 970s to 1120s, worst 1121s against the 2700s ceiling,
-      # so about 2.4x headroom on a spread of 14%. Passing runs and the
-      # deliberately-broken ones INTERLEAVE across that range, so failing does
-      # not measurably change the duration: a failed test still leaves the rest
-      # of the package to execute. Do not read a slow run as a sign of trouble;
-      # read its elapsed number against the ceiling.
+      # so better than 2x headroom at the worst observed, on a run-to-run spread
+      # comfortably under 20%. Those two shape figures are stated loosely on
+      # purpose: an exact percentage is derived from the min and the max, so it
+      # goes stale the first time a run lands outside the sample, which is the
+      # re-counting trap described in the next paragraph. It already happened
+      # once here, to a "14%" computed over the first five runs.
+      #
+      # Passing runs and the deliberately-broken ones INTERLEAVE across that
+      # range, so failing does not measurably change the duration: a failed test
+      # still leaves the rest of the package to execute. Do not read a slow run
+      # as a sign of trouble; read its elapsed number against the ceiling.
       #
       # THAT RANGE IS A HISTORICAL SAMPLE, not a live maximum, and it is stated
       # without a run count on purpose. The whole reason this file exists is
