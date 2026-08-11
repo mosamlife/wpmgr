@@ -35,10 +35,12 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
@@ -54,6 +56,87 @@ import (
 // any of them still passes, it is not testing the policy.
 func gh402AsCollaborator(pool *db.Pool, tenant uuid.UUID, sites []uuid.UUID, fn func(tx pgx.Tx) error) error {
 	return pool.InScopedTenantTx(context.Background(), tenant, uuid.New(), sites, fn)
+}
+
+// gh402CollaboratorWrite attempts ONE write as a site-scoped collaborator, in a
+// transaction of its own, and returns the number of rows it affected. A refusal
+// raised as an error counts as zero, which is what the callers' assertions
+// expect: an error is as good a refusal as no rows.
+//
+// WHY EVERY ATTEMPT GETS ITS OWN TRANSACTION AND ITS OWN CALL.
+//
+// Both write proofs on this branch used to run the UPDATE and the DELETE inside
+// one closure, and to return early when the UPDATE failed. `deleted` then kept
+// the zero value it was declared with and `if deleted != 0` passed without the
+// DELETE ever having been sent. Zero is also exactly what a successful refusal
+// produces, so the two outcomes were indistinguishable and the vacuous one was
+// silent. That the UPDATE does not error today is luck rather than design: a
+// RESTRICTIVE policy's USING clause refuses by filtering rows, so the delete
+// half happened to be reached. Change the policy to raise, or change the
+// fixture, and the assertion goes quiet instead of red.
+//
+// Deleting the early return does not fix it either, because the two statements
+// still share a transaction: Postgres aborts a transaction at its first failed
+// statement, so a DELETE following a failed UPDATE comes back "current
+// transaction is aborted" whatever the policy makes of it, and the COMMIT then
+// fails and is reported as the test's result. Separate transactions are the
+// only shape in which the two verdicts are genuinely independent.
+//
+// AND ONLY A REFUSAL COUNTS AS A REFUSAL. Postgres raises SQLSTATE 42501 when
+// its policies reject a write. Any other error means the statement never
+// reached the policy at all, and treating that as a refusal is precisely how an
+// assertion comes to hold while testing nothing, so it fails here instead,
+// naming the statement.
+func gh402CollaboratorWrite(t *testing.T, pool *db.Pool, tenant uuid.UUID, sites []uuid.UUID,
+	sql string, args ...any) int64 {
+	t.Helper()
+
+	// -1 until tx.Exec has actually returned. "Never attempted" must not be
+	// spellable as "affected no rows"; that equivalence is the whole bug.
+	const notAttempted = int64(-1)
+	rows := notAttempted
+	var execErr error
+
+	wrapErr := gh402AsCollaborator(pool, tenant, sites, func(tx pgx.Tx) error {
+		tag, e := tx.Exec(context.Background(), sql, args...)
+		if e != nil {
+			// Returned, not swallowed. A statement that failed on the server has
+			// already aborted the transaction, so swallowing the error only moves
+			// the failure to COMMIT, where it is reported as something else
+			// entirely. Returning it rolls the wrapper back instead, and this
+			// attempt is the only thing in the transaction to lose.
+			execErr = e
+			return e
+		}
+		rows = tag.RowsAffected()
+		return nil
+	})
+
+	switch {
+	case execErr != nil && gh402IsPolicyRefusal(execErr):
+		return 0
+	case execErr != nil:
+		t.Fatalf("this statement was not refused, it FAILED:\n  %s\n  %v\n"+
+			"Only SQLSTATE 42501 is Postgres refusing a write by policy. Any other error means "+
+			"the statement never reached the policy, so counting it as a refusal would let the "+
+			"assertion below pass without testing anything.", sql, execErr)
+	case wrapErr != nil:
+		t.Fatalf("the collaborator transaction for this statement failed outside it:\n  %s\n  %v",
+			sql, wrapErr)
+	case rows == notAttempted:
+		t.Fatalf("this statement was never attempted, so any assertion about its outcome proves "+
+			"nothing:\n  %s", sql)
+	}
+	return rows
+}
+
+// gh402IsPolicyRefusal reports whether err is Postgres refusing the write
+// itself. insufficient_privilege is what a RESTRICTIVE policy's WITH CHECK
+// raises; its USING clause refuses by filtering rows instead, so the ordinary
+// refusal on the UPDATE and DELETE paths is zero rows and no error at all.
+func gh402IsPolicyRefusal(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
 }
 
 // gh402ScopeFixture is one organisation with two sites, BOTH deleted through
@@ -125,28 +208,15 @@ func TestGH402_ReclaimSiteScope_CannotCloseAnotherSitesTask(t *testing.T) {
 
 	f := gh402SeedScopeFixture(t, pool, admin)
 
-	var updated, deleted int64
-	if err := gh402AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
-		tag, e := tx.Exec(ctx,
-			`UPDATE site_object_reclaim SET completed_at = now() WHERE site_id = $1`, f.siteB)
-		if e != nil {
-			// A refusal by error is just as good an outcome as a refusal by
-			// zero rows; record it as zero and let the assertions run.
-			updated = 0
-			return nil
-		}
-		updated = tag.RowsAffected()
+	// Two attempts, two transactions, two independent verdicts. A refusal by
+	// error is still as good as a refusal by zero rows, but neither statement can
+	// now decide whether the other is tried, and a statement that is not tried is
+	// a failure rather than a zero. See gh402CollaboratorWrite.
+	updated := gh402CollaboratorWrite(t, pool, f.tenant, []uuid.UUID{f.siteA},
+		`UPDATE site_object_reclaim SET completed_at = now() WHERE site_id = $1`, f.siteB)
+	deleted := gh402CollaboratorWrite(t, pool, f.tenant, []uuid.UUID{f.siteA},
+		`DELETE FROM site_object_reclaim WHERE site_id = $1`, f.siteB)
 
-		tag, e = tx.Exec(ctx, `DELETE FROM site_object_reclaim WHERE site_id = $1`, f.siteB)
-		if e != nil {
-			deleted = 0
-			return nil
-		}
-		deleted = tag.RowsAffected()
-		return nil
-	}); err != nil {
-		t.Fatalf("collaborator write: %v", err)
-	}
 	if updated != 0 {
 		t.Errorf("a collaborator invited to siteA closed siteB's reclaim task (%d rows). "+
 			"Those manifests are now in the bucket with nothing left that names them", updated)
@@ -157,9 +227,15 @@ func TestGH402_ReclaimSiteScope_CannotCloseAnotherSitesTask(t *testing.T) {
 
 	// The row is genuinely untouched, read back outside the attack.
 	var completedAt *string
-	if err := admin.QueryRow(ctx,
+	switch err := admin.QueryRow(ctx,
 		`SELECT completed_at::text FROM site_object_reclaim WHERE site_id = $1`, f.siteB).
-		Scan(&completedAt); err != nil {
+		Scan(&completedAt); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Reported here rather than left to surface as a scan failure, which
+		// reads like a broken fixture instead of the deletion it is.
+		t.Fatal("siteB's reclaim task is GONE after the attack; those manifests are now in the " +
+			"bucket with nothing left anywhere that names them")
+	case err != nil:
 		t.Fatalf("read siteB task: %v", err)
 	}
 	if completedAt != nil {

@@ -34,6 +34,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -104,28 +105,15 @@ func TestGH402_M114_SiteScopeSemanticsOnAConvergedDatabase(t *testing.T) {
 	t.Run("cannot close or delete another site's task", func(t *testing.T) {
 		f := gh402SeedScopeFixture(t, pool, admin)
 
-		var updated, deleted int64
-		if err := gh402AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
-			tag, e := tx.Exec(ctx,
-				`UPDATE site_object_reclaim SET completed_at = now() WHERE site_id = $1`, f.siteB)
-			if e != nil {
-				// A refusal by error is as good an outcome as a refusal by zero
-				// rows. Record it as zero and let the assertions run.
-				updated = 0
-				return nil
-			}
-			updated = tag.RowsAffected()
+		// Two attempts, two transactions, two independent verdicts. A refusal by
+		// error is still as good as a refusal by zero rows, but neither statement
+		// can now decide whether the other is tried, and a statement that is not
+		// tried is a failure rather than a zero. See gh402CollaboratorWrite.
+		updated := gh402CollaboratorWrite(t, pool, f.tenant, []uuid.UUID{f.siteA},
+			`UPDATE site_object_reclaim SET completed_at = now() WHERE site_id = $1`, f.siteB)
+		deleted := gh402CollaboratorWrite(t, pool, f.tenant, []uuid.UUID{f.siteA},
+			`DELETE FROM site_object_reclaim WHERE site_id = $1`, f.siteB)
 
-			tag, e = tx.Exec(ctx, `DELETE FROM site_object_reclaim WHERE site_id = $1`, f.siteB)
-			if e != nil {
-				deleted = 0
-				return nil
-			}
-			deleted = tag.RowsAffected()
-			return nil
-		}); err != nil {
-			t.Fatalf("collaborator write: %v", err)
-		}
 		if updated != 0 {
 			t.Errorf("on a converged database a collaborator invited to siteA closed siteB's "+
 				"reclaim task (%d rows). Those manifests are now in the bucket with nothing left "+
@@ -137,9 +125,16 @@ func TestGH402_M114_SiteScopeSemanticsOnAConvergedDatabase(t *testing.T) {
 		}
 
 		var completedAt *string
-		if err := admin.QueryRow(ctx,
+		switch err := admin.QueryRow(ctx,
 			`SELECT completed_at::text FROM site_object_reclaim WHERE site_id = $1`, f.siteB).
-			Scan(&completedAt); err != nil {
+			Scan(&completedAt); {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Read back outside the attack, so this is the row's real fate and not
+			// a policy hiding it. Reported here rather than left to surface as a
+			// scan failure, which reads like a broken fixture.
+			t.Fatal("siteB's reclaim task is GONE after the attack; those manifests are now in " +
+				"the bucket with nothing left anywhere that names them")
+		case err != nil:
 			t.Fatalf("read siteB task: %v", err)
 		}
 		if completedAt != nil {
