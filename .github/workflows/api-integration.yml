@@ -6,8 +6,12 @@ name: api-integration
 #
 # ci.yml's Go job excludes `/apps/api/tests` from `go test` and its comment said
 # those tests "belong in a separate lane". That lane did not exist. From the day
-# the exclusion landed until this file, 343 tests were compile-checked by Build
-# and Vet and never executed by anything. Among them are the m112 (GH #380)
+# the exclusion landed until this file, 343 tests were compile-checked by Vet
+# and never executed by anything. (Vet, not Build: ci.yml's Build step excludes
+# this package too, because every file in it is a _test.go file and `go build`
+# errors on a package with no buildable non-test files. Vet compiles the test
+# files, so it is the only thing standing between this package and bit rot.)
+# Among them are the m112 (GH #380)
 # site-scope RLS policy proofs in tests/email_site_scope_rls_integration_test.go,
 # which are the entire defence for seven closed privilege-escalation doors where
 # a one-site collaborator could reach the whole organisation. A regression in
@@ -28,7 +32,8 @@ name: api-integration
 #
 # COST AND RISK, stated so the next person can revisit this knowingly.
 # Cost: one ubuntu-latest runner for the wall time reported in the PR that added
-# this file, plus roughly 700MB of Docker image pulls, on PRs that touch
+# this file, plus about 425MB of compressed image layers pulled (110 postgres,
+# 254 clickhouse, 47 minio, 15 redis), on PRs that touch
 # apps/api. Risk it buys down: a silent regression in privilege-escalation RLS
 # is a security incident, not a bug. That asymmetry is why this runs per PR and
 # not only nightly. If the wall time ever grows past the point where it is
@@ -188,7 +193,7 @@ jobs:
           docker info --format 'server={{.ServerVersion}} driver={{.Driver}}'
 
       # Pull the four images the package uses up front. Not required for
-      # correctness (testcontainers pulls on demand) but it moves roughly 700MB
+      # correctness (testcontainers pulls on demand) but it moves that ~425MB
       # of network into a named step, so a registry problem reads as a pull
       # failure instead of surfacing later as an inscrutable container start
       # timeout inside some unrelated test. If a test adds a fifth image this

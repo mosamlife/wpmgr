@@ -77,8 +77,9 @@ jobs:
         # about to delete or weaken that workflow, that is what you are giving
         # back up.
         #
-        # Compile-checking here by Build + Vet is still worth having: it stops
-        # the package rotting between integration runs.
+        # Compile-checking here is still worth having: it stops the package
+        # rotting between integration runs. Note that is VET doing it, not
+        # Build, for the reason given on the Build step above.
         #
         # The pattern is anchored with $ so it excludes ONLY that package.
         # apps/api/tests/contract holds the containerless spec-versus-code gates
