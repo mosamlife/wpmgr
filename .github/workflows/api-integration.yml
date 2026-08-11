@@ -41,21 +41,32 @@ name: api-integration
 # nightly-only lane finds the incident after the merge that caused it.
 
 on:
-  # Per PR, so a regression is caught before it reaches main rather than after.
-  # Deliberately NOT `push: branches: ["**"]` like ci.yml: for a same-repo PR
-  # that would run this expensive lane twice per push, once for each event.
-  pull_request:
-  # On main as well. A PR can be green and main still go red, because main is
-  # the merge result and because some gates read live external state. Cheap
-  # insurance on the branch that ships.
-  push:
-    branches: [main]
-  # Nightly at 03:00 UTC. Catches rot that no diff touches: a base image tag
-  # that changed under us, a testcontainers or Docker behaviour change on the
-  # runner image, a flake that only shows up over repeated runs. Also means the
-  # lane's health is known even in a week where nobody touched apps/api.
-  schedule:
-    - cron: "0 3 * * *"
+  # MANUAL ONLY, and that is a deliberate cost decision, not an oversight.
+  #
+  # This lane takes about 18 minutes on a GitHub runner: 344 tests, most of
+  # which stand up their own ephemeral Postgres. On a PR that is 18 minutes of
+  # waiting before anyone can merge anything, which is too high a toll to pay on
+  # every change while the project runs on the standard runners. The tests are
+  # run locally instead (`make test-integration`), which is how they have always
+  # been run.
+  #
+  # WHAT THIS COSTS, stated plainly so the trade is visible. apps/api/tests holds
+  # the m112 RLS proofs, the ones that stop a collaborator invited to a single
+  # site from reaching the whole organisation's email credentials. Nothing in CI
+  # checks them while this is manual. A regression there merges green, and the
+  # only thing standing in front of it is somebody remembering to run the lane.
+  # Run it before merging anything that touches RLS, the email domain, or
+  # tenant scoping.
+  #
+  # TO TURN IT BACK ON once a faster runner is available, uncomment the three
+  # triggers below. Nothing else needs to change: the job, its 45 minute
+  # timeout and the path filter are already written for that.
+  #
+  # pull_request:
+  # push:
+  #   branches: [main]
+  # schedule:
+  #   - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:

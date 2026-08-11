@@ -56,8 +56,27 @@ build-web: ## Build the web SPA
 test: test-api test-web ## Run all tests
 
 .PHONY: test-api
-test-api: ## Run Go tests
-	cd apps/api && go test ./...
+# -timeout 45m, not the default. apps/api/tests stands up an ephemeral Postgres
+# per test and sits right on Go's 10 minute default: measured 522s for that
+# package alone and 601s under the parallel load of `go test ./...`, which
+# panicked with "test timed out after 10m0s". The tests were fine; the limit
+# was not. Without this flag the full run flakes on a busy machine.
+test-api: ## Run Go tests (unit plus integration; needs Docker for the integration package)
+	cd apps/api && go test -timeout 45m ./...
+
+.PHONY: test-integration
+# The integration package on its own, which is where the security proofs live:
+# the m112 RLS tests that stop a collaborator invited to one site reaching the
+# whole organisation's email credentials.
+#
+# THIS IS NOT RUN BY CI. .github/workflows/ci.yml excludes the package and
+# .github/workflows/api-integration.yml is manual-only, because it takes about
+# 18 minutes on a standard runner and that toll on every PR is not worth paying
+# yet. So this command is the only thing standing in front of a regression in
+# it. Run it before merging anything that touches RLS, the email domain or
+# tenant scoping. Needs a working Docker daemon (testcontainers).
+test-integration: ## Run the Go integration tests (Docker required, about 9 minutes)
+	cd apps/api && go test -timeout 45m ./tests/...
 
 .PHONY: test-web
 test-web: ## Run frontend tests

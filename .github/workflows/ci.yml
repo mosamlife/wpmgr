@@ -69,13 +69,18 @@ jobs:
         # and most stand up their own ephemeral Postgres, so the cost, not any
         # missing Docker daemon, is why they sit out this lane.
         #
-        # THE SEPARATE LANE IS .github/workflows/api-integration.yml. It really
-        # runs them, per PR touching apps/api plus on main and nightly. This
-        # comment previously claimed a lane that did not exist, and for as long
-        # as that was true the package's security proofs (the m112 site-scope
-        # RLS policy tests) were compile-checked and never executed. If you are
-        # about to delete or weaken that workflow, that is what you are giving
-        # back up.
+        # THE SEPARATE LANE IS .github/workflows/api-integration.yml, and it is
+        # MANUAL ONLY. It runs the package for real, but only when somebody
+        # dispatches it: about 18 minutes on a standard runner is too long to
+        # wait on every PR until a faster one is available. Its triggers are
+        # written and commented out, ready to uncomment.
+        #
+        # SO NOTHING IN CI EXECUTES THESE TESTS TODAY. That includes the m112
+        # site-scope RLS proofs, the ones that stop a collaborator invited to a
+        # single site reaching the whole organisation's email credentials. They
+        # are run locally, with `make test-integration`, and a regression in
+        # them will merge green. Run it before merging anything that touches
+        # RLS, the email domain or tenant scoping.
         #
         # Compile-checking here is still worth having: it stops the package
         # rotting between integration runs. Note that is VET doing it, not
