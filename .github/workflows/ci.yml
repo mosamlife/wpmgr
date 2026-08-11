@@ -128,6 +128,72 @@ jobs:
       - name: Test
         run: pnpm --filter @wpmgr/web test
 
+  # ---- Commit message hygiene ----
+  # Refuses a PR whose own commits carry an assistant trailer or a session URL.
+  #
+  # WHY. This repository is public, and a Claude Code session URL in a commit
+  # message is published with it, permanently, to everyone. 149 commits already
+  # in main's history carry one, from 2026-06-22 to 2026-07-28. Those are being
+  # left alone deliberately: removing them means rewriting public history, which
+  # changes every SHA since June, orphans the release tags that point at them,
+  # and breaks every existing clone and fork. The cost of the rewrite is higher
+  # than the cost of the leak. So the rule starts here instead, and this job is
+  # what makes it hold.
+  #
+  # It reads ONLY the commits the PR itself adds, never the history behind them,
+  # so the existing 149 cannot fail anybody's unrelated PR.
+  commit-hygiene:
+    name: Commit message hygiene
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # The PR's own commits only. fetch-depth 0 because the range needs the
+          # base commit present, and a shallow clone does not have it.
+          fetch-depth: 0
+
+      - name: No assistant trailers or session URLs in new commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # A session URL is the one that actually matters: it is a live link
+          # published to a public repository. The trailers are a house style
+          # rule. Both are checked; the message says which is which.
+          url_re='claude\.ai/code/session'
+          trailer_re='^[[:space:]]*(Co-Authored-By:[[:space:]]*Claude|Claude-Session:)'
+
+          bad=0
+          for sha in $(git rev-list "$BASE_SHA".."$HEAD_SHA"); do
+            body="$(git log -1 --format='%B' "$sha")"
+            if printf '%s' "$body" | grep -qiE "$url_re"; then
+              echo "ERROR: $(git log -1 --format='%h %s' "$sha")"
+              echo "       carries a Claude Code session URL. This repository is public, so that"
+              echo "       link would be published with the commit and cannot be taken back."
+              bad=1
+            fi
+            if printf '%s' "$body" | grep -qiE "$trailer_re"; then
+              echo "ERROR: $(git log -1 --format='%h %s' "$sha")"
+              echo "       carries an assistant attribution trailer, which this project does not use."
+              bad=1
+            fi
+          done
+
+          if [ "$bad" -ne 0 ]; then
+            echo ""
+            echo "Rewrite the offending messages and force-push the branch:"
+            echo "  git rebase -i $BASE_SHA     # reword each one"
+            echo "  git push --force-with-lease"
+            echo ""
+            echo "Only this PR's commits are read, so nothing already on main is involved."
+            exit 1
+          fi
+          echo "OK: no assistant trailers or session URLs in this PR's commits."
+
   # ---- Marketing site (the public wpmgr.app) ----
   # Separate from the web job so a failure says which app broke, and because
   # these two deploy independently.

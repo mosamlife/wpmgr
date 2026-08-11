@@ -29,8 +29,21 @@ under `apps/web/src/features/<domain>/` mirror the backend domains.
 Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
 One logical change per commit.
 
+**No assistant trailers, and never a session URL.** Do not add
+`Co-Authored-By: Claude`, `Claude-Session:`, or any `claude.ai/code/session`
+link to a commit message. This repository is public, so anything in a commit
+message is published with it and cannot be taken back. Some coding assistants
+append these by default; turn that off. CI checks the commits a pull request
+adds and refuses the PR if it finds one, with the command to fix it.
+
+Commits already on `main` from before this rule are left as they are. Removing
+them would mean rewriting public history, which changes every commit id since
+June 2026, orphans the release tags pointing at them, and breaks every existing
+clone and fork. The rule applies going forward.
+
 ## PR checklist
 
+- [ ] No `Co-Authored-By: Claude`, `Claude-Session:` or `claude.ai/code/session` in any commit message
 - [ ] `make lint` passes
 - [ ] `make test` passes
 - [ ] `make build` passes
