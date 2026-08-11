@@ -209,10 +209,11 @@ jobs:
       # Worst observed 1121s against a 2700s ceiling, so 2.4x headroom, on a
       # package whose run-to-run spread across those four was 14%.
       #
-      # The wall time is printed to the step summary on every run. If it ever
-      # creeps past about 1800s, shard the lane by -run regex rather than
-      # raising this ceiling: at that point the feedback delay is the problem,
-      # and raising the timeout only hides it.
+      # The wall time is reported on every run, to the step summary and to
+      # stdout, so it can be read without a browser. If it ever creeps past
+      # about 1800s, shard the lane by -run regex rather than raising this
+      # ceiling: at that point the feedback delay is the problem, and raising
+      # the timeout only hides it.
       - name: Integration tests
         shell: bash
         env:
@@ -238,8 +239,9 @@ jobs:
 
       # THE MOST IMPORTANT STEP IN THIS FILE.
       #
-      # Every container helper in the package (startPostgres and its 14 siblings)
-      # calls t.Skipf("skipping: cannot start ... container (docker unavailable?)")
+      # Every container helper in the package (startPostgres, its 11 siblings,
+      # and one test that inlines the same setup: 13 call sites today) does
+      # t.Skipf("skipping: cannot start ... container (docker unavailable?)")
       # when it cannot reach a daemon. It SKIPS, it does not fail. So a runner
       # image that one day ships without Docker, or a daemon that dies mid-job,
       # produces 343 skips, `ok`, exit 0 and a green tick, and this lane would go
