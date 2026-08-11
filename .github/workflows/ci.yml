@@ -13,11 +13,38 @@ concurrency:
 permissions:
   contents: read
 
+# EVERY job below carries a timeout-minutes. Without one a hung job runs to
+# GitHub's default ceiling of SIX HOURS, holding a concurrency slot and burning
+# runner minutes while telling nobody anything.
+#
+# The bounds are measured, not guessed. Over the last 40 successful runs of this
+# workflow, per job, in seconds:
+#
+#   Go (apps/api)              min 178  median 223  p90 240  max 247
+#   JS (web)                   min 179  median 251  p90 267  max 271
+#   nginx routing smoke test   min  64  median  72  p90  79  max  83
+#   PHP (agent)                min  59  median  73  p90  79  max  89
+#   Security audit             min  37  median  48  p90  59  max  89
+#   JS (marketing)             min  40  median  47  p90  51  max  53
+#   Commit message hygiene     min   9  median  10  p90  11  max  11
+#
+# Each bound is at least 4x that job's p90 and never under 10 minutes, so an
+# ordinary slow run (cold module cache, cold pnpm store, a slow runner, a
+# registry having a bad day) has room to finish. The point is catching a hang,
+# not policing minutes: the whole workflow's median is about 4.3 minutes, so
+# even the largest bound here is a long way from anything legitimate.
+#
+# .github/workflows/api-integration.yml is NOT covered by this and does not need
+# to be: both of its jobs already set one (5 and 60), and the 60 is deliberately
+# and documentedly larger than its own `go test -timeout 45m`.
+
 jobs:
   # ---- Go API ----
   go:
     name: Go (apps/api)
     runs-on: ubuntu-latest
+    # p90 240s. 5x.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/api
@@ -98,6 +125,8 @@ jobs:
   js:
     name: JS (web)
     runs-on: ubuntu-latest
+    # p90 267s, the slowest job here. 4.5x.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -142,57 +171,52 @@ jobs:
   #
   # It reads ONLY the commits the PR itself adds, never the history behind them,
   # so the existing 149 cannot fail anybody's unrelated PR.
+  #
+  # THE LOGIC LIVES IN A SCRIPT, NOT IN THIS FILE, for the same reason the
+  # version-surface guard does, and this one earned it the hard way. As an
+  # inline block scalar it FAILED OPEN: the loop was
+  #
+  #     for sha in $(git rev-list "$BASE_SHA".."$HEAD_SHA"); do
+  #
+  # under `set -uo pipefail` with no `-e`. Command substitution swallows the
+  # exit status, so a rev-list that FAILED produced an empty string, the body
+  # never ran, and the step printed "OK: no assistant trailers or session URLs
+  # in this PR's commits" over zero commits examined. rev-list fails on a
+  # force-pushed head, on a shallow clone, when the base is missing from the
+  # fetch, and on a cross-fork PR whose base sha is not present locally.
+  #
+  # scripts/check-commit-hygiene.sh now separates the two cases that look
+  # identical from inside a command substitution: rev-list FAILING is an error
+  # (exit 2, naming what it could not do), while a rev-list that SUCCEEDS with
+  # no output is a real, legitimately empty range and passes. The all-clear
+  # prints the number of commits it read, so "it passed" and "it looked" are the
+  # same claim. scripts/check-commit-hygiene_test.sh pins all of that, including
+  # the archived pre-fix implementation as a fixture, and runs in the Security
+  # audit job on every event.
   commit-hygiene:
     name: Commit message hygiene
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # p90 11s. The floor, not a measurement: the only thing here that can grow
+    # is the fetch-depth 0 checkout.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           # The PR's own commits only. fetch-depth 0 because the range needs the
-          # base commit present, and a shallow clone does not have it.
+          # base commit present, and a shallow clone does not have it. If that
+          # ever regresses, the gate now says so instead of passing.
           fetch-depth: 0
 
+      # The shas go through `env`, never interpolated into the shell line, so
+      # nothing from the event payload is ever parsed as script. The script
+      # reads BASE_SHA and HEAD_SHA when it is given no positional arguments.
       - name: No assistant trailers or session URLs in new commits
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -uo pipefail
-
-          # A session URL is the one that actually matters: it is a live link
-          # published to a public repository. The trailers are a house style
-          # rule. Both are checked; the message says which is which.
-          url_re='claude\.ai/code/session'
-          trailer_re='^[[:space:]]*(Co-Authored-By:[[:space:]]*Claude|Claude-Session:)'
-
-          bad=0
-          for sha in $(git rev-list "$BASE_SHA".."$HEAD_SHA"); do
-            body="$(git log -1 --format='%B' "$sha")"
-            if printf '%s' "$body" | grep -qiE "$url_re"; then
-              echo "ERROR: $(git log -1 --format='%h %s' "$sha")"
-              echo "       carries a Claude Code session URL. This repository is public, so that"
-              echo "       link would be published with the commit and cannot be taken back."
-              bad=1
-            fi
-            if printf '%s' "$body" | grep -qiE "$trailer_re"; then
-              echo "ERROR: $(git log -1 --format='%h %s' "$sha")"
-              echo "       carries an assistant attribution trailer, which this project does not use."
-              bad=1
-            fi
-          done
-
-          if [ "$bad" -ne 0 ]; then
-            echo ""
-            echo "Rewrite the offending messages and force-push the branch:"
-            echo "  git rebase -i $BASE_SHA     # reword each one"
-            echo "  git push --force-with-lease"
-            echo ""
-            echo "Only this PR's commits are read, so nothing already on main is involved."
-            exit 1
-          fi
-          echo "OK: no assistant trailers or session URLs in this PR's commits."
+        run: scripts/check-commit-hygiene.sh
 
   # ---- Marketing site (the public wpmgr.app) ----
   # Separate from the web job so a failure says which app broke, and because
@@ -212,6 +236,9 @@ jobs:
   marketing:
     name: JS (marketing)
     runs-on: ubuntu-latest
+    # p90 51s, but a full pnpm install sits in front of it, so this is the
+    # 10-minute floor with room rather than a tight multiple.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,6 +270,10 @@ jobs:
   security:
     name: Security audit
     runs-on: ubuntu-latest
+    # p90 59s, max 89s. Generous because this is the network-bound job:
+    # `go install govulncheck@latest` and `pnpm audit` both hit registries, and
+    # a registry having a bad day should read as slow, not as a hang.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -298,6 +329,18 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- Commit hygiene guard ---------------------------------------------
+      # The gate itself runs in the `commit-hygiene` job, which is pull_request
+      # only. Its SUITE runs here, on every event, because a gate that fails
+      # open is invisible in its own job: the run is green either way. The suite
+      # builds real repositories, force-breaks the range four ways, and asserts
+      # that a rev-list failure exits non-zero and never prints OK, while a
+      # valid empty range still passes. It also carries the pre-fix
+      # implementation as a fixture and asserts it really did fail open, so the
+      # suite cannot quietly become vacuous.
+      - name: Commit hygiene guard self-test
+        run: scripts/check-commit-hygiene_test.sh
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
@@ -347,6 +390,9 @@ jobs:
   nginx-routing:
     name: nginx routing smoke test
     runs-on: ubuntu-latest
+    # p90 79s, max 83s, and it builds infra/Dockerfile.web for real. A cold
+    # build with no layer cache is the slow case this leaves room for.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -365,6 +411,9 @@ jobs:
   php:
     name: PHP (agent)
     runs-on: ubuntu-latest
+    # p90 79s, max 89s. Composer resolution against packagist is the variable
+    # part, so this sits well above the observed spread.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/agent
