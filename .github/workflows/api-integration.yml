@@ -18,13 +18,13 @@ name: api-integration
 # TestRepoRefusesOrgConfigUpsertForSiteScopedPrincipal,
 # TestAgentTransactionNeverCarriesSiteScope and their siblings) live in
 # internal/email, which ci.yml has always run, and they still run there in about
-# 57s. What was unprotected is the other half of m112: the direct-SQL proofs that
-# the POLICIES THEMSELVES are right, asserted against the real schema as a
-# non-superuser. Both halves are needed. Neither is redundant: the repo half
-# fails when the dispatch stops setting app.site_scope, the policy half fails
-# when the policy stops refusing. This lane covers the policy half, plus the
-# other ~320 container tests in the package (billing, backups, audit chain,
-# uptime, tenant isolation, social identity).
+# a minute. What was unprotected is the other half of m112: the direct-SQL
+# proofs that the POLICIES THEMSELVES are right, asserted against the real
+# schema as a non-superuser. Both halves are needed. Neither is redundant: the
+# repo half fails when the dispatch stops setting app.site_scope, the policy
+# half fails when the policy stops refusing. This lane covers the policy half,
+# plus the other ~320 container tests in the package (billing, backups, audit
+# chain, uptime, tenant isolation, social identity).
 #
 # COST AND RISK, stated so the next person can revisit this knowingly.
 # Cost: one ubuntu-latest runner for the wall time reported in the PR that added
@@ -202,12 +202,30 @@ jobs:
       # lane that does not set an explicit timeout WILL flake, and a flaky
       # required lane gets ignored and then deleted, which is worse than no lane.
       #
-      # MEASURED HERE, on ubuntu-latest, across the four runs that introduced
-      # this file: 983s and 1089s for the two passing runs, 1103s and 1121s for
-      # the two deliberately-failing ones (a failing run is the slower case,
-      # since a failed test still leaves the rest of the package to execute).
-      # Worst observed 1121s against a 2700s ceiling, so 2.4x headroom, on a
-      # package whose run-to-run spread across those four was 14%.
+      # MEASURED HERE, on ubuntu-latest, over the five runs that introduced this
+      # file: three passing (983s, 1089s, 1119s) and two deliberately broken to
+      # prove the lane goes red (1103s, 1121s). Worst of those 1121s against the
+      # 2700s ceiling, so 2.4x headroom, on a run-to-run spread of 14%. Note the
+      # two sets INTERLEAVE (983 pass, 1089 pass, 1103 fail, 1119 pass,
+      # 1121 fail): failing does not measurably change the duration, because a
+      # failed test still leaves the rest of the package to execute. Do not read
+      # a slow run as a sign of trouble; read the elapsed number against the
+      # ceiling.
+      #
+      # THOSE FIVE ARE A HISTORICAL SAMPLE, not a live maximum. They are the
+      # observations that chose this ceiling, and a later run being slower does
+      # not falsify them or, on its own, mean anything is wrong. Every run
+      # prints its own wall time (see the Summary step), so read that for
+      # anything current and treat these five as the reason the number is 45m.
+      #
+      # TWO DIFFERENT NUMBERS, AND THEY DO NOT CONTRADICT EACH OTHER. The
+      # figures above are what `go test` reports for the package, which is
+      # exactly the span this -timeout governs. The "wall time" the Summary step
+      # prints is the whole STEP, module download and compile included, so it
+      # lands 90s to 130s higher: 1073s, 1179s, 1212s and 1219s on the four runs
+      # that recorded it. The ceiling on that larger number is the job's
+      # timeout-minutes: 60 above, whose worst case so far was 1255s of job time
+      # against 3600s. If you are auditing the margin, compare like with like.
       #
       # The wall time is reported on every run, to the step summary and to
       # stdout, so it can be read without a browser. If it ever creeps past
