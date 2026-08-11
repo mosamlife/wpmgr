@@ -13,6 +13,8 @@ package backup
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,13 +30,49 @@ import (
 // ---------------------------------------------------------------------------
 
 type gcStore struct {
-	deleted  map[string]bool
+	deleted map[string]bool
+	// objects models what is ACTUALLY in the bucket (GH #402). The sweep tests
+	// predate it and only assert on `deleted`, so it stays empty for them and
+	// costs them nothing; the reclaim tests seed it via put() and then assert on
+	// presence, which is the only way to catch an object that was never deleted
+	// at all (the leak) as opposed to one that was deleted wrongly.
+	objects  map[string]bool
 	failKey  string // when non-empty, Delete(failKey) returns an error
 	failOnce bool   // when true, only the first Delete(failKey) fails
 	failed   bool
+	// failEvery, when > 0, makes every Nth Delete call fail regardless of key.
+	// Models a storage fault partway through draining a prefix.
+	failEvery int
+	calls     int
 }
 
-func newGCStore() *gcStore { return &gcStore{deleted: map[string]bool{}} }
+func newGCStore() *gcStore {
+	return &gcStore{deleted: map[string]bool{}, objects: map[string]bool{}}
+}
+
+// put seeds an object into the modelled bucket.
+func (s *gcStore) put(key string) { s.objects[key] = true }
+
+// has reports whether the object is still in the modelled bucket.
+func (s *gcStore) has(key string) bool { return s.objects[key] }
+
+// list returns the modelled bucket's keys under prefix, mirroring
+// blobstore.Store.List semantics (a plain key-prefix scan).
+func (s *gcStore) list(prefix string) []string {
+	var out []string
+	for k := range s.objects {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// List satisfies the reclaim worker's object-store interface.
+func (s *gcStore) List(_ context.Context, prefix string) ([]string, error) {
+	return s.list(prefix), nil
+}
 
 func (s *gcStore) PresignPut(_ context.Context, key string, _ time.Duration) (string, error) {
 	return "https://put/" + key, nil
@@ -43,11 +81,16 @@ func (s *gcStore) PresignGet(_ context.Context, key string, _ time.Duration) (st
 	return "https://get/" + key, nil
 }
 func (s *gcStore) Delete(_ context.Context, key string) error {
+	s.calls++
+	if s.failEvery > 0 && s.calls%s.failEvery == 0 {
+		return errors.New("simulated object delete failure")
+	}
 	if s.failKey != "" && key == s.failKey && !(s.failOnce && s.failed) {
 		s.failed = true
 		return errors.New("simulated object delete failure")
 	}
 	s.deleted[key] = true
+	delete(s.objects, key)
 	return nil
 }
 

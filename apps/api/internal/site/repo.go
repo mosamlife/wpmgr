@@ -16,6 +16,15 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
+// backupManifestReclaimKind names the site-scoped object-storage root that
+// DELETE /sites/{id} records for later reclamation (GH #402, m113).
+//
+// This literal is duplicated from backup.ReclaimKindBackupManifest on purpose:
+// importing the backup domain here would couple site deletion to it for a
+// single string, and the value's real home is a database column that both sides
+// read. tests/contract asserts the two agree, so the duplication cannot drift
+// silently.
+const backupManifestReclaimKind = "backup_manifest"
 
 // Repo is the tenant-scoped site persistence interface plus the enrollment and
 // agent-auth paths, which (by necessity) run before a tenant scope is known.
@@ -441,14 +450,85 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 	return out, err
 }
 
+// Delete removes a site and, in the SAME TRANSACTION, records the
+// object-storage work the delete leaves behind (GH #402).
+//
+// WHY THE RECLAIM RECORD IS WRITTEN HERE AND NOWHERE ELSE.
+//
+// backup_snapshots.site_id is ON DELETE CASCADE, so the DELETE below destroys
+// every snapshot row for this site. Those rows were the only database record
+// naming the site's per-snapshot manifest.json objects in storage: both
+// deleters of that object need a live snapshot row to build the key, and the
+// retention GC's site roster is itself derived from backup_snapshots. Once this
+// statement commits, nothing can ever name those objects again, so they leak
+// forever. A field report saw 90 orphans from one deleted site.
+//
+// Chunks need no help and get none. backup_chunks has NO foreign key to sites,
+// so the cascade leaves the tenant-wide inventory intact and the ADR-050
+// mark-and-sweep recomputes reachability over the surviving snapshots: the
+// deleted site's exclusive chunks are already reclaimed, and a chunk still
+// shared with a LIVE site is already spared. Nothing here adds any authority to
+// delete a chunk.
+//
+// SAME TRANSACTION IS THE WHOLE POINT. Writing the record in an earlier,
+// separate transaction "before the cascade fires" is unsafe: if that commits
+// and this delete then rolls back, the database holds a durable instruction to
+// delete the manifests of a site that is still live. Insert and delete commit
+// or roll back together, gated on the rows-affected check that was already
+// here, so the record exists if and only if the site row is really gone.
 func (r *pgRepo) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		n, err := sqlc.New(tx).DeleteSite(ctx, sqlc.DeleteSiteParams{ID: id, TenantID: tenantID})
+		q := sqlc.New(tx)
+
+		// Read the destination kind BEFORE the delete: site_destinations.site_id
+		// is also ON DELETE CASCADE, so after the next statement this is gone
+		// too. Diagnostic only (never a credential): it lets the reclaim log say
+		// plainly that a site's backups lived in the operator's own bucket and
+		// were not touched by a control-plane-store reclaimer.
+		//
+		// No rows is the ordinary case (the site used the legacy
+		// control-plane-global bucket) and leaves destKind nil. A REAL error is
+		// surfaced rather than swallowed: a failed statement aborts the
+		// enclosing Postgres transaction, so ignoring it here would only move
+		// the failure to the DELETE below and report it as a confusing
+		// "current transaction is aborted".
+		var destKind *string
+		k, derr := q.GetSiteDefaultDestinationKind(ctx, sqlc.GetSiteDefaultDestinationKindParams{
+			TenantID: tenantID,
+			SiteID:   pgtype.UUID{Bytes: id, Valid: true},
+		})
+		switch {
+		case derr == nil:
+			destKind = &k
+		case errors.Is(derr, pgx.ErrNoRows):
+			// Legacy control-plane-global bucket; nothing to record.
+		default:
+			return domain.Internal("site_destination_lookup_failed",
+				"failed to resolve the site's backup destination").WithCause(derr)
+		}
+
+		n, err := q.DeleteSite(ctx, sqlc.DeleteSiteParams{ID: id, TenantID: tenantID})
 		if err != nil {
 			return domain.Internal("site_delete_failed", "failed to delete site").WithCause(err)
 		}
 		if n == 0 {
 			return domain.NotFound("site_not_found", "site not found")
+		}
+
+		// Only reached when a site row really was removed, so this can never
+		// record work for a live site.
+		if _, eerr := q.EnqueueSiteObjectReclaim(ctx, sqlc.EnqueueSiteObjectReclaimParams{
+			TenantID:        tenantID,
+			SiteID:          id,
+			Kind:            backupManifestReclaimKind,
+			DestinationKind: destKind,
+		}); eerr != nil {
+			// Deliberately fatal to the transaction. Committing the delete
+			// without the record is precisely the reported bug, and it is
+			// unrecoverable afterwards; failing the request is recoverable
+			// because the caller can simply retry the delete.
+			return domain.Internal("site_object_reclaim_enqueue_failed",
+				"failed to record the site's object-storage reclamation").WithCause(eerr)
 		}
 		return nil
 	})

@@ -937,11 +937,28 @@ CREATE POLICY update_tasks_agent ON update_tasks
 -- One row per UNIQUE (tenant, blake3) ciphertext chunk stored in object
 -- storage. Chunks are content-addressed by the BLAKE3 hash of their CIPHERTEXT
 -- (the agent encrypts client-side with age, then hashes; the CP and S3 only
--- ever see ciphertext). refcount tracks how many manifest entries across all of
--- the tenant's snapshots reference the chunk; GC deletes a chunk from S3 only
--- when refcount reaches zero. Tenant-scoped + RLS: a tenant can never see or
--- target another tenant's chunks, and the s3_key is namespaced by tenant so a
--- presign for one tenant cannot address another's chunk prefix.
+-- ever see ciphertext). Tenant-scoped + RLS: a tenant can never see or target
+-- another tenant's chunks, and the s3_key is namespaced by tenant so a presign
+-- for one tenant cannot address another's chunk prefix.
+--
+-- refcount IS OBSERVABILITY ONLY. It counts ORIGIN references (how many
+-- manifest entries introduced the chunk), not live ones, and ADR-050 retracted
+-- the rule this comment used to state, that "GC deletes a chunk from S3 only
+-- when refcount reaches zero". It was wrong in the dangerous direction: the
+-- agent only re-submits changed or new files, so a carry-forward chunk's origin
+-- row lives in exactly ONE generation and its refcount can sit at zero while a
+-- live snapshot still needs it. No delete decision consults refcount. The real
+-- rule is mark-and-sweep (internal/backup/gc.go): a chunk is deleted only when
+-- it is unreachable from EVERY retained snapshot across ALL sites in the tenant
+-- (dedup is tenant-global), AND its GREATEST(created_at, last_referenced_at)
+-- predates the grace floor, AND a ground-truth re-check against live
+-- backup_manifest_entries under the row lock agrees. Anyone designing near this
+-- table should read that file, not this column.
+--
+-- NOTE for GH #402: there is deliberately NO foreign key from here to sites.
+-- Deleting one site cascades its backup_snapshots away but leaves this
+-- inventory intact, which is exactly what lets the tenant-wide sweep recompute
+-- reachability and spare a chunk the deleted site shared with a LIVE one.
 CREATE TABLE backup_chunks (
     id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -1048,6 +1065,68 @@ CREATE POLICY site_destinations_site_scope ON site_destinations
             string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
         )
     );
+
+-- ---------------------------------------------------------------------------
+-- site_object_reclaim  (m113 / GH #402)
+-- ---------------------------------------------------------------------------
+-- The durable record of object-storage work that outlives a site delete.
+--
+-- DELETE /sites/{id} cascades backup_snapshots away, and those rows were the
+-- only database record naming the site's per-snapshot manifest.json objects.
+-- After the cascade nothing could name them again, so they leaked forever. A
+-- row here is INSERTed in the SAME TRANSACTION as the delete (see the site
+-- repo's Delete), so it exists if and only if the site row is really gone, and
+-- an async worker reclaims the site's storage prefix afterwards.
+--
+-- NO FOREIGN KEY TO sites, DELIBERATELY. A site_id FK with ON DELETE CASCADE
+-- would destroy this row in the very statement it exists to survive. The FK is
+-- to tenants only, so a tenant hard-purge cleans these up, which is correct
+-- because the org purge worker has already swept every tenant-scoped root by
+-- then.
+--
+-- The row stores IDENTITY, never a prefix string: the worker derives the
+-- prefix from a code constant plus two validated UUIDs, because a stored prefix
+-- would turn a corrupt row into an arbitrary-prefix delete instruction and the
+-- adjacency is one character ("tenant/" backups, "tenants/" client report PDFs
+-- with client PII). kind is the extension point for the other site-scoped
+-- roots (rucss/, screenshots/). destination_kind is diagnostic only and never a
+-- credential.
+--
+-- Past the retry cap a task is LEFT VISIBLE, never deleted: a stuck task is the
+-- only remaining record that those objects exist.
+CREATE TABLE site_object_reclaim (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id          uuid        NOT NULL,
+    -- Which site-scoped storage root to reclaim ('backup_manifest' today).
+    kind             text        NOT NULL DEFAULT 'backup_manifest',
+    -- 'cp' | 'local' | 's3_compat' | NULL for the legacy CP-global bucket.
+    destination_kind text,
+    attempts         int         NOT NULL DEFAULT 0,
+    next_attempt_at  timestamptz NOT NULL DEFAULT now(),
+    last_error       text,
+    completed_at     timestamptz,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX site_object_reclaim_site_kind_key
+    ON site_object_reclaim (tenant_id, site_id, kind);
+CREATE INDEX site_object_reclaim_tenant_idx ON site_object_reclaim (tenant_id);
+CREATE INDEX site_object_reclaim_due_idx ON site_object_reclaim (next_attempt_at)
+    WHERE completed_at IS NULL;
+
+ALTER TABLE site_object_reclaim ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_object_reclaim FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_object_reclaim_tenant_isolation ON site_object_reclaim
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The reclaim sweep is cross-tenant and runs under InAgentTx.
+CREATE POLICY site_object_reclaim_agent ON site_object_reclaim
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- backup_snapshots  (M4)

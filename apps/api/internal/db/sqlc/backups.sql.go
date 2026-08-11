@@ -1425,16 +1425,34 @@ func (q *Queries) ListStalledRunningSnapshots(ctx context.Context, arg ListStall
 	return items, nil
 }
 
-const listTenantsWithCompletedSnapshots = `-- name: ListTenantsWithCompletedSnapshots :many
+const listTenantsForBackupGC = `-- name: ListTenantsForBackupGC :many
 SELECT DISTINCT tenant_id FROM backup_snapshots
 WHERE status = 'completed'
+UNION
+SELECT DISTINCT tenant_id FROM backup_chunks
 `
 
-// Distinct tenant IDs that have at least one completed snapshot, for the
-// periodic retention GC. Runs cross-tenant under the app.agent GUC (the
-// backup_snapshots_gc SELECT policy); the prune then runs per tenant.
-func (q *Queries) ListTenantsWithCompletedSnapshots(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := q.db.Query(ctx, listTenantsWithCompletedSnapshots)
+// Distinct tenant IDs the periodic retention GC should visit. Runs cross-tenant
+// under the app.agent GUC (the backup_snapshots_gc and backup_chunks_agent
+// SELECT policies); the prune then runs per tenant.
+//
+// GH #402: this used to be "tenants with a completed snapshot" alone, which had
+// a second-order leak in it. Deleting the site that held a tenant's LAST
+// completed snapshot dropped that tenant off this roster permanently, so its
+// chunk bytes were never swept again. backup_chunks has no FK to sites and so
+// survives the cascade intact; unioning it in is what lets the sweep reach an
+// emptied tenant and reclaim those bytes.
+//
+// This widens ENUMERATION only, never the delete decision. A newly-visited
+// tenant is one with chunk rows and no completed snapshot, and every existing
+// guard still applies to it: the in-flight floor pins effectiveFloor to a
+// running snapshot's created_at so newer chunks are kept, the dedup oracle
+// bumps last_referenced_at on any old chunk a running backup re-references, the
+// ground-truth manifest-entries guard keeps anything a not-yet-completed
+// snapshot already references, and Phase 3 is fail-closed so an empty live set
+// caused by an ERROR can never reach the sweep at all.
+func (q *Queries) ListTenantsForBackupGC(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listTenantsForBackupGC)
 	if err != nil {
 		return nil, err
 	}
