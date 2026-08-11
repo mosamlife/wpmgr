@@ -413,11 +413,20 @@ func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOu
 	// row open, backs it off, and after the attempt cap hands it to the
 	// every-tick stuck report with this reason attached, where an operator can
 	// see the bad value and correct it.
+	//
+	// The UPDATE printed below needs a SUPERUSER CONNECTION, and says so. As the
+	// wpmgr_app role, with no app.tenant_id set, RLS makes the row invisible and
+	// the statement reports success having changed nothing: measured, "rows=0
+	// err=<nil>". A recovery instruction that silently no-ops is worse than none,
+	// so the caveat travels with the statement. Making it work for the ordinary
+	// application role is GH #408.
 	prefix, perr := SiteObjectPrefix(t.Kind, t.TenantID, t.SiteID)
 	if perr != nil {
 		w.fail(ctx, t, perr.Error()+
 			" (the task is kept and retried, never cancelled: its objects are still in storage "+
-			"and this row is the only record of them. Correct the row and it resumes: "+
+			"and this row is the only record of them. Correct the row and it resumes, ON A "+
+			"SUPERUSER CONNECTION: as the application role RLS hides this row and the statement "+
+			"reports success while changing nothing, see GH #408. "+
 			"UPDATE site_object_reclaim SET kind = '"+ReclaimKindBackupManifest+
 			"', attempts = 0, next_attempt_at = now() WHERE id = '"+t.ID.String()+"')")
 		return reclaimFailed

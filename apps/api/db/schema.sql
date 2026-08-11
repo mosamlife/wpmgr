@@ -959,6 +959,13 @@ CREATE POLICY update_tasks_agent ON update_tasks
 -- Deleting one site cascades its backup_snapshots away but leaves this
 -- inventory intact, which is exactly what lets the tenant-wide sweep recompute
 -- reachability and spare a chunk the deleted site shared with a LIVE one.
+--
+-- The tenant_id foreign key below IS a cascade, and that one is a live gap.
+-- admin_delete_empty_tenant hard-deletes a tenant row while freeing no object
+-- storage, so deleting an org's last site and then the emptied org destroys
+-- this inventory and strands every chunk object it named. site_object_reclaim
+-- (m113) survives that delete precisely because it has no foreign key to either
+-- parent; this table does not. Tracked as GH #408, not addressed by m113.
 CREATE TABLE backup_chunks (
     id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  uuid        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,

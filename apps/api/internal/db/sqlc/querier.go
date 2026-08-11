@@ -1834,8 +1834,19 @@ type Querier interface {
 	// a second-order leak in it. Deleting the site that held a tenant's LAST
 	// completed snapshot dropped that tenant off this roster permanently, so its
 	// chunk bytes were never swept again. backup_chunks has no FK to sites and so
-	// survives the cascade intact; unioning it in is what lets the sweep reach an
-	// emptied tenant and reclaim those bytes.
+	// survives the cascade intact; unioning it in is what lets the sweep reach a
+	// tenant whose sites are all gone and reclaim those bytes.
+	//
+	// THE TENANT ROW ITSELF STILL HAS TO EXIST FOR THIS TO HELP, AND THAT GAP IS
+	// NOT CLOSED HERE. backup_chunks.tenant_id is ON DELETE CASCADE (m4), so the
+	// chunk inventory is destroyed with the tenant row, and admin_delete_empty_tenant
+	// (org delete Lane A, and the superadmin orphan cleanup) hard-deletes a tenant
+	// while freeing no object storage at all. Delete an organisation's last site and
+	// then the now-empty organisation, and this roster loses the tenant along with
+	// every row naming its chunk objects: GH #402 at tenant level, for chunks, still
+	// open. site_object_reclaim survives that delete because it has no foreign key
+	// to either parent, so the deleted site's MANIFESTS are still reclaimed; the
+	// chunks are not. Tracked as GH #408, deliberately out of scope for this change.
 	//
 	// This widens ENUMERATION only, never the delete decision. A newly-visited
 	// tenant is one with chunk rows and no completed snapshot, and every existing

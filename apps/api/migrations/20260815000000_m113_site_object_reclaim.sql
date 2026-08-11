@@ -13,12 +13,20 @@
 -- again. A site with 90 completed snapshots left 90 orphans, permanently.
 --
 -- Chunks are a different story and deliberately need no help here.
--- backup_chunks has NO foreign key to sites, only to tenants, so the cascade
--- never touches it. It remains the complete tenant-wide inventory, and the
--- ADR-050 mark-and-sweep recomputes reachability over the SURVIVING snapshots,
--- so a deleted site's exclusive chunks are already reclaimed and chunks still
--- shared with a live site are already spared. Nothing in this migration or its
--- worker adds any authority to delete a chunk.
+-- backup_chunks has NO foreign key to sites, only to tenants, so the SITE
+-- cascade never touches it. It remains the complete tenant-wide inventory, and
+-- the ADR-050 mark-and-sweep recomputes reachability over the SURVIVING
+-- snapshots, so a deleted site's exclusive chunks are already reclaimed and
+-- chunks still shared with a live site are already spared. Nothing in this
+-- migration or its worker adds any authority to delete a chunk.
+--
+-- That holds for deleting a SITE. It does not hold for deleting the TENANT:
+-- backup_chunks.tenant_id is ON DELETE CASCADE (m4), so the chunk inventory
+-- dies with the tenant row, and admin_delete_empty_tenant frees no object
+-- storage. Delete an org's last site and then the emptied org, and the chunk
+-- objects are stranded with nothing naming them. This table survives that
+-- delete and its manifests are still reclaimed; the chunks are not. That gap is
+-- GH #408 and is deliberately NOT addressed here.
 --
 -- WHY A TABLE AND NOT SYNCHRONOUS DELETION
 --
@@ -135,6 +143,16 @@
 --   VALUES ('<tenant_id>', '<site_id>', 'backup_manifest')
 --   ON CONFLICT (tenant_id, site_id, kind) DO UPDATE
 --     SET completed_at = NULL, attempts = 0, next_attempt_at = now();
+--
+-- RUN THAT ON A SUPERUSER CONNECTION. As written it does NOT work as the
+-- wpmgr_app role this repository provisions for the application: the table has
+-- FORCE ROW LEVEL SECURITY and site_object_reclaim_tenant_isolation checks
+-- tenant_id against current_setting('app.tenant_id'), which a plain psql session
+-- leaves unset, so the WITH CHECK refuses the INSERT and the ON CONFLICT branch
+-- has no visible row to update. The guidance is kept because it is still the
+-- only route to objects orphaned before m113, but it is presented for what it
+-- currently is: a statement that needs a connection RLS does not apply to.
+-- Making it work for the ordinary application role is GH #408.
 --
 -- Get the kind wrong in that statement and the database refuses the whole
 -- INSERT, naming site_object_reclaim_kind_check. That is deliberate: a task
