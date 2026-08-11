@@ -12,14 +12,18 @@ package contract
 // in the lane every pull request pays for.
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
 )
@@ -70,6 +74,134 @@ func TestGH402_ReclaimKindConstantsAgree(t *testing.T) {
 	if !strings.Contains(block, want) {
 		t.Errorf("db/schema.sql site_object_reclaim.kind default does not match %q",
 			backup.ReclaimKindBackupManifest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 1b. kind is a CLOSED set, in the database, and both halves of it move
+// together.
+//
+// The worker can derive a storage prefix for exactly the kinds it knows, and a
+// task carrying any other value reclaims nothing while being the only record
+// that those objects exist. Rows do not only arrive from DELETE /sites/{id},
+// which writes a code constant: the m113 header and the CHANGELOG both instruct
+// an operator to hand a known-deleted site to the sweep with a hand-written
+// INSERT, because that is the only route to the objects orphaned before m113.
+// A typo there used to be accepted by the database and then refused by the
+// worker, which is the original defect delivered by the remedy for it.
+//
+// So the set is written down three times, and this test is what stops the
+// copies drifting: backup.ReclaimKinds in code, the CHECK constraint in
+// db/schema.sql and m113 for fresh databases, and m115 for databases that
+// already have the table. A kind added to the code alone cannot be inserted; a
+// kind added to the schema alone is accepted and then stranded.
+// ---------------------------------------------------------------------------
+
+const gh402KindCheckMigration = "migrations/20260817000000_m115_site_object_reclaim_kind_check.sql"
+
+// kindCheckKinds pulls the quoted values out of a
+// CHECK (kind IN ('a', 'b')) clause, in either quoting dialect.
+var kindCheckClause = regexp.MustCompile(
+	`(?is)CONSTRAINT\s+"?site_object_reclaim_kind_check"?\s+CHECK\s*\(\s*"?kind"?\s+IN\s*\(([^)]*)\)`)
+
+// stripSQLLineComments removes "--" line comments.
+//
+// Every migration here carries a long explanatory header that names the exact
+// statements being asserted on, so an assertion about what a file DOES is
+// otherwise satisfied by what its header SAYS. That is the same class of defect
+// as the unanchored block extractor above, and it bit immediately: the first
+// version of the "must not VALIDATE CONSTRAINT" check below went red against
+// m115, whose header explains that it deliberately does not.
+//
+// A "--" inside a string literal would be truncated too. No migration here has
+// one, and the alternative is a SQL lexer in a contract test.
+func stripSQLLineComments(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func kindCheckKinds(t *testing.T, src string) []string {
+	t.Helper()
+	m := kindCheckClause.FindStringSubmatch(src)
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, raw := range strings.Split(m[1], ",") {
+		if v := strings.Trim(strings.TrimSpace(raw), "'"); v != "" {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestGH402_ReclaimKindIsAClosedSetInTheDatabase(t *testing.T) {
+	want := append([]string(nil), backup.ReclaimKinds...)
+	sort.Strings(want)
+	if len(want) == 0 {
+		t.Fatal("backup.ReclaimKinds is empty; the worker accepts nothing")
+	}
+
+	// The constraint is declared inline in the CREATE TABLE for a fresh
+	// database, so it is read out of the table block, which is anchored.
+	for _, rel := range []string{
+		"db/schema.sql",
+		"migrations/20260815000000_m113_site_object_reclaim.sql",
+	} {
+		block := siteObjectReclaimBlock(t, readRepoFile(t, rel))
+		got := kindCheckKinds(t, block)
+		if got == nil {
+			t.Errorf("%s: site_object_reclaim.kind has no site_object_reclaim_kind_check "+
+				"constraint. kind is then free text, and an operator backfill with a mistyped "+
+				"kind is accepted by the database and refused by the worker, which strands the "+
+				"objects it was written to reclaim (GH #402 through its own remedy)", rel)
+			continue
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: the kind CHECK allows %v but backup.ReclaimKinds is %v. "+
+				"A kind in only one of the two is either uninsertable or unreclaimable", rel, got, want)
+		}
+	}
+
+	// And the same set has to reach a database that already has the table.
+	// migrate.go never re-reads an applied version, so this cannot live in m113
+	// or m114: both are applied on exactly the databases that need it.
+	converge := stripSQLLineComments(readRepoFile(t, gh402KindCheckMigration))
+	got := kindCheckKinds(t, converge)
+	if got == nil {
+		t.Fatalf("%s does not add site_object_reclaim_kind_check. A database that ran an earlier "+
+			"m113 keeps a free-text kind column forever", gh402KindCheckMigration)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("%s allows %v but backup.ReclaimKinds is %v", gh402KindCheckMigration, got, want)
+	}
+	if !strings.Contains(converge, "NOT VALID") {
+		t.Error(gh402KindCheckMigration + " adds the constraint without NOT VALID. ADD CONSTRAINT " +
+			"validates every existing row, and migrate.go applies migrations on boot, so a " +
+			"database already holding a bad row would fail to start. The row that fails " +
+			"validation is also the one that must not be lost: it names objects nothing else names")
+	}
+	if strings.Contains(converge, "VALIDATE CONSTRAINT") {
+		t.Error(gh402KindCheckMigration + " validates the constraint, which fails the boot " +
+			"migration on exactly the databases that hold a bad row")
+	}
+	if !(gh402KindCheckMigration > gh402ConvergeMigration) {
+		t.Error("the kind-check migration does not sort after m114; migrations apply in lexical " +
+			"filename order")
+	}
+
+	// The worker must actually enforce the same set, rather than the constraint
+	// being the only thing that does. Rows predating m115 exist.
+	if _, err := backup.SiteObjectPrefix("backup_manifesto", uuid.New(), uuid.New()); err == nil {
+		t.Error("backup.SiteObjectPrefix accepted an unknown kind")
 	}
 }
 
@@ -127,7 +259,10 @@ func TestGH402_ReclaimTableHasNoForeignKeys(t *testing.T) {
 const gh402ConvergeMigration = "migrations/20260816000000_m114_site_object_reclaim_converge.sql"
 
 func TestGH402_ConvergenceLivesInAMigrationAnOldDatabaseWillRun(t *testing.T) {
-	converge := readRepoFile(t, gh402ConvergeMigration)
+	// Comments stripped throughout: these files explain themselves at length and
+	// name the statements in question, so an unstripped Contains asserts on the
+	// prose rather than on the SQL.
+	converge := stripSQLLineComments(readRepoFile(t, gh402ConvergeMigration))
 	if !strings.Contains(converge, `DROP CONSTRAINT IF EXISTS "site_object_reclaim_tenant_id_fkey"`) {
 		t.Error(gh402ConvergeMigration + " no longer drops a pre-existing " +
 			"site_object_reclaim_tenant_id_fkey. A database that applied the first version of " +
@@ -148,7 +283,7 @@ func TestGH402_ConvergenceLivesInAMigrationAnOldDatabaseWillRun(t *testing.T) {
 
 	// And m113 must NOT try to do this work itself, which is the mistake being
 	// guarded against.
-	m113 := readRepoFile(t, "migrations/20260815000000_m113_site_object_reclaim.sql")
+	m113 := stripSQLLineComments(readRepoFile(t, "migrations/20260815000000_m113_site_object_reclaim.sql"))
 	if strings.Contains(m113, "DROP CONSTRAINT") {
 		t.Error("m113 contains a DROP CONSTRAINT. A database that already applied m113 will " +
 			"never read it again, so convergence placed there runs only where it is not needed. " +
@@ -189,25 +324,202 @@ func TestGH402_ReclaimTableHasSiteScopePolicy(t *testing.T) {
 	}
 }
 
-// siteObjectReclaimBlock extracts the SQL text from the site_object_reclaim
-// CREATE TABLE up to the end of that statement.
+// ---------------------------------------------------------------------------
+// siteObjectReclaimBlock: the column list of the site_object_reclaim CREATE
+// TABLE, and nothing else.
+//
+// THIS HELPER IS LOAD BEARING, AND ITS FIRST VERSION WAS NOT. It took the first
+// occurrence of the substring "site_object_reclaim" anywhere in the file and
+// read from the next "(" to the next ");". In m113 the first occurrence is the
+// operator backfill statement quoted in the header comment,
+//
+//	--   INSERT INTO site_object_reclaim (tenant_id, site_id, kind)
+//	--   ... SET completed_at = NULL, attempts = 0, next_attempt_at = now();
+//
+// whose "(" opens the column name list and whose "now();" supplies the ");".
+// The foreign-key guard below was therefore reading four lines of prose, and
+// passed with BOTH cascading foreign keys planted in the real CREATE TABLE.
+// The single worst defect this branch has produced could have come back into
+// m113 with the guard against it still green.
+//
+// So it is anchored on CREATE TABLE, at the start of a line, which a "--"
+// comment line cannot be, and the end is the paren that matches the opening
+// one rather than the first ");" that happens along.
+// ---------------------------------------------------------------------------
+
+// siteObjectReclaimCreateTable matches the CREATE TABLE header in both dialects
+// this repo writes: the bare declarative form in db/schema.sql, and the quoted,
+// schema-qualified, IF NOT EXISTS form the migrations use inside a DO block.
+// The ^ anchor with (?m) is what excludes comments: every SQL comment line here
+// starts with "--", so no comment can satisfy "start of line, then CREATE".
+var siteObjectReclaimCreateTable = regexp.MustCompile(
+	`(?im)^[ \t]*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"?public"?\s*\.\s*)?"?site_object_reclaim"?\s*\(`)
+
 func siteObjectReclaimBlock(t *testing.T, src string) string {
 	t.Helper()
-	idx := strings.Index(src, "site_object_reclaim")
-	if idx < 0 {
-		t.Fatal("site_object_reclaim is not declared at all")
+	block, err := extractSiteObjectReclaimBlock(src)
+	if err != nil {
+		// Fatal, never a silent empty string. A guard that cannot find the table
+		// must go red: passing because it read nothing is the failure mode this
+		// helper was rewritten to remove.
+		t.Fatalf("could not read the site_object_reclaim CREATE TABLE: %v", err)
 	}
-	start := strings.Index(src[idx:], "(")
-	if start < 0 {
-		t.Fatal("malformed site_object_reclaim declaration")
+	return block
+}
+
+// extractSiteObjectReclaimBlock is the testable half, so the anti-vacuity
+// property can itself be tested (see TestGH402_ReclaimBlockExtractorIsAnchored).
+func extractSiteObjectReclaimBlock(src string) (string, error) {
+	loc := siteObjectReclaimCreateTable.FindStringIndex(src)
+	if loc == nil {
+		return "", errors.New("no `CREATE TABLE site_object_reclaim (` at the start of any line")
 	}
-	rest := src[idx+start:]
-	// Read to the end of the CREATE TABLE statement.
-	end := strings.Index(rest, ");")
-	if end < 0 {
-		t.Fatal("malformed site_object_reclaim declaration")
+	body, ok := balancedParenBody(src[loc[1]-1:]) // loc[1]-1 is the "("
+	if !ok {
+		return "", errors.New("the column list has no matching close paren")
 	}
-	return rest[:end]
+	return body, nil
+}
+
+// balancedParenBody returns the text between src[0], which must be "(", and the
+// ")" that matches it. Parens inside a "--" line comment, a "/* */" block
+// comment or a single-quoted string do not count.
+//
+// The comment cases are checked BEFORE the quote case on purpose: this schema is
+// heavily commented in English, so an apostrophe inside a comment is far more
+// likely than a "--" inside a string literal, and only one of the two orderings
+// can be right.
+func balancedParenBody(src string) (string, bool) {
+	if len(src) == 0 || src[0] != '(' {
+		return "", false
+	}
+	depth := 0
+	for i := 0; i < len(src); i++ {
+		switch {
+		case strings.HasPrefix(src[i:], "--"):
+			nl := strings.IndexByte(src[i:], '\n')
+			if nl < 0 {
+				return "", false
+			}
+			i += nl
+		case strings.HasPrefix(src[i:], "/*"):
+			end := strings.Index(src[i+2:], "*/")
+			if end < 0 {
+				return "", false
+			}
+			i += 2 + end + 1
+		case src[i] == '\'':
+			j := i + 1
+			for j < len(src) {
+				if src[j] != '\'' {
+					j++
+					continue
+				}
+				if j+1 < len(src) && src[j+1] == '\'' { // '' is an escaped quote
+					j += 2
+					continue
+				}
+				break
+			}
+			if j >= len(src) {
+				return "", false
+			}
+			i = j
+		case src[i] == '(':
+			depth++
+		case src[i] == ')':
+			depth--
+			if depth == 0 {
+				return src[1:i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// The extractor's own test. The foreign-key guard is only as good as this, and
+// the previous extractor passed every test in this file while reading a
+// comment, so the property gets asserted directly: the block must come from the
+// CREATE TABLE, and decoys that mention the table anywhere else must not be
+// mistaken for it.
+func TestGH402_ReclaimBlockExtractorIsAnchored(t *testing.T) {
+	const table = `
+CREATE TABLE site_object_reclaim (
+    id        uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL,
+    kind      text NOT NULL DEFAULT 'backup_manifest'
+);
+`
+	// Every one of these mentions the table, offers a "(" and ends in ");", and
+	// every one of them sits ABOVE the real declaration. The old extractor
+	// returned the decoy for the first of them, which is the shape m113
+	// actually has.
+	decoys := map[string]string{
+		"the operator backfill quoted in a comment": `
+--   INSERT INTO site_object_reclaim (tenant_id, site_id, kind)
+--   VALUES ('<tenant_id>', '<site_id>', 'backup_manifest')
+--   ON CONFLICT (tenant_id, site_id, kind) DO UPDATE
+--     SET tenant_id = tenant_id REFERENCES tenants (id) ON DELETE CASCADE, next_attempt_at = now();
+`,
+		"a banner comment": `
+-- ---------------------------------------------------------------------------
+-- site_object_reclaim  (m113 / GH #402), REFERENCES tenants (id) is forbidden;
+-- ---------------------------------------------------------------------------
+`,
+		"an index name": `
+CREATE UNIQUE INDEX site_object_reclaim_site_kind_key
+    ON site_object_reclaim (tenant_id, site_id, kind);
+`,
+		"a policy name": `
+CREATE POLICY site_object_reclaim_tenant_isolation ON site_object_reclaim
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+`,
+		"a commented-out CREATE TABLE": `
+-- CREATE TABLE site_object_reclaim (
+--     tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE
+-- );
+`,
+	}
+
+	for name, decoy := range decoys {
+		t.Run(name, func(t *testing.T) {
+			block, err := extractSiteObjectReclaimBlock(decoy + table)
+			if err != nil {
+				t.Fatalf("extractor failed on a file containing a real CREATE TABLE: %v", err)
+			}
+			if !strings.Contains(block, "id        uuid PRIMARY KEY") {
+				t.Fatalf("extractor returned something other than the CREATE TABLE column list.\n"+
+					"That is how the foreign-key guard went vacuous, so it is fatal.\ngot: %q", block)
+			}
+			if strings.Contains(block, "REFERENCES") {
+				t.Fatalf("extractor pulled text from the decoy above the table; the guard would "+
+					"now FALSE-POSITIVE on correct code.\ngot: %q", block)
+			}
+		})
+	}
+
+	// A file with no CREATE TABLE at all must error, not silently return "".
+	if _, err := extractSiteObjectReclaimBlock(decoys["a policy name"]); err == nil {
+		t.Error("a file with no CREATE TABLE produced no error; the guard would read an empty " +
+			"block and pass")
+	}
+
+	// A close paren inside a comment or a string must not end the block early.
+	tricky := `
+CREATE TABLE IF NOT EXISTS "public"."site_object_reclaim" (
+    -- 'cp' | 'local' (s3_compat) | NULL, and a stray ); in prose
+    "destination_kind" text DEFAULT 'a)string;with(parens',
+    "tenant_id" uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE
+);
+`
+	block, err := extractSiteObjectReclaimBlock(tricky)
+	if err != nil {
+		t.Fatalf("extractor failed on the quoted migration dialect: %v", err)
+	}
+	if !strings.Contains(block, `"tenant_id" uuid NOT NULL REFERENCES tenants`) {
+		t.Errorf("the block was truncated by a paren inside a comment or a string literal, so a "+
+			"foreign key declared after one would be invisible to the guard.\ngot: %q", block)
+	}
 }
 
 // ---------------------------------------------------------------------------

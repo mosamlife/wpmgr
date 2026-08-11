@@ -1114,7 +1114,18 @@ CREATE TABLE site_object_reclaim (
     tenant_id        uuid        NOT NULL,
     site_id          uuid        NOT NULL,
     -- Which site-scoped storage root to reclaim ('backup_manifest' today).
-    kind             text        NOT NULL DEFAULT 'backup_manifest',
+    --
+    -- A CLOSED SET, enforced here rather than only in the worker. The operator
+    -- remedy for objects orphaned before m113 is a hand-written INSERT into this
+    -- table (the statement is in the m113 header), so a typo in this column is a
+    -- realistic event with an unrealistic cost: the worker cannot derive a prefix
+    -- for a kind it does not know, and those objects have no other record
+    -- anywhere. Refusing the row outright puts the failure in front of the person
+    -- typing it, at the moment they can fix it, instead of parking it in a table
+    -- nobody reads. backup.ReclaimKinds is the code-side set and tests/contract
+    -- holds the two together.
+    kind             text        NOT NULL DEFAULT 'backup_manifest'
+        CONSTRAINT site_object_reclaim_kind_check CHECK (kind IN ('backup_manifest')),
     -- 'cp' | 'local' | 's3_compat' | NULL for the legacy CP-global bucket.
     destination_kind text,
     attempts         int         NOT NULL DEFAULT 0,

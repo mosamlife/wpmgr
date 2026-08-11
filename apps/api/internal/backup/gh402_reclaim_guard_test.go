@@ -483,6 +483,147 @@ func TestGH402_ReclaimWorker_GiveUpLeavesTaskVisible(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// AN UNKNOWN KIND IS A RETRYABLE FAILURE, NEVER A CANCEL.
+//
+// kind used to be free text and the worker used to CANCEL a task whose prefix it
+// could not derive. Cancel closes the row, so the task left the due query and
+// the stuck report at once and nothing ever mentioned it again, while the
+// objects it named sat in the bucket with no other record anywhere.
+//
+// That is not a theoretical row. The m113 header and the CHANGELOG both tell an
+// operator to hand a known-deleted site to the sweep with a hand-written INSERT,
+// because it is the only route to the objects orphaned before m113 existed, and
+// the reporting account has 90 of those. One mistyped kind in that statement
+// stranded them permanently: GH #402 delivered by the remedy for GH #402.
+//
+// The database now refuses the bad insert outright (site_object_reclaim_kind_check,
+// m113 for fresh databases and m115 for existing ones). This test covers what
+// the constraint cannot: a row written before it existed. The rule the worker
+// follows is that Cancel is reserved for a PROOF that there is nothing to
+// reclaim, which is the live-site guard alone.
+// ---------------------------------------------------------------------------
+
+func TestGH402_ReclaimWorker_UnknownKindIsRetriedAndStaysVisible(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	store := newGCStore()
+	key := manifestIndexKey(tenantID, siteID, uuid.New())
+	store.put(key)
+
+	state := newFakeReclaimStore()
+	task := newReclaimTask(tenantID, siteID)
+	task.Kind = "backup_manifests" // the plural: one keystroke
+	state.tasks = []ReclaimTask{task}
+
+	var logged []string
+	w := NewReclaimWorker(state, store, slog.New(slog.NewTextHandler(&recordingWriter{lines: &logged},
+		&slog.HandlerOptions{Level: slog.LevelError})))
+
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	// It must not have been closed. A closed task is invisible to every query the
+	// worker has, so the objects would never be reclaimed and nobody would know.
+	if state.cancelled[task.ID] != "" {
+		t.Fatal("a task with an unknown kind was CANCELLED. That closes the row, which is the " +
+			"only record naming those objects, so they are stranded permanently: GH #402 " +
+			"reintroduced by the remedy for it")
+	}
+	if state.completed[task.ID] {
+		t.Fatal("a task with an unknown kind was marked complete despite reclaiming nothing")
+	}
+	if state.failures[task.ID] != 1 {
+		t.Errorf("expected the attempt to be recorded as a retryable failure, got %d",
+			state.failures[task.ID])
+	}
+	if state.backoffs[task.ID] <= 0 {
+		t.Error("expected a positive retry backoff")
+	}
+	// Nothing was deleted: the worker could not name a prefix, so it must not have
+	// guessed one.
+	if !store.has(key) {
+		t.Error("an object was deleted for a task whose prefix could not be derived")
+	}
+	if len(store.deleted) != 0 {
+		t.Errorf("expected zero deletes, got %d", len(store.deleted))
+	}
+	// The recorded reason has to be usable: the bad value, and how to fix it.
+	reason := state.lastError[task.ID]
+	if !strings.Contains(reason, "backup_manifests") {
+		t.Errorf("the recorded reason does not quote the bad kind, so an operator cannot see the "+
+			"typo: %q", reason)
+	}
+	if !strings.Contains(reason, "UPDATE site_object_reclaim") {
+		t.Errorf("the recorded reason does not tell the operator how to correct the row: %q", reason)
+	}
+
+	// Past the cap it must keep showing up, every tick, with the bad value in it.
+	for i := 0; i < reclaimMaxAttempts+2; i++ {
+		if err := w.Work(context.Background(), nil); err != nil {
+			t.Fatalf("Work tick %d: %v", i, err)
+		}
+	}
+	if _, ok := state.find(task.ID); !ok {
+		t.Fatal("the row was deleted; it is the only record those objects exist")
+	}
+	before := len(logged)
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("post-cap Work: %v", err)
+	}
+	joined := strings.Join(logged[before:], "\n")
+	if joined == "" {
+		t.Fatal("a stranded task went silent after the attempt cap")
+	}
+	if !strings.Contains(joined, siteID.String()) {
+		t.Errorf("the stuck report does not name the site: %s", joined)
+	}
+	if !strings.Contains(joined, "backup_manifests") {
+		t.Errorf("the stuck report does not carry the bad kind, which is the thing an operator "+
+			"has to see in order to fix it: %s", joined)
+	}
+}
+
+// Correcting the kind makes the task run and drain, so the failure above is
+// genuinely recoverable rather than merely noisy.
+func TestGH402_ReclaimWorker_CorrectingTheKindResumesTheTask(t *testing.T) {
+	tenantID := uuid.New()
+	siteID := uuid.New()
+
+	store := newGCStore()
+	key := manifestIndexKey(tenantID, siteID, uuid.New())
+	store.put(key)
+
+	state := newFakeReclaimStore()
+	task := newReclaimTask(tenantID, siteID)
+	task.Kind = "backup_manifests"
+	state.tasks = []ReclaimTask{task}
+
+	w := NewReclaimWorker(state, store, nil)
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if !store.has(key) {
+		t.Fatal("the object was deleted before the kind was corrected")
+	}
+
+	// The operator's UPDATE: fix the kind, reset the attempt counter.
+	state.tasks[0].Kind = ReclaimKindBackupManifest
+	state.failures[task.ID] = 0
+
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work after correction: %v", err)
+	}
+	if store.has(key) {
+		t.Error("the corrected task did not reclaim the object")
+	}
+	if !state.completed[task.ID] {
+		t.Error("the corrected task did not close after a clean drain")
+	}
+}
+
 // Backoff grows and is capped, so a permanently broken bucket does not spin.
 func TestGH402_ReclaimBackoff_GrowsAndCaps(t *testing.T) {
 	if got := reclaimBackoff(0); got != reclaimBaseBackoff {

@@ -108,6 +108,28 @@ const (
 	reclaimMaxBackoff  = 24 * time.Hour
 )
 
+// ReclaimKinds is the closed set of kinds this worker can act on, and the
+// single place a new one is added.
+//
+// It exists because the same set is written down twice more, once as the
+// site_object_reclaim_kind_check constraint in db/schema.sql and m113, and once
+// in m115 for databases that predate that constraint. A kind added here and not
+// there cannot be inserted; a kind added there and not here is accepted by the
+// database and then refused by the worker. tests/contract compares this slice
+// against the constraint text so neither half can move alone.
+var ReclaimKinds = []string{ReclaimKindBackupManifest}
+
+// KnownReclaimKind reports whether kind is one this worker can derive a prefix
+// for.
+func KnownReclaimKind(kind string) bool {
+	for _, k := range ReclaimKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // ReclaimArgs is the (empty) periodic job payload.
 type ReclaimArgs struct{}
 
@@ -189,6 +211,12 @@ type ReclaimStore interface {
 	// Complete closes a task that fully drained.
 	Complete(ctx context.Context, id uuid.UUID) error
 	// Cancel closes a task WITHOUT any storage deletion, recording why.
+	//
+	// Reserved for the one outcome that is a PROOF there is nothing to reclaim:
+	// the site row still exists. A closed task appears in neither the due query
+	// nor the stuck report, so cancelling anything the worker merely could not
+	// do would strand those objects silently and permanently. Everything else
+	// goes through Fail.
 	Cancel(ctx context.Context, id uuid.UUID, reason string) error
 	// Fail records an attempt and backs the task off. Never deletes the row.
 	Fail(ctx context.Context, id uuid.UUID, backoff time.Duration, reason string) error
@@ -232,8 +260,9 @@ func (w *ReclaimWorker) Timeout(*river.Job[ReclaimArgs]) time.Duration { return 
 // semantically wrong prefix; refusing is the only safe answer, because the
 // caller cannot tell the difference and object deletion is irreversible.
 func SiteObjectPrefix(kind string, tenantID, siteID uuid.UUID) (string, error) {
-	if kind != ReclaimKindBackupManifest {
-		return "", fmt.Errorf("site object reclaim: unknown kind %q", kind)
+	if !KnownReclaimKind(kind) {
+		return "", fmt.Errorf("site object reclaim: unknown kind %q, known kinds are %v",
+			kind, ReclaimKinds)
 	}
 	if tenantID == uuid.Nil || siteID == uuid.Nil {
 		return "", errors.New("site object reclaim: refusing to derive a prefix from a nil tenant or site id")
@@ -366,14 +395,32 @@ const (
 func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOutcome {
 	// GUARD 1: the derived prefix must be well formed. Checked before any DB
 	// round-trip so a corrupt row can never even reach the storage calls.
+	//
+	// This FAILS the task, it does not cancel it, and the difference is the
+	// whole point. Cancel closes the row, which takes it out of the due query
+	// AND out of the stuck report, so nothing ever mentions it again. That is
+	// only correct when the worker has PROVED there is nothing to reclaim, which
+	// is guard 3's case and guard 3's case alone: the site row still exists.
+	//
+	// An underivable prefix is not proof of anything. It is the worker not
+	// knowing where to look, and the objects it cannot name are still sitting in
+	// the bucket. Cancelling here strands them permanently, which is GH #402
+	// delivered by the remedy for it. The likeliest way to get here is the
+	// operator backfill the m113 header documents: a mistyped kind in a
+	// hand-written INSERT. The database now refuses that insert outright
+	// (site_object_reclaim_kind_check, m113 and m115), so this path is the
+	// residue, rows written before that constraint existed. Failing leaves the
+	// row open, backs it off, and after the attempt cap hands it to the
+	// every-tick stuck report with this reason attached, where an operator can
+	// see the bad value and correct it.
 	prefix, perr := SiteObjectPrefix(t.Kind, t.TenantID, t.SiteID)
 	if perr != nil {
-		w.logger.Error("site object reclaim: refusing a task whose prefix cannot be derived",
-			slog.String("task_id", t.ID.String()), slog.Any("error", perr))
-		if cerr := w.state.Cancel(ctx, t.ID, perr.Error()); cerr != nil {
-			return reclaimFailed
-		}
-		return reclaimCancelled
+		w.fail(ctx, t, perr.Error()+
+			" (the task is kept and retried, never cancelled: its objects are still in storage "+
+			"and this row is the only record of them. Correct the row and it resumes: "+
+			"UPDATE site_object_reclaim SET kind = '"+ReclaimKindBackupManifest+
+			"', attempts = 0, next_attempt_at = now() WHERE id = '"+t.ID.String()+"')")
+		return reclaimFailed
 	}
 
 	// GUARD 2: stand off a tenant that Lane B already owns, and ONLY that one.

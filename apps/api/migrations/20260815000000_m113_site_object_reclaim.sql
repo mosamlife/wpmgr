@@ -136,6 +136,13 @@
 --   ON CONFLICT (tenant_id, site_id, kind) DO UPDATE
 --     SET completed_at = NULL, attempts = 0, next_attempt_at = now();
 --
+-- Get the kind wrong in that statement and the database refuses the whole
+-- INSERT, naming site_object_reclaim_kind_check. That is deliberate: a task
+-- carrying a kind the worker cannot derive a prefix for is a task that reclaims
+-- nothing, and nothing else in the database names those objects, so a typo
+-- accepted here would strand them exactly as GH #402 did. The column default is
+-- the correct value, so omitting kind entirely also works.
+--
 -- IDEMPOTENCE AND BOOT SAFETY
 --
 -- internal/db/migrate.go applies these on boot, in lexical order, each in its
@@ -161,8 +168,22 @@ BEGIN
         "tenant_id"        uuid        NOT NULL,
         "site_id"          uuid        NOT NULL,
         -- Which site-scoped storage root to reclaim. 'backup_manifest' is the
-        -- only kind today.
-        "kind"             text        NOT NULL DEFAULT 'backup_manifest',
+        -- only kind today, and the set is CLOSED by the constraint below.
+        --
+        -- The operator remedy in this header is a hand-written INSERT, so a typo
+        -- in this column is a realistic event, and an expensive one: the worker
+        -- cannot derive a prefix for a kind it does not know, and there is no
+        -- other record anywhere of the objects that row was meant to reclaim.
+        -- The constraint puts that failure in front of the person typing the
+        -- statement, at the moment they can fix it. A database that predates the
+        -- constraint gets it from m115 (NOT VALID, so it cannot fail a boot), and
+        -- the worker treats an unknown kind as a retryable failure rather than a
+        -- cancel so a row written before either still stays visible.
+        --
+        -- backup.ReclaimKinds is the code-side copy of this set; tests/contract
+        -- compares the two, so a kind cannot be added to one half alone.
+        "kind"             text        NOT NULL DEFAULT 'backup_manifest'
+            CONSTRAINT "site_object_reclaim_kind_check" CHECK ("kind" IN ('backup_manifest')),
         -- 'cp' | 'local' | 's3_compat' | NULL when the site had no destination
         -- row (the legacy control-plane-global bucket). Diagnostic only.
         "destination_kind" text,
