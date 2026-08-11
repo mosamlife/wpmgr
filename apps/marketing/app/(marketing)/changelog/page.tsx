@@ -16,8 +16,8 @@ export const metadata: Metadata = buildMetadata({
 
 // ---------------------------------------------------------------------------
 // Curated release entries (newest first, harvested from CHANGELOG.md).
-// This is a long curated history, not a recent window: 72 entries as of
-// 2026-08-10, running from 0.61.131 back to 0.54.0, some of them grouping
+// This is a long curated history, not a recent window: 73 entries as of
+// 2026-08-11, running from 0.61.132 back to 0.54.0, some of them grouping
 // several releases into one. Anything older lives on GitHub Releases.
 // CI keeps the newest entry within 5 releases of the top CHANGELOG.md entry
 // (scripts/check-version-surfaces.sh), reading the newest version in a grouped
@@ -42,6 +42,43 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 };
 
 const RELEASES: ChangeEntry[] = [
+  {
+    version: "0.61.132",
+    date: "2026-08-11",
+    summary:
+      "Deleting a site used to leave that site's backup manifests in object storage for good. Removing the site removed the only records naming those files, so nothing could ever find them again, and one account was left carrying 90 of them on its storage bill. Deleting a site now clears its stored manifests within the hour. Files orphaned by a delete made before this release are not cleaned up by it, and nothing in it finds them, so clearing those stays a step you take yourself.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Deleting one site no longer strands its backup manifests in object storage forever. Removing the site removed every snapshot record it had, and those records were the only thing naming the site's stored manifest files, so nothing could ever find them again. The delete now writes a reclamation record in the same database transaction that removes the site, and an hourly sweep clears that site's storage folder afterwards. The same transaction is the point: a record written separately, before the delete, could outlive a delete that then failed, and that would leave a standing instruction to erase a live site's backups.",
+      },
+      {
+        tag: "Fixed",
+        text: "Files orphaned before this release are not cleaned up by it, and nothing in it finds them. The reclamation record is written by the delete, so it exists only for sites deleted from this version onwards. A site you deleted on an earlier version left no record anywhere, which is the defect itself, so its manifests are still in your bucket and still on your storage bill: the account that reported this is carrying 90 of them today. Clearing them is a deliberate step you take yourself, one folder per deleted site. Rather than deleting by hand you can hand a site you know is gone to the sweep with a single insert, which keeps every safety check in play, and the exact statement is written out in the database migration that ships with this release. It has to be run on a superuser connection.",
+      },
+      {
+        tag: "Fixed",
+        text: "Deduplicated chunks, which are the bulk of what your backups occupy, are deliberately untouched by that sweep. They are shared across every site in the account, they sit under a different storage root, and the sweep is structurally unable to reach them, so a chunk another site still needs cannot be deleted by this path however it goes wrong. A sweep that cannot finish, or cannot prove the site is really gone, leaves the files where they are and keeps its record rather than discarding it, because that record is by then the last thing that knows those files exist.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site whose backups go to your own storage bucket has its manifests swept like any other. Manifests are always written to the bucket this instance is itself configured with, whatever destination the backup payload was sent to, so all of them are in scope and none of them are stranded. What this instance does not touch is the backup payload sitting in your own bucket, which it holds no credentials for.",
+      },
+      {
+        tag: "Fixed",
+        text: "An account that lost its last backup-carrying site stopped being garbage collected at all, so its stored chunks leaked as well as its manifests. The list of accounts to collect came only from completed backups, and deleting the site that held the final one removed the account from that list permanently. It now also considers accounts that still have chunks in storage, which changes only which accounts get looked at: every existing check on what may actually be deleted is unchanged, and a backup running at the time still protects everything it touches. Deleting the emptied organisation afterwards still strands its chunks, and that is deliberately left open here.",
+      },
+      {
+        tag: "Fixed",
+        text: "A batch of fixes to signing in with Google or GitHub. A provider that stops reporting an address, which is what GitHub does once someone makes theirs private, no longer erases the last address it did report. Connecting a provider, creating an account from one, and a stored provider record changing issuer are now written to the audit log as what they are, instead of all three reading as an ordinary sign-in, and a change to what an account can sign in with is now recorded even when that account belongs to no organisation, which describes a site collaborator, a client with portal access, and every brand new account. Signing in with Google is now bounded by a timeout, as signing in with GitHub already was, and connecting a second account from a provider you already have connected reports a conflict you can act on instead of a server error.",
+      },
+      {
+        tag: "Changed",
+        text: "The self-host install guide no longer hands you a stack from 190 releases ago. It still told you to pull v0.19.0, one link below the current pull commands in the README, so following that link rather than staying on the page you were already reading got you a control plane predating a long list of fixes. Both pages now also say what running without the media encoder actually costs, which is site screenshots, the Media Optimizer and WOFF2 font transcoding, and nothing else. Keeping every published version number honest is now a script anyone can run before pushing, with a test suite of its own, rather than shell buried in the build.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
+  },
   {
     version: "0.61.131",
     date: "2026-08-10",
