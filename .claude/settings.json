@@ -1,0 +1,95 @@
+{
+  "$comment": "Project harness. These hooks execute shell from scripts/claude/ - read them before trusting them; they are committed precisely so they can be read. The guards fail OPEN when jq is missing and session-brief.sh announces that at the top of every session, because a guard that stops guarding in silence is the defect this project keeps shipping. See docs/harness.md.",
+
+  "$comment_deny": "The deny rules below are written as Edit(...) and that is NOT a narrowing to the Edit tool: a path denied here is refused for Write and NotebookEdit too. Checked on 2026-08-12 by attempting a Write to apps/api/internal/db/sqlc/ and a Write to apps/web/src/routeTree.gen.ts; both were refused with 'File is in a directory that is denied by your permission settings', and both shapes are covered - the ** prefix rule and the single-file rule. None of this reaches a Bash write; scripts/claude/bash-guard.sh covers that, and its header states what it cannot cover.",
+
+  "worktree": {
+    "baseRef": "head"
+  },
+
+  "cleanupPeriodDays": 14,
+
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_MAX_TIMEOUT_MS": "1800000",
+    "CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS": "1800000"
+  },
+
+  "workflowSizeGuideline": "medium",
+
+  "permissions": {
+    "deny": [
+      "Edit(apps/api/internal/db/sqlc/**)",
+      "Edit(apps/api/internal/api/gen/**)",
+      "Edit(apps/web/src/routeTree.gen.ts)",
+      "Edit(packages/openapi-client/src/generated/**)",
+      "Edit(apps/landing/**)"
+    ]
+  },
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/route-guard.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/bash-guard.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/agent-writes.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/route-guard.sh\" --record",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/commit-gate.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/session-brief.sh\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

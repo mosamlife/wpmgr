@@ -98,6 +98,24 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# ---- Agent harness (.claude) ------------------------------------------------
+# The harness is build-gating logic, so it lives in tested scripts, not in prose
+# and not in a YAML block scalar. `harness-check` is what ci.yml runs.
+
+.PHONY: harness-check
+harness-check: ## Lint the agent definitions and run the guard regression suite
+	scripts/claude/agent-lint.sh --self-test
+	scripts/claude/agent-lint.sh
+	scripts/claude/guards_test.sh
+
+.PHONY: harness-reap
+harness-reap: ## REPORT what agent worktrees, branches, caches and volumes can be reclaimed
+	scripts/claude/harness-reap.sh
+
+.PHONY: harness-reap-apply
+harness-reap-apply: ## Actually reclaim them (removes only clean, merged worktrees and merged branches)
+	scripts/claude/harness-reap.sh --apply
+
 # reproducible_zip: package $2 (a directory) inside $1 into $3, byte for byte
 # identically every time the same tree is packaged.
 #
