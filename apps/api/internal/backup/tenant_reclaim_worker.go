@@ -179,13 +179,17 @@ func (TenantReclaimArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: TenantReclaimQueue}
 }
 
-// TenantReclaimTask is one unit of work: identity only, never a prefix.
+// TenantReclaimTask is one unit of work: identity and triage, never a prefix.
 type TenantReclaimTask struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID
 	Kind      string
 	Attempts  int32
 	LastError string
+	// CreatedAt is when the work was recorded. `wpmgr-cli reclaim list` prints
+	// its age, which is what separates a task working through its backoff from
+	// one that has been stranded since a delete months ago.
+	CreatedAt time.Time
 }
 
 // TenantReclaimStore is the persistence half, split out so every guard can be
@@ -336,12 +340,12 @@ func (w *TenantReclaimWorker) reportStuck(ctx context.Context) {
 			slog.String("roots", rootList),
 			slog.Int("attempts", int(t.Attempts)),
 			slog.String("last_error", t.LastError),
-			slog.String("recovery", TenantReclaimRetryHint(t.ID)))
+			slog.String("recovery", TenantReclaimRetryCommand(t.ID)))
 	}
 }
 
-// TenantReclaimRetryHint is the supported way to reopen a stuck task, and it is
-// deliberately NOT a SQL statement (GH #408 finding 3).
+// TenantReclaimRetryCommand is the supported way to reopen a stuck TENANT task,
+// and it is deliberately NOT a SQL statement (GH #408 finding 3).
 //
 // The site reclaim worker used to print a bare UPDATE here. Run verbatim as the
 // application role with no GUC that statement is err=nil, rows=0, and the row is
@@ -350,8 +354,19 @@ func (w *TenantReclaimWorker) reportStuck(ctx context.Context) {
 // that cannot work on the connection the operator has, so a longer caveat would
 // have been a different fix from the right one. This command runs through the
 // ordinary application role and exits non-zero if it changes nothing.
+//
+// It names THIS table's kind, not the site engine's: `reclaim retry` resolves an
+// id in the tenant table first, and --kind tenant_storage keeps it there rather
+// than falling through to the site table. The string itself comes from
+// reclaimRetryCommand (reclaim_ops.go), the single constructor both engines use.
+func TenantReclaimRetryCommand(taskID uuid.UUID) string {
+	return reclaimRetryCommand(taskID, TenantReclaimKindStorage)
+}
+
+// TenantReclaimRetryHint is TenantReclaimRetryCommand wrapped in the advice
+// sentence a failed tenant task carries in last_error.
 func TenantReclaimRetryHint(taskID uuid.UUID) string {
-	return "wpmgr-cli reclaim retry --task " + taskID.String()
+	return reclaimRetryAdvice(taskID, TenantReclaimKindStorage)
 }
 
 type tenantReclaimOutcome int
@@ -375,10 +390,7 @@ func (w *TenantReclaimWorker) reclaimOne(ctx context.Context, t TenantReclaimTas
 	// storage call at all.
 	roots, perr := TenantObjectPrefixes(t.Kind, t.TenantID)
 	if perr != nil {
-		w.fail(ctx, t, perr.Error()+
-			" (the task is kept and retried, never cancelled: its objects are still in storage "+
-			"and this row is the only record of them. Correct it with: "+TenantReclaimRetryHint(t.ID)+
-			" which runs as the ordinary application role and exits non-zero if it changes nothing)")
+		w.fail(ctx, t, perr.Error()+TenantReclaimRetryHint(t.ID))
 		return tenantReclaimFailed
 	}
 
@@ -526,7 +538,7 @@ func (w *TenantReclaimWorker) fail(ctx context.Context, t TenantReclaimTask, rea
 		slog.Int("attempts", int(next)),
 		slog.Int("max_attempts", int(w.max)),
 		slog.String("reason", reason),
-		slog.String("recovery", TenantReclaimRetryHint(t.ID)))
+		slog.String("recovery", TenantReclaimRetryCommand(t.ID)))
 }
 
 // tenantReclaimBackoff doubles from the base up to the cap.
@@ -591,7 +603,10 @@ func (s *pgTenantReclaimStore) ListStuck(ctx context.Context, maxAttempts, limit
 func tenantReclaimTasksFromRows(rows []sqlc.TenantObjectReclaim) []TenantReclaimTask {
 	out := make([]TenantReclaimTask, 0, len(rows))
 	for _, r := range rows {
-		t := TenantReclaimTask{ID: r.ID, TenantID: r.TenantID, Kind: r.Kind, Attempts: r.Attempts}
+		t := TenantReclaimTask{
+			ID: r.ID, TenantID: r.TenantID, Kind: r.Kind,
+			Attempts: r.Attempts, CreatedAt: r.CreatedAt,
+		}
 		if r.LastError != nil {
 			t.LastError = *r.LastError
 		}

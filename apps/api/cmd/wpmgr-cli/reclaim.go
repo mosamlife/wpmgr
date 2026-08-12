@@ -135,7 +135,14 @@ func reclaimCmd(args []string, out io.Writer) error {
 	case "retry":
 		fs := flag.NewFlagSet("reclaim retry", flag.ContinueOnError)
 		task := fs.String("task", "", "the task uuid, as shown by `reclaim list`")
-		kind := fs.String("kind", "", "for a site task, the kind to correct it to (default "+backup.ReclaimKindBackupManifest+")")
+		// Both engines' kinds are accepted here. The tenant one used to be
+		// refused before the tenant table was consulted at all, which made the
+		// one command family that exists to dig an operator out of a hole reject
+		// its own kind (GH #408 review).
+		kind := fs.String("kind", "",
+			"the task's kind: "+backup.ReclaimKindBackupManifest+" for a site task, which a site "+
+				"task is also corrected to, or "+backup.TenantReclaimKindStorage+" for an "+
+				"organisation task (default "+backup.ReclaimKindBackupManifest+")")
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
@@ -228,10 +235,16 @@ func reclaimList(ctx context.Context, pool *db.Pool, out io.Writer) error {
 		fmt.Fprintln(out, "no open reclamation tasks")
 		return nil
 	}
+	// age is printed next to attempts on purpose. The two answer different
+	// questions and only together say whether a task is stuck: attempts=8 an
+	// hour old is a task working through its backoff after a storage outage,
+	// attempts=8 three months old is a prefix nothing will ever reclaim and a
+	// bill that has been running since.
 	if len(open.Tenants) > 0 {
 		fmt.Fprintf(out, "organisation storage (%d):\n", len(open.Tenants))
 		for _, t := range open.Tenants {
-			fmt.Fprintf(out, "  task=%s organisation=%s attempts=%d\n", t.ID, t.TenantID, t.Attempts)
+			fmt.Fprintf(out, "  task=%s organisation=%s attempts=%d age=%s\n",
+				t.ID, t.TenantID, t.Attempts, backup.FormatTaskAge(t.CreatedAt))
 			if t.LastError != "" {
 				fmt.Fprintf(out, "    last error: %s\n", t.LastError)
 			}
@@ -240,8 +253,8 @@ func reclaimList(ctx context.Context, pool *db.Pool, out io.Writer) error {
 	if len(open.Sites) > 0 {
 		fmt.Fprintf(out, "site manifests (%d):\n", len(open.Sites))
 		for _, s := range open.Sites {
-			fmt.Fprintf(out, "  task=%s organisation=%s site=%s kind=%s attempts=%d\n",
-				s.ID, s.TenantID, s.SiteID, s.Kind, s.Attempts)
+			fmt.Fprintf(out, "  task=%s organisation=%s site=%s kind=%s attempts=%d age=%s\n",
+				s.ID, s.TenantID, s.SiteID, s.Kind, s.Attempts, backup.FormatTaskAge(s.CreatedAt))
 			if s.LastError != "" {
 				fmt.Fprintf(out, "    last error: %s\n", s.LastError)
 			}

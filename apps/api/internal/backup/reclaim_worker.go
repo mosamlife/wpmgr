@@ -151,7 +151,7 @@ type ObjectReclaimer interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// ReclaimTask is one unit of reclamation work: identity only, no prefix.
+// ReclaimTask is one unit of reclamation work: identity and triage, no prefix.
 type ReclaimTask struct {
 	ID              uuid.UUID
 	TenantID        uuid.UUID
@@ -162,6 +162,10 @@ type ReclaimTask struct {
 	// LastError is the reason the previous attempt failed. Carried so the
 	// stuck-task report can say WHY a task gave up without a second query.
 	LastError string
+	// CreatedAt is when the work was recorded. `wpmgr-cli reclaim list` prints
+	// its age: attempts alone cannot tell an operator whether a task is working
+	// through its backoff or has been stranded for months.
+	CreatedAt time.Time
 }
 
 // TenantReclaimState is the tenant's lifecycle as this worker must read it.
@@ -373,9 +377,9 @@ func (w *ReclaimWorker) reportStuck(ctx context.Context) {
 			prefix = "(underivable: " + perr.Error() + ")"
 		}
 		// These are the lines an operator actually alerts on, so they carry the
-		// same supported command the failure reason does, and for the same reason
-		// (GH #408 finding 3): a pastable statement here would be one the
-		// application role silently discards.
+		// same supported command the failure reason does, from the same
+		// constructor, and for the same reason (GH #408 finding 3): a pastable
+		// statement here would be one the application role silently discards.
 		w.logger.Error("site object reclaim: stuck task",
 			slog.String("task_id", t.ID.String()),
 			slog.String("tenant_id", t.TenantID.String()),
@@ -383,21 +387,27 @@ func (w *ReclaimWorker) reportStuck(ctx context.Context) {
 			slog.String("prefix", prefix),
 			slog.Int("attempts", int(t.Attempts)),
 			slog.String("last_error", t.LastError),
-			slog.String("recovery", "wpmgr-cli reclaim retry --task "+t.ID.String()))
+			slog.String("recovery", ReclaimRetryCommand(t.ID)))
 	}
 }
 
-// ReclaimRetryHint is the supported way to reopen a stuck site task, and it is
-// deliberately NOT a SQL statement (GH #408 finding 3).
+// ReclaimRetryCommand is the supported way to reopen a stuck SITE task, and it
+// is deliberately NOT a SQL statement (GH #408 finding 3).
 //
-// It is a function rather than a literal at each call site so the three places
-// an operator meets this advice (the guard-1 failure reason, the every-tick
-// stuck report, and the tenant worker's equivalent) cannot drift apart.
+// It names this engine's kind explicitly rather than leaning on the retry
+// command's default, so the site and tenant hints each correct their own table.
+// Both are built by reclaimRetryCommand (reclaim_ops.go), which is the only
+// place either string is constructed: the claim that these cannot drift apart is
+// worth making only while that stays true, and it was not true when this comment
+// first made it. TestGH408_EveryOperatorHintComesFromOneConstructor is the guard.
+func ReclaimRetryCommand(taskID uuid.UUID) string {
+	return reclaimRetryCommand(taskID, ReclaimKindBackupManifest)
+}
+
+// ReclaimRetryHint is ReclaimRetryCommand wrapped in the advice sentence a
+// failed site task carries in last_error.
 func ReclaimRetryHint(taskID uuid.UUID) string {
-	return " (the task is kept and retried, never cancelled: its objects are still in storage and " +
-		"this row is the only record of them. Correct it with: wpmgr-cli reclaim retry --task " +
-		taskID.String() + " which runs as the ordinary application role and exits non-zero if it " +
-		"changes nothing)"
+	return reclaimRetryAdvice(taskID, ReclaimKindBackupManifest)
 }
 
 type reclaimOutcome int
@@ -608,7 +618,7 @@ func reclaimTasksFromRows(rows []sqlc.SiteObjectReclaim) []ReclaimTask {
 	for _, r := range rows {
 		t := ReclaimTask{
 			ID: r.ID, TenantID: r.TenantID, SiteID: r.SiteID,
-			Kind: r.Kind, Attempts: r.Attempts,
+			Kind: r.Kind, Attempts: r.Attempts, CreatedAt: r.CreatedAt,
 		}
 		if r.DestinationKind != nil {
 			t.DestinationKind = *r.DestinationKind

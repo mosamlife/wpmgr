@@ -33,6 +33,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -148,8 +149,13 @@ func TestGH408_ReclaimCommandWorksAsTheApplicationRole(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // The negative controls: what the SHIPPED remedies do on that same connection.
-// These record WHY a supported entry point exists, and they run the documented
-// statements verbatim so the record cannot drift from the documentation.
+//
+// These are the tests that establish WHY a supported entry point exists, and
+// they run the documented statements verbatim so they cannot drift from the
+// documentation. Every claim in them is ASSERTED. A control that logs its
+// finding instead of asserting it is a control that cannot fail, and one of
+// those in the file documenting a defect is the defect's own shape applied to
+// its proof.
 // ---------------------------------------------------------------------------
 
 func TestGH408_TheShippedRemediesDoNotWorkAsTheApplicationRole(t *testing.T) {
@@ -172,15 +178,44 @@ func TestGH408_TheShippedRemediesDoNotWorkAsTheApplicationRole(t *testing.T) {
 		t.Logf("m113 header INSERT as %s: %v", "wpmgr_app", ierr)
 	}
 
-	// The worker's printed UPDATE: silent. This is the dangerous one.
+	// The worker's printed UPDATE: silent. This is the dangerous one, and it is
+	// the entire reason the wpmgr-cli reclaim family exists, so it is ASSERTED
+	// rather than logged.
+	//
+	// It used to be recorded with t.Logf inside `if uerr == nil && rows == 0`,
+	// which is a negative control that cannot fail: the behaviour this whole
+	// change is premised on could have changed under it and the test would still
+	// have been green. The claim has three independent parts and each fails on
+	// its own here, because each would falsify the premise differently. An error
+	// would mean Postgres does complain after all and a caveat WOULD have been an
+	// adequate fix; a non-zero row count would mean the statement works as
+	// documented and no command family was needed; an altered row would mean it
+	// half-worked, which is worse than either.
 	stuck := gh408SeedStuckTask(t, admin, tenant)
+	beforeKind, beforeAttempts, beforeNext, beforeUpdated := gh408ReadTaskRow(t, admin, stuck)
+
 	tag, uerr := pool.Exec(ctx, gh408WorkerPrintedUpdate, stuck)
-	if uerr != nil {
-		t.Logf("worker printed UPDATE as wpmgr_app returned an error (better than silence): %v", uerr)
-	}
 	t.Logf("worker printed UPDATE as wpmgr_app: rows=%d err=%v", tag.RowsAffected(), uerr)
-	if uerr == nil && tag.RowsAffected() == 0 {
-		t.Logf("CONFIRMED: the statement the worker prints reports success having changed nothing")
+
+	if uerr != nil {
+		t.Errorf("the statement the worker printed returned an error as wpmgr_app: %v\n"+
+			"If Postgres now refuses it, finding 3 is no longer that the remedy reports success "+
+			"having changed nothing, and the reasoning behind this whole change needs rereading", uerr)
+	}
+	if rows := tag.RowsAffected(); rows != 0 {
+		t.Errorf("the statement the worker printed affected %d rows as wpmgr_app, want 0.\n"+
+			"If it now works on the connection a self-hoster has, the premise of GH #408 finding 3 "+
+			"is false and this control is stale", rows)
+	}
+	afterKind, afterAttempts, afterNext, afterUpdated := gh408ReadTaskRow(t, admin, stuck)
+	if afterKind != beforeKind || afterAttempts != beforeAttempts ||
+		!afterNext.Equal(beforeNext) || !afterUpdated.Equal(beforeUpdated) {
+		t.Errorf("the row CHANGED under a statement that reported zero rows affected:\n"+
+			"  before kind=%q attempts=%d next_attempt_at=%s updated_at=%s\n"+
+			"  after  kind=%q attempts=%d next_attempt_at=%s updated_at=%s\n"+
+			"rows=0 with no error must mean the row is byte-for-byte untouched",
+			beforeKind, beforeAttempts, beforeNext, beforeUpdated,
+			afterKind, afterAttempts, afterNext, afterUpdated)
 	}
 
 	// And the operator cannot even READ the table to discover the id that a
@@ -224,6 +259,23 @@ func gh408SeedStuckTask(t *testing.T, admin *db.Pool, tenant uuid.UUID) uuid.UUI
 		t.Fatalf("restore the kind constraint: %v", rerr)
 	}
 	return id
+}
+
+// gh408ReadTaskRow reads every column the printed UPDATE claims to set, through
+// the ADMIN pool so RLS cannot hide the answer. Reading it as the application
+// role would return no row at all, which is the very effect under test and would
+// make "unchanged" indistinguishable from "invisible".
+func gh408ReadTaskRow(t *testing.T, admin *db.Pool, id uuid.UUID) (string, int32, time.Time, time.Time) {
+	t.Helper()
+	var kind string
+	var attempts int32
+	var next, updated time.Time
+	if err := admin.QueryRow(context.Background(),
+		`SELECT kind, attempts, next_attempt_at, updated_at FROM site_object_reclaim WHERE id = $1`,
+		id).Scan(&kind, &attempts, &next, &updated); err != nil {
+		t.Fatalf("read the task row: %v", err)
+	}
+	return kind, attempts, next, updated
 }
 
 // gh408BackfillOrphanedSite is `wpmgr-cli reclaim site`'s code path, run against

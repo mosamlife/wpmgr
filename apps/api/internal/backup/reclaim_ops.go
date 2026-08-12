@@ -168,22 +168,95 @@ func EnqueueTenantReclaim(ctx context.Context, pool *db.Pool, tenantID uuid.UUID
 	return rows, err
 }
 
+// reclaimRetryCommand is the ONE construction of the command an operator pastes,
+// for either engine.
+//
+// Every place that advice is produced goes through this function: the site
+// worker's guard-1 failure reason and its every-tick stuck report, and the tenant
+// worker's guard-1 failure reason, stuck report and per-attempt failure log.
+// Before this there were three independent constructions of the same string, one
+// of them an inline literal in the site worker's stuck report, under a comment
+// claiming they could not drift apart. This string is what an operator copies,
+// and a stale one sends them to a command that does not exist.
+//
+// kind names the engine the task lives in, so each table's advice corrects its
+// own row rather than relying on a default that is only right for one of them.
+// Both kinds are accepted by RetryReclaimTask (see classifyRetryKind), which
+// they were not: the tenant hint omitted --kind, so the site-only validation
+// there was never met by the printed command and the defect stayed latent.
+func reclaimRetryCommand(taskID uuid.UUID, kind string) string {
+	return "wpmgr-cli reclaim retry --task " + taskID.String() + " --kind " + kind
+}
+
+// reclaimRetryAdvice is reclaimRetryCommand wrapped in the sentence a FAILED task
+// carries in last_error, and is deliberately NOT a SQL statement (GH #408
+// finding 3).
+//
+// The wording holds for both engines: neither cancels a task it merely could not
+// do, because in both tables the row is the last record naming objects that are
+// still in storage.
+func reclaimRetryAdvice(taskID uuid.UUID, kind string) string {
+	return " (the task is kept and retried, never cancelled: its objects are still in storage and " +
+		"this row is the only record of them. Correct it with: " + reclaimRetryCommand(taskID, kind) +
+		" which runs as the ordinary application role and exits non-zero if it changes nothing)"
+}
+
+// retryEngine is which reclaim table a --kind names.
+type retryEngine struct {
+	// siteKind is the kind a matching SITE task is corrected to. Empty when the
+	// operator named the tenant engine, and the site table is then not touched
+	// at all.
+	siteKind string
+	// tenantOnly is set when the kind belongs to the tenant engine alone.
+	tenantOnly bool
+}
+
+// classifyRetryKind resolves the --kind an operator supplied against BOTH closed
+// kind sets.
+//
+// It used to check the site set alone, so `reclaim retry --kind tenant_storage`
+// was refused before the tenant table was ever consulted: the one command family
+// that exists to dig an operator out of a hole rejected its own engine's kind.
+// The hints omitted --kind, so the default path worked and nothing noticed. Both
+// hints now name their own kind, and TestGH408_PrintedHintsAreAcceptedByRetry
+// fails if either prints a kind this refuses.
+//
+// An unknown kind is refused naming both valid sets, because the realistic
+// caller is an operator typing under pressure at the one moment they need a
+// working command.
+func classifyRetryKind(kind string) (retryEngine, error) {
+	switch {
+	case kind == "":
+		// The default is the site engine's only kind. A tenant task still
+		// reopens under it, because the tenant table is consulted first and its
+		// reopen does not touch kind at all.
+		return retryEngine{siteKind: ReclaimKindBackupManifest}, nil
+	case KnownReclaimKind(kind):
+		return retryEngine{siteKind: kind}, nil
+	case KnownTenantReclaimKind(kind):
+		return retryEngine{tenantOnly: true}, nil
+	default:
+		return retryEngine{}, fmt.Errorf(
+			"reclaim retry: unknown kind %q. Valid kinds are %v for a site task and %v for an "+
+				"organisation task", kind, ReclaimKinds, TenantReclaimKinds)
+	}
+}
+
 // RetryReclaimTask reopens a stuck task in either engine (GH #408 finding 3).
 //
 // It replaces the bare UPDATE the site reclaim worker used to print. taskID is
 // looked up in the tenant table first and then the site table; kind is applied
 // only to a site task, where a mistyped kind is the realistic reason a task is
-// stuck in the first place. An empty kind means the default. Returns the number
-// of rows actually changed, which the caller turns into an exit code.
+// stuck in the first place. An empty kind means the default, and a tenant kind
+// confines the lookup to the tenant table. Returns the number of rows actually
+// changed, which the caller turns into an exit code.
 func RetryReclaimTask(ctx context.Context, pool *db.Pool, taskID uuid.UUID, kind string) (int64, error) {
 	if taskID == uuid.Nil {
 		return 0, errors.New("reclaim retry: a nil task id matches nothing")
 	}
-	if kind == "" {
-		kind = ReclaimKindBackupManifest
-	}
-	if !KnownReclaimKind(kind) {
-		return 0, fmt.Errorf("reclaim retry: unknown kind %q, known kinds are %v", kind, ReclaimKinds)
+	engine, kerr := classifyRetryKind(kind)
+	if kerr != nil {
+		return 0, kerr
 	}
 	var rows int64
 	err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
@@ -196,7 +269,16 @@ func RetryReclaimTask(ctx context.Context, pool *db.Pool, taskID uuid.UUID, kind
 			rows = n
 			return nil
 		}
-		n, serr := q.ReopenSiteObjectReclaim(ctx, sqlc.ReopenSiteObjectReclaimParams{ID: taskID, Kind: kind})
+		if engine.tenantOnly {
+			// The operator named the tenant engine explicitly and no open
+			// tenant task has that id. Falling through would aim a site UPDATE
+			// at it carrying a kind the site table cannot hold, and the answer
+			// an operator needs here is which table they are actually in.
+			return fmt.Errorf("reclaim retry: --kind %s names organisation storage, but no OPEN "+
+				"organisation task has id %s. `wpmgr-cli reclaim list` shows every open task in "+
+				"both engines", kind, taskID)
+		}
+		n, serr := q.ReopenSiteObjectReclaim(ctx, sqlc.ReopenSiteObjectReclaimParams{ID: taskID, Kind: engine.siteKind})
 		if serr != nil {
 			return fmt.Errorf("reopen site task: %w", serr)
 		}
@@ -350,7 +432,14 @@ func containsString(hay []string, needle string) bool {
 	return false
 }
 
-// FormatTaskAge renders how long a task has been waiting, for `reclaim list`.
+// FormatTaskAge renders how long a task has been waiting. `reclaim list` prints
+// it for every open task in both engines (cmd/wpmgr-cli/reclaim.go).
+//
+// It is there because attempts alone does not tell an operator whether a task is
+// stuck: attempts=8 an hour after a storage outage is a task working through its
+// backoff, and attempts=8 three months old is a prefix nothing will ever reclaim
+// and a bill that has been running since. Both give up at the same cap and read
+// identically without this.
 func FormatTaskAge(since time.Time) string {
 	d := time.Since(since).Round(time.Minute)
 	if d < time.Minute {
