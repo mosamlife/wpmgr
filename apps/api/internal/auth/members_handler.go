@@ -197,24 +197,34 @@ func (h *MembersHandler) patchRole(c *gin.Context) {
 		httpx.Error(c, domain.Forbidden("role_grant_exceeds_actor", "you cannot grant a role higher than your own"))
 		return
 	}
+	// GH #406 — the TARGET's current role is read UNCONDITIONALLY, before any
+	// branch. Until this moved out of the `newRole != RoleOwner` arm below, an
+	// admin could demote or re-role an OWNER: the grant ceiling above only
+	// compares the actor to the role being GRANTED, and the last-owner COUNT
+	// guard only fires in a single-owner org. In an org with two owners there
+	// was no refusal at all.
+	existing, getErr := h.svc.repo.GetMembership(c.Request.Context(), targetUserID, p.TenantID)
+	if getErr != nil {
+		httpx.Error(c, getErr)
+		return
+	}
+	// Target ceiling: an actor may never act on a member who outranks them.
+	// owner-on-owner stays ALLOWED (ownership transfer is a supported
+	// capability); admin-on-admin and admin-on-viewer are unchanged.
+	if !actorRole.AtLeast(existing.Role) {
+		httpx.Error(c, domain.Forbidden("target_role_exceeds_actor", "you cannot change the role of a member who outranks you"))
+		return
+	}
 	// Last-owner protection: cannot demote the last owner.
-	if newRole != authz.RoleOwner {
-		// Check whether the target is currently an owner.
-		existing, getErr := h.svc.repo.GetMembership(c.Request.Context(), targetUserID, p.TenantID)
-		if getErr != nil {
-			httpx.Error(c, getErr)
+	if newRole != authz.RoleOwner && existing.Role == authz.RoleOwner {
+		ownerCount, countErr := h.svc.CountOwners(c.Request.Context(), p.TenantID)
+		if countErr != nil {
+			httpx.Error(c, countErr)
 			return
 		}
-		if existing.Role == authz.RoleOwner {
-			ownerCount, countErr := h.svc.CountOwners(c.Request.Context(), p.TenantID)
-			if countErr != nil {
-				httpx.Error(c, countErr)
-				return
-			}
-			if ownerCount <= 1 {
-				httpx.Error(c, domain.Forbidden("last_owner", "cannot demote the last owner"))
-				return
-			}
+		if ownerCount <= 1 {
+			httpx.Error(c, domain.Forbidden("last_owner", "cannot demote the last owner"))
+			return
 		}
 	}
 	m, err := h.svc.repo.UpdateMembershipRole(c.Request.Context(), targetUserID, p.TenantID, newRole)
@@ -224,8 +234,8 @@ func (h *MembersHandler) patchRole(c *gin.Context) {
 	}
 	h.svc.RecordAudit(c.Request.Context(), audit.Event{
 		TenantID:   p.TenantID,
-		ActorType:  audit.ActorUser,
-		ActorID:    p.UserID.String(),
+		ActorType:  actorTypeOf(p),
+		ActorID:    p.ActorID(),
 		Action:     "member.role_changed",
 		TargetType: "user",
 		TargetID:   targetUserID.String(),
@@ -246,12 +256,19 @@ func (h *MembersHandler) removeMember(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_user_id", "userId is not a valid UUID"))
 		return
 	}
-	// Last-owner protection: cannot remove the last owner.
 	existing, getErr := h.svc.repo.GetMembership(c.Request.Context(), targetUserID, p.TenantID)
 	if getErr != nil {
 		httpx.Error(c, getErr)
 		return
 	}
+	// GH #406 — target ceiling. Before this, removeMember never read p.Role at
+	// all: its only gate was the last-owner COUNT, so an admin could delete an
+	// owner outright from any org holding two or more owners.
+	if !authz.Role(p.Role).AtLeast(existing.Role) {
+		httpx.Error(c, domain.Forbidden("target_role_exceeds_actor", "you cannot remove a member who outranks you"))
+		return
+	}
+	// Last-owner protection: cannot remove the last owner.
 	if existing.Role == authz.RoleOwner {
 		ownerCount, countErr := h.svc.CountOwners(c.Request.Context(), p.TenantID)
 		if countErr != nil {
@@ -269,13 +286,24 @@ func (h *MembersHandler) removeMember(c *gin.Context) {
 	}
 	h.svc.RecordAudit(c.Request.Context(), audit.Event{
 		TenantID:   p.TenantID,
-		ActorType:  audit.ActorUser,
-		ActorID:    p.UserID.String(),
+		ActorType:  actorTypeOf(p),
+		ActorID:    p.ActorID(),
 		Action:     "member.removed",
 		TargetType: "user",
 		TargetID:   targetUserID.String(),
 	})
 	c.Status(http.StatusNoContent)
+}
+
+// actorTypeOf maps a principal to its audit actor type. A member mutation can
+// be driven by an API key as easily as by a session, and hard-coding ActorUser
+// logged those as the null UUID (p.UserID is uuid.Nil for a key). Mirrors
+// apikey.actorType.
+func actorTypeOf(p domain.Principal) string {
+	if p.Type == domain.PrincipalAPIKey {
+		return audit.ActorAPIKey
+	}
+	return audit.ActorUser
 }
 
 func parseUUID(s string) (uuid.UUID, error) {
