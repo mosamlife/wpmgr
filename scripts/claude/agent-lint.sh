@@ -17,15 +17,51 @@
 #   4. no agent body names a dead app or a concrete feature branch - the
 #      apps/landing and feat/performance-suite defects
 #   5. no generating-model meta-narration leaked into a body
+#   6. that it linted anything at all. An earlier version resolved the root to
+#      "." when git failed, globbed nothing under nullglob, ran the loop zero
+#      times and printed "all agent definitions ok". A lint that finds no input
+#      is a failed lint, never a pass.
 #
 #   scripts/claude/agent-lint.sh              lint
 #   scripts/claude/agent-lint.sh --self-test  prove each check fires and does
 #                                             not over-fire
+#
+# AGENT_LINT_ROOT overrides the repository root. --self-test uses it to drive
+# the tree-level checks against fixture trees; nothing else should set it.
 set -uo pipefail
+shopt -s nullglob
 
-root=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
 status=0
 fail() { echo "FAIL $*"; status=1; }
+
+# No silent fallback. Every path below is built from this value, so a root that
+# is wrong or unknown makes every glob expand to nothing - which is exactly the
+# shape that used to pass.
+resolve_root() {
+  local r="${AGENT_LINT_ROOT:-}"
+  if [[ -z "$r" ]]; then
+    r=$(git rev-parse --show-toplevel 2>/dev/null) || r=
+  fi
+  if [[ -z "$r" ]]; then
+    echo "FAIL agent-lint: cannot resolve a repository root: 'git rev-parse --show-toplevel' failed in '$PWD' and AGENT_LINT_ROOT is unset. Refusing to lint an unknown tree." >&2
+    return 1
+  fi
+  if [[ ! -d "$r" ]]; then
+    echo "FAIL agent-lint: root '$r' is not a directory. Refusing to lint an unknown tree." >&2
+    return 1
+  fi
+  printf '%s\n' "$r"
+}
+
+# The agent names CLAUDE.md's routing table backticks. Used twice: to cross-check
+# names, and to derive a lower bound on how many definitions must exist. Derived,
+# never a hard-coded count.
+routed_names() { # <path to CLAUDE.md>
+  grep -oE '`[a-z][a-z0-9]*(-[a-z0-9]+)+`' "$1" \
+    | tr -d '`' \
+    | grep -E -- '-(architect|engineer|reviewer|writer|researcher)$' \
+    | sort -u
+}
 
 frontmatter() { awk '/^---$/{c++; next} c==1{print} c>=2{exit}' "$1"; }
 body()        { awk '/^---$/{c++; next} c>=2{print}' "$1"; }
@@ -81,33 +117,33 @@ lint_file() {
   return $rc
 }
 
-cross_check() {
+cross_check() { # <root> <agent file>...
+  local root="$1"; shift
   local claude="$root/CLAUDE.md" rc=0
-  [[ -f "$claude" ]] || { echo "FAIL CLAUDE.md does not exist"; return 1; }
+  [[ -f "$claude" ]] || { echo "FAIL CLAUDE.md does not exist at '$claude'"; return 1; }
 
   local -a defined=() referenced=()
   local f n
-  shopt -s nullglob
-  for f in "$root"/.claude/agents/*.md; do
+  # The files come from lint_tree, which has already refused an empty set. This
+  # function never globs, so it cannot silently examine nothing.
+  for f in "$@"; do
     n=$(frontmatter "$f" | sed -n 's/^name:[[:space:]]*//p' | head -1)
     [[ -n "$n" ]] && defined+=("$n")
   done
 
   # Anything in a backtick-quoted `foo-bar` cell of the routing table that looks
   # like an agent name.
-  while IFS= read -r n; do referenced+=("$n"); done < <(
-    grep -oE '`[a-z][a-z0-9]*(-[a-z0-9]+)+`' "$claude" \
-      | tr -d '`' \
-      | grep -E -- '-(architect|engineer|reviewer|writer|researcher)$' \
-      | sort -u
-  )
+  while IFS= read -r n; do referenced+=("$n"); done < <(routed_names "$claude")
 
-  for n in "${referenced[@]}"; do
-    printf '%s\n' "${defined[@]}" | grep -qx "$n" \
+  # bash 3.2 (every macOS) treats "${empty[@]}" under set -u as an unbound
+  # variable and kills the shell mid-lint; bash 5 (ubuntu-latest, where CI runs)
+  # expands it to nothing. The +"" form behaves the same on both.
+  for n in ${referenced[@]+"${referenced[@]}"}; do
+    printf '%s\n' ${defined[@]+"${defined[@]}"} | grep -qx "$n" \
       || { echo "FAIL CLAUDE.md routes to '$n', which has no file in .claude/agents/"; rc=1; }
   done
-  for n in "${defined[@]}"; do
-    printf '%s\n' "${referenced[@]}" | grep -qx "$n" \
+  for n in ${defined[@]+"${defined[@]}"}; do
+    printf '%s\n' ${referenced[@]+"${referenced[@]}"} | grep -qx "$n" \
       || { echo "FAIL agent '$n' exists but is named nowhere in CLAUDE.md; nothing will ever route to it"; rc=1; }
   done
 
@@ -122,9 +158,53 @@ cross_check() {
   return $rc
 }
 
+# The whole tree, and the only place the agent files are collected. Everything
+# it can fail on - unreadable root, missing directory, empty directory, a set
+# smaller than the routing table - must exit non-zero and must never reach the
+# success line.
+lint_tree() { # <root>
+  local root="$1" rc=0 dir f
+  dir="$root/.claude/agents"
+
+  if [[ ! -d "$dir" ]]; then
+    echo "FAIL agent-lint: nothing to lint: expected a directory of agent definitions at '$dir' (root '$root'), which does not exist."
+    return 1
+  fi
+
+  local -a files=()
+  for f in "$dir"/*.md; do files+=("$f"); done
+  if (( ${#files[@]} == 0 )); then
+    echo "FAIL agent-lint: nothing to lint: '$dir' exists but contains no *.md agent definitions."
+    return 1
+  fi
+
+  # Lower bound, derived from CLAUDE.md's routing table at read time. Never a
+  # literal: the number of agents changes, and a hard-coded one goes stale.
+  local claude="$root/CLAUDE.md" want=0
+  if [[ -f "$claude" ]]; then
+    want=$(routed_names "$claude" | wc -l | tr -d '[:space:]')
+    [[ -n "$want" ]] || want=0
+  fi
+  if (( ${#files[@]} < want )); then
+    echo "FAIL agent-lint: found ${#files[@]} agent definition(s) in '$dir', but CLAUDE.md's routing table names $want; the set is incomplete."
+    rc=1
+  fi
+
+  for f in "${files[@]}"; do
+    lint_file "$f" || rc=1
+  done
+  cross_check "$root" "${files[@]}" || rc=1
+
+  if (( rc == 0 )); then
+    echo "agent-lint: ${#files[@]} agent definitions ok in $dir"
+  fi
+  return $rc
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  ok=0
+  ok=0     # checks proven to fire on a fixture that deserves it
+  quiet=0  # correct inputs proven not to be flagged
 
   mk() { printf -- '%s' "$2" > "$tmp/$1.md"; }
 
@@ -140,6 +220,7 @@ You build things. Run go test and commit by name.
 '
   mk good "$good"
   lint_file "$tmp/good.md" >/dev/null || { echo "SELF-TEST FAILED: over-fired on the known-good fixture"; exit 1; }
+  quiet=$((quiet+1))
 
   # Each of these must fire, and must fire for the stated reason.
   check() { # check <name> <content> <expected substring>
@@ -204,7 +285,7 @@ apps/landing is dead: absent from pnpm-workspace.yaml. Do not edit or deploy it.
 '
   lint_file "$tmp/deadapp_ok.md" >/dev/null \
     || { echo "SELF-TEST FAILED: over-fired on a correct warning about apps/landing"; exit 1; }
-  ok=$((ok+1))
+  quiet=$((quiet+1))
 
   check branch '---
 name: e-engineer
@@ -245,14 +326,84 @@ isolation: worktree
 body
 ' "maxTurns"
 
-  echo "self-test ok: $ok checks fire on their fixture, none over-fires on the good one"
+  # --- the tree walk itself -------------------------------------------------
+  # "It linted zero files" is a property of the walk, not of any one file, so
+  # these drive lint_tree and resolve_root. Every one must exit non-zero and
+  # none may print the success line.
+  check_tree() { # check_tree <name> <root> <expected substring>
+    local out rc
+    out=$(lint_tree "$2" 2>&1); rc=$?
+    if [[ $rc -eq 0 ]]; then
+      echo "SELF-TEST FAILED: '$1' exited 0 over a tree it could not lint (got: ${out:-<silence>})"; exit 1
+    fi
+    if ! grep -q "$3" <<<"$out"; then
+      echo "SELF-TEST FAILED: '$1' did not fire on '$3' (got: ${out:-<silence>})"; exit 1
+    fi
+    if grep -q 'definitions ok' <<<"$out"; then
+      echo "SELF-TEST FAILED: '$1' printed the success line while failing (got: $out)"; exit 1
+    fi
+    ok=$((ok+1))
+  }
+
+  check_root() { # check_root <name> <expected substring> <root override, or - for none>
+    local out rc
+    if [[ "$3" == "-" ]]; then
+      out=$( (unset AGENT_LINT_ROOT; export GIT_DIR="$tmp/no-such-git-dir"; cd "$tmp"; resolve_root) 2>&1 ); rc=$?
+    else
+      out=$( (export AGENT_LINT_ROOT="$3"; resolve_root) 2>&1 ); rc=$?
+    fi
+    if [[ $rc -eq 0 ]]; then
+      echo "SELF-TEST FAILED: '$1' resolved a root it should have refused (got: ${out:-<silence>})"; exit 1
+    fi
+    if ! grep -q "$2" <<<"$out"; then
+      echo "SELF-TEST FAILED: '$1' did not fire on '$2' (got: ${out:-<silence>})"; exit 1
+    fi
+    ok=$((ok+1))
+  }
+
+  # These two fixtures carry a CLAUDE.md with no agent names in it on purpose:
+  # the empty-set check has to stand on its own, not be propped up by
+  # cross_check happening to notice the routing table has no files behind it.
+  mkdir -p "$tmp/t-missing"
+  printf -- '%s' 'A CLAUDE.md with no routing table.' > "$tmp/t-missing/CLAUDE.md"
+  check_tree missing_dir "$tmp/t-missing" 'nothing to lint: expected a directory'
+
+  mkdir -p "$tmp/t-empty/.claude/agents"
+  printf -- '%s' 'A CLAUDE.md with no routing table.' > "$tmp/t-empty/CLAUDE.md"
+  printf -- '%s' 'not an agent' > "$tmp/t-empty/.claude/agents/README.txt"
+  check_tree empty_dir "$tmp/t-empty" 'exists but contains no'
+
+  # A set smaller than the routing table. The bound is read from the fixture's
+  # own CLAUDE.md, so nothing here is a hard-coded number.
+  mkdir -p "$tmp/t-short/.claude/agents"
+  printf -- '%s' 'Routing: `good-engineer`, `other-engineer`, `third-writer`.' > "$tmp/t-short/CLAUDE.md"
+  printf -- '%s' "$good" > "$tmp/t-short/.claude/agents/good.md"
+  check_tree short_set "$tmp/t-short" 'the set is incomplete'
+
+  check_root unresolvable_root 'is not a directory' "$tmp/no-such-root"
+  check_root no_git_root 'cannot resolve a repository root' -
+
+  # ...and the honest tree it must not block: one routed agent, one file.
+  mkdir -p "$tmp/t-ok/.claude/agents"
+  printf -- '%s' 'Routing: `good-engineer` builds things.' > "$tmp/t-ok/CLAUDE.md"
+  printf -- '%s' "$good" > "$tmp/t-ok/.claude/agents/good.md"
+  out=$(lint_tree "$tmp/t-ok" 2>&1); rc=$?
+  if [[ $rc -ne 0 ]] || ! grep -q "^agent-lint: 1 agent definitions ok" <<<"$out"; then
+    echo "SELF-TEST FAILED: over-fired on a complete tree (rc=$rc, got: ${out:-<silence>})"; exit 1
+  fi
+  quiet=$((quiet+1))
+
+  # A root that does resolve must be returned as-is and nothing printed to stderr.
+  out=$( (export AGENT_LINT_ROOT="$tmp/t-ok"; resolve_root) 2>&1 ); rc=$?
+  if [[ $rc -ne 0 ]] || [[ "$out" != "$tmp/t-ok" ]]; then
+    echo "SELF-TEST FAILED: resolve_root refused a real directory (rc=$rc, got: ${out:-<silence>})"; exit 1
+  fi
+  quiet=$((quiet+1))
+
+  echo "self-test ok: $ok checks fire on their fixture, $quiet correct inputs stay silent"
   exit 0
 fi
 
-shopt -s nullglob
-for f in "$root"/.claude/agents/*.md; do
-  lint_file "$f" || status=1
-done
-cross_check || status=1
-[[ $status -eq 0 ]] && echo "agent-lint: all agent definitions ok"
+root=$(resolve_root) || exit 2
+lint_tree "$root" || status=1
 exit $status
