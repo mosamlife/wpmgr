@@ -1006,6 +1006,70 @@ ok_cd_out=$(cd "$cdr" && bash "$REAP" --apply --worktrees-only 2>&1); ok_cd_rc=$
 t "unsabotaged, it goes green"     0   "$ok_cd_rc"
 t "and the worktree really went"   no  "$(exists "$cdr/.claude/worktrees/agent-cd1")"
 
+echo "== harness-reap: a failed enumeration never prints as an honest zero"
+# CodeRabbit on #413: the branch section read `git branch --list` into a loop
+# and into `wc -l`, both of which discard git's exit status. A failing git ran
+# the loop zero times, counted 0, and printed "0 merged, 0 unmerged, 0 failed" -
+# byte-identical to a repository that genuinely has no worktree-* branches. The
+# same defect as the one fixed in session-brief.sh, which is why the same
+# countof() answers it; the difference is that this script DELETES, so "I could
+# not look" arriving as "there is nothing to reap" ends with the branches still
+# there and the maintainer told they were gone.
+#
+# A shim on PATH is the only way to make an installed git fail on demand. This
+# one fails on `branch` ALONE and passes everything else through to the real
+# git: the shim in the session-brief block below fails on `worktree` too, which
+# would stop this script at its own main-checkout lookup and prove nothing about
+# section 2.
+reapgit=$(command -v git)
+shim_branch="$tmp/shim-git-branch"; mkdir -p "$shim_branch"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do'
+  echo '  case "$a" in branch) echo "fatal: simulated git branch failure" >&2; exit 128 ;; esac'
+  echo 'done'
+  printf 'exec %s "$@"\n' "$reapgit"
+} > "$shim_branch/git"
+chmod +x "$shim_branch/git"
+
+en="$tmp/enumrepo"
+mkdir -p "$en"
+git -C "$en" init -q
+git -C "$en" config user.email t@t.invalid
+git -C "$en" config user.name t
+echo seed > "$en/seed.txt"
+git -C "$en" add seed.txt >/dev/null
+git -C "$en" commit -qm init
+git -C "$en" branch -M main
+mkdir -p "$en/.claude/worktrees"
+
+# Honest zero: a real repo, real git, and genuinely no worktree-* branches.
+en_zero=$(cd "$en" && bash "$REAP" --worktrees-only 2>&1); en_zero_rc=$?
+tcontains "an honest zero says zero" "0 merged" "$en_zero"
+t "and an honest zero is green"   0 "$en_zero_rc"
+
+# Failed enumeration: same repo, same script, one PATH entry apart.
+en_fail=$(cd "$en" && PATH="$shim_branch:$PATH" bash "$REAP" --worktrees-only 2>&1); en_fail_rc=$?
+tcontains "a failed git says so"      "FAILED enumerate worktree-\* branches" "$en_fail"
+tcontains "and says it is not none"   "NOT 'there are none'" "$en_fail"
+tcontains "and the count reads unknown" "unknown unmerged" "$en_fail"
+# The assertion the whole change exists for: the two must not read the same.
+tlacks "a failed git never claims 0 merged" "0 merged" "$en_fail"
+t "the two runs really differ" differ \
+  "$(if [[ "$en_zero" == "$en_fail" ]]; then printf same; else printf differ; fi)"
+# Destructive script: not being able to look is a failure, not a clean run.
+t "and a failed enumeration goes red" 1 "$en_fail_rc"
+
+# Does not over-fire: a repo that really has worktree-* branches still reaps
+# them, still counts them, and still goes green. A guard that reddened every
+# run would satisfy every assertion above while reclaiming nothing.
+git -C "$en" branch worktree-gone main
+en_real=$(cd "$en" && bash "$REAP" --apply --worktrees-only 2>&1); en_real_rc=$?
+tcontains "a real branch is reaped"  "1 merged" "$en_real"
+t "the branch really went"  no \
+  "$(git -C "$en" rev-parse --verify --quiet worktree-gone >/dev/null 2>&1 && printf yes || printf no)"
+t "and a real reap is green" 0 "$en_real_rc"
+
 echo "== guards_test: this suite obeys the rule it proves"
 # Two fixture setups here staged everything instead of naming it. CLAUDE.md
 # forbids blanket staging everywhere, and this file is the proof surface for the
