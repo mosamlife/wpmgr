@@ -43,9 +43,12 @@
 #    on main carries four required contexts, but `enforce_admins` is
 #    deliberately false, so an owner-token push is accepted server-side and not
 #    one of those contexts ever ran against it. This hook saw that push and
-#    permitted it: its entire notion of git was `git rm` and `git mv`. It is the
-#    only enforcement that exists, which is why it denies rather than asks, and
-#    why it also denies when it cannot read the branch.
+#    permitted it: its entire notion of git was `git rm` and `git mv`. Nothing
+#    server-side catches such a push, and the client-side lock that does,
+#    `.githooks/pre-push`, lives in repo-local config that a fresh clone has not
+#    run `make hooks` for yet. This arm is the early stop in front of it, which
+#    is why it denies rather than asks, and why it also denies when it cannot
+#    read the branch.
 #
 # FAIL-OPEN, DELIBERATELY, AND ANNOUNCED: see the header of route-guard.sh.
 # session-brief.sh reports the guard as INACTIVE at session start if jq is
@@ -970,10 +973,12 @@ review run, then merge. Never git push while HEAD is main - not for a one-line
 fix, not for a typo, not because CI will pass anyway. Approval has to precede the
 irreversible half, and a push to origin/main IS the irreversible half.
 
-This hook is the ONLY enforcement. Branch protection on main carries four
-required contexts, but enforce_admins is deliberately false, so an owner-token
-push is accepted and not one of those contexts runs against it. There is no
-server-side check behind this refusal to catch what it lets through.
+Nothing server-side backs this up: branch protection on main has enforce_admins
+deliberately false, so an owner-token push is accepted and its required contexts
+never run against it. The enforcement is client-side. .githooks/pre-push is the
+lock, since git hands it the resolved refs - but it is repo-local config, so each
+clone needs 'make hooks'. This PreToolUse hook is the early stop in front of it,
+matching command text. Both catch an accident; neither stops a determined push.
 
   git switch -c fix/<name>
   git push -u origin fix/<name>
