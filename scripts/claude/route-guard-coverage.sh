@@ -35,7 +35,12 @@ while [[ $# -gt 0 ]]; do
     --sessions) mode=sessions; shift ;;
     # Point at another copy of the guard to compare two versions on one window.
     --guard) guard_override="${2:?--guard needs a path}"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    # Print the whole comment header, however long it grows, and stop at the
+    # first line of code. The fixed line range this replaces was coupled to the
+    # header's length: it spilled four lines of code into the help text, and
+    # stopped only because a later comment edit happened to grow the header by
+    # exactly the right number of lines. Same form as harness-reap.sh.
+    -h|--help) awk '!/^#/{exit} {print}' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,7 +62,17 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed; the guard fa
 # the closest honest stand-in for "a day's work in one session".
 if [[ "$mode" == sessions ]]; then
   simstate=$(mktemp -d) || exit 1
-  trap 'rm -rf "$simstate"' EXIT
+  simerr=$(mktemp) || exit 1
+  trap 'rm -rf "$simstate" "$simerr"' EXIT
+  # The guard memoises only inside a directory it can prove is its own, and the
+  # proof is a marker file it writes when it creates its default one. A bare
+  # `mktemp -d` carries no marker, so the guard refused this directory on every
+  # call, remembered nothing, and this block reported the STATELESS rate under a
+  # per-session heading. The marker is created here because that is what a real
+  # session's state directory has; the guard is not weakened to accommodate a
+  # measurement.
+  : > "$simstate/.wpmgr-harness-state" \
+    || { echo "FAIL: cannot write the state marker in $simstate" >&2; exit 1; }
   export WPMGR_ROUTE_GUARD_STATE="$simstate"
   export WPMGR_ROUTE_GUARD_TTL_MIN=100000   # one simulated day is one session
 
@@ -71,17 +86,40 @@ if [[ "$mode" == sessions ]]; then
     esac
     [[ -z "${lastday:-}" ]] && continue
     writes=$((writes+1))
-    dec=$(jq -n --arg p "$root/$line" --arg c "$root" --arg s "sim-$lastday" \
-            '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
-          | bash "$guard" 2>/dev/null \
+    payload=$(jq -n --arg p "$root/$line" --arg c "$root" --arg s "sim-$lastday" \
+                '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}')
+    dec=$(printf '%s' "$payload" | bash "$guard" 2>>"$simerr" \
           | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null)
-    [[ "$dec" == "ask" ]] && prompts=$((prompts+1))
+    if [[ "$dec" == "ask" ]]; then
+      prompts=$((prompts+1))
+      # settings.json wires PostToolUse to `route-guard.sh --record`, so what
+      # records a ruling in a real session is the approved write running. A
+      # replay that only calls the PreToolUse arm memoises nothing however valid
+      # its state directory is, and measures the stateless guard again.
+      printf '%s' "$payload" | bash "$guard" --record >/dev/null 2>>"$simerr"
+    fi
   done < <(git -C "$root" log --since="$since" --date=short --format='D %ad' --name-only -- .)
 
   (( writes > 0 )) || { echo "FAIL: no writes replayed. Refusing to report 0." >&2; exit 1; }
+
+  # Two ways this replay can be measuring the stateless guard while printing a
+  # per-session heading. Both are fatal: a wrong number here reads as evidence
+  # that the guard is bearable, which is the decision it exists to inform.
+  if grep -q 'asking every time' "$simerr"; then
+    echo "FAIL: the guard refused this simulation's state directory, so nothing was memoised and the rate would be the stateless one:" >&2
+    grep -m1 'asking every time' "$simerr" >&2
+    exit 1
+  fi
+  recorded=$(find "$simstate" -type f ! -name '.wpmgr-harness-state' 2>/dev/null | wc -l | tr -d '[:space:]')
+  if (( prompts > 0 )) && (( recorded == 0 )); then
+    echo "FAIL: $prompts prompts replayed but nothing was recorded under $simstate, so the guard is not memoising and this is the stateless rate. Refusing to report it per session." >&2
+    exit 1
+  fi
+
   echo "route-guard session simulation: commits since '$since', one session per commit day"
   echo "  simulated sessions : $days"
   echo "  writes replayed    : $writes"
+  echo "  rulings memoised   : $recorded"
   echo "  prompts            : $prompts ($(awk -v n="$prompts" -v d="$writes" 'BEGIN{printf "%.1f", 100*n/d}')%)"
   echo "  prompts per session: $(awk -v n="$prompts" -v d="$days" 'BEGIN{printf "%.1f", (d==0?0:n/d)}')"
   exit 0
