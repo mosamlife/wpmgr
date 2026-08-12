@@ -364,6 +364,46 @@ CREATE TABLE t();
 EOF')"
 t "reading a migration" pass "$(bdecw 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
 
+echo "== bash-guard: every arm reads its own command, not the whole string"
+# The in-place-editor, interpreter and rm arms each ran THREE uncorrelated greps
+# over the entire command - is `sed` present, is `-i` present, is the path
+# present - and denied on the conjunction. Nothing tied the three to one
+# command, so a read was refused whenever some LATER command in the same line
+# happened to supply the missing word. `tee` had the mirror-image defect: it was
+# read positionally and only its FIRST operand was checked, so a second
+# destination was a live bypass of the generated-tree deny.
+
+# tee writes to EVERY operand. Each of these reached the generated tree before.
+t "tee 2nd operand"       deny "$(bdec 'echo x | tee /tmp/a apps/api/internal/db/sqlc/db.go')"
+t "tee -a 2nd operand"    deny "$(bdec 'echo x | tee -a /tmp/a apps/api/internal/db/sqlc/db.go')"
+t "tee 3rd operand"       deny "$(bdec 'echo x | tee /tmp/a /tmp/b apps/web/src/routeTree.gen.ts')"
+t "tee into dead app"     deny "$(bdec 'echo x | tee /tmp/a apps/landing/index.html')"
+
+# ...and the reads that the uncorrelated greps refused. Every one of these was
+# denied before, and a guard that reddens correct work gets switched off.
+t "sed read, grep -i"     pass "$(bdec 'sed -n 1,5p apps/api/internal/db/sqlc/db.go | grep -i querier')"
+t "rm elsewhere, then ls" pass "$(bdec 'rm /tmp/scratch.go && ls -la apps/api/internal/db/sqlc/')"
+t "sed -i /tmp, then cat" pass "$(bdec "sed -i '' s/a/b/ /tmp/x.go; cat apps/api/internal/db/sqlc/db.go")"
+t "python /tmp, then wc"  pass "$(bdec 'python3 -c "open('"'"'/tmp/o'"'"','"'"'w'"'"').write('"'"'x'"'"')" && wc -l apps/api/internal/db/sqlc/db.go')"
+t "grep -i, no editor"    pass "$(bdec 'grep -i querier apps/api/internal/db/sqlc/db.go')"
+
+# A cp inside a comment is never executed, so it must not be read as a write.
+# This is a behaviour change from the last-token version and is asserted, not
+# assumed.
+t "cp inside a comment"   pass "$(bdec 'echo hi # cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+
+# The same arms must still fire when the flag really does belong to the command
+# that names the path.
+t "sed -i on gen"         deny "$(bdec "sed -i '' s/a/b/ apps/api/internal/db/sqlc/db.go")"
+t "perl -pi bundle"       deny "$(bdec 'perl -pi -e s/a/b/ apps/api/internal/api/gen/oas.go')"
+t "node writeFileSync"    deny "$(bdec 'node -e "require('"'"'fs'"'"').writeFileSync('"'"'apps/web/src/routeTree.gen.ts'"'"','"'"'x'"'"')"')"
+# `git rm` deletes a generated file just as `rm` does; the old arm matched the
+# bare word `rm` inside it by accident, and per-segment parsing must keep it.
+t "git rm a gen file"     deny "$(bdec 'git rm apps/api/internal/db/sqlc/db.go')"
+t "git diff a gen tree"   pass "$(bdec 'git diff apps/api/internal/db/sqlc/')"
+# Deleting the dead app stays permitted; only writing into it is refused.
+t "rm the dead app still" pass "$(bdec 'rm -rf apps/landing')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its

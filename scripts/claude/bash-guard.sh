@@ -125,30 +125,56 @@ DEAD_APP='apps/landing/'
 
 tok='[^[:space:];|&<>"'"'"']*'   # one shell word, unquoted
 
-# The destination of a cp/mv/rsync/install/truncate is THAT COMMAND'S operand,
-# never the last whitespace token of the line. The previous version took
-# `awk '{print $NF}'`, which three independent reviews reported as a bypass:
+# A target belongs to THE COMMAND THAT WRITES IT, never to the line it sits on.
 #
-#   cp secret.go apps/api/internal/db/sqlc/models.go # note
+# Two defect shapes are closed here, both measured against this suite.
 #
-# has last token `note`, so the write into the generated tree was permitted. On
-# a multi-line $cmd, awk emits one field PER LINE, so the same test also fired
-# on a protected path that merely ended some unrelated line.
+# (a) The LAST-TOKEN destination. cp/mv/rsync/install/truncate took
+#     `awk '{print $NF}'` over the whole string, so
+#     `cp secret.go apps/api/internal/db/sqlc/models.go # note` ended in `note`
+#     and the write into the generated tree was permitted. awk also emits one
+#     field PER LINE, so on a multi-line command the later grep fired on a
+#     protected path that merely ended some unrelated line.
 #
-# So: join `\`-continued lines, start a new segment at every `;` `|` `&` (which
-# covers `&&` and `||`) and every newline, and inside a segment drop a trailing
-# `#` comment and every redirection, skip leading VAR=value assignments and
+# (b) THREE UNCORRELATED GREPS. The in-place-editor, interpreter and rm arms
+#     each asked "is `sed` anywhere in this string, is `-i` anywhere in this
+#     string, is the path anywhere in this string" and denied on the
+#     conjunction. Nothing tied the three to one command, so
+#     `sed -n 1,5p apps/api/internal/db/sqlc/db.go | grep -i querier` was
+#     denied: pure reading, with the `-i` belonging to grep. That is the
+#     over-fire CLAUDE.md warns gets a guard switched off. It also under-fired:
+#     `tee` was read positionally and only its FIRST operand was checked, so
+#     `echo x | tee /tmp/a apps/api/internal/db/sqlc/db.go` was permitted while
+#     tee writes to every operand.
+#
+# So every shape that needs correlation is decided in one pass over SEGMENTS:
+# join `\`-continued lines, start a segment at each `;` `|` `&` (covering `&&`
+# and `||`) and each newline, and inside a segment drop a trailing `#` comment
+# and every redirection, skip leading VAR=value assignments and
 # env/sudo/command wrappers, take the command name basename-wise so `/bin/cp`
-# counts, and drop option words. What is left is that command's operands: the
-# last one is the destination for cp/mv/rsync/install, every one is a target for
-# truncate, and a `-t`/`--target-directory` value replaces both (for rsync `-t`
-# means preserve-times, so it is not treated as a destination there).
+# counts, and drop option words. What remains is that command's own operands:
 #
-# KNOWN LIMIT, stated rather than papered over: this splits on whitespace with
+#   cp mv rsync install   the LAST operand, or the `-t`/`--target-directory`
+#                         value instead when given (not for rsync, where -t
+#                         means preserve-times)
+#   tee truncate          EVERY operand; both write to all of them
+#   sed perl ruby         every operand, but only when THAT command carries an
+#                         in-place flag (`-i`, `-i.bak`, `-pi`, `--in-place`)
+#   python node php ruby  every operand, but only when THAT segment also
+#                         contains a write call
+#   rm, git rm            every operand, emitted as a DELETE rather than a
+#                         write, because the dead-app arm permits deletion
+#
+# Redirection and `dd of=` are not listed: those two name their destination in
+# the syntax itself, so they need no correlation and are matched directly.
+#
+# KNOWN LIMITS, stated rather than papered over: this splits on whitespace with
 # no quote parsing, so a destination inside quotes, or built from a variable, is
-# not seen. That is the same gap the header already declares.
-collect_write_dests() {
-  local seg cn w tflag i n start
+# not seen; and the interpreter arm treats any `open(` as a write, so reading a
+# protected path through python is refused. Both are conservative in the safe
+# direction, and the header already declares the wider gap.
+collect_dests() {
+  local seg cn w f tflag inplace i n start
   local -a words operands
   while IFS= read -r seg; do
     seg=$(printf '%s' "$seg" \
@@ -168,70 +194,94 @@ collect_write_dests() {
     [[ $start -ge $n ]] && continue
 
     cn=${words[$start]##*/}
-    case "$cn" in cp|mv|rsync|install|truncate) ;; *) continue ;; esac
+    # `git rm` / `git mv` are the same operation one word further along.
+    if [[ "$cn" == git && $((start + 1)) -lt $n ]]; then
+      case "${words[$((start + 1))]}" in
+        rm|mv) start=$((start + 1)); cn=${words[$start]} ;;
+      esac
+    fi
+    case "$cn" in
+      cp|mv|rsync|install|truncate|tee|sed|perl|ruby|python|python3|node|php|rm) ;;
+      *) continue ;;
+    esac
 
     operands=()
     tflag=
+    inplace=
     i=$((start + 1))
     while [[ $i -lt $n ]]; do
       w=${words[$i]}
       case "$w" in
         --target-directory=*)
-          if [[ "$cn" != rsync ]]; then printf '%s\n' "${w#*=}"; tflag=1; fi ;;
+          case "$cn" in cp|mv|install) printf 'w:%s\n' "${w#*=}"; tflag=1 ;; esac ;;
         -t|--target-directory)
-          if [[ "$cn" != rsync ]]; then
-            i=$((i + 1))
-            [[ $i -lt $n ]] && printf '%s\n' "${words[$i]}"
-            tflag=1
-          fi ;;
-        -*) ;;
+          case "$cn" in
+            cp|mv|install)
+              i=$((i + 1))
+              [[ $i -lt $n ]] && printf 'w:%s\n' "${words[$i]}"
+              tflag=1 ;;
+          esac ;;
+        --in-place|--in-place=*) inplace=1 ;;
+        --*) ;;
+        -*)
+          # A short-flag bundle carrying `i` is the in-place flag: -i, -i.bak,
+          # -pi. It is consulted only for sed/perl/ruby, so `cp -i` and `rm -i`
+          # (interactive) set it harmlessly and are never read.
+          f=${w#-}; f=${f%%.*}; f=${f%%=*}
+          case "$f" in *i*) inplace=1 ;; esac ;;
         *) operands[${#operands[@]}]="$w" ;;
       esac
       i=$((i + 1))
     done
-
-    [[ -n "$tflag" ]] && continue
     [[ ${#operands[@]} -eq 0 ]] && continue
-    if [[ "$cn" == truncate ]]; then
-      printf '%s\n' "${operands[@]}"
-    else
-      printf '%s\n' "${operands[$((${#operands[@]} - 1))]}"
-    fi
+
+    case "$cn" in
+      cp|mv|rsync|install)
+        [[ -z "$tflag" ]] && printf 'w:%s\n' "${operands[$((${#operands[@]} - 1))]}" ;;
+      tee|truncate)
+        printf 'w:%s\n' "${operands[@]}" ;;
+      rm)
+        printf 'r:%s\n' "${operands[@]}" ;;
+    esac
+    case "$cn" in
+      sed|perl|ruby)
+        [[ -n "$inplace" ]] && printf 'w:%s\n' "${operands[@]}" ;;
+    esac
+    # ruby is in both lists deliberately: `ruby -i` edits in place and
+    # `ruby -e 'File.write ...'` does not, and neither shape implies the other.
+    case "$cn" in
+      python|python3|ruby|node|php)
+        grep -qE '(open\(|writeFile|file_put_contents|\.write\()' <<<"$seg" \
+          && printf 'w:%s\n' "${operands[@]}" ;;
+    esac
   done < <(printf '%s\n' "$cmd" \
            | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
            | tr ';|&' '\n\n\n')
 }
 
-# One destination per line, so a regex can never match across two of them.
-WRITE_DESTS=$(collect_write_dests)
+# One target per line, tagged w (write) or r (delete), so no regex can match
+# across two of them and the dead-app arm can permit deletion on its own.
+DESTS=$(collect_dests)
+
+# dest_matches <kind> <path-regex>
+dest_matches() {
+  [[ -z "$DESTS" ]] && return 1
+  printf '%s\n' "$DESTS" | grep "^$1:" | grep -qE "$2"
+}
 
 # writes_to <path-regex> [allow_rm]
 # Returns 0 if $cmd writes to something matching the regex.
 writes_to() {
   local p="$1" allow_rm="${2:-no}"
 
-  # cat > f, printf >> f, cmd 2> f, a heredoc's target
+  # cat > f, printf >> f, cmd 2> f, a heredoc's target: the syntax names it.
   grep -qE ">>?[[:space:]]*[\"']?${tok}(${p})" <<<"$cmd" && return 0
-  # tee f, tee -a f
-  grep -qE "(^|[;&|[:space:]])tee([[:space:]]+-[a-zA-Z-]+)*[[:space:]]+[\"']?${tok}(${p})" <<<"$cmd" && return 0
-  # dd of=f
+  # dd of=f: likewise.
   grep -qE "of=[\"']?${tok}(${p})" <<<"$cmd" && return 0
-  # in-place editors: the flag and the path in the same command
-  if grep -qE "(^|[;&|[:space:]])(sed|perl|ruby)[[:space:]]" <<<"$cmd" \
-     && grep -qE "[[:space:]]-i" <<<"$cmd" \
-     && grep -qE "$p" <<<"$cmd"; then return 0; fi
-  # cp/mv/rsync/install/truncate: only the destinations collected above, so
-  # `cp gen/x /tmp/` (a read) does not match and `cp /tmp/x gen/` (a write) does,
-  # whatever trails the line.
-  if [[ -n "$WRITE_DESTS" ]] && grep -qE "$p" <<<"$WRITE_DESTS"; then return 0; fi
-  # an interpreter opening the path for writing
-  if grep -qE "(^|[;&|[:space:]])(python3?|ruby|node|php)[[:space:]]" <<<"$cmd" \
-     && grep -qE "(open\(|writeFile|file_put_contents|\.write\()" <<<"$cmd" \
-     && grep -qE "$p" <<<"$cmd"; then return 0; fi
+  # every target named by a write command, correlated to that command
+  dest_matches w "$p" && return 0
   # deletion
-  if [[ "$allow_rm" == no ]] \
-     && grep -qE "(^|[;&|[:space:]])rm[[:space:]]" <<<"$cmd" \
-     && grep -qE "$p" <<<"$cmd"; then return 0; fi
+  [[ "$allow_rm" == no ]] && dest_matches r "$p" && return 0
   return 1
 }
 
