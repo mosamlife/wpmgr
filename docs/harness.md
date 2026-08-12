@@ -74,12 +74,24 @@ from frictionless to deliberate and visible. That is the whole claim.
 
 ## Why the route guard asks once per area, not once per file
 
-The first version asked on 843 of the 926 files touched in the preceding 30 days
-(91%), and on 2531 of 2670 tracked files. That is a prompt on essentially every
+The first version asked on very nearly every file touched in a 30 day window,
+and on very nearly every tracked file. That is a prompt on essentially every
 main-thread edit, and a guard that cries wolf gets switched off, which is the
-failure this harness exists to prevent.
+failure this harness exists to prevent. So the over-fire rate is measured rather
+than asserted, and the measurement lives in a script instead of in this
+sentence:
 
-Two changes, both measurable with `scripts/claude/route-guard-coverage.sh`:
+```sh
+scripts/claude/route-guard-coverage.sh                 # last 30 days
+scripts/claude/route-guard-coverage.sh --all           # every tracked file
+scripts/claude/route-guard-coverage.sh --since '7 days ago'
+```
+
+Those views are stateless by construction: each file is scored as if it were the
+first write of the session. They are an upper bound on what anyone experiences,
+not a prediction of it.
+
+Two changes, both measurable with that script:
 
 - A test whose suite `ci.yml` actually runs no longer routes. `apps/api/tests`
   is the deliberate exception and still does, because that package is excluded
@@ -90,10 +102,17 @@ Two changes, both measurable with `scripts/claude/route-guard-coverage.sh`:
   path carries its own key, so the first write to auth, tenancy, crypto or a
   deletion path still prompts.
 
-Replaying the same 30 days with each commit day as one session, prompts fall
-from 65.6 per session to 4.7 (`route-guard-coverage.sh --sessions`). If the
-payload carries no session identity the guard does not fail open: it asks every
-time, which is the old behaviour.
+The second change is the one that separates the stateless rate from lived
+experience, and it is why the per-file rate is not the number to argue from.
+`route-guard-coverage.sh --sessions` replays the same window with each commit
+day treated as one session and prints prompts per session, which is the figure
+that decides whether the guard is tolerable to work under. Read it from the
+command rather than from here, and read its stderr too: the guard announces it
+when it declines a state directory, and a session replay whose state was
+declined is measuring the unmemoised guard.
+
+If the payload carries no session identity the guard does not fail open: it asks
+every time, which is the old behaviour.
 
 ## Files
 
