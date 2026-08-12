@@ -65,7 +65,16 @@ while read -r local_ref local_oid remote_ref remote_oid || [ -n "$local_ref$remo
   # branch literally named main to a personal mirror - is not work this repo
   # does. An over-fire teaches --no-verify, so this is the one place it is
   # accepted, and only because the honest alternative is a wrong answer.
-  case "$remote_ref" in
+  # CASE-FOLDED. Git refs are case-sensitive, so refs/heads/Main is a different
+  # ref on github.com and the canonical origin is unaffected either way - but
+  # this machine's APFS volume is case-INSENSITIVE, so a push of
+  # HEAD:refs/heads/Main into any local or cloned repository here resolves to
+  # the same loose ref file as refs/heads/main and moves it. That was measured,
+  # so the fold costs one `tr` and closes it. The over-fire it buys is a real
+  # branch named `Main` or `MAIN`, which this repository does not have and could
+  # not have on this filesystem anyway.
+  lower=$(printf '%s' "$remote_ref" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
     refs/heads/main|main) ;;
     *) continue ;;
   esac

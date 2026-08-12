@@ -540,8 +540,8 @@ fi
 # by nothing at all.
 #
 # WHAT IT CANNOT SEE, ENUMERATED, because a comment that overstates coverage is
-# worse than no comment. All of these were reproduced against this arm and all
-# of them are PERMITTED by it:
+# worse than no comment. All of these were reproduced against this arm, and each
+# is PERMITTED by it under the condition written beside it:
 #
 #     eval git push origin main
 #     bash -c "git push origin main"
@@ -550,7 +550,13 @@ fi
 #     git push origin @                      @ is git's documented synonym for HEAD
 #     git push origin :                      the "matching" refspec
 #     git push origin refs/heads/*:refs/heads/*
-#     git -c push.default=matching push      -c is consumed unread, deliberately
+#     git -c push.default=matching push      ONLY from a checkout whose branch is
+#                                            not main - the -c is consumed unread,
+#                                            so the arm decides it as a bare push
+#                                            and misses that matching can move a
+#                                            main that is not the current branch.
+#                                            From the main checkout it is DENIED,
+#                                            for the ordinary reason.
 #     (git push origin main)                 a subshell is not a segment here
 #     { git push origin main; }              nor is a group
 #     time git push origin main              nor is a timed command
@@ -754,15 +760,33 @@ push_hits_main() {
       i=$((start + 1))
       while [[ $i -lt $n ]]; do
         unq "${words[$i]}"; w=$UNQ
-        case "$w" in -*) ;; *) cdto=$w; cdraw=${words[$i]}; break ;; esac
+        case "$w" in
+          # `--` ends options, so the NEXT word is the operand even when it
+          # starts with a dash. `cd -- /path` stays fully resolved; `cd --` with
+          # nothing after it falls out with $cdto empty, into the branch below.
+          --) i=$((i + 1))
+              if [[ $i -lt $n ]]; then unq "${words[$i]}"; cdto=$UNQ; cdraw=${words[$i]}; fi
+              break ;;
+          -*) ;;
+          *) cdto=$w; cdraw=${words[$i]}; break ;;
+        esac
         i=$((i + 1))
       done
       [[ "$cn" == pushd ]] && PUSH_DIRSTACK+=("$PUSH_CWD")
-      # Bare `pushd` swaps the top two entries; bare `cd` goes to $HOME. The
-      # swap is not modelled, so it declines to know rather than stay put.
+      # Every operandless form declines to know, which is what the paragraph
+      # above already promised and what these three did NOT do. Measured from a
+      # worktree, before this: `cd - && git push`, `cd -- && git push` and
+      # `cd && git push` were all resolved to $HOME and then DENIED with "could
+      # not determine which branch", a reason that was untrue of the command -
+      # and the symmetric half is worse, because with $OLDPWD or $HOME being a
+      # branch checkout the same code PERMITS a push that lands on main.
+      #   cd -   goes to $OLDPWD, which is the shell's, not this process's.
+      #   cd --  and bare `cd` go to $HOME, which is not where the shell is.
+      #   bare pushd swaps the top two entries, which is not modelled.
+      # None of the four is knowable from the command string, so all four defer
+      # and `.githooks/pre-push` decides them after the shell has expanded them.
       if [[ -z "$cdto" ]]; then
-        if [[ "$cn" == pushd ]]; then PUSH_CWD=""; PUSH_CD_UNKNOWN=1
-        else PUSH_CWD=${HOME:-}; [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1; fi
+        PUSH_CWD=""; PUSH_CD_UNKNOWN=1
         continue
       fi
       # Tilde expansion happens only on an UNQUOTED leading ~, so the RAW word

@@ -14,15 +14,22 @@ bootstrap: ## First-time dev setup
 	./scripts/bootstrap.sh
 
 # Separate from bootstrap because bootstrap installs a toolchain and this does
-# not: an existing clone that predates the hook needs this one command and
+# not: an up-to-date clone with the hook uninstalled needs this one command and
 # nothing else. `git config core.hooksPath` is repo-local and repo-local config
 # is never committed, so without it a clone carries .githooks/pre-push and git
 # never runs it - the push to main is permitted exactly as it was on 2026-08-12.
 #
-# The resolution, the absolute-path handling and the verification live in the
-# script, with a committed test suite, because that is where build-gating logic
-# belongs. The first version of this was three inline lines and it installed a
-# RELATIVE path, which every linked worktree then resolved against its own tree.
+# A checkout that PREDATES this rule has no `hooks` target, so `make hooks`
+# there prints "No rule to make target" and installs nothing. That clone needs
+# `git pull` first, or one direct run of the script from a tree that carries it:
+#   scripts/claude/git-hooks.sh install
+#
+# The resolution, the copy into $GIT_COMMON_DIR/hooks and the verification live
+# in the script, with a committed test suite, because that is where build-gating
+# logic belongs. The first version of this was three inline lines that set a
+# RELATIVE core.hooksPath, which every linked worktree resolved against its own
+# tree; the second set an absolute path to the tracked .githooks, which any
+# checkout of an older commit then deleted out from under it.
 .PHONY: hooks
 hooks: ## Install the committed git hooks (pre-push refuses a push that lands on main)
 	scripts/claude/git-hooks.sh install

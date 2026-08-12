@@ -15,7 +15,8 @@
 # this repository's signature defect, so what is asserted here is the hook
 # RUNNING, resolved from the checkout this is invoked in.
 #
-#   install   point core.hooksPath at an absolute .githooks and verify it took
+#   install   copy .githooks/pre-push into $GIT_COMMON_DIR/hooks, point
+#             core.hooksPath at that same directory, and verify by running it
 #   status    print INSTALLED / NOT INSTALLED / COULD NOT CHECK; never fails
 #   check     the same, but exit non-zero unless it is INSTALLED (the gate)
 #
@@ -35,22 +36,41 @@ mode="${1:-status}"
 CANNOT=""   # non-empty: why the question could not be answered
 WHY=""      # non-empty: why it is not installed
 HOOKPATH="" # the resolved pre-push, when there is one
+STALE=""    # non-empty: the installed copy differs from the committed source
+NOCMP=""    # non-empty: why the staleness comparison could not be made
 
-hooks_dir_for_install() {
-  # An ABSOLUTE path, derived from the common dir, because a RELATIVE
-  # core.hooksPath is resolved by git against the top of whatever working tree
-  # is running the hook. That was the bug: `.githooks` is only present in a tree
-  # checked out at or after the hook's commit, so every linked worktree, tag
-  # checkout, bisect and detached HEAD from before it silently ran no hook while
-  # config still said "installed". `git rev-parse --git-common-dir` is the same
-  # directory from every linked worktree, and its parent is the main checkout.
-  local common parent
+common_hooks_dir() {
+  # $GIT_COMMON_DIR/hooks. This is git's own default hooks directory, it is the
+  # SAME directory from every linked worktree, and - the whole point - it is not
+  # in any working tree, so no checkout, tag, bisect or detached HEAD can take
+  # it away. Pointing core.hooksPath at the tracked `.githooks` instead was
+  # measured wrong twice: relative, git resolved it against whichever tree ran
+  # the hook; absolute, it still named a directory that is only present in a
+  # tree checked out at or after the hook's commit, so `git checkout <older>`
+  # in the main checkout silently disarmed every worktree while config kept
+  # reading "installed".
+  local common
   common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
   [ -n "$common" ] || return 1
   common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
-  parent=$(dirname "$common")
-  [ -d "$parent/.githooks" ] || return 1
-  printf '%s' "$parent/.githooks"
+  printf '%s' "$common/hooks"
+}
+
+hook_source() {
+  # The committed hook, from the working tree this was invoked in first - so
+  # `make hooks` works from a worktree even when the main checkout sits on a
+  # commit that predates `.githooks` - and from the main checkout second.
+  local top common
+  top=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$top" ] && [ -r "$top/.githooks/pre-push" ]; then
+    printf '%s' "$top/.githooks/pre-push"; return 0
+  fi
+  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+  common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
+  if [ -r "$(dirname "$common")/.githooks/pre-push" ]; then
+    printf '%s' "$(dirname "$common")/.githooks/pre-push"; return 0
+  fi
+  return 1
 }
 
 resolve() {
@@ -61,26 +81,35 @@ resolve() {
     CANNOT="'$PWD' is not inside a git worktree"; return
   fi
 
-  local hp top
+  local hp top from src
   hp=$(git config --get core.hooksPath 2>/dev/null)
   if [ -z "$hp" ]; then
-    WHY="core.hooksPath is unset, so git runs no hook from this repository at all"
-    return
-  fi
-  if [ "${hp#/}" = "$hp" ]; then
-    # Relative: git resolves it against the top of the working tree the hook
-    # runs in, so it is resolved the same way here rather than against \$PWD.
-    top=$(git rev-parse --show-toplevel 2>/dev/null)
-    if [ -z "$top" ]; then
-      CANNOT="core.hooksPath is the relative path '$hp' and this checkout has no working tree to resolve it against"
+    # Unset is not "no hook": git falls back to $GIT_COMMON_DIR/hooks, which is
+    # exactly where `install` puts it, so this reads the default rather than
+    # calling it absent. Saying "core.hooksPath is unset, so git runs no hook"
+    # here would be a definite negative about a directory never looked at.
+    hp=$(common_hooks_dir) || {
+      CANNOT="core.hooksPath is unset and 'git rev-parse --git-common-dir' failed, so git's default hooks directory cannot be located"
       return
+    }
+    from="git's default, core.hooksPath unset"
+  else
+    from="core.hooksPath"
+    if [ "${hp#/}" = "$hp" ]; then
+      # Relative: git resolves it against the top of the working tree the hook
+      # runs in, so it is resolved the same way here rather than against \$PWD.
+      top=$(git rev-parse --show-toplevel 2>/dev/null)
+      if [ -z "$top" ]; then
+        CANNOT="core.hooksPath is the relative path '$hp' and this checkout has no working tree to resolve it against"
+        return
+      fi
+      hp="$top/$hp"
     fi
-    hp="$top/$hp"
   fi
   HOOKPATH="$hp/pre-push"
 
   if [ ! -e "$HOOKPATH" ]; then
-    WHY="core.hooksPath resolves to '$hp', and there is no pre-push in it"
+    WHY="git resolves hooks to '$hp' ($from), and there is no pre-push in it"
     return
   fi
   if [ ! -x "$HOOKPATH" ]; then
@@ -102,6 +131,23 @@ resolve() {
        | "$HOOKPATH" origin probe://none >/dev/null 2>&1; then
     WHY="'$HOOKPATH' refuses an ordinary branch push, so it would block every branch and get switched off"
     return
+  fi
+
+  # STALENESS. Installing by copy buys a hook no checkout can remove, and the
+  # price is a second copy that can drift from `.githooks/pre-push`. So it is
+  # compared, every time this runs, against the committed source - and when
+  # there is no source to compare against, that is SAID rather than passed over,
+  # because "not compared" and "identical" must never print the same.
+  #
+  # Drift does not change the exit code. What `check` gates on is the two probes
+  # above: the installed hook refuses main and permits a branch. A copy that
+  # still does both is protecting the repository whatever else it says, and
+  # reddening every worktree that edits `.githooks/pre-push` on a branch would
+  # redden correct work - which is how a gate gets switched off.
+  if src=$(hook_source); then
+    cmp -s "$src" "$HOOKPATH" || STALE="$src"
+  else
+    NOCMP="no readable .githooks/pre-push in this working tree or the main checkout"
   fi
 }
 
@@ -126,16 +172,35 @@ report() {
     return 1
   fi
   echo "- pre-push hook: INSTALLED ($HOOKPATH). A push that would land on main is refused; 'git push --no-verify' skips it."
+  if [ -n "$STALE" ]; then
+    echo "  STALE: it differs from the committed '$STALE'. It still refuses main - that was just measured - but it is not the shipped text. Refresh with '$(fix_line)'."
+  elif [ -n "$NOCMP" ]; then
+    echo "  Staleness was NOT checked: $NOCMP. Do not read this line as 'up to date'."
+  fi
   return 0
 }
 
 case "$mode" in
   install)
-    dir=$(hooks_dir_for_install) || {
-      echo "FAIL: could not resolve a .githooks directory from 'git rev-parse --git-common-dir' in '$PWD'." >&2
-      echo "      Run this from inside the checkout, on a commit that carries .githooks/." >&2
+    dir=$(common_hooks_dir) || {
+      echo "FAIL: 'git rev-parse --git-common-dir' gave no answer in '$PWD', so there is no repository to install into." >&2
+      echo "      Run this from inside a checkout of this repository." >&2
       exit 2
     }
+    src=$(hook_source) || {
+      echo "FAIL: no readable .githooks/pre-push in this working tree or in the main checkout, so there is nothing to install." >&2
+      echo "      Check out a commit that carries .githooks/ in either tree and run '$(fix_line)' again." >&2
+      exit 2
+    }
+    mkdir -p "$dir" || { echo "FAIL: could not create '$dir'." >&2; exit 2; }
+    cp "$src" "$dir/pre-push" || { echo "FAIL: could not copy '$src' to '$dir/pre-push'." >&2; exit 2; }
+    chmod +x "$dir/pre-push" || { echo "FAIL: could not make '$dir/pre-push' executable." >&2; exit 2; }
+    echo "installed $src -> $dir/pre-push"
+    # core.hooksPath is set to the same directory git would use by default. It
+    # is not needed for a clone that never had it, and it is the repair for one
+    # that does: an earlier version of this script pointed it at the tracked
+    # .githooks, and leaving that value in place would send git looking at a
+    # directory that disappears on `git checkout <older commit>`.
     git config core.hooksPath "$dir"
     echo "core.hooksPath = $(git config --get core.hooksPath)"
     # Verify what was just installed, through the same resolution a session

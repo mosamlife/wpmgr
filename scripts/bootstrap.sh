@@ -13,11 +13,13 @@ fi
 # it on, and it is FIRST here on purpose: if any later step fails, the clone is
 # still protected.
 #
-# It installs an ABSOLUTE path. A relative one was tried and measured wrong: git
-# resolves a relative core.hooksPath against the top of whichever working tree
-# is running the hook, so it only finds .githooks in a tree checked out at or
-# after the hook's commit. Across the checkouts on this machine the hook was
-# present in 1 of 10 by that rule, with config reading "installed" in all ten.
+# It installs the hook into the repository's common hooks directory, which no
+# checkout of any commit can remove. Pointing config at the tracked .githooks
+# was tried and measured wrong twice: a relative core.hooksPath is resolved by
+# git against whichever working tree runs the hook, and an absolute one still
+# names a directory that vanishes the moment any checkout moves to a commit
+# before the hook existed - in both cases config keeps reading "installed".
+# 'scripts/claude/git-hooks.sh status' prints what is true right now.
 echo "==> Installing the pre-push hook (refuses a push that lands on main)"
 scripts/claude/git-hooks.sh install
 

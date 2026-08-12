@@ -926,6 +926,22 @@ tcontains "and the ~ reason is the branch, not a shrug" \
 # to know a branch it cannot read. .githooks/pre-push refuses it, after the
 # shell has expanded it, and that is proved further down against a real push.
 t "unfollowable cd, on main"     pass "$(bdecc "$onmain" 'cd "$UNSET_DIR" && git push')"
+# THE OPERANDLESS FORMS. The paragraph in bash-guard.sh promised these DEFER;
+# all three silently resolved to $HOME instead, and from a worktree that
+# produced a deny whose reason was untrue of the command. The symmetric half is
+# the dangerous one: with $HOME or $OLDPWD a branch checkout, the same code
+# PERMITS a push that lands on main. None of the three is knowable from the
+# command string, so the hook decides them.
+t "cd - defers"                  pass "$(HOME="$tmp/home/hbranch" bdecc "$onmain" 'cd - && git push')"
+t "cd -- defers"                 pass "$(HOME="$tmp/home/hbranch" bdecc "$onmain" 'cd -- && git push')"
+t "bare cd defers"               pass "$(HOME="$tmp/home/hbranch" bdecc "$onmain" 'cd && git push')"
+# And they defer for the RIGHT reason: no reason at all is printed, rather than
+# a claim about a directory the command never visited.
+t "and no reason is invented"    "" "$(HOME="$tmp/home/hbranch" breason "$onmain" 'cd - && git push')"
+# Not over-fired into uselessness: `--` still ends options, so an operand after
+# it is resolved exactly as before and a push into a main checkout is refused.
+t "cd -- <dir> is still followed" deny "$(bdecc "$linked" "cd -- $onmain && git push")"
+t "cd -- <branch dir> still passes" pass "$(bdecc "$onmain" "cd -- $linked && git push")"
 # What must NOT be relaxed with it: a refspec naming main needs no lookup at
 # all, so an unresolvable cd changes nothing about it.
 t "unfollowable cd, main named"  deny "$(bdecc "$onmain" 'cd "$UNSET_DIR" && git push origin main')"
@@ -2071,6 +2087,28 @@ tlacks    "and no could-not-measure"   "disk free: could not measure" "$sb_zero"
 #    missing binary whose call site is not wrapped in 2>/dev/null shows up.
 sb_err=$(cd "$sb" && PATH="$sysbin" bash "$BRIEF" 2>&1 >/dev/null)
 t "the brief writes nothing to stderr" "" "$sb_err"
+
+# THE SILENT FOURTH STATE. `root=$(git rev-parse ...) || exit 0` meant that with
+# git off PATH, or with the session started outside a repository, this script
+# emitted ZERO BYTES and exited 0: no header, no hook line, no toolchain block.
+# A session could not tell that from a healthy machine, and the answer it needed
+# already existed - git-hooks.sh resolves its own context and says COULD NOT
+# CHECK in both conditions. Asserted in both, because they fail independently.
+sb_nobin="$tmp/nobin"; mkdir -p "$sb_nobin"
+# "$BASH", absolutely: with this PATH, `bash` itself is not findable either, and
+# an exit 127 from the test's own launcher would prove nothing about the brief.
+sb_nogit=$(cd "$sb" && PATH="$sb_nobin" "$BASH" "$BRIEF" 2>/dev/null); sb_nogit_rc=$?
+t "git off PATH: still exits 0"        0 "$sb_nogit_rc"
+tcontains "git off PATH: still reports" "## Machine state" "$sb_nogit"
+tcontains "git off PATH: COULD NOT CHECK" "pre-push hook: COULD NOT CHECK" "$sb_nogit"
+tcontains "and it says not to read that as installed" "Do NOT read" "$sb_nogit"
+
+sb_outside="$tmp/outside-any-repo"; mkdir -p "$sb_outside"
+sb_out=$(cd "$sb_outside" && PATH="$sysbin" bash "$BRIEF" 2>/dev/null); sb_out_rc=$?
+t "outside a repo: still exits 0"      0 "$sb_out_rc"
+tcontains "outside a repo: still reports" "## Machine state" "$sb_out"
+tcontains "outside a repo: COULD NOT CHECK" "pre-push hook: COULD NOT CHECK" "$sb_out"
+tcontains "and the worktree count is not invented" "agent worktrees: not measured" "$sb_out"
 # 2. jq must be present, or the brief announces the guards INACTIVE - a line
 #    that would otherwise sit in the output unremarked and unexplained.
 tlacks "and jq is not missing" "INACTIVE" "$sb_zero"
@@ -2166,9 +2204,11 @@ tc_nogo=$(cd "$sb" && PATH="$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "no go: it says it could not check" "sqlc: could not check whether it is installed" "$tc_nogo"
 tcontains "and names go as the reason"        "'go' is not on PATH"                           "$tc_nogo"
 # The whole finding in one assertion: with no way to look, it must not assert
-# absence. Note the timeout line says "not installed" in lower case and is a
-# different, still-correct claim, so this needle is deliberately upper case.
-tlacks "and never asserts NOT INSTALLED"      "NOT INSTALLED"                                 "$tc_nogo"
+# absence. The needle is the TOOLCHAIN line's exact phrasing - the timeout line
+# says "not installed" in lower case and is a different, still-correct claim,
+# and the hook line legitimately says NOT INSTALLED about a fixture repo that
+# genuinely has no hook, which is a measurement that did happen.
+tlacks "and never asserts NOT INSTALLED"      "is NOT INSTALLED (looked in"                   "$tc_nogo"
 
 echo "== .githooks/pre-push: the lock, as opposed to the manners"
 # bash-guard's arm is a text matcher over a shell command, and eight shapes were
@@ -2311,9 +2351,8 @@ after_check=$(cd "$fresh" && bash "$HOOKSH" check 2>&1); after_rc=$?
 t "check PASSES once installed"   0 "$after_rc"
 tcontains "and says INSTALLED"    "INSTALLED" "$after_check"
 # ABSOLUTE, not relative. A relative path is resolved by git against whatever
-# working tree runs the hook, so it finds .githooks only in a tree checked out
-# at or after the hook's commit - which is what left it absent from 9 of the 10
-# checkouts on this machine while config read "installed" in all ten.
+# working tree runs the hook, so it would find the hooks directory only from
+# some trees while config read "installed" in every one of them.
 absolute_or_not() { if [[ "$1" == /* ]]; then printf 'abs'; else printf 'relative: %s' "$1"; fi; }
 t "hooksPath is absolute"         abs "$(absolute_or_not "$(git -C "$fresh" config --get core.hooksPath)")"
 
@@ -2337,11 +2376,47 @@ wt_push=$(git -C "$freshwt" push "$wtbare" HEAD:refs/heads/main 2>&1); wt_prc=$?
 t "real push to main from a worktree is refused" 1 "$((wt_prc != 0))"
 tcontains "and the worktree refusal is the hook's" "REFUSED: this push would land on main" "$wt_push"
 t "and remote main was never created" "" "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main 2>/dev/null)"
-# Not vacuous: the same push lands once the hook is switched off.
+# Unsetting core.hooksPath does NOT re-open main. That is the repair: the hook
+# is a COPY in git's own default hooks directory, which is outside every working
+# tree, so config carries no load and no checkout can remove it.
 git -C "$freshwt" config --unset core.hooksPath
 git -C "$freshwt" commit -q --allow-empty -m wt2 >/dev/null 2>&1
 git -C "$freshwt" push -q "$wtbare" HEAD:refs/heads/main >/dev/null 2>&1
-t "with hooksPath unset it lands" main "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main >/dev/null && echo main)"
+t "with hooksPath unset it is STILL refused" "" "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main 2>/dev/null)"
+# Not vacuous, and this is the half that proves the refusals above came from the
+# hook: delete the installed copy and the identical push lands.
+rm -f "$fresh/.git/hooks/pre-push"
+git -C "$freshwt" push -q "$wtbare" HEAD:refs/heads/main >/dev/null 2>&1
+t "with the hook removed it lands" main "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main >/dev/null && echo main)"
+
+# THE CASE THAT MOVED RATHER THAN CLOSED. Install, then put the MAIN checkout on
+# a commit that predates .githooks - the arrangement this repository is in right
+# now. The old install pointed core.hooksPath at <main checkout>/.githooks, so
+# that checkout deleted the hook directory and the push to main landed in
+# silence. Nothing here reads a working tree, so nothing here changes.
+(cd "$fresh" && bash "$HOOKSH" install >/dev/null 2>&1)
+git -C "$fresh" checkout -q "$before_hook"
+t "the main checkout has no .githooks now" "" "$(test -e "$fresh/.githooks" && echo present)"
+old_check=$(cd "$freshwt" && bash "$HOOKSH" check 2>&1); old_rc=$?
+t "check still PASSES"            0 "$old_rc"
+git -C "$wtbare" update-ref -d refs/heads/main
+git -C "$freshwt" commit -q --allow-empty -m wt3 >/dev/null 2>&1
+git -C "$freshwt" push -q "$wtbare" HEAD:refs/heads/main >/dev/null 2>&1
+t "and the push to main is STILL refused" "" "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main 2>/dev/null)"
+git -C "$fresh" checkout -q -
+
+# STALENESS is the price of installing a copy, so it is reported. A copy that
+# differs from the committed source still refuses main - that is measured above
+# - so it stays exit 0 and says so in words.
+printf '\n# drift\n' >> "$fresh/.git/hooks/pre-push"
+stale_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1); stale_rc=$?
+t "a stale copy still exits 0"    0 "$stale_rc"
+tcontains "and says INSTALLED"    "INSTALLED" "$stale_out"
+tcontains "and says STALE"        "STALE" "$stale_out"
+tcontains "and names the fix"     "make hooks" "$stale_out"
+(cd "$fresh" && bash "$HOOKSH" install >/dev/null 2>&1)
+fresh_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1)
+t "a fresh copy is not called stale" "" "$(printf '%s' "$fresh_out" | grep -c 'STALE' | grep -v '^0$')"
 
 # The gate has to be wired to the gate. `make harness-check` is what ci.yml
 # runs, and the check above is worth nothing if nothing calls it.
@@ -2358,7 +2433,10 @@ tcontains "session-brief reports the hook" "git-hooks.sh" "$(cat "$repo_root/scr
 (cd "$fresh" && bash "$HOOKSH" check >/dev/null 2>&1); t "re-install took" 0 "$?"
 sb_hook=$(cd "$fresh" && bash "$repo_root/scripts/claude/session-brief.sh" 2>/dev/null)
 tcontains "session-brief says INSTALLED where it is" "pre-push hook: INSTALLED" "$sb_hook"
+# Removing the copy is what makes it absent now; unsetting the config alone
+# leaves it installed, which is asserted a few lines up against a real push.
 git -C "$fresh" config --unset core.hooksPath
+rm -f "$fresh/.git/hooks/pre-push"
 sb_nohook=$(cd "$fresh" && bash "$repo_root/scripts/claude/session-brief.sh" 2>/dev/null); sb_nrc=$?
 t "session-brief still exits 0"   0 "$sb_nrc"
 tcontains "session-brief says NOT INSTALLED where it is not" "pre-push hook: NOT INSTALLED" "$sb_nohook"
