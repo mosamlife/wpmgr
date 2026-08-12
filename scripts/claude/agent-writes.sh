@@ -155,6 +155,14 @@ state="$STATE_DIR"
 # never a symlink and never the marker. No 2>/dev/null and no `|| true`: a prune
 # that cannot do its job says so. I wrote that `|| true` and the comment
 # defending it; the argument was about noise and ignored what $state is.
+# A symlink here is SKIPPED, never deleted, and that is deliberate after being
+# asked. `rm -f` on a symlink would remove the link rather than its target, so
+# deleting one would be safe in itself - but a delete loop is the last place to
+# start making exceptions for symlinks, and the leak it would close is closed
+# properly on the reading side instead: commit-gate.sh now refuses any record
+# that is not a plain file owned by this user, so a symlink that lives here
+# forever is inert rather than followed. Skipping is the safer default; the
+# reader is the fix.
 prune_state() { # prune_state <owned state root>
   ( shopt -s nullglob dotglob
     local e b

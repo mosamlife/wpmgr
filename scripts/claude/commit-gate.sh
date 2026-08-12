@@ -109,8 +109,37 @@ else
 fi
 
 record=""
+record_why=""
 if [[ $state_trusted -eq 1 && -n "$aid" ]]; then
   record="$state/$(printf '%s' "$aid" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64)"
+  # `-f` FOLLOWS SYMLINKS, and agent-writes.sh's prune deliberately never
+  # removes one, so a symlink planted here persists indefinitely and this
+  # reader would follow it on every stop, forever. Measured against a stand-in
+  # tree, with the state directory legitimately ours - 0700, marker present:
+  #
+  #   symlink -> a list naming another agent's dirty file  exit 2, BLOCKED and
+  #     told the agent to commit 'theirs.txt', which it never wrote. That is
+  #     precisely the misattribution this ownership record exists to prevent,
+  #     and the deadlock that made a read-only agent stop and ask a human.
+  #   symlink -> an empty file, or /etc/hosts                exit 0, SILENT -
+  #     not even the unscoped reminder. The quiet direction, and the same
+  #     shape as the planted-empty-record case closed one commit ago.
+  #   dangling symlink                                       already safe:
+  #     -f is false, so it fell through to the reminder.
+  #
+  # Same discipline as the marker check above: a record is a plain file owned
+  # by this user, or it is not read. `-e` alone is false for a dangling link,
+  # so `-L` is tested too or that case would slip past unreported.
+  if [[ -e "$record" || -L "$record" ]]; then
+    if [[ -L "$record" ]]; then
+      record_why="the record '$record' is a symlink, and a symlink is not evidence of what this agent wrote"
+    elif [[ ! -f "$record" ]]; then
+      record_why="the record '$record' is not a plain file"
+    elif [[ ! -O "$record" ]]; then
+      record_why="the record '$record' is not owned by this user"
+    fi
+    [[ -n "$record_why" ]] && record=""
+  fi
 fi
 
 owned=""
@@ -163,6 +192,12 @@ fi
   if [[ -n "$state_why" ]]; then
     echo "NOTE: the ownership record directory '$state' was NOT trusted:"
     echo "$state_why. Nothing in it was read. Reporting instead of blocking."
+    echo ""
+  fi
+  if [[ -n "$record_why" ]]; then
+    echo "NOTE: $record_why."
+    echo "It was NOT read. Delete it by hand if you did not put it there."
+    echo "Reporting instead of blocking."
     echo ""
   fi
   echo "NOTE: this worktree has uncommitted paths, and there is no record of"
