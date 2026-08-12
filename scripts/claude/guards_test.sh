@@ -968,6 +968,103 @@ tlacks    "and invents no free space"  "disk free: Gi"  "$sb_df"
 tcontains "a real df gives a number"   "disk free:"     "$sb_zero"
 tlacks    "and no could-not-measure"   "disk free: could not measure" "$sb_zero"
 
+echo "== session-brief: 'could not check' is not the same claim as 'NOT INSTALLED'"
+# `[[ -x "$(go env GOPATH 2>/dev/null)/bin/$t" ]]` LOOKS like a lookup, but with
+# go unresolvable the substitution is empty, the test degrades to `-x /bin/$t`,
+# and the script asserted NOT INSTALLED for three tools that were installed and
+# runnable at /Users/mosamgor/go/bin. Four states, and they must stay four:
+# on PATH, in the Go bin directory, genuinely absent, and unknowable. The last
+# two were collapsed into the loudest one.
+#
+# The fixture must not be able to reach the real toolchain, or these assertions
+# would pass or fail on what happens to be installed rather than on the code.
+for tool in sqlc atlas; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    echo "FAIL  toolchain setup: '$tool' is on PATH, so the Go-bin-directory case cannot be reached"
+    failed=$((failed+1))
+  fi
+done
+
+sbfx="$tmp/gofix"
+mkdir -p "$sbfx/bin"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$sbfx/bin/sqlc"   # present in the Go bin dir
+chmod +x "$sbfx/bin/sqlc"
+# atlas is deliberately NOT created there: genuinely absent, with a working go.
+
+# A `go` that answers only `go env`, so the lookup is exercised without needing
+# a real toolchain. govulncheck sits in the same directory, which puts it ON
+# PATH - all three states in one run.
+mkgo() { # mkgo <dir> <GOBIN answer> <GOPATH answer>
+  mkdir -p "$1"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'if [[ "${1:-}" == env ]]; then'
+    echo '  case "${2:-}" in'
+    printf '    GOBIN)  echo "%s" ;;\n' "$2"
+    printf '    GOPATH) echo "%s" ;;\n' "$3"
+    echo '    *) echo "" ;;'
+    echo '  esac'
+    echo 'fi'
+    echo 'exit 0'
+  } > "$1/go"
+  chmod +x "$1/go"
+}
+shim_go="$tmp/shim-go"
+mkgo "$shim_go" "" "$sbfx"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shim_go/govulncheck"
+chmod +x "$shim_go/govulncheck"
+
+tc_ok=$(cd "$sb" && PATH="$shim_go:$PATH" bash "$BRIEF" 2>/dev/null)
+tcontains "on PATH is said so"           "on PATH: govulncheck"                    "$tc_ok"
+tcontains "in the Go bin dir, located"   "sqlc is at $sbfx/bin/sqlc, not on PATH"  "$tc_ok"
+tcontains "genuinely absent stays loud"  "atlas is NOT INSTALLED"                  "$tc_ok"
+tcontains "and says where it looked"     "looked in $sbfx/bin"                     "$tc_ok"
+# The over-fire: a tool that WAS found must never also be called absent, or the
+# loud message stops meaning anything.
+tlacks "a located tool is not called absent"  "sqlc is NOT INSTALLED"        "$tc_ok"
+tlacks "a tool on PATH is not called absent"  "govulncheck is NOT INSTALLED" "$tc_ok"
+tlacks "and nothing claims it could not check" "could not check"             "$tc_ok"
+
+# GOBIN overrides GOPATH/bin for `go install`, so a machine that sets it keeps
+# its binaries where GOPATH/bin never mentions. atlas exists ONLY in the GOBIN
+# directory here: if GOBIN were ignored it would come back NOT INSTALLED.
+gbdir="$tmp/gobin-dir"
+mkdir -p "$gbdir"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$gbdir/atlas"
+chmod +x "$gbdir/atlas"
+shim_gobin="$tmp/shim-gobin"
+mkgo "$shim_gobin" "$gbdir" "$sbfx"
+tc_gb=$(cd "$sb" && PATH="$shim_gobin:$PATH" bash "$BRIEF" 2>/dev/null)
+tcontains "GOBIN beats GOPATH/bin" "atlas is at $gbdir/atlas, not on PATH" "$tc_gb"
+tlacks "and GOBIN's tool is not called absent" "atlas is NOT INSTALLED"    "$tc_gb"
+
+# The state the old code could not express at all: go unresolvable, so the
+# lookup never happened and absence is not a claim this script may make.
+path_without() { # path_without <cmd> -> $PATH with the directory holding <cmd> removed
+  local cmd=$1 p d e out=""
+  p=$(command -v "$cmd" 2>/dev/null) || { printf '%s' "$PATH"; return 0; }
+  d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || d=""
+  local IFS=:
+  for e in $PATH; do
+    [[ -z "$e" ]] && continue
+    [[ -n "$d" && "$(cd "$e" 2>/dev/null && pwd -P)" == "$d" ]] && continue
+    out="$out:$e"
+  done
+  printf '%s' "${out#:}"
+}
+nogo_path=$(path_without go)
+if (PATH="$nogo_path"; command -v go >/dev/null 2>&1); then
+  echo "FAIL  no-go setup: 'go' is still resolvable, so the unknowable case cannot be reached"
+  failed=$((failed+1))
+fi
+tc_nogo=$(cd "$sb" && PATH="$nogo_path" bash "$BRIEF" 2>/dev/null)
+tcontains "no go: it says it could not check" "sqlc: could not check whether it is installed" "$tc_nogo"
+tcontains "and names go as the reason"        "'go' is not on PATH"                           "$tc_nogo"
+# The whole finding in one assertion: with no way to look, it must not assert
+# absence. Note the timeout line says "not installed" in lower case and is a
+# different, still-correct claim, so this needle is deliberately upper case.
+tlacks "and never asserts NOT INSTALLED"      "NOT INSTALLED"                                 "$tc_nogo"
+
 echo ""
 if [[ $failed -eq 0 ]]; then
   echo "guards_test: $pass assertions passed"

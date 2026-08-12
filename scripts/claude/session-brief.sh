@@ -30,15 +30,62 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "- route-guard and bash-guard are INACTIVE: jq is not installed. Routing"
   echo "  and the wait-loop deny are unenforced this session. Fix: install jq."
 fi
+# --- toolchain --------------------------------------------------------------
+# Four states, and the old code collapsed two of them into the loudest one.
+#
+# `[[ -x "$(go env GOPATH 2>/dev/null)/bin/$t" ]]` reads as a lookup, but when
+# `go` is not resolvable the substitution is EMPTY, the test degrades to
+# `-x /bin/$t`, that is false, and the script asserted "NOT INSTALLED". That is
+# a definite negative from a measurement that never happened: on this machine it
+# reported sqlc, atlas and govulncheck all missing while all three sat in
+# /Users/mosamgor/go/bin and ran. Same defect as the `wc -l` two sections down,
+# and it matters more, because CLAUDE.md's Delivery section names this script as
+# the authority for where the toolchain lives. An authority that guesses is
+# worse than the hard-coded prose it replaced.
+#
+# GOBIN is asked before GOPATH because `go install` honours GOBIN when it is
+# set, so a machine that sets it keeps its binaries somewhere GOPATH/bin never
+# mentions. `command -v` stays the first question: a tool on PATH needs no
+# directory at all. Both were considered and both are in.
+lookup_dir=""
+lookup_why=""
+if ! command -v go >/dev/null 2>&1; then
+  lookup_why="'go' is not on PATH, so its install directory cannot be asked for"
+else
+  lookup_dir=$(go env GOBIN 2>/dev/null)
+  if [[ -z "$lookup_dir" ]]; then
+    gopath=$(go env GOPATH 2>/dev/null)
+    [[ -n "$gopath" ]] && lookup_dir="$gopath/bin"
+  fi
+  [[ -z "$lookup_dir" ]] && lookup_why="'go env GOBIN' and 'go env GOPATH' both came back empty"
+fi
+
+on_path=""
 for t in timeout sqlc atlas govulncheck; do
-  command -v "$t" >/dev/null 2>&1 && continue
+  if command -v "$t" >/dev/null 2>&1; then
+    on_path="$on_path $t"
+    continue
+  fi
   case "$t" in
     timeout) echo "- timeout is not installed. Bound waits with 'for i in \$(seq 1 N)', the Bash tool's timeout parameter, or Monitor." ;;
-    *) [[ -x "$(go env GOPATH 2>/dev/null)/bin/$t" ]] \
-         && echo "- $t is at \$(go env GOPATH)/bin/$t, not on PATH." \
-         || echo "- $t is NOT INSTALLED. A gate that needs it must fail loudly, not be skipped." ;;
+    *)
+      if [[ -n "$lookup_why" ]]; then
+        # The one sentence this may never say here is NOT INSTALLED. With no
+        # way to look, absence is a claim the script is not in a position to
+        # make, and it is the claim a session would act on.
+        echo "- $t: could not check whether it is installed - $lookup_why. Resolve 'go' and re-check before trusting this either way; do NOT read it as absent."
+      elif [[ -x "$lookup_dir/$t" ]]; then
+        echo "- $t is at $lookup_dir/$t, not on PATH."
+      else
+        # Still as loud as it ever was. This message is why a missing binary
+        # cannot be silently skipped, and it now carries where it looked, so
+        # the next reader can check the answer rather than believe it.
+        echo "- $t is NOT INSTALLED (looked in $lookup_dir). A gate that needs it must fail loudly, not be skipped."
+      fi ;;
   esac
 done
+on_path="${on_path# }"
+[[ -n "$on_path" ]] && echo "- on PATH: $on_path"
 
 # Take a measurement, or say plainly that it could not be taken. Never let a
 # failure print as a number that means something else.
