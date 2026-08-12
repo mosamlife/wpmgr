@@ -209,8 +209,10 @@ collect_dests() {
   local seg cn w f d tdir inplace i n start
   local -a words operands
   while IFS= read -r seg; do
+    # Comments and separators are already handled, quote-aware, by the splitter
+    # below. Only redirections are stripped here.
     seg=$(printf '%s' "$seg" \
-      | sed -E -e 's/(^|[[:space:]])#.*$//' -e 's/[0-9]*[<>]+&?[[:space:]]*[^[:space:]]*//g')
+      | sed -E -e 's/[0-9]*[<>]+&?[[:space:]]*[^[:space:]]*//g')
     words=()
     IFS=$' \t' read -r -a words <<<"$seg"
     n=${#words[@]}
@@ -304,7 +306,28 @@ collect_dests() {
     esac
   done < <(printf '%s\n' "$cmd" \
            | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
-           | tr ';|&' '\n\n\n')
+           | awk '
+      # Split into command segments and drop comments, both QUOTE-AWARE. A
+      # plain `tr ";|&"` plus a `s/ #.*//` cut inside quoted text, so
+      #   sed -i "s| #x|y|" apps/api/internal/db/sqlc/db.go
+      # lost its destination to a `|` and a `#` that were data, and the write
+      # was permitted. Quote state is reset each line rather than carried, so an
+      # unbalanced apostrophe in a heredoc body cannot silence the rest of the
+      # command.
+      {
+        q = ""; out = ""; prev = ""
+        n = length($0)
+        for (i = 1; i <= n; i++) {
+          c = substr($0, i, 1)
+          if (q != "") { out = out c; if (c == q) q = "" }
+          else if (c == "'"'"'" || c == "\"") { q = c; out = out c }
+          else if (c == "#" && (prev == "" || prev == " " || prev == "\t")) break
+          else if (c == ";" || c == "|" || c == "&") out = out "\n"
+          else out = out c
+          prev = c
+        }
+        print out
+      }')
 }
 
 # One target per line, tagged w (write) or r (delete), so no regex can match

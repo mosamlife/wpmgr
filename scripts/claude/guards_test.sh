@@ -627,6 +627,18 @@ t "rm dead app, bare dir"  pass "$(bdec 'rm -rf apps/landing')"
 t "copy out of bare dir"   pass "$(bdec 'cp apps/api/internal/db/sqlc/db.go /tmp/')"
 t "cp -t out of sqlc"      pass "$(bdec 'cp -t /tmp/ apps/api/internal/db/sqlc/db.go')"
 
+# Segment splitting and comment stripping are quote-aware. A `|` and a `#` that
+# are DATA inside a sed script used to cut the command up and take the
+# destination with them.
+t "pipe inside a quote"    deny "$(bdec "sed -i 's| #x|y|' apps/api/internal/db/sqlc/db.go")"
+t "hash inside a quote"    deny "$(bdec "sed -i 's/ #x/y/' apps/api/internal/db/sqlc/db.go")"
+
+# The destination is a directory and the SOURCE basename is the generated file,
+# so the resolved target is apps/web/src/routeTree.gen.ts. Emitting the resolved
+# name is what makes this reachable at all.
+t "src basename into dir"  deny "$(bdec 'cp /tmp/routeTree.gen.ts apps/web/src')"
+t "harmless basename"      pass "$(bdec 'cp /tmp/notes.txt apps/web/src')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
