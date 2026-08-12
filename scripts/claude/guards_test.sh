@@ -842,6 +842,132 @@ blanket=$ga'(-A|--all)([^A-Za-z0-9_-]|$)|'$ga'\.([^A-Za-z0-9_/.-]|$)'
 t "no blanket staging in this suite" 0 \
   "$(grep -vE '^[[:space:]]*#' "$0" | grep -cE "$blanket" | tr -d ' ')"
 
+echo "== agent-writes: a record it cannot write is announced, never swallowed"
+# Both writes in the recorder used to discard their failure - `mkdir -p ...
+# 2>/dev/null || exit 0`, and an append whose stderr went to /dev/null followed
+# by an unconditional exit 0. This file is the sole input to commit-gate.sh, so
+# a silent failure there set scoped=0 and DOWNGRADED the blocking gate to a
+# reminder, with nothing said anywhere. It must announce and still exit 0: a
+# PostToolUse hook that exits non-zero fails the user's tool call.
+#
+# Both failures are planted physically rather than with chmod, which root
+# ignores and which would make this suite pass or fail on the uid it runs as.
+
+# 1. The state directory cannot be created: its parent is a regular file.
+blocker="$tmp/not-a-dir"
+echo x > "$blocker"
+aw_mk=$(jq -n --arg a agent-D --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+        | WPMGR_AGENT_WRITES_STATE="$blocker/state" bash "$WRITES" 2>&1 >/dev/null)
+aw_mk_rc=$(jq -n --arg a agent-D --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+        | WPMGR_AGENT_WRITES_STATE="$blocker/state" bash "$WRITES" >/dev/null 2>&1; printf '%s' "$?")
+t "broken state dir still exits 0"   0 "$aw_mk_rc"
+tcontains "and names what failed"    "cannot create the state directory" "$aw_mk"
+tcontains "and names the consequence" "NOT being written"                "$aw_mk"
+tcontains "and says the gate stops blocking" "never block"               "$aw_mk"
+
+# 2. The record file itself cannot be appended to: the path is a directory.
+apst="$tmp/agent-writes-append"
+mkdir -p "$apst/agent-E"
+aw_ap=$(jq -n --arg a agent-E --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+        | WPMGR_AGENT_WRITES_STATE="$apst" bash "$WRITES" 2>&1 >/dev/null)
+aw_ap_rc=$(jq -n --arg a agent-E --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+        | WPMGR_AGENT_WRITES_STATE="$apst" bash "$WRITES" >/dev/null 2>&1; printf '%s' "$?")
+t "unwritable record still exits 0"  0 "$aw_ap_rc"
+tcontains "and names that failure"   "cannot append to the record" "$aw_ap"
+
+# ...and the over-fire, which for a hook that runs on EVERY write is the whole
+# risk: a working recorder must be completely silent, or the note becomes noise
+# and stops being read.
+aw_ok=$(jq -n --arg a agent-F --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+        | bash "$WRITES" 2>&1 >/dev/null)
+t "a working recorder says nothing"  "" "$aw_ok"
+
+# The consequence, end to end, because the note above is a claim about
+# commit-gate.sh and a claim is worth what its proof is. agent-F's write really
+# was recorded, so the gate blocks; agent-G's never was, so the same gate can
+# only remind - which is exactly the downgrade the recorder now announces.
+t "record present, gate blocks"      2 "$(gate agent-F)"
+tcontains "and names the file"       "theirs.txt" "$(gate_msg agent-F)"
+t "record absent, gate only reminds" 0 "$(gate agent-G)"
+tcontains "and admits it is not blocking" "Not blocking" "$(gate_msg agent-G)"
+
+echo "== session-brief: a measurement it could not take never prints as zero"
+# `git ... | wc -l` prints 0 when GIT failed, which is indistinguishable from
+# "there are none", and the caller then dropped the whole worktree section
+# rather than admit it could not look. Same for docker, and the disk warning -
+# the one that would have caught failure B - was skipped outright when df
+# printed something non-numeric.
+#
+# The failures are planted with shims on PATH, because that is the only way to
+# make an installed tool fail on demand. The git shim passes everything else
+# through to the real git: the brief exits at its own `git rev-parse` if git is
+# merely missing, so "git cannot answer" and "git is absent" are different
+# things and this reproduces the first.
+BRIEF="$here/session-brief.sh"
+realgit=$(command -v git)
+sb="$tmp/briefrepo"
+mkdir -p "$sb"
+git -C "$sb" init -q
+git -C "$sb" config user.email t@t.invalid
+git -C "$sb" config user.name t
+echo seed > "$sb/seed.txt"
+git -C "$sb" add seed.txt >/dev/null
+git -C "$sb" commit -qm init
+
+shim_git="$tmp/shim-git"; mkdir -p "$shim_git"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do'
+  echo '  case "$a" in worktree|branch) echo "fatal: simulated git failure" >&2; exit 128 ;; esac'
+  echo 'done'
+  printf 'exec %s "$@"\n' "$realgit"
+} > "$shim_git/git"
+chmod +x "$shim_git/git"
+
+# An honest zero and a failed measurement must not read the same. This is the
+# assertion the whole change exists for.
+sb_zero=$(cd "$sb" && bash "$BRIEF" 2>/dev/null)
+sb_fail=$(cd "$sb" && PATH="$shim_git:$PATH" bash "$BRIEF" 2>/dev/null)
+tlacks    "honest zero claims no worktrees"  "agent worktrees" "$sb_zero"
+tcontains "a failed git says so"             "agent worktrees: could not measure" "$sb_fail"
+tlacks    "and never reports it as zero"     "0 live"          "$sb_fail"
+# The shim must really be the thing that changed the answer, not a repo that
+# happened to differ: same repo, same script, one PATH entry apart.
+t "the two runs really differ"  differ \
+  "$(if [[ "$sb_zero" == "$sb_fail" ]]; then printf same; else printf differ; fi)"
+# A brief that cannot measure still must not break the session start.
+sb_fail_rc=$(cd "$sb" && PATH="$shim_git:$PATH" bash "$BRIEF" >/dev/null 2>&1; printf '%s' "$?")
+t "a failed measurement still exits 0" 0 "$sb_fail_rc"
+
+# docker: installed but not answering is precisely what a full disk does to it,
+# and reporting that as "0 volumes" hides the symptom when it is most wanted.
+shim_dfail="$tmp/shim-docker-fail"; mkdir -p "$shim_dfail"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "Cannot connect to the Docker daemon" >&2' 'exit 1' > "$shim_dfail/docker"
+chmod +x "$shim_dfail/docker"
+sb_dfail=$(cd "$sb" && PATH="$shim_dfail:$PATH" bash "$BRIEF" 2>/dev/null)
+tcontains "a silent docker says so" "docker volumes: could not measure" "$sb_dfail"
+# ...and the honest direction, or a brief that reported everything as
+# unmeasurable would pass the assertion above while measuring nothing.
+shim_dok="$tmp/shim-docker-ok"; mkdir -p "$shim_dok"
+printf '%s\n' '#!/usr/bin/env bash' 'for i in $(seq 1 12); do echo "vol$i"; done' > "$shim_dok/docker"
+chmod +x "$shim_dok/docker"
+sb_dok=$(cd "$sb" && PATH="$shim_dok:$PATH" bash "$BRIEF" 2>/dev/null)
+tcontains "a working docker is counted"   "12 docker volumes" "$sb_dok"
+tlacks    "and is not called unmeasurable" "docker volumes: could not measure" "$sb_dok"
+
+# df: the under-25Gi warning is the one that would have caught failure B, so a
+# df that gives no number must say the warning did not run, not stay quiet.
+shim_df="$tmp/shim-df"; mkdir -p "$shim_df"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "df: /: Operation not permitted" >&2' 'exit 1' > "$shim_df/df"
+chmod +x "$shim_df/df"
+sb_df=$(cd "$sb" && PATH="$shim_df:$PATH" bash "$BRIEF" 2>/dev/null)
+tcontains "a broken df says so"        "disk free: could not measure" "$sb_df"
+tcontains "and says the warning did not run" "did NOT run" "$sb_df"
+tlacks    "and invents no free space"  "disk free: Gi"  "$sb_df"
+# The honest direction: a real df gives a number and no apology.
+tcontains "a real df gives a number"   "disk free:"     "$sb_zero"
+tlacks    "and no could-not-measure"   "disk free: could not measure" "$sb_zero"
+
 echo ""
 if [[ $failed -eq 0 ]]; then
   echo "guards_test: $pass assertions passed"
