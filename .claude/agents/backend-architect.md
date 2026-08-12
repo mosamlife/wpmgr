@@ -102,7 +102,7 @@ a restore that holds it and the restored chunks are gone. Route this work to
 Editing `packages/openapi/openapi.yaml` without regenerating **both**, in the
 same commit, breaks the contract for the other layers:
 
-```
+```bash
 cd apps/api && go generate ./internal/api/gen/...
 pnpm -C packages/openapi-client generate
 ```

@@ -30,9 +30,11 @@ App code imports from `@wpmgr/api`, never from `./generated`; a new operation
 must be added to the facade's re-export lists in
 `packages/openapi-client/src/index.ts` or the app cannot see it.
 
-A new route needs `pnpm -C apps/web build` to regenerate `routeTree.gen.ts`
-(commit it) **and** a nav entry in `src/components/layout/sidebar.tsx`.
-Typecheck alone catches neither.
+Every new route needs `pnpm -C apps/web build` to regenerate `routeTree.gen.ts`
+(commit it). A route that is **authenticated and user-navigable** also needs a
+nav entry in `src/components/layout/sidebar.tsx`. Public flows and legal pages
+stay out of that sidebar, as do authenticated routes reached only from another
+page. Typecheck catches none of this.
 
 ## Units cross the wire raw
 
