@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse hook for Bash.
 #
-# Three arms, all grounded in something measured here.
+# Four arms, all grounded in something measured here.
 #
 # 1. UNBOUNDED WAIT LOOPS - deny.
 #    Of the agent runs that returned no result in one week, most contained
@@ -36,6 +36,16 @@
 #    whose target paths never appear in the command line. A determined shell
 #    write gets through. This raises the bar from "frictionless" to "deliberate
 #    and visible", and that is the whole claim.
+#
+# 4. A GIT PUSH THAT WOULD LAND COMMITS ON main - deny.
+#    On 2026-08-12 a one-line fix was committed on main in the main checkout and
+#    pushed straight to origin/main, with no branch and no PR. Branch protection
+#    on main carries four required contexts, but `enforce_admins` is
+#    deliberately false, so an owner-token push is accepted server-side and not
+#    one of those contexts ever ran against it. This hook saw that push and
+#    permitted it: its entire notion of git was `git rm` and `git mv`. It is the
+#    only enforcement that exists, which is why it denies rather than asks, and
+#    why it also denies when it cannot read the branch.
 #
 # FAIL-OPEN, DELIBERATELY, AND ANNOUNCED: see the header of route-guard.sh.
 # session-brief.sh reports the guard as INACTIVE at session start if jq is
@@ -325,7 +335,16 @@ collect_dests() {
         grep -qE '(open\(|writeFile|file_put_contents|\.write\()' <<<"$seg" \
           && printf 'w:%s\n' "${operands[@]}" ;;
     esac
-  done < <(printf '%s\n' "$cmd" \
+  done < <(split_segments)
+}
+
+# One splitter, two callers. collect_dests decides write destinations with it
+# and the git-push arm below decides command words with it; a second copy would
+# drift, and this is the part every deny arm's correctness rests on. Defined
+# after its caller deliberately - shell resolves a function at CALL time, and
+# collect_dests is first called below both definitions.
+split_segments() {
+  printf '%s\n' "$cmd" \
            | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
            | awk '
       # Split into command segments and drop comments, both QUOTE-AWARE. A
@@ -375,7 +394,7 @@ collect_dests() {
         }
         if (q != "") { line = $0; gsub(/[;|&]/, "\n", line); print line }
         else print out
-      }')
+      }'
 }
 
 # One target per line, tagged w (write) or r (delete), so no regex can match
@@ -506,6 +525,219 @@ for databases on the earlier version. Route it to database-engineer.
 Doing this from the shell instead of Edit does not change the outcome; it only
 removes the record that it happened."
   fi
+fi
+
+# ---- arm 4: a push that would land commits on main -------------------------
+# Decided per SEGMENT, from the same splitter every other arm uses: `git` has to
+# be the command word and `push` its subcommand. So a push named inside a quoted
+# string, inside a commit message or after a `#` is not a push, and neither is
+# any command that merely contains the letters m-a-i-n.
+#
+# Branch names are compared by EQUALITY, after one layer of quotes comes off,
+# never by substring or by regex. `main-ui`, `maintenance`, `feat/remaining`,
+# `origin/main` as a log argument and `cp domain.go x` all have to stay ordinary
+# work; a guard that reddens those gets switched off, and then main is guarded
+# by nothing at all.
+#
+# WHAT IT CANNOT SEE, stated rather than implied. The splitter reads a heredoc
+# BODY as ordinary segments, so `cat > runbook.md <<EOF` whose body carries a
+# literal `git push origin main` line is refused. Writing that file through
+# Edit/Write - which is where prose is written here anyway - is not. And a push
+# performed by a script this command merely invokes, or built from a variable,
+# is invisible to a text matcher, exactly as the header already says.
+
+# push_branch <value of git -C, may be empty> -> $PBRANCH; 1 if unreadable.
+#
+# The branch has to come from the directory the command will actually run in,
+# which is the hook payload's cwd, or from `git -C` when the command overrides
+# it. The migration arm's SECOND source - this script's own directory - is
+# deliberately not reused here, and that is not an oversight: this file is
+# committed in the repository it guards, so from an agent worktree it resolves
+# the MAIN checkout, whose HEAD is usually main, and every agent push in the
+# project would be refused for a branch nobody was on. A wrong answer is worse
+# than no answer; no answer is handled below, loudly.
+PBRANCH=""
+push_branch() {
+  local d="$1" base
+  PBRANCH=""
+  base=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  if [[ -n "$d" ]]; then
+    if [[ "$d" != /* ]]; then
+      [[ -n "$base" ]] || return 1
+      d="${base%/}/$d"
+    fi
+  else
+    d="$base"
+  fi
+  [[ -n "$d" && -d "$d" ]] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  # --quiet exits non-zero on a detached HEAD rather than printing "HEAD", so a
+  # detached checkout arrives here as unreadable instead of as a branch called
+  # HEAD. Both are correct answers to "which branch"; only one of them is true.
+  PBRANCH=$(git -C "$d" symbolic-ref --quiet --short HEAD 2>/dev/null)
+  [[ -n "$PBRANCH" ]] || return 1
+  return 0
+}
+
+# push_hits_main -> 0 and $PUSH_WHY set, when some segment is a push that lands
+# on main or a push whose target cannot be read ($PUSH_WHY = UNKNOWN).
+PUSH_WHY=""
+push_hits_main() {
+  local seg w cn i n start sub d gitdir allrefs tagsonly r dst np
+  local -a words positional
+  while IFS= read -r seg; do
+    words=()
+    IFS=$' \t' read -r -a words <<<"$seg"
+    n=${#words[@]}
+    [[ $n -eq 0 ]] && continue
+
+    start=0
+    while [[ $start -lt $n ]]; do
+      case "${words[$start]}" in
+        *=*|env|sudo|command|nohup|nice) start=$((start + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [[ $start -ge $n ]] && continue
+    unq "${words[$start]}"; cn=${UNQ##*/}
+    [[ "$cn" == git ]] || continue
+
+    # git's own options come BEFORE the subcommand, and two of them change which
+    # repository the push reads its branch from. `-C dir` is followed, so
+    # `git -C <main checkout> push` from a worktree is still a push to main;
+    # --git-dir/--work-tree/--namespace are not followed, so the branch becomes
+    # unreadable rather than silently taken from the wrong tree. Their separate
+    # -value forms consume that value, or the value itself would be read as the
+    # subcommand and the whole push would be skipped.
+    d=""; gitdir=""; sub=""
+    i=$((start + 1))
+    while [[ $i -lt $n ]]; do
+      unq "${words[$i]}"; w=$UNQ
+      case "$w" in
+        -C) i=$((i + 1)); [[ $i -lt $n ]] && { unq "${words[$i]}"; d=$UNQ; } ;;
+        -c) i=$((i + 1)) ;;
+        --git-dir=*|--work-tree=*|--namespace=*) gitdir=1 ;;
+        --git-dir|--work-tree|--namespace) gitdir=1; i=$((i + 1)) ;;
+        -*) ;;
+        *) sub=$w; break ;;
+      esac
+      i=$((i + 1))
+    done
+    [[ "$sub" == push ]] || continue
+
+    positional=()
+    allrefs=""; tagsonly=""
+    i=$((i + 1))
+    while [[ $i -lt $n ]]; do
+      unq "${words[$i]}"; w=$UNQ
+      case "$w" in
+        --all|--mirror) allrefs=1 ;;
+        # --tags with no refspec pushes refs/tags and nothing else, so it moves
+        # no branch. Exact match: --follow-tags is an ordinary branch push.
+        --tags) tagsonly=1 ;;
+        # These take a separate value, which must not be read as a refspec.
+        -o|--push-option|--repo|--receive-pack|--exec) i=$((i + 1)) ;;
+        -*) ;;
+        *) positional[${#positional[@]}]="$w" ;;
+      esac
+      i=$((i + 1))
+    done
+
+    if [[ -n "$allrefs" ]]; then
+      PUSH_WHY="--all/--mirror pushes every local branch, and one of them is main"
+      return 0
+    fi
+
+    # `git push [<repository> [<refspec>...]]`: the FIRST positional is always
+    # the repository, whether it is a remote name or a URL.
+    np=${#positional[@]}
+    if [[ $np -gt 1 ]]; then
+      i=1
+      while [[ $i -lt $np ]]; do
+        r=${positional[$i]}
+        r=${r#+}                # `+main` is a force-push of main
+        dst=${r##*:}            # `src:dst` lands on dst; no colon means dst = src
+        dst=${dst#refs/heads/}
+        if [[ "$dst" == main ]]; then
+          PUSH_WHY="the refspec '${positional[$i]}' targets main on the remote"
+          return 0
+        fi
+        # `git push origin HEAD` lands on a remote branch named for the CURRENT
+        # branch, so it is only readable by asking which branch that is.
+        if [[ "$dst" == HEAD && "$r" != *:* ]]; then
+          if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
+            PUSH_WHY="UNKNOWN"
+            return 0
+          fi
+          if [[ "$PBRANCH" == main ]]; then
+            PUSH_WHY="HEAD is the current branch and the current branch is main"
+            return 0
+          fi
+        fi
+        i=$((i + 1))
+      done
+      continue
+    fi
+
+    # No refspec at all: the push goes to the current branch.
+    [[ -n "$tagsonly" ]] && continue
+    if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
+      PUSH_WHY="UNKNOWN"
+      return 0
+    fi
+    if [[ "$PBRANCH" == main ]]; then
+      PUSH_WHY="it names no refspec, so it pushes the current branch, and the current branch is main"
+      return 0
+    fi
+  done < <(split_segments)
+  return 1
+}
+
+# The word `push` cannot be absent from a `git push`, so this costs one grep on
+# every other command instead of two awk processes. It gates entry to the
+# structural test; it never decides anything by itself.
+if grep -qE '(^|[^A-Za-z0-9_-])push([^A-Za-z0-9_-]|$)' <<<"$cmd" && push_hits_main; then
+  if [[ "$PUSH_WHY" == UNKNOWN ]]; then
+    push_cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+    emit deny "That is a git push, and this guard COULD NOT DETERMINE which branch it would
+land on, so it cannot rule out main.
+
+The branch is read from the directory the command runs in, and that failed here:
+the hook payload's cwd was '${push_cwd:-<none>}', and one of these is true - it
+is absent, it is not a directory, it is not inside a worktree, HEAD is detached,
+git is not on PATH, or the command overrode the repository with --git-dir /
+--work-tree / --namespace.
+
+A push this guard cannot read is not a push it may allow. Branch protection on
+main has enforce_admins deliberately false, so nothing after this hook checks
+anything: if this one is wrong, the commits are on origin/main.
+
+Name the target and it needs no lookup at all:
+
+  git push origin <branch>        any branch except main
+  git push -u origin fix/<name>
+
+Or re-run it from inside the checkout the push belongs to."
+  fi
+  emit deny "That push lands commits on main, and the only route to main is a pull request:
+${PUSH_WHY}.
+
+CLAUDE.md, \"## Delivery\": branch, push the branch, open the PR, let ci.yml and
+review run, then merge. Never git push while HEAD is main - not for a one-line
+fix, not for a typo, not because CI will pass anyway. Approval has to precede the
+irreversible half, and a push to origin/main IS the irreversible half.
+
+This hook is the ONLY enforcement. Branch protection on main carries four
+required contexts, but enforce_admins is deliberately false, so an owner-token
+push is accepted and not one of those contexts runs against it. There is no
+server-side check behind this refusal to catch what it lets through.
+
+  git switch -c fix/<name>
+  git push -u origin fix/<name>
+  gh pr create
+
+Pushing a branch, a tag, or a release branch is untouched by this arm; only a
+push that moves main is refused."
 fi
 
 exit 0

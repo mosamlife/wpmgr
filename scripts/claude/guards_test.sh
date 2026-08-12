@@ -801,6 +801,172 @@ t "quoted mv dead aside"  pass "$(bdec 'mv "apps/landing" /tmp/landing-old')"
 t "quoted rm dead app"    pass "$(bdec 'rm -rf "apps/landing"')"
 t "quoted sibling"        pass "$(bdec 'cp /tmp/x "apps/api/internal/db/sqlcx/db.go"')"
 
+echo "== bash-guard: a push that would land commits on main"
+# On 2026-08-12 a one-line fix was committed on main in the main checkout and
+# pushed straight to origin/main, with no branch and no PR. Branch protection on
+# main carries four required contexts and enforce_admins is deliberately false,
+# so the push was accepted server-side with none of them running. This guard saw
+# that command and permitted it: its whole notion of git was `git rm`/`git mv`.
+#
+# Every case below needs a checkout whose HEAD is KNOWN, and `git init` takes
+# its first branch name from the machine's init.defaultBranch, which this suite
+# may not assume. So HEAD is set explicitly with symbolic-ref, and the premise
+# is asserted before anything rests on it.
+mkbranchrepo() { # mkbranchrepo <dir> <branch>
+  mkdir -p "$1"
+  git -C "$1" init -q
+  git -C "$1" config user.email t@t.invalid
+  git -C "$1" config user.name t
+  git -C "$1" symbolic-ref HEAD "refs/heads/$2"
+  echo seed > "$1/seed.txt"
+  git -C "$1" add seed.txt >/dev/null
+  git -C "$1" commit -qm init
+}
+onmain="$tmp/on-main";       mkbranchrepo "$onmain" main
+onbranch="$tmp/on-branch";   mkbranchrepo "$onbranch" fix/thing
+onwt="$tmp/on-worktree";     mkbranchrepo "$onwt" worktree-agent-7
+detached="$tmp/detached";    mkbranchrepo "$detached" main
+git -C "$detached" checkout -q --detach
+
+# The premises. Without these, "denied because HEAD is main" and "permitted
+# because HEAD is not" both pass for whatever reason the machine chose.
+t "fixture HEAD is main"     main              "$(git -C "$onmain"   symbolic-ref --quiet --short HEAD)"
+t "fixture HEAD is a branch" fix/thing         "$(git -C "$onbranch" symbolic-ref --quiet --short HEAD)"
+t "fixture HEAD is worktree" worktree-agent-7  "$(git -C "$onwt"     symbolic-ref --quiet --short HEAD)"
+t "fixture HEAD is detached" ""                "$(git -C "$detached" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+
+bdecc() { # bdec with an arbitrary cwd, which is where the branch is read from
+  local out
+  out=$(jq -n --arg c "$1" --arg c2 "$2" '{cwd:$c, tool_input:{command:$c2}}' \
+        | bash "$BASH_G" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+breason() {
+  jq -n --arg c "$1" --arg c2 "$2" '{cwd:$c, tool_input:{command:$c2}}' \
+    | bash "$BASH_G" 2>/dev/null \
+    | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null
+}
+
+# It fires. Every shape that puts a commit on main.
+t "bare push, HEAD is main"  deny "$(bdecc "$onmain"   'git push')"
+t "push origin, HEAD main"   deny "$(bdecc "$onmain"   'git push origin')"
+t "push origin HEAD on main" deny "$(bdecc "$onmain"   'git push origin HEAD')"
+t "push -u origin HEAD main" deny "$(bdecc "$onmain"   'git push -u origin HEAD')"
+t "push origin main"         deny "$(bdecc "$onbranch" 'git push origin main')"
+t "push origin HEAD:main"    deny "$(bdecc "$onbranch" 'git push origin HEAD:main')"
+t "push -u origin main"      deny "$(bdecc "$onbranch" 'git push -u origin main')"
+t "push --force origin main" deny "$(bdecc "$onbranch" 'git push --force origin main')"
+t "push -f origin main"      deny "$(bdecc "$onbranch" 'git push -f origin main')"
+t "push origin +main"        deny "$(bdecc "$onbranch" 'git push origin +main')"
+t "push origin main:main"    deny "$(bdecc "$onbranch" 'git push origin main:main')"
+t "push HEAD:refs/heads/main" deny "$(bdecc "$onbranch" 'git push origin HEAD:refs/heads/main')"
+t "push --force-with-lease"  deny "$(bdecc "$onbranch" 'git push --force-with-lease origin main')"
+t "push --all"               deny "$(bdecc "$onbranch" 'git push --all')"
+t "push --all origin"        deny "$(bdecc "$onbranch" 'git push --all origin')"
+t "push --mirror"            deny "$(bdecc "$onbranch" 'git push --mirror origin')"
+t "push a branch onto main"  deny "$(bdecc "$onbranch" 'git push origin fix/thing:main')"
+t "push to a URL, main"      deny "$(bdecc "$onbranch" 'git push git@github.com:o/r.git main')"
+t "push --tags AND main"     deny "$(bdecc "$onbranch" 'git push --tags origin main')"
+t "push -o then main"        deny "$(bdecc "$onbranch" 'git push -o ci.skip origin main')"
+# The agent worktree whose HEAD is main. Isolation is not protection: a worktree
+# can sit on main like any other checkout.
+t "worktree HEAD is main"    deny "$(bdecc "$detached/../on-main" 'git push')"
+# Quoting must not defeat it, exactly as it must not defeat the write arms.
+t "dquoted main"             deny "$(bdecc "$onbranch" 'git push origin "main"')"
+t "squoted main"             deny "$(bdecc "$onbranch" "git push origin 'main'")"
+t "quoted push word"         deny "$(bdecc "$onbranch" 'git "push" origin "main"')"
+t "quoted remote and main"   deny "$(bdecc "$onbranch" 'git push "origin" "main"')"
+# The command word is found the same way every other arm finds it.
+t "chained after &&"         deny "$(bdecc "$onbranch" 'make test && git push origin main')"
+t "chained after ;"          deny "$(bdecc "$onbranch" 'git commit -m x; git push origin main')"
+t "env prefix"               deny "$(bdecc "$onbranch" 'GIT_TRACE=1 git push origin main')"
+t "absolute git path"        deny "$(bdecc "$onbranch" '/usr/bin/git push origin main')"
+t "trailing comment"         deny "$(bdecc "$onbranch" 'git push origin main # just this once')"
+# `git -C` overrides the repository, so the branch comes from THERE.
+t "git -C a main checkout"   deny "$(bdecc "$onbranch" "git -C $onmain push")"
+t "git -C, then origin HEAD" deny "$(bdecc "$onbranch" "git -C $onmain push origin HEAD")"
+# --git-dir is not followed, so the branch is unreadable rather than read from
+# the wrong tree; the refspec form is still decidable and still denied.
+t "--git-dir sep val, main"  deny "$(bdecc "$onbranch" 'git --git-dir /x/.git push origin main')"
+
+# The refusal has to point at the rule it enforces, or it is just a wall.
+main_reason=$(breason "$onbranch" 'git push origin main')
+tcontains "refusal names Delivery"    "## Delivery"        "$main_reason"
+tcontains "refusal names the PR"      "pull request"       "$main_reason"
+tcontains "refusal says why it is it" "enforce_admins"     "$main_reason"
+
+# ...and it must not over-fire, or it gets switched off and guards nothing.
+t "push -u a fix branch"     pass "$(bdecc "$onbranch" 'git push -u origin fix/whatever')"
+t "push origin HEAD"         pass "$(bdecc "$onbranch" 'git push origin HEAD')"
+t "bare push on a branch"    pass "$(bdecc "$onbranch" 'git push')"
+t "release branch"           pass "$(bdecc "$onbranch" 'git push origin release/0.61.134')"
+t "release branch -u"        pass "$(bdecc "$onbranch" 'git push -u origin release/0.61.134')"
+t "delete a remote branch"   pass "$(bdecc "$onbranch" 'git push --delete origin some-branch')"
+t "push --tags"              pass "$(bdecc "$onmain"   'git push --tags')"
+t "push --tags origin"       pass "$(bdecc "$onmain"   'git push origin --tags')"
+t "push one tag by name"     pass "$(bdecc "$onbranch" 'git push origin v0.61.133')"
+t "agent worktree push -u"   pass "$(bdecc "$onwt"     'git push -u origin worktree-agent-7')"
+t "agent worktree bare push" pass "$(bdecc "$onwt"     'git push')"
+t "agent worktree HEAD"      pass "$(bdecc "$onwt"     'git push origin HEAD')"
+t "agent worktree force"     pass "$(bdecc "$onwt"     'git push -f origin worktree-agent-7')"
+# Not a push. None of these move a ref on the remote.
+t "git fetch origin main"    pass "$(bdecc "$onmain"   'git fetch origin main')"
+t "git pull on main"         pass "$(bdecc "$onmain"   'git pull')"
+t "git remote -v"            pass "$(bdecc "$onmain"   'git remote -v')"
+t "git log origin/main"      pass "$(bdecc "$onmain"   'git log --oneline origin/main -5')"
+t "git checkout main"        pass "$(bdecc "$onmain"   'git checkout main')"
+t "git branch on main"       pass "$(bdecc "$onmain"   'git rev-parse --abbrev-ref HEAD')"
+t "git config push.default"  pass "$(bdecc "$onmain"   'git config push.default simple')"
+# The word main, without a push behind it. Substring matching would take all of
+# these, and they are ordinary work.
+t "cp domain.go"             pass "$(bdecc "$onmain"   'cp domain.go /tmp/x')"
+t "branch main-ui"           pass "$(bdecc "$onbranch" 'git push -u origin main-ui')"
+t "branch maintenance"       pass "$(bdecc "$onbranch" 'git push origin maintenance')"
+t "branch feat/remaining"    pass "$(bdecc "$onbranch" 'git push origin feat/remaining')"
+t "branch main2"             pass "$(bdecc "$onbranch" 'git push origin main2')"
+t "branch fix/main-menu"     pass "$(bdecc "$onbranch" 'git push origin fix/main-menu')"
+# A push that is DATA, not a command: quoted, commented, or echoed.
+t "push inside a message"    pass "$(bdecc "$onmain"   'git commit -m "wip; git push origin main"')"
+t "push inside a comment"    pass "$(bdecc "$onmain"   'make test # then git push origin main')"
+t "push echoed"              pass "$(bdecc "$onmain"   'echo "git push origin main"')"
+t "grepping for git push"    pass "$(bdecc "$onmain"   'grep -rn "git push" docs/')"
+
+echo "== bash-guard: a push whose branch it cannot read is refused, not waved through"
+# The signature defect of this project is a check that announces success over its
+# own errors. An unreadable branch is not a licence to push: it is DENY, and the
+# reason says the branch could not be determined rather than pretending to know.
+# The remedy is in the message and costs no lookup - name the branch.
+t "no cwd, bare push"        deny "$(bdec 'git push')"
+t "no cwd, push origin"      deny "$(bdec 'git push origin')"
+t "no cwd, push origin HEAD" deny "$(bdec 'git push origin HEAD')"
+t "cwd is not a repo"        deny "$(bdecc "$nogit" 'git push')"
+t "detached HEAD"            deny "$(bdecc "$detached" 'git push')"
+t "--git-dir, bare push"     deny "$(bdecc "$onbranch" "git --git-dir=$onbranch/.git push")"
+t "--work-tree, bare push"   deny "$(bdecc "$onbranch" "git --work-tree=$onbranch push")"
+unknown_reason=$(breason "$detached" 'git push')
+tcontains "says it could not read it" "COULD NOT DETERMINE" "$unknown_reason"
+tlacks    "and claims no branch"      "current branch is main" "$unknown_reason"
+
+# The over-fire that would make the deny above unusable: a push that names its
+# target needs no branch lookup, so an unreadable HEAD must not block it. Agents
+# push constantly and a payload without a usable cwd must not strand them.
+t "no cwd, explicit branch"  pass "$(bdec 'git push -u origin fix/x')"
+t "no cwd, a tag"            pass "$(bdec 'git push origin v0.61.133')"
+t "detached, explicit"       pass "$(bdecc "$detached" 'git push origin fix/x')"
+t "non-repo cwd, explicit"   pass "$(bdecc "$nogit" 'git push -u origin release/0.61.134')"
+t "--git-dir, explicit"      pass "$(bdecc "$onbranch" 'git --git-dir=/x/.git push origin fix/x')"
+# ...and an unreadable branch is not a licence to refuse everything else either.
+t "no cwd, git fetch"        pass "$(bdec 'git fetch --all')"
+t "detached, git status"     pass "$(bdecc "$detached" 'git status')"
+
+# KNOWN PRECEDENCE, asserted so it is visible rather than assumed: arm 2
+# (publishing prose) is reached first and ASKS, so a push chained with a gh
+# command arrives at the human as an ask carrying the publishing advice, not as
+# this arm's deny. It is still a stop, not a bypass. Reported to the owner
+# rather than fixed here, because moving the arm is not this change.
+t "push main && gh pr create" ask "$(bdecc "$onbranch" 'git push origin main && gh pr create')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
