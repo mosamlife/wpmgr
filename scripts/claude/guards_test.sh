@@ -251,7 +251,14 @@ touch -t 200001010000 "$own/sess-stale" "$own/not a session dir" "$own/.wpmgr-ha
 t "stale session dir pruned"   no  "$(exists "$own/sess-stale")"
 t "off-shape entry kept"       yes "$(exists "$own/not a session dir")"
 t "marker survives the prune"  yes "$(exists "$own/.wpmgr-harness-state")"
-t "own dir is not group/world readable" 700 "$(stat -f '%OLp' "$own" 2>/dev/null || stat -c '%a' "$own")"
+# ORDER MATTERS, DO NOT SWAP THESE. `-f` is "format string" to BSD stat and
+# "--file-system" to GNU stat, so `stat -f '%OLp'` on Linux exits 0 while
+# answering a completely different question - it printed the filesystem's block
+# size and type into this assertion on ubuntu-latest, and `||` never fired
+# because there was no failure to catch. The GNU form must come first because it
+# is the one that FAILS on the other platform (`stat -c` exits 1 on BSD,
+# measured), so the branch that must not be reached cannot answer by accident.
+t "own dir is not group/world readable" 700 "$(stat -c '%a' "$own" 2>/dev/null || stat -f '%OLp' "$own")"
 
 echo "== route-guard state: the marker is a claim, so the claim is checked too"
 # The marker is a FIXED name under a FIXED directory name, and ${TMPDIR:-/tmp}
