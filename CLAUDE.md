@@ -200,14 +200,26 @@ is the pattern.
 **The only route to `main` is a pull request.** Branch, push the branch, open the
 PR, let `ci.yml` and review run, merge. Never commit on `main` in the main
 checkout and never `git push` while `HEAD` is `main` — not for a one-line fix,
-not for a typo, not because CI will pass anyway. `bash-guard.sh` denies that push
-and its refusal names this paragraph.
+not for a typo, not because CI will pass anyway.
 
-That local guard is the **only** enforcement. Branch protection on `main` carries
-the four required contexts but `enforce_admins` is deliberately `false`, so an
-owner-token push is accepted and no server-side check ever runs against it. A
-push from a plain terminal, from the GitHub UI, or from any tool that is not a
-Claude Code session is not guarded at all.
+**There is no server-side enforcement.** Branch protection on `main` carries the
+four required contexts, but `enforce_admins` is deliberately `false` so an
+owner-token push is accepted and no required check ever runs against it. That is
+a standing decision, kept so an incident hotfix stays possible. Everything below
+is therefore client-side, and a determined push always gets through:
+`git push --no-verify`, `git send-pack`, and `git -c core.hooksPath=…` each skip
+it. These layers stop an accident, which is what actually happened.
+
+- `.githooks/pre-push` is the lock. Git hands it the already-resolved refs, so
+  `eval`, a `cd`, quoting, `@`, and exotic refspecs cannot disguise a push from
+  it. **It is repo-local config and config is never committed, so every clone
+  and every fresh worktree starts unprotected.** `make hooks` installs it;
+  `make hooks-status` says whether it is live. `session-brief.sh` prints
+  INSTALLED / NOT INSTALLED / COULD NOT CHECK at every session start, because a
+  guard that is silently absent is worse than none — you would trust it.
+- `bash-guard.sh` is the early stop, and matches command text, so it is
+  structurally incomplete and says so in its own comments. It exists to explain
+  the rule at the moment you would break it, not to be the barrier.
 
 **Approval has to precede the irreversible half.** On 2026-08-12 the #406 fix was
 committed to `main`, pushed, and *then* followed by "want me to open a PR for
