@@ -40,12 +40,41 @@ for t in timeout sqlc atlas govulncheck; do
   esac
 done
 
+# Take a measurement, or say plainly that it could not be taken. Never let a
+# failure print as a number that means something else.
+#
+# harness-reap.sh's sizeof() is the pattern - it prints "size unknown" rather
+# than a blank column, because a blank size reads as zero and zero is the one
+# thing it does not mean. A COUNT is the worse case: `git ... | wc -l` prints a
+# perfectly plausible 0 when GIT ITSELF failed, 0 is indistinguishable from
+# "there are none", and the caller below then dropped the whole section rather
+# than admit it could not look.
+#
+# Prints the count on success and "unknown" on failure, and returns the
+# command's own status so the caller can tell those two apart. `grep -c ''`
+# rather than `wc -l` so that empty output counts as 0 and a final line with no
+# newline still counts as 1.
+countof() { # countof <command...>
+  local out rc
+  out=$("$@" 2>/dev/null); rc=$?
+  [[ $rc -ne 0 ]] && { printf 'unknown'; return 1; }
+  printf '%s' "$(printf '%s' "$out" | grep -c '')"
+  return 0
+}
+
 # --- disk -------------------------------------------------------------------
+# This is the warning that would have caught failure B - "No space left on
+# device" with 803MB free - so it is the last one that may go quiet. It used to
+# print nothing at all when both df forms failed, and `[[ "$avail_g" -lt 25 ]]`
+# carried a `2>/dev/null` that swallowed bash's own error on a non-numeric
+# value, silently skipping the warning. Both now say what happened instead.
 avail_g=$(df -g / 2>/dev/null | awk 'NR==2{print $4}')
 [[ -z "$avail_g" ]] && avail_g=$(df -BG / 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}')
-if [[ -n "$avail_g" ]]; then
+if [[ "$avail_g" =~ ^[0-9]+$ ]]; then
   echo "- disk free: ${avail_g}Gi"
-  [[ "$avail_g" -lt 25 ]] 2>/dev/null && echo "  WARNING: under 25Gi. Run 'make harness-reap' before starting a build."
+  [[ "$avail_g" -lt 25 ]] && echo "  WARNING: under 25Gi. Run 'make harness-reap' before starting a build."
+else
+  echo "- disk free: could not measure. Neither 'df -g /' nor 'df -BG /' gave a number (got '${avail_g}'), so the under-25Gi warning did NOT run this session. Check it by hand before a build: disk exhaustion has killed a build here mid-link."
 fi
 
 gocache=$(go env GOCACHE 2>/dev/null || true)
@@ -54,18 +83,32 @@ gomod=$(go env GOMODCACHE 2>/dev/null || true)
 [[ -n "$gomod" && -d "$gomod" ]] && echo "- Go module cache: $(du -sh "$gomod" 2>/dev/null | cut -f1)"
 
 # --- worktrees --------------------------------------------------------------
-wt=$(git -C "$root" worktree list 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
-br=$(git -C "$root" branch --list 'worktree-*' 2>/dev/null | wc -l | tr -d ' ')
-if [[ "${wt:-0}" -gt 0 || "${br:-0}" -gt 0 ]]; then
+# `git worktree list` always prints the main checkout first, so the agent
+# worktrees are one fewer than the lines.
+wt=$(countof git -C "$root" worktree list); wt_ok=$?
+br=$(countof git -C "$root" branch --list 'worktree-*'); br_ok=$?
+[[ $wt_ok -eq 0 ]] && wt=$(( wt > 0 ? wt - 1 : 0 ))
+if [[ $wt_ok -ne 0 || $br_ok -ne 0 ]]; then
+  # A repo that honestly has none says nothing at all, three lines down. These
+  # two states must never read the same, which is the whole point of the change.
+  echo "- agent worktrees: could not measure. git failed in '$root', so this session does not know how much disk the worktrees are holding. Run 'make harness-reap' to see the real state."
+elif [[ "$wt" -gt 0 || "$br" -gt 0 ]]; then
   size=$(du -sh "$root/.claude/worktrees" 2>/dev/null | cut -f1)
-  echo "- agent worktrees: ${wt} live (${size:-unknown}), ${br} worktree-* branches"
-  [[ "${br:-0}" -gt "$(( ${wt:-0} + 4 ))" ]] && echo "  $(( br - wt )) orphaned branches. 'make harness-reap' lists them; 'make harness-reap-apply' deletes the merged ones."
+  echo "- agent worktrees: ${wt} live (${size:-size unknown}), ${br} worktree-* branches"
+  [[ "$br" -gt "$(( wt + 4 ))" ]] && echo "  $(( br - wt )) orphaned branches. 'make harness-reap' lists them; 'make harness-reap-apply' deletes the merged ones."
 fi
 
 # --- volumes ----------------------------------------------------------------
 if command -v docker >/dev/null 2>&1; then
-  vols=$(docker volume ls -q 2>/dev/null | wc -l | tr -d ' ')
-  [[ "${vols:-0}" -gt 10 ]] && echo "- ${vols} docker volumes. Orphaned testcontainer volumes accumulate; 'make harness-reap' reports them."
+  vols=$(countof docker volume ls -q); vols_ok=$?
+  if [[ $vols_ok -ne 0 ]]; then
+    # Exactly the shape failure B produced: docker installed, daemon or
+    # snapshotter erroring because the disk had already filled. Reporting that
+    # as "0 volumes" hides the symptom at the moment it is most wanted.
+    echo "- docker volumes: could not measure. docker is installed but did not answer, which is itself what a full disk does to it. Orphaned testcontainer volumes accumulate unseen; 'make harness-reap' reports them."
+  elif [[ "$vols" -gt 10 ]]; then
+    echo "- ${vols} docker volumes. Orphaned testcontainer volumes accumulate; 'make harness-reap' reports them."
+  fi
 fi
 
 exit 0
