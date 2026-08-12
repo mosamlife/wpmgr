@@ -142,21 +142,39 @@ echo "== route-guard: asks once per destination per session"
 # The measured reason: the per-file version asked on 843 of the 926 files
 # touched in 30 days. Routing changes the outcome when work STARTS, not on the
 # fortieth file of the same work.
+#
+# The ruling is remembered only once it has actually been GIVEN. The PreToolUse
+# arm cannot see the answer, so it writes nothing; the PostToolUse arm
+# (--record) runs only if the tool actually ran, which is the one piece of
+# evidence the hook protocol gives that the prompt was approved.
+record_route() { # record_route <session_id> <abs file path>
+  jq -n --arg p "$2" --arg c "$repo" --arg s "$1" \
+    '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+    | bash "$ROUTE" --record >/dev/null 2>&1
+}
+
 t "1st Go file, session A"  ask  "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessA)"
+record_route sessA "$repo/apps/api/internal/site/service.go"
 t "2nd Go file, session A"  pass "$(decision "$repo/apps/api/internal/site/other.go"   "$repo" "" sessA)"
 t "same file again"         pass "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessA)"
 # A different destination is a different ruling and must still be asked.
 t "then a web file"         ask  "$(decision "$repo/apps/web/src/app.tsx"              "$repo" "" sessA)"
+record_route sessA "$repo/apps/web/src/app.tsx"
 # ...including the escalation: an auth path is a different ruling from ordinary
 # Go work by the same specialist, so it prompts even though backend-architect
 # was already approved above.
 t "then an auth file"       ask  "$(decision "$repo/apps/api/internal/auth/session.go" "$repo" "" sessA)"
+record_route sessA "$repo/apps/api/internal/auth/session.go"
 t "auth file again"         pass "$(decision "$repo/apps/api/internal/auth/token.go"   "$repo" "" sessA)"
 # A different session has made no ruling yet.
 t "1st Go file, session B"  ask  "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessB)"
 # Remembering must never weaken a deny.
 t "deny is not remembered"  deny "$(decision "$repo/apps/api/internal/db/sqlc/db.go"   "$repo" "" sessA)"
 t "deny again"              deny "$(decision "$repo/apps/api/internal/db/sqlc/db.go"   "$repo" "" sessA)"
+# A deny arm has no ruling to record, so recording one must not create a marker
+# that could later silence a genuine ask.
+record_route sessA "$repo/apps/api/internal/db/sqlc/db.go"
+t "deny after record"       deny "$(decision "$repo/apps/api/internal/db/sqlc/db.go"   "$repo" "" sessA)"
 # TTL 0 disables the memory entirely: a long session comes back to the same area
 # hours later and gets asked again.
 t "ttl 0 re-asks" ask \
@@ -164,6 +182,71 @@ t "ttl 0 re-asks" ask \
 # No session identity in the payload means no memory, and the guard falls back
 # to asking rather than to silence.
 t "no session id asks"      ask  "$(decision "$repo/apps/api/internal/site/deux.go")"
+
+echo "== route-guard: a refused prompt makes it stricter, never quieter"
+# The defect: the marker was persisted by the PreToolUse arm, BEFORE the human
+# answered. Denying or cancelling the prompt therefore suppressed every later
+# write to that destination for the whole TTL window, so refusing the guard was
+# the way to switch it off. A decision is only remembered once it has been
+# given, and only when it was an approval.
+t "1st ask, session C"      ask  "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessC)"
+t "denied, so it re-asks"   ask  "$(decision "$repo/apps/api/internal/site/other.go"   "$repo" "" sessC)"
+t "still asks, third time"  ask  "$(decision "$repo/apps/api/internal/site/trois.go"   "$repo" "" sessC)"
+# ...and once a write to that destination actually goes through, it goes quiet.
+record_route sessC "$repo/apps/api/internal/site/service.go"
+t "approved, then quiet"    pass "$(decision "$repo/apps/api/internal/site/other.go"   "$repo" "" sessC)"
+# Approving one destination rules on nothing else.
+t "other destination asks"  ask  "$(decision "$repo/apps/web/src/other.tsx"            "$repo" "" sessC)"
+
+echo "== route-guard state: it deletes only inside a directory it owns"
+# The state root is overridable by WPMGR_ROUTE_GUARD_STATE, and the prune step
+# ran `find ... -exec rm -rf` under it unconditionally. A mis-set or inherited
+# value pointed that at real content. An override is honoured only when the
+# guard created the directory or the directory carries the guard's own marker,
+# and only entries with the exact name shape the guard writes are ever removed.
+#
+# NOTE ON THE PROOF: the same mechanism with the override set to '/' would have
+# deleted every top-level directory on the machine, so the pre-fix behaviour was
+# demonstrated against this stand-in tree, never against a real root. The '/'
+# case below asserts the refusal only.
+foreign="$tmp/foreign"
+mkdir -p "$foreign/personal-notes" "$foreign/scratch"
+touch -t 200001010000 "$foreign/personal-notes" "$foreign/scratch"
+( export WPMGR_ROUTE_GUARD_STATE="$foreign"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessF >/dev/null )
+exists() { [[ -e "$1" ]] && printf yes || printf no; }
+t "foreign dir: content kept"  yes "$(exists "$foreign/personal-notes")"
+t "foreign dir: kept (2)"      yes "$(exists "$foreign/scratch")"
+t "foreign dir: not adopted"   no  "$(exists "$foreign/.wpmgr-harness-state")"
+
+# A relative override is not a state directory; it is a path relative to
+# whatever directory the hook happened to be invoked from.
+( export WPMGR_ROUTE_GUARD_STATE="relative-state"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessG >/dev/null )
+t "relative override refused"  no  "$(exists "$tmp/relative-state")"
+t "relative, cwd-relative too" no  "$(exists "$repo/relative-state")"
+
+# The filesystem root: refused outright, and never stamped as ours.
+( export WPMGR_ROUTE_GUARD_STATE="/"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessH >/dev/null )
+t "root override refused"      no  "$(exists "/.wpmgr-harness-state")"
+t "root override still asks"   ask \
+  "$(export WPMGR_ROUTE_GUARD_STATE="/"; decision "$repo/apps/api/internal/site/thing.go" "$repo" "" sessH)"
+
+# A directory the guard creates is its own, and inside it the prune removes only
+# entries with the name shape the guard writes - never a bare glob.
+own="$tmp/owned-state"
+( export WPMGR_ROUTE_GUARD_STATE="$own"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessI >/dev/null )
+t "own dir created"            yes "$(exists "$own")"
+t "own dir stamped"            yes "$(exists "$own/.wpmgr-harness-state")"
+mkdir -p "$own/sess-stale" "$own/not a session dir"
+touch -t 200001010000 "$own/sess-stale" "$own/not a session dir" "$own/.wpmgr-harness-state"
+( export WPMGR_ROUTE_GUARD_STATE="$own"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessJ >/dev/null )
+t "stale session dir pruned"   no  "$(exists "$own/sess-stale")"
+t "off-shape entry kept"       yes "$(exists "$own/not a session dir")"
+t "marker survives the prune"  yes "$(exists "$own/.wpmgr-harness-state")"
 
 echo "== route-guard: escalation is by directory, not by substring"
 tlacks   "_authed does not escalate"  "security-reviewer" "$(reason "$repo/apps/web/src/routes/_authed/sites/index.tsx")"
@@ -240,8 +323,41 @@ t "sed -i elsewhere"    pass "$(bdec "sed -i '' s/a/b/ apps/api/internal/site/se
 # Deleting the dead app is the correct end state, so only writing into it is refused.
 t "rm the dead app"     pass "$(bdec 'rm -rf apps/landing')"
 
+echo "== bash-guard: the destination is the write command's, not the line's"
+# The bypass this closes, reported independently by both review bots: the
+# destination of cp/mv/rsync/install/truncate was taken as the LAST WHITESPACE
+# TOKEN of the whole command. A trailing comment or a chained command moves it,
+# so `cp secret.go apps/api/internal/db/sqlc/models.go # note` made the last
+# token 'note' and the write was permitted. This was reported to the owner as
+# closed while these shapes were open.
+t "cp + trailing comment"   deny "$(bdec 'cp secret.go apps/api/internal/db/sqlc/models.go # note')"
+t "cp + comment, no space"  deny "$(bdec 'cp secret.go apps/api/internal/db/sqlc/models.go #note')"
+t "mv + && chain"           deny "$(bdec 'mv /tmp/x apps/api/internal/api/gen/oas.go && echo done')"
+t "; chain then cp"         deny "$(bdec 'echo hi; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "chain then cp + comment" deny "$(bdec 'ls -la /tmp && cp /tmp/x apps/web/src/routeTree.gen.ts # swap it in')"
+t "|| chain then mv"        deny "$(bdec 'test -f /tmp/x || mv /tmp/y packages/openapi-client/src/generated/sdk.ts')"
+t "pipe then cp"            deny "$(bdec 'ls /tmp | head -1; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "rsync + comment"         deny "$(bdec 'rsync -a /tmp/gen/ apps/api/internal/api/gen/ # regenerated elsewhere')"
+t "install + comment"       deny "$(bdec 'install -m 644 /tmp/db.go apps/api/internal/db/sqlc/db.go # perms')"
+t "truncate + comment"      deny "$(bdec 'truncate -s 0 apps/web/src/routeTree.gen.ts # blank it')"
+t "cp + trailing redirect"  deny "$(bdec 'cp /tmp/x apps/api/internal/db/sqlc/db.go 2>/dev/null')"
+t "cp into dead app + cmt"  deny "$(bdec 'cp /tmp/index.html apps/landing/index.html # revive it')"
+t "env prefix then cp"      deny "$(bdec 'FOO=1 cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "absolute /bin/cp"        deny "$(bdec '/bin/cp /tmp/x apps/api/internal/db/sqlc/db.go # note')"
+
+# ...and the honest cases these must not block. A protected path as the SOURCE
+# of a chained copy is ordinary reading, and a guard that refuses it gets
+# switched off.
+t "protected path is source"    pass "$(bdec 'cp apps/api/internal/db/sqlc/db.go /tmp/x && echo done')"
+t "source + comment"            pass "$(bdec 'cp apps/api/internal/db/sqlc/db.go /tmp/ # for reference')"
+t "source, then unrelated cp"   pass "$(bdec 'cp apps/api/internal/api/gen/oas.go /tmp/a; cp /tmp/b /tmp/c')"
+t "rsync OUT of the dead app"   pass "$(bdec 'rsync -a apps/landing/ /tmp/landing-backup/ # archive before deleting')"
+t "mv the dead app aside"       pass "$(bdec 'mv apps/landing /tmp/landing-old')"
+t "cp two files out of gen"     pass "$(bdec 'cp apps/api/internal/api/gen/oas.go apps/api/internal/api/gen/x.go /tmp/')"
+
 # An applied migration is computed from HEAD, exactly as route-guard.sh does it.
 t "sed -i applied mig"  deny "$(bdecw "sed -i '' s/a/b/ apps/api/migrations/20260101000000_m01_applied.sql")"
+t "cp over applied mig" deny "$(bdecw 'cp /tmp/x apps/api/migrations/20260101000000_m01_applied.sql # tweak')"
 t "redirect applied"    deny "$(bdecw 'echo x > apps/api/migrations/20260101000000_m01_applied.sql')"
 t "new migration ok"    pass "$(bdecw 'cat > apps/api/migrations/20260201000000_m02_new.sql <<EOF
 CREATE TABLE t();
@@ -309,6 +425,61 @@ tcontains "unscoped reports" "Not blocking" "$(jq -n --arg c "$wt" '{cwd:$c}' | 
 t "stop_hook_active passes" 0 \
   "$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-A", stop_hook_active:true}' \
      | bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")"
+
+echo "== harness-reap: it removes only worktrees the harness created"
+# The reaper fed `git worktree list` straight into `git worktree remove --force`
+# with no ownership filter, so any clean worktree on a merged commit was removed
+# - including one a maintainer made by hand for their own work, and including
+# the main checkout when the reaper was run from inside a worktree. Ownership is
+# structural: created by the harness means directly under .claude/worktrees/ of
+# THIS checkout, named agent-* or wf_*. Everything else is somebody else's.
+REAP="$here/harness-reap.sh"
+rr="$tmp/reaprepo"
+mkdir -p "$rr"
+git -C "$rr" init -q
+git -C "$rr" config user.email t@t.invalid
+git -C "$rr" config user.name t
+echo seed > "$rr/seed.txt"
+git -C "$rr" add seed.txt >/dev/null
+git -C "$rr" commit -qm init
+git -C "$rr" branch -M main
+
+mkdir -p "$rr/.claude/worktrees"
+git -C "$rr" worktree add -q --detach "$rr/.claude/worktrees/agent-zz1" main 2>/dev/null
+git -C "$rr" worktree add -q --detach "$rr/.claude/worktrees/wf_zz2-abc" main 2>/dev/null
+# Named by a person, in the harness's own directory: still not the harness's.
+git -C "$rr" worktree add -q --detach "$rr/.claude/worktrees/mine-by-hand" main 2>/dev/null
+# A maintainer's own worktree, clean and on a merged commit, outside that tree.
+git -C "$rr" worktree add -q --detach "$tmp/manual-wt" main 2>/dev/null
+
+reap_out=$(cd "$rr" && bash "$REAP" --worktrees-only 2>&1)
+reap_rm=$(printf '%s\n' "$reap_out" | grep 'worktree remove' || true)
+tcontains "agent-* is removable"      "agent-zz1"     "$reap_rm"
+tcontains "wf_* is removable"         "wf_zz2-abc"    "$reap_rm"
+tlacks "a hand-made worktree is not"  "manual-wt"     "$reap_rm"
+tlacks "an off-shape name is not"     "mine-by-hand"  "$reap_rm"
+tlacks "the main checkout is not"     "force '$rr'"   "$reap_rm"
+# Held back is not silence: an unowned worktree is reported, so the maintainer
+# can see the disk it is holding and decide for themselves.
+tcontains "unowned is reported"       "manual-wt"     "$reap_out"
+
+# ...and the same again for real, because a dry run proves only what the script
+# says it would do. This is a throwaway repo under mktemp.
+(cd "$rr" && bash "$REAP" --apply --worktrees-only >/dev/null 2>&1)
+t "agent-* really removed"    no  "$(exists "$rr/.claude/worktrees/agent-zz1")"
+t "wf_* really removed"       no  "$(exists "$rr/.claude/worktrees/wf_zz2-abc")"
+t "hand-made one survives"    yes "$(exists "$tmp/manual-wt")"
+t "off-shape one survives"    yes "$(exists "$rr/.claude/worktrees/mine-by-hand")"
+t "main checkout survives"    yes "$(exists "$rr/seed.txt")"
+
+# Run from INSIDE a worktree, `git rev-parse --show-toplevel` is that worktree,
+# so the main checkout was neither the skipped 'root' nor filtered out. It must
+# never be listed as removable.
+git -C "$rr" worktree add -q --detach "$rr/.claude/worktrees/agent-zz3" main 2>/dev/null
+from_wt=$(cd "$rr/.claude/worktrees/agent-zz3" && bash "$REAP" --worktrees-only 2>&1 \
+          | grep 'worktree remove' || true)
+tlacks "main checkout, seen from a worktree" "force '$rr'" "$from_wt"
+tlacks "the sibling by hand, from a worktree" "mine-by-hand" "$from_wt"
 
 echo ""
 if [[ $failed -eq 0 ]]; then

@@ -43,9 +43,27 @@
 # these paths without it. bash-guard.sh closes that for the deny cases; see its
 # header for what it cannot close.
 #
+# TWO ARMS, AND ONLY THE SECOND ONE REMEMBERS ANYTHING.
+#
+#   (no argument)  PreToolUse. Classifies and emits deny/ask/pass. It writes NO
+#                  marker, because at PreToolUse the human has not answered yet.
+#   --record       PostToolUse. Emits nothing and records the ruling. PostToolUse
+#                  runs only if the tool actually ran, which is the one piece of
+#                  evidence the hook protocol gives that the prompt was approved.
+#
+# The defect that split them: the marker was persisted by the PreToolUse arm,
+# BEFORE the answer. Denying or cancelling the prompt therefore suppressed every
+# later write to that destination for the whole TTL, so refusing the guard was
+# how you switched it off. A refusal must make this stricter, never quieter. A
+# deny arm records nothing either: there is no ruling to remember, and a marker
+# written there would silence a later genuine ask.
+#
 # Test: scripts/claude/guards_test.sh
 # Over-fire rate: scripts/claude/route-guard-coverage.sh
 set -uo pipefail
+
+mode=run
+[[ "${1:-}" == "--record" ]] && mode=record
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -83,6 +101,9 @@ rel="${ppath#"$root"/}"
 [[ "$rel" == "$ppath" ]] && exit 0
 
 emit() { # emit <decision> <reason>
+  # The --record arm answers nothing and records nothing here: every caller of
+  # emit above the memory block is a deny, and a deny has no ruling to remember.
+  [[ "$mode" == record ]] && exit 0
   jq -n --arg d "$1" --arg r "$2" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -208,25 +229,109 @@ ttl="${WPMGR_ROUTE_GUARD_TTL_MIN:-90}"
 session=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
 [[ -z "$session" ]] && session=$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)
 
-repeat_note=""
-if [[ -n "$session" && "$ttl" =~ ^[0-9]+$ && "$ttl" -gt 0 ]]; then
-  state="${WPMGR_ROUTE_GUARD_STATE:-${TMPDIR:-/tmp}/wpmgr-route-guard}"
-  # Sessions are per-run and never read again; two days is generous.
-  find "$state" -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null
+sane() { printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64; }
 
-  sane() { printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64; }
+# ---- the state directory, and why it is not simply whatever the env says ----
+# This block deletes. WPMGR_ROUTE_GUARD_STATE is an environment variable, and the
+# prune under it used to be an unconditional
+#   find "$state" -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} +
+# so a mis-set, inherited or empty-ish value pointed `rm -rf` at real content.
+# With the value '/' that is one batched rm -rf over every top-level directory on
+# the machine, and it destroyed this machine's home directory once.
+#
+# So: the guard deletes only inside a directory it can PROVE is its own, proven
+# by a marker file it writes itself when it creates the directory. No marker and
+# it did not create it means somebody else's directory: left completely alone,
+# not adopted, not pruned, not written to. Refusing the override does not turn
+# the guard off - it drops the memory, so the guard asks every time, which is the
+# strict direction.
+STATE_MARKER=".wpmgr-harness-state"
+STATE_DEFAULT="${TMPDIR:-/tmp}/wpmgr-route-guard"
+
+resolve_state() { # prints an owned state root on stdout, or fails
+  local want="${WPMGR_ROUTE_GUARD_STATE:-$STATE_DEFAULT}"
+  local why=""
+
+  # A relative value is not a directory, it is "somewhere relative to whatever
+  # cwd this hook happened to be invoked from". Never create one, never use one.
+  case "$want" in
+    /*) ;;
+    *)  printf 'route-guard: WPMGR_ROUTE_GUARD_STATE=%q is not an absolute path; no state, asking every time\n' "$want" >&2
+        return 1 ;;
+  esac
+  while [[ "$want" == */ && "$want" != "/" ]]; do want="${want%/}"; done
+  if [[ "$want" == "/" ]]; then
+    printf 'route-guard: WPMGR_ROUTE_GUARD_STATE is the filesystem root; refusing it, asking every time\n' >&2
+    return 1
+  fi
+
+  if [[ -e "$want" ]]; then
+    if [[ ! -d "$want" || -L "$want" ]]; then
+      printf 'route-guard: state path %q is not a plain directory; refusing it, asking every time\n' "$want" >&2
+      return 1
+    fi
+    if [[ ! -f "$want/$STATE_MARKER" ]]; then
+      # One exception, and only for the DEFAULT path: it carries this guard's own
+      # name, so a version of the guard that predates the marker is the plausible
+      # author. Adopt it only if this user owns it and it is not a symlink;
+      # anything given by the environment is never adopted.
+      if [[ "$want" == "$STATE_DEFAULT" && -O "$want" ]]; then
+        : > "$want/$STATE_MARKER" || return 1
+      else
+        printf 'route-guard: %q has no %s marker, so it is not this guard'"'"'s state directory; leaving it untouched and asking every time\n' "$want" "$STATE_MARKER" >&2
+        return 1
+      fi
+    fi
+  else
+    mkdir -p "$want" || return 1
+    : > "$want/$STATE_MARKER" || return 1
+  fi
+  printf '%s' "$want"
+}
+
+prune_state() { # prune_state <owned state root>
+  # Only entries with the exact name shape sane() produces, and only directories,
+  # so the marker file and anything a human parked in here survive. A bare
+  # `-type d` glob is what made the old prune a general-purpose deleter. No
+  # 2>/dev/null either: a prune that cannot do its job says so.
+  ( shopt -s nullglob dotglob
+    local e b
+    for e in "$1"/*; do
+      b=${e##*/}
+      [[ "$b" == "$STATE_MARKER" ]] && continue
+      [[ -d "$e" && ! -L "$e" ]] || continue
+      [[ "$b" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || continue
+      # Sessions are per-run and never read again; two days is generous.
+      [[ -n "$(find "$e" -maxdepth 0 -mtime +2)" ]] || continue
+      rm -rf -- "$e"
+    done )
+}
+
+repeat_note=""
+if [[ -n "$session" && "$ttl" =~ ^[0-9]+$ && "$ttl" -gt 0 ]] && state=$(resolve_state); then
+  prune_state "$state"
+
   sdir="$state/$(sane "$session")"
   marker="$sdir/$(sane "${agent}|${sensitive}")"
+
+  if [[ "$mode" == record ]]; then
+    # PostToolUse: the tool ran, so the ruling was given and was an approval.
+    mkdir -p "$sdir" && : > "$marker"
+    exit 0
+  fi
 
   if [[ -n "$(find "$marker" -mmin "-$ttl" 2>/dev/null)" ]]; then
     exit 0   # already ruled on, this session, this destination
   fi
-  mkdir -p "$sdir" 2>/dev/null && : > "$marker" 2>/dev/null
   repeat_note="
-This asks once per destination per session (${ttl} minutes). Later writes to
-this same area will not prompt, so make the ruling now rather than waving it
-through."
+This asks once per destination per session (${ttl} minutes) once you have let a
+write through. Later writes to this same area will not prompt, so make the
+ruling now rather than waving it through."
 fi
+
+# Nothing to record: no session identity, no TTL, or no state directory this
+# guard owns. Recording is best-effort; asking is not.
+[[ "$mode" == record ]] && exit 0
 
 emit ask "CLAUDE.md routes this file to a specialist: ${agent}.
 Reason: ${why}.
