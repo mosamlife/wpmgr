@@ -26,7 +26,12 @@ import { PageError } from "@/components/feedback";
 import { PageHeader } from "@/components/shared/page-header";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { toast } from "@/components/toast";
-import { useMe, canManage, isOrgScoped } from "@/features/auth/use-auth";
+import {
+  useMe,
+  canManage,
+  isOrgScoped,
+  activeRole,
+} from "@/features/auth/use-auth";
 import {
   useMembers,
   useUpdateMemberRole,
@@ -44,6 +49,10 @@ function MembersPage() {
   const { data: me } = useMe();
   const manage = canManage(me);
   const orgScoped = isOrgScoped(me);
+  // Only an owner may nominate another owner. `canManage` is true for admin
+  // too, so gating on it would offer the owner role to an admin; the viewer's
+  // literal role is what decides. The server enforces the same ceiling.
+  const viewerIsOwner = activeRole(me) === "owner";
 
   const {
     data: members,
@@ -138,6 +147,7 @@ function MembersPage() {
                   key={m.user_id}
                   member={m}
                   manage={manage}
+                  viewerIsOwner={viewerIsOwner}
                   currentUserId={me?.user.id}
                 />
               ))}
@@ -158,10 +168,12 @@ function MembersPage() {
 function MemberRow({
   member,
   manage,
+  viewerIsOwner,
   currentUserId,
 }: {
   member: Member;
   manage: boolean;
+  viewerIsOwner: boolean;
   currentUserId?: string;
 }) {
   const updateRole = useUpdateMemberRole();
@@ -214,6 +226,7 @@ function MemberRow({
             className="w-32"
             aria-label={`Role for ${display}`}
           >
+            {viewerIsOwner ? <option value="owner">Owner</option> : null}
             <option value="admin">Admin</option>
             <option value="operator">Operator</option>
             <option value="viewer">Viewer</option>

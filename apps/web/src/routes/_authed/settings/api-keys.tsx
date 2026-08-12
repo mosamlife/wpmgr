@@ -30,7 +30,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { DefinitionList, KvRow } from "@/components/shared/definition-list";
 import { StatusChip } from "@/components/status";
-import { useMe, canManage } from "@/features/auth/use-auth";
+import { useMe, canManage, activeRole } from "@/features/auth/use-auth";
 import {
   useApiKeys,
   useCreateApiKey,
@@ -52,6 +52,10 @@ type CreateValues = z.infer<typeof createSchema>;
 function ApiKeysPage() {
   const { data: me } = useMe();
   const manage = canManage(me);
+  // A key never grants more than its creator holds. `canManage` is true for
+  // admin as well as owner, so it is the wrong gate for the owner option:
+  // the viewer's literal role is what decides. The server clamps this too.
+  const viewerIsOwner = activeRole(me) === "owner";
 
   const { data: keys, isPending, isError, error, refetch, isRefetching } =
     useApiKeys();
@@ -129,7 +133,7 @@ function ApiKeysPage() {
               className="h-9 rounded-md border border-[var(--color-border)] bg-transparent px-3 text-sm"
               {...register("role")}
             >
-              <option value="owner">Owner</option>
+              {viewerIsOwner ? <option value="owner">Owner</option> : null}
               <option value="admin">Admin</option>
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
