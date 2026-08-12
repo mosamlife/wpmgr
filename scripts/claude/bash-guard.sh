@@ -205,6 +205,27 @@ lead="(${tok}/)?"
 # not seen; and the interpreter arm treats any `open(` as a write, so reading a
 # protected path through python is refused. Both are conservative in the safe
 # direction, and the header already declares the wider gap.
+# Strip ONE surrounding layer of quotes from a word, into $UNQ.
+#
+# `read -a` splits on whitespace and does not unquote, so `"apps/api/migrations"`
+# arrives with its quotes still attached. The substring arms tolerated that,
+# because their boundary class already treats a quote as a path boundary. The
+# DERIVED path did not, and could not: `<dest>/<basename>` is handed to
+# `git cat-file -e HEAD:<path>`, which needs the exact filename and got
+# `apps/api/migrations"/"20260527115454_initial.sql`. So
+#
+#   cp "/tmp/20260527115454_initial.sql" "apps/api/migrations"
+#
+# overwrote an applied migration while the check looked for a path git could
+# never resolve. One layer is all a shell removes, and setting a global rather
+# than echoing keeps this off the subshell path in a loop that runs per operand.
+unq() {
+  UNQ=$1
+  UNQ=${UNQ#\"}; UNQ=${UNQ%\"}
+  UNQ=${UNQ#\'}; UNQ=${UNQ%\'}
+}
+UNQ=""
+
 collect_dests() {
   local seg cn w f d tdir inplace i n start
   local -a words operands
@@ -247,12 +268,12 @@ collect_dests() {
       w=${words[$i]}
       case "$w" in
         --target-directory=*)
-          case "$cn" in cp|mv|install) tdir=${w#*=} ;; esac ;;
+          case "$cn" in cp|mv|install) unq "${w#*=}"; tdir=$UNQ ;; esac ;;
         -t|--target-directory)
           case "$cn" in
             cp|mv|install)
               i=$((i + 1))
-              [[ $i -lt $n ]] && tdir=${words[$i]} ;;
+              [[ $i -lt $n ]] && { unq "${words[$i]}"; tdir=$UNQ; } ;;
           esac ;;
         --in-place|--in-place=*) inplace=1 ;;
         --*) ;;
@@ -262,7 +283,7 @@ collect_dests() {
           # (interactive) set it harmlessly and are never read.
           f=${w#-}; f=${f%%.*}; f=${f%%=*}
           case "$f" in *i*) inplace=1 ;; esac ;;
-        *) operands[${#operands[@]}]="$w" ;;
+        *) unq "$w"; operands[${#operands[@]}]="$UNQ" ;;
       esac
       i=$((i + 1))
     done
@@ -454,8 +475,13 @@ database-engineer."
   applied=""
   while IFS= read -r m; do
     [[ -z "$m" ]] && continue
-    m="${m#w:}"; m="${m#r:}"   # strip the DESTS tag, or HEAD:w:apps/... is asked
-    m="${m#./}"; m="${m#"$root"/}"
+    # Normalise to the repo-relative path whatever shape it arrived in: the
+    # DESTS tag, a `./` prefix, an absolute path, a quote the splitter left
+    # behind. Everything before the last `apps/api/migrations/` is dropped, so
+    # `git cat-file` is always asked a path it can actually resolve. Stripping
+    # only a known prefix left `HEAD:w:apps/...` and `HEAD:/apps/...` being
+    # asked, and both answer "not in HEAD" for a file that is.
+    m="apps/api/migrations/${m##*apps/api/migrations/}"
     git -C "$root" cat-file -e "HEAD:$m" 2>/dev/null && applied="$applied  $m"$'\n'
   done < <(printf '%s\n%s\n' "$cmd" "$DESTS" \
            | grep -oE "${tok}apps/api/migrations/[A-Za-z0-9_.-]+\.sql" | sort -u)

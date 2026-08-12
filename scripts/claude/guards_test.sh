@@ -764,6 +764,43 @@ t "esc quote, read only"  pass "$(bdec 'echo don\'"'"'t; cat apps/api/internal/d
 t "esc quote, copy out"   pass "$(bdec 'echo don\'"'"'t; cp apps/api/internal/db/sqlc/db.go /tmp/')"
 t "esc quote, rm dead"    pass "$(bdec 'echo don\'"'"'t; rm -rf apps/landing')"
 
+echo "== bash-guard: a QUOTED target is the same target"
+# `read -a` splits on whitespace and does not unquote, so a quoted destination
+# keeps its quote characters. The substring arms tolerated that - their boundary
+# class already treats a quote as a path boundary, which is why the generated
+# tree kept denying and this went unnoticed. The DERIVED path could not: it is
+# handed to `git cat-file -e HEAD:<path>`, which needs an exact filename and was
+# asked for one containing quote characters. Every shape below overwrote a
+# migration that is in HEAD while the check looked for a path git could never
+# resolve.
+#
+# These use the FIXTURE repo's applied migration, so they prove the same code
+# path the owner reproduced against the real one.
+t "dquoted src and dest"  deny "$(bdecw 'cp "/tmp/20260101000000_m01_applied.sql" "apps/api/migrations"')"
+t "squoted src and dest"  deny "$(bdecw "cp '/tmp/20260101000000_m01_applied.sql' 'apps/api/migrations'")"
+t "bare src, quoted dest" deny "$(bdecw 'cp /tmp/20260101000000_m01_applied.sql "apps/api/migrations"')"
+t "quoted src, bare dest" deny "$(bdecw 'cp "/tmp/20260101000000_m01_applied.sql" apps/api/migrations')"
+t "mv, both quoted"       deny "$(bdecw 'mv "/tmp/20260101000000_m01_applied.sql" "apps/api/migrations"')"
+t "cp -t quoted dir"      deny "$(bdecw 'cp -t "apps/api/migrations" "/tmp/20260101000000_m01_applied.sql"')"
+t "quoted full path"      deny "$(bdecw 'cp /tmp/x "apps/api/migrations/20260101000000_m01_applied.sql"')"
+# The generated tree denied under quoting before and must keep doing so.
+t "quoted gen dir"        deny "$(bdec 'cp /tmp/x.go "apps/api/internal/db/sqlc"')"
+t "quoted gen file"       deny "$(bdec 'cp "/tmp/x.go" "apps/api/internal/db/sqlc/models.go"')"
+t "squoted dead app"      deny "$(bdec "cp /tmp/index.html 'apps/landing'")"
+
+# OVER-FIRE is the risk in unquoting: it must not start matching things that are
+# not write targets. A quoted protected path that is merely named, read, or used
+# as a SOURCE stays ordinary work.
+t "quoted, only echoed"   pass "$(bdecw 'echo "apps/api/migrations"')"
+t "quoted, git diff"      pass "$(bdecw 'git diff "apps/api/migrations"')"
+t "quoted mig as source"  pass "$(bdecw 'cp "apps/api/migrations/20260101000000_m01_applied.sql" /tmp/')"
+t "quoted NEW migration"  pass "$(bdecw 'cp /tmp/new.sql "apps/api/migrations/20260201000000_m02_new.sql"')"
+t "quoted gen as source"  pass "$(bdec 'cp "apps/api/internal/db/sqlc/db.go" /tmp/')"
+t "quoted ls"             pass "$(bdec 'ls "apps/api/internal/db/sqlc"')"
+t "quoted mv dead aside"  pass "$(bdec 'mv "apps/landing" /tmp/landing-old')"
+t "quoted rm dead app"    pass "$(bdec 'rm -rf "apps/landing"')"
+t "quoted sibling"        pass "$(bdec 'cp /tmp/x "apps/api/internal/db/sqlcx/db.go"')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
