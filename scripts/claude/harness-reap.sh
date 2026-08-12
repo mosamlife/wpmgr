@@ -221,7 +221,11 @@ while IFS= read -r wt; do
   head=$(git -C "$wt" rev-parse HEAD 2>/dev/null); head_ok=$?
   if [[ $dirty_ok -ne 0 || $head_ok -ne 0 ]]; then
     say "  KEEP   $name - could not read its state (status: $dirty_ok, rev-parse: $head_ok). Nothing is deleted on the strength of a measurement that failed."
-    kept=$((kept+1)); failures=$((failures+1)); continue
+    # Both columns, deliberately: it was held back AND it is a failure. Counting
+    # it only as "held back" left the section line reading "0 failed" while the
+    # trailer at the bottom said one action had failed, and a report that
+    # contradicts itself at a glance is one nobody finishes reading.
+    kept=$((kept+1)); wt_failed=$((wt_failed+1)); failures=$((failures+1)); continue
   fi
   if [[ "${dirty:-1}" -ne 0 ]]; then
     say "  KEEP   $name - $dirty uncommitted path(s). Commit or discard it by hand."
