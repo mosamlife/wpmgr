@@ -582,6 +582,63 @@ t "git diff a gen tree"   pass "$(bdec 'git diff apps/api/internal/db/sqlc/')"
 # Deleting the dead app stays permitted; only writing into it is refused.
 t "rm the dead app still" pass "$(bdec 'rm -rf apps/landing')"
 
+echo "== bash-guard: a bare DIRECTORY destination is a protected path too"
+# Every protected prefix used to end in `/`, so a protected path was recognised
+# only when something followed it. A directory destination has nothing
+# following it, and a directory destination is the ordinary shape of a copy, so
+# each of these landed a real file in a real protected tree while the guard said
+# nothing. The suite did not catch it because every assertion above names a file
+# or a trailing slash; these name the bare directory, which is the shape that
+# was open.
+t "cp -r into sqlc dir"    deny "$(bdec 'cp -r /tmp/newsqlc apps/api/internal/db/sqlc')"
+t "mv into sqlc dir"       deny "$(bdec 'mv /tmp/models.go apps/api/internal/db/sqlc')"
+t "cp -t sqlc dir"         deny "$(bdec 'cp -t apps/api/internal/db/sqlc /tmp/models.go')"
+t "cp --target-dir sqlc"   deny "$(bdec 'cp --target-directory=apps/api/internal/db/sqlc /tmp/models.go')"
+t "rsync into gen dir"     deny "$(bdec 'rsync -a /tmp/gen/ apps/api/internal/api/gen')"
+t "install into sqlc dir"  deny "$(bdec 'install -m 644 /tmp/db.go apps/api/internal/db/sqlc')"
+t "tee into sqlc dir"      deny "$(bdec 'tee /tmp/a apps/api/internal/db/sqlc')"
+t "cp -r into dead app"    deny "$(bdec 'cp -r /tmp/newlanding apps/landing')"
+t "mv into gen dir + cmt"  deny "$(bdec 'mv /tmp/oas.go apps/api/internal/api/gen # regenerated')"
+
+# The worst of them. The destination names only the DIRECTORY, so the target
+# filename appears nowhere on the command line - it comes from the source
+# basename - and the applied-migration check scanned the command line. The write
+# lands on a migration that is already in HEAD.
+t "cp into migrations dir" deny "$(bdecw 'cp /tmp/20260101000000_m01_applied.sql apps/api/migrations')"
+t "cp -t migrations dir"   deny "$(bdecw 'cp -t apps/api/migrations /tmp/20260101000000_m01_applied.sql')"
+t "mv into migrations dir" deny "$(bdecw 'mv /tmp/20260101000000_m01_applied.sql apps/api/migrations')"
+# ...and a genuinely NEW migration delivered the same way is ordinary work.
+t "new mig into mig dir"   pass "$(bdecw 'cp /tmp/20260901000000_m40_new.sql apps/api/migrations')"
+
+# `>|` overrides noclobber and is a redirection like any other. The segment
+# split then orphaned the path, so this reached the generated tree.
+t "noclobber redirect"     deny "$(bdec 'echo x >| apps/api/internal/db/sqlc/db.go')"
+
+# OVER-FIRE is the risk in dropping the trailing slash: a bare prefix matches a
+# SIBLING unless it is anchored on a path boundary. Reads of, and writes near,
+# these trees must all still pass.
+t "ls the bare sqlc dir"   pass "$(bdec 'ls apps/api/internal/db/sqlc')"
+t "git diff bare mig dir"  pass "$(bdecw 'git diff apps/api/migrations')"
+t "sibling migrations-*"   pass "$(bdecw 'cp /tmp/x apps/api/migrations-notes.txt')"
+t "sibling landing-old"    pass "$(bdec 'cp /tmp/x apps/landing-old/index.html')"
+t "sibling sqlcx"          pass "$(bdec 'cp /tmp/x apps/api/internal/db/sqlcx/db.go')"
+t "mv dead app aside dir"  pass "$(bdec 'mv apps/landing /tmp/landing-old')"
+t "rm dead app, bare dir"  pass "$(bdec 'rm -rf apps/landing')"
+t "copy out of bare dir"   pass "$(bdec 'cp apps/api/internal/db/sqlc/db.go /tmp/')"
+t "cp -t out of sqlc"      pass "$(bdec 'cp -t /tmp/ apps/api/internal/db/sqlc/db.go')"
+
+# Segment splitting and comment stripping are quote-aware. A `|` and a `#` that
+# are DATA inside a sed script used to cut the command up and take the
+# destination with them.
+t "pipe inside a quote"    deny "$(bdec "sed -i 's| #x|y|' apps/api/internal/db/sqlc/db.go")"
+t "hash inside a quote"    deny "$(bdec "sed -i 's/ #x/y/' apps/api/internal/db/sqlc/db.go")"
+
+# The destination is a directory and the SOURCE basename is the generated file,
+# so the resolved target is apps/web/src/routeTree.gen.ts. Emitting the resolved
+# name is what makes this reachable at all.
+t "src basename into dir"  deny "$(bdec 'cp /tmp/routeTree.gen.ts apps/web/src')"
+t "harmless basename"      pass "$(bdec 'cp /tmp/notes.txt apps/web/src')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
@@ -875,7 +932,12 @@ tcontains "and names the consequence" "NOT being written"                "$aw_mk
 tcontains "and says the gate stops blocking" "never block"               "$aw_mk"
 
 # 2. The record file itself cannot be appended to: the path is a directory.
+# The state directory must be one the recorder legitimately owns, or it is now
+# refused at the marker check and the append is never reached - so it is created
+# by the recorder itself, on a first successful write, exactly as in production.
 apst="$tmp/agent-writes-append"
+jq -n --arg a agent-seed --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+  | WPMGR_AGENT_WRITES_STATE="$apst" bash "$WRITES" >/dev/null 2>&1
 mkdir -p "$apst/agent-E"
 aw_ap=$(jq -n --arg a agent-E --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
         | WPMGR_AGENT_WRITES_STATE="$apst" bash "$WRITES" 2>&1 >/dev/null)
@@ -899,6 +961,116 @@ t "record present, gate blocks"      2 "$(gate agent-F)"
 tcontains "and names the file"       "theirs.txt" "$(gate_msg agent-F)"
 t "record absent, gate only reminds" 0 "$(gate agent-G)"
 tcontains "and admits it is not blocking" "Not blocking" "$(gate_msg agent-G)"
+
+echo "== agent-writes: an env-controlled state path never reaches mkdir or a delete"
+# The incident chain, in this file: $state comes from the environment and used
+# to reach `mkdir -p "$state"` and
+# `find "$state" -mindepth 1 -maxdepth 1 -type f -mtime +2 -delete 2>/dev/null`
+# with no validation at all. Pointed at a home directory it deleted the plain
+# files there and exited 0 in silence. Every case below runs against a stand-in
+# tree under $tmp; nothing here ever names a real path.
+aw() { # aw <state path> <agent id> -> stderr, stdout discarded
+  jq -n --arg a "$2" --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+    | WPMGR_AGENT_WRITES_STATE="$1" bash "$WRITES" 2>&1 >/dev/null
+}
+aw_rc() { # aw_rc <state path> <agent id> -> exit code
+  jq -n --arg a "$2" --arg p "$wt/theirs.txt" '{agent_id:$a, tool_input:{file_path:$p}}' \
+    | WPMGR_AGENT_WRITES_STATE="$1" bash "$WRITES" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+
+# THE INCIDENT CASE. A stand-in home, with the files the reviewer proved were
+# deleted. It must come out untouched, and the hook must say why.
+home="$tmp/stand-in-home"
+mkdir -p "$home"
+for f in .gitconfig .netrc .zsh_history notes.md; do printf 'keep me\n' > "$home/$f"; done
+# Two days old, so the old -mtime +2 sweep would have matched every one.
+find "$home" -maxdepth 1 -type f -exec touch -t 202001010000 {} +
+home_out=$(aw "$home" agent-H)
+t "a foreign dir is refused"          0   "$(aw_rc "$home" agent-H)"
+tcontains "and says it is not ours"   "no .wpmgr-harness-state" "$home_out"
+tcontains "and still says the gate degrades" "never block"      "$home_out"
+t "stand-in .gitconfig survives"      yes "$(exists "$home/.gitconfig")"
+t "stand-in .netrc survives"          yes "$(exists "$home/.netrc")"
+t "stand-in .zsh_history survives"    yes "$(exists "$home/.zsh_history")"
+t "stand-in notes.md survives"        yes "$(exists "$home/notes.md")"
+t "and no record was planted in it"   no  "$(exists "$home/agent-H")"
+
+# A relative path is not a directory, it is "somewhere relative to whatever cwd
+# this hook was invoked from".
+rel_out=$(aw "relative/state" agent-H)
+tcontains "a relative path is refused" "not an absolute path" "$rel_out"
+t "and nothing is created for it"      no "$(exists "$tmp/relative")"
+# The value that made the morning's rm -rf catastrophic.
+tcontains "the filesystem root is refused" "filesystem root" "$(aw "/" agent-H)"
+# A symlink pointing at a tree we do not own is the classic swap.
+ln -s "$home" "$tmp/state-link"
+tcontains "a symlink is refused" "not a plain directory" "$(aw "$tmp/state-link" agent-H)"
+t "and the link's target is untouched" yes "$(exists "$home/.gitconfig")"
+
+# A marker that is a symlink proves nothing about who owns the directory it
+# points into, so it is not accepted as the ownership claim.
+badm="$tmp/badmarker"
+mkdir -p "$badm"
+ln -s /etc/hosts "$badm/.wpmgr-harness-state"
+printf 'keep me\n' > "$badm/agent-H"
+touch -t 202001010000 "$badm/agent-H"
+tcontains "a symlinked marker is refused" "not a plain file owned by this user" "$(aw "$badm" agent-H)"
+t "and its contents survive"              yes "$(exists "$badm/agent-H")"
+
+# ...and the over-fire, which is the whole risk of adding checks: a directory
+# this recorder made itself must keep working, silently, and must still be
+# pruned. A refusal that also refused normal work would just get switched off.
+okst="$tmp/okstate"
+ok_first=$(aw "$okst" agent-I)
+t "a fresh state dir is created"     yes "$(exists "$okst/.wpmgr-harness-state")"
+t "and the record is written"        yes "$(exists "$okst/agent-I")"
+t "and it says nothing at all"       ""  "$ok_first"
+# 0700, read off directly. The record lists every path an agent touched, and on
+# a shared /tmp the old 0755 handed that list to any local account.
+t "and it is drwx------"             "drwx------" "$(ls -ld "$okst" | awk '{print substr($1,1,10)}')"
+# Re-running against the directory it just made must also stay silent: the
+# marker is accepted on the second pass, not only written on the first.
+t "and a second write is silent"     ""  "$(aw "$okst" agent-I)"
+
+# The prune still prunes, and still only its own records. A stale record goes;
+# a file whose name is not of the shape sane() produces, and the marker, stay.
+printf 'old\n' > "$okst/agent-STALE"
+touch -t 202001010000 "$okst/agent-STALE"
+printf 'human\n' > "$okst/notes for me.txt"
+touch -t 202001010000 "$okst/notes for me.txt"
+aw "$okst" agent-I >/dev/null
+t "a stale record is pruned"          no  "$(exists "$okst/agent-STALE")"
+t "an off-shape name is not"          yes "$(exists "$okst/notes for me.txt")"
+t "the marker is never pruned"        yes "$(exists "$okst/.wpmgr-harness-state")"
+t "and a fresh record is not"         yes "$(exists "$okst/agent-I")"
+
+echo "== commit-gate: a record directory it cannot vouch for is not read"
+# A planted EMPTY record is the quietest possible outcome: it sets scoped=1 with
+# nothing owned, and the gate then exits 0 at the "already committed" branch
+# without even the unscoped reminder - less said than if no record existed.
+plant="$tmp/planted-state"
+mkdir -p "$plant"
+: > "$plant/agent-J"                      # empty record, no marker: not ours
+gate_at() { # gate_at <state> <agent id> -> exit code
+  jq -n --arg c "$wt" --arg a "$2" '{cwd:$c, agent_id:$a}' \
+    | WPMGR_AGENT_WRITES_STATE="$1" bash "$GATE" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+gate_at_msg() {
+  jq -n --arg c "$wt" --arg a "$2" '{cwd:$c, agent_id:$a}' \
+    | WPMGR_AGENT_WRITES_STATE="$1" bash "$GATE" 2>&1 >/dev/null
+}
+t "a planted record is not read"    0 "$(gate_at "$plant" agent-J)"
+tcontains "and the reason is stated" "was NOT trusted"     "$(gate_at_msg "$plant" agent-J)"
+tcontains "and it still reminds"     "Not blocking"        "$(gate_at_msg "$plant" agent-J)"
+# The over-fire: a directory the recorder really made is still read, and the
+# gate still BLOCKS on it. A vouching check that stopped the gate working would
+# be worse than the hole it closes.
+aw "$tmp/gatestate" agent-K >/dev/null
+t "a vouched record still blocks"   2 "$(gate_at "$tmp/gatestate" agent-K)"
+tcontains "and names the file"      "theirs.txt" "$(gate_at_msg "$tmp/gatestate" agent-K)"
+tlacks "and claims no distrust"     "was NOT trusted" "$(gate_at_msg "$tmp/gatestate" agent-K)"
 
 echo "== session-brief: a measurement it could not take never prints as zero"
 # `git ... | wc -l` prints 0 when GIT failed, which is indistinguishable from
