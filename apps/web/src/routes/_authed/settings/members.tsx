@@ -204,7 +204,7 @@ function MemberRow({
         {member.name ?? "—"}
       </TableCell>
       <TableCell>
-        {manage && !isCurrentUser ? (
+        {manage && !isCurrentUser && member.role !== "owner" ? (
           <Select
             value={member.role}
             onChange={(e) =>
@@ -214,7 +214,6 @@ function MemberRow({
             className="w-32"
             aria-label={`Role for ${display}`}
           >
-            <option value="owner">Owner</option>
             <option value="admin">Admin</option>
             <option value="operator">Operator</option>
             <option value="viewer">Viewer</option>
@@ -225,7 +224,7 @@ function MemberRow({
       </TableCell>
       {manage ? (
         <TableCell className="text-right">
-          {isCurrentUser ? null : (
+          {isCurrentUser || member.role === "owner" ? null : (
             <Button
               type="button"
               variant="outline"
