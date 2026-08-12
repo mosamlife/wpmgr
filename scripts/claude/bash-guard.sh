@@ -344,7 +344,7 @@ collect_dests() {
 # after its caller deliberately - shell resolves a function at CALL time, and
 # collect_dests is first called below both definitions.
 split_segments() {
-  printf '%s\n' "$cmd" \
+  printf '%s\n' "${1-$cmd}" \
            | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
            | awk '
       # Split into command segments and drop comments, both QUOTE-AWARE. A
@@ -539,12 +539,25 @@ fi
 # work; a guard that reddens those gets switched off, and then main is guarded
 # by nothing at all.
 #
-# WHAT IT CANNOT SEE, stated rather than implied. The splitter reads a heredoc
-# BODY as ordinary segments, so `cat > runbook.md <<EOF` whose body carries a
-# literal `git push origin main` line is refused. Writing that file through
-# Edit/Write - which is where prose is written here anyway - is not. And a push
-# performed by a script this command merely invokes, or built from a variable,
-# is invisible to a text matcher, exactly as the header already says.
+# WHAT IT CANNOT SEE, ENUMERATED, because a comment that overstates coverage is
+# worse than no comment. All of these were reproduced against this arm and all
+# of them are PERMITTED by it:
+#
+#     eval git push origin main
+#     bash -c "git push origin main"
+#     git push origin $(echo main)
+#     git p"ush" origin main                 the entry grep and unq() both miss it
+#     git push origin @                      @ is git's documented synonym for HEAD
+#     git push origin :                      the "matching" refspec
+#     git push origin refs/heads/*:refs/heads/*
+#     git -c push.default=matching push      -c is consumed unread, deliberately
+#
+# They are not a list to grind out. Deciding them means being the shell, and
+# closing eight invites a ninth. `.githooks/pre-push` is what actually catches
+# them: it runs inside git, after expansion and after refspec resolution, and is
+# handed the refs that are about to move, so none of the above reaches it in
+# disguise. This arm exists to refuse the ordinary shapes EARLY, with the rule
+# attached, before a command runs at all. It is the manners, not the lock.
 
 # push_branch <value of git -C, may be empty> -> $PBRANCH; 1 if unreadable.
 #
@@ -556,11 +569,14 @@ fi
 # the MAIN checkout, whose HEAD is usually main, and every agent push in the
 # project would be refused for a branch nobody was on. A wrong answer is worse
 # than no answer; no answer is handled below, loudly.
+#
+# The base directory is PUSH_CWD, not the payload's cwd directly, because a
+# leading `cd <path> &&` moves it. See the cd tracking in push_hits_main.
 PBRANCH=""
 push_branch() {
   local d="$1" base
   PBRANCH=""
-  base=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  base=$PUSH_CWD
   if [[ -n "$d" ]]; then
     if [[ "$d" != /* ]]; then
       [[ -n "$base" ]] || return 1
@@ -579,12 +595,89 @@ push_branch() {
   return 0
 }
 
+# push_commands -> $cmd with the lines that are DATA rather than shell removed.
+#
+# Two shapes put the literal text `git push origin main` at the start of a line
+# without any push being performed, and this arm denied both:
+#
+#   cat > docs/runbook.md <<EOF        a heredoc BODY is prose, not commands
+#   To release, do NOT run
+#   git push origin main
+#   EOF
+#
+#   git commit -m "feat: a pre-push hook            a quoted string that spans
+#                                                   lines is one argument, and
+#   git push origin main is what the hook refuses.  the splitter resets its
+#   "                                               quote state every line
+#
+# The second one is the shape of this change's own commit message, and the first
+# is how every runbook in docs/ gets written. Both are correct work, and a guard
+# that reddens correct work gets switched off.
+#
+# The splitter's per-line quote reset is deliberate and stays: for the WRITE arms
+# an extra split can only over-fire, and over-firing there is caught by an
+# assertion. Here it is the opposite, so this pass runs first and only for this
+# arm. It drops a heredoc body up to its delimiter line, and drops the part of a
+# line that belongs to a string opened on an EARLIER line - keeping whatever
+# follows the closing quote, because `more" && git push origin main` really is a
+# push and dropping the whole line would be a bypass.
+#
+# ITS OWN LIMIT: a heredoc whose delimiter never appears swallows the rest of the
+# command. That command does not run in bash either - it waits for the delimiter
+# on stdin - so there is nothing to guard; `.githooks/pre-push` is the backstop
+# for it as for everything else here.
+push_commands() {
+  printf '%s\n' "$cmd" | awk '
+    function scan(s,   i, n, c, rest, d) {
+      n = length(s); i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\" && q != "'"'"'") { i += 2; continue }
+        if (q != "") { if (c == q) q = ""; i++; continue }
+        if (c == "'"'"'" || c == "\"") { q = c; i++; continue }
+        if (c == "#" && (i == 1 || substr(s, i-1, 1) == " " || substr(s, i-1, 1) == "\t")) return
+        if (c == "<" && substr(s, i+1, 1) == "<") {
+          rest = substr(s, i + 2)
+          # <<< is a here-STRING: it has no body and opens no delimiter.
+          if (substr(rest, 1, 1) == "<") { i += 3; continue }
+          sub(/^-/, "", rest); sub(/^[ \t]+/, "", rest)
+          d = ""
+          if (match(rest, /^"[^"]*"/))          d = substr(rest, RSTART + 1, RLENGTH - 2)
+          else if (match(rest, /^'"'"'[^'"'"']*'"'"'/)) d = substr(rest, RSTART + 1, RLENGTH - 2)
+          else if (match(rest, /^[A-Za-z0-9_.-]+/))  d = substr(rest, RSTART, RLENGTH)
+          if (d != "") { nd++; dq[nd] = d }
+          i += 2; continue
+        }
+        i++
+      }
+    }
+    BEGIN { q = ""; nd = 0 }
+    {
+      line = $0
+      if (nd > 0) {
+        t = line; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+        if (t == dq[1]) { for (k = 1; k < nd; k++) dq[k] = dq[k+1]; nd-- }
+        next
+      }
+      if (q != "") {
+        idx = index(line, q)
+        if (idx == 0) next
+        q = ""
+        line = substr(line, idx + 1)
+      }
+      scan(line)
+      print line
+    }'
+}
+
 # push_hits_main -> 0 and $PUSH_WHY set, when some segment is a push that lands
 # on main or a push whose target cannot be read ($PUSH_WHY = UNKNOWN).
 PUSH_WHY=""
+PUSH_CWD=""
 push_hits_main() {
-  local seg w cn i n start sub d gitdir allrefs tagsonly r dst np
+  local seg w cn i n start sub d gitdir allrefs tagsonly dryrun r dst np cdto
   local -a words positional
+  PUSH_CWD=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
   while IFS= read -r seg; do
     words=()
     IFS=$' \t' read -r -a words <<<"$seg"
@@ -600,6 +693,38 @@ push_hits_main() {
     done
     [[ $start -ge $n ]] && continue
     unq "${words[$start]}"; cn=${UNQ##*/}
+
+    # `cd <path> && git push` RETARGETS the branch lookup. This is the incident
+    # shape and it is why the arm was worth repairing at all: an agent works in a
+    # worktree, so the payload's cwd is a worktree, and
+    #   cd /Users/.../wpmgr && git push
+    # was permitted with zero bytes transferred to the guard's attention while
+    # `git -C /Users/.../wpmgr push` was denied. It is the same push.
+    #
+    # It cuts the other way too, and that half was a FALSE REASON rather than a
+    # bypass: from the main checkout, `cd <worktree> && git push` was refused
+    # saying "the current branch is main". It was not. Either follow the cd or
+    # stop claiming to know the branch.
+    #
+    # An operand this cannot resolve - `cd $DIR`, `cd -`, `cd ~x`, a nonexistent
+    # path - clears the directory rather than guessing, so a later bare push
+    # arrives at the UNKNOWN branch of the deny below. Fail closed, and say so.
+    if [[ "$cn" == cd || "$cn" == pushd ]]; then
+      cdto=""
+      i=$((start + 1))
+      while [[ $i -lt $n ]]; do
+        unq "${words[$i]}"; w=$UNQ
+        case "$w" in -*) ;; *) cdto=$w; break ;; esac
+        i=$((i + 1))
+      done
+      [[ -z "$cdto" ]] && continue          # bare `cd`/`pushd`: leave it alone
+      if [[ "$cdto" != /* ]]; then
+        [[ -n "$PUSH_CWD" ]] && cdto="${PUSH_CWD%/}/$cdto"
+      fi
+      if [[ -d "$cdto" ]]; then PUSH_CWD=$cdto; else PUSH_CWD=""; fi
+      continue
+    fi
+
     [[ "$cn" == git ]] || continue
 
     # git's own options come BEFORE the subcommand, and two of them change which
@@ -626,11 +751,17 @@ push_hits_main() {
     [[ "$sub" == push ]] || continue
 
     positional=()
-    allrefs=""; tagsonly=""
+    allrefs=""; tagsonly=""; dryrun=""
     i=$((i + 1))
     while [[ $i -lt $n ]]; do
       unq "${words[$i]}"; w=$UNQ
       case "$w" in
+        # --dry-run/-n transfers NOTHING. Refusing it was a defect twice over:
+        # the reason printed - "That push lands commits on main" - was untrue of
+        # the command it refused, and it blocked the one safe way to inspect the
+        # dangerous command before running it. Checking what a push would do is
+        # the behaviour to encourage, not to redden.
+        --dry-run|-n) dryrun=1 ;;
         --all|--mirror) allrefs=1 ;;
         # --tags with no refspec pushes refs/tags and nothing else, so it moves
         # no branch. Exact match: --follow-tags is an ordinary branch push.
@@ -642,6 +773,8 @@ push_hits_main() {
       esac
       i=$((i + 1))
     done
+
+    [[ -n "$dryrun" ]] && continue
 
     if [[ -n "$allrefs" ]]; then
       PUSH_WHY="--all/--mirror pushes every local branch, and one of them is main"
@@ -689,13 +822,19 @@ push_hits_main() {
       PUSH_WHY="it names no refspec, so it pushes the current branch, and the current branch is main"
       return 0
     fi
-  done < <(split_segments)
+  done < <(split_segments "$(push_commands)")
   return 1
 }
 
-# The word `push` cannot be absent from a `git push`, so this costs one grep on
-# every other command instead of two awk processes. It gates entry to the
-# structural test; it never decides anything by itself.
+# A cheap entry gate: the structural test costs two awk processes, and most
+# commands are not pushes. It NEVER decides anything by itself.
+#
+# It is not sound, and the previous comment here claimed it was - "the word push
+# cannot be absent from a git push". `git p"ush" origin main` has no word `push`
+# in it, is a real push, and is permitted by this grep and by unq() alike. That
+# is not fixed here, on purpose: see the enumerated list above. The lock is
+# `.githooks/pre-push`, which sees the resolved ref and does not care how the
+# word was spelled.
 if grep -qE '(^|[^A-Za-z0-9_-])push([^A-Za-z0-9_-]|$)' <<<"$cmd" && push_hits_main; then
   if [[ "$PUSH_WHY" == UNKNOWN ]]; then
     push_cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)

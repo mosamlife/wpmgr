@@ -13,6 +13,18 @@ help: ## Show this help
 bootstrap: ## First-time dev setup
 	./scripts/bootstrap.sh
 
+# Separate from bootstrap because bootstrap installs a toolchain and this does
+# not: an existing clone that predates the hook needs this one line and nothing
+# else. `git config core.hooksPath` is repo-local and repo-local config is never
+# committed, so without it a clone carries .githooks/pre-push and git never runs
+# it - the push to main is permitted exactly as it was on 2026-08-12.
+.PHONY: hooks
+hooks: ## Install the committed git hooks (pre-push refuses a push that lands on main)
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath = $$(git config --get core.hooksPath)"
+	@test -x .githooks/pre-push || { echo "FAIL: .githooks/pre-push is missing or not executable"; exit 1; }
+	@echo "pre-push installed. It is bypassed by 'git push --no-verify', deliberately and on the record."
+
 .PHONY: quickstart
 quickstart: ## One-command self-host bootstrap: write .env + generate secrets
 	./scripts/init-env.sh

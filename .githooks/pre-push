@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Refuse any push that would create, move or delete refs/heads/main.
+#
+# WHY THIS EXISTS RATHER THAN ONLY THE BASH GUARD.
+# On 2026-08-12 a one-line fix was committed on main in the main checkout and
+# pushed straight to origin/main, with no branch and no PR. Branch protection on
+# main carries four required contexts, but `enforce_admins` is deliberately
+# false - the owner keeps it false so an incident hotfix stays possible - so the
+# push was accepted server-side with none of those contexts running against it.
+#
+# scripts/claude/bash-guard.sh has an arm that reads the command string and
+# denies a push to main. Three adversaries found nine working bypasses of it,
+# all reproduced. `cd <main checkout> && git push` from an agent worktree was
+# permitted; so were `eval git push origin main`, `bash -c '...'`,
+# `git push origin @` (@ is git's documented synonym for HEAD),
+# `git push origin :`, `git push origin refs/heads/*:refs/heads/*`,
+# `git push origin $(echo main)`, `git p"ush" origin main`, and
+# `git -c push.default=matching push`. That is not a list to grind out. A text
+# matcher over a shell command cannot decide those without being the shell, and
+# closing nine invites a tenth.
+#
+# This hook runs INSIDE git: after the shell has expanded everything, after
+# eval, after command substitution, after push.default and after refspec
+# resolution. It is handed the refs that are actually about to move. None of the
+# nine can reach it disguised, because by the time it runs there is no disguise
+# left. It also fires for a push typed in a plain terminal, or made by an IDE or
+# any other tool, which a PreToolUse hook on Bash never sees at all.
+#
+# CONTRACT (githooks(5), git 2.48.1):
+#   $1            remote name; $2 remote URL (both the URL for an unnamed remote)
+#   stdin, one line per ref being pushed:
+#       <local-ref> SP <local-oid> SP <remote-ref> SP <remote-oid> LF
+#   Deleting a ref supplies `(delete)` as <local-ref> and the all-zero oid as
+#   <local-oid>; the REMOTE ref is still named, which is why the decision below
+#   keys on <remote-ref> alone and so covers a delete without a special case.
+#   A non-zero exit aborts the whole push, having transferred nothing.
+#
+# Test: scripts/claude/guards_test.sh
+set -uo pipefail
+
+remote_name="${1-}"
+remote_url="${2-}"
+
+hits=""
+while read -r local_ref local_oid remote_ref remote_oid; do
+  [ -n "$remote_ref" ] || continue
+  # git fully qualifies the remote ref, but a bare name costs nothing to also
+  # refuse and cannot match a branch merely CONTAINING "main" - both arms are
+  # whole-string equality, so main-ui, maintenance and feat/remaining pass.
+  case "$remote_ref" in
+    refs/heads/main|main) ;;
+    *) continue ;;
+  esac
+  if [ "$local_ref" = "(delete)" ]; then
+    hits="${hits}  DELETE ${remote_ref} (was ${remote_oid})"$'\n'
+  else
+    hits="${hits}  ${local_ref} -> ${remote_ref} (${local_oid})"$'\n'
+  fi
+done
+
+[ -n "$hits" ] || exit 0
+
+cat >&2 <<'REFUSED'
+
+  ------------------------------------------------------------------
+  REFUSED: this push would land on main.
+  ------------------------------------------------------------------
+REFUSED
+printf '%s' "$hits" >&2
+cat >&2 <<REFUSED
+
+  remote: ${remote_name:-<none>} (${remote_url:-<none>})
+
+  CLAUDE.md, "## Delivery": the only route to main is a pull request.
+  Branch, push the branch, open the PR, let ci.yml and review run, then
+  merge. Approval has to precede the irreversible half, and a push to
+  main IS the irreversible half.
+
+  Nothing behind this refusal will catch what it lets through: branch
+  protection on main carries four required contexts, but enforce_admins
+  is deliberately false, so an owner-token push is accepted server-side
+  and not one of those contexts ever runs against it.
+
+    git switch -c fix/<name>
+    git push -u origin fix/<name>
+    gh pr create
+
+  Pushing any other branch, or a tag, is untouched by this hook.
+
+  THE ESCAPE HATCH, NAMED RATHER THAN HIDDEN: \`git push --no-verify\`
+  skips this hook entirely. That is the incident-hotfix path the owner
+  kept open by leaving enforce_admins false, and it is stated here on
+  purpose - an undocumented bypass gets found and then used casually,
+  while a documented one is a deliberate act you can be asked about.
+
+REFUSED
+exit 1
