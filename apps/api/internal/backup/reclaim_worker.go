@@ -151,7 +151,7 @@ type ObjectReclaimer interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// ReclaimTask is one unit of reclamation work: identity only, no prefix.
+// ReclaimTask is one unit of reclamation work: identity and triage, no prefix.
 type ReclaimTask struct {
 	ID              uuid.UUID
 	TenantID        uuid.UUID
@@ -162,6 +162,10 @@ type ReclaimTask struct {
 	// LastError is the reason the previous attempt failed. Carried so the
 	// stuck-task report can say WHY a task gave up without a second query.
 	LastError string
+	// CreatedAt is when the work was recorded. `wpmgr-cli reclaim list` prints
+	// its age: attempts alone cannot tell an operator whether a task is working
+	// through its backoff or has been stranded for months.
+	CreatedAt time.Time
 }
 
 // TenantReclaimState is the tenant's lifecycle as this worker must read it.
@@ -372,14 +376,38 @@ func (w *ReclaimWorker) reportStuck(ctx context.Context) {
 		if perr != nil {
 			prefix = "(underivable: " + perr.Error() + ")"
 		}
+		// These are the lines an operator actually alerts on, so they carry the
+		// same supported command the failure reason does, from the same
+		// constructor, and for the same reason (GH #408 finding 3): a pastable
+		// statement here would be one the application role silently discards.
 		w.logger.Error("site object reclaim: stuck task",
 			slog.String("task_id", t.ID.String()),
 			slog.String("tenant_id", t.TenantID.String()),
 			slog.String("site_id", t.SiteID.String()),
 			slog.String("prefix", prefix),
 			slog.Int("attempts", int(t.Attempts)),
-			slog.String("last_error", t.LastError))
+			slog.String("last_error", t.LastError),
+			slog.String("recovery", ReclaimRetryCommand(t.ID)))
 	}
+}
+
+// ReclaimRetryCommand is the supported way to reopen a stuck SITE task, and it
+// is deliberately NOT a SQL statement (GH #408 finding 3).
+//
+// It names this engine's kind explicitly rather than leaning on the retry
+// command's default, so the site and tenant hints each correct their own table.
+// Both are built by reclaimRetryCommand (reclaim_ops.go), which is the only
+// place either string is constructed: the claim that these cannot drift apart is
+// worth making only while that stays true, and it was not true when this comment
+// first made it. TestGH408_EveryOperatorHintComesFromOneConstructor is the guard.
+func ReclaimRetryCommand(taskID uuid.UUID) string {
+	return reclaimRetryCommand(taskID, ReclaimKindBackupManifest)
+}
+
+// ReclaimRetryHint is ReclaimRetryCommand wrapped in the advice sentence a
+// failed site task carries in last_error.
+func ReclaimRetryHint(taskID uuid.UUID) string {
+	return reclaimRetryAdvice(taskID, ReclaimKindBackupManifest)
 }
 
 type reclaimOutcome int
@@ -414,21 +442,20 @@ func (w *ReclaimWorker) reclaimOne(ctx context.Context, t ReclaimTask) reclaimOu
 	// every-tick stuck report with this reason attached, where an operator can
 	// see the bad value and correct it.
 	//
-	// The UPDATE printed below needs a SUPERUSER CONNECTION, and says so. As the
-	// wpmgr_app role, with no app.tenant_id set, RLS makes the row invisible and
-	// the statement reports success having changed nothing: measured, "rows=0
-	// err=<nil>". A recovery instruction that silently no-ops is worse than none,
-	// so the caveat travels with the statement. Making it work for the ordinary
-	// application role is GH #408.
+	// This used to print a bare UPDATE with an "ON A SUPERUSER CONNECTION"
+	// caveat. GH #408 finding 3: run verbatim as the wpmgr_app role with no GUC
+	// that statement is err=nil, rows=0, and the row is byte-for-byte unchanged,
+	// because the RLS USING clause hides it and Postgres has nothing to complain
+	// about. The defect was never a missing warning (the caveat was right there
+	// in the string) but a remedy that cannot work on the connection the operator
+	// has, so a longer caveat would have been a different fix from the right one.
+	// The message now names a command that runs as the ordinary application role
+	// and exits non-zero if it changes nothing.
+	// TestGH408_WorkerPrintsNoRunnableSQL fails the moment a pastable statement
+	// goes back in.
 	prefix, perr := SiteObjectPrefix(t.Kind, t.TenantID, t.SiteID)
 	if perr != nil {
-		w.fail(ctx, t, perr.Error()+
-			" (the task is kept and retried, never cancelled: its objects are still in storage "+
-			"and this row is the only record of them. Correct the row and it resumes, ON A "+
-			"SUPERUSER CONNECTION: as the application role RLS hides this row and the statement "+
-			"reports success while changing nothing, see GH #408. "+
-			"UPDATE site_object_reclaim SET kind = '"+ReclaimKindBackupManifest+
-			"', attempts = 0, next_attempt_at = now() WHERE id = '"+t.ID.String()+"')")
+		w.fail(ctx, t, perr.Error()+ReclaimRetryHint(t.ID))
 		return reclaimFailed
 	}
 
@@ -591,7 +618,7 @@ func reclaimTasksFromRows(rows []sqlc.SiteObjectReclaim) []ReclaimTask {
 	for _, r := range rows {
 		t := ReclaimTask{
 			ID: r.ID, TenantID: r.TenantID, SiteID: r.SiteID,
-			Kind: r.Kind, Attempts: r.Attempts,
+			Kind: r.Kind, Attempts: r.Attempts, CreatedAt: r.CreatedAt,
 		}
 		if r.DestinationKind != nil {
 			t.DestinationKind = *r.DestinationKind

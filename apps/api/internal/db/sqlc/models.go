@@ -1191,6 +1191,18 @@ type TenantAppAlertBreaker struct {
 	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
+type TenantObjectReclaim struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	Kind          string             `json:"kind"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt time.Time          `json:"next_attempt_at"`
+	LastError     *string            `json:"last_error"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
 type TrustedDevice struct {
 	ID         uuid.UUID          `json:"id"`
 	UserID     uuid.UUID          `json:"user_id"`

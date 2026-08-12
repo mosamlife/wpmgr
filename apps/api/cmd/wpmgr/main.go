@@ -1353,6 +1353,22 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	siteObjectReclaimWorker := backup.NewReclaimWorker(
 		backup.NewReclaimStore(pool), siteObjectReclaimStore, logger)
+
+	// GH #408: the TENANT-storage drain, the sibling of the sweep above one
+	// level up. admin_delete_empty_tenant (org delete Lane A, and the superadmin
+	// orphan cleanup) hard-deletes a tenants row and frees zero object storage,
+	// and the m4 cascade destroys backup_chunks in the same statement, so
+	// nothing could name chunks/<tenant>/ afterwards. The function now records a
+	// tenant_object_reclaim row in the delete's own transaction (m116) and this
+	// worker drains every root org.ObjectStoragePrefixes lists.
+	//
+	// A SEPARATE worker rather than a new kind on the sweep above, on purpose:
+	// m113's safety claim is that its reclaimer is structurally incapable of
+	// deleting a chunk, and adding chunk authority to it would falsify that for
+	// the whole engine. This is the only chunk-delete authority outside the
+	// ADR-050 mark-and-sweep, and it is confined to one file.
+	tenantObjectReclaimWorker := backup.NewTenantReclaimWorker(
+		backup.NewTenantReclaimStore(pool), siteObjectReclaimStore, logger)
 	// Timeout sweeper (every 15s) + site_events prune (every minute).
 	// M58: wire env-configurable thresholds (WPMGR_CONN_DEGRADE_AFTER,
 	// WPMGR_CONN_DISCONNECT_AFTER, WPMGR_CONN_DEGRADE_MISS_THRESHOLD) and the
@@ -1906,6 +1922,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// GH #402: site-object reclaim sweep (always wired; no-ops with no
 		// object storage).
 		siteObjectReclaimWorker: siteObjectReclaimWorker,
+		// GH #408: tenant-storage drain (always wired; same no-op property).
+		tenantObjectReclaimWorker: tenantObjectReclaimWorker,
 	})
 	if err != nil {
 		return err
@@ -3238,6 +3256,11 @@ type riverDeps struct {
 	// cleanly when there are no due tasks, and leaves them open when there is
 	// no object storage to reclaim from.
 	siteObjectReclaimWorker *backup.ReclaimWorker
+	// GH #408: the tenant-storage drain. Always wired, same reasoning; it is the
+	// only chunk-delete authority in this codebase outside the ADR-050
+	// mark-and-sweep, and it is deliberately a separate worker rather than a
+	// kind on the one above.
+	tenantObjectReclaimWorker *backup.TenantReclaimWorker
 }
 
 // startRiver builds and starts the River client with the health-check worker, a
@@ -3801,6 +3824,35 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return backup.ReclaimArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
+	// GH #408: drain the object storage a HARD-deleted organisation leaves
+	// behind. Its own queue, so a large tenant's drain never starves the site
+	// sweep above.
+	//
+	// Hourly with RunOnStart, matching the sweep above, and the per-tick key
+	// budget rather than the tick interval is what bounds the work: a task that
+	// does not finish stays OPEN and the next tick re-lists a shorter set. Every
+	// concurrency property that makes MaxWorkers 1 sufficient there holds here
+	// for the same reasons (deletes treat a missing key as success, every
+	// attempt re-LISTS, CompleteTenantObjectReclaim is guarded WHERE
+	// completed_at IS NULL, and the prefixes are derived from the row rather
+	// than stored), with one addition: this worker refuses to delete anything at
+	// all unless the tenant row, its sites and its chunk inventory are ALL still
+	// absent, re-checked at drain time.
+	//
+	// The 24 hour floor on a newly recorded task lives in the schema, not here.
+	// It is defence in depth, so an operator who deleted the wrong organisation
+	// has a day to restore a pre-delete dump before the bytes go, and it means
+	// RunOnStart cannot drain a tenant deleted moments before a deploy.
+	if d.tenantObjectReclaimWorker != nil {
+		river.AddWorker(workers, d.tenantObjectReclaimWorker)
+		queues[backup.TenantReclaimQueue] = river.QueueConfig{MaxWorkers: 1}
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return backup.TenantReclaimArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}

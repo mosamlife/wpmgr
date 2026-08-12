@@ -5,6 +5,7 @@
 //	wpmgr-cli migrate        # apply embedded versioned migrations
 //	wpmgr-cli gen-secrets    # mint the boot-critical secrets (KEY=VALUE lines)
 //	wpmgr-cli validate-env   # check the environment config and list every problem at once
+//	wpmgr-cli reclaim ...    # object-storage reclamation (see reclaim.go)
 package main
 
 import (
@@ -39,6 +40,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, "validate-env:", err)
 			os.Exit(1)
 		}
+	case "reclaim":
+		// Exits NON-ZERO when it changed nothing. That is the property that makes
+		// this a recovery path (GH #408): the remedies it replaces reported
+		// success while RLS silently discarded the statement.
+		if err := reclaimCmd(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "reclaim:", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -65,4 +74,5 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  migrate        apply database migrations")
 	fmt.Fprintln(os.Stderr, "  gen-secrets    mint boot-critical secrets as KEY=VALUE lines")
 	fmt.Fprintln(os.Stderr, "  validate-env   check the environment config and list every problem at once")
+	fmt.Fprintln(os.Stderr, "  reclaim        object-storage reclamation; run `reclaim` alone for its subcommands")
 }

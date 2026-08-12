@@ -16,6 +16,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,13 @@ func (s *gh402Store) List(_ context.Context, prefix string) ([]string, error) {
 			out = append(out, k)
 		}
 	}
+	// Sorted, because Go randomises map iteration and S3 and GCS both list
+	// lexicographically. Unsorted, this fake returned a different order every
+	// run, so a test that injects a fault on one key could see that key first
+	// and observe no progress before the fault. That failed about two runs in
+	// three and looked like a flake in the drain rather than what it was: the
+	// fake being less predictable than the thing it stands in for.
+	sort.Strings(out)
 	return out, nil
 }
 

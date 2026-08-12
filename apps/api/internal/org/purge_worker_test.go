@@ -160,7 +160,7 @@ func (s *purgeTestStore) Delete(_ context.Context, key string) error {
 // would have failed against the pre-fix two-prefix slice.
 func TestObjectStoragePrefixes_ExactSevenRoots(t *testing.T) {
 	tenantID := uuid.New()
-	got := objectStoragePrefixes(tenantID)
+	got := ObjectStoragePrefixes(tenantID)
 
 	want := []string{
 		"chunks/" + tenantID.String() + "/",
@@ -229,7 +229,7 @@ func TestPurgeWorker_DeletesAllSevenPrefixesMarksPurgeStartedAndIsIdempotent(t *
 	}
 
 	events := rec.snapshot()
-	wantPrefixes := objectStoragePrefixes(tenant)
+	wantPrefixes := ObjectStoragePrefixes(tenant)
 	for _, p := range wantPrefixes {
 		found := false
 		for _, e := range events {

@@ -139,27 +139,30 @@
 -- deleting by hand, which keeps every guard in the worker (including the
 -- refusal to touch a site whose row still exists) in play:
 --
---   INSERT INTO site_object_reclaim (tenant_id, site_id, kind)
---   VALUES ('<tenant_id>', '<site_id>', 'backup_manifest')
---   ON CONFLICT (tenant_id, site_id, kind) DO UPDATE
---     SET completed_at = NULL, attempts = 0, next_attempt_at = now();
+--   wpmgr-cli reclaim site --tenant <tenant_id> --site <site_id>
 --
--- RUN THAT ON A SUPERUSER CONNECTION. As written it does NOT work as the
+-- COMMENT UPDATED FOR GH #408, and only the comment: this migration is already
+-- applied everywhere, so migrate.go will never read this file again on a
+-- database that matters, and editing a statement here would change nothing while
+-- pretending to. m116's header carries the authoritative version.
+--
+-- This header used to print a hand-written INSERT instead, with the instruction
+-- to run it on a SUPERUSER CONNECTION. That statement does not work as the
 -- wpmgr_app role this repository provisions for the application: the table has
--- FORCE ROW LEVEL SECURITY and site_object_reclaim_tenant_isolation checks
--- tenant_id against current_setting('app.tenant_id'), which a plain psql session
--- leaves unset, so the WITH CHECK refuses the INSERT and the ON CONFLICT branch
--- has no visible row to update. The guidance is kept because it is still the
--- only route to objects orphaned before m113, but it is presented for what it
--- currently is: a statement that needs a connection RLS does not apply to.
--- Making it work for the ordinary application role is GH #408.
+-- FORCE ROW LEVEL SECURITY, site_object_reclaim_tenant_isolation checks
+-- tenant_id against current_setting('app.tenant_id') which a plain psql session
+-- leaves unset, so the WITH CHECK refuses the INSERT (SQLSTATE 42501) and the ON
+-- CONFLICT branch has no visible row to update. Since it was also the ONLY route
+-- to objects orphaned before m113, "needs a connection RLS does not apply to"
+-- was not an acceptable place to leave it. The command above runs every
+-- statement under InAgentTx, which the site_object_reclaim_agent policy already
+-- permits, and exits non-zero if it changed nothing.
 --
--- Get the kind wrong in that statement and the database refuses the whole
--- INSERT, naming site_object_reclaim_kind_check. That is deliberate: a task
--- carrying a kind the worker cannot derive a prefix for is a task that reclaims
--- nothing, and nothing else in the database names those objects, so a typo
--- accepted here would strand them exactly as GH #402 did. The column default is
--- the correct value, so omitting kind entirely also works.
+-- Get the kind wrong and the database refuses the whole INSERT, naming
+-- site_object_reclaim_kind_check. That is deliberate: a task carrying a kind the
+-- worker cannot derive a prefix for is a task that reclaims nothing, and nothing
+-- else in the database names those objects, so a typo accepted here would strand
+-- them exactly as GH #402 did.
 --
 -- IDEMPOTENCE AND BOOT SAFETY
 --

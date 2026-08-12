@@ -53,7 +53,19 @@ import (
 // differ — so all three mutually exclude each other on hashtext(orgID),
 // meaning a delete/restore request and an in-flight purge of the SAME tenant
 // always serialize. See purge_worker.go's purgeOne doc comment.
-const orgLifecycleLockKey = "org_lifecycle"
+const orgLifecycleLockKey = LifecycleLockKey
+
+// LifecycleLockKey is orgLifecycleLockKey under an exported name, for the one
+// caller outside this package: backup.TenantReclaimWorker, whose Lane A drain
+// deletes a hard-deleted tenant's object storage and so is an organisation
+// lifecycle operation like the three above.
+//
+// SHARED, NOT COPIED, for the same reason ObjectStoragePrefixes is (see
+// purge_worker.go). A second spelling of this string would compile, pass every
+// test, and take a DIFFERENT lock: the two lanes would then believe they were
+// mutually excluded while both ran, and the failure would only ever show up as
+// missing objects. One constant means that cannot happen.
+const LifecycleLockKey = "org_lifecycle"
 
 // SetHosted wires whether hosted billing (WPMGR_HOSTED) is enabled. When
 // true, DELETE refuses to delete an org with plan_status='active' until the

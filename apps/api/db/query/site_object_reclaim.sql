@@ -61,6 +61,46 @@ WHERE completed_at IS NULL
 ORDER BY created_at, id
 LIMIT @row_limit;
 
+-- name: ListOpenSiteObjectReclaims :many
+-- Everything still open, whatever its attempt count. What
+-- `wpmgr-cli reclaim list` shows an operator (GH #408).
+--
+-- It exists because with no GUC set this table reads as EMPTY to the application
+-- role, so an operator cannot discover the task id that a hand-written
+-- correction needs them to supply. That chicken-and-egg is why documenting
+-- "SET app.tenant_id first" was not an adequate answer to GH #408 finding 3.
+SELECT id, tenant_id, site_id, kind, destination_kind, attempts,
+       next_attempt_at, last_error, completed_at, created_at, updated_at
+FROM site_object_reclaim
+WHERE completed_at IS NULL
+ORDER BY created_at, id
+LIMIT @row_limit;
+
+-- name: ReopenSiteObjectReclaim :execrows
+-- `wpmgr-cli reclaim retry --task`: put a stuck task back in the due queue,
+-- correcting its kind on the way (GH #408 finding 3).
+--
+-- This replaces the bare UPDATE the worker used to print into last_error. That
+-- statement was authored for a superuser connection: as the application role
+-- with no GUC the RLS USING clause hides the row, so it matched nothing and
+-- Postgres reported no error, and the operator was told the correction had been
+-- applied when the row was byte-for-byte unchanged. This statement is identical
+-- in effect and runs under InAgentTx, where the m113 _agent policy makes the row
+-- visible and writable; the caller reports rows=0 as a failure and exits
+-- non-zero, so it cannot repeat the trick.
+--
+-- kind is set rather than left alone because the realistic reason a task is
+-- stuck is a kind the worker cannot derive a prefix for, which is exactly what
+-- the worker's GUARD 1 reports. The kind check constraint still applies, so a
+-- wrong value here is refused by the database rather than silently accepted.
+UPDATE site_object_reclaim
+SET kind            = @kind,
+    attempts        = 0,
+    next_attempt_at = now(),
+    last_error      = NULL,
+    updated_at      = now()
+WHERE id = @id AND completed_at IS NULL;
+
 -- name: CompleteSiteObjectReclaim :execrows
 -- Marks a task done. Set ONLY after the whole prefix drained with no error, so
 -- a crash partway leaves completed_at NULL and the next tick re-lists (a
