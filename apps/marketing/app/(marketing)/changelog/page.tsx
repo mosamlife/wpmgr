@@ -16,8 +16,8 @@ export const metadata: Metadata = buildMetadata({
 
 // ---------------------------------------------------------------------------
 // Curated release entries (newest first, harvested from CHANGELOG.md).
-// This is a long curated history, not a recent window: 73 entries as of
-// 2026-08-11, running from 0.61.132 back to 0.54.0, some of them grouping
+// This is a long curated history, not a recent window: 74 entries as of
+// 2026-08-12, running from 0.61.133 back to 0.54.0, some of them grouping
 // several releases into one. Anything older lives on GitHub Releases.
 // CI keeps the newest entry within 5 releases of the top CHANGELOG.md entry
 // (scripts/check-version-surfaces.sh), reading the newest version in a grouped
@@ -42,6 +42,35 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 };
 
 const RELEASES: ChangeEntry[] = [
+  {
+    version: "0.61.133",
+    date: "2026-08-12",
+    summary:
+      "Deleting an organisation that had no sites left in it used to leave the bulk of its backups sitting in object storage forever, and freed nothing off your storage bill. Removing the organisation removed the only inventory naming those files, so nothing could find them again afterwards, including you, because the account they were filed under was gone too. Deleting an emptied organisation now clears its storage within the hour. Storage orphaned by a delete made before this release is still not cleaned up on its own, and there is now a supported command for clearing it, which replaces the recovery instructions published with the last release: those needed a database superuser and did not work on the connection a self-hosted install actually has.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "Deleting an emptied organisation no longer strands its deduplicated backup chunks in storage forever. Those chunks are the bulk of what your backups occupy. Deleting an organisation with no sites and no other members removes it on the spot, and that same removal destroyed the stored inventory of its chunks while freeing no storage at all, so the objects were left named by nothing: not by the collector, whose list of accounts is built from that inventory, and not by you, because the account id was gone with it. The delete now records what it left behind, in the same database transaction that removes the organisation, and an hourly drain frees every one of that account's storage folders afterwards. The same transaction is the point: the record exists if and only if the organisation really went.",
+      },
+      {
+        tag: "Fixed",
+        text: "Backups belonging to a live site in another organisation cannot be caught by that drain, by construction rather than by care. Chunk storage is namespaced per account and deduplication never crosses an account boundary, so two accounts holding byte-identical WordPress files hold two separate objects, and draining one cannot reach the other. Before deleting anything the drain re-checks that the organisation, its sites and its chunk inventory are all still absent, and refuses if any of them came back, which is what makes a restored database backup, or a second control plane pointed at the same bucket, safe rather than lucky. It works in bounded batches, resumes where it stopped rather than reporting a half-finished cleanup as complete, and if it is refused or cannot finish it keeps its record and says so on every sweep, because that record is by then the last thing that knows those files exist.",
+      },
+      {
+        tag: "Fixed",
+        text: "The recovery instructions published with the previous release did not work on the connection you have. Both statements shipped there were written for a database superuser: run as the ordinary application role a self-hosted install uses, one was refused outright, and the other was worse, because the row it targeted was hidden from that role and the statement reported success while changing nothing at all. There is now a supported command family, wpmgr-cli reclaim, which lists outstanding work, hands a deleted site or a deleted organisation to the sweeps, and reopens a record that got stuck. It runs as the ordinary application role, it changes no permission or policy to do so, and every subcommand exits with an error when it changed nothing, which is the property that makes it a recovery path rather than another thing that claims success having done nothing. The message in the logs now names that command instead of printing a statement that cannot work.",
+      },
+      {
+        tag: "Fixed",
+        text: "Storage orphaned by a delete made before the previous release is still not cleaned up automatically, and nothing in this release goes looking for it on its own. The record that drives the cleanup is written by the delete, so it exists only for organisations and sites deleted from these versions onwards, and anything you deleted earlier is still in your bucket and still on your storage bill. Clearing it is now a deliberate step you take rather than a hand-written database statement. For organisations, wpmgr-cli reclaim backfill-tenants finds the ones the control plane still holds a deletion trail for and queues each one. For organisations removed by the separate cleanup of orphaned accounts, which leaves no such trail, wpmgr-cli reclaim discover --report-only reads the bucket and prints the candidates whose account no longer exists; it deletes nothing and queues nothing, so a person decides, and every safety check above still applies to whatever they hand over. For a single deleted site there is wpmgr-cli reclaim site.",
+      },
+      {
+        tag: "Changed",
+        text: "The published api image now contains wpmgr-cli. The install guide has been telling you to run that tool inside this image since long before today, and the image only ever carried the server itself, so the instruction could not work as written.",
+      },
+    ],
+    featureLinks: [{ label: "Backups", href: "/features/backups" }],
+  },
   {
     version: "0.61.132",
     date: "2026-08-11",
