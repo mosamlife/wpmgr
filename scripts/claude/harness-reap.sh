@@ -11,14 +11,31 @@
 # precisely the worktrees an agent did work in. The ones that accumulate are the
 # ones the sweep may never touch.
 #
-#   scripts/claude/harness-reap.sh            REPORT ONLY (default)
-#   scripts/claude/harness-reap.sh --apply    actually delete
+#   scripts/claude/harness-reap.sh                   REPORT ONLY (default)
+#   scripts/claude/harness-reap.sh --apply           actually delete
 #   scripts/claude/harness-reap.sh --apply --cache-gb 8
+#   scripts/claude/harness-reap.sh --worktrees-only  worktrees and their
+#                                                    branches; no Go cache,
+#                                                    no Docker
 #
 # Safety, because this deletes things:
 #   - dry run by default; --apply is the only thing that removes anything
-#   - a worktree is removed only if it is clean AND its branch is merged into
-#     the default branch. Never on mtime; mtime lies.
+#   - a worktree is removed only if THIS HARNESS CREATED IT. Ownership is
+#     structural, not a heuristic: the directory sits directly under
+#     `.claude/worktrees/` of the main checkout and is named `agent-*` or
+#     `wf_*`. A worktree a person made by hand, one with an off-shape name in
+#     that same directory, and the main checkout itself are all somebody
+#     else's and are never removed. Unowned ones are still REPORTED with their
+#     size, because held back is not silence: the maintainer decides.
+#     The earlier version fed `git worktree list` straight into
+#     `git worktree remove --force`, which removed anything clean and merged -
+#     and, run from inside a worktree, offered up the main checkout, because
+#     `git rev-parse --show-toplevel` resolves to the worktree.
+#   - a worktree is removed only if it is also clean AND its branch is merged
+#     into the default branch. Never on mtime; mtime lies.
+#   - the worktree the reaper is running inside is never removed, however
+#     clean it is: `git worktree remove --force` on your own cwd deletes the
+#     ground you are standing on
 #   - a branch is deleted only with `git branch -d` (merged-only), never -D
 #   - the Go MODULE cache is never touched: it is 4GB of re-downloadable
 #     dependencies whose removal costs a slow rebuild for nothing
@@ -28,11 +45,15 @@ set -uo pipefail
 
 APPLY=0
 CACHE_GB=10
+WORKTREES_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --cache-gb) CACHE_GB="${2:-10}"; shift ;;
-    -h|--help) sed -n '1,30p' "$0"; exit 0 ;;
+    --worktrees-only) WORKTREES_ONLY=1 ;;
+    # Print the whole comment header, however long it grows. A fixed line range
+    # silently truncates the safety notes the moment someone adds one.
+    -h|--help) awk '!/^#/{exit} {print}' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift
@@ -47,18 +68,48 @@ git rev-parse --verify --quiet "$base" >/dev/null || { echo "cannot resolve a ba
 
 say() { printf '%s\n' "$*"; }
 act() { if [[ $APPLY -eq 1 ]]; then say "  DO   $*"; else say "  WOULD $*"; fi; }
+# `du` on a path that has just been removed, or that a worktree record points at
+# after the directory went, prints nothing. Say so rather than print an empty
+# column: a blank size reads as zero, and zero is the one thing it does not mean.
+sizeof() { local s; s=$(du -sh "$1" 2>/dev/null | cut -f1); printf '%s' "${s:-size unknown}"; }
+
+# `git worktree list` puts the MAIN worktree first, always - that is the one
+# fact that survives being run from inside a worktree, where
+# `git rev-parse --show-toplevel` gives the worktree instead. Everything the
+# harness creates lives directly under `.claude/worktrees/` of that checkout.
+main_wt=$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)
+[[ -n "$main_wt" ]] || { echo "cannot resolve the main checkout from 'git worktree list'; refusing to remove anything" >&2; exit 2; }
+harness_dir="$main_wt/.claude/worktrees"
+
+# Owned == created by this harness. Structural, both halves required:
+# directly under $harness_dir (a nested path is not "directly under"), AND an
+# agent-* or wf_* name. `mine-by-hand` sitting in that directory is a person's.
+harness_made() {
+  [[ "$(dirname "$1")" == "$harness_dir" ]] || return 1
+  case "$(basename "$1")" in agent-*|wf_*) return 0 ;; *) return 1 ;; esac
+}
 
 reclaimed_note=""
 
 # ---- 1. worktrees ----------------------------------------------------------
-say "== agent worktrees (base: $base)"
-removed=0; kept=0
+say "== agent worktrees (base: $base, harness dir: $harness_dir)"
+removed=0; kept=0; foreign=0
 while IFS= read -r wt; do
   [[ -z "$wt" ]] && continue
-  case "$wt" in "$root") continue ;; esac
+  # The main checkout is not leaked disk and is never a reap target, whether or
+  # not we are standing in it.
+  [[ "$wt" == "$main_wt" ]] && continue
   name=$(basename "$wt")
+  if ! harness_made "$wt"; then
+    say "  OTHER  $name - not created by this harness ($(sizeof "$wt")): $wt"
+    foreign=$((foreign+1)); continue
+  fi
   if [[ ! -d "$wt" ]]; then
     say "  stale  $name (directory gone)"; continue
+  fi
+  if [[ "$wt" == "$root" ]]; then
+    say "  KEEP   $name - the reaper is running inside it. Re-run from the main checkout."
+    kept=$((kept+1)); continue
   fi
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   head=$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo "")
@@ -77,7 +128,7 @@ while IFS= read -r wt; do
 done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
 act "git worktree prune"
 [[ $APPLY -eq 1 ]] && git worktree prune
-say "  $removed removable, $kept held back"
+say "  $removed removable, $kept held back, $foreign not ours (listed above; remove those by hand if you want the space)"
 
 # ---- 2. orphaned worktree-* branches --------------------------------------
 say "== worktree-* branches merged into $base"
@@ -98,6 +149,9 @@ unmerged=$(git branch --list 'worktree-*' --no-merged "$base" 2>/dev/null | wc -
 say "  $n merged (deletable), $unmerged unmerged (left alone - inspect them by hand)"
 
 # ---- 3. Go build cache -----------------------------------------------------
+if [[ $WORKTREES_ONLY -eq 1 ]]; then
+say "== Go build cache and docker volumes skipped (--worktrees-only)"
+else
 say "== Go build cache (ceiling ${CACHE_GB}G; module cache is never touched)"
 gocache=$(go env GOCACHE 2>/dev/null || true)
 if [[ -n "$gocache" && -d "$gocache" ]]; then
@@ -137,6 +191,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 else
   say "  docker unreachable, skipped"
 fi
+fi  # end --worktrees-only skip
 
 # ---- 5. result -------------------------------------------------------------
 say "== disk"
