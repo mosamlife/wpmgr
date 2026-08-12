@@ -273,13 +273,34 @@ echo "== route-guard state: the marker is a claim, so the claim is checked too"
 # another owner and is genuinely writable by us, which is exactly the shared-/tmp
 # shape. `rm` is shadowed for the duration so that a regression in the guard
 # cannot prune somebody else's temp directory to prove the point.
+#
+# THERE IS NO SKIP HERE ANY MORE, DELIBERATELY. This block used to print SKIP and
+# let the run report a pass when it could not find a fixture, and the branch that
+# reached it was `id -u` = 0: as root, `! -O` is false for EVERY candidate, so
+# the whole ownership proof silently vanished in exactly the environment CI runs
+# in. A visible skip is acceptable for an optional local capability; it is not
+# acceptable for the ownership path, because that is the path the deleted home
+# directory came from. So root, which used to be the case that skipped, is now
+# the case that is easiest to construct: root can chown, so it builds its own
+# foreign-owned directory. If no fixture can be built by EITHER route, that is a
+# failure, not a skip.
 unowned=""
-for cand in /private/var/tmp /var/tmp /private/tmp /tmp; do
-  [[ -d "$cand" && ! -L "$cand" && -w "$cand" && ! -O "$cand" ]] || continue
-  unowned="$cand"; break
-done
+if [[ "$(id -u)" -eq 0 ]]; then
+  unowned="$tmp/unowned-by-root"
+  mkdir -p "$unowned"
+  chown 65534:65534 "$unowned" 2>/dev/null || chown nobody "$unowned" 2>/dev/null
+  chmod 777 "$unowned"
+  [[ -O "$unowned" ]] && unowned=""   # the chown did not take
+fi
 if [[ -z "$unowned" ]]; then
-  echo "SKIP  no directory on this machine is both writable and owned by another user; the unowned-state assertions did not run"
+  for cand in /private/var/tmp /var/tmp /private/tmp /tmp; do
+    [[ -d "$cand" && ! -L "$cand" && -w "$cand" && ! -O "$cand" ]] || continue
+    unowned="$cand"; break
+  done
+fi
+if [[ -z "$unowned" ]]; then
+  echo "FAIL  unowned-state fixture: no directory is both writable and owned by another user, and this uid ($(id -u)) could not chown one; the ownership assertions did not run"
+  failed=$((failed+1))
 else
   planted="$unowned/.wpmgr-harness-state"
   had_marker=$(exists "$planted")
@@ -311,6 +332,65 @@ else
   rm -rf "$unowned/sessU"
   [[ "$had_marker" == yes ]] || rm -f "$planted"
 fi
+
+echo "== route-guard state: the marker write cannot be redirected through a symlink"
+# Owning a directory does not make it private: a directory this user owns can
+# still be group- or world-writable, and the adoption path used to run a plain
+# `: > "$want/$STATE_MARKER"` redirect into it. Between "the marker is absent"
+# and "create the marker" another local account could drop a SYMLINK at that
+# name and have the redirect truncate any file this user can write.
+#
+# A real cross-account race is not constructible here, so what is asserted is the
+# ORDERING and the REFUSAL, which is what actually closes the window: the
+# directory is 0700 before anything is written into it, and the create uses
+# O_CREAT|O_EXCL, which POSIX requires to fail on a symbolic link.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%OLp' "$1"; }
+
+# The adoption path is the DEFAULT path only, so point TMPDIR at a scratch tree
+# and let the guard compute its own default under it.
+adopt="$tmp/adopt"
+mkdir -p "$adopt/wpmgr-route-guard"
+chmod 0777 "$adopt/wpmgr-route-guard"
+victim="$tmp/victim.txt"
+echo "PRECIOUS" > "$victim"
+# A DANGLING symlink is the sharp case: -e is false, so the guard takes the
+# create branch, and a plain redirect would have created the target.
+ln -s "$tmp/victim-created-by-the-redirect" "$adopt/wpmgr-route-guard/.wpmgr-harness-state"
+( unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessT >/dev/null )
+t "dangling symlink: not followed"  no "$(exists "$tmp/victim-created-by-the-redirect")"
+t "dangling symlink: still a link"  yes "$([[ -L "$adopt/wpmgr-route-guard/.wpmgr-harness-state" ]] && printf yes || printf no)"
+t "closed before any write"         700 "$(mode_of "$adopt/wpmgr-route-guard")"
+t "symlinked marker: still asks"    ask \
+  "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; decision "$repo/apps/api/internal/site/z.go" "$repo" "" sessT)"
+
+# ...and a symlink pointing at a file that DOES exist is refused by the claim
+# check rather than trusted, with the target left untouched.
+rm -f "$adopt/wpmgr-route-guard/.wpmgr-harness-state"
+chmod 0777 "$adopt/wpmgr-route-guard"
+ln -s "$victim" "$adopt/wpmgr-route-guard/.wpmgr-harness-state"
+( unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessT >/dev/null )
+t "live symlink: target not truncated" "PRECIOUS" "$(cat "$victim")"
+t "live symlink: still asks"        ask \
+  "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; decision "$repo/apps/api/internal/site/w.go" "$repo" "" sessT)"
+
+# The honest case this must not block: no symlink, a loose directory the guard
+# does own gets adopted, closed, and marked with a REAL file.
+rm -rf "$adopt/wpmgr-route-guard"
+mkdir -p "$adopt/wpmgr-route-guard"
+chmod 0777 "$adopt/wpmgr-route-guard"
+( unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessT >/dev/null )
+t "loose own dir: adopted"          yes "$(exists "$adopt/wpmgr-route-guard/.wpmgr-harness-state")"
+t "loose own dir: marker is a file" yes "$([[ -f "$adopt/wpmgr-route-guard/.wpmgr-harness-state" && ! -L "$adopt/wpmgr-route-guard/.wpmgr-harness-state" ]] && printf yes || printf no)"
+t "loose own dir: closed to 0700"   700 "$(mode_of "$adopt/wpmgr-route-guard")"
+# A directory the guard CREATES is private from birth, not merely tightened after.
+t "created dir is 0700"             700 \
+  "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$tmp/fresh"
+     mkdir -p "$tmp/fresh"
+     decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessV >/dev/null
+     mode_of "$tmp/fresh/wpmgr-route-guard")"
 
 echo "== route-guard state: a path component is validated, not merely sanitised"
 # sane() is `tr -c 'a-zA-Z0-9._-'`, and '.' is in the keep-set, so the two
