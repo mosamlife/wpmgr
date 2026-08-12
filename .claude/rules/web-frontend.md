@@ -77,3 +77,36 @@ hero badge and `/changelog` are hand-maintained and name the **agent** version.
 
 `apps/tracker` builds the RUM collector that ships inside the agent zip as
 `assets/wpmgr-rum.js`; a change there is an agent-facing change.
+
+## A hand-written Gin route has no contract, and `as T` lies
+
+The security, diagnostics and scan endpoints are hand-written Gin, not generated
+from the spec, so nothing binds the TS type to the Go DTO. `apiGet<T>` ends in
+`return result.data as T`, which is an assertion and not a validation: if the
+handler returns the config flat and the TS type says `{config, detail}`, it
+typechecks green and then throws at runtime and the error boundary takes down
+the whole route.
+
+Open the Go handler and match its `json:` tags exactly, flat against nested and
+body against header. A hook unit test passes here because it mocks the shape it
+already expects; the test that catches it renders against the real Go shape.
+
+## Deleting the old route file is part of the restructure
+
+Converting a flat route into a directory leaves two files claiming one path
+unless the old one is actually removed. TanStack only rejects the duplicate at
+runtime, inside `buildRouteTree`, which throws while the router is constructed,
+so **every route white-screens**. It passes typecheck, build and the unit suite,
+because duplicate entries are valid TypeScript and no unit test mounts a router.
+
+After any route-structure change: confirm the old file is gone rather than
+trusting that it was deleted, grep `routeTree.gen.ts` for a repeated `id:`, and
+load the app in a real browser before calling it done.
+
+## The design lint is part of the gate
+
+`npx impeccable detect <changed dirs>` runs on any directory you touched, and
+its violations get fixed rather than noted. Icons come from the design system;
+never an emoji, which the lint does not catch on its own. Do not disable an
+editable control behind a flag it should not depend on, and wire a mutation to
+invalidate or update optimistically so the clicked state actually changes.

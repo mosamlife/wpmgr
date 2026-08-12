@@ -91,3 +91,37 @@ These proofs are in the integration package CI does not run
 (`.claude/rules/ci-and-build-logic.md`). Run `make test-integration` locally,
 and **commit before you start it**: it takes about nine minutes and an
 interrupted run with uncommitted work loses everything.
+
+## Regenerate sqlc, and prove the regeneration was real
+
+Any change to a column set or to `db/query/*.sql` is followed by a real
+`sqlc generate`. Hand-editing the generated tree is refused by a permission rule
+and by both guards, but the opposite failure is not: **generated files that were
+never regenerated still compile and still pass tests.**
+
+A hand-synced tree took production down. `GetPerfConfig`'s `Scan` gained three
+destinations that the `SELECT` list never did, so pgx returned `number of field
+descriptions must equal number of destinations` on every site. A sibling query
+bound 62 arguments against 59 placeholders and silently never persisted the
+toggle it claimed to save.
+
+So the gate is not "I ran sqlc". It is:
+
+```
+cd apps/api && $(go env GOPATH)/bin/sqlc generate
+git diff --stat internal/db/sqlc/          # MUST be empty
+```
+
+An empty diff after a regeneration is the only proof that generated equals
+source. A tree shipped here 1044 lines away from true sqlc output, compiling,
+with 21 tests passing.
+
+If `sqlc generate` errors with `relation "x" does not exist`, the fix is to
+bring `db/schema.sql` up to the new migration's DDL. It is never to hand-edit
+the generated file. That exact substitution shipped four `RETURNING` lists one
+column short of the struct they scanned into, leaving a field silently zero.
+
+**sqlc does not validate column names on the left of `UPDATE ... SET`.** A
+mutation referencing a column no migration ever added generates cleanly, passes
+the empty-diff gate, and fails at runtime with 42703 forever. For a new table,
+read every column named in `SET` and `WHERE` against the migration DDL.

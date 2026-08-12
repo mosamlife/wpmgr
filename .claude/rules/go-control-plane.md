@@ -72,3 +72,29 @@ locally before merging anything touching RLS, the email domain, tenant scoping,
 or object-storage reclamation. A regression there merges green.
 
 It takes about nine minutes. **Commit before you start it.**
+
+## A handler that is registered but never constructed 404s silently
+
+Adding a domain module means three edits, not two: the handler, the
+`server.Deps` field, and the construction in `cmd/wpmgr/main.go`. Miss the
+third and `deps.X` is nil, the `if deps.X != nil { Register }` guard skips
+registration rather than crashing, and **every route in the module 404s** while
+`go build` and the package's own tests pass, because the package is fine and
+only the binary is wrong.
+
+After adding a module, grep `cmd/wpmgr/main.go` for the handler in both the
+constructor and the `server.Deps{}` literal, then confirm on the live deploy
+that a new route answers 401, not 404.
+
+## An RLS policy scoped `FOR SELECT` breaks a locking read
+
+Postgres applies the UPDATE `USING` clause to `SELECT ... FOR UPDATE` as well.
+A `FOR SELECT`-only agent policy therefore let a plain read through and silently
+excluded every row from the claim, so scheduled backups never fired, for every
+install, with no error and no log. Any RLS table a cross-tenant agent path
+locks, updates or deletes needs a `FOR ALL` policy with the agent predicate in
+both `USING` and `WITH CHECK`.
+
+The diagnostic tell is a bare `SELECT` that works while the locking read returns
+nothing. Count candidates at the entry point; per-row skip logs never fire when
+the row was dropped upstream at the locking read.

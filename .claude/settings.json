@@ -50,6 +50,19 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/agent-writes.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+
     "SubagentStop": [
       {
         "hooks": [

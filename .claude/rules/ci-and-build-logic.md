@@ -55,8 +55,8 @@ by name, so the tenancy and RLS proofs never run on a PR.
 `plugincheck.yml` runs automatically on any PR touching the agent plugin.
 `wporg-deploy.yml` is manual only and irreversible.
 
-`sqlc`, `atlas` and `govulncheck` are installed but **not on `PATH`**; they are
-in `$(go env GOPATH)/bin`. A gate that cannot find its binary must fail loudly.
+A gate that cannot find its binary must fail loudly, never be skipped.
+`session-brief.sh` prints where each toolchain binary actually is, every session.
 
 `govulncheck` reads a live advisory database, so it can redden `main` with zero
 code change and a green PR can fail on merge. Fix the dependency. Never tag a

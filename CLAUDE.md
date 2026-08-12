@@ -53,6 +53,37 @@ and hand-editing a generated tree.
 **A change that spans a migration and Go code is two agents in sequence,
 `database-engineer` first**, never one agent doing both.
 
+**This rule outranks a narrower instruction inside one session.** A session
+prompt that says "do not call agents unless asked" does not repeal it. Surface
+the conflict out loud and get a ruling; never resolve it silently. Taking such
+an instruction literally is how a whole OAuth sign-in feature got hand-built
+inline and unreviewed here.
+
+**Pass `model: "opus"` when the change is irreversible.** The builders are
+pinned `sonnet` in their frontmatter, and frontmatter beats inheriting from this
+loop, so a dispatch drops to Sonnet even when you are on Opus. Override for:
+deletes, GC, retention sweeps and object-storage reclamation; locks, leader
+election, job claiming and anything racing a live process; auth, crypto, key
+storage, RLS and tenancy; destructive migrations. Leave UI, copy, docs, additive
+endpoints, tests and config on the default. The cheap tier wrote competent code
+that would have deleted a running backup's working directory; the review caught
+it. Never drop the review either way: builder self-anchoring is structural and
+independent of model tier.
+
+**Every reported bug goes through a workflow, not an ad-hoc fix.** Parallel
+investigation over each half of the system, then one reconciling design pass
+that states the root cause with `file:line` and a failing-to-passing regression
+test, then the specialist build, then an adversarial review sized to the risk,
+then ship and verify. Right-size the fan-out to severity. Do not trust the
+reporter's root cause, or your own first one: on the restore data-loss bug both
+the reporter and one investigator had it wrong, and an ad-hoc fix would have
+fixed the wrong thing.
+
+**For a latency or performance bug, the first change is measurement.** Add
+phase timing, deploy, capture one real slow request, and let the numbers name
+the culprit. Reasoning from symptoms shipped four wrong fixes to one endpoint
+across three releases; instrumenting found it in one.
+
 ## Briefing an agent
 
 The measured failure here is not that long agents die. It is that a blocked
@@ -111,6 +142,36 @@ still say "344 tests" in four places, and
 `grep -rhoE '^func Test[A-Za-z0-9_]+' apps/api/tests/*.go | wc -l` says 386.
 
 A claim in prose is part of the deliverable. **Wrong prose is a defect.**
+
+## What shipped code may say
+
+**Never name a competitor plugin in code, a code comment, a commit message, or
+a committed doc.** That is the clean-room boundary, and `ci.yml` enforces it
+over `docs/**.md` and root markdown. Describe the technique neutrally: "standard
+minify-and-rewrite technique", never "as used by X".
+
+**Never write a defensive disclaimer.** No "not copied from", no "original
+implementation". They imply the question arose, which reads worse than saying
+nothing.
+
+**Never name a local reference directory in a tracked ignore file**, not
+`.gitignore`, not `.gcloudignore`, not `.dockerignore`. Those files are
+committed, so the line publishes the reference. References are used and then
+deleted, never ignored.
+
+Two carve-outs, both deliberate. `apps/marketing/**` **may** name competitors:
+comparison pages are wanted there, and only the dash rule applies. Integration
+targets, the functional conflict-detection map and wordpress.org directory slugs
+in `plugin_signatures` are facts about interop, not provenance, and stay.
+`apps/agent/readme.txt` is the wordpress.org listing page and stays under the
+strict rule.
+
+## Standing permissions
+
+**Agent releases publish without asking.** When a feature needs a new agent
+version, ship it as part of shipping and surface the version and channel in the
+reply. This covers the agent specifically; every other outward-facing action
+still gets a decision.
 
 ## Guards and tests
 

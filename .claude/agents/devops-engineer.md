@@ -44,9 +44,28 @@ The marketing site deploys as Cloud Run service `wpmgr-marketing` via
 `infra/cloudbuild.marketing.yaml`. It is the only marketing surface; if a brief
 names a different one, check `pnpm-workspace.yaml` before you build it.
 
-A multi-layer change deploys every layer: api, web, agent, marketing. Ship the
-agent before the control plane when the agent fix stands alone, the fleet is
-only repaired when the plugin updates.
+A multi-layer change deploys every layer. Do not reconstruct the steps from
+memory: diff the tree, enumerate which of these changed, and deploy each one.
+
+| Changed | Deploy |
+|---|---|
+| `apps/api` | build `infra/Dockerfile.api`, `gcloud run deploy wpmgr-api`, confirm a clean boot (`listening` plus migrations applied) |
+| `apps/web` | build `infra/Dockerfile.web`, `gcloud run deploy wpmgr-web`. **The one that gets forgotten.** Without it the owner has no UI to QA |
+| `apps/agent` | `make agent-release`; the fleet is only repaired when the plugin updates |
+| `apps/marketing` | `infra/cloudbuild.marketing.yaml`, `gcloud run deploy wpmgr-marketing` |
+| `apps/api/migrations` | nothing; it applies on API boot. Confirm it is additive first |
+| media-encoder | ship this image **first**, or jobs enqueue against a worker that cannot run them |
+
+Ship the agent before the control plane when the agent fix stands alone.
+Otherwise the control plane goes first, so it understands the new contract
+before the fleet starts speaking it.
+
+The image build args are **`BUILD_VERSION`** for web and **`VERSION`** for api.
+Pass the real tag; the wrong arg name silently leaves the version chip reading
+`local`, and that chip is how the owner tells which build they are looking at.
+
+A multi-layer change is not deployed until every layer it touched is deployed.
+Say which layers you deployed and which you deliberately did not.
 
 ## Releasing
 

@@ -18,7 +18,7 @@ wearing a different hat.
 | Route a write to a specialist | `route-guard.sh` | prompts once per destination per session, on the main thread only |
 | Do not write an unbounded wait loop | `bash-guard.sh` | blocked |
 | The rules for publishing prose outside the repo | `bash-guard.sh` | restated at the moment it matters |
-| Commit before you stop | `commit-gate.sh` (SubagentStop) | blocks once, in agent worktrees only |
+| Commit before you stop | `commit-gate.sh` (SubagentStop) | blocks once, in agent worktrees, only for paths that agent wrote |
 | Know the machine's disk and guard health | `session-brief.sh` (SessionStart) | reported, never blocks |
 | Agent definitions stay true | `agent-lint.sh`, in `ci.yml` via `make harness-check` | CI-gated |
 | The guards keep working | `guards_test.sh`, same job | CI-gated |
@@ -100,7 +100,8 @@ review.md                     the review process, cited by every review brief
 .worktreeinclude              gitignored files copied into every agent worktree (.env)
 scripts/claude/route-guard.sh    PreToolUse: Edit|Write|NotebookEdit
 scripts/claude/bash-guard.sh     PreToolUse: Bash
-scripts/claude/commit-gate.sh    SubagentStop
+scripts/claude/agent-writes.sh   PostToolUse: records which files each agent wrote
+scripts/claude/commit-gate.sh    SubagentStop, scoped to what THAT agent wrote
 scripts/claude/session-brief.sh  SessionStart
 scripts/claude/agent-lint.sh     lints the agent definitions; --self-test proves each check
 scripts/claude/guards_test.sh    the regression suite over both PreToolUse guards

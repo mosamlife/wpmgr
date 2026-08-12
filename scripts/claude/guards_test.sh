@@ -248,6 +248,68 @@ CREATE TABLE t();
 EOF')"
 t "reading a migration" pass "$(bdecw 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
 
+echo "== commit-gate: only ever answers for what this agent wrote"
+# The deadlock this fixes: a read-only agent was launched into another agent's
+# worktree, told to commit or delete 17 files it had never touched while its
+# brief said not to touch them, and stopped to ask a human.
+GATE="$here/commit-gate.sh"
+WRITES="$here/agent-writes.sh"
+export WPMGR_AGENT_WRITES_STATE="$tmp/agent-writes"
+
+# A worktree at the path shape the gate gates on.
+wt="$tmp/repo/.claude/worktrees/agent-zz"
+mkdir -p "$wt"
+git -C "$wt" init -q
+git -C "$wt" config user.email t@t.invalid
+git -C "$wt" config user.name t
+echo seed > "$wt/seed.txt"
+git -C "$wt" add -A >/dev/null; git -C "$wt" commit -qm init
+echo mine   > "$wt/mine.txt"      # written by agent-A
+echo theirs > "$wt/theirs.txt"    # written by nobody in this test
+
+record() { # record <agent_id> <abs path>
+  jq -n --arg a "$1" --arg p "$2" '{agent_id:$a, tool_input:{file_path:$p}}' \
+    | bash "$WRITES" 2>/dev/null
+}
+gate() { # gate <agent_id> -> exit code
+  jq -n --arg c "$wt" --arg a "$1" \
+    '{cwd:$c} + (if $a == "" then {} else {agent_id:$a} end)' \
+    | bash "$GATE" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+gate_msg() {
+  jq -n --arg c "$wt" --arg a "$1" '{cwd:$c, agent_id:$a}' \
+    | bash "$GATE" 2>&1 >/dev/null
+}
+
+record agent-A "$wt/mine.txt"
+
+# Agent A wrote an uncommitted file: it is blocked, and told about its own file.
+t "A is blocked"           2 "$(gate agent-A)"
+tcontains "A sees its file"   "mine.txt"   "$(gate_msg agent-A)"
+tlacks    "A is not shown theirs" "theirs.txt" "$(gate_msg agent-A)"
+# The exact deadlock: agent B wrote nothing, so it must not be blocked at all,
+# however dirty the tree is.
+t "B wrote nothing, passes" 0 "$(gate agent-B)"
+# ...and it is never told to delete anything.
+tlacks "never demands deletion" "delete" "$(gate_msg agent-A)"
+
+# Once A commits its own file, the gate goes quiet even though the tree is still
+# dirty with someone else's work.
+git -C "$wt" add mine.txt >/dev/null; git -C "$wt" commit -qm mine
+t "A committed, passes"     0 "$(gate agent-A)"
+t "tree still dirty"        1 "$(git -C "$wt" status --porcelain | grep -c theirs.txt)"
+
+# No agent_id means no ownership record, and the fallback reports rather than
+# blocks. A gate that deadlocks an agent is worse than one that reminds it.
+t "unscoped does not block" 0 "$(gate "")"
+tcontains "unscoped reports" "Not blocking" "$(jq -n --arg c "$wt" '{cwd:$c}' | bash "$GATE" 2>&1 >/dev/null)"
+
+# The second pass never blocks, so a gate can never wedge an agent.
+t "stop_hook_active passes" 0 \
+  "$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-A", stop_hook_active:true}' \
+     | bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")"
+
 echo ""
 if [[ $failed -eq 0 ]]; then
   echo "guards_test: $pass assertions passed"
