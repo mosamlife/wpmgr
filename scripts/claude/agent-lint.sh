@@ -56,6 +56,12 @@ resolve_root() {
 # The agent names CLAUDE.md's routing table backticks. Used twice: to cross-check
 # names, and to derive a lower bound on how many definitions must exist. Derived,
 # never a hard-coded count.
+guard_names() { # <path to route-guard.sh>
+  sed -n 's/.*agent="\([a-z-]*\).*/\1/p' "$1" \
+    | sort -u \
+    | grep -E -- '-(architect|engineer|reviewer|writer)$'
+}
+
 routed_names() { # <path to CLAUDE.md>
   grep -oE '`[a-z][a-z0-9]*(-[a-z0-9]+)+`' "$1" \
     | tr -d '`' \
@@ -110,8 +116,13 @@ lint_file() {
     && { echo "FAIL $f: names a concrete branch. Describe the shape; never pin a branch."; rc=1; }
   grep -qE 'fleet-agent-for-wpmgr' <<<"$bd" && { echo "FAIL $f: uses the old wp.org slug; it is fleet-agent-site-manager"; rc=1; }
 
-  # Generating-model narration. Two committed agents opened with it.
-  grep -qiE '^(I |Here is the complete|Writing it now|Let me produce|Based on all the)' <<<"$bd" \
+  # Generating-model narration. Two committed agents opened with it. Anchored on
+  # the first non-empty line, because that is what the message claims: applied
+  # to every line it reddens a correct body that tells the agent to print a
+  # sentence starting "I ", and a check that reddens correct work gets removed.
+  local opening
+  opening=$(grep -m1 -vE '^[[:space:]]*$' <<<"$bd")
+  grep -qiE '^(I |Here is the complete|Writing it now|Let me produce|Based on all the)' <<<"$opening" \
     && { echo "FAIL $f: body opens with generating-model narration, not instructions"; rc=1; }
 
   return $rc
@@ -148,13 +159,28 @@ cross_check() { # <root> <agent file>...
   done
 
   # Same check for the guard, so the guard and the table cannot drift apart.
+  # Both ways of comparing nothing are errors. The guard is part of the harness,
+  # so it is not optional; and an extraction that yields no names means the
+  # spelling guard_names depends on has changed, not that the guard routes
+  # nowhere. Either way this check was passing while comparing nothing, which is
+  # the same defect as linting zero files.
   local guard="$root/scripts/claude/route-guard.sh"
-  if [[ -f "$guard" ]]; then
-    while IFS= read -r n; do
-      printf '%s\n' "${defined[@]}" | grep -qx "$n" \
-        || { echo "FAIL route-guard.sh routes to '$n', which has no file in .claude/agents/"; rc=1; }
-    done < <(sed -n 's/.*agent="\([a-z-]*\).*/\1/p' "$guard" | sort -u | grep -E -- '-(architect|engineer|reviewer|writer)$')
+  if [[ ! -f "$guard" ]]; then
+    echo "FAIL agent-lint: no route guard at '$guard'. It is part of the harness, so its destinations cannot be compared against .claude/agents/ and this check would otherwise pass having compared nothing."
+    rc=1
+    return $rc
   fi
+
+  local -a routed=()
+  while IFS= read -r n; do routed+=("$n"); done < <(guard_names "$guard")
+  if (( ${#routed[@]} == 0 )); then
+    echo "FAIL agent-lint: extracted no agent names from '$guard'. It is expected to name each destination as agent=\"<name>\"; that spelling has changed, so this check was comparing nothing."
+    rc=1
+  fi
+  for n in ${routed[@]+"${routed[@]}"}; do
+    printf '%s\n' ${defined[@]+"${defined[@]}"} | grep -qx "$n" \
+      || { echo "FAIL route-guard.sh routes to '$n', which has no file in .claude/agents/"; rc=1; }
+  done
   return $rc
 }
 
@@ -317,6 +343,23 @@ maxTurns: 5
 I now have comprehensive grounding. Writing it now.
 ' "generating-model narration"
 
+  # ...and a body that legitimately tells the agent to print a line starting
+  # "I ", further down. The message says "opens with", so this must stay silent.
+  mk narration_ok '---
+name: j-engineer
+description: d
+model: sonnet
+isolation: worktree
+maxTurns: 5
+---
+Run the gate. If the binary is missing, print exactly:
+I cannot find govulncheck on PATH.
+and exit 1.
+'
+  lint_file "$tmp/narration_ok.md" >/dev/null \
+    || { echo "SELF-TEST FAILED: over-fired on an instruction to print a line starting \"I \""; exit 1; }
+  quiet=$((quiet+1))
+
   check noturns '---
 name: h-engineer
 description: d
@@ -373,20 +416,54 @@ body
   printf -- '%s' 'not an agent' > "$tmp/t-empty/.claude/agents/README.txt"
   check_tree empty_dir "$tmp/t-empty" 'exists but contains no'
 
+  # A whole fixture tree: agents, a routing table and a route guard that names
+  # its destinations the way the real one does.
+  mktree() { # mktree <name> <CLAUDE.md text> <route-guard.sh text, or - for none>
+    local d="$tmp/$1"
+    mkdir -p "$d/.claude/agents" "$d/scripts/claude"
+    printf -- '%s' "$2" > "$d/CLAUDE.md"
+    printf -- '%s' "$good" > "$d/.claude/agents/good.md"
+    [[ "$3" == "-" ]] || printf -- '%s' "$3" > "$d/scripts/claude/route-guard.sh"
+  }
+  guard_ok='case "$p" in
+  apps/api/*) agent="good-engineer" ;;
+esac
+'
+
   # A set smaller than the routing table. The bound is read from the fixture's
   # own CLAUDE.md, so nothing here is a hard-coded number.
-  mkdir -p "$tmp/t-short/.claude/agents"
-  printf -- '%s' 'Routing: `good-engineer`, `other-engineer`, `third-writer`.' > "$tmp/t-short/CLAUDE.md"
-  printf -- '%s' "$good" > "$tmp/t-short/.claude/agents/good.md"
+  mktree t-short 'Routing: `good-engineer`, `other-engineer`, `third-writer`.' "$guard_ok"
   check_tree short_set "$tmp/t-short" 'the set is incomplete'
+
+  # The guard file itself is not optional: absent, there is nothing to compare
+  # the routing table against, and the check used to skip and pass.
+  mktree t-noguard 'Routing: `good-engineer` builds things.' -
+  check_tree guard_missing "$tmp/t-noguard" 'no route guard at'
+
+  # Present, but no longer spelled agent="...". The extraction yields nothing and
+  # the loop used to run zero times, green.
+  mktree t-guardspelling 'Routing: `good-engineer` builds things.' 'case "$p" in
+  apps/api/*) route_to good-engineer ;;
+esac
+'
+  check_tree guard_extracts_nothing "$tmp/t-guardspelling" 'extracted no agent names'
+
+  # Both of those fixtures are correct in every other respect, so each must go
+  # red for exactly one reason. An assertion that passes because something else
+  # failed proves nothing about the check it is named after.
+  for n in t-noguard t-guardspelling; do
+    out=$(lint_tree "$tmp/$n" 2>&1)
+    if [[ "$(grep -c '^FAIL' <<<"$out")" -ne 1 ]]; then
+      echo "SELF-TEST FAILED: '$n' went red for more than the guard check (got: $out)"; exit 1
+    fi
+  done
 
   check_root unresolvable_root 'is not a directory' "$tmp/no-such-root"
   check_root no_git_root 'cannot resolve a repository root' -
 
-  # ...and the honest tree it must not block: one routed agent, one file.
-  mkdir -p "$tmp/t-ok/.claude/agents"
-  printf -- '%s' 'Routing: `good-engineer` builds things.' > "$tmp/t-ok/CLAUDE.md"
-  printf -- '%s' "$good" > "$tmp/t-ok/.claude/agents/good.md"
+  # ...and the honest tree it must not block: one routed agent, one file, one
+  # guard that names it.
+  mktree t-ok 'Routing: `good-engineer` builds things.' "$guard_ok"
   out=$(lint_tree "$tmp/t-ok" 2>&1); rc=$?
   if [[ $rc -ne 0 ]] || ! grep -q "^agent-lint: 1 agent definitions ok" <<<"$out"; then
     echo "SELF-TEST FAILED: over-fired on a complete tree (rc=$rc, got: ${out:-<silence>})"; exit 1

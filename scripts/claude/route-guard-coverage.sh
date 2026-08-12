@@ -3,11 +3,16 @@
 #
 # "Prove it fires, then prove it does not over-fire" is only half a rule without
 # a number attached, and the over-fire half is the half that gets skipped. The
-# first version of this guard asked on 2531 of 2670 tracked files and on 901 of
-# the 926 files touched in the preceding 30 days: a prompt on essentially every
-# main-thread edit. A guard that cries wolf gets switched off, which is the
-# failure this harness exists to prevent, so the over-fire rate is measured
-# rather than asserted.
+# first version of this guard would have prompted on nearly every tracked file
+# and on nearly every file touched in the preceding month. A guard that cries
+# wolf gets switched off, which is the failure this harness exists to prevent,
+# so the over-fire rate is measured rather than asserted.
+#
+# The figures are not written down here. Run it: the body below derives them
+# from the repository as it stands and prints them, and fails loudly rather than
+# reporting a rate it could not measure. Two copies of one number is how a
+# number goes stale, and this file already carried a figure that had drifted
+# from the one in docs/harness.md.
 #
 # REPORT ONLY. This is deliberately NOT wired into ci.yml. Its input is the last
 # N days of commits, which changes every time anything merges, so gating on it
