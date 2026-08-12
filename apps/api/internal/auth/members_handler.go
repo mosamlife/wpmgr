@@ -203,31 +203,34 @@ func (h *MembersHandler) patchRole(c *gin.Context) {
 	// compares the actor to the role being GRANTED, and the last-owner COUNT
 	// guard only fires in a single-owner org. In an org with two owners there
 	// was no refusal at all.
-	existing, getErr := h.svc.repo.GetMembership(c.Request.Context(), targetUserID, p.TenantID)
-	if getErr != nil {
-		httpx.Error(c, getErr)
-		return
-	}
-	// Target ceiling: an actor may never act on a member who outranks them.
-	// owner-on-owner stays ALLOWED (ownership transfer is a supported
-	// capability); admin-on-admin and admin-on-viewer are unchanged.
-	if !actorRole.AtLeast(existing.Role) {
-		httpx.Error(c, domain.Forbidden("target_role_exceeds_actor", "you cannot change the role of a member who outranks you"))
-		return
-	}
-	// Last-owner protection: cannot demote the last owner.
-	if newRole != authz.RoleOwner && existing.Role == authz.RoleOwner {
-		ownerCount, countErr := h.svc.CountOwners(c.Request.Context(), p.TenantID)
-		if countErr != nil {
-			httpx.Error(c, countErr)
-			return
+	//
+	// GH #406 follow-up — read, guard and write are ONE transaction, holding
+	// this org's member lock (repo.WithMemberGuard). As four separate
+	// transactions, two concurrent demotes of two different owners both read
+	// ownerCount=2, both passed the guard and both wrote, leaving the org with
+	// zero owners and no in-product way back. The checks below are byte-for-byte
+	// the ones 702ed45 introduced; only where the roles are read from changed.
+	var m Membership
+	err = h.svc.repo.WithMemberGuard(c.Request.Context(), targetUserID, p.TenantID, func(g MemberGuard) error {
+		// Target ceiling: an actor may never act on a member who outranks them.
+		// owner-on-owner stays ALLOWED (ownership transfer is a supported
+		// capability); admin-on-admin and admin-on-viewer are unchanged.
+		if !actorRole.AtLeast(g.Target.Role) {
+			return domain.Forbidden("target_role_exceeds_actor", "you cannot change the role of a member who outranks you")
 		}
-		if ownerCount <= 1 {
-			httpx.Error(c, domain.Forbidden("last_owner", "cannot demote the last owner"))
-			return
+		// Last-owner protection: cannot demote the last owner. Actor-independent
+		// by construction — an owner demoting themselves is refused on the same
+		// count as an admin demoting them — so zero owners is unreachable
+		// through this route for ANY caller, not merely hard to reach.
+		if newRole != authz.RoleOwner && g.Target.Role == authz.RoleOwner {
+			if g.OwnerCount <= 1 {
+				return domain.Forbidden("last_owner", "cannot demote the last owner")
+			}
 		}
-	}
-	m, err := h.svc.repo.UpdateMembershipRole(c.Request.Context(), targetUserID, p.TenantID, newRole)
+		var uerr error
+		m, uerr = g.UpdateRole(c.Request.Context(), newRole)
+		return uerr
+	})
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -256,31 +259,27 @@ func (h *MembersHandler) removeMember(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_user_id", "userId is not a valid UUID"))
 		return
 	}
-	existing, getErr := h.svc.repo.GetMembership(c.Request.Context(), targetUserID, p.TenantID)
-	if getErr != nil {
-		httpx.Error(c, getErr)
-		return
-	}
-	// GH #406 — target ceiling. Before this, removeMember never read p.Role at
-	// all: its only gate was the last-owner COUNT, so an admin could delete an
-	// owner outright from any org holding two or more owners.
-	if !authz.Role(p.Role).AtLeast(existing.Role) {
-		httpx.Error(c, domain.Forbidden("target_role_exceeds_actor", "you cannot remove a member who outranks you"))
-		return
-	}
-	// Last-owner protection: cannot remove the last owner.
-	if existing.Role == authz.RoleOwner {
-		ownerCount, countErr := h.svc.CountOwners(c.Request.Context(), p.TenantID)
-		if countErr != nil {
-			httpx.Error(c, countErr)
-			return
+	// GH #406 follow-up — read, guard and delete are ONE transaction holding
+	// this org's member lock; see patchRole above and repo.WithMemberGuard.
+	// The DELETE race was the worse of the two: 25/25 measured rounds reached
+	// zero owners.
+	if err := h.svc.repo.WithMemberGuard(c.Request.Context(), targetUserID, p.TenantID, func(g MemberGuard) error {
+		// GH #406 — target ceiling. Before this, removeMember never read p.Role
+		// at all: its only gate was the last-owner COUNT, so an admin could
+		// delete an owner outright from any org holding two or more owners.
+		if !authz.Role(p.Role).AtLeast(g.Target.Role) {
+			return domain.Forbidden("target_role_exceeds_actor", "you cannot remove a member who outranks you")
 		}
-		if ownerCount <= 1 {
-			httpx.Error(c, domain.Forbidden("last_owner", "cannot remove the last owner"))
-			return
+		// Last-owner protection: cannot remove the last owner. Actor-independent
+		// (see patchRole): an owner cannot remove themselves out of the last
+		// owner slot either.
+		if g.Target.Role == authz.RoleOwner {
+			if g.OwnerCount <= 1 {
+				return domain.Forbidden("last_owner", "cannot remove the last owner")
+			}
 		}
-	}
-	if err := h.svc.repo.DeleteMembership(c.Request.Context(), targetUserID, p.TenantID); err != nil {
+		return g.Delete(c.Request.Context())
+	}); err != nil {
 		httpx.Error(c, err)
 		return
 	}
