@@ -265,6 +265,20 @@ component() { # component <raw> -> one safe path component on stdout, or fails
 STATE_MARKER=".wpmgr-harness-state"
 STATE_DEFAULT="${TMPDIR:-/tmp}/wpmgr-route-guard"
 
+# The SECOND, INDEPENDENT reason the marker write cannot be hijacked. `set -C`
+# makes bash open the redirect with O_CREAT|O_EXCL, and POSIX requires open() to
+# FAIL when O_CREAT|O_EXCL names a symbolic link - dangling or not. So this
+# refuses to follow a planted symlink even if the directory were somehow still
+# writable by another account when it runs. Tightening the directory first and
+# this are two locks on the same door; either alone would close the reported
+# window, and neither is trusted to be the only one.
+excl_create() { # excl_create <path> -> create it, never following a symlink
+  if ! ( set -C; : > "$1" ) 2>/dev/null; then
+    printf 'route-guard: refused to create %q - it already exists or is a symlink; no state, asking every time\n' "$1" >&2
+    return 1
+  fi
+}
+
 resolve_state() { # prints an owned state root on stdout, or fails
   local want="${WPMGR_ROUTE_GUARD_STATE:-$STATE_DEFAULT}"
   local why=""
@@ -307,23 +321,34 @@ resolve_state() { # prints an owned state root on stdout, or fails
         printf 'route-guard: %q is not a plain file owned by this user; refusing the state directory, asking every time\n' "$want/$STATE_MARKER" >&2
         return 1
       fi
+      # Accepted, so close it: whatever another account had the right to write
+      # here, it loses now.
+      chmod 700 "$want" || return 1
     elif [[ "$want" == "$STATE_DEFAULT" ]]; then
       # One exception, and only for the DEFAULT path, which we have just proven
       # this user owns: it carries this guard's own name, so a version of the
       # guard that predates the marker is the plausible author. Anything given by
       # the environment is never adopted.
-      : > "$want/$STATE_MARKER" || return 1
+      #
+      # ORDER IS THE SECURITY PROPERTY HERE. Owning a directory does not make it
+      # private - a directory this user owns can still be group- or
+      # world-writable, and between "the marker is absent" and "create the
+      # marker" another local account could drop a SYMLINK at that name and have
+      # the redirect truncate whatever this user can write. So the directory is
+      # closed to 0700 BEFORE anything is written into it, and only then is the
+      # marker created. Do not move the chmod below the write.
+      chmod 700 "$want" || return 1
+      excl_create "$want/$STATE_MARKER" || return 1
     else
       printf 'route-guard: %q has no %s marker, so it is not this guard'"'"'s state directory; leaving it untouched and asking every time\n' "$want" "$STATE_MARKER" >&2
       return 1
     fi
-    # It is ours, so close it: anything another account already had the right to
-    # write here, it loses now.
-    chmod 700 "$want" || return 1
   else
+    # Same order on the creation path: private at birth (umask), tightened
+    # explicitly in case it already existed as a race, then written to.
     ( umask 077; mkdir -p "$want" ) || return 1
     chmod 700 "$want" || return 1
-    : > "$want/$STATE_MARKER" || return 1
+    excl_create "$want/$STATE_MARKER" || return 1
   fi
   printf '%s' "$want"
 }
@@ -361,7 +386,14 @@ if [[ -n "${state:-}" ]] && sess_c=$(component "$session") \
 
   if [[ "$mode" == record ]]; then
     # PostToolUse: the tool ran, so the ruling was given and was an approval.
-    mkdir -p "$sdir" && : > "$marker"
+    # The same order as the state root, for the same reason: private at birth,
+    # and never write through a symlink. This one lives inside a directory
+    # resolve_state has already proven is ours and forced to 0700, so no other
+    # account can create anything here - but the session marker is refreshed on
+    # every record, so it cannot use O_EXCL and gets an explicit refusal instead.
+    ( umask 077; mkdir -p "$sdir" ) || exit 0
+    [[ -L "$marker" || ( -e "$marker" && ! -f "$marker" ) ]] && exit 0
+    : > "$marker"
     exit 0
   fi
 
