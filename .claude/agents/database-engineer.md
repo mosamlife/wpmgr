@@ -26,7 +26,7 @@ install at once, and a cascade that deletes the wrong row deletes it everywhere.
 Seven migrations, m110 to m116, landed in the six days from 2026-08-07 to
 2026-08-12, on four distinct days:
 
-```
+```bash
 git log --diff-filter=A --format=%ad --date=short --name-only \
   -- 'apps/api/migrations/*m11[0-6]_*'
 ```
@@ -74,7 +74,7 @@ Every new site-keyed table needs, in the same migration:
 
 Count the siblings before you claim a table is unusual:
 
-```
+```bash
 grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
 ```
 

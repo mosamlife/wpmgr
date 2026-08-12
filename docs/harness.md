@@ -12,9 +12,9 @@ wearing a different hat.
 
 | Rule | Mechanism | Strength |
 |---|---|---|
-| Do not hand-edit a generated tree | `permissions.deny` + a `deny` arm in `route-guard.sh` + arm 3 of `bash-guard.sh` | blocked |
-| Do not edit an already-applied migration | `route-guard.sh` and `bash-guard.sh`, both computed from `git cat-file -e HEAD:<path>` | blocked |
-| Do not edit `apps/landing` | `permissions.deny` + both guards | blocked |
+| Do not hand-edit a generated tree | `permissions.deny` + a `deny` arm in `route-guard.sh` + arm 3 of `bash-guard.sh` | blocked for tool writes and recognised shell targets |
+| Do not edit an already-applied migration | `route-guard.sh` and `bash-guard.sh`, both computed from `git cat-file -e HEAD:<path>` | blocked for tool writes and recognised shell targets |
+| Do not edit `apps/landing` | `permissions.deny` + both guards | blocked for tool writes and recognised shell targets |
 | Route a write to a specialist | `route-guard.sh` | prompts once per destination per session, on the main thread only |
 | Do not write an unbounded wait loop | `bash-guard.sh` | blocked |
 | The rules for publishing prose outside the repo | `bash-guard.sh` | restated at the moment it matters |
@@ -23,6 +23,13 @@ wearing a different hat.
 | Agent definitions stay true | `agent-lint.sh`, in `ci.yml` via `make harness-check` | CI-gated |
 | The guards keep working | `guards_test.sh`, same job | CI-gated |
 | Everything else in `CLAUDE.md` | prose | **advisory** |
+
+"Blocked for tool writes and recognised shell targets" is the honest ceiling on
+the first three rows, not a hedge. `Edit`, `Write` and `NotebookEdit` are
+refused outright; a shell write is refused only when the guard can see the
+protected path in the command string it is handed. "What the deny rules actually
+cover" below lists the shapes that get past it, and that list is the reason
+these rows do not just say "blocked".
 
 The last row is the honest one. `CLAUDE.md` is context, not configuration. If a
 rule there matters enough that it must hold every time, it has to move up this

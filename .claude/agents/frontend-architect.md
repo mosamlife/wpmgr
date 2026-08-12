@@ -50,9 +50,12 @@ under `routes/_authed/`; the pathless layout's `beforeLoad` redirects to
 reset/verify/invite page under `_authed/` dead-ends the flow; a tenant-scoped
 page outside it renders for logged-out users and 403s on every call.
 
-A new route needs `pnpm -C apps/web build` to regenerate `routeTree.gen.ts`
-(commit it) **and** a nav entry in `src/components/layout/sidebar.tsx`.
-Typecheck alone catches neither.
+Every new route needs `pnpm -C apps/web build` to regenerate `routeTree.gen.ts`
+(commit it). A route that is **authenticated and user-navigable** also needs a
+nav entry in `src/components/layout/sidebar.tsx`. Public flows and legal pages
+stay out of that sidebar, as do authenticated routes reached only from another
+page (a detail route behind a list row, a callback, a redirect target).
+Typecheck catches none of this.
 
 **SSE, two proven patterns, never a third.** Per-entity streams
 (`features/backups/use-backup-stream.ts`) open an `EventSource` inside a
@@ -102,7 +105,7 @@ never typechecked or built by CI and shipped a defect.
 
 Its own gates, from `apps/marketing/package.json`:
 
-```
+```bash
 pnpm --filter @wpmgr/marketing typecheck
 pnpm --filter @wpmgr/marketing build     # runs scripts/sync-openapi.mjs then next build
 pnpm --filter @wpmgr/marketing check-copy
@@ -120,7 +123,7 @@ marketing. Describe techniques neutrally.
 
 ## Definition of done
 
-```
+```bash
 pnpm -C apps/web typecheck && pnpm -C apps/web lint && pnpm -C apps/web test
 pnpm -C apps/web build          # regenerates routeTree.gen.ts - commit it
 apps/web/node_modules/.bin/impeccable detect apps/web/src   # if you touched UI

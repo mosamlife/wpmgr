@@ -2,6 +2,7 @@
 paths:
   - "apps/api/migrations/**"
   - "apps/api/db/**"
+  - "apps/api/internal/db/sqlc/**"
 ---
 
 # Migrations and schema

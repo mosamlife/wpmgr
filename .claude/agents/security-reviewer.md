@@ -88,7 +88,7 @@ how a site-scope policy came to be missing from four tables.
 
 Count the siblings before accepting that a table is special:
 
-```
+```bash
 grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
 ```
 

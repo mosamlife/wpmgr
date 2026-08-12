@@ -20,16 +20,17 @@ command is missing, say so and stop, never report a step you did not run.
 `./*.md` against a banned alternation and exits 1 on a hit, excluding
 `docs/adr/ADR-055`. Count it, never quote it, and never copy the list anywhere:
 
-```
+```bash
 b=$(grep -oE "banned='[^']+'" .github/workflows/ci.yml | sed "s/banned='//; s/'$//")
 printf '%s' "$b" | tr '|' '\n' | wc -l                 # alternates
 printf '%s' "$b" | tr '|' '\n' | tr -d ' -' | sort -u | wc -l   # distinct products
 ```
 
-On 2026-08-12 that was 12 alternates covering 10 distinct products, several
-products having both a hyphenated and a spaced spelling. `README.md` is matched
-by `./*.md`. **A competitor feature matrix in the README fails CI.** Describe
-techniques neutrally and never name a competitor plugin as a source.
+Run both in the turn you need the figure; several products carry both a
+hyphenated and a spaced spelling, so the two counts differ and neither is
+stable. `README.md` is matched by `./*.md`. **A competitor feature matrix in the
+README fails CI.** Describe techniques neutrally and never name a competitor
+plugin as a source.
 
 **Shipped copy check.** `node apps/marketing/scripts/check-copy.mjs`, no em
 dashes, no en dashes, no competitor names in the marketing site, in
