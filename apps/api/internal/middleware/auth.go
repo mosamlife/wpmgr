@@ -81,11 +81,17 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 			// no such ceiling: an owner minting an owner-role key is a
 			// supported case (PermTenantManage / PermSMTPManage /
 			// PermBillingManage are owner-only and are reachable by key), so
-			// any blanket clamp here would break legitimate keys while a
-			// per-key "who minted it" ceiling is not recoverable — the table
-			// records no creator. The ceiling therefore lives at the mint
-			// point, in apikey.Handler.create (GH #406). An unknown/invalid
-			// stored role fails closed on its own: rank 0 fails every AtLeast.
+			// any blanket clamp here would break legitimate keys. The ceiling
+			// therefore lives at the mint point, in apikey.Handler.create
+			// (GH #406). Keys minted before that fix keep the role they were
+			// given, and who minted one IS recoverable — join audit_log on
+			// action='apikey.create' AND target_type='api_key' AND
+			// target_id = <key id>::text for actor_type/actor_id — so a sweep
+			// of pre-fix roles is a query, not a guess. Two holes in that
+			// trail: create's Record is best-effort (`_, _ =`), so a failed
+			// write leaves a key untraced, and a hard tenant purge cascades
+			// audit_log away with the tenant. An unknown/invalid stored role
+			// fails closed on its own: rank 0 fails every AtLeast.
 			p := domain.Principal{
 				Type:     domain.PrincipalAPIKey,
 				APIKeyID: key.ID,
