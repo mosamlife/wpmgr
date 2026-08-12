@@ -1110,6 +1110,69 @@ t "a vouched record still blocks"   2 "$(gate_at "$tmp/gatestate" agent-K)"
 tcontains "and names the file"      "theirs.txt" "$(gate_at_msg "$tmp/gatestate" agent-K)"
 tlacks "and claims no distrust"     "was NOT trusted" "$(gate_at_msg "$tmp/gatestate" agent-K)"
 
+echo "== commit-gate: a record that is a symlink is never followed"
+# `-f "$record"` FOLLOWS SYMLINKS, and agent-writes.sh's prune deliberately
+# never removes one, so a planted symlink persisted indefinitely and was
+# followed on every stop. Measured before the fix, with the state directory
+# legitimately ours (0700, marker present), which is the precondition that makes
+# this narrower than the earlier findings but does not make it unreachable:
+#
+#   symlink -> a list naming another agent's dirty file  exit 2, and the agent
+#     was told to commit 'theirs.txt', which it never wrote.
+#   symlink -> an empty file, or /etc/hosts              exit 0 and SILENT,
+#     not even the unscoped reminder.
+#   dangling symlink                                     already safe.
+#
+# The first is the exact misattribution the ownership record exists to prevent;
+# the second is the quiet direction. Both are pinned here.
+symst="$tmp/symstate"
+aw "$symst" agent-seed >/dev/null          # a state dir the recorder really made
+t "the symlink fixture's dir is ours" yes "$(exists "$symst/.wpmgr-harness-state")"
+
+# A list naming a file this agent never wrote. If the gate follows the link it
+# blocks on theirs.txt; that is the case being closed.
+printf '%s\n' "$wt/theirs.txt" > "$tmp/planted-list"
+ln -s "$tmp/planted-list" "$symst/agent-L"
+t "a symlinked record does not block"   0 "$(gate_at "$symst" agent-L)"
+tcontains "and says it is a symlink"    "is a symlink" "$(gate_at_msg "$symst" agent-L)"
+tcontains "and says it was not read"    "NOT read"     "$(gate_at_msg "$symst" agent-L)"
+# The misattribution itself. The needle is the CLAIM, not the filename: the
+# unscoped reminder deliberately lists the whole dirty tree under "if any of
+# these are yours", and that is not misattribution. What must never happen is
+# the gate asserting this agent WROTE a path it read out of a symlink.
+tlacks "and never claims the agent wrote it" "that YOU wrote" "$(gate_at_msg "$symst" agent-L)"
+# ...and it must not go quiet either. Silence was the other half of the finding.
+tcontains "and still reminds"           "Not blocking" "$(gate_at_msg "$symst" agent-L)"
+
+# A dangling symlink was already safe by accident, because -f is false for one.
+# It is asserted so it stays safe deliberately: -e alone is false here, so the
+# check tests -L too or this case slips past unreported.
+ln -s "$tmp/definitely-not-there" "$symst/agent-M"
+t "a dangling symlinked record passes"  0 "$(gate_at "$symst" agent-M)"
+tcontains "and is reported, not ignored" "is a symlink" "$(gate_at_msg "$symst" agent-M)"
+
+# A symlink to a file owned by another user: readable, so -f used to accept it,
+# and its contents matched nothing, which is how it produced silence.
+ln -s /etc/hosts "$symst/agent-N"
+t "a root-owned target is refused"      0 "$(gate_at "$symst" agent-N)"
+tcontains "and that is stated too"      "is a symlink" "$(gate_at_msg "$symst" agent-N)"
+
+# The prune leaves symlinks alone, on purpose - a delete loop is the last place
+# to make exceptions for them - so the reader is what makes them inert. This
+# pins the pair: still on disk, still not followed.
+touch -h -t 202001010000 "$symst/agent-L" 2>/dev/null
+aw "$symst" agent-seed >/dev/null
+t "the prune leaves the symlink"        yes "$(exists "$symst/agent-L")"
+t "and it is still not followed"        0   "$(gate_at "$symst" agent-L)"
+
+# THE OVER-FIRE, and the anchor: a plain record owned by this user, in the very
+# same directory, must still block exactly as before. A check that refused real
+# records would take the gate out entirely.
+aw "$symst" agent-O >/dev/null
+t "a plain record still blocks"         2 "$(gate_at "$symst" agent-O)"
+tcontains "and names its own file"      "theirs.txt"   "$(gate_at_msg "$symst" agent-O)"
+tlacks "and claims no symlink"          "is a symlink" "$(gate_at_msg "$symst" agent-O)"
+
 echo "== session-brief: a measurement it could not take never prints as zero"
 # `git ... | wc -l` prints 0 when GIT failed, which is indistinguishable from
 # "there are none", and the caller then dropped the whole worktree section
