@@ -1553,7 +1553,22 @@ tcontains "and that is stated too"      "is a symlink" "$(gate_at_msg "$symst" a
 # The prune leaves symlinks alone, on purpose - a delete loop is the last place
 # to make exceptions for them - so the reader is what makes them inert. This
 # pins the pair: still on disk, still not followed.
+#
+# THE PREMISE IS CHECKED, NOT ASSUMED. `touch -h` sets the mtime of the LINK
+# rather than its target, and it is not portable; its failure was discarded
+# here. If it fails, agent-L keeps a fresh mtime, the prune then skips it for
+# being FRESH rather than for being a SYMLINK, and both assertions below pass
+# while proving nothing about the behaviour they exist to pin.
+#
+# So the premise is asserted with the same instrument prune_state itself uses -
+# `find <path> -maxdepth 0 -mtime +2`, which stats the link and not its target
+# because find does not follow symlinks without -L or -H. That tests the state
+# the fixture is actually in, rather than whether one tool reported success.
 touch -h -t 202001010000 "$symst/agent-L" 2>/dev/null
+if [[ -z "$(find "$symst/agent-L" -maxdepth 0 -mtime +2 2>/dev/null)" ]]; then
+  echo "FAIL  prune-symlink setup: agent-L is not older than the prune's own threshold, so the two assertions below would pass because it is fresh, not because it is a symlink"
+  failed=$((failed+1))
+fi
 aw "$symst" agent-seed >/dev/null
 t "the prune leaves the symlink"        yes "$(exists "$symst/agent-L")"
 t "and it is still not followed"        0   "$(gate_at "$symst" agent-L)"
@@ -1688,6 +1703,35 @@ tlacks    "and invents no free space"  "disk free: Gi"  "$sb_df"
 # The honest direction: a real df gives a number and no apology.
 tcontains "a real df gives a number"   "disk free:"     "$sb_zero"
 tlacks    "and no could-not-measure"   "disk free: could not measure" "$sb_zero"
+
+# --- does the farm actually carry everything the brief invokes? --------------
+# When this farm was built I wrote down its weakness: add an external command to
+# session-brief.sh and forget it here, and that command silently fails under the
+# fixture's PATH while the real brief works - a FALSE GREEN, which CI cannot
+# catch because CI only ever runs the fixture. Deriving the list by scanning a
+# shell file is guesswork, so instead the fixture checks its own consequences.
+#
+# 1. Nothing may reach stderr. bash prints "command not found" there, so any
+#    missing binary whose call site is not wrapped in 2>/dev/null shows up.
+sb_err=$(cd "$sb" && PATH="$sysbin" bash "$BRIEF" 2>&1 >/dev/null)
+t "the brief writes nothing to stderr" "" "$sb_err"
+# 2. jq must be present, or the brief announces the guards INACTIVE - a line
+#    that would otherwise sit in the output unremarked and unexplained.
+tlacks "and jq is not missing" "INACTIVE" "$sb_zero"
+# 3. A positive measurement, not merely the absence of a complaint: a real
+#    number for disk free proves df AND awk AND the pipeline all ran under the
+#    built PATH. Degrade any of them and this becomes "could not measure".
+tcontains "and df+awk really measured" "disk free: " "$sb_zero"
+t "with an actual number"              1 \
+  "$(printf '%s\n' "$sb_zero" | grep -cE '^- disk free: [0-9]+Gi$' | tr -d ' ')"
+#
+# STATED LIMIT, because a check whose reach is oversold is worse than none:
+# this cannot see a command invoked with its own 2>/dev/null - countof() wraps
+# every call that way - and `du` and `cut` are genuinely unexercised here, since
+# both only run for Go cache sizes (needs go, excluded) and worktree sizes (the
+# fixture repo has none). Removing either from the farm does NOT redden. They
+# stay in the list because the real brief needs them, and that gap is written
+# down rather than papered over.
 
 echo "== session-brief: 'could not check' is not the same claim as 'NOT INSTALLED'"
 # `[[ -x "$(go env GOPATH 2>/dev/null)/bin/$t" ]]` LOOKS like a lookup, but with
