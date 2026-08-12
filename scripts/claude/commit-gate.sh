@@ -79,8 +79,37 @@ dirty=$(git -C "$cwd" status --porcelain -uall 2>/dev/null)
 # ---- restrict to what this agent wrote -------------------------------------
 aid=$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null)
 state="${WPMGR_AGENT_WRITES_STATE:-${TMPDIR:-/tmp}/wpmgr-agent-writes}"
+
+# The record is only worth as much as the directory holding it. ${TMPDIR:-/tmp}
+# falls back to a SHARED /tmp on Linux, in containers and on CI, where another
+# local account can pre-create this directory and plant records. A planted EMPTY
+# record is the worst case and the quietest: it sets scoped=1 with nothing
+# owned, and this script then exits 0 at the "already committed" branch WITHOUT
+# even the unscoped reminder - less said than if the record had never existed.
+#
+# So the directory is vouched for the same way agent-writes.sh and
+# route-guard.sh vouch for it, and anything that fails falls through to the
+# unscoped reminder, which is the loud direction. This side only ever READS: it
+# never creates, adopts, chmods or prunes, because a Stop hook is not the place
+# to be repairing state.
+STATE_MARKER=".wpmgr-harness-state"
+state_trusted=0
+state_why=""
+if [[ ! -e "$state" ]]; then
+  : # No state at all is normal for an agent that has written nothing. Not a
+    # finding, and saying so on every such stop would be noise.
+elif [[ ! -d "$state" || -L "$state" ]]; then
+  state_why="it is not a plain directory"
+elif [[ ! -O "$state" ]]; then
+  state_why="it is not owned by this user"
+elif [[ -L "$state/$STATE_MARKER" || ! -f "$state/$STATE_MARKER" || ! -O "$state/$STATE_MARKER" ]]; then
+  state_why="it carries no $STATE_MARKER file owned by this user, so it is not this harness's"
+else
+  state_trusted=1
+fi
+
 record=""
-if [[ -n "$aid" ]]; then
+if [[ $state_trusted -eq 1 && -n "$aid" ]]; then
   record="$state/$(printf '%s' "$aid" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64)"
 fi
 
@@ -131,6 +160,11 @@ fi
 # No ownership record, so there is no way to tell this agent's work from anyone
 # else's. Blocking here is what caused the deadlock, so this only reminds.
 {
+  if [[ -n "$state_why" ]]; then
+    echo "NOTE: the ownership record directory '$state' was NOT trusted:"
+    echo "$state_why. Nothing in it was read. Reporting instead of blocking."
+    echo ""
+  fi
   echo "NOTE: this worktree has uncommitted paths, and there is no record of"
   echo "which of them you wrote (no agent_id, or the PostToolUse recorder did"
   echo "not run). Not blocking."
