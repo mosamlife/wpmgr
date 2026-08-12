@@ -21,16 +21,36 @@ command is missing, say so and stop, never report a step you did not run.
 `docs/adr/ADR-055`. Count it, never quote it, and never copy the list anywhere:
 
 ```bash
-b=$(grep -oE "banned='[^']+'" .github/workflows/ci.yml | sed "s/banned='//; s/'$//")
-printf '%s' "$b" | tr '|' '\n' | wc -l                 # alternates
-printf '%s' "$b" | tr '|' '\n' | tr -d ' -' | sort -u | wc -l   # distinct products
+banned_counts() {
+  f=${1:-.github/workflows/ci.yml}
+  [ -f "$f" ] || { echo "cannot read $f: the vocabulary gate moved, so find it before trusting any count" >&2; return 1; }
+  b=$(grep -oE "banned='[^']+'" "$f" | sed "s/banned='//; s/'$//")
+  [ -n "$b" ] || { echo "no single-line banned='...' in $f: renamed, requoted or wrapped, which is not an empty list" >&2; return 1; }
+  echo "alternates        $(printf '%s' "$b" | tr '|' '\n' | grep -c .)"
+  echo "distinct products $(printf '%s' "$b" | tr '|' '\n' | tr -d ' -' | sort -u | grep -c .)"
+}
+
+banned_counts
 ```
 
-Run both in the turn you need the figure; several products carry both a
+Run it in the turn you need the figure; several products carry both a
 hyphenated and a spaced spelling, so the two counts differ and neither is
 stable. `README.md` is matched by `./*.md`. **A competitor feature matrix in the
 README fails CI.** Describe techniques neutrally and never name a competitor
 plugin as a source.
+
+Two reasons it is a function and not the bare pipeline it replaces. It counts
+with `grep -c .` because `wc -l` counts newline characters, and the value has no
+trailing newline, so the alternation count came out one short of the truth every
+single time. And an extraction that finds nothing refuses instead of printing
+`0`, because `0` here reads as "there is no banned list to comply with", which
+is the one direction this repository cannot afford to be wrong in.
+
+It only understands a single-line, single-quoted `banned='...'`. Requote it,
+wrap it across lines, or move it to another file and the function says so and
+exits `1`; it does not try to parse the new shape. That is deliberate, because
+the fix for a moved gate is to open the workflow and read it, not to make this
+regex cleverer until it silently matches the wrong thing.
 
 **Shipped copy check.** `node apps/marketing/scripts/check-copy.mjs`, no em
 dashes, no en dashes, no competitor names in the marketing site, in
