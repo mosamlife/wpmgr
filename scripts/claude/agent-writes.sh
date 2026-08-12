@@ -82,6 +82,24 @@ STATE_DEFAULT="${TMPDIR:-/tmp}/wpmgr-agent-writes"
 STATE_DIR=""
 STATE_WHY=""
 
+# The SECOND, INDEPENDENT lock on the marker write. `set -C` makes bash open the
+# redirect with O_CREAT|O_EXCL, and POSIX requires open() to FAIL when
+# O_CREAT|O_EXCL names a symbolic link - dangling or not. So this refuses to
+# follow a planted symlink even if the directory were somehow still writable by
+# another account when it runs. Tightening the directory to 0700 first and this
+# are two locks on one door; either alone closes the window, and neither is
+# trusted to be the only one.
+#
+# DUPLICATION, DELIBERATE AND FLAGGED: this is character-for-character the same
+# primitive as route-guard.sh's excl_create(), and two implementations of one
+# primitive is exactly how this file inherited the ordering bug in the first
+# place. It is copied rather than shared only because sharing it means editing
+# route-guard.sh, which another agent owns this round. It wants extracting into
+# one sourced file, in a single change that touches both callers.
+excl_create() { # excl_create <path> -> create it, never following a symlink
+  ( set -C; : > "$1" ) 2>/dev/null
+}
+
 resolve_state() { # sets STATE_DIR, or sets STATE_WHY and returns 1
   local want="${WPMGR_AGENT_WRITES_STATE:-$STATE_DEFAULT}"
 
@@ -106,7 +124,12 @@ resolve_state() { # sets STATE_DIR, or sets STATE_WHY and returns 1
       STATE_WHY="refusing the state directory '$want': it is not owned by this user"
       return 1
     fi
-    if [[ -e "$want/$STATE_MARKER" ]]; then
+    # `-e` FOLLOWS the link, so it is false for a DANGLING symlink and a planted
+    # dangling marker fell through to "no marker" - or, on the default path, all
+    # the way to the adoption branch, where only the O_EXCL lock stopped it.
+    # `-L` is tested too so the first lock sees it and says what it really is.
+    # Same `-e`/`-L` gap that was fixed on the reading side in commit-gate.sh.
+    if [[ -e "$want/$STATE_MARKER" || -L "$want/$STATE_MARKER" ]]; then
       # The marker is the ownership claim, so the claim itself must be ours and
       # must be a real file: a symlink named $STATE_MARKER proves nothing about
       # who owns the directory it points into.
@@ -114,28 +137,43 @@ resolve_state() { # sets STATE_DIR, or sets STATE_WHY and returns 1
         STATE_WHY="refusing the state directory '$want': its $STATE_MARKER is not a plain file owned by this user"
         return 1
       fi
+      # Accepted, and nothing is written here, so this only closes the door:
+      # whatever another account could write before, it loses now.
+      chmod 700 "$want" || {
+        STATE_WHY="refusing the state directory '$want': cannot chmod 700 it"; return 1; }
     elif [[ "$want" == "$STATE_DEFAULT" ]]; then
       # One adoption, and only for the DEFAULT path, which we have just proven
       # this user owns: it carries this hook's own name, so an older version of
       # this hook is the plausible author. A path the environment supplied is
       # never adopted.
-      : > "$want/$STATE_MARKER" || {
-        STATE_WHY="refusing the state directory '$want': cannot write its $STATE_MARKER"; return 1; }
+      #
+      # ORDER IS THE SECURITY PROPERTY HERE, and this file had it backwards -
+      # it wrote the marker and chmod'd afterwards. Owning a directory does not
+      # make it private: a directory this user owns can still be group- or
+      # world-writable, and between "the marker is absent" and "create the
+      # marker" another local account could drop a SYMLINK at that name and have
+      # the redirect truncate whatever this user can write. The directory is
+      # closed to 0700 BEFORE anything is written into it, and only then is the
+      # marker created - and created with O_EXCL, so neither lock is trusted to
+      # be the only one.
+      chmod 700 "$want" || {
+        STATE_WHY="refusing the state directory '$want': cannot chmod 700 it before writing its $STATE_MARKER"; return 1; }
+      excl_create "$want/$STATE_MARKER" || {
+        STATE_WHY="refusing the state directory '$want': cannot exclusively create its $STATE_MARKER - it already exists or is a symlink"; return 1; }
     else
       STATE_WHY="refusing the state directory '$want': no $STATE_MARKER, so it is not this harness's"
       return 1
     fi
-    # It is ours, so close it: whatever another account could write here before,
-    # it loses now.
-    chmod 700 "$want" || {
-      STATE_WHY="refusing the state directory '$want': cannot chmod 700 it"; return 1; }
   else
+    # Ordering was already right here - mkdir, chmod, then the marker - but the
+    # marker went in through a plain redirect, so it had one lock where the
+    # adoption path above now has two. Same primitive, same guarantee.
     ( umask 077; mkdir -p "$want" ) || {
       STATE_WHY="cannot create the state directory '$want'"; return 1; }
     chmod 700 "$want" || {
       STATE_WHY="cannot create the state directory '$want': created it but cannot chmod 700 it"; return 1; }
-    : > "$want/$STATE_MARKER" || {
-      STATE_WHY="cannot create the state directory '$want': cannot write its $STATE_MARKER"; return 1; }
+    excl_create "$want/$STATE_MARKER" || {
+      STATE_WHY="cannot create the state directory '$want': cannot exclusively create its $STATE_MARKER - it already exists or is a symlink"; return 1; }
   fi
   STATE_DIR="$want"
   return 0
@@ -177,10 +215,29 @@ prune_state() { # prune_state <owned state root>
 }
 prune_state "$state"
 
+sane=$(printf '%s' "$aid" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64)
+
+# JUDGED, not skipped. `>>` follows symlinks and bash's noclobber does not apply
+# to it, so O_EXCL is not available here: the record must persist and be appended
+# to across calls, which is the opposite of exclusive creation. So this is a
+# check-then-use, and the thing that makes it sound is the directory, which
+# resolve_state has just proved is 0700 and owned by this user - no other account
+# can put a symlink here to begin with.
+#
+# What remains is a symlink left by something running AS this user: a stale one
+# from before the marker regime, or a stray. prune_state deliberately skips
+# symlinks, so such a link persists forever, and appending through it would write
+# every path an agent touches into whatever it points at. commit-gate.sh already
+# refuses to READ a symlinked record - that was last round - and this is the
+# matching refusal on the WRITE side. Both ends of the same question now answer
+# the same way.
+if [[ -L "$state/$sane" ]]; then
+  degraded "refusing to append to the record '$state/$sane': it is a symlink, and a record is a plain file or it is nothing. Delete it by hand if you did not put it there."
+fi
+
 # umask 077 so the record itself is 0600. The directory is already 0700, so this
 # is belt and braces, but a record of every path an agent touched is not
 # something to create world-readable on the way to a stricter directory.
-sane=$(printf '%s' "$aid" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64)
 ( umask 077; printf '%s\n' "$path" >> "$state/$sane" ) 2>/dev/null \
   || degraded "cannot append to the record '$state/$sane'."
 
