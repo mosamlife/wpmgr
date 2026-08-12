@@ -1070,6 +1070,97 @@ t "the branch really went"  no \
   "$(git -C "$en" rev-parse --verify --quiet worktree-gone >/dev/null 2>&1 && printf yes || printf no)"
 t "and a real reap is green" 0 "$en_real_rc"
 
+echo "== harness-reap: the delete decision fails safe when git cannot answer"
+# The two reads that decide whether a worktree is DELETED - `git status
+# --porcelain` for "is it clean" and `git rev-parse HEAD` for "is it merged" -
+# both used to fail OPEN TOWARDS DELETION, which is the worst direction
+# available. A failing status printed nothing, `wc -l` turned that into 0, 0 read
+# as clean, and the worktree was removed on the strength of a measurement that
+# never happened; a failing rev-parse left $head empty and `[[ -n "$head" ]]`
+# skipped the merged question rather than answering it. What that destroys is an
+# agent's uncommitted work, which is the exact loss CLAUDE.md is written around.
+#
+# Two shims, each failing ONE call and passing everything else through.
+# `rev-parse` cannot be failed wholesale: the reaper resolves its own root with
+# `git rev-parse --show-toplevel` on its third line and would exit 2 there,
+# proving nothing about the delete decision. So the second shim fails on the
+# exact argument the per-worktree HEAD lookup passes - a bare `HEAD` - which no
+# other call in the script uses.
+ddgit=$(command -v git)
+shim_status="$tmp/shim-git-status"; mkdir -p "$shim_status"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do'
+  echo '  case "$a" in status) echo "fatal: simulated git status failure" >&2; exit 128 ;; esac'
+  echo 'done'
+  printf 'exec %s "$@"\n' "$ddgit"
+} > "$shim_status/git"
+chmod +x "$shim_status/git"
+shim_head="$tmp/shim-git-head"; mkdir -p "$shim_head"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do'
+  echo '  case "$a" in HEAD) echo "fatal: simulated rev-parse HEAD failure" >&2; exit 128 ;; esac'
+  echo 'done'
+  printf 'exec %s "$@"\n' "$ddgit"
+} > "$shim_head/git"
+chmod +x "$shim_head/git"
+
+# A fresh repo per scenario: these runs are --apply and really delete, so they
+# cannot share one. Each holds a harness-owned worktree with real uncommitted
+# work and a harness-owned worktree that is genuinely clean and merged.
+mkdd() { # mkdd <dir>
+  local d=$1
+  mkdir -p "$d"
+  git -C "$d" init -q
+  git -C "$d" config user.email t@t.invalid
+  git -C "$d" config user.name t
+  printf '/.claude/worktrees/\n' > "$d/.gitignore"
+  echo seed > "$d/seed.txt"
+  git -C "$d" add seed.txt .gitignore >/dev/null
+  git -C "$d" commit -qm init
+  git -C "$d" branch -M main
+  mkdir -p "$d/.claude/worktrees"
+  git -C "$d" worktree add -q --detach "$d/.claude/worktrees/agent-wip" main 2>/dev/null
+  git -C "$d" worktree add -q --detach "$d/.claude/worktrees/agent-clean" main 2>/dev/null
+  echo "an agent's uncommitted work" > "$d/.claude/worktrees/agent-wip/wip.txt"
+}
+
+# Does not over-fire, and it is the control for both cases below: with a git
+# that works, the dirty one is held for the ORDINARY reason and the clean one is
+# still reaped. A reaper that held everything back would satisfy every
+# fails-safe assertion below while reclaiming nothing.
+dd1="$tmp/dd-ok"; mkdd "$dd1"
+dd_ok=$(cd "$dd1" && bash "$REAP" --apply --worktrees-only 2>&1); dd_ok_rc=$?
+tcontains "dirty is held for the ordinary reason" "uncommitted path(s)" "$dd_ok"
+tlacks "and not as an unreadable one" "could not read its state" "$dd_ok"
+t "the dirty one keeps its work"  yes "$(exists "$dd1/.claude/worktrees/agent-wip/wip.txt")"
+t "the clean one is still reaped" no  "$(exists "$dd1/.claude/worktrees/agent-clean")"
+t "and a working git is green"    0   "$dd_ok_rc"
+
+# `git status` cannot answer. THE assertion: pre-fix this file was deleted with
+# the work in it, the run printed "1 removed" and exited 0.
+dd2="$tmp/dd-status"; mkdd "$dd2"
+dd_st=$(cd "$dd2" && PATH="$shim_status:$PATH" bash "$REAP" --apply --worktrees-only 2>&1); dd_st_rc=$?
+t "unmeasured is not clean"       yes "$(exists "$dd2/.claude/worktrees/agent-wip/wip.txt")"
+t "and nothing at all is removed" yes "$(exists "$dd2/.claude/worktrees/agent-clean")"
+tcontains "it names the read that failed" "could not read its state (status: 1" "$dd_st"
+# The two hold-backs must not read the same, or a maintainer cannot tell an
+# ordinary keep from a reaper that has gone blind.
+tlacks "never as an ordinary hold-back"   "uncommitted path(s)" "$dd_st"
+tlacks "and never claims a reclaim"       "1 removed"           "$dd_st"
+t "a failed status goes red"      1   "$dd_st_rc"
+
+# The rev-parse half, which decides "is it merged". Asserted separately because
+# a fixture exercising only `status` leaves this one unpinned.
+dd3="$tmp/dd-head"; mkdd "$dd3"
+dd_rp=$(cd "$dd3" && PATH="$shim_head:$PATH" bash "$REAP" --apply --worktrees-only 2>&1); dd_rp_rc=$?
+t "unmeasured is not merged"      yes "$(exists "$dd3/.claude/worktrees/agent-clean")"
+t "and the work survives too"     yes "$(exists "$dd3/.claude/worktrees/agent-wip/wip.txt")"
+# status: 0 proves the OTHER half answered and rev-parse alone is what failed.
+tcontains "it names the rev-parse half"   "could not read its state (status: 0" "$dd_rp"
+t "a failed HEAD read goes red"   1   "$dd_rp_rc"
+
 echo "== guards_test: this suite obeys the rule it proves"
 # Two fixture setups here staged everything instead of naming it. CLAUDE.md
 # forbids blanket staging everywhere, and this file is the proof surface for the
