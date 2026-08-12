@@ -1148,7 +1148,10 @@ tcontains "it names the read that failed" "could not read its state (status: 1" 
 # The two hold-backs must not read the same, or a maintainer cannot tell an
 # ordinary keep from a reaper that has gone blind.
 tlacks "never as an ordinary hold-back"   "uncommitted path(s)" "$dd_st"
-tlacks "and never claims a reclaim"       "1 removed"           "$dd_st"
+# Positive, not a tlacks: with the pre-fix code this run deleted both worktrees
+# and printed "2 removed", so a `tlacks "1 removed"` here passed while the work
+# was being destroyed. Assert the number it must actually print.
+tcontains "and no reclaim is claimed"     "0 removed"           "$dd_st"
 t "a failed status goes red"      1   "$dd_st_rc"
 
 # The rev-parse half, which decides "is it merged". Asserted separately because
@@ -1159,6 +1162,9 @@ t "unmeasured is not merged"      yes "$(exists "$dd3/.claude/worktrees/agent-cl
 t "and the work survives too"     yes "$(exists "$dd3/.claude/worktrees/agent-wip/wip.txt")"
 # status: 0 proves the OTHER half answered and rev-parse alone is what failed.
 tcontains "it names the rev-parse half"   "could not read its state (status: 0" "$dd_rp"
+# Pre-fix, an empty $head made `[[ -n "$head" ]]` skip the is-it-merged question
+# entirely and the clean worktree was removed: "1 removed".
+tcontains "and no reclaim is claimed either" "0 removed"        "$dd_rp"
 t "a failed HEAD read goes red"   1   "$dd_rp_rc"
 
 echo "== guards_test: this suite obeys the rule it proves"
