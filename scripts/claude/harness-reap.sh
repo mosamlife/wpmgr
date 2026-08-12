@@ -98,6 +98,37 @@ act() { if [[ $APPLY -eq 1 ]]; then say "  DO   $*"; else say "  WOULD $*"; fi; 
 # column: a blank size reads as zero, and zero is the one thing it does not mean.
 sizeof() { local s; s=$(du -sh "$1" 2>/dev/null | cut -f1); printf '%s' "${s:-size unknown}"; }
 
+# Count something, or say plainly that it could not be counted. Verbatim the
+# helper from session-brief.sh, and deliberately not a second idiom for the same
+# question: `<command> | wc -l` prints a perfectly plausible 0 when the COMMAND
+# failed, and 0 is indistinguishable from "there are none". In a brief that
+# understates the disk you are holding. In a reaper it is worse - "0 merged, 0
+# unmerged" reads as "nothing to reap here", the maintainer stops looking, and
+# the orphaned branches stay.
+#
+# Prints the count on success and "unknown" on failure, and returns the
+# command's own status so the caller can tell those two apart. `grep -c ''`
+# rather than `wc -l` so that empty output counts as 0 and a final line with no
+# newline still counts as 1.
+countof() { # countof <command...>
+  local out rc
+  out=$("$@" 2>/dev/null); rc=$?
+  [[ $rc -ne 0 ]] && { printf 'unknown'; return 1; }
+  printf '%s' "$(printf '%s' "$out" | grep -c '')"
+  return 0
+}
+
+# An enumeration that failed must not be walked as if it were empty. Prints
+# nothing; returns the command's status and leaves the output in $enum_out.
+# Separate from countof() because the reaper needs the LIST, not just its size,
+# and `while read < <(cmd)` throws the status of `cmd` away entirely.
+enum_out=""
+enumerate() { # enumerate <command...>
+  local rc
+  enum_out=$("$@" 2>/dev/null); rc=$?
+  return $rc
+}
+
 # Every destructive command goes through here, and nothing counts itself done.
 #
 # Each site used to be `<destructive command> 2>/dev/null` followed by an
@@ -151,6 +182,17 @@ reclaimed_note=""
 # ---- 1. worktrees ----------------------------------------------------------
 say "== agent worktrees (base: $base, harness dir: $harness_dir)"
 removed=0; kept=0; foreign=0; wt_failed=0
+# The same status-discarding shape as section 2. This one is *nearly* covered
+# already - the identical enumeration runs above to resolve $main_wt and exits 2
+# if it comes back empty - but that is a different invocation, so a git that
+# fails only on the second call would still walk an empty sweep and report a
+# clean "0 removed, 0 held back, 0 not ours, 0 failed".
+enumerate git worktree list --porcelain; sweep_ok=$?
+if [[ $sweep_ok -ne 0 ]]; then
+  failures=$((failures+1))
+  say "  FAILED enumerate worktrees - 'git worktree list' exited $sweep_ok. Nothing was swept. This is NOT 'there are none'."
+  removed=unknown; kept=unknown; foreign=unknown; wt_failed=unknown
+fi
 while IFS= read -r wt; do
   [[ -z "$wt" ]] && continue
   # The main checkout is not leaked disk and is never a reap target, whether or
@@ -168,8 +210,19 @@ while IFS= read -r wt; do
     say "  KEEP   $name - the reaper is running inside it. Re-run from the main checkout."
     kept=$((kept+1)); continue
   fi
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo "")
+  # These two decide whether the worktree gets deleted, and both used to fail
+  # OPEN TOWARDS DELETION, which is the worst direction available: a failing
+  # `git status` produced no output, `wc -l` turned that into 0, 0 read as
+  # "clean", and the worktree was removed on the strength of a measurement that
+  # never happened. A failing `rev-parse` left $head empty, and the merged-check
+  # is guarded by `[[ -n "$head" ]]`, so the "is it merged" question was skipped
+  # rather than answered. Unmeasured is not clean and it is not merged.
+  dirty=$(countof git -C "$wt" status --porcelain); dirty_ok=$?
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null); head_ok=$?
+  if [[ $dirty_ok -ne 0 || $head_ok -ne 0 ]]; then
+    say "  KEEP   $name - could not read its state (status: $dirty_ok, rev-parse: $head_ok). Nothing is deleted on the strength of a measurement that failed."
+    kept=$((kept+1)); failures=$((failures+1)); continue
+  fi
   if [[ "${dirty:-1}" -ne 0 ]]; then
     say "  KEEP   $name - $dirty uncommitted path(s). Commit or discard it by hand."
     kept=$((kept+1)); continue
@@ -185,7 +238,7 @@ while IFS= read -r wt; do
   else
     wt_failed=$((wt_failed+1))
   fi
-done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+done < <(printf '%s' "$enum_out" | awk '/^worktree /{print $2}')
 act "git worktree prune"
 attempt "git worktree prune" git worktree prune
 say "  $removed $did, $kept held back, $foreign not ours (listed above; remove those by hand if you want the space), $wt_failed failed"
@@ -195,20 +248,41 @@ say "== worktree-* branches merged into $base"
 # A branch that is still checked out in a live worktree is skipped: `git branch
 # -d` would refuse it anyway, and listing it as removable is noise that trains
 # the reader to skim this output.
-checked_out=$(git worktree list --porcelain 2>/dev/null | awk '/^branch /{sub("refs/heads/","",$2); print $2}')
+# Enumerate first and keep git's exit status, all three times. Every one of
+# these used to be read straight into a loop or a `wc -l`, which discards it: a
+# git that failed produced zero iterations and a count of 0, and this section
+# then printed "0 merged, 0 unmerged, 0 failed" - byte-identical to a repository
+# that honestly has no worktree-* branches. The reaper is destructive, so "I
+# could not look" must never be delivered as "there is nothing to reap".
+enumerate git worktree list --porcelain; co_ok=$?
+checked_out=$(printf '%s' "$enum_out" | awk '/^branch /{sub("refs/heads/","",$2); print $2}')
+enumerate git branch --list 'worktree-*' --merged "$base" --format='%(refname:short)'; merged_ok=$?
+merged_list="$enum_out"
+unmerged=$(countof git branch --list 'worktree-*' --no-merged "$base"); unmerged_ok=$?
+
 n=0; skipped=0; br_failed=0
-while IFS= read -r b; do
-  [[ -z "$b" ]] && continue
-  if printf '%s\n' "$checked_out" | grep -qx "$b"; then skipped=$((skipped+1)); continue; fi
-  act "git branch -d '$b'"
-  if attempt "delete branch '$b'" git branch -d "$b"; then
-    n=$((n+1))
-  else
-    br_failed=$((br_failed+1))
-  fi
-done < <(git branch --list 'worktree-*' --merged "$base" --format='%(refname:short)' 2>/dev/null)
-[[ $skipped -gt 0 ]] && say "  $skipped still checked out in a live worktree, skipped"
-unmerged=$(git branch --list 'worktree-*' --no-merged "$base" 2>/dev/null | wc -l | tr -d ' ')
+if [[ $co_ok -ne 0 || $merged_ok -ne 0 || $unmerged_ok -ne 0 ]]; then
+  # Counted as a failure, so the exit-1 trailer fires and this cannot be
+  # mistaken for a clean run. Nothing is deleted from a list we do not trust:
+  # the checked-out set is what stops the reaper offering a branch that a live
+  # worktree is sitting on, and without it every delete is a guess.
+  failures=$((failures+1))
+  say "  FAILED enumerate worktree-* branches - git exited non-zero (worktree list: $co_ok, merged: $merged_ok, unmerged: $unmerged_ok). No branch was inspected and none was deleted."
+  say "         This is NOT 'there are none'. The reaper could not look, so the orphaned branches may all still be there; re-run it once git works."
+  n=unknown; br_failed=unknown
+else
+  while IFS= read -r b; do
+    [[ -z "$b" ]] && continue
+    if printf '%s\n' "$checked_out" | grep -qx "$b"; then skipped=$((skipped+1)); continue; fi
+    act "git branch -d '$b'"
+    if attempt "delete branch '$b'" git branch -d "$b"; then
+      n=$((n+1))
+    else
+      br_failed=$((br_failed+1))
+    fi
+  done < <(printf '%s\n' "$merged_list")
+  [[ $skipped -gt 0 ]] && say "  $skipped still checked out in a live worktree, skipped"
+fi
 say "  $n merged ($didbr), $unmerged unmerged (left alone - inspect them by hand), $br_failed failed"
 
 # ---- 3. Go build cache -----------------------------------------------------
@@ -240,10 +314,19 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   # it was written for. That is the same class of defect as prescribing
   # `timeout`, which is also absent here.
   vols=""
+  # `docker info` above proves the daemon answers, which is not the same as
+  # `docker volume ls` working: the failure this script was written for was a
+  # daemon that was up and erroring on a missing snapshot. That printed nothing,
+  # and nothing arrived here as "none labelled org.testcontainers=true" - the
+  # exact reading a maintainer hunting 17 orphaned volumes must not be given.
+  enumerate docker volume ls -q --filter label=org.testcontainers=true; vol_ok=$?
   while IFS= read -r v; do [[ -n "$v" ]] && vols="$vols $v"; done \
-    < <(docker volume ls -q --filter label=org.testcontainers=true 2>/dev/null)
+    < <(printf '%s\n' "$enum_out")
   vols="${vols# }"
-  if [[ -z "$vols" ]]; then
+  if [[ $vol_ok -ne 0 ]]; then
+    failures=$((failures+1))
+    say "  FAILED enumerate volumes - 'docker volume ls' exited $vol_ok while the daemon was answering 'docker info'. This is NOT 'there are none'; no volume was pruned."
+  elif [[ -z "$vols" ]]; then
     say "  none labelled org.testcontainers=true"
   else
     nvol=$(printf '%s\n' $vols | wc -l | tr -d ' ')
