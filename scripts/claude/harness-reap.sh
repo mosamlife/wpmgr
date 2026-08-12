@@ -41,6 +41,12 @@
 #     dependencies whose removal costs a slow rebuild for nothing
 #   - only volumes with the testcontainers label are pruned, never a bare
 #     `docker volume prune`
+#   - nothing counts itself done. Every destructive command is checked for its
+#     exit status, a refusal is printed with the tool's own words, a failed
+#     action is never counted as reclaimed, and the script exits 1 if anything
+#     failed. It used to run each of them as `... 2>/dev/null` and then
+#     increment the counter unconditionally, so a `git worktree lock`ed
+#     worktree was reported as removed while it sat there holding its disk
 set -uo pipefail
 
 APPLY=0
@@ -73,6 +79,38 @@ act() { if [[ $APPLY -eq 1 ]]; then say "  DO   $*"; else say "  WOULD $*"; fi; 
 # column: a blank size reads as zero, and zero is the one thing it does not mean.
 sizeof() { local s; s=$(du -sh "$1" 2>/dev/null | cut -f1); printf '%s' "${s:-size unknown}"; }
 
+# Every destructive command goes through here, and nothing counts itself done.
+#
+# Each site used to be `<destructive command> 2>/dev/null` followed by an
+# unconditional counter increment, so a refusal from git or docker was thrown
+# away and reported as a success: against a `git worktree lock`ed worktree the
+# script printed "1 removable" while the directory was still on disk, and git's
+# own "fatal: cannot remove a locked working tree" went to /dev/null. That is
+# the failure this project keeps having - announcing success over its own
+# errors - and a reclaim report that lies is worse than none, because the disk
+# it claims to have freed is still gone.
+#
+# Returns 0 when the caller may count the action, 1 when it may not. In a dry
+# run nothing is attempted, so nothing can have failed and the counters mean
+# "removable" rather than "removed".
+failures=0
+attempt() { # attempt <label> <cmd> [args...]
+  local label=$1; shift
+  [[ $APPLY -eq 1 ]] || return 0
+  local out rc
+  out=$("$@" 2>&1); rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  failures=$((failures+1))
+  # Fold to one line so a multi-line git error cannot break up the report, and
+  # never print an empty reason: a command that failed silently still has to
+  # say so, or the reader assumes the blank means nothing happened.
+  say "  FAILED $label - exit $rc: $(printf '%s' "${out:-(no output)}" | tr '\n' ' ' | sed 's/  */ /g')"
+  return 1
+}
+# The counters are "what could go" in a dry run and "what actually went" under
+# --apply. Same numbers, different claim; say which one you are making.
+if [[ $APPLY -eq 1 ]]; then did=removed; didbr=deleted; else did=removable; didbr=deletable; fi
+
 # `git worktree list` puts the MAIN worktree first, always - that is the one
 # fact that survives being run from inside a worktree, where
 # `git rev-parse --show-toplevel` gives the worktree instead. Everything the
@@ -93,7 +131,7 @@ reclaimed_note=""
 
 # ---- 1. worktrees ----------------------------------------------------------
 say "== agent worktrees (base: $base, harness dir: $harness_dir)"
-removed=0; kept=0; foreign=0
+removed=0; kept=0; foreign=0; wt_failed=0
 while IFS= read -r wt; do
   [[ -z "$wt" ]] && continue
   # The main checkout is not leaked disk and is never a reap target, whether or
@@ -123,12 +161,15 @@ while IFS= read -r wt; do
     kept=$((kept+1)); continue
   fi
   act "git worktree remove --force '$wt'"
-  [[ $APPLY -eq 1 ]] && git worktree remove --force "$wt" 2>/dev/null
-  removed=$((removed+1))
+  if attempt "remove worktree '$name'" git worktree remove --force "$wt"; then
+    removed=$((removed+1))
+  else
+    wt_failed=$((wt_failed+1))
+  fi
 done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
 act "git worktree prune"
-[[ $APPLY -eq 1 ]] && git worktree prune
-say "  $removed removable, $kept held back, $foreign not ours (listed above; remove those by hand if you want the space)"
+attempt "git worktree prune" git worktree prune
+say "  $removed $did, $kept held back, $foreign not ours (listed above; remove those by hand if you want the space), $wt_failed failed"
 
 # ---- 2. orphaned worktree-* branches --------------------------------------
 say "== worktree-* branches merged into $base"
@@ -136,17 +177,20 @@ say "== worktree-* branches merged into $base"
 # -d` would refuse it anyway, and listing it as removable is noise that trains
 # the reader to skim this output.
 checked_out=$(git worktree list --porcelain 2>/dev/null | awk '/^branch /{sub("refs/heads/","",$2); print $2}')
-n=0; skipped=0
+n=0; skipped=0; br_failed=0
 while IFS= read -r b; do
   [[ -z "$b" ]] && continue
   if printf '%s\n' "$checked_out" | grep -qx "$b"; then skipped=$((skipped+1)); continue; fi
   act "git branch -d '$b'"
-  [[ $APPLY -eq 1 ]] && git branch -d "$b" >/dev/null 2>&1
-  n=$((n+1))
+  if attempt "delete branch '$b'" git branch -d "$b"; then
+    n=$((n+1))
+  else
+    br_failed=$((br_failed+1))
+  fi
 done < <(git branch --list 'worktree-*' --merged "$base" --format='%(refname:short)' 2>/dev/null)
 [[ $skipped -gt 0 ]] && say "  $skipped still checked out in a live worktree, skipped"
 unmerged=$(git branch --list 'worktree-*' --no-merged "$base" 2>/dev/null | wc -l | tr -d ' ')
-say "  $n merged (deletable), $unmerged unmerged (left alone - inspect them by hand)"
+say "  $n merged ($didbr), $unmerged unmerged (left alone - inspect them by hand), $br_failed failed"
 
 # ---- 3. Go build cache -----------------------------------------------------
 if [[ $WORKTREES_ONLY -eq 1 ]]; then
@@ -160,8 +204,9 @@ if [[ -n "$gocache" && -d "$gocache" ]]; then
   say "  $gocache = $(du -sh "$gocache" 2>/dev/null | cut -f1)"
   if [[ "$gb" -ge "$CACHE_GB" ]]; then
     act "go clean -cache   (reclaims ~${gb}G; the next build is slow, nothing is lost)"
-    [[ $APPLY -eq 1 ]] && go clean -cache
-    reclaimed_note="${reclaimed_note} build-cache"
+    # Same rule as the worktrees: the note claims the cache was reclaimed, so
+    # it may only be written when the clean actually returned 0.
+    attempt "go clean -cache" go clean -cache && reclaimed_note="${reclaimed_note} build-cache"
   else
     say "  under the ceiling, leaving it"
   fi
@@ -185,7 +230,12 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     nvol=$(printf '%s\n' $vols | wc -l | tr -d ' ')
     say "  ${nvol} labelled volume(s)"
     act "docker volume rm $vols"
-    [[ $APPLY -eq 1 ]] && docker volume rm $vols >/dev/null 2>&1
+    # $vols is deliberately unquoted: it splits into one argument per volume.
+    # `docker volume rm` exits non-zero if ANY of them is still in use, and it
+    # names which - the sentence that used to go to /dev/null.
+    if attempt "docker volume rm (${nvol})" docker volume rm $vols; then
+      [[ $APPLY -eq 1 ]] && say "  ${nvol} removed"
+    fi
   fi
   docker system df >/dev/null 2>&1 || say "  NOTE: 'docker system df' is erroring. That is what running out of disk mid-build does to the containerd snapshotter; it needs a Docker Desktop reset, which this script will not do for you."
 else
@@ -199,5 +249,13 @@ df -h / | tail -1
 if [[ $APPLY -eq 0 ]]; then
   say ""
   say "REPORT ONLY. Re-run with --apply to perform the actions above."
+fi
+# Red on any refused action. A reclaim that half-worked and exited 0 is the
+# shape that gets read as "done" and closed; the counts above already exclude
+# the failures, and this makes them impossible to walk past.
+if [[ $failures -gt 0 ]]; then
+  say ""
+  say "$failures action(s) FAILED - each is printed above with the exact error. Nothing was silently skipped, and nothing that failed was counted as reclaimed."
+  exit 1
 fi
 exit 0

@@ -481,6 +481,54 @@ from_wt=$(cd "$rr/.claude/worktrees/agent-zz3" && bash "$REAP" --worktrees-only 
 tlacks "main checkout, seen from a worktree" "force '$rr'" "$from_wt"
 tlacks "the sibling by hand, from a worktree" "mine-by-hand" "$from_wt"
 
+echo "== harness-reap: a refused action is reported, never counted as reclaimed"
+# Each destructive step used to be `<command> 2>/dev/null` followed by an
+# unconditional counter increment. Against a `git worktree lock`ed worktree git
+# says "fatal: cannot remove a locked working tree", the script threw that away
+# and printed "1 removable", and the directory sat there still holding its
+# disk. A reclaim report that lies is worse than none. `git worktree lock` is
+# the one refusal that is reproducible without root, a full disk or Docker, so
+# it is the case pinned here.
+lk="$tmp/lockrepo"
+mkdir -p "$lk"
+git -C "$lk" init -q
+git -C "$lk" config user.email t@t.invalid
+git -C "$lk" config user.name t
+echo seed > "$lk/seed.txt"
+git -C "$lk" add seed.txt >/dev/null
+git -C "$lk" commit -qm init
+git -C "$lk" branch -M main
+mkdir -p "$lk/.claude/worktrees"
+git -C "$lk" worktree add -q --detach "$lk/.claude/worktrees/agent-locked" main 2>/dev/null
+git -C "$lk" worktree add -q --detach "$lk/.claude/worktrees/agent-ok" main 2>/dev/null
+git -C "$lk" worktree lock "$lk/.claude/worktrees/agent-locked"
+
+# A dry run attempts nothing, so it cannot have failed at anything: it must not
+# invent a failure it has not met, and it must stay green.
+lock_dry=$(cd "$lk" && bash "$REAP" --worktrees-only 2>&1); lock_dry_rc=$?
+tlacks "a dry run claims no failure" "FAILED" "$lock_dry"
+t "a dry run stays green"      0 "$lock_dry_rc"
+
+lock_out=$(cd "$lk" && bash "$REAP" --apply --worktrees-only 2>&1); lock_rc=$?
+tcontains "the refusal is reported"   "FAILED"                "$lock_out"
+tcontains "git's own words survive"   "locked working tree"   "$lock_out"
+tcontains "the failure is counted"    "1 failed"              "$lock_out"
+# The whole defect in one assertion: two were offered, one really went.
+tcontains "only the real one counts"  "1 removed"             "$lock_out"
+t "the refused one is still there" yes "$(exists "$lk/.claude/worktrees/agent-locked")"
+t "and a refusal goes red"          1  "$lock_rc"
+# ...and the honest direction, or a reaper that reports everything as failed
+# would pass the assertions above while reclaiming nothing.
+t "the healthy one really went"     no "$(exists "$lk/.claude/worktrees/agent-ok")"
+
+# Same worktree, same script, only the real obstacle removed: it must now go,
+# be counted, and go green. A guard that reddens correct work gets switched off.
+git -C "$lk" worktree unlock "$lk/.claude/worktrees/agent-locked"
+ok_out=$(cd "$lk" && bash "$REAP" --apply --worktrees-only 2>&1); ok_rc=$?
+t "unlocked, it really goes"        no "$(exists "$lk/.claude/worktrees/agent-locked")"
+t "and the run goes green"           0 "$ok_rc"
+tcontains "a green run says so"     "0 failed" "$ok_out"
+
 echo ""
 if [[ $failed -eq 0 ]]; then
   echo "guards_test: $pass assertions passed"
