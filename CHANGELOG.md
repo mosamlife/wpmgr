@@ -6,6 +6,8 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.133] - 2026-08-12
+
 ### Fixed
 
 - Deleting an empty organisation no longer strands its deduplicated backup chunks in storage forever. Deleting an organisation with no sites and no other members removes it immediately, and that same statement destroyed the stored inventory of its backup chunks while freeing no storage at all, so those objects were left named by nothing: not by the collector, whose list of accounts comes from that inventory, and not by you, because the account id was gone too. Delete an account's last site and then the emptied account, and its chunk storage was unreachable permanently. The delete now records what it left behind, in the same database transaction it deletes the account in, and an hourly drain frees every one of that account's storage folders afterwards. Same transaction is the point, exactly as it was for site deletion: the record exists if and only if the account really went, and it deliberately has no link back to the account, because a record of cleanup work that is removed along with the thing it describes is the bug it was written to prevent.

@@ -18,7 +18,7 @@ WPMgr lets you enroll, monitor, update, back up, and secure a fleet of WordPress
 </p>
 
 <!-- wpmgr-install-pins:start (the version below is a required pin; scripts/check-version-surfaces.sh keeps it current) -->
-**v0.61.131**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
+**v0.61.132**: open-source and production-usable for self-hosters. The agent plugin is reviewed and listed in the [WordPress.org plugin directory](https://wordpress.org/plugins/fleet-agent-site-manager/).
 <!-- wpmgr-install-pins:end -->
 
 ---
@@ -318,15 +318,15 @@ The control plane, dashboard, and media encoder are published on GitHub Containe
 <!-- wpmgr-install-pins:start (required pins; scripts/check-version-surfaces.sh keeps them current) -->
 
 ```bash
-docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.131
-docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.131
-docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.131
+docker pull ghcr.io/mosamlife/wpmgr-api:v0.61.132
+docker pull ghcr.io/mosamlife/wpmgr-web:v0.61.132
+docker pull ghcr.io/mosamlife/wpmgr-media-encoder:v0.61.132
 ```
 
 Or bring up the whole stack from the published images (no local build) with the pull-only Compose overlay:
 
 ```bash
-export WPMGR_VERSION=v0.61.131   # omit to track :latest
+export WPMGR_VERSION=v0.61.132   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
