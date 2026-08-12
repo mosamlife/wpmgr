@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useForm } from "react-hook-form";
+import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { KeyRound, Trash2 } from "lucide-react";
@@ -42,12 +42,30 @@ export const Route = createFileRoute("/_authed/settings/api-keys")({
   component: ApiKeysPage,
 });
 
-const createSchema = z.object({
-  name: z.string().min(1, "Name is required").max(200),
-  role: z.enum(["owner", "admin", "operator", "viewer"]).optional(),
-});
+/**
+ * The create-key schema, gated on the viewer's role the same way the Owner
+ * <option> is. Hiding the option is not enough on its own: a permissive enum
+ * still validates "owner" from a stale form value or a devtools edit and the
+ * client sends it. Only an owner may mint an owner key
+ * (apps/api/internal/apikey/handler.go:59 refuses with
+ * `apikey_role_exceeds_actor`); the server is the authority, this keeps the
+ * client from asking.
+ *
+ * Pure + exported so both role branches are testable without mounting the page.
+ */
+export function createApiKeySchema(viewerIsOwner: boolean) {
+  return z.object({
+    name: z.string().min(1, "Name is required").max(200),
+    role: viewerIsOwner
+      ? z.enum(["owner", "admin", "operator", "viewer"]).optional()
+      : z.enum(["admin", "operator", "viewer"]).optional(),
+  });
+}
 
-type CreateValues = z.infer<typeof createSchema>;
+type CreateValues = {
+  name: string;
+  role?: "owner" | "admin" | "operator" | "viewer";
+};
 
 function ApiKeysPage() {
   const { data: me } = useMe();
@@ -70,13 +88,18 @@ function ApiKeysPage() {
   // `revokeTarget` holds the key the operator is about to revoke.
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
 
+  const schema = useMemo(
+    () => createApiKeySchema(viewerIsOwner),
+    [viewerIsOwner],
+  );
+
   const {
     register,
     handleSubmit,
     reset,
     formState: { errors },
   } = useForm<CreateValues>({
-    resolver: zodResolver(createSchema),
+    resolver: zodResolver(schema) as Resolver<CreateValues>,
     defaultValues: { name: "", role: "operator" },
   });
 

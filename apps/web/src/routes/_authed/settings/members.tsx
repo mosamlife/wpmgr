@@ -165,6 +165,40 @@ function MembersPage() {
 // MemberRow — inline role picker + remove button.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether the viewer may act on this row at all (role picker + Remove button).
+ *
+ * An owner row is the handover case. The API permits owner-on-owner
+ * (apps/api/internal/auth/members_handler.go refuses only with
+ * `target_role_exceeds_actor`, i.e. when the TARGET outranks the ACTOR), so an
+ * owner must be able to demote a co-owner; otherwise an org that reaches two
+ * owners through the dashboard can never return to one. An admin does NOT
+ * outrank an owner, so an admin still gets static text on that row -- that half
+ * is the GH #406 fix and must not be widened.
+ *
+ * `manage` is deliberately not the gate for the owner row: `canManage` is true
+ * for admin too, so gating anything owner-shaped on it reintroduces #406.
+ *
+ * Pure + exported so the four-cell viewer/target matrix is testable directly.
+ */
+export function canActOnMemberRow({
+  manage,
+  viewerIsOwner,
+  isCurrentUser,
+  targetRole,
+}: {
+  manage: boolean;
+  viewerIsOwner: boolean;
+  isCurrentUser: boolean;
+  targetRole: MemberRole;
+}): boolean {
+  if (!manage) return false;
+  // Self-service demotion/removal stays out of the UI in every case.
+  if (isCurrentUser) return false;
+  if (targetRole === "owner") return viewerIsOwner;
+  return true;
+}
+
 function MemberRow({
   member,
   manage,
@@ -199,6 +233,12 @@ function MemberRow({
 
   const display = member.email ?? member.user_id;
   const isPending = updateRole.isPending || removeMember.isPending;
+  const canAct = canActOnMemberRow({
+    manage,
+    viewerIsOwner,
+    isCurrentUser,
+    targetRole: member.role,
+  });
 
   return (
     <TableRow>
@@ -216,7 +256,7 @@ function MemberRow({
         {member.name ?? "—"}
       </TableCell>
       <TableCell>
-        {manage && !isCurrentUser && member.role !== "owner" ? (
+        {canAct ? (
           <Select
             value={member.role}
             onChange={(e) =>
@@ -237,7 +277,7 @@ function MemberRow({
       </TableCell>
       {manage ? (
         <TableCell className="text-right">
-          {isCurrentUser || member.role === "owner" ? null : (
+          {!canAct ? null : (
             <Button
               type="button"
               variant="outline"

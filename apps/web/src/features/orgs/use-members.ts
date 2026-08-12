@@ -43,6 +43,82 @@ export interface InviteMemberResult {
 }
 
 // ---------------------------------------------------------------------------
+// Coded refusals
+//
+// Follows the `mapDeleteOrgError` idiom in `features/orgs/use-orgs.ts`: a map
+// of documented codes to house-style copy, a pure exported mapper that falls
+// back to the server's own message for anything undocumented, and an Error
+// subclass carrying the code for callers that need to branch.
+//
+// Every code below was read out of the Go handler rather than guessed:
+//   apps/api/internal/auth/members_handler.go
+//     :215 Forbidden("target_role_exceeds_actor", "you cannot change the role
+//          of a member who outranks you")
+//     :268 Forbidden("target_role_exceeds_actor", "you cannot remove a member
+//          who outranks you")
+//     Forbidden("role_grant_exceeds_actor", "you cannot grant a role higher
+//          than your own")   (also apps/api/internal/auth/service.go:331 and
+//          apps/api/internal/invitation/service.go:96)
+//     Forbidden("last_owner", "cannot demote the last owner" / "cannot remove
+//          the last owner")
+// ---------------------------------------------------------------------------
+
+/** The refusal codes the members endpoints are documented to return. */
+export type MemberErrorCode =
+  | "target_role_exceeds_actor"
+  | "role_grant_exceeds_actor"
+  | "last_owner";
+
+const MEMBER_ERROR_MESSAGES: Record<MemberErrorCode, string> = {
+  target_role_exceeds_actor:
+    "That member outranks you, so you can't change or remove them. Ask an owner.",
+  role_grant_exceeds_actor:
+    "You can't grant a role higher than your own. Ask an owner.",
+  last_owner:
+    "This is the last owner. Promote another member to owner first, then try again.",
+};
+
+function isMemberErrorCode(code: string): code is MemberErrorCode {
+  return Object.prototype.hasOwnProperty.call(MEMBER_ERROR_MESSAGES, code);
+}
+
+/**
+ * Maps a members-endpoint refusal code into clear, human copy. Falls back to
+ * the server's own message for any undocumented code, so a future backend
+ * addition never surfaces as a blank error. Pure + exported so every
+ * documented code is covered by a test without a network call.
+ */
+export function mapMemberError(
+  code: string | undefined,
+  fallbackMessage: string,
+): string {
+  if (code && isMemberErrorCode(code)) {
+    return MEMBER_ERROR_MESSAGES[code];
+  }
+  return fallbackMessage || "Request failed";
+}
+
+/** Raised by the member mutations; carries the server's refusal code. */
+export class MemberError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "MemberError";
+    this.code = code;
+  }
+}
+
+function toMemberError(error: unknown, fallback: string): Error {
+  const raw = error as { code?: string; message?: string } | null | undefined;
+  const code = typeof raw?.code === "string" ? raw.code : undefined;
+  if (code && isMemberErrorCode(code)) {
+    return new MemberError(mapMemberError(code, raw?.message ?? fallback), code);
+  }
+  const base = toError(error);
+  return new MemberError(base.message || fallback, code);
+}
+
+// ---------------------------------------------------------------------------
 // Cache key family
 // ---------------------------------------------------------------------------
 
@@ -84,7 +160,9 @@ export function useUpdateMemberRole(): UseMutationResult<
         body: { role },
         headers: { "Content-Type": "application/json" },
       });
-      if (result.error !== undefined) throw toError(result.error);
+      if (result.error !== undefined) {
+        throw toMemberError(result.error, "Could not update role");
+      }
       return result.data as Member;
     },
     onSuccess: (_updated, { role }) => {
@@ -92,7 +170,9 @@ export function useUpdateMemberRole(): UseMutationResult<
       toast.success(`Role updated to ${role}`);
     },
     onError: (err) => {
-      toast.error(`Could not update role: ${err.message}`);
+      // The message is already self-contained for a documented refusal code
+      // (see mapMemberError); prefixing it would double the "could not" clause.
+      toast.error(err.message);
     },
   });
 }
@@ -113,7 +193,9 @@ export function useRemoveMember(): UseMutationResult<
       const result = await client.delete({
         url: `/api/v1/members/${encodeURIComponent(userId)}`,
       });
-      if (result.error !== undefined) throw toError(result.error);
+      if (result.error !== undefined) {
+        throw toMemberError(result.error, "Could not remove member");
+      }
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: memberKeys.list() });
@@ -143,7 +225,12 @@ export function useInviteMember(): UseMutationResult<
         body,
         headers: { "Content-Type": "application/json" },
       });
-      if (result.error !== undefined) throw toError(result.error);
+      // Invite goes through the same ceiling check
+      // (apps/api/internal/invitation/service.go:96 returns
+      // role_grant_exceeds_actor), so it maps the same way.
+      if (result.error !== undefined) {
+        throw toMemberError(result.error, "Could not send invitation");
+      }
       return result.data as InviteMemberResult;
     },
     onSuccess: (_data) => {
