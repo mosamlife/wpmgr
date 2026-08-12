@@ -31,6 +31,10 @@
 #     `git worktree remove --force`, which removed anything clean and merged -
 #     and, run from inside a worktree, offered up the main checkout, because
 #     `git rev-parse --show-toplevel` resolves to the worktree.
+#   - it refuses to run at all if it cannot enter the repository root. Every
+#     action here resolves its repository from the current directory, and the
+#     report and the self-protection checks all assume that directory is the
+#     root; acting from one it never reached is how a delete goes wrong
 #   - a worktree is removed only if it is also clean AND its branch is merged
 #     into the default branch. Never on mtime; mtime lies.
 #   - the worktree the reaper is running inside is never removed, however
@@ -66,7 +70,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-cd "$root"
+# Never continue on a failed `cd` (SC2164). Everything below - `git worktree
+# remove --force`, `git branch -d`, the rev-parse that picks the base branch,
+# `go clean -cache` - resolves its repository from the CURRENT DIRECTORY, while
+# the report line, the `$wt == $root` self-protection check and the ownership
+# test all assume that directory is $root. Unchecked, a failed cd left every
+# one of them running somewhere the script had never reached, and it did not
+# even slow down: the proof in guards_test.sh plants the failure and the old
+# code goes on to remove a worktree and print "1 removed" from a location it
+# never verified. A script whose next four commands delete things stops when it
+# cannot reach the place it is about to act on.
+cd "$root" || {
+  echo "cannot enter the repository root '$root' (exit $?). Refusing to run." >&2
+  echo "Every action below resolves its repository from the current directory," >&2
+  echo "which is still $(pwd) - not the root just resolved. Nothing was touched." >&2
+  exit 2
+}
 
 base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
 git rev-parse --verify --quiet "$base" >/dev/null || base=main

@@ -47,7 +47,11 @@ mkdir -p "$repo"/apps/api/{migrations,db,tests,internal/{site,auth,db/sqlc,api/g
          "$repo"/apps/tracker/src "$repo"/apps/landing "$repo"/docs/worklog \
          "$repo"/.github/workflows "$repo"/infra "$repo"/packages/openapi-client/src
 echo "-- applied" > "$repo/apps/api/migrations/20260101000000_m01_applied.sql"
-git -C "$repo" add -A >/dev/null
+# Staged BY NAME, like every commit in this project. This used to stage the
+# whole tree, which CLAUDE.md forbids everywhere and which this suite exists to
+# prove: a proof that breaks the rule it proves is not a proof. Asserted about
+# this file at the end of the suite, so it cannot quietly come back.
+git -C "$repo" add apps/api/migrations/20260101000000_m01_applied.sql >/dev/null
 git -C "$repo" commit -qm init
 
 pass=0; failed=0
@@ -456,6 +460,79 @@ CREATE TABLE t();
 EOF')"
 t "reading a migration" pass "$(bdecw 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
 
+echo "== bash-guard: the migration arm never goes quiet because it cannot resolve a root"
+# The hole: the arm resolved its repository from `.cwd` ALONE, and when that was
+# absent from the payload or was not inside a worktree it left `root` empty, ran
+# nothing, printed nothing and exited 0. The command was allowed. Any payload
+# carrying no cwd was a silent route around the strongest deny in this guard, so
+# every `bdec` assertion above - all of which send no cwd - proved nothing about
+# this arm. The arm now resolves a second way, and refuses if it cannot.
+
+# 1. It resolves without a cwd, from this script's own checkout. Asserted
+#    against a migration that really is in THIS repository's HEAD, picked at run
+#    time: hard-coding a filename here would rot the first time one is renamed,
+#    and a rotted name would make this assertion pass for the wrong reason.
+real_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || echo "")
+real_mig=""
+[[ -n "$real_root" ]] && real_mig=$(git -C "$real_root" ls-tree -r --name-only HEAD apps/api/migrations 2>/dev/null | grep -E '\.sql$' | head -1)
+if [[ -n "$real_mig" ]]; then
+  t "no cwd, applied mig denied"  deny "$(bdec "sed -i '' s/a/b/ $real_mig")"
+  t "no cwd, redirect denied"     deny "$(bdec "echo x > $real_mig")"
+else
+  echo "  NOTE: no migration found in HEAD, so the no-cwd resolution is unproven here"
+  failed=$((failed+1))
+fi
+# ...and the over-fire it must not commit. A migration filename that is NOT in
+# HEAD is new work, and new work is exactly what this arm has to let through.
+t "no cwd, new mig passes" pass "$(bdec 'cat > apps/api/migrations/29991231235959_not_in_head.sql <<EOF
+CREATE TABLE t();
+EOF')"
+# A cwd that is a real directory but not a repository must fall back, not fail
+# open: same answer as above.
+nonrepo=$(jq -n --arg c "$tmp" --arg c2 'echo x > apps/api/migrations/29991231235959_not_in_head.sql' \
+            '{cwd:$c, tool_input:{command:$c2}}' | bash "$BASH_G" 2>/dev/null \
+          | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+t "non-repo cwd, new mig ok" pass "${nonrepo:-pass}"
+
+# 2. When NEITHER source resolves, it refuses with a stated reason. Reproduced
+#    honestly by running a copy of the guard from outside any worktree with no
+#    cwd in the payload, which is the only way both sources can really fail.
+nogit="$tmp/nogit"
+mkdir -p "$nogit"
+cp "$BASH_G" "$nogit/bash-guard.sh"
+# The premise of the four assertions below is that $nogit is outside any
+# worktree. If TMPDIR ever sits inside one, the guard resolves a root, the case
+# under test never arises, and the assertions would pass or fail for a reason
+# that has nothing to do with the code. Say so and go red rather than report a
+# proof that did not happen.
+if git -C "$nogit" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "FAIL  unresolvable-root setup: $nogit is inside a git worktree, so this case cannot be reached"
+  failed=$((failed+1))
+fi
+orphan() { # orphan <command> -> the raw hook JSON, if any
+  jq -n --arg c2 "$1" '{tool_input:{command:$c2}}' | bash "$nogit/bash-guard.sh" 2>/dev/null
+}
+# No output at all means the guard said nothing and the command is allowed;
+# that is 'pass', and it must be spelled the same way `bdec` spells it or an
+# allowed command reads as an empty string and every comparison misfires.
+orphan_dec() {
+  local out
+  out=$(orphan "$1" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+applied_mig='echo x > apps/api/migrations/20260101000000_m01_applied.sql'
+t "unresolvable root denies" deny "$(orphan_dec "$applied_mig")"
+tcontains "and says why" "cannot resolve" \
+  "$(orphan "$applied_mig" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)"
+# The refusal is scoped to the arm that cannot answer. An unresolvable root is
+# not a licence to refuse every command in the repository.
+t "unresolvable root, unrelated cmd" pass "$(orphan_dec 'go test ./...')"
+t "unresolvable root, reading a mig" pass \
+  "$(orphan_dec 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
+# The other arms still answer from outside a repository: they never needed one.
+t "unresolvable root, sqlc still denied" deny \
+  "$(orphan_dec 'echo x > apps/api/internal/db/sqlc/db.go')"
+
 echo "== bash-guard: every arm reads its own command, not the whole string"
 # The in-place-editor, interpreter and rm arms each ran THREE uncorrelated greps
 # over the entire command - is `sed` present, is `-i` present, is the path
@@ -511,7 +588,7 @@ git -C "$wt" init -q
 git -C "$wt" config user.email t@t.invalid
 git -C "$wt" config user.name t
 echo seed > "$wt/seed.txt"
-git -C "$wt" add -A >/dev/null; git -C "$wt" commit -qm init
+git -C "$wt" add seed.txt >/dev/null; git -C "$wt" commit -qm init
 echo mine   > "$wt/mine.txt"      # written by agent-A
 echo theirs > "$wt/theirs.txt"    # written by nobody in this test
 
@@ -547,6 +624,38 @@ tlacks "never demands deletion" "delete" "$(gate_msg agent-A)"
 git -C "$wt" add mine.txt >/dev/null; git -C "$wt" commit -qm mine
 t "A committed, passes"     0 "$(gate agent-A)"
 t "tree still dirty"        1 "$(git -C "$wt" status --porcelain | grep -c theirs.txt)"
+
+# A file inside a directory that did not exist. Default `git status --porcelain`
+# COLLAPSES an untracked directory to a single entry - `?? newpkg/` - and never
+# names the file inside it, so the ownership compare matched nothing and the
+# gate stayed silent about the one thing a builder agent mostly produces: new
+# files in new packages. Pinned first as the porcelain fact itself, so this
+# reads as a defect in git's default output rather than as an unexplained
+# assertion, and so a future change to the flag is caught here and not in
+# production.
+mkdir -p "$wt/newpkg/deeper"
+echo new > "$wt/newpkg/deeper/added.go"
+t "porcelain collapses the dir" "?? newpkg/" \
+  "$(git -C "$wt" status --porcelain | grep newpkg)"
+t "-uall names the file"        "?? newpkg/deeper/added.go" \
+  "$(git -C "$wt" status --porcelain -uall | grep added.go)"
+
+record agent-C "$wt/newpkg/deeper/added.go"
+t "C: new dir still blocks"  2 "$(gate agent-C)"
+tcontains "C sees its nested file" "newpkg/deeper/added.go" "$(gate_msg agent-C)"
+tcontains "C's count is right"     "1 uncommitted path"     "$(gate_msg agent-C)"
+
+# ...and the over-fire -uall could have caused, since it turns one line into
+# many: the extra lines are still filtered through the ownership record, so an
+# untracked tree nobody recorded is neither counted nor shown.
+mkdir -p "$wt/otherpkg/deeper"
+echo other > "$wt/otherpkg/deeper/notmine.go"
+tlacks "C is not shown another's new dir" "otherpkg" "$(gate_msg agent-C)"
+t "C's count is still 1"        2 "$(gate agent-C)"
+tcontains "still one path"      "1 uncommitted path"  "$(gate_msg agent-C)"
+# The original deadlock, re-checked with the tree now full of untracked
+# directories: an agent that wrote nothing is still never blocked.
+t "B still passes, -uall or not" 0 "$(gate agent-B)"
 
 # No agent_id means no ownership record, and the fallback reports rather than
 # blocks. A gate that deadlocks an agent is worse than one that reminds it.
@@ -660,6 +769,78 @@ ok_out=$(cd "$lk" && bash "$REAP" --apply --worktrees-only 2>&1); ok_rc=$?
 t "unlocked, it really goes"        no "$(exists "$lk/.claude/worktrees/agent-locked")"
 t "and the run goes green"           0 "$ok_rc"
 tcontains "a green run says so"     "0 failed" "$ok_out"
+
+echo "== harness-reap: it refuses to act from anywhere but the root it resolved"
+# SC2164. `cd "$root"` was unchecked, and everything after it - `git worktree
+# remove --force`, `git branch -d`, `go clean -cache`, and the rev-parse that
+# picks the base branch - resolves its repository from the CURRENT DIRECTORY,
+# not from $root. A failed cd therefore did not stop the script; it re-aimed
+# every destructive command at whatever directory the caller was standing in.
+#
+# The failure is planted the only way a `cd` to a directory that git just
+# resolved can honestly be made to fail: an exported shell function shadows the
+# builtin inside the script's own process. The subshell enters $cdr FIRST, so
+# the reaper starts in the right place and fails only at its own cd.
+cdr="$tmp/cdrepo"
+mkdir -p "$cdr"
+git -C "$cdr" init -q
+git -C "$cdr" config user.email t@t.invalid
+git -C "$cdr" config user.name t
+echo seed > "$cdr/seed.txt"
+git -C "$cdr" add seed.txt >/dev/null
+git -C "$cdr" commit -qm init
+git -C "$cdr" branch -M main
+mkdir -p "$cdr/.claude/worktrees"
+git -C "$cdr" worktree add -q --detach "$cdr/.claude/worktrees/agent-cd1" main 2>/dev/null
+
+reap_broken_cd() { # reap_broken_cd <dir> ; runs --apply with every cd failing
+  (
+    cd "$1" || return 9
+    cd() { return 1; }
+    export -f cd
+    bash "$REAP" --apply --worktrees-only 2>&1
+  )
+}
+brk_out=$(reap_broken_cd "$cdr"); brk_rc=$?
+# It must stop, say so, and above all not have removed anything.
+t "a failed cd goes red"           2   "$brk_rc"
+tcontains "and states the reason"  "cannot enter the repository root" "$brk_out"
+t "and nothing was removed"        yes "$(exists "$cdr/.claude/worktrees/agent-cd1")"
+tlacks "no reclaim is claimed"     "removed," "$brk_out"
+
+# ...and the honest direction, or a reaper that refused unconditionally would
+# pass every assertion above while reclaiming nothing. Same repo, same flags,
+# only the sabotage removed.
+ok_cd_out=$(cd "$cdr" && bash "$REAP" --apply --worktrees-only 2>&1); ok_cd_rc=$?
+t "unsabotaged, it goes green"     0   "$ok_cd_rc"
+t "and the worktree really went"   no  "$(exists "$cdr/.claude/worktrees/agent-cd1")"
+
+echo "== guards_test: this suite obeys the rule it proves"
+# Two fixture setups here staged everything instead of naming it. CLAUDE.md
+# forbids blanket staging everywhere, and this file is the proof surface for the
+# harness that teaches it, so the rule is asserted about this file rather than
+# left to review.
+#
+# The pattern tolerates a `git -C <dir>` prefix - the form both offenders took,
+# and the form a plain search for the phrase alone does not see. Its two
+# boundaries differ on purpose, and each was wrong once when this was written:
+# the flags end at any non-flag character, so a trailing `;` is still caught
+# while `-A-not-a-flag` is not; the bare dot ends only at something that cannot
+# continue a path, so a lone dot is caught while a relative path such as
+# `./one/file.go` - which is naming a file - is not.
+#
+# Comment lines are stripped first. This paragraph would otherwise match itself,
+# and, worse, a comment restating the rule is a second home for a fact that has
+# one: scripts/claude/fact-census.sh counts exactly that kind of drift, and this
+# block is deliberately written so it does not add to that count.
+#
+# `git add` only. `commit -a` is also forbidden and appears nowhere in this
+# suite; folding it in would have to catch `-am` too, and a pattern that half
+# covers a rule is worse than one that states its scope.
+ga='git( +-C +[^ ]+)? +add +'
+blanket=$ga'(-A|--all)([^A-Za-z0-9_-]|$)|'$ga'\.([^A-Za-z0-9_/.-]|$)'
+t "no blanket staging in this suite" 0 \
+  "$(grep -vE '^[[:space:]]*#' "$0" | grep -cE "$blanket" | tr -d ' ')"
 
 echo ""
 if [[ $failed -eq 0 ]]; then
