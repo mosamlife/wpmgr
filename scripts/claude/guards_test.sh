@@ -279,6 +279,16 @@ else
   rm -f "$tmp/rm.log"
   ( export WPMGR_ROUTE_GUARD_STATE="$unowned" PATH="$stub:$PATH"
     decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessU >/dev/null )
+  # Pin the OWNERSHIP branch by name. Asserting only "it was refused" passed even
+  # with the ownership test deleted, because `chmod 700` on a root-owned
+  # directory fails and refuses it anyway - a second reason, not the one under
+  # test. An assertion that survives the removal of the code it names tests
+  # nothing.
+  err=$( ( export WPMGR_ROUTE_GUARD_STATE="$unowned"
+           jq -n --arg c "$repo" --arg p "$repo/apps/api/internal/site/service.go" --arg s sessU \
+             '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+           | bash "$ROUTE" 2>&1 >/dev/null ) )
+  tcontains "unowned dir: refused by the owner check" "not owned by this user" "$err"
   t "unowned dir: never pruned"  no  "$(exists "$tmp/rm.log")"
   t "unowned dir: no session dir" no "$(exists "$unowned/sessU")"
   t "unowned dir: still asks"    ask \
