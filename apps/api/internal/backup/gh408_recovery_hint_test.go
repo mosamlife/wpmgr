@@ -379,6 +379,14 @@ type fakeTenantReclaimStore struct {
 	failures  map[uuid.UUID]int
 	lastError map[uuid.UUID]string
 	backoffs  map[uuid.UUID]time.Duration
+
+	// The org lifecycle lock. lockHeldBy stands in for another lifecycle
+	// operation already holding a tenant's lock; locked and released count the
+	// calls, so a test can assert the lock is both taken and given back.
+	lockHeldBy map[uuid.UUID]bool
+	lockErr    error
+	locked     int
+	released   int
 }
 
 func newFakeTenantReclaimStore() *fakeTenantReclaimStore {
@@ -390,7 +398,23 @@ func newFakeTenantReclaimStore() *fakeTenantReclaimStore {
 		failures:     map[uuid.UUID]int{},
 		lastError:    map[uuid.UUID]string{},
 		backoffs:     map[uuid.UUID]time.Duration{},
+		lockHeldBy:   map[uuid.UUID]bool{},
 	}
+}
+
+func (f *fakeTenantReclaimStore) LockTenantLifecycle(_ context.Context, tenantID uuid.UUID) (func(), bool, error) {
+	if f.lockErr != nil {
+		return nil, false, f.lockErr
+	}
+	if f.lockHeldBy[tenantID] {
+		return nil, false, nil
+	}
+	f.locked++
+	f.lockHeldBy[tenantID] = true
+	return func() {
+		f.released++
+		f.lockHeldBy[tenantID] = false
+	}, true, nil
 }
 
 func (f *fakeTenantReclaimStore) ListDue(_ context.Context, maxAttempts, limit int32) ([]TenantReclaimTask, error) {

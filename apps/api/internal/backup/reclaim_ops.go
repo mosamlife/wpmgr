@@ -52,6 +52,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -351,6 +352,10 @@ type DiscoverCandidate struct {
 //
 // It exists for the ONE population the database cannot name: tenants removed by
 // the superadmin orphan cleanup, which writes no system audit event.
+//
+// The result is ORDERED, by key count descending and then by tenant id, so that
+// identical bucket contents produce an identical report every run. See the sort
+// below for why that matters more here than tidiness.
 func DiscoverOrphanTenantPrefixes(ctx context.Context, pool *db.Pool, store ObjectLister) ([]DiscoverCandidate, error) {
 	if store == nil {
 		return nil, errors.New("reclaim discover: no object storage is configured")
@@ -382,10 +387,35 @@ func DiscoverOrphanTenantPrefixes(ctx context.Context, pool *db.Pool, store Obje
 			}
 		}
 	}
+	// Iterate the candidates in a FIXED order, not map order. Go randomises map
+	// iteration, so ranging `seen` directly gave a different report for identical
+	// bucket contents on every run: two runs could not be diffed, an operator
+	// could not tell a changed bucket from a reshuffled list, and a test over this
+	// output would be flaky rather than wrong. This is the same defect as the
+	// object-store fake that listed in map order while S3 and GCS list
+	// lexicographically (94448d7), this time in output a human reads.
+	ids := make([]uuid.UUID, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := seen[ids[i]], seen[ids[j]]
+		// Biggest leak first: keys is the number this report exists to surface and
+		// the one an operator acts on, so the prefix worth reclaiming most is at the
+		// top of the list rather than wherever the hash landed it.
+		if a.Keys != b.Keys {
+			return a.Keys > b.Keys
+		}
+		// Tenant id breaks every tie, so the order is TOTAL. Without a tiebreak,
+		// equal-sized candidates would still shuffle between runs and the sort would
+		// only look deterministic.
+		return a.TenantID.String() < b.TenantID.String()
+	})
+
 	var out []DiscoverCandidate
 	err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
-		for id, c := range seen {
+		for _, id := range ids {
 			exists, eerr := q.TenantExistsForReclaim(ctx, id)
 			if eerr != nil {
 				return fmt.Errorf("check tenant %s: %w", id, eerr)
@@ -393,7 +423,7 @@ func DiscoverOrphanTenantPrefixes(ctx context.Context, pool *db.Pool, store Obje
 			if exists {
 				continue // a live organisation's storage, correctly in the bucket
 			}
-			out = append(out, *c)
+			out = append(out, *seen[id])
 		}
 		return nil
 	})

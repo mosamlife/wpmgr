@@ -107,6 +107,17 @@
 // on. Where the two do overlap the overlap is harmless: a tenant task draining
 // tenant/<T>/ covers a site task's tenant/<T>/site/<S>/ subtree, and because
 // deletes are idempotent whichever runs second lists a shorter set and finishes.
+//
+// THE ORG LIFECYCLE LOCK. Guards 2 to 4 read tenant lifecycle state, and a read
+// without a lock is stale the moment it returns. So reclaimOne takes the
+// per-tenant org_lifecycle advisory lock (org.LifecycleLockKey, the same key
+// space as DELETE /orgs/{orgId}, POST /orgs/{orgId}/restore and the Lane B
+// purge) BEFORE the first guard and holds it until after the task is closed.
+// Without it an organisation restored mid-drain lost the chunks, manifests and
+// client report PDFs the guards had just concluded were nobody's, and the task
+// closed completed=true with an empty last_error. It is a try-lock: a contended
+// tenant is left for the next tick, never waited on and never forced through.
+// See reclaimOne, and TestGH408_DrainYieldsWhileAnOrgLifecycleOperationHoldsTheLock.
 package backup
 
 import (
@@ -195,6 +206,13 @@ type TenantReclaimTask struct {
 // TenantReclaimStore is the persistence half, split out so every guard can be
 // tested without a container.
 type TenantReclaimStore interface {
+	// LockTenantLifecycle takes the per-tenant org_lifecycle advisory lock and
+	// returns a release func to be called on every path once acquired.
+	//
+	// It NEVER waits. acquired=false means another organisation lifecycle
+	// operation holds the lock right now, and the caller must yield the tenant to
+	// a later tick rather than block a worker or force its own work through.
+	LockTenantLifecycle(ctx context.Context, tenantID uuid.UUID) (release func(), acquired bool, err error)
 	// ListDue returns open tasks that are due and still under the attempt cap.
 	ListDue(ctx context.Context, maxAttempts, limit int32) ([]TenantReclaimTask, error)
 	// ListStuck returns open tasks past the cap. They are never deleted; this is
@@ -290,7 +308,7 @@ func (w *TenantReclaimWorker) Work(ctx context.Context, _ *river.Job[TenantRecla
 	if err != nil {
 		return fmt.Errorf("tenant object reclaim: list due: %w", err)
 	}
-	var done, partial, refused, failed int
+	var done, partial, refused, skipped, failed int
 	for _, t := range tasks {
 		switch w.reclaimOne(ctx, t) {
 		case tenantReclaimDone:
@@ -299,6 +317,8 @@ func (w *TenantReclaimWorker) Work(ctx context.Context, _ *river.Job[TenantRecla
 			partial++
 		case tenantReclaimRefused:
 			refused++
+		case tenantReclaimSkipped:
+			skipped++
 		default:
 			failed++
 		}
@@ -306,7 +326,8 @@ func (w *TenantReclaimWorker) Work(ctx context.Context, _ *river.Job[TenantRecla
 	if len(tasks) > 0 {
 		w.logger.Info("tenant object reclaim: sweep complete",
 			slog.Int("reclaimed", done), slog.Int("partial", partial),
-			slog.Int("refused", refused), slog.Int("failed", failed))
+			slog.Int("refused", refused), slog.Int("skipped", skipped),
+			slog.Int("failed", failed))
 	}
 	w.reportStuck(ctx)
 	return nil
@@ -376,6 +397,11 @@ const (
 	tenantReclaimPartial
 	tenantReclaimRefused
 	tenantReclaimFailed
+	// tenantReclaimSkipped is contention on the org lifecycle lock, and it is
+	// distinct from every outcome above on purpose: nothing was checked, nothing
+	// was deleted, nothing was written, and no attempt was spent. The task is
+	// still due and the next tick takes it.
+	tenantReclaimSkipped
 )
 
 // reclaimOne handles exactly one task: guards first, then a bounded drain.
@@ -393,6 +419,50 @@ func (w *TenantReclaimWorker) reclaimOne(ctx context.Context, t TenantReclaimTas
 		w.fail(ctx, t, perr.Error()+TenantReclaimRetryHint(t.ID))
 		return tenantReclaimFailed
 	}
+
+	// THE LOCK, and it must be here: after the pure derivation above, BEFORE the
+	// first guard, and held until after the task is closed.
+	//
+	// Guards 2 to 4 are a read of tenant lifecycle state, and without the lock
+	// they are a read that goes stale the instant it returns. An organisation
+	// restored in the window between "no tenants row" and the first Delete had its
+	// chunks, manifests and client reports deleted underneath it by a drain that
+	// had already decided they were nobody's, and the task then closed
+	// completed=true with an empty last_error: silent, and with the objects gone
+	// there is nothing left to recover from. Taking the lock first and holding it
+	// past Complete makes the guards mean at drain time what they say at check
+	// time, which is the only thing that makes them guards.
+	//
+	// This is the same lock, in the same key space, that DELETE /orgs/{orgId},
+	// POST /orgs/{orgId}/restore and the Lane B purge worker take
+	// (org.LifecycleLockKey). This drain deletes an organisation's storage, so it
+	// is an organisation lifecycle operation and belongs inside that mutual
+	// exclusion rather than beside it.
+	//
+	// What it does NOT claim: an out-of-band database restore takes no advisory
+	// lock, so nothing in this process can serialise against one. Guard 2 remains
+	// the valve for that case, and this lock closes the window against every
+	// lifecycle operation that DOES take it.
+	release, locked, lerr := w.state.LockTenantLifecycle(ctx, t.TenantID)
+	if lerr != nil {
+		w.fail(ctx, t, fmt.Sprintf("could not take the org lifecycle lock: %v", lerr))
+		return tenantReclaimFailed
+	}
+	if !locked {
+		// Contended: yield, do NOT wait and do NOT proceed. No attempt is burned
+		// and nothing is written, so the row stays exactly as due as it was and the
+		// next tick picks it up. Counting contention as a failed attempt would let
+		// a busy tenant walk a perfectly healthy task to the attempt cap, and past
+		// the cap the objects stop being reclaimed at all.
+		w.logger.Info("tenant object reclaim: another organisation lifecycle operation holds this "+
+			"tenant's lock, leaving the task for the next tick",
+			slog.String("task_id", t.ID.String()),
+			slog.String("tenant_id", t.TenantID.String()))
+		return tenantReclaimSkipped
+	}
+	// Every path from here, including a panic in the drain, releases the lock and
+	// returns the pinned connection to the pool.
+	defer release()
 
 	// GUARD 2: the tenant row must still be ABSENT.
 	//
@@ -566,6 +636,55 @@ type pgTenantReclaimStore struct{ pool *db.Pool }
 // RLS.
 func NewTenantReclaimStore(pool *db.Pool) TenantReclaimStore {
 	return &pgTenantReclaimStore{pool: pool}
+}
+
+// LockTenantLifecycle takes the per-tenant org_lifecycle advisory lock the way
+// org.PurgeWorker.purgeOne does, deliberately to the letter rather than in a
+// second style of its own.
+//
+//   - SESSION scope on a PINNED connection, not a transaction-scoped lock. The
+//     drain's critical section is mostly object-storage network I/O, so a xact
+//     lock would either hold a transaction open across every List and Delete or
+//     have to be re-taken mid-drain, which is the same as not holding it. The
+//     connection is pinned for the whole section because a session lock only
+//     stays held on the session that took it: taking it inside a pooled tx that
+//     commits returns the connection and silently drops the lock.
+//   - pg_try_advisory_lock, never the blocking pg_advisory_lock. A drain that
+//     waited would pin a River worker behind a purge that can run for half an
+//     hour, and a drain that forced its way past would be the defect itself.
+//   - The SAME key space as DELETE /orgs/{orgId}, POST /orgs/{orgId}/restore and
+//     the Lane B purge: hashtext(org.LifecycleLockKey), hashtext(tenant).
+//     Postgres advisory locks share one lock space whatever the acquisition
+//     scope, so session and xact holders mutually exclude.
+//   - Released on EVERY path including error and panic: the caller defers the
+//     returned func, which unlocks and then returns the connection to the pool,
+//     in that order. Even if the unlock statement itself fails the lock still
+//     drops when the session closes, so the failure mode is bounded.
+func (s *pgTenantReclaimStore) LockTenantLifecycle(ctx context.Context, tenantID uuid.UUID) (func(), bool, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire lock connection: %w", err)
+	}
+	var acquired bool
+	if lerr := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtext($1), hashtext($2))`,
+		org.LifecycleLockKey, tenantID.String(),
+	).Scan(&acquired); lerr != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("org lifecycle advisory lock: %w", lerr)
+	}
+	if !acquired {
+		conn.Release()
+		return nil, false, nil
+	}
+	return func() {
+		// Best effort, then hand the connection back. A failed unlock is harmless:
+		// the lock is session-scoped and drops with the session either way.
+		_, _ = conn.Exec(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`,
+			org.LifecycleLockKey, tenantID.String())
+		conn.Release()
+	}, true, nil
 }
 
 func (s *pgTenantReclaimStore) ListDue(ctx context.Context, maxAttempts, limit int32) ([]TenantReclaimTask, error) {
