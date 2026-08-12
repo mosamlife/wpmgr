@@ -59,7 +59,21 @@ esac
 root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
 
-dirty=$(git -C "$cwd" status --porcelain 2>/dev/null)
+# `-uall` is load-bearing, not decoration. Default porcelain COLLAPSES an
+# untracked directory to one entry - `?? apps/api/internal/foo/` - and never
+# names a single file inside it. An agent that created
+# apps/api/internal/foo/bar.go in a directory that did not exist therefore
+# produced no porcelain line carrying `bar.go`, the ownership compare below
+# matched nothing, and the gate went silent about exactly the work it exists to
+# catch: brand-new files in brand-new packages, which is most of what a builder
+# agent writes. `-uall` expands each of those to one line per file.
+#
+# It cannot over-fire. Everything below is filtered through the ownership record
+# first, so an unrelated untracked tree - however many files -uall now expands
+# it into - still matches nothing this agent wrote and still says nothing.
+# Ignored files stay invisible either way: that needs --ignored, which is not
+# passed, so a gitignored node_modules is not listed by this and never was.
+dirty=$(git -C "$cwd" status --porcelain -uall 2>/dev/null)
 [[ -z "$dirty" ]] && exit 0
 
 # ---- restrict to what this agent wrote -------------------------------------

@@ -314,19 +314,48 @@ fi
 # An already-applied migration. Which files are applied is not a fixed list, so
 # it is computed the same way route-guard.sh computes it: presence in HEAD.
 if writes_to 'apps/api/migrations/'; then
+  # Resolve a repository to ask, or refuse. This arm used to leave `root` empty
+  # whenever `.cwd` was absent from the payload or was not inside a worktree,
+  # and then simply skip the whole check: no decision, no message, command
+  # ALLOWED. That is a silent route around the strongest deny in this file,
+  # available to any payload that happens not to carry a cwd, and silence is
+  # the one outcome a guard may never produce. A check that cannot do its job
+  # says so.
   cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
   root=""
   [[ -n "$cwd" && -d "$cwd" ]] && root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
-  if [[ -n "$root" ]]; then
-    applied=""
-    while IFS= read -r m; do
-      [[ -z "$m" ]] && continue
-      m="${m#./}"; m="${m#"$root"/}"
-      git -C "$root" cat-file -e "HEAD:$m" 2>/dev/null && applied="$applied  $m"$'\n'
-    done < <(grep -oE "${tok}apps/api/migrations/[A-Za-z0-9_.-]+\.sql" <<<"$cmd" | sort -u)
+  # Second source, so a missing cwd does not turn into a blanket refusal of
+  # ordinary new-migration work: this hook script is itself committed in the
+  # repository it guards, so its own directory resolves the same checkout.
+  if [[ -z "$root" ]]; then
+    self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || self_dir=""
+    [[ -n "$self_dir" ]] && root=$(git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null)
+  fi
 
-    if [[ -n "$applied" ]]; then
-      emit deny "That command writes to a migration that already exists in HEAD:
+  if [[ -z "$root" ]]; then
+    emit deny "That command writes under apps/api/migrations/, and this guard cannot resolve
+any git repository to check it against: the hook payload carried no usable cwd
+(got '${cwd:-<none>}'), and this script's own directory is not inside a
+worktree either.
+
+Whether the target is an ALREADY-APPLIED migration is decided by whether it
+exists in HEAD, and with no repository that question has no answer. This arm
+used to fall silent here and let the command run, which is a route around the
+deny rather than an answer to it, so it refuses instead.
+
+Re-run the command from inside the checkout, or route the change to
+database-engineer."
+  fi
+
+  applied=""
+  while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    m="${m#./}"; m="${m#"$root"/}"
+    git -C "$root" cat-file -e "HEAD:$m" 2>/dev/null && applied="$applied  $m"$'\n'
+  done < <(grep -oE "${tok}apps/api/migrations/[A-Za-z0-9_.-]+\.sql" <<<"$cmd" | sort -u)
+
+  if [[ -n "$applied" ]]; then
+    emit deny "That command writes to a migration that already exists in HEAD:
 
 ${applied}
 internal/db/migrate.go sorts versions lexically and skips anything already in
@@ -340,7 +369,6 @@ for databases on the earlier version. Route it to database-engineer.
 
 Doing this from the shell instead of Edit does not change the outcome; it only
 removes the record that it happened."
-    fi
   fi
 fi
 
