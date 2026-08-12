@@ -107,10 +107,24 @@ toggle it claimed to save.
 
 So the gate is not "I ran sqlc". It is:
 
+```sh
+cd apps/api
+sqlc=$(command -v sqlc) ||
+  sqlc=$(ls "$(go env GOBIN)/sqlc" "$(go env GOPATH)/bin/sqlc" 2>/dev/null | head -1)
+[ -x "$sqlc" ] || { echo "sqlc is not installed; install it, never skip this gate" >&2; exit 1; }
+"$sqlc" generate
+git diff --quiet -- internal/db/sqlc/ ||
+  { echo "sqlc output differs from the committed tree" >&2; exit 1; }
 ```
-cd apps/api && $(go env GOPATH)/bin/sqlc generate
-git diff --stat internal/db/sqlc/          # MUST be empty
-```
+
+Resolve the binary, never assume a directory. `sqlc` may be on `PATH`, and when
+`GOBIN` is set `go install` puts it there rather than in `$(go env GOPATH)/bin`.
+A gate that cannot find its binary fails loudly; it is never skipped.
+
+The assertion is `git diff --quiet`, which exits 1 exactly when the tree moved.
+`git diff --stat` exits 0 whether or not it printed anything, so a comment
+saying `MUST be empty` next to it asserts nothing and passes for a generator
+that never ran.
 
 An empty diff after a regeneration is the only proof that generated equals
 source. A tree shipped here 1044 lines away from true sqlc output, compiling,
