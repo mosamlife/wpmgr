@@ -582,6 +582,51 @@ t "git diff a gen tree"   pass "$(bdec 'git diff apps/api/internal/db/sqlc/')"
 # Deleting the dead app stays permitted; only writing into it is refused.
 t "rm the dead app still" pass "$(bdec 'rm -rf apps/landing')"
 
+echo "== bash-guard: a bare DIRECTORY destination is a protected path too"
+# Every protected prefix used to end in `/`, so a protected path was recognised
+# only when something followed it. A directory destination has nothing
+# following it, and a directory destination is the ordinary shape of a copy, so
+# each of these landed a real file in a real protected tree while the guard said
+# nothing. The suite did not catch it because every assertion above names a file
+# or a trailing slash; these name the bare directory, which is the shape that
+# was open.
+t "cp -r into sqlc dir"    deny "$(bdec 'cp -r /tmp/newsqlc apps/api/internal/db/sqlc')"
+t "mv into sqlc dir"       deny "$(bdec 'mv /tmp/models.go apps/api/internal/db/sqlc')"
+t "cp -t sqlc dir"         deny "$(bdec 'cp -t apps/api/internal/db/sqlc /tmp/models.go')"
+t "cp --target-dir sqlc"   deny "$(bdec 'cp --target-directory=apps/api/internal/db/sqlc /tmp/models.go')"
+t "rsync into gen dir"     deny "$(bdec 'rsync -a /tmp/gen/ apps/api/internal/api/gen')"
+t "install into sqlc dir"  deny "$(bdec 'install -m 644 /tmp/db.go apps/api/internal/db/sqlc')"
+t "tee into sqlc dir"      deny "$(bdec 'tee /tmp/a apps/api/internal/db/sqlc')"
+t "cp -r into dead app"    deny "$(bdec 'cp -r /tmp/newlanding apps/landing')"
+t "mv into gen dir + cmt"  deny "$(bdec 'mv /tmp/oas.go apps/api/internal/api/gen # regenerated')"
+
+# The worst of them. The destination names only the DIRECTORY, so the target
+# filename appears nowhere on the command line - it comes from the source
+# basename - and the applied-migration check scanned the command line. The write
+# lands on a migration that is already in HEAD.
+t "cp into migrations dir" deny "$(bdecw 'cp /tmp/20260101000000_m01_applied.sql apps/api/migrations')"
+t "cp -t migrations dir"   deny "$(bdecw 'cp -t apps/api/migrations /tmp/20260101000000_m01_applied.sql')"
+t "mv into migrations dir" deny "$(bdecw 'mv /tmp/20260101000000_m01_applied.sql apps/api/migrations')"
+# ...and a genuinely NEW migration delivered the same way is ordinary work.
+t "new mig into mig dir"   pass "$(bdecw 'cp /tmp/20260901000000_m40_new.sql apps/api/migrations')"
+
+# `>|` overrides noclobber and is a redirection like any other. The segment
+# split then orphaned the path, so this reached the generated tree.
+t "noclobber redirect"     deny "$(bdec 'echo x >| apps/api/internal/db/sqlc/db.go')"
+
+# OVER-FIRE is the risk in dropping the trailing slash: a bare prefix matches a
+# SIBLING unless it is anchored on a path boundary. Reads of, and writes near,
+# these trees must all still pass.
+t "ls the bare sqlc dir"   pass "$(bdec 'ls apps/api/internal/db/sqlc')"
+t "git diff bare mig dir"  pass "$(bdecw 'git diff apps/api/migrations')"
+t "sibling migrations-*"   pass "$(bdecw 'cp /tmp/x apps/api/migrations-notes.txt')"
+t "sibling landing-old"    pass "$(bdec 'cp /tmp/x apps/landing-old/index.html')"
+t "sibling sqlcx"          pass "$(bdec 'cp /tmp/x apps/api/internal/db/sqlcx/db.go')"
+t "mv dead app aside dir"  pass "$(bdec 'mv apps/landing /tmp/landing-old')"
+t "rm dead app, bare dir"  pass "$(bdec 'rm -rf apps/landing')"
+t "copy out of bare dir"   pass "$(bdec 'cp apps/api/internal/db/sqlc/db.go /tmp/')"
+t "cp -t out of sqlc"      pass "$(bdec 'cp -t /tmp/ apps/api/internal/db/sqlc/db.go')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its

@@ -120,10 +120,42 @@ fi
 # because the string appears somewhere in the line is the over-fire that gets
 # the whole harness switched off. So each shape below identifies the protected
 # path as the TARGET of the write, not merely as a substring of the command.
-GENERATED='apps/api/internal/db/sqlc/|apps/api/internal/api/gen/|apps/web/src/routeTree\.gen\.ts|packages/openapi-client/src/generated/'
-DEAD_APP='apps/landing/'
+#
+# THE PREFIXES CARRY NO TRAILING SLASH, and that is the whole point. Every
+# entry used to end in `/`, so a protected path was only ever recognised when
+# something followed it. A DIRECTORY destination has nothing following it, and a
+# directory destination is the ordinary shape of a copy:
+#
+#   cp -r /tmp/newsqlc apps/api/internal/db/sqlc      permitted
+#   mv /tmp/models.go  apps/api/internal/db/sqlc      permitted
+#   cp -t apps/api/internal/db/sqlc /tmp/models.go    permitted
+#   cp -r /tmp/newlanding apps/landing                permitted
+#   cp /tmp/20260531050000_m19_orgs_sharing.sql apps/api/migrations   permitted
+#
+# All five land a real file in a real protected directory in this checkout. The
+# last one overwrote an ALREADY-APPLIED migration and never even reached the
+# HEAD check, because the arm's own `writes_to` returned false first.
+#
+# Dropping the slash needs a boundary in its place, or `apps/api/migrations`
+# starts matching `apps/api/migrations-notes.txt` and `apps/landing` starts
+# matching `apps/landing-old`. BOUND is that boundary: a protected prefix
+# matches only where the path ends or a new component begins. It is a path
+# boundary, never a substring.
+GENERATED='apps/api/internal/db/sqlc|apps/api/internal/api/gen|apps/web/src/routeTree\.gen\.ts|packages/openapi-client/src/generated'
+DEAD_APP='apps/landing'
+MIGRATIONS='apps/api/migrations'
 
 tok='[^[:space:];|&<>"'"'"']*'   # one shell word, unquoted
+# A protected prefix must START a path component and must END one. Without the
+# trailing test, `apps/api/migrations` matches `apps/api/migrations-notes.txt`
+# and `apps/landing` matches `apps/landing-old`; without the leading test, a
+# sibling tree such as `myapps/api/internal/db/sqlc` matches. Both are path
+# boundaries, not word boundaries: `/` is what separates components.
+BOUND='(/|[[:space:]]|["'"'"']|\)|,|;|\||&|$)'
+LEADB='(^|[:/"'"'"'(,=[:space:]])'
+# An optional leading directory, for the two arms that match inside the raw
+# command string rather than against an already-extracted target.
+lead="(${tok}/)?"
 
 # A target belongs to THE COMMAND THAT WRITES IT, never to the line it sits on.
 #
@@ -174,7 +206,7 @@ tok='[^[:space:];|&<>"'"'"']*'   # one shell word, unquoted
 # protected path through python is refused. Both are conservative in the safe
 # direction, and the header already declares the wider gap.
 collect_dests() {
-  local seg cn w f tflag inplace i n start
+  local seg cn w f d tdir inplace i n start
   local -a words operands
   while IFS= read -r seg; do
     seg=$(printf '%s' "$seg" \
@@ -206,20 +238,19 @@ collect_dests() {
     esac
 
     operands=()
-    tflag=
+    tdir=
     inplace=
     i=$((start + 1))
     while [[ $i -lt $n ]]; do
       w=${words[$i]}
       case "$w" in
         --target-directory=*)
-          case "$cn" in cp|mv|install) printf 'w:%s\n' "${w#*=}"; tflag=1 ;; esac ;;
+          case "$cn" in cp|mv|install) tdir=${w#*=} ;; esac ;;
         -t|--target-directory)
           case "$cn" in
             cp|mv|install)
               i=$((i + 1))
-              [[ $i -lt $n ]] && printf 'w:%s\n' "${words[$i]}"
-              tflag=1 ;;
+              [[ $i -lt $n ]] && tdir=${words[$i]} ;;
           esac ;;
         --in-place|--in-place=*) inplace=1 ;;
         --*) ;;
@@ -237,7 +268,24 @@ collect_dests() {
 
     case "$cn" in
       cp|mv|rsync|install)
-        [[ -z "$tflag" ]] && printf 'w:%s\n' "${operands[$((${#operands[@]} - 1))]}" ;;
+        # The destination may be a FILE or a DIRECTORY, and which one it is
+        # cannot be resolved here: the payload's cwd is the agent's, not this
+        # process's, and the tree may not even exist yet. So emit both readings.
+        # `cp X apps/api/migrations` lands `apps/api/migrations/X`, and that
+        # resolved name is what the applied-migration check has to see - the
+        # command line itself never contains it.
+        if [[ -n "$tdir" ]]; then
+          printf 'w:%s\n' "$tdir"
+          for w in "${operands[@]}"; do printf 'w:%s/%s\n' "${tdir%/}" "${w##*/}"; done
+        else
+          d=${operands[$((${#operands[@]} - 1))]}
+          printf 'w:%s\n' "$d"
+          i=0
+          while [[ $i -lt $((${#operands[@]} - 1)) ]]; do
+            printf 'w:%s/%s\n' "${d%/}" "${operands[$i]##*/}"
+            i=$((i + 1))
+          done
+        fi ;;
       tee|truncate)
         printf 'w:%s\n' "${operands[@]}" ;;
       rm)
@@ -264,9 +312,13 @@ collect_dests() {
 DESTS=$(collect_dests)
 
 # dest_matches <kind> <path-regex>
+# The prefix is matched as a whole path component, never as a substring of a
+# longer one. It is NOT anchored at the start of the target: the interpreter arm
+# emits a whole quoted expression as its operand, so the path sits inside
+# `open('...','w')` rather than beginning the token.
 dest_matches() {
   [[ -z "$DESTS" ]] && return 1
-  printf '%s\n' "$DESTS" | grep "^$1:" | grep -qE "$2"
+  printf '%s\n' "$DESTS" | grep "^$1:" | grep -qE "${LEADB}($2)${BOUND}"
 }
 
 # writes_to <path-regex> [allow_rm]
@@ -275,9 +327,11 @@ writes_to() {
   local p="$1" allow_rm="${2:-no}"
 
   # cat > f, printf >> f, cmd 2> f, a heredoc's target: the syntax names it.
-  grep -qE ">>?[[:space:]]*[\"']?${tok}(${p})" <<<"$cmd" && return 0
+  # `>|` is a redirection too (it overrides noclobber), and without the `\|?`
+  # the segment split then orphaned the path and the write was permitted.
+  grep -qE ">>?\|?[[:space:]]*[\"']?${lead}(${p})${BOUND}" <<<"$cmd" && return 0
   # dd of=f: likewise.
-  grep -qE "of=[\"']?${tok}(${p})" <<<"$cmd" && return 0
+  grep -qE "of=[\"']?${lead}(${p})${BOUND}" <<<"$cmd" && return 0
   # every target named by a write command, correlated to that command
   dest_matches w "$p" && return 0
   # deletion
@@ -313,7 +367,7 @@ fi
 
 # An already-applied migration. Which files are applied is not a fixed list, so
 # it is computed the same way route-guard.sh computes it: presence in HEAD.
-if writes_to 'apps/api/migrations/'; then
+if writes_to "$MIGRATIONS"; then
   # Resolve a repository to ask, or refuse. This arm used to leave `root` empty
   # whenever `.cwd` was absent from the payload or was not inside a worktree,
   # and then simply skip the whole check: no decision, no message, command
@@ -350,9 +404,15 @@ database-engineer."
   applied=""
   while IFS= read -r m; do
     [[ -z "$m" ]] && continue
+    m="${m#w:}"; m="${m#r:}"   # strip the DESTS tag, or HEAD:w:apps/... is asked
     m="${m#./}"; m="${m#"$root"/}"
     git -C "$root" cat-file -e "HEAD:$m" 2>/dev/null && applied="$applied  $m"$'\n'
-  done < <(grep -oE "${tok}apps/api/migrations/[A-Za-z0-9_.-]+\.sql" <<<"$cmd" | sort -u)
+  done < <(printf '%s\n%s\n' "$cmd" "$DESTS" \
+           | grep -oE "${tok}apps/api/migrations/[A-Za-z0-9_.-]+\.sql" | sort -u)
+  # $DESTS as well as $cmd, because `cp X apps/api/migrations` names the target
+  # file nowhere on the command line: the name comes from the SOURCE basename,
+  # and collect_dests is what resolves it. Scanning only $cmd let exactly that
+  # shape overwrite an applied migration.
 
   if [[ -n "$applied" ]]; then
     emit deny "That command writes to a migration that already exists in HEAD:
