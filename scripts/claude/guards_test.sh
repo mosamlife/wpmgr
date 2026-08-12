@@ -899,6 +899,51 @@ t "linked wt HEAD reads"      worktree-agent-9 "$(git -C "$linked" symbolic-ref 
 t "linked wt bare push"       pass "$(bdecc "$linked" 'git push')"
 t "linked wt -C the parent"   deny "$(bdecc "$linked" "git -C $onmain push")"
 t "linked wt cd the parent"   deny "$(bdecc "$linked" "cd $onmain && git push")"
+
+# --- cd tracking: the over-fires, every one reproduced before it was fixed ---
+# All from the linked worktree, whose HEAD is worktree-agent-9, so none of them
+# was ever in doubt. Each denied, and the reason each printed - "this guard
+# could not determine which branch" - was true of the guard and useless to the
+# reader, who was pushing a worktree branch.
+t 'cd to the toplevel, then push' pass "$(bdecc "$linked" 'cd "$(git rev-parse --show-toplevel)" && git push')"
+t "cd into a dir made at runtime" pass "$(bdecc "$linked" 'mkdir -p out && cd out && cd .. && git push')"
+t "pushd, then popd, then push"  pass "$(bdecc "$linked" "pushd $onmain >/dev/null && ls && popd && git push")"
+# ...and popd is FOLLOWED, not merely tolerated: without the pop this is a push
+# from the main checkout and is still refused.
+t "pushd without the popd"       deny "$(bdecc "$linked" "pushd $onmain >/dev/null && git push")"
+# Tilde. bash expands a leading unquoted ~, so this arm does too, and the answer
+# is now the true one rather than "cannot tell": into a main checkout it denies,
+# into a branch checkout it passes. HOME is overridden so the assertion does not
+# depend on whose machine it runs on.
+mkbranchrepo "$tmp/home/hmain" main
+mkbranchrepo "$tmp/home/hbranch" fix/thing
+t "cd ~ into a main checkout"    deny "$(HOME="$tmp/home" bdecc "$linked" 'cd ~/hmain && git push')"
+t "cd ~ into a branch checkout"  pass "$(HOME="$tmp/home" bdecc "$linked" 'cd ~/hbranch && git push')"
+tcontains "and the ~ reason is the branch, not a shrug" \
+  "the current branch is main" "$(HOME="$tmp/home" breason "$linked" 'cd ~/hmain && git push')"
+# THE COST OF DEFERRING, asserted rather than left implicit. From the MAIN
+# checkout an unfollowable cd now passes this arm, because it no longer claims
+# to know a branch it cannot read. .githooks/pre-push refuses it, after the
+# shell has expanded it, and that is proved further down against a real push.
+t "unfollowable cd, on main"     pass "$(bdecc "$onmain" 'cd "$UNSET_DIR" && git push')"
+# What must NOT be relaxed with it: a refspec naming main needs no lookup at
+# all, so an unresolvable cd changes nothing about it.
+t "unfollowable cd, main named"  deny "$(bdecc "$onmain" 'cd "$UNSET_DIR" && git push origin main')"
+t "unfollowable cd, HEAD:main"   deny "$(bdecc "$linked" 'cd "$UNSET_DIR" && git push origin HEAD:main')"
+# A payload with no cwd at all is a broken payload, not an ordinary command, and
+# it still denies - the deferral is scoped to a cd this arm could not follow.
+t "no cwd at all, bare push"     deny "$(bdecc "" 'git push')"
+
+# --dry-run transfers nothing, and git's parse-options takes any unambiguous
+# prefix, so `--dry` IS a dry run. Refusing it printed "that push lands commits
+# on main", which is untrue of a command that transfers nothing.
+t "push --dry-run origin main"   pass "$(bdecc "$onbranch" 'git push --dry-run origin main')"
+t "push -n origin main"          pass "$(bdecc "$onbranch" 'git push -n origin main')"
+t "push --dry origin main"       pass "$(bdecc "$onbranch" 'git push --dry origin main')"
+t "push --dr origin main"        pass "$(bdecc "$onbranch" 'git push --dr origin main')"
+# `--d` is ambiguous with --delete and git rejects it itself, so it is not a dry
+# run and is not treated as one.
+t "push --d origin main"         deny "$(bdecc "$onbranch" 'git push --d origin main')"
 # Quoting must not defeat it, exactly as it must not defeat the write arms.
 t "dquoted main"             deny "$(bdecc "$onbranch" 'git push origin "main"')"
 t "squoted main"             deny "$(bdecc "$onbranch" "git push origin 'main'")"
@@ -1021,12 +1066,20 @@ t "cd to main, push origin"  deny "$(bdecc "$onbranch" "cd $onmain && git push o
 t "cd off main to a branch"  pass "$(bdecc "$onmain"   "cd $onwt && git push")"
 t "cd off main, push -u"     pass "$(bdecc "$onmain"   "cd $onwt && git push -u origin worktree-agent-7")"
 t "cd relative, off main"    pass "$(bdecc "$onmain"   "cd ../on-branch && git push")"
-# An unresolvable cd is not a licence to keep using the old directory. Fail
-# closed and say the branch is unknown - never claim a branch it did not read.
-t "cd \$VAR, bare push"      deny "$(bdecc "$onmain"   'cd $SOMEWHERE && git push')"
-cdvar_reason=$(breason "$onmain" 'cd $SOMEWHERE && git push')
-tcontains "and says it is unknown" "COULD NOT DETERMINE" "$cdvar_reason"
-tlacks    "not a branch it invented" "current branch is main" "$cdvar_reason"
+# An unresolvable cd is not a licence to keep using the old directory either -
+# it must never claim a branch it did not read. It USED to deny here and say
+# "branch unknown", which was right about the branch and wrong about the
+# outcome: the same rule denied `cd "$(git rev-parse --show-toplevel)" && git
+# push`, `cd ~/wpmgr && git push` and `mkdir -p out && cd out && cd .. && git
+# push` from a worktree, none of which was ever in doubt, and an over-fire here
+# teaches --no-verify. So it DEFERS: no decision, no invented reason, and
+# .githooks/pre-push refuses it after the shell has actually expanded it. That
+# hand-off is proved against a real push at the end of this file, not asserted.
+t "cd \$VAR, bare push"      pass "$(bdecc "$onmain"   'cd $SOMEWHERE && git push')"
+t "cd \$VAR, cd .., push"    pass "$(bdecc "$onmain"   'cd $SOMEWHERE && cd .. && git push')"
+# The deferral is scoped to the cd. Everything this arm can still read, it still
+# decides, and a refspec naming main needs no directory at all.
+t "cd \$VAR, main by name"   deny "$(bdecc "$onmain"   'cd $SOMEWHERE && git push origin main')"
 # ...but an unresolvable cd needs no branch when the target is named, or every
 # `cd $DIR && git push -u origin fix/x` in the project is stranded.
 t "cd \$VAR, explicit branch" pass "$(bdecc "$onmain"  'cd $SOMEWHERE && git push -u origin fix/x')"
@@ -2183,15 +2236,133 @@ tcontains "hook names the ref"      "refs/heads/main" "$hk"
 # Silence on the allowed path: a hook that chatters on every push gets muted.
 t "hook is silent when allowed" "" "$(hookmsg origin git@x:o/r.git "refs/heads/fix/x $sha refs/heads/fix/x $zero")"
 
+# A final ref line with NO trailing newline made `read` return non-zero with the
+# variables set, the loop dropped it, and the hook exited 0 in silence - the
+# same bytes with a trailing LF exited 1. Not reachable from git, which always
+# terminates the line, and fixed anyway: a guard that fails open on a malformed
+# input is the defect this hook exists to close. Both forms asserted, or the
+# fix is indistinguishable from the bug.
+hookdec_nonl() { # like hookdec, but stdin does NOT end in a newline
+  if printf '%s' "$3" | bash "$HOOK" "$1" "$2" >/dev/null 2>&1; then
+    printf 'allowed'
+  else
+    printf 'refused'
+  fi
+}
+t "hook: main, trailing LF"   refused "$(hookdec      origin git@x:o/r.git "refs/heads/main $sha refs/heads/main $zero")"
+t "hook: main, NO trailing LF" refused "$(hookdec_nonl origin git@x:o/r.git "refs/heads/main $sha refs/heads/main $zero")"
+t "hook: branch, NO trailing LF" allowed "$(hookdec_nonl origin git@x:o/r.git "refs/heads/fix/x $sha refs/heads/fix/x $zero")"
+t "hook: last of many, no LF" refused "$(hookdec_nonl origin git@x:o/r.git "refs/heads/a $sha refs/heads/a $zero
+refs/heads/main $sha refs/heads/main $zero")"
+
 # The hook is inert until core.hooksPath points at it, and that setting lives in
-# .git/config, which is not committed. So the INSTALL is part of the deliverable
-# and is asserted here: a fresh clone that never runs it is a clone with no hook,
-# which is the 2026-08-12 state exactly. Anchored on the command, not on the
-# words appearing somewhere in the file.
+# .git/config, which is not committed. So the INSTALL is part of the deliverable.
+#
+# WHAT USED TO BE HERE: three greps asserting the string `git config
+# core.hooksPath .githooks` appeared in bootstrap.sh and the Makefile. Those
+# three passed, along with the whole rest of this suite, inside a clone where no
+# hook was installed and `git push origin HEAD:refs/heads/main` landed the
+# commit. The string was present; the protection was not. What follows asserts
+# the protection.
 repo_root=$(cd "$here/../.." && pwd)
-tcontains "bootstrap installs it" "git config core.hooksPath .githooks" "$(cat "$repo_root/scripts/bootstrap.sh")"
-tcontains "make hooks installs it" "git config core.hooksPath .githooks" "$(cat "$repo_root/Makefile")"
-tcontains "and make hooks is a target" "^hooks:" "$(cat "$repo_root/Makefile")"
+HOOKSH="$repo_root/scripts/claude/git-hooks.sh"
+t "the installer is executable" exec "$(test -x "$HOOKSH" && echo exec)"
+
+# A FRESH CLONE, which is the state every developer and every CI runner starts
+# in: hook in the tree, core.hooksPath unset, nothing running. Built here rather
+# than cloned from this repository so that it models the tree HISTORY the
+# worktree case below needs - a commit BEFORE .githooks existed, then the commit
+# that adds it - and so the suite tests the working copy rather than whatever
+# happens to be committed.
+fresh="$tmp/fresh-clone"
+mkdir -p "$fresh/scripts/claude"
+git -C "$fresh" init -q
+git -C "$fresh" config user.email t@t.invalid
+git -C "$fresh" config user.name t
+echo pre > "$fresh/README.md"
+git -C "$fresh" add README.md >/dev/null
+git -C "$fresh" commit -qm "before the hook existed"
+before_hook=$(git -C "$fresh" rev-parse HEAD)
+mkdir -p "$fresh/.githooks"
+cp "$HOOK" "$fresh/.githooks/pre-push"
+chmod +x "$fresh/.githooks/pre-push"
+cp "$HOOKSH" "$fresh/scripts/claude/git-hooks.sh"
+chmod +x "$fresh/scripts/claude/git-hooks.sh"
+git -C "$fresh" add .githooks/pre-push scripts/claude/git-hooks.sh >/dev/null
+git -C "$fresh" commit -qm "the hook"
+t "fresh clone has the hook file" file "$(test -f "$fresh/.githooks/pre-push" && echo file)"
+t "fresh clone has no hooksPath"  ""    "$(git -C "$fresh" config --get core.hooksPath)"
+
+fresh_check=$(cd "$fresh" && bash "$HOOKSH" check 2>&1); fresh_rc=$?
+t "check FAILS in a fresh clone"  1 "$fresh_rc"
+tcontains "and says NOT INSTALLED" "NOT INSTALLED" "$fresh_check"
+tcontains "and prints the one fix" "make hooks"    "$fresh_check"
+# status must report the same thing and must NOT fail the session: it runs from
+# SessionStart, where a non-zero exit is the harness's problem, not the user's.
+fresh_status=$(cd "$fresh" && bash "$HOOKSH" status 2>&1); fresh_src=$?
+t "status exits 0 regardless"     0 "$fresh_src"
+tcontains "status says NOT INSTALLED" "NOT INSTALLED" "$fresh_status"
+
+# Install, and the same command must now pass. Both halves, or neither proves
+# anything: a check that is always red is as useless as one that is always green.
+inst_out=$(cd "$fresh" && bash "$HOOKSH" install 2>&1); inst_rc=$?
+t "install succeeds"              0 "$inst_rc"
+after_check=$(cd "$fresh" && bash "$HOOKSH" check 2>&1); after_rc=$?
+t "check PASSES once installed"   0 "$after_rc"
+tcontains "and says INSTALLED"    "INSTALLED" "$after_check"
+# ABSOLUTE, not relative. A relative path is resolved by git against whatever
+# working tree runs the hook, so it finds .githooks only in a tree checked out
+# at or after the hook's commit - which is what left it absent from 9 of the 10
+# checkouts on this machine while config read "installed" in all ten.
+absolute_or_not() { if [[ "$1" == /* ]]; then printf 'abs'; else printf 'relative: %s' "$1"; fi; }
+t "hooksPath is absolute"         abs "$(absolute_or_not "$(git -C "$fresh" config --get core.hooksPath)")"
+
+# A LINKED WORKTREE checked out BEFORE the hook existed. This is the case the
+# relative path silently lost: .githooks is not in that tree at all.
+freshwt="$tmp/fresh-wt"
+git -C "$fresh" worktree add -q --detach "$freshwt" "$before_hook" >/dev/null 2>&1
+t "the old tree has no .githooks" "" "$(test -e "$freshwt/.githooks" && echo present)"
+wt_check=$(cd "$freshwt" && bash "$HOOKSH" check 2>&1); wt_rc=$?
+t "check PASSES from that worktree" 0 "$wt_rc"
+
+# And the hook actually RUNS from there, against a real push. Reasoning about
+# core.hooksPath resolution is not proof; git running it is.
+wtbare="$tmp/wt-throwaway.git"
+git init -q --bare "$wtbare"
+git -C "$freshwt" checkout -q -B main
+git -C "$freshwt" config user.email t@t.invalid
+git -C "$freshwt" config user.name t
+git -C "$freshwt" commit -q --allow-empty -m wt >/dev/null 2>&1
+wt_push=$(git -C "$freshwt" push "$wtbare" HEAD:refs/heads/main 2>&1); wt_prc=$?
+t "real push to main from a worktree is refused" 1 "$((wt_prc != 0))"
+tcontains "and the worktree refusal is the hook's" "REFUSED: this push would land on main" "$wt_push"
+t "and remote main was never created" "" "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main 2>/dev/null)"
+# Not vacuous: the same push lands once the hook is switched off.
+git -C "$freshwt" config --unset core.hooksPath
+git -C "$freshwt" commit -q --allow-empty -m wt2 >/dev/null 2>&1
+git -C "$freshwt" push -q "$wtbare" HEAD:refs/heads/main >/dev/null 2>&1
+t "with hooksPath unset it lands" main "$(git -C "$wtbare" rev-parse --verify -q refs/heads/main >/dev/null && echo main)"
+
+# The gate has to be wired to the gate. `make harness-check` is what ci.yml
+# runs, and the check above is worth nothing if nothing calls it.
+tcontains "harness-check runs the hook check" "git-hooks.sh check" "$(cat "$repo_root/Makefile")"
+tcontains "make hooks is still a target" "^hooks:" "$(cat "$repo_root/Makefile")"
+tcontains "bootstrap installs it" "git-hooks.sh install" "$(cat "$repo_root/scripts/bootstrap.sh")"
+# And a session is told. This is the line that turns a silent gap into a visible
+# one, and it was absent: `grep -c hooksPath session-brief.sh` was 0.
+tcontains "session-brief reports the hook" "git-hooks.sh" "$(cat "$repo_root/scripts/claude/session-brief.sh")"
+# Re-install first: the worktree case above unset core.hooksPath, and that
+# config is SHARED with every linked worktree - which is itself why one absolute
+# setting can cover them all.
+(cd "$fresh" && bash "$HOOKSH" install >/dev/null 2>&1)
+(cd "$fresh" && bash "$HOOKSH" check >/dev/null 2>&1); t "re-install took" 0 "$?"
+sb_hook=$(cd "$fresh" && bash "$repo_root/scripts/claude/session-brief.sh" 2>/dev/null)
+tcontains "session-brief says INSTALLED where it is" "pre-push hook: INSTALLED" "$sb_hook"
+git -C "$fresh" config --unset core.hooksPath
+sb_nohook=$(cd "$fresh" && bash "$repo_root/scripts/claude/session-brief.sh" 2>/dev/null); sb_nrc=$?
+t "session-brief still exits 0"   0 "$sb_nrc"
+tcontains "session-brief says NOT INSTALLED where it is not" "pre-push hook: NOT INSTALLED" "$sb_nohook"
+tcontains "and it carries the fix"  "make hooks" "$sb_nohook"
 
 echo "== .githooks/pre-push: against a real push, because stdin is not proof"
 # The layer above proves the hook's logic. It does NOT prove git calls it, that

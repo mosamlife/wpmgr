@@ -9,14 +9,17 @@ if [ -d /opt/homebrew/opt/node@22/bin ]; then
 fi
 
 # core.hooksPath is repo-local config and config is NOT committed, so a fresh
-# clone has the hook in its tree and git ignoring it. This is the line that turns
+# clone has the hook in its tree and git ignoring it. This is the step that turns
 # it on, and it is FIRST here on purpose: if any later step fails, the clone is
-# still protected. Relative, not absolute - git resolves core.hooksPath against
-# the top of the working tree, so one setting covers the main checkout and every
-# linked worktree, each finding its own copy.
+# still protected.
+#
+# It installs an ABSOLUTE path. A relative one was tried and measured wrong: git
+# resolves a relative core.hooksPath against the top of whichever working tree
+# is running the hook, so it only finds .githooks in a tree checked out at or
+# after the hook's commit. Across the checkouts on this machine the hook was
+# present in 1 of 10 by that rule, with config reading "installed" in all ten.
 echo "==> Installing the pre-push hook (refuses a push that lands on main)"
-git config core.hooksPath .githooks
-echo "    core.hooksPath = $(git config --get core.hooksPath)"
+scripts/claude/git-hooks.sh install
 
 echo "==> Checking toolchain"
 command -v go >/dev/null || { echo "go not found"; exit 1; }

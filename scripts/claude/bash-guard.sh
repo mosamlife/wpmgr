@@ -551,9 +551,15 @@ fi
 #     git push origin :                      the "matching" refspec
 #     git push origin refs/heads/*:refs/heads/*
 #     git -c push.default=matching push      -c is consumed unread, deliberately
+#     (git push origin main)                 a subshell is not a segment here
+#     { git push origin main; }              nor is a group
+#     time git push origin main              nor is a timed command
+#     if true; then git push origin main; fi a compound command's body
 #
-# They are not a list to grind out. Deciding them means being the shell, and
-# closing eight invites a ninth. `.githooks/pre-push` is what actually catches
+# That list is a SAMPLE, not an inventory, and it carries no count on purpose:
+# every time someone looked it grew, and the number written here was stale
+# within a day of being written. Deciding these means being the shell.
+# `.githooks/pre-push` is what actually catches
 # them: it runs inside git, after expansion and after refspec resolution, and is
 # handed the refs that are about to move, so none of the above reaches it in
 # disguise. This arm exists to refuse the ordinary shapes EARLY, with the rule
@@ -674,9 +680,18 @@ push_commands() {
 # on main or a push whose target cannot be read ($PUSH_WHY = UNKNOWN).
 PUSH_WHY=""
 PUSH_CWD=""
+# Set when a `cd`/`pushd`/`popd` moved the shell somewhere this arm could not
+# resolve. It means "the branch is not knowable from here", which is NOT the
+# same as "the payload gave no cwd" - the second is still a deny, because a
+# session with no cwd at all is a broken payload rather than an ordinary
+# command. See the deny sites below.
+PUSH_CD_UNKNOWN=""
+PUSH_DIRSTACK=()
 push_hits_main() {
-  local seg w cn i n start sub d gitdir allrefs tagsonly dryrun r dst np cdto
+  local seg w cn i n start sub d gitdir allrefs tagsonly dryrun r dst np cdto cdraw
   local -a words positional
+  PUSH_CD_UNKNOWN=""
+  PUSH_DIRSTACK=()
   PUSH_CWD=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
   while IFS= read -r seg; do
     words=()
@@ -706,22 +721,74 @@ push_hits_main() {
     # saying "the current branch is main". It was not. Either follow the cd or
     # stop claiming to know the branch.
     #
-    # An operand this cannot resolve - `cd $DIR`, `cd -`, `cd ~x`, a nonexistent
-    # path - clears the directory rather than guessing, so a later bare push
-    # arrives at the UNKNOWN branch of the deny below. Fail closed, and say so.
-    if [[ "$cn" == cd || "$cn" == pushd ]]; then
-      cdto=""
+    # An operand this cannot resolve - `cd $DIR`, `cd "$(git ...)"`, `cd -`,
+    # `cd ~x`, a directory a previous segment creates at run time - is recorded
+    # as NOT KNOWN rather than guessed at. It used to clear the directory and
+    # fall into the UNKNOWN deny, and that denied five shapes of correct work,
+    # all reproduced from a worktree whose HEAD was not main:
+    #
+    #     cd "$(git rev-parse --show-toplevel)" && git push   the worktree ITSELF
+    #     cd ~/Desktop/Terminal/wpmgr && git push             tilde, never expanded
+    #     pushd /tmp >/dev/null && ls && popd && git push      popd, never tracked
+    #     mkdir -p out && cd out && cd .. && git push          `out` not there yet
+    #
+    # `~` and `popd` are now followed, because both are small and exact. What is
+    # left unresolvable DEFERS: no deny, no reason, and `.githooks/pre-push`
+    # decides it instead, after the shell has actually expanded it. That is the
+    # trade this file already makes everywhere else - a false reason is worse
+    # than no reason, and the hook is the lock while this arm is the manners.
+    if [[ "$cn" == cd || "$cn" == pushd || "$cn" == popd ]]; then
+      if [[ "$cn" == popd ]]; then
+        if [[ ${#PUSH_DIRSTACK[@]} -gt 0 ]]; then
+          PUSH_CWD=${PUSH_DIRSTACK[${#PUSH_DIRSTACK[@]}-1]}
+          unset 'PUSH_DIRSTACK[${#PUSH_DIRSTACK[@]}-1]'
+          [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1
+        else
+          # popd with nothing pushed is an error in bash and moves nothing, but
+          # this arm may have missed the pushd, so it declines to know.
+          PUSH_CWD=""; PUSH_CD_UNKNOWN=1
+        fi
+        continue
+      fi
+      cdto=""; cdraw=""
       i=$((start + 1))
       while [[ $i -lt $n ]]; do
         unq "${words[$i]}"; w=$UNQ
-        case "$w" in -*) ;; *) cdto=$w; break ;; esac
+        case "$w" in -*) ;; *) cdto=$w; cdraw=${words[$i]}; break ;; esac
         i=$((i + 1))
       done
-      [[ -z "$cdto" ]] && continue          # bare `cd`/`pushd`: leave it alone
-      if [[ "$cdto" != /* ]]; then
-        [[ -n "$PUSH_CWD" ]] && cdto="${PUSH_CWD%/}/$cdto"
+      [[ "$cn" == pushd ]] && PUSH_DIRSTACK+=("$PUSH_CWD")
+      # Bare `pushd` swaps the top two entries; bare `cd` goes to $HOME. The
+      # swap is not modelled, so it declines to know rather than stay put.
+      if [[ -z "$cdto" ]]; then
+        if [[ "$cn" == pushd ]]; then PUSH_CWD=""; PUSH_CD_UNKNOWN=1
+        else PUSH_CWD=${HOME:-}; [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1; fi
+        continue
       fi
-      if [[ -d "$cdto" ]]; then PUSH_CWD=$cdto; else PUSH_CWD=""; fi
+      # Tilde expansion happens only on an UNQUOTED leading ~, so the RAW word
+      # is what decides it: bash does not expand "~/x", and neither does this.
+      case "$cdraw" in
+        '~')   cdto=${HOME:-} ;;
+        '~/'*) cdto="${HOME:-}/${cdraw#\~/}" ;;
+      esac
+      # A RELATIVE target with no base is not resolvable, and resolving it
+      # against THIS SCRIPT's own cwd is the worst available answer: from a
+      # session inside .claude/worktrees, `cd out && cd ..` then landed on the
+      # main checkout and denied with "the current branch is main", about a
+      # directory the command never visited.
+      if [[ "$cdto" != /* ]]; then
+        if [[ -n "$PUSH_CWD" ]]; then
+          cdto="${PUSH_CWD%/}/$cdto"
+        else
+          PUSH_CWD=""; PUSH_CD_UNKNOWN=1; continue
+        fi
+      fi
+      if [[ -d "$cdto" ]]; then
+        PUSH_CWD=$(cd "$cdto" 2>/dev/null && pwd -P) || PUSH_CWD=""
+        [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1
+      else
+        PUSH_CWD=""; PUSH_CD_UNKNOWN=1
+      fi
       continue
     fi
 
@@ -761,7 +828,14 @@ push_hits_main() {
         # the command it refused, and it blocked the one safe way to inspect the
         # dangerous command before running it. Checking what a push would do is
         # the behaviour to encourage, not to redden.
-        --dry-run|-n) dryrun=1 ;;
+        #
+        # The abbreviations are here because git's parse-options accepts any
+        # UNAMBIGUOUS prefix, so `git push --dry origin main` really is a dry
+        # run and really transfers nothing - and it was denied, with the reason
+        # "that push lands commits on main", which is untrue of it. Listed down
+        # to `--dr`, which is the shortest prefix no other push option shares:
+        # `--d` is ambiguous with --delete and git rejects it itself.
+        --dry-run|--dry-ru|--dry-r|--dry-|--dry|--dr|-n) dryrun=1 ;;
         --all|--mirror) allrefs=1 ;;
         # --tags with no refspec pushes refs/tags and nothing else, so it moves
         # no branch. Exact match: --follow-tags is an ordinary branch push.
@@ -799,6 +873,9 @@ push_hits_main() {
         # branch, so it is only readable by asking which branch that is.
         if [[ "$dst" == HEAD && "$r" != *:* ]]; then
           if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
+            # Unreadable BECAUSE a cd could not be followed: defer to the hook
+            # rather than deny with a reason that is not true of the command.
+            [[ -n "$PUSH_CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue 2
             PUSH_WHY="UNKNOWN"
             return 0
           fi
@@ -815,6 +892,9 @@ push_hits_main() {
     # No refspec at all: the push goes to the current branch.
     [[ -n "$tagsonly" ]] && continue
     if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
+      # Same deferral as above: an unfollowable cd is a gap in this arm's
+      # knowledge, not evidence about the branch. The hook decides it.
+      [[ -n "$PUSH_CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue
       PUSH_WHY="UNKNOWN"
       return 0
     fi
