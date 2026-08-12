@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Measures how much real work the route guard would interrupt.
+#
+# "Prove it fires, then prove it does not over-fire" is only half a rule without
+# a number attached, and the over-fire half is the half that gets skipped. The
+# first version of this guard asked on 2531 of 2670 tracked files and on 901 of
+# the 926 files touched in the preceding 30 days: a prompt on essentially every
+# main-thread edit. A guard that cries wolf gets switched off, which is the
+# failure this harness exists to prevent, so the over-fire rate is measured
+# rather than asserted.
+#
+# REPORT ONLY. This is deliberately NOT wired into ci.yml. Its input is the last
+# N days of commits, which changes every time anything merges, so gating on it
+# would redden main with zero code change - the same failure mode govulncheck
+# already has here. The deterministic behaviour is pinned in
+# scripts/claude/guards_test.sh instead, against a synthetic repo.
+#
+#   scripts/claude/route-guard-coverage.sh                 last 30 days
+#   scripts/claude/route-guard-coverage.sh --since '7 days ago'
+#   scripts/claude/route-guard-coverage.sh --all           every tracked file
+set -uo pipefail
+
+guard_override=""
+since='30 days ago'
+mode=recent
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --since) since="${2:?--since needs a date}"; shift 2 ;;
+    --all)   mode=all; shift ;;
+    --sessions) mode=sessions; shift ;;
+    # Point at another copy of the guard to compare two versions on one window.
+    --guard) guard_override="${2:?--guard needs a path}"; shift 2 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 1; }
+root=$(cd "$root" && pwd -P)
+guard="${guard_override:-$root/scripts/claude/route-guard.sh}"
+[[ -x "$guard" ]] || [[ -f "$guard" ]] || { echo "no route-guard.sh at $guard" >&2; exit 1; }
+
+# A measurement that silently measures nothing is the defect this repo keeps
+# shipping, so every way of ending up with an empty file list is fatal.
+command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed; the guard fails open and this would report 0%" >&2; exit 1; }
+
+# ---- session simulation ----------------------------------------------------
+# The per-file rate above is stateless, so it measures the guard as if every
+# write were the first one. What a person actually experiences is prompts per
+# session, and the guard remembers a destination once it has been ruled on. This
+# replays the same window with each COMMIT DAY treated as one session, which is
+# the closest honest stand-in for "a day's work in one session".
+if [[ "$mode" == sessions ]]; then
+  simstate=$(mktemp -d) || exit 1
+  trap 'rm -rf "$simstate"' EXIT
+  export WPMGR_ROUTE_GUARD_STATE="$simstate"
+  export WPMGR_ROUTE_GUARD_TTL_MIN=100000   # one simulated day is one session
+
+  writes=0; prompts=0; days=0; lastday=""
+  while IFS= read -r line; do
+    case "$line" in
+      "D "*) d="${line#D }"
+             [[ "$d" != "$lastday" ]] && { days=$((days+1)); lastday="$d"; }
+             continue ;;
+      "") continue ;;
+    esac
+    [[ -z "${lastday:-}" ]] && continue
+    writes=$((writes+1))
+    dec=$(jq -n --arg p "$root/$line" --arg c "$root" --arg s "sim-$lastday" \
+            '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+          | bash "$guard" 2>/dev/null \
+          | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null)
+    [[ "$dec" == "ask" ]] && prompts=$((prompts+1))
+  done < <(git -C "$root" log --since="$since" --date=short --format='D %ad' --name-only -- .)
+
+  (( writes > 0 )) || { echo "FAIL: no writes replayed. Refusing to report 0." >&2; exit 1; }
+  echo "route-guard session simulation: commits since '$since', one session per commit day"
+  echo "  simulated sessions : $days"
+  echo "  writes replayed    : $writes"
+  echo "  prompts            : $prompts ($(awk -v n="$prompts" -v d="$writes" 'BEGIN{printf "%.1f", 100*n/d}')%)"
+  echo "  prompts per session: $(awk -v n="$prompts" -v d="$days" 'BEGIN{printf "%.1f", (d==0?0:n/d)}')"
+  exit 0
+fi
+
+# bash 3.2 is what macOS ships and what this runs on, so no `mapfile`.
+files=()
+if [[ "$mode" == all ]]; then
+  label="every tracked file"
+  while IFS= read -r f; do files+=("$f"); done < <(git -C "$root" ls-files)
+else
+  label="files changed since '$since'"
+  while IFS= read -r f; do files+=("$f"); done < <(
+    git -C "$root" log --since="$since" --name-only --pretty=format: -- . \
+      | sed '/^$/d' | sort -u)
+fi
+
+total=${#files[@]}
+(( total > 0 )) || { echo "FAIL: no files matched ($label). Refusing to report 0%." >&2; exit 1; }
+
+ask=0; deny=0; passn=0
+declare -a asked=()
+for f in "${files[@]}"; do
+  d=$(jq -n --arg p "$root/$f" --arg c "$root" '{cwd:$c, tool_input:{file_path:$p}}' \
+      | bash "$guard" 2>/dev/null \
+      | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null)
+  case "${d:-pass}" in
+    ask)  ask=$((ask+1));  asked+=("$f") ;;
+    deny) deny=$((deny+1)) ;;
+    *)    passn=$((passn+1)) ;;
+  esac
+done
+
+pct() { awk -v n="$1" -v d="$2" 'BEGIN{ printf "%.1f", (d==0 ? 0 : 100*n/d) }'; }
+
+echo "route-guard coverage: $label"
+echo "  files measured : $total"
+echo "  ask            : $ask ($(pct "$ask" "$total")%)"
+echo "  deny           : $deny ($(pct "$deny" "$total")%)"
+echo "  pass           : $passn ($(pct "$passn" "$total")%)"
+echo ""
+echo "top directories that would prompt:"
+if (( ask > 0 )); then
+  printf '%s\n' "${asked[@]}" | awk -F/ '{ print (NF>2 ? $1"/"$2"/"$3 : $0) }' \
+    | sort | uniq -c | sort -rn | head -12 | sed 's/^/  /'
+else
+  echo "  (none)"
+fi
