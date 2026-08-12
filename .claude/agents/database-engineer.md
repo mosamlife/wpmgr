@@ -86,8 +86,9 @@ they kept appearing.
 ### 3. `db/schema.sql` is not authoritative for RLS
 
 Its first line calls itself "single source of truth". It is not: it is sqlc's
-input, and it is well behind the migrations. The same grep above returns 46
-against `apps/api/migrations/*.sql` and 22 against `apps/api/db/schema.sql`. An
+input, and it is well behind the migrations. Run the grep above against
+`apps/api/db/schema.sql` as well as `apps/api/migrations/*.sql` and compare the
+two counts yourself; expect the migrations to lead by a wide margin. An
 agent that greps `schema.sql` to decide whether a table is site-scoped will
 conclude it is unprotected, which is the opposite of the truth. **The migrations
 are authoritative.** Grep both the quoted, schema-qualified form the migrations

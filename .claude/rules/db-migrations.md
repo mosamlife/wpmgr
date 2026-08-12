@@ -52,10 +52,14 @@ closed in handlers before anyone asked why they kept appearing.
 Its first line calls itself the single source of truth. It is sqlc's input, and
 it is well behind the migrations:
 
+```sh
+grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
+grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/db/schema.sql   | sort -u | wc -l
 ```
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l   # 46
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/db/schema.sql   | sort -u | wc -l   # 22
-```
+
+Run both in the turn you need the figures. Expect the migrations to return the
+larger number by a wide margin, not by one or two; if the two ever agree, prove
+the drift actually closed rather than assuming it.
 
 Grepping `schema.sql` to decide whether a table is site-scoped concludes it is
 unprotected, which is the opposite of the truth. Grep both the quoted,

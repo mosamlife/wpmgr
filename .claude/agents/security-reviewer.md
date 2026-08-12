@@ -92,9 +92,10 @@ Count the siblings before accepting that a table is special:
 grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
 ```
 
-`apps/api/db/schema.sql` calls itself the single source of truth and **is not**:
-the same grep returns 46 against the migrations and 22 against `schema.sql`. The
-migrations are authoritative.
+`apps/api/db/schema.sql` calls itself the single source of truth and **is not**.
+Run the same grep against `apps/api/db/schema.sql` as well and compare: it
+returns materially fewer policies than the migrations do. The migrations are
+authoritative.
 
 **The GUC is set in `internal/db/db.go`, never by a handler.** `InTenantTx`,
 `InTenantTxAsUser`, `InUserTx`, `InScopedTenantTx` (the site-collaborator path),
