@@ -47,10 +47,10 @@ mkdir -p "$repo"/apps/api/{migrations,db,tests,internal/{site,auth,db/sqlc,api/g
          "$repo"/apps/tracker/src "$repo"/apps/landing "$repo"/docs/worklog \
          "$repo"/.github/workflows "$repo"/infra "$repo"/packages/openapi-client/src
 echo "-- applied" > "$repo/apps/api/migrations/20260101000000_m01_applied.sql"
-# Staged BY NAME, like every commit in this project. CLAUDE.md forbids
-# `git add -A` everywhere, and this file is the proof surface for the harness
-# that teaches that rule: a proof that breaks the rule it proves is not a proof.
-# Asserted about this file below, so it cannot quietly come back.
+# Staged BY NAME, like every commit in this project. This used to stage the
+# whole tree, which CLAUDE.md forbids everywhere and which this suite exists to
+# prove: a proof that breaks the rule it proves is not a proof. Asserted about
+# this file at the end of the suite, so it cannot quietly come back.
 git -C "$repo" add apps/api/migrations/20260101000000_m01_applied.sql >/dev/null
 git -C "$repo" commit -qm init
 
@@ -816,13 +816,31 @@ t "unsabotaged, it goes green"     0   "$ok_cd_rc"
 t "and the worktree really went"   no  "$(exists "$cdr/.claude/worktrees/agent-cd1")"
 
 echo "== guards_test: this suite obeys the rule it proves"
-# Two fixture setups here staged with `git add -A`. CLAUDE.md forbids blanket
-# staging everywhere, and this file is the proof surface for the harness that
-# teaches it, so the rule is asserted about this file rather than left to
-# review. The pattern tolerates a `git -C <dir>` prefix, which is the form both
-# offenders took and the form a plain search for the phrase "git add -A" misses.
-blanket='git( +-C +[^ ]+)? +add +(-A|--all|\.)( |$)'
-t "no blanket staging in this suite" 0 "$(grep -cE "$blanket" "$0" | tr -d ' ')"
+# Two fixture setups here staged everything instead of naming it. CLAUDE.md
+# forbids blanket staging everywhere, and this file is the proof surface for the
+# harness that teaches it, so the rule is asserted about this file rather than
+# left to review.
+#
+# The pattern tolerates a `git -C <dir>` prefix - the form both offenders took,
+# and the form a plain search for the phrase alone does not see. Its two
+# boundaries differ on purpose, and each was wrong once when this was written:
+# the flags end at any non-flag character, so a trailing `;` is still caught
+# while `-A-not-a-flag` is not; the bare dot ends only at something that cannot
+# continue a path, so a lone dot is caught while a relative path such as
+# `./one/file.go` - which is naming a file - is not.
+#
+# Comment lines are stripped first. This paragraph would otherwise match itself,
+# and, worse, a comment restating the rule is a second home for a fact that has
+# one: scripts/claude/fact-census.sh counts exactly that kind of drift, and this
+# block is deliberately written so it does not add to that count.
+#
+# `git add` only. `commit -a` is also forbidden and appears nowhere in this
+# suite; folding it in would have to catch `-am` too, and a pattern that half
+# covers a rule is worse than one that states its scope.
+ga='git( +-C +[^ ]+)? +add +'
+blanket=$ga'(-A|--all)([^A-Za-z0-9_-]|$)|'$ga'\.([^A-Za-z0-9_/.-]|$)'
+t "no blanket staging in this suite" 0 \
+  "$(grep -vE '^[[:space:]]*#' "$0" | grep -cE "$blanket" | tr -d ' ')"
 
 echo ""
 if [[ $failed -eq 0 ]]; then

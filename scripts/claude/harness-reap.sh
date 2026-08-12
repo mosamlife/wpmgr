@@ -32,8 +32,9 @@
 #     and, run from inside a worktree, offered up the main checkout, because
 #     `git rev-parse --show-toplevel` resolves to the worktree.
 #   - it refuses to run at all if it cannot enter the repository root. Every
-#     action here resolves its repository from the current directory, so a
-#     failed `cd` would aim all of them at the caller's directory instead
+#     action here resolves its repository from the current directory, and the
+#     report and the self-protection checks all assume that directory is the
+#     root; acting from one it never reached is how a delete goes wrong
 #   - a worktree is removed only if it is also clean AND its branch is merged
 #     into the default branch. Never on mtime; mtime lies.
 #   - the worktree the reaper is running inside is never removed, however
@@ -69,17 +70,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-# Never continue on a failed `cd`. Everything below - `git worktree remove
-# --force`, `git branch -d`, `go clean -cache`, and the `git rev-parse` that
-# picks the base branch - resolves its repository from the CURRENT DIRECTORY,
-# not from $root. An unchecked `cd` (SC2164) leaves every one of them pointed at
-# whatever directory the caller happened to be standing in, so a reaper asked to
-# clean repo A would delete worktrees and branches out of repo B and report it
-# as a successful reclaim. Given what a mis-targeted delete costs, this refuses.
+# Never continue on a failed `cd` (SC2164). Everything below - `git worktree
+# remove --force`, `git branch -d`, the rev-parse that picks the base branch,
+# `go clean -cache` - resolves its repository from the CURRENT DIRECTORY, while
+# the report line, the `$wt == $root` self-protection check and the ownership
+# test all assume that directory is $root. Unchecked, a failed cd left every
+# one of them running somewhere the script had never reached, and it did not
+# even slow down: the proof in guards_test.sh plants the failure and the old
+# code goes on to remove a worktree and print "1 removed" from a location it
+# never verified. A script whose next four commands delete things stops when it
+# cannot reach the place it is about to act on.
 cd "$root" || {
-  echo "cannot enter the repository root '$root' (exit $?). Refusing to run: every" >&2
-  echo "action below resolves its repository from the current directory, so" >&2
-  echo "continuing would delete worktrees and branches out of $(pwd) instead." >&2
+  echo "cannot enter the repository root '$root' (exit $?). Refusing to run." >&2
+  echo "Every action below resolves its repository from the current directory," >&2
+  echo "which is still $(pwd) - not the root just resolved. Nothing was touched." >&2
   exit 2
 }
 
