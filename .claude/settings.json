@@ -58,6 +58,11 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/agent-writes.sh\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/route-guard.sh\" --record",
+            "timeout": 10
           }
         ]
       }

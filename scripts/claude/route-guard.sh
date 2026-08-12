@@ -231,6 +231,23 @@ session=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
 
 sane() { printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '-' | tail -c 64; }
 
+# sane() keeps '.', because a session id legitimately contains one. So the two
+# components that do NOT stay inside the directory they are joined to survive it
+# unchanged: `session_id: ".."` sanitises to ".." and put the marker one level
+# ABOVE the state root. Sanitising is not the same as validating; a component is
+# only usable once it has been checked for what it means, not only for what
+# characters it contains.
+component() { # component <raw> -> one safe path component on stdout, or fails
+  local c
+  c=$(sane "$1")
+  case "$c" in
+    ''|.|..)
+      printf 'route-guard: %s sanitises to "%s", which does not stay inside the state directory; no state, asking every time\n' "$1" "$c" >&2
+      return 1 ;;
+  esac
+  printf '%s' "$c"
+}
+
 # ---- the state directory, and why it is not simply whatever the env says ----
 # This block deletes. WPMGR_ROUTE_GUARD_STATE is an environment variable, and the
 # prune under it used to be an unconditional
@@ -270,20 +287,42 @@ resolve_state() { # prints an owned state root on stdout, or fails
       printf 'route-guard: state path %q is not a plain directory; refusing it, asking every time\n' "$want" >&2
       return 1
     fi
-    if [[ ! -f "$want/$STATE_MARKER" ]]; then
-      # One exception, and only for the DEFAULT path: it carries this guard's own
-      # name, so a version of the guard that predates the marker is the plausible
-      # author. Adopt it only if this user owns it and it is not a symlink;
-      # anything given by the environment is never adopted.
-      if [[ "$want" == "$STATE_DEFAULT" && -O "$want" ]]; then
-        : > "$want/$STATE_MARKER" || return 1
-      else
-        printf 'route-guard: %q has no %s marker, so it is not this guard'"'"'s state directory; leaving it untouched and asking every time\n' "$want" "$STATE_MARKER" >&2
+    # OWNERSHIP IS CHECKED FOR EVERY ACCEPTED PATH, not only for the one branch
+    # that adopts. The marker is a fixed name under a fixed, predictable
+    # directory name, and ${TMPDIR:-/tmp} falls back to a SHARED /tmp on CI, in
+    # containers and on Linux boxes. If presence of the marker alone were enough,
+    # another local account could create /tmp/wpmgr-route-guard, drop the marker
+    # in it, leave it world-writable and plant session markers - and a planted
+    # marker satisfies the TTL check and SUPPRESSES the route prompt. That is the
+    # quiet direction, which is the one failure this guard exists to prevent.
+    if [[ ! -O "$want" ]]; then
+      printf 'route-guard: state path %q is not owned by this user; refusing it, asking every time\n' "$want" >&2
+      return 1
+    fi
+    if [[ -e "$want/$STATE_MARKER" ]]; then
+      # The marker is the ownership claim, so the claim itself has to be ours and
+      # has to be a real file: a symlink named .wpmgr-harness-state proves
+      # nothing about who owns the directory it points into.
+      if [[ -L "$want/$STATE_MARKER" || ! -f "$want/$STATE_MARKER" || ! -O "$want/$STATE_MARKER" ]]; then
+        printf 'route-guard: %q is not a plain file owned by this user; refusing the state directory, asking every time\n' "$want/$STATE_MARKER" >&2
         return 1
       fi
+    elif [[ "$want" == "$STATE_DEFAULT" ]]; then
+      # One exception, and only for the DEFAULT path, which we have just proven
+      # this user owns: it carries this guard's own name, so a version of the
+      # guard that predates the marker is the plausible author. Anything given by
+      # the environment is never adopted.
+      : > "$want/$STATE_MARKER" || return 1
+    else
+      printf 'route-guard: %q has no %s marker, so it is not this guard'"'"'s state directory; leaving it untouched and asking every time\n' "$want" "$STATE_MARKER" >&2
+      return 1
     fi
+    # It is ours, so close it: anything another account already had the right to
+    # write here, it loses now.
+    chmod 700 "$want" || return 1
   else
-    mkdir -p "$want" || return 1
+    ( umask 077; mkdir -p "$want" ) || return 1
+    chmod 700 "$want" || return 1
     : > "$want/$STATE_MARKER" || return 1
   fi
   printf '%s' "$want"
@@ -310,9 +349,15 @@ prune_state() { # prune_state <owned state root>
 repeat_note=""
 if [[ -n "$session" && "$ttl" =~ ^[0-9]+$ && "$ttl" -gt 0 ]] && state=$(resolve_state); then
   prune_state "$state"
+fi
 
-  sdir="$state/$(sane "$session")"
-  marker="$sdir/$(sane "${agent}|${sensitive}")"
+# Both halves of the key are validated, not merely sanitised, before either one
+# is joined to a path. A failure here drops the memory and falls through to the
+# ask, which is the strict direction.
+if [[ -n "${state:-}" ]] && sess_c=$(component "$session") \
+   && dest_c=$(component "${agent}|${sensitive}"); then
+  sdir="$state/$sess_c"
+  marker="$sdir/$dest_c"
 
   if [[ "$mode" == record ]]; then
     # PostToolUse: the tool ran, so the ruling was given and was an approval.
@@ -320,7 +365,12 @@ if [[ -n "$session" && "$ttl" =~ ^[0-9]+$ && "$ttl" -gt 0 ]] && state=$(resolve_
     exit 0
   fi
 
-  if [[ -n "$(find "$marker" -mmin "-$ttl" 2>/dev/null)" ]]; then
+  # A marker only silences the prompt if THIS user wrote it. The state root is
+  # ownership-checked above, but a marker planted while it was still loose would
+  # outlive that check, so the file actually being trusted is checked directly.
+  if [[ -d "$sdir" && ! -L "$sdir" && -O "$sdir" \
+        && -f "$marker" && ! -L "$marker" && -O "$marker" \
+        && -n "$(find "$marker" -mmin "-$ttl" 2>/dev/null)" ]]; then
     exit 0   # already ruled on, this session, this destination
   fi
   repeat_note="

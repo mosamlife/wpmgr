@@ -247,6 +247,98 @@ touch -t 200001010000 "$own/sess-stale" "$own/not a session dir" "$own/.wpmgr-ha
 t "stale session dir pruned"   no  "$(exists "$own/sess-stale")"
 t "off-shape entry kept"       yes "$(exists "$own/not a session dir")"
 t "marker survives the prune"  yes "$(exists "$own/.wpmgr-harness-state")"
+t "own dir is not group/world readable" 700 "$(stat -f '%OLp' "$own" 2>/dev/null || stat -c '%a' "$own")"
+
+echo "== route-guard state: the marker is a claim, so the claim is checked too"
+# The marker is a FIXED name under a FIXED directory name, and ${TMPDIR:-/tmp}
+# falls back to a shared /tmp in CI, in containers and on Linux boxes. If the
+# marker's presence alone were enough, another local account could create the
+# directory, drop the marker in it and plant session markers - and a planted
+# marker satisfies the TTL check and SUPPRESSES the prompt, which is the quiet
+# direction this guard exists to prevent. So ownership is checked for every
+# accepted path, not only on the branch that adopts one.
+#
+# This fixture is real, not stubbed: it looks for a directory that genuinely has
+# another owner and is genuinely writable by us, which is exactly the shared-/tmp
+# shape. `rm` is shadowed for the duration so that a regression in the guard
+# cannot prune somebody else's temp directory to prove the point.
+unowned=""
+for cand in /private/var/tmp /var/tmp /private/tmp /tmp; do
+  [[ -d "$cand" && ! -L "$cand" && -w "$cand" && ! -O "$cand" ]] || continue
+  unowned="$cand"; break
+done
+if [[ -z "$unowned" ]]; then
+  echo "SKIP  no directory on this machine is both writable and owned by another user; the unowned-state assertions did not run"
+else
+  planted="$unowned/.wpmgr-harness-state"
+  had_marker=$(exists "$planted")
+  [[ "$had_marker" == yes ]] || : > "$planted"
+  stub="$tmp/stub"; mkdir -p "$stub"
+  printf '#!/bin/sh\necho "rm $*" >> %s/rm.log\nexit 0\n' "$tmp" > "$stub/rm"
+  chmod +x "$stub/rm"
+  rm -f "$tmp/rm.log"
+  ( export WPMGR_ROUTE_GUARD_STATE="$unowned" PATH="$stub:$PATH"
+    decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessU >/dev/null )
+  # Pin the OWNERSHIP branch by name. Asserting only "it was refused" passed even
+  # with the ownership test deleted, because `chmod 700` on a root-owned
+  # directory fails and refuses it anyway - a second reason, not the one under
+  # test. An assertion that survives the removal of the code it names tests
+  # nothing.
+  err=$( ( export WPMGR_ROUTE_GUARD_STATE="$unowned"
+           jq -n --arg c "$repo" --arg p "$repo/apps/api/internal/site/service.go" --arg s sessU \
+             '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+           | bash "$ROUTE" 2>&1 >/dev/null ) )
+  tcontains "unowned dir: refused by the owner check" "not owned by this user" "$err"
+  t "unowned dir: never pruned"  no  "$(exists "$tmp/rm.log")"
+  t "unowned dir: no session dir" no "$(exists "$unowned/sessU")"
+  t "unowned dir: still asks"    ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$unowned"; decision "$repo/apps/api/internal/site/x.go" "$repo" "" sessU)"
+  # ...and a marker planted there can never silence a later prompt.
+  mkdir -p "$unowned/sessU" 2>/dev/null && : > "$unowned/sessU/backend-architect-0" 2>/dev/null
+  t "planted marker does not silence" ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$unowned"; decision "$repo/apps/api/internal/site/y.go" "$repo" "" sessU)"
+  rm -rf "$unowned/sessU"
+  [[ "$had_marker" == yes ]] || rm -f "$planted"
+fi
+
+echo "== route-guard state: a path component is validated, not merely sanitised"
+# sane() is `tr -c 'a-zA-Z0-9._-'`, and '.' is in the keep-set, so the two
+# components that do NOT stay inside the directory they are joined to survive it
+# unchanged. Measured before the fix: session_id ".." put the destination marker
+# in the state root's PARENT. Sanitising is not validating.
+esc="$tmp/escape"
+mkdir -p "$esc/state"
+: > "$esc/state/.wpmgr-harness-state"
+# The payload PostToolUse actually delivers: hook_event_name, tool_name and
+# tool_response ride along with the fields the guard reads.
+record_post() { # record_post <session_id> <abs file path>
+  jq -n --arg p "$2" --arg c "$repo" --arg s "$1" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c,
+      hook_event_name:"PostToolUse", tool_name:"Edit",
+      tool_input:{file_path:$p}, tool_response:{filePath:$p, success:true}}' \
+    | bash "$ROUTE" --record >/dev/null 2>&1
+}
+( export WPMGR_ROUTE_GUARD_STATE="$esc/state"
+  record_post ".." "$repo/apps/api/internal/site/service.go"
+  record_post "."  "$repo/apps/api/internal/site/service.go" )
+t "'..' writes nothing above"   "state" "$(ls -A "$esc")"
+t "'.' writes nothing in root"  ".wpmgr-harness-state" "$(ls -A "$esc/state")"
+t "'..' still asks"             ask \
+  "$(export WPMGR_ROUTE_GUARD_STATE="$esc/state"; decision "$repo/apps/api/internal/site/service.go" "$repo" "" "..")"
+# ...and the real PostToolUse payload shape still records for an ordinary id.
+( export WPMGR_ROUTE_GUARD_STATE="$esc/state"
+  record_post sessK "$repo/apps/api/internal/site/service.go" )
+t "PostToolUse shape records"   pass \
+  "$(export WPMGR_ROUTE_GUARD_STATE="$esc/state"; decision "$repo/apps/api/internal/site/other.go" "$repo" "" sessK)"
+
+echo "== settings.json: the --record arm is actually wired"
+# Until something invokes --record, no ruling is ever recorded and every routed
+# write prompts again. PreToolUse asks; only PostToolUse knows the tool ran.
+SETTINGS="$(cd "$here/../.." && pwd)/.claude/settings.json"
+t "settings.json parses" 0 "$(jq -e . "$SETTINGS" >/dev/null 2>&1; printf '%s' "$?")"
+post_edit=$(jq -r '.hooks.PostToolUse[] | select(.matcher == "Edit|Write|NotebookEdit") | .hooks[].command' "$SETTINGS" 2>/dev/null)
+tcontains "PostToolUse keeps agent-writes" "agent-writes.sh"        "$post_edit"
+tcontains "PostToolUse records rulings"    "route-guard.sh\" --record" "$post_edit"
 
 echo "== route-guard: escalation is by directory, not by substring"
 tlacks   "_authed does not escalate"  "security-reviewer" "$(reason "$repo/apps/web/src/routes/_authed/sites/index.tsx")"
