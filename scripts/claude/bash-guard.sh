@@ -311,14 +311,40 @@ collect_dests() {
       # plain `tr ";|&"` plus a `s/ #.*//` cut inside quoted text, so
       #   sed -i "s| #x|y|" apps/api/internal/db/sqlc/db.go
       # lost its destination to a `|` and a `#` that were data, and the write
-      # was permitted. Quote state is reset each line rather than carried, so an
-      # unbalanced apostrophe in a heredoc body cannot silence the rest of the
-      # command.
+      # was permitted.
+      #
+      # BACKSLASH ESCAPES ARE CONSUMED IN PAIRS. The first version of this
+      # splitter had none, and that was a REGRESSION worse than the nit it
+      # fixed: `\` is a literal apostrophe to bash, but it opened a quote state
+      # here that never closed, so
+      #   echo don\'"'"'t; cp /tmp/x apps/api/internal/db/sqlc/db.go
+      # became ONE segment whose command word was `echo`, and the write was
+      # never seen. That is reachable from any apostrophe in ordinary prose in
+      # a chained command, and it defeated all three deny arms.
+      #
+      # Inside SINGLE quotes bash performs no escaping at all - a backslash is
+      # a literal character and the next `'"'"'` still closes the string - so the
+      # pairing is skipped there, matching the shell rather than guessing.
+      #
+      # WHEN IN DOUBT, SPLIT. If a line ends with a quote still open, this
+      # cannot know where the command ends, so it falls back to the old
+      # separator split for that line. A spurious split can only over-fire,
+      # which an assertion catches; an absorbed segment is a silent bypass. The
+      # same reasoning covers the per-line quote reset: line 2 of a genuine
+      # multi-line quoted string is parsed as unquoted, which splits more, not
+      # less.
       {
         q = ""; out = ""; prev = ""
         n = length($0)
         for (i = 1; i <= n; i++) {
           c = substr($0, i, 1)
+          if (c == "\\" && q != "'"'"'") {
+            d = substr($0, i + 1, 1)
+            out = out c d
+            i++
+            prev = d
+            continue
+          }
           if (q != "") { out = out c; if (c == q) q = "" }
           else if (c == "'"'"'" || c == "\"") { q = c; out = out c }
           else if (c == "#" && (prev == "" || prev == " " || prev == "\t")) break
@@ -326,7 +352,8 @@ collect_dests() {
           else out = out c
           prev = c
         }
-        print out
+        if (q != "") { line = $0; gsub(/[;|&]/, "\n", line); print line }
+        else print out
       }')
 }
 

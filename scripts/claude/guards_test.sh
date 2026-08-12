@@ -639,6 +639,44 @@ t "hash inside a quote"    deny "$(bdec "sed -i 's/ #x/y/' apps/api/internal/db/
 t "src basename into dir"  deny "$(bdec 'cp /tmp/routeTree.gen.ts apps/web/src')"
 t "harmless basename"      pass "$(bdec 'cp /tmp/notes.txt apps/web/src')"
 
+echo "== bash-guard: the splitter survives backslash escapes"
+# A REGRESSION this suite did not catch, and the reason it is asserted here at
+# the shape level rather than the symptom level. The quote-aware splitter was
+# added to close a `#`-inside-a-sed-script nit and had no escape handling, so
+# `\'` - a literal apostrophe to bash - opened a quote state that never closed.
+# The rest of the line was absorbed into one segment whose command word was the
+# harmless leading command, and the write was never seen. Reachable from any
+# apostrophe in ordinary prose in a chained command, against all three deny
+# arms. A fix for a minor finding must not widen the attack surface.
+t "esc quote then cp"     deny "$(bdec 'echo don\'"'"'t; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "esc quote then dead"   deny "$(bdec 'echo don\'"'"'t && cp /tmp/x apps/landing/index.html')"
+t "esc quote then rm"     deny "$(bdec 'echo don\'"'"'t; rm -rf apps/api/internal/api/gen/oas.go')"
+t "esc dquote then cp"    deny "$(bdec 'echo \"; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "esc backslash then cp" deny "$(bdec 'echo a\\; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "ansi-c quote then cp"  deny "$(bdec 'echo $'"'"'\'"'"''"'"'; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "mixed escapes then mv" deny "$(bdec 'echo it\'"'"'s a \"q\"; mv /tmp/x apps/web/src/routeTree.gen.ts')"
+# A lone trailing backslash must not run off the end of the line either.
+t "trailing backslash"    deny "$(bdec 'cp /tmp/x apps/api/internal/db/sqlc/db.go \')"
+
+# The controls: balanced quotes, which were green before the regression and
+# must stay green. If these ever go quiet the splitter is absorbing again.
+t "dquoted apostrophe"    deny "$(bdec 'echo "don'"'"'t"; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "no quote at all"       deny "$(bdec 'echo dont; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "grep a dquoted quote"  deny "$(bdec 'grep "it'"'"'s" /tmp/f; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+t "awk program then cp"   deny "$(bdec 'awk '"'"'{print $1}'"'"' /tmp/f; cp /tmp/x apps/api/internal/db/sqlc/db.go')"
+
+# The nit the splitter was added for stays closed. If a correct escape-aware
+# splitter had cost these, the deny would have been kept and the nit reopened.
+t "pipe in quote still"   deny "$(bdec "sed -i 's| #x|y|' apps/api/internal/db/sqlc/db.go")"
+t "hash in quote still"   deny "$(bdec "sed -i 's/ #x/y/' apps/api/internal/db/sqlc/db.go")"
+
+# Over-fire: an apostrophe in prose is not a write, and splitting more when the
+# quote state is uncertain must not start refusing ordinary commands.
+t "apostrophe, no write"  pass "$(bdec 'echo don'"'"'t worry')"
+t "esc quote, read only"  pass "$(bdec 'echo don\'"'"'t; cat apps/api/internal/db/sqlc/db.go')"
+t "esc quote, copy out"   pass "$(bdec 'echo don\'"'"'t; cp apps/api/internal/db/sqlc/db.go /tmp/')"
+t "esc quote, rm dead"    pass "$(bdec 'echo don\'"'"'t; rm -rf apps/landing')"
+
 echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
