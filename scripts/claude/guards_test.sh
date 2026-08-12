@@ -1170,6 +1170,88 @@ t "an off-shape name is not"          yes "$(exists "$okst/notes for me.txt")"
 t "the marker is never pruned"        yes "$(exists "$okst/.wpmgr-harness-state")"
 t "and a fresh record is not"         yes "$(exists "$okst/agent-I")"
 
+echo "== agent-writes: the marker is never written into a door still open"
+# TOCTOU, inherited from route-guard.sh along with the rest of the discipline.
+# On the ADOPTION path this file wrote the marker and chmod 700'd afterwards,
+# so between "the marker is absent" and "the marker exists" another local
+# account with write access to that directory could drop a SYMLINK at the marker
+# name and have the redirect truncate whatever this user can write. Owning a
+# directory does not make it private.
+#
+# Two independent locks now, and each is reverted on its own below: 0700 before
+# any write, and creation through `set -C` so bash opens O_CREAT|O_EXCL, which
+# POSIX requires to fail on a symlink, dangling or not.
+
+# The planted symlink, at the marker name, pointing at a file that does not
+# exist yet. If the redirect follows it, the target is CREATED. That is the
+# whole finding in one observable fact.
+adopt="$tmp/adopt-toctou"
+mkdir -p "$adopt"
+victim="$tmp/adopt-victim.txt"
+ln -s "$victim" "$adopt/.wpmgr-harness-state"
+adopt_out=$(aw "$adopt" agent-P)
+t "the planted target is never created" no "$(exists "$victim")"
+t "and the run still exits 0"           0  "$(aw_rc "$adopt" agent-P)"
+# The directory is not the default path, so this is refused at the marker check
+# before adoption is even considered - the outer lock. Its own message.
+tcontains "and the refusal is stated"   "not a plain file owned by this user" "$adopt_out"
+t "and no record is written there"      no "$(exists "$adopt/agent-P")"
+
+# The same plant, but the marker symlink points at a file that DOES exist and
+# has content. A followed redirect truncates it; this asserts the bytes survive.
+keep="$tmp/adopt-keepme.txt"
+printf 'do not truncate me\n' > "$keep"
+adopt2="$tmp/adopt-toctou2"
+mkdir -p "$adopt2"
+ln -s "$keep" "$adopt2/.wpmgr-harness-state"
+aw "$adopt2" agent-Q >/dev/null
+t "an existing target is not truncated" "do not truncate me" "$(cat "$keep")"
+
+# excl_create on its own: against a directory with a dangling symlink at the
+# marker name, `set -C` must refuse rather than create the target. Exercised
+# through the CREATION path, where the marker is written into a directory this
+# run has just made - the case the ordering fix alone does not cover.
+mkdir -p "$tmp/exclprobe"
+ln -s "$tmp/exclprobe/never-me" "$tmp/exclprobe/.wpmgr-harness-state"
+if ( set -C; : > "$tmp/exclprobe/.wpmgr-harness-state" ) 2>/dev/null; then
+  excl_probe=FOLLOWED
+else
+  excl_probe=REFUSED
+fi
+t "set -C refuses a symlink"            REFUSED "$excl_probe"
+t "and did not create its target"       no      "$(exists "$tmp/exclprobe/never-me")"
+
+echo "== agent-writes: a record that is a symlink is never appended through"
+# The write-side twin of the commit-gate refusal. `>>` follows symlinks and
+# bash's noclobber does not apply to it, so O_EXCL is unavailable here: the
+# record must persist across calls. The directory is 0700 by this point, so the
+# remaining case is a stale or stray symlink left by something running as this
+# user - and prune_state deliberately never removes one, so it would persist
+# forever and every recorded path would go wherever it points.
+wrst="$tmp/writestate"
+aw "$wrst" agent-seed >/dev/null
+spill="$tmp/spill-target.txt"
+printf 'original\n' > "$spill"
+ln -s "$spill" "$wrst/agent-R"
+wr_out=$(aw "$wrst" agent-R)
+t "the symlinked record is refused"   0 "$(aw_rc "$wrst" agent-R)"
+tcontains "and says it is a symlink"  "it is a symlink" "$wr_out"
+t "and nothing is appended to it"     "original" "$(cat "$spill")"
+
+# ...and the over-fire on both changes at once: normal recording is unchanged,
+# silent, and commit-gate still blocks on the record it produced.
+t "a plain record is still written"   yes "$(exists "$wrst/agent-seed")"
+t "and recording stays silent"        ""  "$(aw "$wrst" agent-S)"
+t "and its dir is still drwx------"   "drwx------" "$(ls -ld "$wrst" | awk '{print substr($1,1,10)}')"
+# gate_at is defined further down, under the commit-gate heading, so the call is
+# inline here rather than moving anything that another agent may be editing.
+wr_gate_rc=$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-S"}' \
+  | WPMGR_AGENT_WRITES_STATE="$wrst" bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")
+wr_gate_msg=$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-S"}' \
+  | WPMGR_AGENT_WRITES_STATE="$wrst" bash "$GATE" 2>&1 >/dev/null)
+t "and commit-gate still blocks"      2 "$wr_gate_rc"
+tcontains "and names the file"        "theirs.txt" "$wr_gate_msg"
+
 echo "== commit-gate: a record directory it cannot vouch for is not read"
 # A planted EMPTY record is the quietest possible outcome: it sets scoped=1 with
 # nothing owned, and the gate then exits 0 at the "already committed" branch
