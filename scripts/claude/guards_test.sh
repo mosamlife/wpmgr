@@ -474,7 +474,16 @@ echo "== bash-guard: the migration arm never goes quiet because it cannot resolv
 #    and a rotted name would make this assertion pass for the wrong reason.
 real_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || echo "")
 real_mig=""
-[[ -n "$real_root" ]] && real_mig=$(git -C "$real_root" ls-tree -r --name-only HEAD apps/api/migrations 2>/dev/null | grep -E '\.sql$' | head -1)
+# No `head -1` on the end of this pipeline. head closes the pipe as soon as it
+# has its line, grep then dies on a write error, and CI logged
+# "grep: write error: Broken pipe" from exactly here. It was harmless - the
+# value is still the first match - but a stderr line nobody can explain is how
+# a real one gets skipped over. Take the whole list and cut the first line in
+# bash, where nothing closes anything early.
+if [[ -n "$real_root" ]]; then
+  real_migs=$(git -C "$real_root" ls-tree -r --name-only HEAD apps/api/migrations 2>/dev/null | grep -E '\.sql$')
+  real_mig=${real_migs%%$'\n'*}
+fi
 if [[ -n "$real_mig" ]]; then
   t "no cwd, applied mig denied"  deny "$(bdec "sed -i '' s/a/b/ $real_mig")"
   t "no cwd, redirect denied"     deny "$(bdec "echo x > $real_mig")"
@@ -905,6 +914,50 @@ echo "== session-brief: a measurement it could not take never prints as zero"
 # things and this reproduces the first.
 BRIEF="$here/session-brief.sh"
 realgit=$(command -v git)
+
+# --- a PATH this fixture BUILDS, never one it inherits -----------------------
+# Every session-brief.sh run below goes through $sysbin. The first version of
+# this fixture prepended its shims to $PATH, so what each case resolved to
+# depended on what the developer happened to have installed: on a machine whose
+# shell profile puts the Go bin directory on PATH - which is the configuration
+# the docs ask for, so sqlc/atlas/govulncheck run directly - nine assertions
+# reddened, while CI, which has none of those binaries, stayed green. Green in
+# CI and red for the developer who followed the instructions is the shape this
+# project names specifically, and a suite that reddens correct work gets
+# switched off.
+#
+# A symlink farm rather than a list of system directories: the directory holding
+# jq or git may also hold go - both are /opt/homebrew/bin on this machine - so
+# no subset of real directories is guaranteed to exclude the toolchain. Linking
+# exactly the binaries session-brief.sh needs gives a PATH that can contain
+# nothing else. `bash` is in the list because the shims' `#!/usr/bin/env bash`
+# resolves it through PATH.
+sysbin="$tmp/sysbin"
+mkdir -p "$sysbin"
+for b in bash sh git jq df awk du cut grep; do
+  bp=$(command -v "$b" 2>/dev/null)
+  if [[ "$bp" != /* || ! -x "$bp" ]]; then
+    echo "FAIL  hermetic PATH setup: '$b' did not resolve to an executable absolute path (got '${bp:-nothing}')"
+    failed=$((failed+1)); continue
+  fi
+  ln -sf "$bp" "$sysbin/$b"
+done
+# Not a restatement of the loop above: this is what stops a future edit adding
+# `go`, or a whole system directory, to the farm without anyone noticing. It
+# keys on the PATH just built, never on the ambient one.
+# `timeout` is in this list for a reason that cost a CI run: it does not exist
+# on macOS but IS real coreutils on ubuntu-latest, so with the ambient PATH the
+# brief reported "- on PATH: timeout govulncheck" there and "- on PATH:
+# govulncheck" here, and an assertion on the exact line passed locally and
+# failed in CI. Any tool the brief looks up must be absent from the farm, so
+# that whether it is "on PATH" is decided here and not by the operating system.
+for tool in go sqlc atlas govulncheck docker timeout; do
+  if (PATH="$sysbin"; command -v "$tool" >/dev/null 2>&1); then
+    echo "FAIL  hermetic PATH setup: '$tool' is visible under the built PATH, so the fixture is not hermetic"
+    failed=$((failed+1))
+  fi
+done
+
 sb="$tmp/briefrepo"
 mkdir -p "$sb"
 git -C "$sb" init -q
@@ -926,8 +979,8 @@ chmod +x "$shim_git/git"
 
 # An honest zero and a failed measurement must not read the same. This is the
 # assertion the whole change exists for.
-sb_zero=$(cd "$sb" && bash "$BRIEF" 2>/dev/null)
-sb_fail=$(cd "$sb" && PATH="$shim_git:$PATH" bash "$BRIEF" 2>/dev/null)
+sb_zero=$(cd "$sb" && PATH="$sysbin" bash "$BRIEF" 2>/dev/null)
+sb_fail=$(cd "$sb" && PATH="$shim_git:$sysbin" bash "$BRIEF" 2>/dev/null)
 tlacks    "honest zero claims no worktrees"  "agent worktrees" "$sb_zero"
 tcontains "a failed git says so"             "agent worktrees: could not measure" "$sb_fail"
 tlacks    "and never reports it as zero"     "0 live"          "$sb_fail"
@@ -936,7 +989,7 @@ tlacks    "and never reports it as zero"     "0 live"          "$sb_fail"
 t "the two runs really differ"  differ \
   "$(if [[ "$sb_zero" == "$sb_fail" ]]; then printf same; else printf differ; fi)"
 # A brief that cannot measure still must not break the session start.
-sb_fail_rc=$(cd "$sb" && PATH="$shim_git:$PATH" bash "$BRIEF" >/dev/null 2>&1; printf '%s' "$?")
+sb_fail_rc=$(cd "$sb" && PATH="$shim_git:$sysbin" bash "$BRIEF" >/dev/null 2>&1; printf '%s' "$?")
 t "a failed measurement still exits 0" 0 "$sb_fail_rc"
 
 # docker: installed but not answering is precisely what a full disk does to it,
@@ -944,14 +997,16 @@ t "a failed measurement still exits 0" 0 "$sb_fail_rc"
 shim_dfail="$tmp/shim-docker-fail"; mkdir -p "$shim_dfail"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "Cannot connect to the Docker daemon" >&2' 'exit 1' > "$shim_dfail/docker"
 chmod +x "$shim_dfail/docker"
-sb_dfail=$(cd "$sb" && PATH="$shim_dfail:$PATH" bash "$BRIEF" 2>/dev/null)
+sb_dfail=$(cd "$sb" && PATH="$shim_dfail:$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "a silent docker says so" "docker volumes: could not measure" "$sb_dfail"
 # ...and the honest direction, or a brief that reported everything as
 # unmeasurable would pass the assertion above while measuring nothing.
 shim_dok="$tmp/shim-docker-ok"; mkdir -p "$shim_dok"
-printf '%s\n' '#!/usr/bin/env bash' 'for i in $(seq 1 12); do echo "vol$i"; done' > "$shim_dok/docker"
+# A builtin loop, not `seq`: under the built PATH there is no seq, and a shim
+# that cannot run would report zero volumes and quietly pass the wrong test.
+printf '%s\n' '#!/usr/bin/env bash' 'for ((i=1;i<=12;i++)); do echo "vol$i"; done' > "$shim_dok/docker"
 chmod +x "$shim_dok/docker"
-sb_dok=$(cd "$sb" && PATH="$shim_dok:$PATH" bash "$BRIEF" 2>/dev/null)
+sb_dok=$(cd "$sb" && PATH="$shim_dok:$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "a working docker is counted"   "12 docker volumes" "$sb_dok"
 tlacks    "and is not called unmeasurable" "docker volumes: could not measure" "$sb_dok"
 
@@ -960,7 +1015,7 @@ tlacks    "and is not called unmeasurable" "docker volumes: could not measure" "
 shim_df="$tmp/shim-df"; mkdir -p "$shim_df"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "df: /: Operation not permitted" >&2' 'exit 1' > "$shim_df/df"
 chmod +x "$shim_df/df"
-sb_df=$(cd "$sb" && PATH="$shim_df:$PATH" bash "$BRIEF" 2>/dev/null)
+sb_df=$(cd "$sb" && PATH="$shim_df:$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "a broken df says so"        "disk free: could not measure" "$sb_df"
 tcontains "and says the warning did not run" "did NOT run" "$sb_df"
 tlacks    "and invents no free space"  "disk free: Gi"  "$sb_df"
@@ -976,15 +1031,13 @@ echo "== session-brief: 'could not check' is not the same claim as 'NOT INSTALLE
 # on PATH, in the Go bin directory, genuinely absent, and unknowable. The last
 # two were collapsed into the loudest one.
 #
-# The fixture must not be able to reach the real toolchain, or these assertions
-# would pass or fail on what happens to be installed rather than on the code.
-for tool in sqlc atlas; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    echo "FAIL  toolchain setup: '$tool' is on PATH, so the Go-bin-directory case cannot be reached"
-    failed=$((failed+1))
-  fi
-done
-
+# Every run below uses the built $sysbin PATH, which is already asserted to see
+# none of go, sqlc, atlas or govulncheck. The states are therefore produced by
+# this fixture and not by what the developer has installed - the whole point of
+# the rewrite. The two guards that used to sit here keyed on the AMBIENT PATH
+# and reddened on a machine that simply had the toolchain installed; their real
+# job now belongs to the hermeticity check next to the farm, where it can catch
+# a mistake in the farm rather than a fact about the developer's shell.
 sbfx="$tmp/gofix"
 mkdir -p "$sbfx/bin"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$sbfx/bin/sqlc"   # present in the Go bin dir
@@ -1014,7 +1067,7 @@ mkgo "$shim_go" "" "$sbfx"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$shim_go/govulncheck"
 chmod +x "$shim_go/govulncheck"
 
-tc_ok=$(cd "$sb" && PATH="$shim_go:$PATH" bash "$BRIEF" 2>/dev/null)
+tc_ok=$(cd "$sb" && PATH="$shim_go:$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "on PATH is said so"           "on PATH: govulncheck"                    "$tc_ok"
 tcontains "in the Go bin dir, located"   "sqlc is at $sbfx/bin/sqlc, not on PATH"  "$tc_ok"
 tcontains "genuinely absent stays loud"  "atlas is NOT INSTALLED"                  "$tc_ok"
@@ -1034,30 +1087,16 @@ printf '%s\n' '#!/bin/sh' 'exit 0' > "$gbdir/atlas"
 chmod +x "$gbdir/atlas"
 shim_gobin="$tmp/shim-gobin"
 mkgo "$shim_gobin" "$gbdir" "$sbfx"
-tc_gb=$(cd "$sb" && PATH="$shim_gobin:$PATH" bash "$BRIEF" 2>/dev/null)
+tc_gb=$(cd "$sb" && PATH="$shim_gobin:$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "GOBIN beats GOPATH/bin" "atlas is at $gbdir/atlas, not on PATH" "$tc_gb"
 tlacks "and GOBIN's tool is not called absent" "atlas is NOT INSTALLED"    "$tc_gb"
 
 # The state the old code could not express at all: go unresolvable, so the
-# lookup never happened and absence is not a claim this script may make.
-path_without() { # path_without <cmd> -> $PATH with the directory holding <cmd> removed
-  local cmd=$1 p d e out=""
-  p=$(command -v "$cmd" 2>/dev/null) || { printf '%s' "$PATH"; return 0; }
-  d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || d=""
-  local IFS=:
-  for e in $PATH; do
-    [[ -z "$e" ]] && continue
-    [[ -n "$d" && "$(cd "$e" 2>/dev/null && pwd -P)" == "$d" ]] && continue
-    out="$out:$e"
-  done
-  printf '%s' "${out#:}"
-}
-nogo_path=$(path_without go)
-if (PATH="$nogo_path"; command -v go >/dev/null 2>&1); then
-  echo "FAIL  no-go setup: 'go' is still resolvable, so the unknowable case cannot be reached"
-  failed=$((failed+1))
-fi
-tc_nogo=$(cd "$sb" && PATH="$nogo_path" bash "$BRIEF" 2>/dev/null)
+# lookup never happened and absence is not a claim this script may make. The
+# built PATH simply has no go in it, which is why this needs no PATH surgery -
+# the earlier version stripped the directory holding go out of the ambient
+# PATH, which worked only because it was starting from a PATH it did not build.
+tc_nogo=$(cd "$sb" && PATH="$sysbin" bash "$BRIEF" 2>/dev/null)
 tcontains "no go: it says it could not check" "sqlc: could not check whether it is installed" "$tc_nogo"
 tcontains "and names go as the reason"        "'go' is not on PATH"                           "$tc_nogo"
 # The whole finding in one assertion: with no way to look, it must not assert
