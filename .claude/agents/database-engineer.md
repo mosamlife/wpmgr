@@ -75,8 +75,19 @@ Every new site-keyed table needs, in the same migration:
 Count the siblings before you claim a table is unusual:
 
 ```bash
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
+site_scope_count() {
+  n=$(grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' "$@" | sort -u | grep -c .)
+  [ "$n" -gt 0 ] || { echo "no site_scope policy matched across $# path(s); fix the pattern or the path before concluding anything" >&2; return 1; }
+  echo "$n"
+}
+
+site_scope_count apps/api/migrations/*.sql
 ```
+
+Ending that pipeline in `wc -l` instead would print `0` and exit `0` when the
+pattern matches nothing, and `0` here reads as "no sibling carries this policy",
+which is the opposite of the truth and the conclusion that costs a tenant
+boundary. A search that found nothing must refuse, not answer.
 
 m112 exists solely because four tables in the email domain shipped without this
 and the database therefore refused only another *tenant*, not another *site*.

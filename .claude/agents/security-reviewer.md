@@ -89,12 +89,22 @@ how a site-scope policy came to be missing from four tables.
 Count the siblings before accepting that a table is special:
 
 ```bash
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
+site_scope_count() {
+  n=$(grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' "$@" | sort -u | grep -c .)
+  [ "$n" -gt 0 ] || { echo "no site_scope policy matched across $# path(s); fix the pattern or the path before concluding anything" >&2; return 1; }
+  echo "$n"
+}
+
+site_scope_count apps/api/migrations/*.sql
 ```
 
+It refuses instead of printing `0` because an empty result and a real answer of
+zero are indistinguishable in a bare `wc -l`, and here the wrong reading of `0`
+is "nothing is site-scoped", which is how a tenant boundary gets waved through.
+
 `apps/api/db/schema.sql` calls itself the single source of truth and **is not**.
-Run the same grep against `apps/api/db/schema.sql` as well and compare: it
-returns materially fewer policies than the migrations do. The migrations are
+Run `site_scope_count apps/api/db/schema.sql` as well and compare: it returns
+materially fewer policies than the migrations do. The migrations are
 authoritative.
 
 **The GUC is set in `internal/db/db.go`, never by a handler.** `InTenantTx`,

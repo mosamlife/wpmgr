@@ -53,13 +53,26 @@ Its first line calls itself the single source of truth. It is sqlc's input, and
 it is well behind the migrations:
 
 ```sh
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/migrations/*.sql | sort -u | wc -l
-grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' apps/api/db/schema.sql   | sort -u | wc -l
+site_scope_count() {
+  n=$(grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' "$@" | sort -u | grep -c .)
+  [ "$n" -gt 0 ] || { echo "no site_scope policy matched across $# path(s); fix the pattern or the path before concluding anything" >&2; return 1; }
+  echo "$n"
+}
+
+site_scope_count apps/api/migrations/*.sql
+site_scope_count apps/api/db/schema.sql
 ```
 
 Run both in the turn you need the figures. Expect the migrations to return the
 larger number by a wide margin, not by one or two; if the two ever agree, prove
 the drift actually closed rather than assuming it.
+
+The wrapper exists because the bare pipeline ends in `wc -l`, which prints `0`
+and exits `0` when the pattern matches nothing. On this page, `0` is not a
+number: it is the same answer a renamed policy convention, a moved path or a
+mangled paste produces, and it reads as "this table has no site-scope policy",
+which is the exact wrong conclusion the paragraph below warns about. An empty
+search here has to refuse rather than answer.
 
 Grepping `schema.sql` to decide whether a table is site-scoped concludes it is
 unprotected, which is the opposite of the truth. Grep both the quoted,
