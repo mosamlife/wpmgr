@@ -30,6 +30,21 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "- route-guard and bash-guard are INACTIVE: jq is not installed. Routing"
   echo "  and the wait-loop deny are unenforced this session. Fix: install jq."
 fi
+
+# The pre-push hook, resolved for THIS checkout. It is committed but inert until
+# core.hooksPath points at it, and core.hooksPath is repo-local config, which is
+# never committed: unprotected is the default state of every clone, and of every
+# checkout made before the hook existed. Nothing told anyone - the setting is
+# invisible until the moment it is needed, which is the moment it is too late.
+# Three states, never two, same as the toolchain block below: INSTALLED, NOT
+# INSTALLED, or COULD NOT CHECK. `status` cannot fail the session; it exits 0
+# whatever it finds, and prints the one command that fixes a negative.
+hooks_status="$root/scripts/claude/git-hooks.sh"
+if [[ -x "$hooks_status" ]]; then
+  "$hooks_status" status 2>/dev/null || true
+else
+  echo "- pre-push hook: COULD NOT CHECK - $hooks_status is missing or not executable, so this session does not know whether a push to main is refused here. Do NOT read that as installed."
+fi
 # --- toolchain --------------------------------------------------------------
 # Four states, and the old code collapsed two of them into the loudest one.
 #

@@ -259,6 +259,20 @@ jobs:
       #
       # The self-tests run FIRST: if the linter or the guards have regressed,
       # that is the more useful failure to read.
+      #
+      # `make hooks` is a separate step and runs BEFORE it, because
+      # harness-check now asserts the committed pre-push hook is actually
+      # running - core.hooksPath is repo-local config, config is never
+      # committed, and actions/checkout produces exactly the unprotected clone
+      # every developer starts with. Installing it here is not a way around the
+      # assertion: it makes CI prove the INSTALLER works on a clean checkout,
+      # which is the half a runner can prove. The unprotected-clone failure
+      # itself is proved in scripts/claude/guards_test.sh, which builds a clone
+      # with no hook, requires the check to go red, installs, and requires it to
+      # go green.
+      - name: Install the committed git hooks
+        run: make hooks
+
       - name: Agent harness self-test and lint
         run: make harness-check
 

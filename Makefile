@@ -13,6 +13,24 @@ help: ## Show this help
 bootstrap: ## First-time dev setup
 	./scripts/bootstrap.sh
 
+# Separate from bootstrap because bootstrap installs a toolchain and this does
+# not: an existing clone that predates the hook needs this one command and
+# nothing else. `git config core.hooksPath` is repo-local and repo-local config
+# is never committed, so without it a clone carries .githooks/pre-push and git
+# never runs it - the push to main is permitted exactly as it was on 2026-08-12.
+#
+# The resolution, the absolute-path handling and the verification live in the
+# script, with a committed test suite, because that is where build-gating logic
+# belongs. The first version of this was three inline lines and it installed a
+# RELATIVE path, which every linked worktree then resolved against its own tree.
+.PHONY: hooks
+hooks: ## Install the committed git hooks (pre-push refuses a push that lands on main)
+	scripts/claude/git-hooks.sh install
+
+.PHONY: hooks-status
+hooks-status: ## Report whether the pre-push hook is actually running in this checkout
+	@scripts/claude/git-hooks.sh status
+
 .PHONY: quickstart
 quickstart: ## One-command self-host bootstrap: write .env + generate secrets
 	./scripts/init-env.sh
@@ -107,6 +125,12 @@ harness-check: ## Lint the agent definitions and run the guard regression suite
 	scripts/claude/agent-lint.sh --self-test
 	scripts/claude/agent-lint.sh
 	scripts/claude/guards_test.sh
+# LAST, and it asserts the hook is RUNNING in this checkout, not that an
+# installer string appears in a file. The previous version of that assertion
+# passed in full inside a clone where no hook was installed and `git push
+# origin HEAD:refs/heads/main` landed. A check that passes when the thing it
+# checks is absent is worse than no check.
+	scripts/claude/git-hooks.sh check
 
 .PHONY: harness-reap
 harness-reap: ## REPORT what agent worktrees, branches, caches and volumes can be reclaimed
