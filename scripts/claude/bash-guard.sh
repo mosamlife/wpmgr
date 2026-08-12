@@ -125,10 +125,90 @@ DEAD_APP='apps/landing/'
 
 tok='[^[:space:];|&<>"'"'"']*'   # one shell word, unquoted
 
+# The destination of a cp/mv/rsync/install/truncate is THAT COMMAND'S operand,
+# never the last whitespace token of the line. The previous version took
+# `awk '{print $NF}'`, which three independent reviews reported as a bypass:
+#
+#   cp secret.go apps/api/internal/db/sqlc/models.go # note
+#
+# has last token `note`, so the write into the generated tree was permitted. On
+# a multi-line $cmd, awk emits one field PER LINE, so the same test also fired
+# on a protected path that merely ended some unrelated line.
+#
+# So: join `\`-continued lines, start a new segment at every `;` `|` `&` (which
+# covers `&&` and `||`) and every newline, and inside a segment drop a trailing
+# `#` comment and every redirection, skip leading VAR=value assignments and
+# env/sudo/command wrappers, take the command name basename-wise so `/bin/cp`
+# counts, and drop option words. What is left is that command's operands: the
+# last one is the destination for cp/mv/rsync/install, every one is a target for
+# truncate, and a `-t`/`--target-directory` value replaces both (for rsync `-t`
+# means preserve-times, so it is not treated as a destination there).
+#
+# KNOWN LIMIT, stated rather than papered over: this splits on whitespace with
+# no quote parsing, so a destination inside quotes, or built from a variable, is
+# not seen. That is the same gap the header already declares.
+collect_write_dests() {
+  local seg cn w tflag i n start
+  local -a words operands
+  while IFS= read -r seg; do
+    seg=$(printf '%s' "$seg" \
+      | sed -E -e 's/(^|[[:space:]])#.*$//' -e 's/[0-9]*[<>]+&?[[:space:]]*[^[:space:]]*//g')
+    words=()
+    IFS=$' \t' read -r -a words <<<"$seg"
+    n=${#words[@]}
+    [[ $n -eq 0 ]] && continue
+
+    start=0
+    while [[ $start -lt $n ]]; do
+      case "${words[$start]}" in
+        *=*|env|sudo|command|nohup|nice) start=$((start + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [[ $start -ge $n ]] && continue
+
+    cn=${words[$start]##*/}
+    case "$cn" in cp|mv|rsync|install|truncate) ;; *) continue ;; esac
+
+    operands=()
+    tflag=
+    i=$((start + 1))
+    while [[ $i -lt $n ]]; do
+      w=${words[$i]}
+      case "$w" in
+        --target-directory=*)
+          if [[ "$cn" != rsync ]]; then printf '%s\n' "${w#*=}"; tflag=1; fi ;;
+        -t|--target-directory)
+          if [[ "$cn" != rsync ]]; then
+            i=$((i + 1))
+            [[ $i -lt $n ]] && printf '%s\n' "${words[$i]}"
+            tflag=1
+          fi ;;
+        -*) ;;
+        *) operands[${#operands[@]}]="$w" ;;
+      esac
+      i=$((i + 1))
+    done
+
+    [[ -n "$tflag" ]] && continue
+    [[ ${#operands[@]} -eq 0 ]] && continue
+    if [[ "$cn" == truncate ]]; then
+      printf '%s\n' "${operands[@]}"
+    else
+      printf '%s\n' "${operands[$((${#operands[@]} - 1))]}"
+    fi
+  done < <(printf '%s\n' "$cmd" \
+           | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
+           | tr ';|&' '\n\n\n')
+}
+
+# One destination per line, so a regex can never match across two of them.
+WRITE_DESTS=$(collect_write_dests)
+
 # writes_to <path-regex> [allow_rm]
 # Returns 0 if $cmd writes to something matching the regex.
 writes_to() {
-  local p="$1" allow_rm="${2:-no}" last
+  local p="$1" allow_rm="${2:-no}"
 
   # cat > f, printf >> f, cmd 2> f, a heredoc's target
   grep -qE ">>?[[:space:]]*[\"']?${tok}(${p})" <<<"$cmd" && return 0
@@ -140,11 +220,10 @@ writes_to() {
   if grep -qE "(^|[;&|[:space:]])(sed|perl|ruby)[[:space:]]" <<<"$cmd" \
      && grep -qE "[[:space:]]-i" <<<"$cmd" \
      && grep -qE "$p" <<<"$cmd"; then return 0; fi
-  # cp/mv/rsync/install/truncate: destination is the last word, so `cp gen/x
-  # /tmp/` (a read) does not match and `cp /tmp/x gen/` (a write) does.
-  last=$(printf '%s' "$cmd" | awk '{print $NF}')
-  if grep -qE "(^|[;&|[:space:]])(cp|mv|rsync|install|truncate)[[:space:]]" <<<"$cmd" \
-     && grep -qE "$p" <<<"$last"; then return 0; fi
+  # cp/mv/rsync/install/truncate: only the destinations collected above, so
+  # `cp gen/x /tmp/` (a read) does not match and `cp /tmp/x gen/` (a write) does,
+  # whatever trails the line.
+  if [[ -n "$WRITE_DESTS" ]] && grep -qE "$p" <<<"$WRITE_DESTS"; then return 0; fi
   # an interpreter opening the path for writing
   if grep -qE "(^|[;&|[:space:]])(python3?|ruby|node|php)[[:space:]]" <<<"$cmd" \
      && grep -qE "(open\(|writeFile|file_put_contents|\.write\()" <<<"$cmd" \
