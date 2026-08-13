@@ -16,12 +16,19 @@ export const metadata: Metadata = buildMetadata({
 
 // ---------------------------------------------------------------------------
 // Curated release entries (newest first, harvested from CHANGELOG.md).
-// This is a long curated history, not a recent window: 75 entries as of
-// 2026-08-14, running from 0.61.134 back to 0.54.0, some of them grouping
-// several releases into one. Anything older lives on GitHub Releases.
+// This is the whole curated history rather than a recent window: it runs back
+// to 0.54.0, with some entries grouping several releases into one. Anything
+// older lives on GitHub Releases.
+// The total is deliberately not written down here. It is derived from RELEASES,
+// so a number in this comment is right only until the release that forgets to
+// bump it. Count it when you actually want it, anchored on the entry indent so
+// the ChangeEntry type's own field is not counted as an entry:
+//   grep -cE '^    version:' 'apps/marketing/app/(marketing)/changelog/page.tsx'
 // CI keeps the newest entry within 5 releases of the top CHANGELOG.md entry
 // (scripts/check-version-surfaces.sh), reading the newest version in a grouped
-// entry rather than the first one on the line.
+// entry rather than the first one on the line. That guard reads the first
+// quoted version field in the whole file, so nothing above RELEASES may carry
+// one, which is why the line above does not quote the value it matches.
 // ---------------------------------------------------------------------------
 
 type ChangeTag = "Added" | "Changed" | "Fixed" | "Security";
