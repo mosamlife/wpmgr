@@ -523,6 +523,154 @@ func (r *Repo) DeleteMembership(ctx context.Context, userID, tenantID uuid.UUID)
 }
 
 // ---------------------------------------------------------------------------
+// Guarded member mutation (GH #406 follow-up: the last-owner guard was
+// check-then-act across four separate transactions)
+// ---------------------------------------------------------------------------
+
+// MemberRolesLockKey namespaces the per-tenant advisory lock that serialises
+// every guarded member-role mutation for one organisation. Same shape as
+// org.LifecycleLockKey: pg_advisory_xact_lock(hashtext(key), hashtext(tenant)),
+// so the lock is released by COMMIT or ROLLBACK and can never leak.
+//
+// A DIFFERENT namespace to org_lifecycle on purpose: a member demote must not
+// block behind an org purge, and neither guards the other's invariant.
+//
+// It is the FIRST thing the guard transaction does, before any row lock. That
+// ordering is the whole deadlock argument: two callers demoting two different
+// owners of the same org would otherwise take the two owner rows in opposite
+// order and deadlock. With the advisory lock first, the second caller is still
+// outside the critical section when the first takes its row locks, so the two
+// sets of row locks never interleave — there is exactly one lock to acquire
+// before any other, and it is the same lock for both callers.
+const MemberRolesLockKey = "org_member_roles"
+
+// MemberGuard is the read half of a guarded member mutation, handed to the
+// callback of WithMemberGuard. Target and OwnerCount were read INSIDE the same
+// transaction that will perform the write, under the per-tenant advisory lock
+// and with the tenant's owner rows held FOR UPDATE — so a decision taken on
+// them cannot be invalidated by a concurrent demote or delete before the write
+// lands. Authorization policy stays in the handler; only the atomicity lives
+// here.
+type MemberGuard struct {
+	// Target is the membership the caller is acting on, as it exists under
+	// the lock.
+	Target Membership
+	// OwnerCount is the tenant's owner-role membership count under the lock.
+	OwnerCount int
+
+	tx       pgx.Tx
+	tenantID uuid.UUID
+	userID   uuid.UUID
+}
+
+// UpdateRole writes the new role in the guard's transaction.
+func (g MemberGuard) UpdateRole(ctx context.Context, role authz.Role) (Membership, error) {
+	row, err := sqlc.New(g.tx).UpdateMembershipRole(ctx, sqlc.UpdateMembershipRoleParams{
+		UserID: g.userID, TenantID: g.tenantID, Role: string(role),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Membership{}, domain.NotFound("membership_not_found", "membership not found")
+		}
+		return Membership{}, domain.Internal("membership_update_failed", "failed to update membership").WithCause(err)
+	}
+	return membershipToModel(row), nil
+}
+
+// Delete removes the membership in the guard's transaction.
+func (g MemberGuard) Delete(ctx context.Context) error {
+	n, err := sqlc.New(g.tx).DeleteMembership(ctx, sqlc.DeleteMembershipParams{UserID: g.userID, TenantID: g.tenantID})
+	if err != nil {
+		return domain.Internal("membership_delete_failed", "failed to delete membership").WithCause(err)
+	}
+	if n == 0 {
+		return domain.NotFound("membership_not_found", "membership not found")
+	}
+	return nil
+}
+
+// WithMemberGuard runs fn inside ONE tenant transaction spanning read → guard →
+// write, so the last-owner invariant cannot be raced.
+//
+// Before the fix this was four transactions (GetMembership, CountOwners, then
+// UpdateMembershipRole or DeleteMembership), and two concurrent demotes of two
+// different owners both read ownerCount=2, both passed the guard and both
+// wrote: the org reached ZERO owners. Since 702ed45 closed the two in-product
+// repair routes (an admin could no longer mint an owner API key nor promote
+// themselves), a zero-owner org needs direct database access to fix, which
+// makes the race an unrecoverable-org bug rather than a transient one.
+//
+// The transaction, in order:
+//  1. pg_advisory_xact_lock on (MemberRolesLockKey, tenant) — one writer per
+//     org inside the critical section, and the single lock every caller takes
+//     first (see MemberRolesLockKey for the deadlock argument).
+//  2. the target membership row SELECT ... FOR UPDATE.
+//  3. the tenant's owner rows SELECT ... FOR UPDATE, counted. Row locks as
+//     well as the advisory lock so that a future writer that forgets the
+//     advisory lock still blocks on the rows themselves.
+//
+// RLS: the reads run under InTenantTx (app.tenant_id set by the helper, never
+// by this code). memberships_tenant_isolation is declared with NO `FOR` clause
+// — i.e. FOR ALL, with the tenant predicate in both USING and WITH CHECK — so
+// it applies to `SELECT ... FOR UPDATE` exactly as it does to a plain SELECT.
+// That is what makes a locking read safe here: the FOR SELECT-only policies on
+// this table (memberships_self_read, memberships_agent) would have silently
+// returned zero rows to a locking read, which is the trap that stopped
+// scheduled backups firing. Neither of those is in play on the InTenantTx
+// path. Both statements still carry tenant_id explicitly.
+func (r *Repo) WithMemberGuard(ctx context.Context, userID, tenantID uuid.UUID, fn func(MemberGuard) error) error {
+	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+			MemberRolesLockKey, tenantID.String(),
+		); err != nil {
+			return domain.Internal("member_lock_failed", "failed to lock organisation membership").WithCause(err)
+		}
+
+		var m Membership
+		var role string
+		if err := tx.QueryRow(ctx,
+			`SELECT user_id, tenant_id, role, created_at, updated_at
+			   FROM memberships
+			  WHERE user_id = $1 AND tenant_id = $2
+			    FOR UPDATE`,
+			userID, tenantID,
+		).Scan(&m.UserID, &m.TenantID, &role, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound("membership_not_found", "membership not found")
+			}
+			return domain.Internal("membership_get_failed", "failed to load membership").WithCause(err)
+		}
+		m.Role = authz.Role(role)
+
+		// FOR UPDATE cannot sit beside an aggregate, so the lock is taken in a
+		// subquery and counted outside it. ORDER BY user_id makes the row-lock
+		// order deterministic even though the advisory lock above already means
+		// no second caller is here to race for them.
+		var owners int64
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM (
+			     SELECT user_id FROM memberships
+			      WHERE tenant_id = $1 AND role = 'owner'
+			      ORDER BY user_id
+			        FOR UPDATE
+			 ) locked_owners`,
+			tenantID,
+		).Scan(&owners); err != nil {
+			return domain.Internal("owner_count_failed", "failed to count owners").WithCause(err)
+		}
+
+		return fn(MemberGuard{
+			Target:     m,
+			OwnerCount: int(owners),
+			tx:         tx,
+			tenantID:   tenantID,
+			userID:     userID,
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Social identities (m110)
 // ---------------------------------------------------------------------------
 

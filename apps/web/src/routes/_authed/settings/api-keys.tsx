@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useForm } from "react-hook-form";
+import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { KeyRound, Trash2 } from "lucide-react";
@@ -30,7 +30,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { DefinitionList, KvRow } from "@/components/shared/definition-list";
 import { StatusChip } from "@/components/status";
-import { useMe, canManage } from "@/features/auth/use-auth";
+import { useMe, canManage, activeRole } from "@/features/auth/use-auth";
 import {
   useApiKeys,
   useCreateApiKey,
@@ -42,16 +42,42 @@ export const Route = createFileRoute("/_authed/settings/api-keys")({
   component: ApiKeysPage,
 });
 
-const createSchema = z.object({
-  name: z.string().min(1, "Name is required").max(200),
-  role: z.enum(["owner", "admin", "operator", "viewer"]).optional(),
-});
+/**
+ * The create-key schema, gated on the viewer's role the same way the Owner
+ * <option> is. Hiding the option is not enough on its own: a permissive enum
+ * still validates "owner" from a stale form value or a devtools edit and the
+ * client sends it. Only an owner may mint an owner key
+ * (apps/api/internal/apikey/handler.go:59 refuses with
+ * `apikey_role_exceeds_actor`); the server is the authority, this keeps the
+ * client from asking.
+ *
+ * Pure + exported so both role branches are testable without mounting the page.
+ */
+export function createApiKeySchema(viewerIsOwner: boolean) {
+  return z.object({
+    name: z.string().min(1, "Name is required").max(200),
+    role: viewerIsOwner
+      ? z.enum(["owner", "admin", "operator", "viewer"]).optional()
+      : z
+          .enum(["admin", "operator", "viewer"], {
+            error: "Only an owner can create an owner key. Pick a lower role.",
+          })
+          .optional(),
+  });
+}
 
-type CreateValues = z.infer<typeof createSchema>;
+type CreateValues = {
+  name: string;
+  role?: "owner" | "admin" | "operator" | "viewer";
+};
 
 function ApiKeysPage() {
   const { data: me } = useMe();
   const manage = canManage(me);
+  // A key never grants more than its creator holds. `canManage` is true for
+  // admin as well as owner, so it is the wrong gate for the owner option:
+  // the viewer's literal role is what decides. The server clamps this too.
+  const viewerIsOwner = activeRole(me) === "owner";
 
   const { data: keys, isPending, isError, error, refetch, isRefetching } =
     useApiKeys();
@@ -66,15 +92,35 @@ function ApiKeysPage() {
   // `revokeTarget` holds the key the operator is about to revoke.
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
 
+  const schema = useMemo(
+    () => createApiKeySchema(viewerIsOwner),
+    [viewerIsOwner],
+  );
+
   const {
     register,
     handleSubmit,
     reset,
+    setValue,
+    getValues,
     formState: { errors },
   } = useForm<CreateValues>({
-    resolver: zodResolver(createSchema),
+    resolver: zodResolver(schema) as Resolver<CreateValues>,
     defaultValues: { name: "", role: "operator" },
   });
+
+  // The viewer's role can drop while this page stays mounted: the OrgSwitcher
+  // lives in the AppShell top bar, and activating another org resets the query
+  // cache without unmounting a settings route. If "owner" was selected before
+  // that flip it is now unselectable -- the <option> is gone, so the native
+  // select silently falls back to its first option while the form still holds
+  // "owner", and every submit fails validation against a control that looks
+  // fine. Put the form back on a role the new ceiling allows.
+  useEffect(() => {
+    if (!viewerIsOwner && getValues("role") === "owner") {
+      setValue("role", "operator");
+    }
+  }, [viewerIsOwner, getValues, setValue]);
 
   const onCreate = handleSubmit(async (values) => {
     const result = await createMutation.mutateAsync(values, {
@@ -127,13 +173,19 @@ function ApiKeysPage() {
             <select
               id="role"
               className="h-9 rounded-md border border-[var(--color-border)] bg-transparent px-3 text-sm"
+              aria-invalid={errors.role ? true : undefined}
               {...register("role")}
             >
-              <option value="owner">Owner</option>
+              {viewerIsOwner ? <option value="owner">Owner</option> : null}
               <option value="admin">Admin</option>
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
             </select>
+            {errors.role ? (
+              <p role="alert" className="text-sm text-[var(--color-destructive)]">
+                {errors.role.message}
+              </p>
+            ) : null}
           </div>
           <Button
             type="button"
