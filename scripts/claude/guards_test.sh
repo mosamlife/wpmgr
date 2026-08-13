@@ -26,10 +26,21 @@
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-ROUTE="$here/route-guard.sh"
+# Overridable for ONE purpose: pointing the suite at a mutated copy of the guard
+# to prove an assertion actually depends on the branch it names. The sister
+# script route-guard-coverage.sh carries --guard for the same reason. An
+# override is announced, because a run against something other than the shipped
+# guard must never be mistaken for a run against it.
+ROUTE="${WPMGR_TEST_ROUTE_GUARD:-$here/route-guard.sh}"
+[[ "$ROUTE" == "$here/route-guard.sh" ]] || echo "NOTE: route-guard under test is $ROUTE (WPMGR_TEST_ROUTE_GUARD), NOT the shipped one"
 BASH_G="$here/bash-guard.sh"
 
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq is not installed, and the guards fail open without it"; exit 0; }
+# RED, not SKIP. This used to print "SKIP: jq is not installed, and the guards
+# fail open without it" and exit 0, so the one machine state in which the guards
+# were most degraded was also the one state in which their suite reported
+# success. A suite that goes green when it ran nothing is the same defect the
+# guards themselves exist to close, one layer up.
+command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed. This suite builds every hook payload with it, so it cannot run - and the guards it tests now REFUSE (exit 2) rather than fail open, so this is not a machine you can work on. Fix: brew install jq" >&2; exit 1; }
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/repo"
@@ -80,6 +91,16 @@ reason() {
   jq -n --arg p "$1" --arg c "$repo" '{cwd:$c, tool_input:{file_path:$p}}' \
     | bash "$ROUTE" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null
 }
+# The guard's STDERR, which is where every state-directory refusal names itself.
+# Asserting only "it was refused" is what let four refusal branches be deleted
+# with this suite still printing all-passed: a state directory has several
+# independent reasons to be turned down, so an assertion that does not name one
+# is satisfied by any of the others. Pin the branch, not the outcome.
+stderr_of() { # stderr_of <abs file path> <session id>
+  jq -n --arg c "$repo" --arg p "$1" --arg s "$2" \
+    '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+    | bash "$ROUTE" 2>&1 >/dev/null
+}
 
 t() { # t <label> <expected> <actual>
   if [[ "$2" == "$3" ]]; then pass=$((pass+1))
@@ -122,10 +143,82 @@ echo "== route-guard: it does not over-fire"
 t "inside a subagent"     pass "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "agent-x")"
 t "unrouted root file"    pass "$(decision "$repo/notes.txt")"
 t "outside any repo"      pass "$(decision "/tmp/scratch.go")"
-t "relative path"         pass "$(decision "apps/api/x.go")"
 # The bug that silently disabled the whole guard: cwd in a subdirectory.
 t "cwd=apps/api"          ask  "$(decision "$repo/apps/api/internal/site/service.go" "$repo/apps/api")"
 t "cwd=apps/web/src"      ask  "$(decision "$repo/apps/web/src/routes/_authed/sites/index.tsx" "$repo/apps/web/src")"
+
+echo "== route-guard: a relative file_path is judged, never waved through"
+# THIS SUITE USED TO PIN THE DEFECT AS CORRECT. The line here read
+#   t "relative path"  pass  "$(decision "apps/api/x.go")"
+# and it passed for the wrong reason: the guard did not decide that a relative
+# path was unrouted, it exited 0 at `case "$path" in /*) ;; *) exit 0` before
+# reaching any arm. Every routed path went the same way. Driven at
+# apps/api/internal/auth/members_handler.go - backend-architect plus a mandatory
+# security review - a payload with no cwd produced zero bytes and exit 0, and the
+# generated sqlc tree, which is a hard deny, did the same. bash-guard.sh had
+# already been hardened against this exact shape.
+#
+# "Relative" needs a base, so both sources of one are asserted, and so is the
+# case where neither answers.
+t "relative, cwd resolves it"  ask \
+  "$(decision "apps/api/internal/auth/members_handler.go" "$repo")"
+t "relative, deny arm too"     deny "$(decision "apps/api/internal/db/sqlc/db.go" "$repo")"
+# ...and it is relative to the CWD, not to the repository root. With cwd one
+# level down, the same string names a different file, and that file is unrouted.
+t "relative is cwd-relative"   pass "$(decision "notes.txt" "$repo/apps/api")"
+t "relative, cwd-relative ask" ask  "$(decision "internal/auth/members_handler.go" "$repo/apps/api")"
+
+# Second source: no cwd in the payload at all. The guard script is committed
+# inside the repository it guards, so its own directory resolves that checkout,
+# and a relative path in a cwd-less payload is repo-relative or it is nothing.
+# Asserted against THIS repository, since that is the checkout the shipped guard
+# resolves - the throwaway fixture is not the one under its own feet.
+# `jq '... // "pass"'` on EMPTY stdin prints nothing at all rather than "pass",
+# so the default has to be applied in bash, the way decision() does it. Getting
+# this wrong turns "the guard said nothing" into an empty string that matches no
+# expectation - which at least fails loudly, unlike the shape this suite is here
+# to catch.
+nocwd() { # nocwd <relative path>
+  local out
+  out=$(jq -n --arg p "$1" '{tool_input:{file_path:$p}}' \
+    | bash "$ROUTE" 2>/dev/null \
+    | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+t "no cwd: routed path asks"   ask  "$(nocwd apps/api/internal/auth/members_handler.go)"
+t "no cwd: generated denies"   deny "$(nocwd apps/api/internal/db/sqlc/db.go)"
+t "no cwd: dead app denies"    deny "$(nocwd apps/landing/index.html)"
+# ...and the over-fire it must not commit: an unrouted relative path is still a
+# pass, and it is a pass because no arm matched, not because the guard gave up.
+t "no cwd: unrouted passes"    pass "$(nocwd notes.txt)"
+t "no cwd: a test still passes" pass "$(nocwd apps/web/src/thing.test.tsx)"
+
+# Neither source answers: no cwd, and the guard's own copy is not inside any
+# checkout. It still may not fall silent - it judges the literal string as
+# repo-relative, which is the only reading under which a routed prefix means
+# anything - and it still may not over-fire on a path no arm covers.
+orphan="$tmp/orphan"
+mkdir -p "$orphan"
+cp "$ROUTE" "$orphan/route-guard.sh"
+orphan_dec() { # orphan_dec <relative path>
+  local out
+  out=$(jq -n --arg p "$1" '{tool_input:{file_path:$p}}' \
+    | bash "$orphan/route-guard.sh" 2>/dev/null \
+    | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+# Guard the premise: if $orphan were somehow inside a worktree, every assertion
+# below would be testing the resolved path instead and would pass for the wrong
+# reason.
+t "orphan copy is outside any repo" "" \
+  "$(git -C "$orphan" rev-parse --show-toplevel 2>/dev/null)"
+t "orphan: generated still denies"  deny "$(orphan_dec apps/api/internal/db/sqlc/db.go)"
+t "orphan: routed still asks"       ask  "$(orphan_dec apps/api/internal/auth/members_handler.go)"
+t "orphan: unrouted still passes"   pass "$(orphan_dec notes.txt)"
+# With no repository there is no HEAD, so "already applied" has no answer. It
+# must not be answered with a deny aimed at brand new work: the migration falls
+# through to the database-engineer ask.
+t "orphan: migration asks, not denies" ask "$(orphan_dec apps/api/migrations/20260101000000_m01_applied.sql)"
 
 echo "== route-guard: a test whose suite CI runs does not prompt"
 # ci.yml runs `go test` over ./internal/..., `pnpm --filter @wpmgr/web test` and
@@ -242,17 +335,45 @@ t "foreign dir: not adopted"   no  "$(exists "$foreign/.wpmgr-harness-state")"
 
 # A relative override is not a state directory; it is a path relative to
 # whatever directory the hook happened to be invoked from.
+#
+# PINNED BY MESSAGE, and here is why it has to be. The two `exists` assertions
+# below both pass with the relative-path refusal DELETED: the guard then runs
+# `mkdir -p relative-state` in whatever directory the hook process happens to
+# have, which is this script's cwd and is neither $tmp nor $repo, so both
+# assertions look for the directory somewhere it was never going to appear. They
+# are worth keeping - they say the guard did not scatter state into either of the
+# two plausible places - but on their own they test nothing about the branch.
 ( export WPMGR_ROUTE_GUARD_STATE="relative-state"
   decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessG >/dev/null )
 t "relative override refused"  no  "$(exists "$tmp/relative-state")"
 t "relative, cwd-relative too" no  "$(exists "$repo/relative-state")"
+t "relative override still asks" ask \
+  "$(export WPMGR_ROUTE_GUARD_STATE="relative-state"; decision "$repo/apps/api/internal/site/rel.go" "$repo" "" sessG)"
+tcontains "relative override: refused by the absolute-path branch" \
+  "is not an absolute path" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="relative-state"; stderr_of "$repo/apps/api/internal/site/service.go" sessG)"
 
 # The filesystem root: refused outright, and never stamped as ours.
+#
+# PINNED BY MESSAGE for the same reason. With the '/' branch deleted, '/' is
+# still refused - by the ownership check one branch further down, because root
+# owns '/' and this user does not - so "no marker at /.wpmgr-harness-state" and
+# "it still asks" are both satisfied by a completely different line of code. As
+# root, which is what CI runs as in a container, that second reason disappears
+# too and the deletion becomes `rm -rf` over every top-level directory.
 ( export WPMGR_ROUTE_GUARD_STATE="/"
   decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessH >/dev/null )
 t "root override refused"      no  "$(exists "/.wpmgr-harness-state")"
 t "root override still asks"   ask \
   "$(export WPMGR_ROUTE_GUARD_STATE="/"; decision "$repo/apps/api/internal/site/thing.go" "$repo" "" sessH)"
+tcontains "root override: refused by the filesystem-root branch" \
+  "is the filesystem root" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="/"; stderr_of "$repo/apps/api/internal/site/service.go" sessH)"
+# ...and a trailing slash is the same path. '/'+'/' and '//' both normalise to
+# the root, and the branch strips before it compares.
+tcontains "root with a trailing slash too" \
+  "is the filesystem root" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="//"; stderr_of "$repo/apps/api/internal/site/service.go" sessH)"
 
 # A directory the guard creates is its own, and inside it the prune removes only
 # entries with the name shape the guard writes - never a bare glob.
@@ -391,6 +512,24 @@ ln -s "$victim" "$adopt/wpmgr-route-guard/.wpmgr-harness-state"
 t "live symlink: target not truncated" "PRECIOUS" "$(cat "$victim")"
 t "live symlink: still asks"        ask \
   "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; decision "$repo/apps/api/internal/site/w.go" "$repo" "" sessT)"
+# PINNED BY MESSAGE, because both assertions above pass with the marker-claim
+# check DELETED. The PreToolUse arm never writes a marker, so nothing truncates
+# the victim on this path, and the session has no recorded ruling, so it asks
+# anyway. What the deleted check actually costs is invisible to both: the state
+# root gets ACCEPTED on the strength of a symlink, and prune_state then runs
+# `rm -rf` inside a directory whose only claim to being ours points somewhere
+# else.
+tcontains "live symlink: refused by the marker-claim branch" \
+  "is not a plain file owned by this user" \
+  "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; stderr_of "$repo/apps/api/internal/site/service.go" sessT)"
+# ...and that acceptance is what the refusal prevents: nothing inside the
+# directory is pruned while its claim is a symlink.
+mkdir -p "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
+touch -t 200001010000 "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
+( unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessT >/dev/null )
+t "symlinked claim: nothing pruned" yes "$(exists "$adopt/wpmgr-route-guard/sess-stale-claimcheck")"
+rm -rf "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
 
 # The honest case this must not block: no symlink, a loose directory the guard
 # does own gets adopted, closed, and marked with a REAL file.
@@ -408,6 +547,63 @@ t "created dir is 0700"             700 \
      mkdir -p "$tmp/fresh"
      decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessV >/dev/null
      mode_of "$tmp/fresh/wpmgr-route-guard")"
+
+echo "== route-guard state: the READ side trusts a marker only if it is a plain file this user owns"
+# The marker is what SILENCES the prompt, so the read side is where a planted one
+# would pay off, and silencing the prompt is the one outcome this guard exists to
+# prevent. `-f` is true THROUGH a symlink and `find -mmin` follows it, so without
+# the `! -L` tests a link dropped at the marker's name - or at the session
+# directory's name - hands the whole decision to whatever it points at.
+#
+# ASSERTED AGAINST A STATE ROOT THE GUARD OWNS, DELIBERATELY. The existing
+# "planted marker does not silence" assertion plants into the UNOWNED fixture,
+# where resolve_state refuses the directory long before the read side runs; it
+# therefore passes with every read-side check deleted. Reaching the code under
+# test means getting past resolve_state first.
+# NOT pre-created: an override the guard did not create and that carries no
+# marker is refused, correctly, and the read side would never be reached.
+rstate="$tmp/readside-state"
+( export WPMGR_ROUTE_GUARD_STATE="$rstate"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessR >/dev/null
+  record_route sessR "$repo/apps/api/internal/site/service.go" )
+t "readside: state root adopted"  yes "$(exists "$rstate/.wpmgr-harness-state")"
+# The marker's NAME is the guard's own business, so it is read back rather than
+# spelled out here. A name written into this file would rot the first time the
+# key changes, and a rotted name makes every assertion below pass for the wrong
+# reason. No `head -1`: head closes the pipe and the producer dies on a write
+# error, which this suite has logged from exactly that shape before.
+rmarks=$(find "$rstate/sessR" -type f 2>/dev/null)
+rmark=${rmarks%%$'\n'*}
+t "readside: a ruling was recorded" yes "$([[ -n "$rmark" ]] && printf yes || printf no)"
+# The honest case first: a real marker this user owns DOES silence the next
+# prompt. Without this, every assertion below would be satisfied by a guard that
+# had simply stopped memoising.
+t "readside: real marker silences"  pass \
+  "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/other.go" "$repo" "" sessR)"
+if [[ -n "$rmark" ]]; then
+  rname=${rmark##*/}
+  rvictim="$tmp/readside-victim"; : > "$rvictim"
+  rm -f "$rmark"
+  ln -s "$rvictim" "$rmark"
+  t "symlinked marker does not silence" ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/three.go" "$repo" "" sessR)"
+  t "symlinked marker: target untouched" yes "$(exists "$rvictim")"
+  # ...and the session DIRECTORY is trusted on the same terms. `-d` is true
+  # through a link too, so a symlink at the session's name would let any
+  # directory this user can write supply the ruling.
+  rm -f "$rmark"
+  relse="$tmp/readside-elsewhere"
+  mkdir -p "$relse"
+  : > "$relse/$rname"
+  rm -rf "$rstate/sessR"
+  ln -s "$relse" "$rstate/sessR"
+  t "symlinked session dir does not silence" ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/four.go" "$repo" "" sessR)"
+  rm -f "$rstate/sessR"
+else
+  echo "FAIL  readside fixture: nothing was recorded under $rstate/sessR, so the read-side checks did not run"
+  failed=$((failed+1))
+fi
 
 echo "== route-guard state: a path component is validated, not merely sanitised"
 # sane() is `tr -c 'a-zA-Z0-9._-'`, and '.' is in the keep-set, so the two
@@ -510,6 +706,55 @@ t "rm the sqlc tree"    deny "$(bdec 'rm -rf apps/api/internal/db/sqlc/')"
 t "python writes sqlc"  deny "$(bdec "python3 -c \"open('apps/api/internal/db/sqlc/db.go','w').write('x')\"")"
 t "write into dead app" deny "$(bdec 'echo x > apps/landing/index.html')"
 
+echo "== bash-guard: the interpreter arm decides on the CALL, in the right direction"
+# The arm's test was `(open\(|writeFile|file_put_contents|\.write\()`, and its
+# polarity was inverted at both ends: it DENIED a read that happened to say
+# `open(` and PERMITTED a `shutil.copy` onto the generated tree, whose
+# hand-editing caused a production 500 here.
+#
+# This suite did not catch it, and the reason is worth keeping in view: both of
+# its python assertions happened to contain the literal token `open(`, so a bare
+# substring match on `open(` would have passed the suite while shipping the bug.
+# An assertion that passes for the wrong reason tests nothing. Every write case
+# below is therefore spelled WITHOUT `open(`, and every read case is spelled
+# with one, so the two halves cannot be satisfied by the same substring.
+t "shutil.copy"          deny "$(bdec "python3 -c \"import shutil; shutil.copy('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.copyfile"      deny "$(bdec "python3 -c \"import shutil; shutil.copyfile('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.move"          deny "$(bdec "python3 -c \"import shutil; shutil.move('/tmp/x','apps/api/internal/api/gen/oas.go')\"")"
+t "pathlib write_text"   deny "$(bdec "python3 -c \"import pathlib; pathlib.Path('apps/api/internal/db/sqlc/db.go').write_text('x')\"")"
+t "pathlib write_bytes"  deny "$(bdec "python3 -c \"import pathlib; pathlib.Path('apps/web/src/routeTree.gen.ts').write_bytes(b'x')\"")"
+t "os.replace"           deny "$(bdec "python3 -c \"import os; os.replace('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "os.rename"            deny "$(bdec "python3 -c \"import os; os.rename('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.rmtree"        deny "$(bdec "python3 -c \"import shutil; shutil.rmtree('apps/api/internal/db/sqlc')\"")"
+t "os.remove"            deny "$(bdec "python3 -c \"import os; os.remove('apps/api/internal/db/sqlc/db.go')\"")"
+t "node copyFileSync"    deny "$(bdec "node -e \"require('fs').copyFileSync('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "node renameSync"      deny "$(bdec "node -e \"require('fs').renameSync('/tmp/x','apps/web/src/routeTree.gen.ts')\"")"
+t "node appendFileSync"  deny "$(bdec "node -e \"require('fs').appendFileSync('apps/api/internal/api/gen/oas.go','x')\"")"
+t "php copy()"           deny "$(bdec "php -r \"copy('/tmp/x','apps/api/internal/db/sqlc/db.go');\"")"
+t "php rename()"         deny "$(bdec "php -r \"rename('/tmp/x','apps/api/internal/db/sqlc/db.go');\"")"
+t "php unlink()"         deny "$(bdec "php -r \"unlink('apps/api/internal/db/sqlc/db.go');\"")"
+# The mode is what makes an `open` a write, so each mode is asserted, not assumed.
+t "open mode a"          deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','a'); f.close()\"")"
+t "open mode x"          deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','x'); f.close()\"")"
+t "open mode r+"         deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','r+'); f.close()\"")"
+t "open mode wb"         deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','wb'); f.close()\"")"
+t "open mode= keyword"   deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go', mode='w'); f.close()\"")"
+
+# ...and the reads. Every one of these was DENIED before, which is the over-fire
+# that gets a guard switched off: the harness would have taught its users that
+# reading a generated file needs a way around the guard.
+t "python read+print"    pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go').read())\"")"
+t "python open mode r"   pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go','r').read())\"")"
+t "python open mode rb"  pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go','rb').read())\"")"
+t "python io.open read"  pass "$(bdec "python3 -c \"import io; print(io.open('apps/api/internal/api/gen/oas.go').read())\"")"
+t "python readlines"     pass "$(bdec "python3 -c \"print(open('apps/web/src/routeTree.gen.ts').readlines()[0])\"")"
+t "pathlib read_text"    pass "$(bdec "python3 -c \"import pathlib; print(pathlib.Path('apps/api/internal/db/sqlc/db.go').read_text())\"")"
+t "node readFileSync"    pass "$(bdec "node -e \"console.log(require('fs').readFileSync('apps/api/internal/db/sqlc/db.go','utf8'))\"")"
+t "php file_get_contents" pass "$(bdec "php -r \"echo file_get_contents('apps/api/internal/db/sqlc/db.go');\"")"
+# A read that prints through the stream object rather than through print(): the
+# only `.write(` here belongs to stdout, and the file is opened for reading.
+t "stdout.write a read"  pass "$(bdec "python3 -c \"import sys; sys.stdout.write(open('apps/api/internal/db/sqlc/db.go').read())\"")"
+
 # ...and the honest cases it must NOT block. Reading, listing and grepping these
 # paths is ordinary work, and the regeneration commands must obviously survive.
 t "grep sqlc to a file" pass "$(bdec 'grep -r Query apps/api/internal/db/sqlc/ > /tmp/out.txt')"
@@ -563,6 +808,53 @@ t "new migration ok"    pass "$(bdecw 'cat > apps/api/migrations/20260201000000_
 CREATE TABLE t();
 EOF')"
 t "reading a migration" pass "$(bdecw 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
+
+echo "== bash-guard: a migrations destination it cannot resolve is refused, not read as 'none matched'"
+# The hole: the applied-migration scan extracts a filename with [A-Za-z0-9_.-]+,
+# a class holding no glob metacharacter, so a pattern matched NOTHING, $applied
+# stayed empty and the whole script fell to its bare `exit 0` - zero bytes on
+# stdout, zero on stderr, and one `*` rewriting every migration that has already
+# run. Each of these was ALLOWED, silently, before the shape check.
+t "sed -i mig glob"      deny "$(bdecw "sed -i.bak 's/a/b/' apps/api/migrations/*.sql")"
+t "tee mig glob"         deny "$(bdecw 'tee apps/api/migrations/*.sql')"
+t "redirect mig glob"    deny "$(bdecw 'echo x > apps/api/migrations/*.sql')"
+t "perl -pi mig glob"    deny "$(bdecw 'perl -pi -e s/a/b/ apps/api/migrations/2026*.sql')"
+t "mig ? wildcard"       deny "$(bdecw 'tee apps/api/migrations/2026010100000?_m01_applied.sql')"
+t "mig [ class"          deny "$(bdecw 'tee apps/api/migrations/2026[01]*.sql')"
+t "mig brace"            deny "$(bdecw 'tee apps/api/migrations/{a,b}.sql')"
+t "mig from a variable"  deny "$(bdecw 'tee apps/api/migrations/$f.sql')"
+t "mig from a subshell"  deny "$(bdecw 'tee apps/api/migrations/`ls`.sql')"
+# The glob is on the SOURCE, and the destination is the directory: the file that
+# lands is whatever the pattern expands to at run time, which is exactly the
+# question this guard cannot answer.
+t "cp glob src into dir" deny "$(bdecw 'cp /tmp/*.sql apps/api/migrations/')"
+# `rm` reaches this arm too (allow_rm is not set here), and deleting every
+# applied migration is the same outage as rewriting them.
+t "rm mig glob"          deny "$(bdecw 'rm apps/api/migrations/*.sql')"
+# ...and the honest work it must NOT block. Creating a new migration is the
+# entire purpose of the directory, and every read of it stays ordinary: none of
+# these is a write, so the arm is never entered and no glob is ever inspected.
+t "new mig, literal"     pass "$(bdecw 'cat > apps/api/migrations/20260201000000_m02_new.sql <<EOF
+CREATE TABLE t();
+EOF')"
+t "new mig then ls glob" pass "$(bdecw 'printf x > apps/api/migrations/20260201000000_m02_new.sql && ls apps/api/migrations/*.sql')"
+t "ls a mig glob"        pass "$(bdecw 'ls -la apps/api/migrations/*.sql')"
+t "cat a mig glob"       pass "$(bdecw 'cat apps/api/migrations/*.sql')"
+t "grep a mig glob"      pass "$(bdecw 'grep -l CREATE apps/api/migrations/*.sql')"
+t "wc a mig glob"        pass "$(bdecw 'wc -l apps/api/migrations/*.sql')"
+t "sed READ a mig glob"  pass "$(bdecw 'sed -n 1,5p apps/api/migrations/*.sql')"
+t "git add a mig glob"   pass "$(bdecw 'git add apps/api/migrations/*.sql')"
+# A glob over a path that merely CONTAINS the word migrations is not this
+# directory, and a sibling directory is not it either.
+t "glob docs/migrations"  pass "$(bdecw "sed -i.bak 's/a/b/' docs/migrations/*.md")"
+t "glob migrations-notes" pass "$(bdecw 'tee apps/api/migrations-notes/*.txt')"
+t "glob elsewhere"        pass "$(bdecw 'tee /tmp/migrations/*.sql')"
+# The message has to name the unresolved destination, or it teaches nothing.
+mig_glob_reason=$(jq -n --arg c 'tee apps/api/migrations/*.sql' --arg w "$repo" \
+  '{cwd:$w, tool_input:{command:$c}}' | bash "$BASH_G" 2>/dev/null \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')
+tcontains "names the glob"     'apps/api/migrations/\*.sql' "$mig_glob_reason"
+tcontains "says new is ok"     'NEW migration' "$mig_glob_reason"
 
 echo "== bash-guard: the migration arm never goes quiet because it cannot resolve a root"
 # The hole: the arm resolved its repository from `.cwd` ALONE, and when that was
@@ -1140,7 +1432,11 @@ echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
 # brief said not to touch them, and stopped to ask a human.
-GATE="$here/commit-gate.sh"
+# Overridable for the one reason ROUTE is: pointing the suite at a mutated copy
+# to prove an assertion depends on the branch it names. Announced, so a run
+# against something other than the shipped gate is never mistaken for one.
+GATE="${WPMGR_TEST_COMMIT_GATE:-$here/commit-gate.sh}"
+[[ "$GATE" == "$here/commit-gate.sh" ]] || echo "NOTE: commit-gate under test is $GATE (WPMGR_TEST_COMMIT_GATE), NOT the shipped one"
 WRITES="$here/agent-writes.sh"
 export WPMGR_AGENT_WRITES_STATE="$tmp/agent-writes"
 
@@ -1229,6 +1525,92 @@ tcontains "unscoped reports" "Not blocking" "$(jq -n --arg c "$wt" '{cwd:$c}' | 
 t "stop_hook_active passes" 0 \
   "$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-A", stop_hook_active:true}' \
      | bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")"
+
+# A NAME GIT QUOTES. Default porcelain wraps any path carrying a space, a double
+# quote, a backslash, a control character or a non-ASCII byte in double quotes
+# with C-style escapes. The ownership compare matched the record's raw path
+# against that column, so every one of those files failed to match, `owned` came
+# out empty, and the gate exited 0 IN SILENCE - reporting that the agent had
+# committed everything when it had not, which is how unpushed work gets reaped.
+#
+# Pinned as the porcelain FACT first, exactly like `-uall` above, so this reads
+# as a property of git's output rather than as an unexplained assertion, and so
+# a future flag change is caught here and not in production.
+q_space="has space.txt"
+q_utf8=$'na\xc3\xafve.txt'
+q_bslash='back\slash.txt'
+printf 'x\n' > "$wt/$q_space"
+printf 'x\n' > "$wt/$q_utf8"
+printf 'x\n' > "$wt/$q_bslash"
+t "porcelain quotes a space"      '?? "has space.txt"' \
+  "$(git -C "$wt" status --porcelain -uall | grep 'has space')"
+t "-z prints the same path raw"   "?? $q_space" \
+  "$(git -C "$wt" status --porcelain -uall -z | tr '\0' '\n' | grep 'has space')"
+# `-c core.quotePath=false` is NOT the fix and is pinned as such: it unescapes
+# the non-ASCII case only, and a space is quoted regardless because the plain
+# format is space-delimited.
+t "quotePath=false still quotes"  '?? "has space.txt"' \
+  "$(git -C "$wt" -c core.quotePath=false status --porcelain -uall | grep 'has space')"
+
+record agent-Q "$wt/$q_space"
+record agent-Q "$wt/$q_utf8"
+record agent-Q "$wt/$q_bslash"
+t "Q: quoted names block"     2 "$(gate agent-Q)"
+tcontains "Q sees the spaced name"    "has space.txt"  "$(gate_msg agent-Q)"
+tcontains "Q sees the non-ASCII name" "$q_utf8"        "$(gate_msg agent-Q)"
+tcontains "Q sees the backslash name" 'back.slash.txt' "$(gate_msg agent-Q)"
+# The count is read off the fixture, never written down: three files were
+# recorded just above, and the number in the message has to be that one.
+q_n=$(printf '%s\n' "$q_space" "$q_utf8" "$q_bslash" | grep -c .)
+tcontains "Q's count matches the fixture" "$q_n uncommitted path" "$(gate_msg agent-Q)"
+
+# OVER-FIRE, three ways. A quoted name nobody recorded is still nobody's...
+printf 'x\n' > "$wt/not mine.txt"
+tlacks "Q is not shown another quoted name" "not mine.txt" "$(gate_msg agent-Q)"
+# ...a longer name that merely STARTS with a recorded one is a different file...
+printf 'x\n' > "$wt/$q_space.bak"
+tlacks "prefix is not a match"  "has space.txt.bak" "$(gate_msg agent-Q)"
+tcontains "and the count did not move" "$q_n uncommitted path" "$(gate_msg agent-Q)"
+# ...and an agent that wrote nothing is still never blocked, quoted tree or not.
+t "B still passes, quoted or not" 0 "$(gate agent-B)"
+# Committing them makes it go quiet, so this is a gate and not a permanent block.
+git -C "$wt" add "$q_space" "$q_utf8" "$q_bslash" >/dev/null
+git -C "$wt" commit -qm quoted
+t "Q committed, passes"       0 "$(gate agent-Q)"
+
+# A RENAME. Under `-z` git emits `XY <new path><NUL><old path><NUL>`: the origin
+# half is its own record with NO status prefix, so read as an entry its first
+# three characters are swallowed as a status code and the remainder compared as
+# a path. It is dropped instead.
+printf 'r\n' > "$wt/old name.txt"
+git -C "$wt" add "old name.txt" >/dev/null
+git -C "$wt" commit -qm oldname
+git -C "$wt" mv "old name.txt" "new name.txt"
+t "-z rename layout"  "R  new name.txt|old name.txt|" \
+  "$(git -C "$wt" status --porcelain -uall -z | tr '\0' '|' | grep -o 'R  new name.txt|old name.txt|')"
+unscoped_out=$(jq -n --arg c "$wt" '{cwd:$c}' | bash "$GATE" 2>&1 >/dev/null)
+tcontains "the rename is listed once"  "R  new name.txt" "$unscoped_out"
+tlacks    "its origin half is not an entry" "^old name.txt$" "$unscoped_out"
+record agent-RN "$wt/new name.txt"
+t "RN: the renamed path blocks" 2 "$(gate agent-RN)"
+tcontains "RN sees the new path" "new name.txt" "$(gate_msg agent-RN)"
+
+# A `git status` THAT FAILS is not an empty tree. The stub answers `status` with
+# 128 and passes everything else - including the `rev-parse --git-dir` probe
+# above it - through to the real git, which is the only shape in which this
+# branch is reachable.
+gstub="$tmp/gitstub"
+mkdir -p "$gstub"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = status ] && exit 128; done\nexec %s "$@"\n' \
+  "$(command -v git)" > "$gstub/git"
+chmod +x "$gstub/git"
+gfail_rc=$(PATH="$gstub:$PATH" jq -n --arg c "$wt" --arg a agent-Q '{cwd:$c, agent_id:$a}' \
+             | PATH="$gstub:$PATH" bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")
+gfail_out=$(jq -n --arg c "$wt" --arg a agent-Q '{cwd:$c, agent_id:$a}' \
+            | PATH="$gstub:$PATH" bash "$GATE" 2>&1 >/dev/null)
+t "a failed git status does not block"  0 "$gfail_rc"
+tcontains "but it says so, with the exit" "failed in '$wt' (exit 128)" "$gfail_out"
+tcontains "and claims nothing either way" "nothing is claimed" "$gfail_out"
 
 echo "== harness-reap: it removes only worktrees the harness created"
 # The reaper fed `git worktree list` straight into `git worktree remove --force`
@@ -1334,11 +1716,19 @@ t "and the run goes green"           0 "$ok_rc"
 tcontains "a green run says so"     "0 failed" "$ok_out"
 
 echo "== harness-reap: it refuses to act from anywhere but the root it resolved"
-# SC2164. `cd "$root"` was unchecked, and everything after it - `git worktree
-# remove --force`, `git branch -d`, `go clean -cache`, and the rev-parse that
-# picks the base branch - resolves its repository from the CURRENT DIRECTORY,
-# not from $root. A failed cd therefore did not stop the script; it re-aimed
-# every destructive command at whatever directory the caller was standing in.
+# SC2164. `cd "$root"` was unchecked, and the three GIT commands after it - `git
+# worktree remove --force`, `git branch -d`, and the rev-parse that picks the
+# base branch - resolve their repository from the CURRENT DIRECTORY, not from
+# $root. A failed cd therefore did not stop the script; it re-aimed every
+# destructive git command at whatever directory the caller was standing in.
+#
+# This comment used to name `go clean -cache` as a fourth, and that was false.
+# `go clean -cache` wipes the machine-wide directory `go env GOCACHE` names,
+# which is the same directory from every cwd, so the cd guard neither protects
+# it nor ever could; --apply plus the ceiling check is what stands in front of
+# it. The assertions below passed either way - they are about the git half - so
+# the false premise cost nothing here and was still a claim of coverage this
+# proof does not have.
 #
 # The failure is planted the only way a `cd` to a directory that git just
 # resolved can honestly be made to fail: an exported shell function shadows the
@@ -1370,6 +1760,204 @@ t "a failed cd goes red"           2   "$brk_rc"
 tcontains "and states the reason"  "cannot enter the repository root" "$brk_out"
 t "and nothing was removed"        yes "$(exists "$cdr/.claude/worktrees/agent-cd1")"
 tlacks "no reclaim is claimed"     "removed," "$brk_out"
+
+echo "== harness-reap: a build cache it could not measure is not a cache under the ceiling"
+# The one place in that file where its own countof()/sizeof() discipline was not
+# applied: `kb=$(du -sk "$gocache" | cut -f1)` fed an arithmetic expansion, so a
+# failed du became the empty string, `${kb:-0}` became 0, 0 is below every
+# ceiling, and the section printed "under the ceiling, leaving it". A
+# measurement that never happened, reported as a measurement.
+#
+# `go` and `docker` are stubbed alongside `du` so the section is reachable
+# without a toolchain and without waiting on a docker daemon; the reaper is run
+# WITHOUT --worktrees-only, because that flag skips the section under test.
+rstub="$tmp/reapstub"
+mkdir -p "$rstub"
+fake_cache="$tmp/fakecache"
+mkdir -p "$fake_cache"
+printf 'x\n' > "$fake_cache/blob"
+printf '#!/bin/sh\nif [ "$1" = env ] && [ "$2" = GOCACHE ]; then printf "%%s\\n" "$FAKE_GOCACHE"; exit 0; fi\nif [ "$1" = env ]; then exit 0; fi\nexit 0\n' > "$rstub/go"
+printf '#!/bin/sh\nexit 1\n' > "$rstub/docker"
+chmod +x "$rstub/go" "$rstub/docker"
+# A `du` that fails the way a real one does: no output, non-zero status.
+dustub="$tmp/dustub"
+mkdir -p "$dustub"
+printf '#!/bin/sh\nexit 1\n' > "$dustub/du"
+chmod +x "$dustub/du"
+
+# No helper function here: a function called in `$( )` runs in a SUBSHELL, so an
+# exit code it stashed in a variable never comes back, and reading one that was
+# never set is how this block first failed. The status is taken from the command
+# substitution itself, where `$?` is the reaper's own.
+#
+# FIRES: du fails, so no decision is made and the run goes red.
+du_out=$(cd "$cdr" && PATH="$dustub:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); du_rc=$?
+tcontains "an unmeasurable cache says so" "COULD NOT MEASURE the build cache" "$du_out"
+tlacks "and never decides to leave it"    "leaving it"         "$du_out"
+tlacks "and cleans nothing"               "go clean -cache"    "$du_out"
+t "and the run goes red"               1  "$du_rc"
+
+# ...and the sharper shape, which is the one a real `du` produces: it prints a
+# plausible PARTIAL total and exits non-zero because it could not descend into
+# something. A number is there to be read, and it is not the size of the cache.
+# Only the status says so, which is why sizeof() has to return it.
+dupart="$tmp/dupartial"
+mkdir -p "$dupart"
+printf '#!/bin/sh\nprintf "12\\t%%s\\n" "$2"\nexit 1\n' > "$dupart/du"
+chmod +x "$dupart/du"
+part_out=$(cd "$cdr" && PATH="$dupart:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); part_rc=$?
+tcontains "a partial du is not a size"  "COULD NOT MEASURE the build cache" "$part_out"
+tlacks "and it is not left as measured" "leaving it" "$part_out"
+t "and that run goes red"            1  "$part_rc"
+
+# DOES NOT OVER-FIRE: the same cache with a working du is measured, found small,
+# left alone, and the run is green. The size is named in the sentence, so a
+# reader can see WHICH number was compared against the ceiling.
+ok_out=$(cd "$cdr" && PATH="$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); ok_rc=$?
+tcontains "a measured small cache is left" "ceiling, leaving it" "$ok_out"
+tlacks "and is not called unmeasurable"    "COULD NOT MEASURE" "$ok_out"
+t "and that run goes green"             0  "$ok_rc"
+
+# The ceiling test is `[[ $kbrc -ne 0 ]] || ! [[ "$kb" =~ ^[0-9]+$ ]]`, and the
+# two halves answer different questions. Deleting either one alone used to leave
+# this suite fully green, which means neither was pinned and the guard's own
+# rule - prove it fires - was unmet for both. One stub per half, so a mutation
+# of either is named by the assertion that catches it:
+#
+#   the STATUS half   is pinned by the partial-du stub above: a plausible `12`
+#                     with a non-zero exit. The regex alone passes it.
+#   the SHAPE half    is pinned here: exit 0, so the status alone passes it, and
+#                     a first field that is not a number. `du` answers this way
+#                     on a filesystem whose reporting tool prints a unit, and
+#                     `$(( kb / 1024 / 1024 ))` on a non-number is 0 in bash -
+#                     under every ceiling, the exact silent pass this refuses.
+dushape="$tmp/dushape"
+mkdir -p "$dushape"
+printf '#!/bin/sh\nprintf "12K\\t%%s\\n" "$2"\nexit 0\n' > "$dushape/du"
+chmod +x "$dushape/du"
+shape_out=$(cd "$cdr" && PATH="$dushape:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); shape_rc=$?
+tcontains "a non-numeric du is not a size" "COULD NOT MEASURE the build cache" "$shape_out"
+tcontains "and the unreadable value is quoted back" "gave '12K'" "$shape_out"
+tlacks "and it is not left as measured too" "leaving it" "$shape_out"
+t "and the shape run goes red"          1  "$shape_rc"
+
+# ...and a GOCACHE that could not even be asked for is not "no cache to clean".
+nogo="$tmp/nogostub"
+mkdir -p "$nogo"
+printf '#!/bin/sh\nexit 1\n' > "$nogo/go"
+chmod +x "$nogo/go"
+nogo_out=$(cd "$cdr" && PATH="$nogo:$rstub:$PATH" bash "$REAP" 2>&1); nogo_rc=$?
+tcontains "no GOCACHE answer says so" "returned nothing" "$nogo_out"
+t "and that run goes red too"       1  "$nogo_rc"
+
+echo "== --help prints the whole comment header, never a hardcoded line range"
+# Both of these were mis-slicing in the shipped tree, not hypothetically:
+# quickstart-selfhost.sh's `sed -n '3,42p'` stopped two lines short and dropped
+# two of the three lines under "Host requirements" from the README's headline
+# install script; init-env.sh's `sed -n '3,31p'` overran by one and printed
+# `set -euo pipefail` to the user as help text.
+#
+# The header is re-derived here with a DIFFERENT idiom from the awk under test -
+# sed, quitting at the first non-comment - so this is a comparison and not the
+# same expression written twice.
+real_repo=$(cd "$here/../.." && pwd)
+help_covers() { # help_covers <script> -> "yes" or the first line it dropped
+  local f=$1 out line stripped
+  # `printf --` first, because bash 3.2.57's builtin parses a format string
+  # starting with `--` as its own option list: this line used to be
+  # `printf '--help exited %s' "$?"` and printed `printf: --: invalid option`
+  # to stderr while returning the empty string, so the assertion reported
+  # nothing at all where it meant to report the exit code.
+  out=$(bash "$f" --help 2>&1) || { printf -- '--help exited %s' "$?"; return 1; }
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    stripped=$(printf '%s' "$line" | sed 's/^#\{0,1\} \{0,1\}//')
+    grep -qxF -- "$line" <<<"$out" && continue
+    grep -qxF -- "$stripped" <<<"$out" && continue
+    printf 'DROPPED: %s' "$line"
+    return 1
+  done < <(sed -n '2,$p' "$f" | sed -n '/^#/!q;p')
+  printf 'yes'
+}
+first_code() { awk 'NR>1 && !/^#/ {print; exit}' "$1"; }
+for hs in scripts/quickstart-selfhost.sh scripts/init-env.sh \
+          scripts/claude/harness-reap.sh scripts/claude/route-guard-coverage.sh; do
+  t "$hs: --help covers its whole header" yes "$(help_covers "$real_repo/$hs")"
+  tlacks "$hs: --help stops at the code" \
+    "$(first_code "$real_repo/$hs")" "$(bash "$real_repo/$hs" --help 2>&1)"
+  # ...and asking for help is not a failure. init-env.sh exited 1 here: its EXIT
+  # trap ended on `[ -n "${GEN_FILE}" ]`, false on every run that minted no temp
+  # file, and a trap's return value REPLACES the script's exit status.
+  t "$hs: --help exits 0" 0 "$(bash "$real_repo/$hs" --help >/dev/null 2>&1; printf '%s' "$?")"
+  # ...and the SHEBANG is not help text. `#!/usr/bin/env bash` is a comment line
+  # to awk, so `!/^#/{exit} {print}' printed it as the first line of the help
+  # output in harness-reap.sh and route-guard-coverage.sh. help_covers above
+  # cannot see this: it re-derives the header with `sed -n '2,$p'`, which skips
+  # line 1, and it only asks whether anything was DROPPED - an EXTRA line is
+  # invisible to it. So reverting the awk in either script reddened nothing.
+  #
+  # BOTH SPELLINGS. quickstart-selfhost.sh and init-env.sh pipe the awk through
+  # `sed 's/^#\{0,1\} \{0,1\}//'` to strip the comment marker, so a leaked
+  # shebang reaches the reader as `!/usr/bin/env bash` with no `#`. A needle
+  # anchored on `^#!` matched neither of those two, and reverting their awk
+  # reddened nothing while this line sat in the loop looking like it covered all
+  # four.
+  t "$hs: --help does not print the shebang" "" \
+    "$(bash "$real_repo/$hs" --help 2>&1 | head -1 | grep -E '^#?!/' )"
+done
+# The failure path of help_covers itself, which is the only path where its
+# diagnostic is ever built. On a healthy script `--help` exits 0 and that printf
+# never runs, so a format string bash could not parse sat there unexercised: it
+# began `--`, which bash 3.2.57's printf builtin reads as its own option list,
+# and the branch returned the empty string with `printf: --: invalid option` on
+# stderr instead of the exit code it meant to report.
+badhelp="$tmp/bad-help.sh"
+printf '%s\n' '#!/usr/bin/env bash' '# a header' 'exit 7' > "$badhelp"
+chmod +x "$badhelp"
+t "help_covers reports the exit code" "--help exited 7" "$(help_covers "$badhelp" 2>/dev/null)"
+t "and builds it without a printf error" "" \
+  "$(help_covers "$badhelp" 2>&1 >/dev/null)"
+# Named explicitly, because these three lines are the ones that were missing and
+# a coverage loop that silently stopped matching would go green again.
+qs_help=$(bash "$real_repo/scripts/quickstart-selfhost.sh" --help 2>&1)
+tcontains "quickstart help: docker req"  "Docker 24+"  "$qs_help"
+tcontains "quickstart help: curl req"    "curl or wget" "$qs_help"
+tcontains "quickstart help: openssl req" "openssl"      "$qs_help"
+
+echo "== docs-writer's banned-vocabulary snippet refuses what it cannot count once"
+# `grep -oE` prints EVERY match, so a second `banned='...'` made the extraction
+# two lines and both counts became their SUM - printed with no hint that more
+# than one list existed, and larger than the list CI would actually apply. The
+# reassuring direction, on the check that guards the clean-room boundary.
+#
+# The snippet is extracted from the agent definition and run, so this proves the
+# committed text rather than a copy of it that can drift away from it.
+snip="$tmp/banned_counts.sh"
+awk '/^banned_counts\(\) \{/{f=1} f{print} f && /^\}$/{exit}' \
+  "$real_repo/.claude/agents/docs-writer.md" > "$snip"
+t "snippet extracted from the agent file" yes "$([[ -s "$snip" ]] && printf yes || printf no)"
+# shellcheck source=/dev/null
+. "$snip"
+bc_rc() { banned_counts "$1" >/dev/null 2>&1; printf '%s' "$?"; }
+ci_yml="$real_repo/.github/workflows/ci.yml"
+# The honest case first, or every refusal below could be satisfied by a function
+# that refuses everything.
+t "the real ci.yml is accepted"       0 "$(bc_rc "$ci_yml")"
+tcontains "and it reports alternates" "alternates" "$(banned_counts "$ci_yml" 2>&1)"
+# FIRES: a second assignment. The count it prints is the count it found, so this
+# assertion cannot go stale against the real list's length.
+bc_dup="$tmp/ci-dup.yml"
+cp "$ci_yml" "$bc_dup"
+printf "          banned='zzalpha|zzbeta'\n" >> "$bc_dup"
+bc_found=$(grep -oE "banned='[^']+'" "$bc_dup" | grep -c .)
+t "a duplicate banned= is refused"    1 "$(bc_rc "$bc_dup")"
+tcontains "and it says how many"  "found $bc_found single-line" "$(banned_counts "$bc_dup" 2>&1)"
+tlacks "and prints no summed total" "alternates" "$(banned_counts "$bc_dup" 2>&1)"
+# ...and the two directions it already refused stay refused.
+bc_none="$tmp/ci-none.yml"
+grep -v "banned='" "$ci_yml" > "$bc_none"
+t "no banned= at all is refused"      1 "$(bc_rc "$bc_none")"
+t "an unreadable file is refused"     1 "$(bc_rc "$tmp/no-such-workflow.yml")"
 
 # ...and the honest direction, or a reaper that refused unconditionally would
 # pass every assertion above while reclaiming nothing. Same repo, same flags,
@@ -2109,9 +2697,16 @@ t "outside a repo: still exits 0"      0 "$sb_out_rc"
 tcontains "outside a repo: still reports" "## Machine state" "$sb_out"
 tcontains "outside a repo: COULD NOT CHECK" "pre-push hook: COULD NOT CHECK" "$sb_out"
 tcontains "and the worktree count is not invented" "agent worktrees: not measured" "$sb_out"
-# 2. jq must be present, or the brief announces the guards INACTIVE - a line
-#    that would otherwise sit in the output unremarked and unexplained.
-tlacks "and jq is not missing" "INACTIVE" "$sb_zero"
+# 2. jq must be present, or the brief announces that the guards refuse
+#    everything - a line that would otherwise sit in the output unremarked and
+#    unexplained. The needle is taken from the brief's own source rather than
+#    written out here: when that sentence changed from "are INACTIVE" to
+#    "REFUSE EVERYTHING" this assertion kept passing against a string the script
+#    no longer contains, which is a test asserting nothing.
+jq_line=$(grep -o 'route-guard and bash-guard [A-Z][A-Z ]*[A-Z]' "$BRIEF" | head -1)
+t "the brief has a jq-missing line" 1 \
+  "$( [[ -n "$jq_line" ]] && printf 1 || printf 0 )"
+tlacks "and jq is not missing" "$jq_line" "$sb_zero"
 # 3. A positive measurement, not merely the absence of a complaint: a real
 #    number for disk free proves df AND awk AND the pipeline all ran under the
 #    built PATH. Degrade any of them and this becomes "could not measure".
@@ -2662,6 +3257,223 @@ t "real: :main deletes too"   refused  "$(pushed origin :main)"
 t "real: main survived both"  "$main_before" "$(git -C "$bare" rev-parse refs/heads/main)"
 # The escape hatch the refusal advertises has to be real, or the message lies.
 newcommit; t "real: --no-verify lands"  ok "$(pushed --no-verify origin main)"
+
+echo "== bash-guard: the destination is resolved against the PAYLOAD's cwd"
+# Every arm of arm 3 matched repo-relative TEXT, and nothing rebased an operand.
+# So working from a subdirectory - the ordinary way to work in this repo -
+# bypassed all of them. Reproduced against the shipped guard, all silent:
+#   cwd=<repo>/apps/api   sed -i.bak s/a/b/ migrations/*.sql        -> no decision
+#   cwd=<repo>            sed -i.bak s/a/b/ apps/api/migrations/*.sql -> deny
+# Same command, same file, opposite answers, decided by which directory the
+# session happened to be sitting in.
+#
+# The guard's own cwd is NOT the payload's - it runs wherever the harness
+# started it - so every assertion here passes the cwd in the JSON and none of
+# them relies on $PWD.
+bdec_at() { # bdec_at <cwd> <command>
+  local out
+  out=$(jq -n --arg c "$1" --arg x "$2" '{cwd:$c, tool_input:{command:$x}}' \
+        | bash "$BASH_G" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+sub_api="$repo/apps/api"
+t "subdir: glob over migrations"   deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ migrations/*.sql')"
+t "subdir: applied migration"      deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+t "subdir: sed -i into sqlc"       deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ internal/db/sqlc/db.go')"
+t "subdir: cp into sqlc"           deny "$(bdec_at "$sub_api" 'cp /tmp/db.go internal/db/sqlc/db.go')"
+t "subdir: cp into the mig dir"    deny "$(bdec_at "$sub_api" 'cp /tmp/20260101000000_m01_applied.sql migrations')"
+t "subdir: tee into ogen"          deny "$(bdec_at "$sub_api" 'echo x | tee internal/api/gen/oas.go')"
+t "subdir: redirect into dead app" deny "$(bdec_at "$repo/apps" 'echo x > landing/index.html')"
+t "subdir: rm the sqlc tree"       deny "$(bdec_at "$sub_api" 'rm -rf internal/db/sqlc/')"
+# An ABSOLUTE destination is the same file by another spelling, and was equally
+# unmatched: the arms are written in repo-relative terms and nothing stripped
+# the root.
+t "absolute: applied migration"    deny "$(bdec_at "$repo" "sed -i.bak s/a/b/ $repo/apps/api/migrations/20260101000000_m01_applied.sql")"
+t "absolute: sqlc tree"            deny "$(bdec_at "$repo" "cp /tmp/db.go $repo/apps/api/internal/db/sqlc/db.go")"
+# DOES NOT OVER-FIRE. A subdirectory cwd must not turn ordinary work red, and
+# these are the shapes that would get the guard switched off.
+t "subdir: new migration"          pass "$(bdec_at "$sub_api" 'cat > migrations/20260813000000_m99_new.sql')"
+t "subdir: ls the mig dir"         pass "$(bdec_at "$sub_api" 'ls migrations/*.sql')"
+t "subdir: sed -n over a glob"     pass "$(bdec_at "$sub_api" 'sed -n 1,5p migrations/*.sql')"
+t "subdir: git log over the dir"   pass "$(bdec_at "$sub_api" 'git log --oneline -- migrations')"
+t "subdir: grep the sqlc tree"     pass "$(bdec_at "$sub_api" 'grep -r Querier internal/db/sqlc/ > /tmp/out')"
+t "subdir: write outside the repo" pass "$(bdec_at "$sub_api" 'cp /tmp/x ../../../elsewhere/x')"
+t "subdir: a same-named sibling"   pass "$(bdec_at "$sub_api" 'cp /tmp/x migrations-notes.txt')"
+t "outside repo cwd: /tmp write"   pass "$(bdec_at /tmp 'cp /tmp/a /tmp/b')"
+# A cwd that is not a directory, and one that is outside any checkout, must not
+# crash the guard or make it answer about a repo it never found. The migrations
+# arm has its own loud refusal for the no-repository case and that is asserted
+# elsewhere; what is asserted here is that an ordinary command still passes.
+t "nonexistent cwd still decides"  pass "$(bdec_at "$tmp/no-such-dir" 'echo hello')"
+
+echo "== bash-guard: a .. or /./ segment is not a different file"
+# Five spellings, each resolving to a protected file, each PERMITTED in silence
+# by the shipped guard. Normalisation is LEXICAL: the destination of a write
+# usually does not exist yet, so realpath/readlink -f would fail or answer about
+# the parent, and resolving a symlink at guard time answers a different question
+# from the one the command asks a moment later.
+t "..  into the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/../api/migrations/20260101000000_m01_applied.sql')"
+t ".. inside the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/migrations/../migrations/20260101000000_m01_applied.sql')"
+t ".. into the sqlc tree"       deny "$(bdec_at "$repo" 'cp /tmp/x apps/api/internal/db/../db/sqlc/db.go')"
+t "/./ into the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/./api/migrations/20260101000000_m01_applied.sql')"
+t ".. into the dead app"        deny "$(bdec_at "$repo" 'echo x > apps/landing/../landing/index.html')"
+t ".. plus a glob"              deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/../api/migrations/*.sql')"
+t ".. from a subdirectory"      deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ ../api/migrations/20260101000000_m01_applied.sql')"
+t ".. in an absolute path"      deny "$(bdec_at "$repo" "cp /tmp/x $repo/apps/api/../api/internal/db/sqlc/db.go")"
+# DOES NOT OVER-FIRE: a `..` that genuinely leaves the protected tree, and one
+# that leaves the repository altogether, are ordinary.
+t ".. out of the mig dir"       pass "$(bdec_at "$repo" 'cp /tmp/x apps/api/migrations/../notes.txt')"
+t ".. above the repo root"      pass "$(bdec_at "$repo" 'cp /tmp/x ../outside/apps/api/migrations/x.sql')"
+t "a dir literally named .."    pass "$(bdec_at "$repo" 'cp /tmp/x apps/api/migrations-old/../notes.txt')"
+
+echo "== bash-guard: two interpreter in-place writes that named no write call"
+q="'"
+t "python fileinput inplace" deny \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q}, inplace=True)]\"")"
+t "python fileinput inplace=1" deny \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q}, inplace=1)]\"")"
+t "node openSync w truncates" deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}w${q})\"")"
+t "node openSync a"           deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}a${q})\"")"
+t "node writeSync after open" deny \
+  "$(bdec_at "$repo" "node -e \"const f=require(${q}fs${q}); const d=f.openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}w${q}); f.writeSync(d,${q}x${q})\"")"
+# writeSync WITHOUT an openSync in the same segment, or the assertion above is
+# satisfied by the openSync pattern alone and deleting writeSync reddens
+# nothing. Proved: with only the openSync alternative removed, the combined
+# command still denied. `\.write\(` needs the paren right after `write` and
+# `writeFile` is a different name, so this shape was matched by neither.
+t "node writeSync on its own"  deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).writeSync(3,${q}x${q},0,${q}apps/api/internal/db/sqlc/db.go${q})\"")"
+# DOES NOT OVER-FIRE: the read forms of the same two calls. Refusing a read is
+# what taught the previous version's users to route around this arm.
+t "python fileinput, no inplace" pass \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q})]\"")"
+t "node openSync r"              pass \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}r${q})\"")"
+t "python open() read"           pass \
+  "$(bdec_at "$repo" "python3 -c \"print(open(${q}apps/api/internal/db/sqlc/db.go${q}).read())\"")"
+t "the word fileinput alone"     pass \
+  "$(bdec_at "$repo" 'grep -n fileinput apps/api/internal/db/sqlc/db.go')"
+
+echo "== bash-guard and route-guard REFUSE when jq is missing, never disappear"
+# Measured against the shipped guards before this: with jq off PATH, a write to
+# an applied migration, a glob over the migrations directory and a write into
+# the sqlc tree all returned zero bytes and no stderr. `command -v jq || exit 0`
+# is the whole cause, and a session brief line printed once is not a
+# compensating control for three denies that have vanished.
+#
+# A PATH THIS BLOCK BUILDS, the same idiom as the tr fixture above: linking
+# exactly the binaries the guards need means the absence of jq is decided here
+# and not by whatever the developer has installed.
+nojq="$tmp/no-jq"; mkdir -p "$nojq"
+for b in bash cat git grep sed awk sort tr find head tail date mktemp rm; do
+  bp=$(command -v "$b" 2>/dev/null)
+  [[ "$bp" == /* && -x "$bp" ]] && ln -sf "$bp" "$nojq/$b"
+done
+# The premise, asserted rather than assumed: this PATH really does lack jq.
+# Without it every refusal below could be refusing for some other reason.
+t "fixture: no jq on the stripped PATH" "" "$(PATH="$nojq" command -v jq 2>/dev/null)"
+t "fixture: bash is still there" "$nojq/bash" "$(PATH="$nojq" command -v bash 2>/dev/null)"
+
+nojq_bash() { # nojq_bash <command> -> "<rc>:<bytes of stderr>"
+  local err rc
+  err=$(jq -n --arg c "$repo" --arg x "$1" '{cwd:$c, tool_input:{command:$x}}' \
+        | PATH="$nojq" bash "$BASH_G" 2>&1 >/dev/null); rc=$?
+  printf '%s:%s' "$rc" "$([[ -n "$err" ]] && echo loud || echo silent)"
+}
+nojq_route() { # nojq_route <abs path> -> "<rc>:<loud|silent>"
+  local err rc
+  err=$(jq -n --arg c "$repo" --arg p "$1" '{cwd:$c, tool_input:{file_path:$p}}' \
+        | PATH="$nojq" bash "$ROUTE" 2>&1 >/dev/null); rc=$?
+  printf '%s:%s' "$rc" "$([[ -n "$err" ]] && echo loud || echo silent)"
+}
+# Exit 2 is how a PreToolUse hook blocks. Both halves are asserted: the code
+# alone could be an accident, and stderr alone would still let the tool run.
+t "no jq: bash-guard blocks an applied migration" "2:loud" \
+  "$(nojq_bash 'sed -i.bak s/a/b/ apps/api/migrations/20260101000000_m01_applied.sql')"
+t "no jq: bash-guard blocks a migrations glob"    "2:loud" \
+  "$(nojq_bash 'sed -i.bak s/a/b/ apps/api/migrations/*.sql')"
+t "no jq: bash-guard blocks a write into sqlc"    "2:loud" \
+  "$(nojq_bash 'cp /tmp/db.go apps/api/internal/db/sqlc/db.go')"
+# ...and an ORDINARY command is blocked too. That is the point: the guard cannot
+# read the payload, so it cannot tell one command from another, and answering
+# "allow" would be a decision it has no basis for.
+t "no jq: bash-guard blocks a plain command"      "2:loud" "$(nojq_bash 'ls -la')"
+t "no jq: route-guard blocks the sqlc tree"       "2:loud" \
+  "$(nojq_route "$repo/apps/api/internal/db/sqlc/db.go")"
+t "no jq: route-guard blocks an unrouted file"    "2:loud" "$(nojq_route "$repo/notes.txt")"
+# The remedy has to be in the message, or the refusal is a wall.
+nojq_msg=$(jq -n --arg c "$repo" --arg x 'ls' '{cwd:$c, tool_input:{command:$x}}' \
+           | PATH="$nojq" bash "$BASH_G" 2>&1 >/dev/null)
+tcontains "no jq: bash-guard names the remedy" "brew install jq" "$nojq_msg"
+tcontains "no jq: bash-guard names the cause"  "jq is NOT installed" "$nojq_msg"
+# ...and this suite must go RED rather than SKIP when jq is missing, because a
+# SKIP is the same silence one layer up. Asserted by running the suite's own
+# preamble idiom under the stripped PATH.
+t "no jq: the suite itself refuses" 1 \
+  "$(PATH="$nojq" bash -c 'command -v jq >/dev/null 2>&1 || exit 1'; printf '%s' "$?")"
+tcontains "no jq: the suite says FAIL not SKIP" "FAIL: jq is not installed" \
+  "$(sed -n '/command -v jq/,+2p' "$here/guards_test.sh" | head -3)"
+
+echo "== route-guard-coverage: its own self-test is pinned"
+# The self-test in route-guard-coverage.sh asks the guard three questions whose
+# answers are fixed by the routing table, and refuses to print a rate if any is
+# wrong. Nothing asserted that it existed. Deleting it left this suite fully
+# green and silently restored the exact defect it closed: a guard that reads its
+# payload and exits 0 was then scored
+#   ask 0 (0.0%) / deny 0 (0.0%) / pass 248 (100.0%)
+# and that number is what gets pasted into docs/harness.md as evidence the guard
+# is bearable. This file's subject is unguarded fixes, so its own fix is pinned.
+COV="$here/route-guard-coverage.sh"
+deadguard="$tmp/dead-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' > "$deadguard"
+chmod +x "$deadguard"
+cov_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$deadguard" 2>&1); cov_rc=$?
+t "a dead guard is not scored"            1 "$cov_rc"
+tcontains "and the self-test names itself" "self-test" "$cov_out"
+tcontains "and it says the guard is not routing" "is not routing" "$cov_out"
+tlacks "and no rate is printed at all"    "route-guard coverage:" "$cov_out"
+# Each of the three questions on its own, so deleting any ONE probe is caught by
+# a named assertion rather than by the other two happening to cover for it.
+# A guard that ONLY denies scores a perfect 0% over-fire; a guard that only asks
+# scores a terrible one. Neither is the shipped guard, and both must be refused.
+alldeny="$tmp/all-deny-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\njq -n %s\n' \
+  "'{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"x\"}}'" > "$alldeny"
+chmod +x "$alldeny"
+allask="$tmp/all-ask-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\njq -n %s\n' \
+  "'{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"ask\",permissionDecisionReason:\"x\"}}'" > "$allask"
+chmod +x "$allask"
+deny_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$alldeny" 2>&1); deny_rc=$?
+ask_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$allask" 2>&1); ask_rc=$?
+t "a deny-everything guard is refused" 1 "$deny_rc"
+tcontains "and the pass probe names it" "zz-coverage-selftest.txt" "$deny_out"
+t "an ask-everything guard is refused"  1 "$ask_rc"
+tcontains "and the deny probe names it" "sqlc/zz_coverage_selftest.go" "$ask_out"
+# The ASK probe needed its own stub. The two above are both caught by the pass
+# and deny probes, so deleting the ask probe left this suite green - the same
+# unpinned-fix shape this whole section exists for, one level down. This guard
+# gets the deny and the pass right and answers `pass` where the routing table
+# says `ask`, which is precisely the "routes nothing to a specialist" guard the
+# self-test is there to reject.
+noask="$tmp/no-ask-guard.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'p=$(cat)' \
+  'case "$p" in *db/sqlc*) jq -n '"'"'{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"x"}}'"'"' ;; esac' \
+  'exit 0' > "$noask"
+chmod +x "$noask"
+noask_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$noask" 2>&1); noask_rc=$?
+t "a guard that never asks is refused"  1 "$noask_rc"
+tcontains "and the ask probe names it" "zzcoverage/zz_coverage_selftest.go" "$noask_out"
+# DOES NOT OVER-FIRE: the SHIPPED guard passes its own self-test and a rate is
+# printed. Without this the four assertions above are satisfied by a self-test
+# that refuses everything, which measures nothing and blocks the real script.
+live_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' 2>&1); live_rc=$?
+t "the shipped guard is scored"        0 "$live_rc"
+tcontains "and a rate is printed"      "route-guard coverage:" "$live_out"
+tlacks "and nothing failed on the way" "FAIL:" "$live_out"
 
 echo ""
 if [[ $failed -eq 0 ]]; then

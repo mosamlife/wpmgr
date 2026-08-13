@@ -28,12 +28,18 @@
 # remembered per session, per destination, for WPMGR_ROUTE_GUARD_TTL_MIN
 # minutes, and a session that comes back to the same area later re-asks.
 #
-# FAIL-OPEN, DELIBERATELY, AND ANNOUNCED. If jq is missing this exits 0 and
-# routes nothing, because blocking every edit on a fresh clone of a public repo
-# is a guard that gets switched off within the hour. The compensating control is
-# scripts/claude/session-brief.sh, which prints "route-guard INACTIVE" at the
-# top of every session when jq is absent. Silence is what this project bans;
-# a stated, visible degradation is not silence.
+# FAIL-CLOSED WHEN jq IS MISSING. This used to exit 0 and route nothing, on the
+# argument that blocking every edit on a fresh clone gets the guard switched off
+# within the hour, with the session brief's "route-guard INACTIVE" line as the
+# compensating control. That argument was wrong on its own terms: a write to an
+# applied migration and a write into the sqlc tree - the two things this file
+# DENIES rather than asks about, because neither is a judgement call - both went
+# through with rc=0 and zero bytes of output. A brief line printed once at
+# session start is not a compensating control for a deny that has vanished.
+#
+# So the absence is now the loud outcome: exit 2, which is how a PreToolUse hook
+# blocks, with the remedy on stderr. One `brew install jq` restores it, and
+# scripts/bootstrap.sh installs it.
 #
 # The de-duplication needs a session identity. If neither session_id nor
 # transcript_path is in the payload it does NOT fail open: it asks every time,
@@ -65,40 +71,23 @@ set -uo pipefail
 mode=run
 [[ "${1:-}" == "--record" ]] && mode=record
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then
+  cat >/dev/null    # drain the payload, so the caller never sees EPIPE
+  echo "route-guard.sh: jq is NOT installed, so this guard cannot read the hook payload
+and cannot decide anything. It refuses rather than disappearing: without jq a
+write to an already-applied migration and a hand-edit of a generated tree - the
+two edits this guard DENIES outright - both succeed with no prompt and no
+record.
+
+Install it and re-run:  brew install jq" >&2
+  exit 2
+fi
 
 input=$(cat)
 
 # Inside a subagent this must not fire: the specialist IS the destination.
 # agent_id is present only for subagent tool calls.
 [[ -n "$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null)" ]] && exit 0
-
-path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input" 2>/dev/null)
-[[ -z "$path" ]] && exit 0
-case "$path" in /*) ;; *) exit 0 ;; esac
-
-# Repo-relative, derived from the FILE, not from cwd. Deriving it from .cwd
-# silently disabled this guard whenever the session was started in a
-# subdirectory: with cwd=apps/api every control-plane .go file passed.
-#
-# Both sides are resolved to physical paths first: `git rev-parse` returns a
-# physical path, so on any machine where the checkout sits under a symlinked
-# prefix (/tmp -> /private/tmp on macOS) a raw string prefix strip fails to
-# match and the guard silently routes nothing.
-# Walk up to the nearest EXISTING ancestor: a Write that creates a file in a
-# directory that does not exist yet is exactly the case a `dirname` check would
-# wave through, and creating a new migration is that case.
-dir=$(dirname "$path")
-anc="$dir"
-while [[ ! -d "$anc" && "$anc" != "/" && -n "$anc" ]]; do anc=$(dirname "$anc"); done
-[[ -d "$anc" ]] || exit 0
-panc=$(cd "$anc" 2>/dev/null && pwd -P) || exit 0
-root=$(git -C "$panc" rev-parse --show-toplevel 2>/dev/null) || exit 0
-root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
-# Re-express the full path under the physical ancestor.
-ppath="$panc${path#"$anc"}"
-rel="${ppath#"$root"/}"
-[[ "$rel" == "$ppath" ]] && exit 0
 
 emit() { # emit <decision> <reason>
   # The --record arm answers nothing and records nothing here: every caller of
@@ -114,6 +103,85 @@ emit() { # emit <decision> <reason>
   }'
   exit 0
 }
+
+path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input" 2>/dev/null)
+[[ -z "$path" ]] && exit 0
+
+# A RELATIVE file_path used to `exit 0` right here, printing nothing, for every
+# path in the routing table: a payload carrying no usable cwd was a silent route
+# around every arm below, including the two hard denies. Driven at
+# apps/api/internal/auth/members_handler.go - backend-architect plus a mandatory
+# security review - it exited 0 with zero bytes, and the generated sqlc tree did
+# the same. bash-guard.sh had already been hardened against exactly this shape
+# in its migration arm; this is the same fix on this side.
+#
+# "Relative" only means anything against a base, so a base is resolved from two
+# independent sources, and when neither answers the guard still does not fall
+# silent - it judges the literal string as if it were repo-relative, which is
+# the only reading under which a routed prefix means anything, and says so.
+resolved=1
+case "$path" in
+  /*) ;;
+  *)
+    base=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+    if [[ -n "$base" && -d "$base" && ! -L "$base" ]]; then
+      base=$(cd "$base" 2>/dev/null && pwd -P) || base=""
+    else
+      base=""
+    fi
+    # Second source: this hook script is committed inside the repository it
+    # guards, so its own directory resolves that checkout even with no cwd at
+    # all. A relative path in a payload with no cwd is repo-relative or it is
+    # nothing.
+    if [[ -z "$base" ]]; then
+      self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || self_dir=""
+      if [[ -n "$self_dir" ]]; then
+        base=$(git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null) || base=""
+        [[ -n "$base" ]] && { base=$(cd "$base" 2>/dev/null && pwd -P) || base=""; }
+      fi
+    fi
+    if [[ -n "$base" ]]; then
+      path="$base/$path"
+    else
+      # No cwd, and this script is not inside a checkout either. There is no
+      # base, so there is no physical path to resolve - but there is still a
+      # string, and the routing table is a table of string prefixes. Judge it,
+      # and let the arms below answer. Falling through to `exit 0` here is what
+      # produced zero bytes on the sqlc tree.
+      resolved=0
+      rel="$path"
+      root=""
+    fi
+    ;;
+esac
+
+# Repo-relative, derived from the FILE, not from cwd. Deriving it from .cwd
+# silently disabled this guard whenever the session was started in a
+# subdirectory: with cwd=apps/api every control-plane .go file passed.
+#
+# Both sides are resolved to physical paths first: `git rev-parse` returns a
+# physical path, so on any machine where the checkout sits under a symlinked
+# prefix (/tmp -> /private/tmp on macOS) a raw string prefix strip fails to
+# match and the guard silently routes nothing.
+# Walk up to the nearest EXISTING ancestor: a Write that creates a file in a
+# directory that does not exist yet is exactly the case a `dirname` check would
+# wave through, and creating a new migration is that case.
+if (( resolved )); then
+  dir=$(dirname "$path")
+  anc="$dir"
+  while [[ ! -d "$anc" && "$anc" != "/" && -n "$anc" ]]; do anc=$(dirname "$anc"); done
+  # These three exits are for a path that is outside every checkout on this
+  # machine: there is no repository whose routing table could cover it, so
+  # passing is an answer and not a silence.
+  [[ -d "$anc" ]] || exit 0
+  panc=$(cd "$anc" 2>/dev/null && pwd -P) || exit 0
+  root=$(git -C "$panc" rev-parse --show-toplevel 2>/dev/null) || exit 0
+  root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
+  # Re-express the full path under the physical ancestor.
+  ppath="$panc${path#"$anc"}"
+  rel="${ppath#"$root"/}"
+  [[ "$rel" == "$ppath" ]] && exit 0
+fi
 
 # ---- deny: generated trees ------------------------------------------------
 case "$rel" in
@@ -143,7 +211,10 @@ esac
 # Editing it is a silent no-op that looks like a fix.
 case "$rel" in
   apps/api/migrations/*.sql)
-    if git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null; then
+    # With no root (the unresolved case above) this question has no answer, so
+    # it is not answered: the file falls through to the database-engineer ask
+    # below rather than to a deny that might be aimed at brand new work.
+    if [[ -n "$root" ]] && git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null; then
       emit deny "$rel already exists in HEAD, so it has been applied and internal/db/migrate.go will never read it again:
 
     sort.Strings(versions) ... if applied[version] { continue }

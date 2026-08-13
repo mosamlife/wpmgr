@@ -73,8 +73,47 @@ root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
 # it into - still matches nothing this agent wrote and still says nothing.
 # Ignored files stay invisible either way: that needs --ignored, which is not
 # passed, so a gitignored node_modules is not listed by this and never was.
-dirty=$(git -C "$cwd" status --porcelain -uall 2>/dev/null)
+#
+# `-z` is load-bearing for a second, independent reason. DEFAULT PORCELAIN
+# QUOTES A PATH that carries a space, a double quote, a backslash, a control
+# character or a non-ASCII byte: it prints `?? "has space.txt"`, wrapped in
+# double quotes with C-style escapes, and `-c core.quotePath=false` does not
+# stop it - that flag only unescapes the non-ASCII case, and a space is still
+# quoted because the plain format is space-delimited. The ownership compare
+# below matches the record's path against the porcelain path column, so EVERY
+# such file failed to match, `owned` came out empty, and this script exited 0 in
+# silence - reporting that the agent had committed everything when it had not,
+# which is exactly how unpushed work gets reaped. `-z` prints paths raw.
+#
+# NUL is translated to newline because a newline inside a filename is already
+# unrepresentable in the ownership record, which agent-writes.sh writes one path
+# per line; so nothing this system can express is lost, and the result is
+# ordinary line-oriented text that command substitution can carry (it cannot
+# carry NUL - bash drops those bytes, silently on the bash 3.2 this machine
+# ships).
+#
+# `pipefail` is set, so a git that fails is not read as a clean tree.
+dirty=$(git -C "$cwd" status --porcelain -uall -z 2>/dev/null | tr '\0' '\n')
+status_rc=$?
+if [[ $status_rc -ne 0 ]]; then
+  {
+    echo "NOTE: 'git status --porcelain -uall -z' failed in '$cwd' (exit $status_rc)."
+    echo "Nothing could be read, so nothing is claimed either way. Not blocking."
+    echo "Check your own uncommitted paths by hand before you stop."
+  } >&2
+  exit 0
+fi
 [[ -z "$dirty" ]] && exit 0
+
+# Drop the ORIGIN half of a rename or copy. Under `-z` git emits a rename as two
+# records - `R  <new path>` and then the OLD path on its own, with no XY prefix -
+# so the line after an R or C entry is a bare path, and matching it as an entry
+# would read its first three characters as a status code and compare the rest.
+# Measured shape: `R  new name.txt<NUL>old name.txt<NUL>`.
+entries=$(printf '%s\n' "$dirty" | awk '
+  skip { skip = 0; next }
+  { print; if (substr($0, 1, 2) ~ /[RC]/) skip = 1 }
+')
 
 # ---- restrict to what this agent wrote -------------------------------------
 aid=$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null)
@@ -147,19 +186,25 @@ scoped=0
 if [[ -n "$record" && -f "$record" ]]; then
   scoped=1
   # The record holds absolute paths as the tool saw them; git speaks
-  # repo-relative. Compare on the repo-relative form of both.
-  while IFS= read -r w; do
-    [[ -z "$w" ]] && continue
-    rel="${w#"$root"/}"
-    [[ "$rel" == "$w" ]] && continue        # not in this worktree at all
-    # Anchored match against the porcelain path column, so a path is never
-    # matched as a substring of a longer one.
-    line=$(printf '%s\n' "$dirty" | awk -v p="$rel" 'substr($0,4)==p {print; exit}')
-    [[ -z "$line" ]] && continue                       # written, then committed
-    if ! printf '%s' "$owned" | grep -qxF -- "$line"; then
-      owned="$owned$line"$'\n'
-    fi
-  done < <(sort -u "$record")
+  # repo-relative. Reduce the record to repo-relative form once...
+  wrote=$(while IFS= read -r w; do
+            [[ -z "$w" ]] && continue
+            rel="${w#"$root"/}"
+            [[ "$rel" == "$w" ]] && continue    # not in this worktree at all
+            printf '%s\n' "$rel"
+          done < <(sort -u "$record"))
+  # ...then walk the PORCELAIN and ask the record about each entry, rather than
+  # walking the record and searching the porcelain text. The path git prints is
+  # now the authority on its own spelling, so nothing depends on reproducing
+  # git's quoting rules, and `grep -qxF` is a whole-line literal match, so a
+  # path is never matched as a substring or a prefix of a longer one.
+  # No dedup pass: git lists each path once.
+  while IFS= read -r line; do
+    [[ ${#line} -lt 4 ]] && continue
+    rel="${line:3}"
+    printf '%s\n' "$wrote" | grep -qxF -- "$rel" || continue
+    owned="$owned$line"$'\n'
+  done < <(printf '%s\n' "$entries")
   owned=$(printf '%s' "$owned" | sed '/^$/d')
   # Everything this agent wrote is already committed. Nothing to say.
   [[ -z "$owned" ]] && exit 0
@@ -207,7 +252,7 @@ fi
   echo "If any of the following are yours, commit them by name before you stop."
   echo "If none are, ignore this and do not touch them:"
   echo ""
-  printf '%s\n' "$dirty" | head -40
+  printf '%s\n' "$entries" | head -40
 } >&2
 
 exit 0

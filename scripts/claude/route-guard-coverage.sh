@@ -40,7 +40,11 @@ while [[ $# -gt 0 ]]; do
     # header's length: it spilled four lines of code into the help text, and
     # stopped only because a later comment edit happened to grow the header by
     # exactly the right number of lines. Same form as harness-reap.sh.
-    -h|--help) awk '!/^#/{exit} {print}' "$0"; exit 0 ;;
+    # The `NR==1` arm drops the shebang, which is a comment line to awk and was
+    # therefore printed as the first line of the help text. Same expression as
+    # harness-reap.sh, quickstart-selfhost.sh and init-env.sh; all four are
+    # asserted identical in guards_test.sh.
+    -h|--help) awk 'NR==1 && /^#!/ {next} !/^#/{exit} {print}' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,6 +58,74 @@ guard="${guard_override:-$root/scripts/claude/route-guard.sh}"
 # shipping, so every way of ending up with an empty file list is fatal.
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed; the guard fails open and this would report 0%" >&2; exit 1; }
 
+errlog=$(mktemp) || exit 1
+trap 'rm -f "$errlog"' EXIT
+
+# ---- "the guard declined" is not "the guard failed" ------------------------
+# Both arms below used to collapse those two into one, with
+#   ... | bash "$guard" 2>/dev/null | jq -r '... // "pass"'   and   "${d:-pass}"
+# so a guard that crashed, that printed a parse error, or that answered nothing
+# at all was scored as a deliberate PASS on every file - a perfect 0.0% over-fire
+# rate for a guard that is not running, exit 0, in both arms. That number gets
+# pasted into docs/harness.md as evidence that the guard is bearable, which is
+# the decision this script exists to inform, so scoring a dead guard is worse
+# than not measuring at all.
+#
+# Declined  = exit 0 and no output. That is the guard's real "pass" protocol.
+# Failed    = a non-zero exit, or output that carries no permissionDecision.
+#             Fatal, named, and non-zero out of this script.
+guard_decision() { # guard_decision <payload> <label> -> prints a decision, or fails
+  local out rc d
+  out=$(printf '%s' "$1" | bash "$guard" 2>>"$errlog"); rc=$?
+  if (( rc != 0 )); then
+    printf 'FAIL: the guard exited %d on %s. A coverage number measured against a failing guard is not a coverage number.\n' "$rc" "$2" >&2
+    [[ -s "$errlog" ]] && { echo "  last stderr:" >&2; tail -3 "$errlog" >&2; }
+    return 1
+  fi
+  [[ -z "$out" ]] && { printf 'pass'; return 0; }
+  d=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  if [[ -z "$d" ]]; then
+    printf 'FAIL: the guard produced %d bytes on %s that carry no .hookSpecificOutput.permissionDecision:\n' "${#out}" "$2" >&2
+    printf '%s\n' "${out:0:400}" >&2
+    return 1
+  fi
+  printf '%s' "$d"
+}
+
+# ---- is the guard alive at all? --------------------------------------------
+# The check above catches a guard that crashes or babbles. It cannot catch the
+# one that this script was actually measuring - a guard that reads its payload,
+# decides nothing and exits 0, which is indistinguishable from a pass on any
+# single file. So the guard is asked three questions whose answers are fixed by
+# the routing table in CLAUDE.md rather than by any count, before a rate is
+# reported:
+#
+#   a generated tree must deny, a Go control-plane file must ask, and a file on
+#   no routed path must pass.
+#
+# All three, or no number. Two would not be enough: "deny everything" and "ask
+# nothing" are both scored 0% over-fire by a two-question probe. The paths need
+# not exist - the guard walks up to the nearest existing ancestor - so this does
+# not rot when a directory is renamed, and it sends no session_id, so the
+# guard's per-session memory cannot answer for it.
+selftest() {
+  local bad=0 want got
+  probe() { # probe <expected> <repo-relative path>
+    got=$(guard_decision "$(jq -n --arg p "$root/$2" --arg c "$root" '{cwd:$c, tool_input:{file_path:$p}}')" "self-test $2") || return 1
+    [[ "$got" == "$1" ]] && return 0
+    printf 'FAIL: self-test: the guard answered %q for %s, expected %q.\n' "$got" "$2" "$1" >&2
+    return 1
+  }
+  probe deny apps/api/internal/db/sqlc/zz_coverage_selftest.go     || bad=1
+  probe ask  apps/api/internal/zzcoverage/zz_coverage_selftest.go  || bad=1
+  probe pass zz-coverage-selftest.txt                              || bad=1
+  if (( bad )); then
+    echo "FAIL: $guard is not routing. Refusing to report a rate for it - a dead guard measures 0% over-fire, which is the best possible number." >&2
+    return 1
+  fi
+}
+selftest || exit 1
+
 # ---- session simulation ----------------------------------------------------
 # The per-file rate above is stateless, so it measures the guard as if every
 # write were the first one. What a person actually experiences is prompts per
@@ -62,8 +134,8 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed; the guard fa
 # the closest honest stand-in for "a day's work in one session".
 if [[ "$mode" == sessions ]]; then
   simstate=$(mktemp -d) || exit 1
-  simerr=$(mktemp) || exit 1
-  trap 'rm -rf "$simstate" "$simerr"' EXIT
+  simerr="$errlog"
+  trap 'rm -rf "$simstate"; rm -f "$errlog"' EXIT
   # The guard memoises only inside a directory it can prove is its own, and the
   # proof is a marker file it writes when it creates its default one. A bare
   # `mktemp -d` carries no marker, so the guard refused this directory on every
@@ -88,15 +160,17 @@ if [[ "$mode" == sessions ]]; then
     writes=$((writes+1))
     payload=$(jq -n --arg p "$root/$line" --arg c "$root" --arg s "sim-$lastday" \
                 '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}')
-    dec=$(printf '%s' "$payload" | bash "$guard" 2>>"$simerr" \
-          | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null)
+    dec=$(guard_decision "$payload" "$line") || exit 1
     if [[ "$dec" == "ask" ]]; then
       prompts=$((prompts+1))
       # settings.json wires PostToolUse to `route-guard.sh --record`, so what
       # records a ruling in a real session is the approved write running. A
       # replay that only calls the PreToolUse arm memoises nothing however valid
       # its state directory is, and measures the stateless guard again.
-      printf '%s' "$payload" | bash "$guard" --record >/dev/null 2>>"$simerr"
+      if ! printf '%s' "$payload" | bash "$guard" --record >/dev/null 2>>"$simerr"; then
+        echo "FAIL: the guard's --record arm failed on $line, so the memoisation this arm reports on is not happening." >&2
+        exit 1
+      fi
     fi
   done < <(git -C "$root" log --since="$since" --date=short --format='D %ad' --name-only -- .)
 
@@ -143,13 +217,15 @@ total=${#files[@]}
 ask=0; deny=0; passn=0
 declare -a asked=()
 for f in "${files[@]}"; do
-  d=$(jq -n --arg p "$root/$f" --arg c "$root" '{cwd:$c, tool_input:{file_path:$p}}' \
-      | bash "$guard" 2>/dev/null \
-      | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null)
-  case "${d:-pass}" in
+  d=$(guard_decision "$(jq -n --arg p "$root/$f" --arg c "$root" '{cwd:$c, tool_input:{file_path:$p}}')" "$f") || exit 1
+  case "$d" in
     ask)  ask=$((ask+1));  asked+=("$f") ;;
     deny) deny=$((deny+1)) ;;
-    *)    passn=$((passn+1)) ;;
+    pass) passn=$((passn+1)) ;;
+    # Not `*)`. A decision this script does not know how to score is not a pass:
+    # `allow` would be counted as silence, and a future fourth value would be
+    # counted as whatever the last case happened to be.
+    *)    echo "FAIL: the guard answered '$d' on $f, which this script cannot score." >&2; exit 1 ;;
   esac
 done
 

@@ -50,14 +50,32 @@
 #    is why it denies rather than asks, and why it also denies when it cannot
 #    read the branch.
 #
-# FAIL-OPEN, DELIBERATELY, AND ANNOUNCED: see the header of route-guard.sh.
-# session-brief.sh reports the guard as INACTIVE at session start if jq is
-# absent.
+# FAIL-CLOSED WHEN jq IS MISSING. This used to be `command -v jq || exit 0`,
+# and what that produced was measured: with jq off PATH, a write to an
+# already-applied migration, a glob over the whole migrations directory and a
+# write into the sqlc tree ALL returned no decision, no stdout and no stderr.
+# The three strongest denies in this file disappeared together, and the only
+# announcement was a line in the session brief that nobody re-reads after
+# installing a package. A guard that evaporates when a dependency is missing is
+# this project's signature defect in its purest form, so the absence is now the
+# loud outcome: exit 2, which is how a PreToolUse hook blocks, with the reason
+# on stderr. Every Bash command is refused until jq is installed. That is
+# deliberate - the alternative is an unguarded session that looks guarded.
 #
 # Test: scripts/claude/guards_test.sh
 set -uo pipefail
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then
+  cat >/dev/null    # drain the payload, so the caller never sees EPIPE
+  echo "bash-guard.sh: jq is NOT installed, so this guard cannot read the hook payload
+and cannot decide anything. It refuses rather than disappearing: without jq
+every deny in it - an already-applied migration, a glob over the migrations
+directory, a write into a generated tree, a push that would land on main -
+silently permits the command instead.
+
+Install it and re-run:  brew install jq" >&2
+  exit 2
+fi
 
 input=$(cat)
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)
@@ -215,9 +233,21 @@ lead="(${tok}/)?"
 #
 # KNOWN LIMITS, stated rather than papered over: this splits on whitespace with
 # no quote parsing, so a destination inside quotes, or built from a variable, is
-# not seen; and the interpreter arm treats any `open(` as a write, so reading a
-# protected path through python is refused. Both are conservative in the safe
-# direction, and the header already declares the wider gap.
+# not seen. That is conservative in the safe direction only for the OVER-fire
+# half; it under-fires, and the header already declares that wider gap.
+#
+# This comment used to end "the interpreter arm treats any `open(` as a write,
+# so reading a protected path through python is refused ... conservative in the
+# safe direction". Both halves of that were wrong, and the second half was the
+# damaging one: the arm's test was `(open\(|writeFile|file_put_contents|\.write\()`,
+# which denied
+#   python3 -c "print(open('apps/api/internal/db/sqlc/db.go').read())"   a READ
+# and permitted
+#   python3 -c "import shutil; shutil.copy('/tmp/x','apps/.../sqlc/db.go')"
+# because a `shutil.copy` contains none of those four tokens. It refused the
+# harmless half and waved through the overwrite of the tree whose hand-editing
+# caused a production 500 here. A comment that claims safety in both directions
+# is how that survived; the real boundary is stated at $IWRITE below.
 # Strip ONE surrounding layer of quotes from a word, into $UNQ.
 #
 # `read -a` splits on whitespace and does not unquote, so `"apps/api/migrations"`
@@ -239,8 +269,65 @@ unq() {
 }
 UNQ=""
 
+# The interpreter arm's two tests, and the honest statement of where their
+# boundary is.
+#
+# WHAT THEY DECIDE: whether THIS segment performs a write (or a delete), not
+# whether it mentions a file. An interpreter one-liner names its destination
+# inside its own source text, so there is no positional operand to read; the
+# only signal available is the call being made. So the calls are enumerated.
+#
+# WHAT THEY CANNOT DECIDE, since a comment that overstates coverage is worse
+# than none: a call whose name arrives through a variable, an alias, `getattr`,
+# `eval`, an imported helper, or a path assembled by a function call inside the
+# `open(` argument list - `open(os.path.join('a','b'),'w')` is matched only by
+# the `.write(` that usually follows it, and not at all without one. Where the
+# shape is genuinely ambiguous the choice here is to DENY: `open(P,'r+')` is
+# listed as a write because `r+` can write, and a bare `copy(`/`rename(` with
+# no receiver is listed because PHP's are free functions. What is deliberately
+# NOT denied is a plain read - `open(P)`, `open(P,'r')`, `read_text()`,
+# `readFileSync` - because refusing those taught the previous version's users
+# nothing except to route around it.
+IQ='["'"'"']'
+#
+# THREE ADDITIONS, each an in-place overwrite proved destructive against a
+# stand-in file while the shipped pattern permitted it:
+#
+#   fileinput.input(P, inplace=True)   python's own in-place editor. It contains
+#                                      no `open(`, no `.write(` and no `shutil`,
+#                                      so nothing above matched it, and it
+#                                      rewrites the file it is iterating.
+#   fs.openSync(P, 'w')                node. Truncates to zero bytes on the open
+#                                      itself, with no write call anywhere.
+#   fs.writeSync(fd, buf)              node. `\.write\(` needs the paren
+#                                      immediately after `write`, and
+#                                      `writeFile` is a different name, so the
+#                                      form that usually follows an openSync was
+#                                      unmatched too.
+#
+# The mode test is what keeps the read forms out: `openSync(P,'r')` and
+# `open(P,'r')` are permitted, and `fileinput.input(P)` without `inplace` is a
+# read. Positional `fileinput.input(P, 1)` is NOT matched - the second parameter
+# is `inplace`, but it is spelled `inplace=` in every real use and matching a
+# bare `1` would fire on any two-argument call.
+IWRITE="(shutil\.(copy|copy2|copyfile|copytree|move)\(\
+|\.write_(text|bytes)\(\
+|os\.(replace|rename|renames|truncate|ftruncate)\(\
+|open\([^)]*(,|mode=)[[:space:]]*${IQ}[rwaxbt+U]*[wax+][rwaxbt+U]*${IQ}\
+|fileinput\.[A-Za-z_]*\(.*inplace[[:space:]]*=[[:space:]]*(True|1)\
+|openSync\([^)]*,[[:space:]]*${IQ}[rwaxbst+]*[wax+][rwaxbst+]*${IQ}\
+|\.write\(|\.writelines\(\
+|writeFile|appendFile|createWriteStream|copyFile|renameSync|truncateSync\
+|writeSync\(|writevSync\(\
+|file_put_contents|fwrite|fputs|move_uploaded_file\
+|(^|[^A-Za-z0-9_.\$>-])(copy|rename|touch)\()"
+IDELETE="(rmtree\(\
+|os\.(remove|removedirs|rmdir)\(\
+|unlink(Sync)?\(\
+|(^|[^A-Za-z0-9_])rm(dir)?(Sync)?\()"
+
 collect_dests() {
-  local seg cn w f d tdir inplace i n start
+  local seg cn w f d tdir inplace i n start probe
   local -a words operands
   while IFS= read -r seg; do
     # Comments and separators are already handled, quote-aware, by the splitter
@@ -335,8 +422,16 @@ collect_dests() {
     # `ruby -e 'File.write ...'` does not, and neither shape implies the other.
     case "$cn" in
       python|python3|ruby|node|php)
-        grep -qE '(open\(|writeFile|file_put_contents|\.write\()' <<<"$seg" \
-          && printf 'w:%s\n' "${operands[@]}" ;;
+        # `.write(` first has its two stream forms removed, because
+        # `sys.stdout.write(open(P).read())` is a read that prints and denying
+        # it is exactly the over-fire that gets a guard switched off. Parameter
+        # expansion, not a subshell: this runs once per segment.
+        probe=${seg//sys.stdout.write(/}
+        probe=${probe//sys.stderr.write(/}
+        grep -qE "$IWRITE" <<<"$probe" && printf 'w:%s\n' "${operands[@]}"
+        # Deletion is tagged r, the same as `rm`, so the one arm that permits a
+        # delete (the dead app) keeps permitting it however it is spelled.
+        grep -qE "$IDELETE" <<<"$probe" && printf 'r:%s\n' "${operands[@]}" ;;
     esac
   done < <(split_segments)
 }
@@ -400,9 +495,147 @@ split_segments() {
       }'
 }
 
+# ---- where the command will actually run, and what its operands resolve to --
+#
+# TWO BYPASSES, ONE CAUSE: every arm below matched repo-relative TEXT, and
+# nothing ever rebased an operand or collapsed a `.`/`..` segment. Both were
+# reproduced against the shipped guard, and both went out silent - no decision,
+# zero bytes, command permitted:
+#
+#   cwd=<repo>/apps/api   sed -i.bak s/a/b/ migrations/*.sql
+#   cwd=<repo>/apps/api   sed -i.bak s/a/b/ migrations/<applied>.sql
+#   cwd=<repo>/apps/api   cp /tmp/db.go internal/db/sqlc/db.go
+#   cwd=<repo>            sed -i.bak s/a/b/ apps/api/../api/migrations/<applied>.sql
+#   cwd=<repo>            sed -i.bak s/a/b/ apps/./api/migrations/<applied>.sql
+#   cwd=<repo>            sed -i.bak s/a/b/ apps/api/internal/db/../db/sqlc/db.go
+#
+# Every protected path in this file was reachable both ways. `cd` into a
+# subdirectory is the ordinary way to work in this repo, so the first shape is
+# not even an attack; it is Tuesday.
+#
+# THE CWD IS THE PAYLOAD'S, NEVER $PWD. This hook runs in a process whose own
+# cwd is wherever the harness started it, which is not where the command will
+# run. `.cwd` in the payload is the only honest source, and when it is absent
+# the operand is left as it arrived - which is the old behaviour, so nothing
+# that is denied today stops being denied.
+#
+# NORMALISATION IS LEXICAL, NEVER FILESYSTEM. Not `realpath`, not
+# `readlink -f`, not `cd && pwd -P`. Two independent reasons, and either alone
+# settles it: the destination of a write usually does NOT EXIST YET, so a
+# resolver either fails or answers about the parent; and resolving a symlink at
+# guard time answers a different question from the one the command will ask
+# when it runs a moment later. So `.` and `..` are collapsed textually and
+# nothing on disk is consulted.
+#
+# BOTH READINGS ARE EMITTED for a relative operand: the operand as-is, and the
+# operand rebased onto the payload cwd. Which one the shell means depends on
+# where it runs, and this cannot narrow that down without guessing; emitting
+# both can only match MORE than the shipped guard, never less, so no assertion
+# that passes today can start failing. The cost is that from cwd=apps/api the
+# spelling `apps/api/migrations/x.sql` is still read as protected even though it
+# would resolve to `apps/api/apps/api/...`. That is the status quo, and it
+# denies a command that would have failed anyway.
+#
+# A `..` that walks off the top is NOT quietly dropped: `../../..` above the
+# base leaves its leading `..` in place, so the result is not a repo-relative
+# path, matches no protected prefix, and is not confused with one.
+PAYLOAD_CWD=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+CWD_ROOT=""
+CWD_REL=""
+if [[ -n "$PAYLOAD_CWD" && -d "$PAYLOAD_CWD" ]]; then
+  CWD_ROOT=$(git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null) || CWD_ROOT=""
+  if [[ -n "$CWD_ROOT" ]]; then
+    CWD_ROOT=$(cd "$CWD_ROOT" 2>/dev/null && pwd -P) || CWD_ROOT=""
+  fi
+  if [[ -n "$CWD_ROOT" ]]; then
+    # The cwd's own physical path, so the prefix strip below compares like with
+    # like: on macOS /tmp is a symlink to /private/tmp and `show-toplevel` is
+    # always physical.
+    phys=$(cd "$PAYLOAD_CWD" 2>/dev/null && pwd -P) || phys=""
+    if [[ "$phys" == "$CWD_ROOT" ]]; then CWD_REL=""
+    elif [[ "$phys" == "$CWD_ROOT"/* ]]; then CWD_REL="${phys#"$CWD_ROOT"/}"
+    else CWD_ROOT=""; fi   # cwd is not inside the root git reported: trust neither
+  fi
+fi
+
+# normalise_dests: read tagged destination lines, emit the same lines with every
+# path-like token inside them lexically normalised, and additionally rebased
+# onto the payload cwd. Tokens are cut on the characters that cannot appear in
+# a path spelled on a command line, so a path buried inside an interpreter
+# expression - `shutil.copy('/tmp/x','apps/./api/...')` - comes out on its own.
+# Character-by-character rather than a bracket expression: `[`, `]` and `-` are
+# all legal in a glob and all awkward inside one, and getting that wrong fails
+# open.
+normalise_dests() {
+  awk -v base="$CWD_REL" -v root="$CWD_ROOT" '
+    function ispath(c) {
+      return index("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./*?[]{}$~+@%^-", c) > 0
+    }
+    # Collapse "." and resolve ".." textually. A ".." that cannot be resolved
+    # because it walks above the base is KEPT, so the caller can see that the
+    # result left the tree rather than being handed a path that looks inside it.
+    function lexnorm(p,   parts, n, i, k, abs, out, s) {
+      abs = (substr(p, 1, 1) == "/")
+      n = split(p, parts, "/")
+      k = 0
+      for (i = 1; i <= n; i++) {
+        if (parts[i] == "" || parts[i] == ".") continue
+        if (parts[i] == "..") {
+          if (k > 0 && out[k] != "..") { k--; continue }
+          if (abs) continue          # "/.." is "/"
+          out[++k] = ".."; continue
+        }
+        out[++k] = parts[i]
+      }
+      s = ""
+      for (i = 1; i <= k; i++) s = (i == 1 ? out[i] : s "/" out[i])
+      return (abs ? "/" s : s)
+    }
+    function put(tag, p,   n) {
+      if (p == "") return
+      if (substr(p, 1, 1) == "/") {
+        n = lexnorm(p)
+        # An absolute path is only interesting once it is inside the checkout.
+        if (root == "") return
+        if (n == root) { print tag; return }
+        if (index(n, root "/") == 1) print tag substr(n, length(root) + 2)
+        return
+      }
+      print tag lexnorm(p)
+      if (base != "") print tag lexnorm(base "/" p)
+    }
+    {
+      tag = substr($0, 1, 2)
+      if (tag != "w:" && tag != "r:") next
+      body = substr($0, 3)
+      tok = ""
+      L = length(body)
+      for (i = 1; i <= L + 1; i++) {
+        c = (i <= L) ? substr(body, i, 1) : ""
+        if (c != "" && ispath(c)) { tok = tok c; continue }
+        if (tok != "") { put(tag, tok); tok = "" }
+      }
+    }'
+}
+
+# Redirection targets and `dd of=` name their destination in the syntax itself,
+# so collect_dests strips them and the raw greps in writes_to read them straight
+# off $cmd. Those greps are text-only, which is exactly what both bypasses
+# above walked through, so the same targets are extracted here and pushed
+# through normalise_dests with everything else. The raw greps stay: they cost
+# nothing and they cover shapes the extraction below does not tokenise.
+redir_dests() {
+  grep -oE ">>?\|?[[:space:]]*[\"']?${tok}" <<<"$cmd" | sed -E 's/^>>?\|?[[:space:]]*//'
+  grep -oE "of=[\"']?${tok}" <<<"$cmd" | sed -E 's/^of=//'
+}
+
 # One target per line, tagged w (write) or r (delete), so no regex can match
 # across two of them and the dead-app arm can permit deletion on its own.
 DESTS=$(collect_dests)
+DESTS=$(printf '%s\n%s\n' "$DESTS" "$(redir_dests | sed 's/^/w:/')" \
+        | grep -E '^[wr]:.' | sort -u)
+DESTS=$(printf '%s\n%s\n' "$DESTS" "$(printf '%s\n' "$DESTS" | normalise_dests)" \
+        | grep -E '^[wr]:.' | sort -u)
 
 # dest_matches <kind> <path-regex>
 # The prefix is matched as a whole path component, never as a substring of a
@@ -461,6 +694,80 @@ fi
 # An already-applied migration. Which files are applied is not a fixed list, so
 # it is computed the same way route-guard.sh computes it: presence in HEAD.
 if writes_to "$MIGRATIONS"; then
+  # FIRST: a destination that cannot be resolved to a specific file is not the
+  # same answer as "no migration matched", and reading it as one was a silent
+  # bypass of the strongest deny in this file.
+  #
+  # The literal scan further down extracts a filename with the character class
+  # [A-Za-z0-9_.-]+\.sql, which contains no glob metacharacter. So
+  #   sed -i.bak s/a/b/ apps/api/migrations/*.sql
+  # matched NOTHING, $applied stayed empty, the `if` below was false, and
+  # control fell straight to the bare `exit 0` at the end of this script: no
+  # decision, no stdout, no stderr, and one command rewriting every committed
+  # migration at once - the outage .claude/rules/db-migrations.md calls
+  # non-negotiable, reached by adding a single `*`.
+  #
+  # THE GLOB IS NOT EXPANDED HERE, deliberately. This hook runs BEFORE the
+  # command does, from a process whose cwd is not the payload's. What `*.sql`
+  # names at guard time is not what it names at run time, so an expansion that
+  # happened to find only new files would license a write that lands on an
+  # applied one. The destination is judged on its SHAPE.
+  #
+  # DENY, not ask. Nothing honest reaches here. A new migration is created
+  # under a literal timestamped name - that ordinal IS the file's identity, and
+  # `cat > apps/api/migrations/20260813000000_x.sql` resolves fine. Reading the
+  # directory (`ls`, `cat`, `grep` over `*.sql`) never enters this arm at all,
+  # because none of those is a write and only write and delete destinations are
+  # collected below. An ask would put a prompt in front of a shape that is
+  # always wrong, and a prompt that is always answered the same way stops being
+  # read.
+  mig_targets() {
+    # Redirection and `dd of=` name their destination in the syntax itself, and
+    # collect_dests strips redirections, so those two are read from $cmd. Every
+    # other destination is an already-correlated DESTS line, w (write) or r
+    # (delete). READS are deliberately not scanned: writing a new migration and
+    # then listing the directory,
+    #   cat > apps/api/migrations/<new>.sql && ls apps/api/migrations/*.sql
+    # is ordinary work, and taking the glob from the `ls` would redden it.
+    grep -oE ">>?\|?[[:space:]]*[\"']?${lead}${MIGRATIONS}/${tok}" <<<"$cmd"
+    grep -oE "of=[\"']?${lead}${MIGRATIONS}/${tok}" <<<"$cmd"
+    printf '%s\n' "$DESTS" | grep -E '^[wr]:' | grep -oE "${MIGRATIONS}/${tok}"
+  }
+  unresolved=""
+  while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    m=${m##*apps/api/migrations/}
+    # The bare directory, as `cp X apps/api/migrations/` emits it. collect_dests
+    # emits the directory AND the derived `<dir>/<basename>`, and it is that
+    # sibling entry which carries the name; flagging the directory itself would
+    # deny every legitimate copy into it.
+    [[ -z "$m" ]] && continue
+    case "$m" in
+      *'*'*|*'?'*|*'['*|*'{'*|*'$'*|*'`'*)
+        unresolved="$unresolved  ${MIGRATIONS}/$m"$'\n' ;;
+    esac
+  done < <(mig_targets | sort -u)
+
+  if [[ -n "$unresolved" ]]; then
+    emit deny "That command writes under apps/api/migrations/ to a destination this guard
+cannot resolve to a specific file:
+
+${unresolved}
+Whether a migration may be edited is decided by whether that exact file is in
+HEAD, and a pattern has no exact file. It is not expanded here either: this hook
+runs before the command does, so what the pattern matches now is not what it
+will match when the shell runs it.
+
+One glob over this directory rewrites every migration that has already run.
+internal/db/migrate.go skips any version already in schema_migrations, so those
+edits change nothing on an existing database and break every fresh install
+instead - see .claude/rules/db-migrations.md.
+
+Name the one file you mean. Creating a NEW migration under its own timestamped
+name is not blocked. If the change really is to an existing migration, it is a
+new ordinal plus a converge path, and it routes to database-engineer."
+  fi
+
   # Resolve a repository to ask, or refuse. This arm used to leave `root` empty
   # whenever `.cwd` was absent from the payload or was not inside a worktree,
   # and then simply skip the whole check: no decision, no message, command
@@ -468,9 +775,8 @@ if writes_to "$MIGRATIONS"; then
   # available to any payload that happens not to carry a cwd, and silence is
   # the one outcome a guard may never produce. A check that cannot do its job
   # says so.
-  cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
-  root=""
-  [[ -n "$cwd" && -d "$cwd" ]] && root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+  cwd=$PAYLOAD_CWD
+  root=$CWD_ROOT
   # Second source, so a missing cwd does not turn into a blanket refusal of
   # ordinary new-migration work: this hook script is itself committed in the
   # repository it guards, so its own directory resolves the same checkout.
