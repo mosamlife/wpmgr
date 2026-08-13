@@ -62,8 +62,12 @@ while [[ $# -gt 0 ]]; do
     --cache-gb) CACHE_GB="${2:-10}"; shift ;;
     --worktrees-only) WORKTREES_ONLY=1 ;;
     # Print the whole comment header, however long it grows. A fixed line range
-    # silently truncates the safety notes the moment someone adds one.
-    -h|--help) awk '!/^#/{exit} {print}' "$0"; exit 0 ;;
+    # silently truncates the safety notes the moment someone adds one. The
+    # `NR==1` arm drops the shebang, which is a comment line to awk and was
+    # therefore printed as the first line of the help text. Same expression as
+    # route-guard-coverage.sh, quickstart-selfhost.sh and init-env.sh; all four
+    # are asserted identical in guards_test.sh.
+    -h|--help) awk 'NR==1 && /^#!/ {next} !/^#/{exit} {print}' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift

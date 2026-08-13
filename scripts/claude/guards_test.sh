@@ -35,7 +35,12 @@ ROUTE="${WPMGR_TEST_ROUTE_GUARD:-$here/route-guard.sh}"
 [[ "$ROUTE" == "$here/route-guard.sh" ]] || echo "NOTE: route-guard under test is $ROUTE (WPMGR_TEST_ROUTE_GUARD), NOT the shipped one"
 BASH_G="$here/bash-guard.sh"
 
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq is not installed, and the guards fail open without it"; exit 0; }
+# RED, not SKIP. This used to print "SKIP: jq is not installed, and the guards
+# fail open without it" and exit 0, so the one machine state in which the guards
+# were most degraded was also the one state in which their suite reported
+# success. A suite that goes green when it ran nothing is the same defect the
+# guards themselves exist to close, one layer up.
+command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed. This suite builds every hook payload with it, so it cannot run - and the guards it tests now REFUSE (exit 2) rather than fail open, so this is not a machine you can work on. Fix: brew install jq" >&2; exit 1; }
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/repo"
@@ -1813,6 +1818,29 @@ tcontains "a measured small cache is left" "ceiling, leaving it" "$ok_out"
 tlacks "and is not called unmeasurable"    "COULD NOT MEASURE" "$ok_out"
 t "and that run goes green"             0  "$ok_rc"
 
+# The ceiling test is `[[ $kbrc -ne 0 ]] || ! [[ "$kb" =~ ^[0-9]+$ ]]`, and the
+# two halves answer different questions. Deleting either one alone used to leave
+# this suite fully green, which means neither was pinned and the guard's own
+# rule - prove it fires - was unmet for both. One stub per half, so a mutation
+# of either is named by the assertion that catches it:
+#
+#   the STATUS half   is pinned by the partial-du stub above: a plausible `12`
+#                     with a non-zero exit. The regex alone passes it.
+#   the SHAPE half    is pinned here: exit 0, so the status alone passes it, and
+#                     a first field that is not a number. `du` answers this way
+#                     on a filesystem whose reporting tool prints a unit, and
+#                     `$(( kb / 1024 / 1024 ))` on a non-number is 0 in bash -
+#                     under every ceiling, the exact silent pass this refuses.
+dushape="$tmp/dushape"
+mkdir -p "$dushape"
+printf '#!/bin/sh\nprintf "12K\\t%%s\\n" "$2"\nexit 0\n' > "$dushape/du"
+chmod +x "$dushape/du"
+shape_out=$(cd "$cdr" && PATH="$dushape:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); shape_rc=$?
+tcontains "a non-numeric du is not a size" "COULD NOT MEASURE the build cache" "$shape_out"
+tcontains "and the unreadable value is quoted back" "gave '12K'" "$shape_out"
+tlacks "and it is not left as measured too" "leaving it" "$shape_out"
+t "and the shape run goes red"          1  "$shape_rc"
+
 # ...and a GOCACHE that could not even be asked for is not "no cache to clean".
 nogo="$tmp/nogostub"
 mkdir -p "$nogo"
@@ -1835,7 +1863,12 @@ echo "== --help prints the whole comment header, never a hardcoded line range"
 real_repo=$(cd "$here/../.." && pwd)
 help_covers() { # help_covers <script> -> "yes" or the first line it dropped
   local f=$1 out line stripped
-  out=$(bash "$f" --help 2>&1) || { printf '--help exited %s' "$?"; return 1; }
+  # `printf --` first, because bash 3.2.57's builtin parses a format string
+  # starting with `--` as its own option list: this line used to be
+  # `printf '--help exited %s' "$?"` and printed `printf: --: invalid option`
+  # to stderr while returning the empty string, so the assertion reported
+  # nothing at all where it meant to report the exit code.
+  out=$(bash "$f" --help 2>&1) || { printf -- '--help exited %s' "$?"; return 1; }
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     stripped=$(printf '%s' "$line" | sed 's/^#\{0,1\} \{0,1\}//')
@@ -2637,9 +2670,16 @@ t "outside a repo: still exits 0"      0 "$sb_out_rc"
 tcontains "outside a repo: still reports" "## Machine state" "$sb_out"
 tcontains "outside a repo: COULD NOT CHECK" "pre-push hook: COULD NOT CHECK" "$sb_out"
 tcontains "and the worktree count is not invented" "agent worktrees: not measured" "$sb_out"
-# 2. jq must be present, or the brief announces the guards INACTIVE - a line
-#    that would otherwise sit in the output unremarked and unexplained.
-tlacks "and jq is not missing" "INACTIVE" "$sb_zero"
+# 2. jq must be present, or the brief announces that the guards refuse
+#    everything - a line that would otherwise sit in the output unremarked and
+#    unexplained. The needle is taken from the brief's own source rather than
+#    written out here: when that sentence changed from "are INACTIVE" to
+#    "REFUSE EVERYTHING" this assertion kept passing against a string the script
+#    no longer contains, which is a test asserting nothing.
+jq_line=$(grep -o 'route-guard and bash-guard [A-Z][A-Z ]*[A-Z]' "$BRIEF" | head -1)
+t "the brief has a jq-missing line" 1 \
+  "$( [[ -n "$jq_line" ]] && printf 1 || printf 0 )"
+tlacks "and jq is not missing" "$jq_line" "$sb_zero"
 # 3. A positive measurement, not merely the absence of a complaint: a real
 #    number for disk free proves df AND awk AND the pipeline all ran under the
 #    built PATH. Degrade any of them and this becomes "could not measure".
@@ -3190,6 +3230,202 @@ t "real: :main deletes too"   refused  "$(pushed origin :main)"
 t "real: main survived both"  "$main_before" "$(git -C "$bare" rev-parse refs/heads/main)"
 # The escape hatch the refusal advertises has to be real, or the message lies.
 newcommit; t "real: --no-verify lands"  ok "$(pushed --no-verify origin main)"
+
+echo "== bash-guard: the destination is resolved against the PAYLOAD's cwd"
+# Every arm of arm 3 matched repo-relative TEXT, and nothing rebased an operand.
+# So working from a subdirectory - the ordinary way to work in this repo -
+# bypassed all of them. Reproduced against the shipped guard, all silent:
+#   cwd=<repo>/apps/api   sed -i.bak s/a/b/ migrations/*.sql        -> no decision
+#   cwd=<repo>            sed -i.bak s/a/b/ apps/api/migrations/*.sql -> deny
+# Same command, same file, opposite answers, decided by which directory the
+# session happened to be sitting in.
+#
+# The guard's own cwd is NOT the payload's - it runs wherever the harness
+# started it - so every assertion here passes the cwd in the JSON and none of
+# them relies on $PWD.
+bdec_at() { # bdec_at <cwd> <command>
+  local out
+  out=$(jq -n --arg c "$1" --arg x "$2" '{cwd:$c, tool_input:{command:$x}}' \
+        | bash "$BASH_G" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+sub_api="$repo/apps/api"
+t "subdir: glob over migrations"   deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ migrations/*.sql')"
+t "subdir: applied migration"      deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+t "subdir: sed -i into sqlc"       deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ internal/db/sqlc/db.go')"
+t "subdir: cp into sqlc"           deny "$(bdec_at "$sub_api" 'cp /tmp/db.go internal/db/sqlc/db.go')"
+t "subdir: cp into the mig dir"    deny "$(bdec_at "$sub_api" 'cp /tmp/20260101000000_m01_applied.sql migrations')"
+t "subdir: tee into ogen"          deny "$(bdec_at "$sub_api" 'echo x | tee internal/api/gen/oas.go')"
+t "subdir: redirect into dead app" deny "$(bdec_at "$repo/apps" 'echo x > landing/index.html')"
+t "subdir: rm the sqlc tree"       deny "$(bdec_at "$sub_api" 'rm -rf internal/db/sqlc/')"
+# An ABSOLUTE destination is the same file by another spelling, and was equally
+# unmatched: the arms are written in repo-relative terms and nothing stripped
+# the root.
+t "absolute: applied migration"    deny "$(bdec_at "$repo" "sed -i.bak s/a/b/ $repo/apps/api/migrations/20260101000000_m01_applied.sql")"
+t "absolute: sqlc tree"            deny "$(bdec_at "$repo" "cp /tmp/db.go $repo/apps/api/internal/db/sqlc/db.go")"
+# DOES NOT OVER-FIRE. A subdirectory cwd must not turn ordinary work red, and
+# these are the shapes that would get the guard switched off.
+t "subdir: new migration"          pass "$(bdec_at "$sub_api" 'cat > migrations/20260813000000_m99_new.sql')"
+t "subdir: ls the mig dir"         pass "$(bdec_at "$sub_api" 'ls migrations/*.sql')"
+t "subdir: sed -n over a glob"     pass "$(bdec_at "$sub_api" 'sed -n 1,5p migrations/*.sql')"
+t "subdir: git log over the dir"   pass "$(bdec_at "$sub_api" 'git log --oneline -- migrations')"
+t "subdir: grep the sqlc tree"     pass "$(bdec_at "$sub_api" 'grep -r Querier internal/db/sqlc/ > /tmp/out')"
+t "subdir: write outside the repo" pass "$(bdec_at "$sub_api" 'cp /tmp/x ../../../elsewhere/x')"
+t "subdir: a same-named sibling"   pass "$(bdec_at "$sub_api" 'cp /tmp/x migrations-notes.txt')"
+t "outside repo cwd: /tmp write"   pass "$(bdec_at /tmp 'cp /tmp/a /tmp/b')"
+# A cwd that is not a directory, and one that is outside any checkout, must not
+# crash the guard or make it answer about a repo it never found. The migrations
+# arm has its own loud refusal for the no-repository case and that is asserted
+# elsewhere; what is asserted here is that an ordinary command still passes.
+t "nonexistent cwd still decides"  pass "$(bdec_at "$tmp/no-such-dir" 'echo hello')"
+
+echo "== bash-guard: a .. or /./ segment is not a different file"
+# Five spellings, each resolving to a protected file, each PERMITTED in silence
+# by the shipped guard. Normalisation is LEXICAL: the destination of a write
+# usually does not exist yet, so realpath/readlink -f would fail or answer about
+# the parent, and resolving a symlink at guard time answers a different question
+# from the one the command asks a moment later.
+t "..  into the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/../api/migrations/20260101000000_m01_applied.sql')"
+t ".. inside the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/migrations/../migrations/20260101000000_m01_applied.sql')"
+t ".. into the sqlc tree"       deny "$(bdec_at "$repo" 'cp /tmp/x apps/api/internal/db/../db/sqlc/db.go')"
+t "/./ into the migrations dir" deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/./api/migrations/20260101000000_m01_applied.sql')"
+t ".. into the dead app"        deny "$(bdec_at "$repo" 'echo x > apps/landing/../landing/index.html')"
+t ".. plus a glob"              deny "$(bdec_at "$repo" 'sed -i.bak s/a/b/ apps/api/../api/migrations/*.sql')"
+t ".. from a subdirectory"      deny "$(bdec_at "$sub_api" 'sed -i.bak s/a/b/ ../api/migrations/20260101000000_m01_applied.sql')"
+t ".. in an absolute path"      deny "$(bdec_at "$repo" "cp /tmp/x $repo/apps/api/../api/internal/db/sqlc/db.go")"
+# DOES NOT OVER-FIRE: a `..` that genuinely leaves the protected tree, and one
+# that leaves the repository altogether, are ordinary.
+t ".. out of the mig dir"       pass "$(bdec_at "$repo" 'cp /tmp/x apps/api/migrations/../notes.txt')"
+t ".. above the repo root"      pass "$(bdec_at "$repo" 'cp /tmp/x ../outside/apps/api/migrations/x.sql')"
+t "a dir literally named .."    pass "$(bdec_at "$repo" 'cp /tmp/x apps/api/migrations-old/../notes.txt')"
+
+echo "== bash-guard: two interpreter in-place writes that named no write call"
+q="'"
+t "python fileinput inplace" deny \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q}, inplace=True)]\"")"
+t "python fileinput inplace=1" deny \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q}, inplace=1)]\"")"
+t "node openSync w truncates" deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}w${q})\"")"
+t "node openSync a"           deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}a${q})\"")"
+t "node writeSync after open" deny \
+  "$(bdec_at "$repo" "node -e \"const f=require(${q}fs${q}); const d=f.openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}w${q}); f.writeSync(d,${q}x${q})\"")"
+# DOES NOT OVER-FIRE: the read forms of the same two calls. Refusing a read is
+# what taught the previous version's users to route around this arm.
+t "python fileinput, no inplace" pass \
+  "$(bdec_at "$repo" "python3 -c \"import fileinput; [print(l) for l in fileinput.input(${q}apps/api/internal/db/sqlc/db.go${q})]\"")"
+t "node openSync r"              pass \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}r${q})\"")"
+t "python open() read"           pass \
+  "$(bdec_at "$repo" "python3 -c \"print(open(${q}apps/api/internal/db/sqlc/db.go${q}).read())\"")"
+t "the word fileinput alone"     pass \
+  "$(bdec_at "$repo" 'grep -n fileinput apps/api/internal/db/sqlc/db.go')"
+
+echo "== bash-guard and route-guard REFUSE when jq is missing, never disappear"
+# Measured against the shipped guards before this: with jq off PATH, a write to
+# an applied migration, a glob over the migrations directory and a write into
+# the sqlc tree all returned zero bytes and no stderr. `command -v jq || exit 0`
+# is the whole cause, and a session brief line printed once is not a
+# compensating control for three denies that have vanished.
+#
+# A PATH THIS BLOCK BUILDS, the same idiom as the tr fixture above: linking
+# exactly the binaries the guards need means the absence of jq is decided here
+# and not by whatever the developer has installed.
+nojq="$tmp/no-jq"; mkdir -p "$nojq"
+for b in bash cat git grep sed awk sort tr find head tail date mktemp rm; do
+  bp=$(command -v "$b" 2>/dev/null)
+  [[ "$bp" == /* && -x "$bp" ]] && ln -sf "$bp" "$nojq/$b"
+done
+# The premise, asserted rather than assumed: this PATH really does lack jq.
+# Without it every refusal below could be refusing for some other reason.
+t "fixture: no jq on the stripped PATH" "" "$(PATH="$nojq" command -v jq 2>/dev/null)"
+t "fixture: bash is still there" "$nojq/bash" "$(PATH="$nojq" command -v bash 2>/dev/null)"
+
+nojq_bash() { # nojq_bash <command> -> "<rc>:<bytes of stderr>"
+  local err rc
+  err=$(jq -n --arg c "$repo" --arg x "$1" '{cwd:$c, tool_input:{command:$x}}' \
+        | PATH="$nojq" bash "$BASH_G" 2>&1 >/dev/null); rc=$?
+  printf '%s:%s' "$rc" "$([[ -n "$err" ]] && echo loud || echo silent)"
+}
+nojq_route() { # nojq_route <abs path> -> "<rc>:<loud|silent>"
+  local err rc
+  err=$(jq -n --arg c "$repo" --arg p "$1" '{cwd:$c, tool_input:{file_path:$p}}' \
+        | PATH="$nojq" bash "$ROUTE" 2>&1 >/dev/null); rc=$?
+  printf '%s:%s' "$rc" "$([[ -n "$err" ]] && echo loud || echo silent)"
+}
+# Exit 2 is how a PreToolUse hook blocks. Both halves are asserted: the code
+# alone could be an accident, and stderr alone would still let the tool run.
+t "no jq: bash-guard blocks an applied migration" "2:loud" \
+  "$(nojq_bash 'sed -i.bak s/a/b/ apps/api/migrations/20260101000000_m01_applied.sql')"
+t "no jq: bash-guard blocks a migrations glob"    "2:loud" \
+  "$(nojq_bash 'sed -i.bak s/a/b/ apps/api/migrations/*.sql')"
+t "no jq: bash-guard blocks a write into sqlc"    "2:loud" \
+  "$(nojq_bash 'cp /tmp/db.go apps/api/internal/db/sqlc/db.go')"
+# ...and an ORDINARY command is blocked too. That is the point: the guard cannot
+# read the payload, so it cannot tell one command from another, and answering
+# "allow" would be a decision it has no basis for.
+t "no jq: bash-guard blocks a plain command"      "2:loud" "$(nojq_bash 'ls -la')"
+t "no jq: route-guard blocks the sqlc tree"       "2:loud" \
+  "$(nojq_route "$repo/apps/api/internal/db/sqlc/db.go")"
+t "no jq: route-guard blocks an unrouted file"    "2:loud" "$(nojq_route "$repo/notes.txt")"
+# The remedy has to be in the message, or the refusal is a wall.
+nojq_msg=$(jq -n --arg c "$repo" --arg x 'ls' '{cwd:$c, tool_input:{command:$x}}' \
+           | PATH="$nojq" bash "$BASH_G" 2>&1 >/dev/null)
+tcontains "no jq: bash-guard names the remedy" "brew install jq" "$nojq_msg"
+tcontains "no jq: bash-guard names the cause"  "jq is NOT installed" "$nojq_msg"
+# ...and this suite must go RED rather than SKIP when jq is missing, because a
+# SKIP is the same silence one layer up. Asserted by running the suite's own
+# preamble idiom under the stripped PATH.
+t "no jq: the suite itself refuses" 1 \
+  "$(PATH="$nojq" bash -c 'command -v jq >/dev/null 2>&1 || exit 1'; printf '%s' "$?")"
+tcontains "no jq: the suite says FAIL not SKIP" "FAIL: jq is not installed" \
+  "$(sed -n '/command -v jq/,+2p' "$here/guards_test.sh" | head -3)"
+
+echo "== route-guard-coverage: its own self-test is pinned"
+# The self-test in route-guard-coverage.sh asks the guard three questions whose
+# answers are fixed by the routing table, and refuses to print a rate if any is
+# wrong. Nothing asserted that it existed. Deleting it left this suite fully
+# green and silently restored the exact defect it closed: a guard that reads its
+# payload and exits 0 was then scored
+#   ask 0 (0.0%) / deny 0 (0.0%) / pass 248 (100.0%)
+# and that number is what gets pasted into docs/harness.md as evidence the guard
+# is bearable. This file's subject is unguarded fixes, so its own fix is pinned.
+COV="$here/route-guard-coverage.sh"
+deadguard="$tmp/dead-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' > "$deadguard"
+chmod +x "$deadguard"
+cov_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$deadguard" 2>&1); cov_rc=$?
+t "a dead guard is not scored"            1 "$cov_rc"
+tcontains "and the self-test names itself" "self-test" "$cov_out"
+tcontains "and it says the guard is not routing" "is not routing" "$cov_out"
+tlacks "and no rate is printed at all"    "route-guard coverage:" "$cov_out"
+# Each of the three questions on its own, so deleting any ONE probe is caught by
+# a named assertion rather than by the other two happening to cover for it.
+# A guard that ONLY denies scores a perfect 0% over-fire; a guard that only asks
+# scores a terrible one. Neither is the shipped guard, and both must be refused.
+alldeny="$tmp/all-deny-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\njq -n %s\n' \
+  "'{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"x\"}}'" > "$alldeny"
+chmod +x "$alldeny"
+allask="$tmp/all-ask-guard.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\njq -n %s\n' \
+  "'{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"ask\",permissionDecisionReason:\"x\"}}'" > "$allask"
+chmod +x "$allask"
+deny_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$alldeny" 2>&1); deny_rc=$?
+ask_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$allask" 2>&1); ask_rc=$?
+t "a deny-everything guard is refused" 1 "$deny_rc"
+tcontains "and the pass probe names it" "zz-coverage-selftest.txt" "$deny_out"
+t "an ask-everything guard is refused"  1 "$ask_rc"
+tcontains "and the deny probe names it" "sqlc/zz_coverage_selftest.go" "$ask_out"
+# DOES NOT OVER-FIRE: the SHIPPED guard passes its own self-test and a rate is
+# printed. Without this the four assertions above are satisfied by a self-test
+# that refuses everything, which measures nothing and blocks the real script.
+live_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' 2>&1); live_rc=$?
+t "the shipped guard is scored"        0 "$live_rc"
+tcontains "and a rate is printed"      "route-guard coverage:" "$live_out"
+tlacks "and nothing failed on the way" "FAIL:" "$live_out"
 
 echo ""
 if [[ $failed -eq 0 ]]; then

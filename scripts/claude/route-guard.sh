@@ -28,12 +28,18 @@
 # remembered per session, per destination, for WPMGR_ROUTE_GUARD_TTL_MIN
 # minutes, and a session that comes back to the same area later re-asks.
 #
-# FAIL-OPEN, DELIBERATELY, AND ANNOUNCED. If jq is missing this exits 0 and
-# routes nothing, because blocking every edit on a fresh clone of a public repo
-# is a guard that gets switched off within the hour. The compensating control is
-# scripts/claude/session-brief.sh, which prints "route-guard INACTIVE" at the
-# top of every session when jq is absent. Silence is what this project bans;
-# a stated, visible degradation is not silence.
+# FAIL-CLOSED WHEN jq IS MISSING. This used to exit 0 and route nothing, on the
+# argument that blocking every edit on a fresh clone gets the guard switched off
+# within the hour, with the session brief's "route-guard INACTIVE" line as the
+# compensating control. That argument was wrong on its own terms: a write to an
+# applied migration and a write into the sqlc tree - the two things this file
+# DENIES rather than asks about, because neither is a judgement call - both went
+# through with rc=0 and zero bytes of output. A brief line printed once at
+# session start is not a compensating control for a deny that has vanished.
+#
+# So the absence is now the loud outcome: exit 2, which is how a PreToolUse hook
+# blocks, with the remedy on stderr. One `brew install jq` restores it, and
+# scripts/bootstrap.sh installs it.
 #
 # The de-duplication needs a session identity. If neither session_id nor
 # transcript_path is in the payload it does NOT fail open: it asks every time,
@@ -65,7 +71,17 @@ set -uo pipefail
 mode=run
 [[ "${1:-}" == "--record" ]] && mode=record
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then
+  cat >/dev/null    # drain the payload, so the caller never sees EPIPE
+  echo "route-guard.sh: jq is NOT installed, so this guard cannot read the hook payload
+and cannot decide anything. It refuses rather than disappearing: without jq a
+write to an already-applied migration and a hand-edit of a generated tree - the
+two edits this guard DENIES outright - both succeed with no prompt and no
+record.
+
+Install it and re-run:  brew install jq" >&2
+  exit 2
+fi
 
 input=$(cat)
 

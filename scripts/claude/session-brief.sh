@@ -14,9 +14,12 @@
 #    forbidden to touch a worktree that holds work, which is exactly the ones
 #    that accumulate. Discovering this mid-link is the expensive way.
 #
-# F: the guards fail open when jq is missing. Silence is the defect this project
-#    keeps shipping, so the degradation is announced here, every session,
-#    instead.
+# F: the guards REFUSE when jq is missing - they exit 2 rather than exit 0, so
+#    every Edit, Write and Bash call is blocked until it is installed. That is
+#    loud on its own, but it is loud one command too late, so it is announced
+#    here at session start with the one-line fix. This block used to say the
+#    guards were INACTIVE, which was true of the old fail-open behaviour and is
+#    now the opposite of what happens.
 #
 # Never blocks. SessionStart cannot block, and this must stay cheap.
 set -uo pipefail
@@ -41,8 +44,8 @@ echo "## Machine state"
 
 # --- guard health -----------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
-  echo "- route-guard and bash-guard are INACTIVE: jq is not installed. Routing"
-  echo "  and the wait-loop deny are unenforced this session. Fix: install jq."
+  echo "- route-guard and bash-guard REFUSE EVERYTHING: jq is not installed, so both"
+  echo "  exit 2 and every Edit, Write and Bash call is blocked. Fix: brew install jq."
 fi
 
 # The pre-push hook, resolved for THIS checkout. It is committed but inert until

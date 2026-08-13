@@ -40,7 +40,11 @@ while [[ $# -gt 0 ]]; do
     # header's length: it spilled four lines of code into the help text, and
     # stopped only because a later comment edit happened to grow the header by
     # exactly the right number of lines. Same form as harness-reap.sh.
-    -h|--help) awk '!/^#/{exit} {print}' "$0"; exit 0 ;;
+    # The `NR==1` arm drops the shebang, which is a comment line to awk and was
+    # therefore printed as the first line of the help text. Same expression as
+    # harness-reap.sh, quickstart-selfhost.sh and init-env.sh; all four are
+    # asserted identical in guards_test.sh.
+    -h|--help) awk 'NR==1 && /^#!/ {next} !/^#/{exit} {print}' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
