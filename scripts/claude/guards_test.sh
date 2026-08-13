@@ -1889,7 +1889,27 @@ for hs in scripts/quickstart-selfhost.sh scripts/init-env.sh \
   # trap ended on `[ -n "${GEN_FILE}" ]`, false on every run that minted no temp
   # file, and a trap's return value REPLACES the script's exit status.
   t "$hs: --help exits 0" 0 "$(bash "$real_repo/$hs" --help >/dev/null 2>&1; printf '%s' "$?")"
+  # ...and the SHEBANG is not help text. `#!/usr/bin/env bash` is a comment line
+  # to awk, so `!/^#/{exit} {print}' printed it as the first line of the help
+  # output in harness-reap.sh and route-guard-coverage.sh. help_covers above
+  # cannot see this: it re-derives the header with `sed -n '2,$p'`, which skips
+  # line 1, and it only asks whether anything was DROPPED - an EXTRA line is
+  # invisible to it. So reverting the awk in either script reddened nothing.
+  t "$hs: --help does not print the shebang" "" \
+    "$(bash "$real_repo/$hs" --help 2>&1 | head -1 | grep '^#!' )"
 done
+# The failure path of help_covers itself, which is the only path where its
+# diagnostic is ever built. On a healthy script `--help` exits 0 and that printf
+# never runs, so a format string bash could not parse sat there unexercised: it
+# began `--`, which bash 3.2.57's printf builtin reads as its own option list,
+# and the branch returned the empty string with `printf: --: invalid option` on
+# stderr instead of the exit code it meant to report.
+badhelp="$tmp/bad-help.sh"
+printf '%s\n' '#!/usr/bin/env bash' '# a header' 'exit 7' > "$badhelp"
+chmod +x "$badhelp"
+t "help_covers reports the exit code" "--help exited 7" "$(help_covers "$badhelp" 2>/dev/null)"
+t "and builds it without a printf error" "" \
+  "$(help_covers "$badhelp" 2>&1 >/dev/null)"
 # Named explicitly, because these three lines are the ones that were missing and
 # a coverage loop that silently stopped matching would go green again.
 qs_help=$(bash "$real_repo/scripts/quickstart-selfhost.sh" --help 2>&1)
@@ -3312,6 +3332,13 @@ t "node openSync a"           deny \
   "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}a${q})\"")"
 t "node writeSync after open" deny \
   "$(bdec_at "$repo" "node -e \"const f=require(${q}fs${q}); const d=f.openSync(${q}apps/api/internal/db/sqlc/db.go${q},${q}w${q}); f.writeSync(d,${q}x${q})\"")"
+# writeSync WITHOUT an openSync in the same segment, or the assertion above is
+# satisfied by the openSync pattern alone and deleting writeSync reddens
+# nothing. Proved: with only the openSync alternative removed, the combined
+# command still denied. `\.write\(` needs the paren right after `write` and
+# `writeFile` is a different name, so this shape was matched by neither.
+t "node writeSync on its own"  deny \
+  "$(bdec_at "$repo" "node -e \"require(${q}fs${q}).writeSync(3,${q}x${q},0,${q}apps/api/internal/db/sqlc/db.go${q})\"")"
 # DOES NOT OVER-FIRE: the read forms of the same two calls. Refusing a read is
 # what taught the previous version's users to route around this arm.
 t "python fileinput, no inplace" pass \
@@ -3419,6 +3446,20 @@ t "a deny-everything guard is refused" 1 "$deny_rc"
 tcontains "and the pass probe names it" "zz-coverage-selftest.txt" "$deny_out"
 t "an ask-everything guard is refused"  1 "$ask_rc"
 tcontains "and the deny probe names it" "sqlc/zz_coverage_selftest.go" "$ask_out"
+# The ASK probe needed its own stub. The two above are both caught by the pass
+# and deny probes, so deleting the ask probe left this suite green - the same
+# unpinned-fix shape this whole section exists for, one level down. This guard
+# gets the deny and the pass right and answers `pass` where the routing table
+# says `ask`, which is precisely the "routes nothing to a specialist" guard the
+# self-test is there to reject.
+noask="$tmp/no-ask-guard.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'p=$(cat)' \
+  'case "$p" in *db/sqlc*) jq -n '"'"'{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"x"}}'"'"' ;; esac' \
+  'exit 0' > "$noask"
+chmod +x "$noask"
+noask_out=$(cd "$here/../.." && bash "$COV" --since '30 days ago' --guard "$noask" 2>&1); noask_rc=$?
+t "a guard that never asks is refused"  1 "$noask_rc"
+tcontains "and the ask probe names it" "zzcoverage/zz_coverage_selftest.go" "$noask_out"
 # DOES NOT OVER-FIRE: the SHIPPED guard passes its own self-test and a rate is
 # printed. Without this the four assertions above are satisfied by a self-test
 # that refuses everything, which measures nothing and blocks the real script.

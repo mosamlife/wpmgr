@@ -339,7 +339,15 @@ else
   # this comparison as 0, which is under every ceiling. Refuse to decide instead,
   # and say so loudly: this counts as a failure, so the script exits 1 and the
   # run cannot be read as "checked, nothing to do".
-  if [[ $kbrc -ne 0 ]] || ! [[ "$kb" =~ ^[0-9]+$ ]]; then
+  # ONE test, not two. This was `[[ $kbrc -ne 0 ]] || ! [[ "$kb" =~ ^[0-9]+$ ]]`,
+  # and the halves were not independent: sizeof() returns non-zero ONLY on the
+  # path where it has already printed `size unknown`, so a non-zero $kbrc always
+  # arrives with a $kb the regex rejects anyway. Deleting the status half alone
+  # changed no outcome and reddened nothing, which is a half nobody can test.
+  # $kbrc is still READ, in the message below, because "exit 1 with a partial
+  # total" and "exit 0 with a unit suffix" are different faults to go and look
+  # at, and the reader needs to know which one happened.
+  if ! [[ "$kb" =~ ^[0-9]+$ ]]; then
     say "  COULD NOT MEASURE the build cache: 'du -sk' gave '$kb' (exit $kbrc)."
     say "  The ceiling check is SKIPPED and nothing was cleaned - a size that was"
     say "  never read is not a size below it. Measure it by hand:"
