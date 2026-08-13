@@ -16,8 +16,8 @@ export const metadata: Metadata = buildMetadata({
 
 // ---------------------------------------------------------------------------
 // Curated release entries (newest first, harvested from CHANGELOG.md).
-// This is a long curated history, not a recent window: 74 entries as of
-// 2026-08-12, running from 0.61.133 back to 0.54.0, some of them grouping
+// This is a long curated history, not a recent window: 75 entries as of
+// 2026-08-14, running from 0.61.134 back to 0.54.0, some of them grouping
 // several releases into one. Anything older lives on GitHub Releases.
 // CI keeps the newest entry within 5 releases of the top CHANGELOG.md entry
 // (scripts/check-version-surfaces.sh), reading the newest version in a grouped
@@ -42,6 +42,39 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 };
 
 const RELEASES: ChangeEntry[] = [
+  {
+    version: "0.61.134",
+    date: "2026-08-14",
+    summary:
+      "An administrator in your organisation could change the owner's role or remove the owner from the organisation, and could separately create an API key carrying the owner role. Neither is possible now: nobody can act on a member who outranks them, and nobody can create a key more powerful than they are. Upgrading does not revoke keys that already exist, so if administrators in your organisation can create API keys, review the list and revoke any owner-role key you did not expect. The dashboard now offers the owner role only to an owner, and an owner can nominate a second owner and hand ownership over.",
+    items: [
+      {
+        tag: "Security",
+        text: "An administrator could change the owner's role, or remove the owner from the organisation outright. Both actions are allowed for anyone who can manage members, which an administrator can, and that was the only question asked on the remove path: the acting person's own role was never read. The change path compared the acting person only against the role being handed out, never against the role the person being changed already held, so nothing anywhere compared an administrator to an owner. An organisation with one owner looked safe, but the refusal it gave came from the separate rule that keeps the last owner in place, not from any question of rank, so an organisation with two owners had no protection at all. Both now read the other person's role first and refuse when the acting person does not outrank it. An owner acting on another owner still works, because that is how ownership is handed over, and an administrator acting on another administrator or on anyone below is unchanged.",
+      },
+      {
+        tag: "Security",
+        text: "An administrator could create an API key carrying the owner role, which is an owner-grade credential obtained without going near the members page at all. The role was taken from the request as given, with nothing comparing it to the person asking. Asking for a role above your own is now refused outright rather than quietly lowered to one you may have, so a script that asks for something it is not entitled to gets an error instead of a key that silently does less than it thinks. The default is unchanged and an owner creating an owner-role key still works.",
+      },
+      {
+        tag: "Security",
+        text: "Upgrading does not revoke any API key that already exists. A key created with the owner role while the above was possible keeps working, with that role, until somebody revokes it, so reviewing them is a step you take yourself. The API keys page in your settings lists every key with the role it carries and revokes any of them, and the same is available over the API. Revoke any owner-role key that an administrator created. Which account created a given key is recoverable from the audit log, which has recorded it against the key since long before this release, with two limits: that record is written on a best-effort basis, so a failed write leaves a key with no trail, and permanently purging an organisation takes its audit history with it.",
+      },
+      {
+        tag: "Fixed",
+        text: "Two people demoting two different owners at the same moment could leave the organisation with no owner at all. The rule that keeps the last owner in place counted the owners and then saved the change as two separate steps, so both requests could see two owners, both conclude that one would be left, and both go ahead. That was already possible before this release; what changed is the cost of it. An organisation that lost its last owner used to be able to put itself right from inside the product, by promoting somebody or by creating an owner-role key, and those are exactly the two routes the fixes above close, so the same accident would now need somebody with direct database access to undo. Counting the owners, checking the rule and saving the change now happen as one step that no second request can interrupt. The rule itself is unchanged.",
+      },
+      {
+        tag: "Fixed",
+        text: "The dashboard no longer offers the owner role to somebody who is not an owner. On the members page and on the API keys page it appeared for anyone who could manage members, which includes an administrator, so the dashboard was offering something the control plane now refuses. The API keys page had a second version of the same problem, where the form would still send the owner role after the option itself was hidden. Both now go by your own role, and the refusals that come back are shown as messages you can read rather than a generic failure.",
+      },
+      {
+        tag: "Fixed",
+        text: "An owner can hand ownership over. An owner sees a second owner's row as an ordinary row and can change or remove it, which is what lets an organisation that has reached two owners come back to one, and an administrator still sees an owner's row as plain text with nothing to click. What an owner cannot do is act on their own row, so stepping down takes two people: an owner promotes somebody else to owner, and that person then demotes or removes the first. That is deliberate rather than missing, because it is what stops an owner demoting themselves and leaving the organisation with nobody in charge of it.",
+      },
+    ],
+    featureLinks: [{ label: "Team and access control", href: "/features/team-access" }],
+  },
   {
     version: "0.61.133",
     date: "2026-08-12",
