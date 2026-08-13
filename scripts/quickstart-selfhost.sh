@@ -63,8 +63,16 @@ for arg in "$@"; do
     --version=*)  WPMGR_VERSION="${arg#--version=}" ;;
     --dir=*)      WORK_DIR="${arg#--dir=}" ;;
     --force)      FORCE=1 ;;
+    # Print the whole comment header, however long it grows. The hardcoded
+    # `sed -n '3,42p'` this replaces stopped two lines short of the end of the
+    # block and was ALREADY WRONG when it was read: of the three lines under
+    # "Host requirements" it printed only the Docker one, dropping curl/wget and
+    # openssl from the help of the README's headline install script. Same
+    # pattern as scripts/claude/harness-reap.sh and route-guard-coverage.sh; the
+    # NR==1 arm drops the shebang, which is a comment line but not help text.
     -h|--help)
-      sed -n '3,42p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
+      awk 'NR==1 && /^#!/ {next} !/^#/{exit} {print}' "${BASH_SOURCE[0]}" \
+        | sed 's/^#\{0,1\} \{0,1\}//'
       exit 0
       ;;
     *)

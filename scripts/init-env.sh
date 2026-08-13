@@ -74,7 +74,14 @@ log()  { printf '==> %s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-cleanup() { [ -n "${GEN_FILE}" ] && rm -f "${GEN_FILE}"; }
+# An EXIT trap's own return value REPLACES the script's exit status, and this
+# one ended on `[ -n "${GEN_FILE}" ]`, which is false on every run that never
+# minted a temp file. So `scripts/init-env.sh --help` exited 1, and so did a
+# clean bootstrap that used an existing generator - a success reported as a
+# failure to anything that checks, which is `set -e` in the caller, the README's
+# one-liner, and quickstart-selfhost.sh. Measured: `--help` exited 1 with the
+# help text fully printed. `return 0` makes the trap say only what it is for.
+cleanup() { [ -n "${GEN_FILE}" ] && rm -f "${GEN_FILE}"; return 0; }
 trap cleanup EXIT
 
 # current_value: prints the current value of KEY in .env (empty if absent/blank).
@@ -206,8 +213,15 @@ for arg in "$@"; do
   case "${arg}" in
     --force) FORCE=1 ;;
     --hostname=*) HOSTNAME_OVERRIDE="${arg#--hostname=}" ;;
+    # Print the whole comment header, however long it grows. The hardcoded
+    # `sed -n '3,31p'` this replaces overran the block by one line and was
+    # ALREADY WRONG when it was read: it printed `set -euo pipefail` to the user
+    # as though it were help text. Same pattern as scripts/claude/harness-reap.sh
+    # and route-guard-coverage.sh; the NR==1 arm drops the shebang, which is a
+    # comment line but not help text.
     -h | --help)
-      sed -n '3,31p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
+      awk 'NR==1 && /^#!/ {next} !/^#/{exit} {print}' "${BASH_SOURCE[0]}" \
+        | sed 's/^#\{0,1\} \{0,1\}//'
       exit 0
       ;;
     *)

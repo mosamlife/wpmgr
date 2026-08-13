@@ -70,9 +70,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-# Never continue on a failed `cd` (SC2164). Everything below - `git worktree
-# remove --force`, `git branch -d`, the rev-parse that picks the base branch,
-# `go clean -cache` - resolves its repository from the CURRENT DIRECTORY, while
+# Never continue on a failed `cd` (SC2164). The three GIT commands below - `git
+# worktree remove --force`, `git branch -d`, and the rev-parse that picks the
+# base branch - resolve their repository from the CURRENT DIRECTORY, while
 # the report line, the `$wt == $root` self-protection check and the ownership
 # test all assume that directory is $root. Unchecked, a failed cd left every
 # one of them running somewhere the script had never reached, and it did not
@@ -80,6 +80,14 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" 
 # code goes on to remove a worktree and print "1 removed" from a location it
 # never verified. A script whose next four commands delete things stops when it
 # cannot reach the place it is about to act on.
+#
+# `go clean -cache` is deliberately NOT in that list, though an earlier version
+# of this comment named it as a fourth. It is not cwd-sensitive at all: it wipes
+# the single machine-wide directory `go env GOCACHE` names, which is the same
+# directory whatever the current one is and whatever repository - if any - the
+# current one belongs to. Listing it here read as though the cd guard covered
+# it. Nothing about cwd covers it; what stands between it and the cache is
+# --apply plus the ceiling check in section 3.
 cd "$root" || {
   echo "cannot enter the repository root '$root' (exit $?). Refusing to run." >&2
   echo "Every action below resolves its repository from the current directory," >&2
@@ -96,7 +104,24 @@ act() { if [[ $APPLY -eq 1 ]]; then say "  DO   $*"; else say "  WOULD $*"; fi; 
 # `du` on a path that has just been removed, or that a worktree record points at
 # after the directory went, prints nothing. Say so rather than print an empty
 # column: a blank size reads as zero, and zero is the one thing it does not mean.
-sizeof() { local s; s=$(du -sh "$1" 2>/dev/null | cut -f1); printf '%s' "${s:-size unknown}"; }
+#
+# It also RETURNS du's status, so a caller that has to decide on the number can
+# tell "0" from "could not measure". The Go build-cache ceiling in section 3 is
+# that caller, and it was the one place in this file where neither this helper
+# nor countof() was used: it read `du -sk "$gocache" | cut -f1` straight into an
+# arithmetic expansion, so a failed du became the empty string, `${kb:-0}` became
+# 0, 0 was below any ceiling, and the section printed "under the ceiling, leaving
+# it" - a measurement that never happened, reported as a measurement.
+#
+# The unit is a parameter so this stays ONE du call site rather than growing a
+# second helper beside it. `-s` always, never a recursive listing.
+sizeof() { # sizeof <path> [du unit flag, default h] -> size on stdout, du's status
+  local out rc
+  out=$(du -s"${2:-h}" "$1" 2>/dev/null); rc=$?
+  if [[ $rc -ne 0 || -z "$out" ]]; then printf 'size unknown'; return 1; fi
+  printf '%s' "${out%%$'\t'*}"
+  return 0
+}
 
 # Count something, or say plainly that it could not be counted. Verbatim the
 # helper from session-brief.sh, and deliberately not a second idiom for the same
@@ -295,21 +320,41 @@ say "== Go build cache and docker volumes skipped (--worktrees-only)"
 else
 say "== Go build cache (ceiling ${CACHE_GB}G; module cache is never touched)"
 gocache=$(go env GOCACHE 2>/dev/null || true)
-if [[ -n "$gocache" && -d "$gocache" ]]; then
-  kb=$(du -sk "$gocache" 2>/dev/null | cut -f1)
-  gb=$(( ${kb:-0} / 1024 / 1024 ))
-  say "  $gocache = $(du -sh "$gocache" 2>/dev/null | cut -f1)"
-  if [[ "$gb" -ge "$CACHE_GB" ]]; then
-    act "go clean -cache   (reclaims ~${gb}G; the next build is slow, nothing is lost)"
-    # Same rule as the worktrees: the note claims the cache was reclaimed, so
-    # it may only be written when the clean actually returned 0.
-    attempt "go clean -cache" go clean -cache && reclaimed_note="${reclaimed_note} build-cache"
+if [[ -z "$gocache" ]]; then
+  say "  'go env GOCACHE' returned nothing - no Go toolchain on PATH, or it failed."
+  say "  The cache was NOT measured and NOT cleaned. This is not 'no cache to clean'."
+  failures=$((failures+1))
+elif [[ ! -d "$gocache" ]]; then
+  say "  $gocache is not a directory - nothing to measure or clean"
+else
+  kb=$(sizeof "$gocache" k); kbrc=$?
+  say "  $gocache = $(sizeof "$gocache")"
+  # A ceiling test is a decision, and a decision needs a number. `du` fails on a
+  # cache being written underneath it, on a permission it cannot cross, on an
+  # unreadable mount - and the empty string it leaves behind used to arrive at
+  # this comparison as 0, which is under every ceiling. Refuse to decide instead,
+  # and say so loudly: this counts as a failure, so the script exits 1 and the
+  # run cannot be read as "checked, nothing to do".
+  if [[ $kbrc -ne 0 ]] || ! [[ "$kb" =~ ^[0-9]+$ ]]; then
+    say "  COULD NOT MEASURE the build cache: 'du -sk' gave '$kb' (exit $kbrc)."
+    say "  The ceiling check is SKIPPED and nothing was cleaned - a size that was"
+    say "  never read is not a size below it. Measure it by hand:"
+    say "    du -sh '$gocache'"
+    failures=$((failures+1))
   else
-    say "  under the ceiling, leaving it"
+    gb=$(( kb / 1024 / 1024 ))
+    if [[ "$gb" -ge "$CACHE_GB" ]]; then
+      act "go clean -cache   (reclaims ~${gb}G; the next build is slow, nothing is lost)"
+      # Same rule as the worktrees: the note claims the cache was reclaimed, so
+      # it may only be written when the clean actually returned 0.
+      attempt "go clean -cache" go clean -cache && reclaimed_note="${reclaimed_note} build-cache"
+    else
+      say "  ${gb}G is under the ${CACHE_GB}G ceiling, leaving it"
+    fi
   fi
 fi
 gomod=$(go env GOMODCACHE 2>/dev/null || true)
-[[ -n "$gomod" && -d "$gomod" ]] && say "  module cache $(du -sh "$gomod" 2>/dev/null | cut -f1) - reported only, never cleaned here"
+[[ -n "$gomod" && -d "$gomod" ]] && say "  module cache $(sizeof "$gomod") - reported only, never cleaned here"
 
 # ---- 4. testcontainer volumes ---------------------------------------------
 say "== docker testcontainer volumes"

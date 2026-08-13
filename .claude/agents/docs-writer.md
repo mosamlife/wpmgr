@@ -24,8 +24,10 @@ command is missing, say so and stop, never report a step you did not run.
 banned_counts() {
   f=${1:-.github/workflows/ci.yml}
   [ -f "$f" ] || { echo "cannot read $f: the vocabulary gate moved, so find it before trusting any count" >&2; return 1; }
-  b=$(grep -oE "banned='[^']+'" "$f" | sed "s/banned='//; s/'$//")
-  [ -n "$b" ] || { echo "no single-line banned='...' in $f: renamed, requoted or wrapped, which is not an empty list" >&2; return 1; }
+  raw=$(grep -oE "banned='[^']+'" "$f")
+  n=$(printf '%s' "$raw" | grep -c .)
+  [ "$n" -eq 1 ] || { echo "found $n single-line banned='...' assignments in $f, expected exactly one: renamed, requoted, wrapped, or the gate now has more than one list, and summing them silently is how a partial list reads as the whole one" >&2; return 1; }
+  b=$(printf '%s' "$raw" | sed "s/banned='//; s/'$//")
   echo "alternates        $(printf '%s' "$b" | tr '|' '\n' | grep -c .)"
   echo "distinct products $(printf '%s' "$b" | tr '|' '\n' | tr -d ' -' | sort -u | grep -c .)"
 }
@@ -46,11 +48,20 @@ single time. And an extraction that finds nothing refuses instead of printing
 `0`, because `0` here reads as "there is no banned list to comply with", which
 is the one direction this repository cannot afford to be wrong in.
 
-It only understands a single-line, single-quoted `banned='...'`. Requote it,
-wrap it across lines, or move it to another file and the function says so and
-exits `1`; it does not try to parse the new shape. That is deliberate, because
-the fix for a moved gate is to open the workflow and read it, not to make this
-regex cleverer until it silently matches the wrong thing.
+It only understands **exactly one** single-line, single-quoted `banned='...'`.
+Requote it, wrap it across lines, or move it to another file and the function
+says so and exits `1`; it does not try to parse the new shape. That is
+deliberate, because the fix for a moved gate is to open the workflow and read
+it, not to make this regex cleverer until it silently matches the wrong thing.
+
+Two or more is refused for the same reason zero is. `grep -oE` prints every
+match, so a second `banned='...'` — a split list, a copy left behind by an edit,
+a second job with its own list — made `$b` two lines and the counts became their
+SUM, printed with no hint that more than one list existed. A sum is the right
+answer to a question nobody asked: it is not the length of the list CI actually
+applies to your file, and it is wrong in the reassuring direction, since the
+number it prints is larger than the list you would be complying with. The
+function now prints how many it found and stops.
 
 **Shipped copy check.** `node apps/marketing/scripts/check-copy.mjs`, no em
 dashes, no en dashes, no competitor names in the marketing site, in

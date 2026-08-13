@@ -1427,7 +1427,11 @@ echo "== commit-gate: only ever answers for what this agent wrote"
 # The deadlock this fixes: a read-only agent was launched into another agent's
 # worktree, told to commit or delete 17 files it had never touched while its
 # brief said not to touch them, and stopped to ask a human.
-GATE="$here/commit-gate.sh"
+# Overridable for the one reason ROUTE is: pointing the suite at a mutated copy
+# to prove an assertion depends on the branch it names. Announced, so a run
+# against something other than the shipped gate is never mistaken for one.
+GATE="${WPMGR_TEST_COMMIT_GATE:-$here/commit-gate.sh}"
+[[ "$GATE" == "$here/commit-gate.sh" ]] || echo "NOTE: commit-gate under test is $GATE (WPMGR_TEST_COMMIT_GATE), NOT the shipped one"
 WRITES="$here/agent-writes.sh"
 export WPMGR_AGENT_WRITES_STATE="$tmp/agent-writes"
 
@@ -1516,6 +1520,92 @@ tcontains "unscoped reports" "Not blocking" "$(jq -n --arg c "$wt" '{cwd:$c}' | 
 t "stop_hook_active passes" 0 \
   "$(jq -n --arg c "$wt" '{cwd:$c, agent_id:"agent-A", stop_hook_active:true}' \
      | bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")"
+
+# A NAME GIT QUOTES. Default porcelain wraps any path carrying a space, a double
+# quote, a backslash, a control character or a non-ASCII byte in double quotes
+# with C-style escapes. The ownership compare matched the record's raw path
+# against that column, so every one of those files failed to match, `owned` came
+# out empty, and the gate exited 0 IN SILENCE - reporting that the agent had
+# committed everything when it had not, which is how unpushed work gets reaped.
+#
+# Pinned as the porcelain FACT first, exactly like `-uall` above, so this reads
+# as a property of git's output rather than as an unexplained assertion, and so
+# a future flag change is caught here and not in production.
+q_space="has space.txt"
+q_utf8=$'na\xc3\xafve.txt'
+q_bslash='back\slash.txt'
+printf 'x\n' > "$wt/$q_space"
+printf 'x\n' > "$wt/$q_utf8"
+printf 'x\n' > "$wt/$q_bslash"
+t "porcelain quotes a space"      '?? "has space.txt"' \
+  "$(git -C "$wt" status --porcelain -uall | grep 'has space')"
+t "-z prints the same path raw"   "?? $q_space" \
+  "$(git -C "$wt" status --porcelain -uall -z | tr '\0' '\n' | grep 'has space')"
+# `-c core.quotePath=false` is NOT the fix and is pinned as such: it unescapes
+# the non-ASCII case only, and a space is quoted regardless because the plain
+# format is space-delimited.
+t "quotePath=false still quotes"  '?? "has space.txt"' \
+  "$(git -C "$wt" -c core.quotePath=false status --porcelain -uall | grep 'has space')"
+
+record agent-Q "$wt/$q_space"
+record agent-Q "$wt/$q_utf8"
+record agent-Q "$wt/$q_bslash"
+t "Q: quoted names block"     2 "$(gate agent-Q)"
+tcontains "Q sees the spaced name"    "has space.txt"  "$(gate_msg agent-Q)"
+tcontains "Q sees the non-ASCII name" "$q_utf8"        "$(gate_msg agent-Q)"
+tcontains "Q sees the backslash name" 'back.slash.txt' "$(gate_msg agent-Q)"
+# The count is read off the fixture, never written down: three files were
+# recorded just above, and the number in the message has to be that one.
+q_n=$(printf '%s\n' "$q_space" "$q_utf8" "$q_bslash" | grep -c .)
+tcontains "Q's count matches the fixture" "$q_n uncommitted path" "$(gate_msg agent-Q)"
+
+# OVER-FIRE, three ways. A quoted name nobody recorded is still nobody's...
+printf 'x\n' > "$wt/not mine.txt"
+tlacks "Q is not shown another quoted name" "not mine.txt" "$(gate_msg agent-Q)"
+# ...a longer name that merely STARTS with a recorded one is a different file...
+printf 'x\n' > "$wt/$q_space.bak"
+tlacks "prefix is not a match"  "has space.txt.bak" "$(gate_msg agent-Q)"
+tcontains "and the count did not move" "$q_n uncommitted path" "$(gate_msg agent-Q)"
+# ...and an agent that wrote nothing is still never blocked, quoted tree or not.
+t "B still passes, quoted or not" 0 "$(gate agent-B)"
+# Committing them makes it go quiet, so this is a gate and not a permanent block.
+git -C "$wt" add "$q_space" "$q_utf8" "$q_bslash" >/dev/null
+git -C "$wt" commit -qm quoted
+t "Q committed, passes"       0 "$(gate agent-Q)"
+
+# A RENAME. Under `-z` git emits `XY <new path><NUL><old path><NUL>`: the origin
+# half is its own record with NO status prefix, so read as an entry its first
+# three characters are swallowed as a status code and the remainder compared as
+# a path. It is dropped instead.
+printf 'r\n' > "$wt/old name.txt"
+git -C "$wt" add "old name.txt" >/dev/null
+git -C "$wt" commit -qm oldname
+git -C "$wt" mv "old name.txt" "new name.txt"
+t "-z rename layout"  "R  new name.txt|old name.txt|" \
+  "$(git -C "$wt" status --porcelain -uall -z | tr '\0' '|' | grep -o 'R  new name.txt|old name.txt|')"
+unscoped_out=$(jq -n --arg c "$wt" '{cwd:$c}' | bash "$GATE" 2>&1 >/dev/null)
+tcontains "the rename is listed once"  "R  new name.txt" "$unscoped_out"
+tlacks    "its origin half is not an entry" "^old name.txt$" "$unscoped_out"
+record agent-RN "$wt/new name.txt"
+t "RN: the renamed path blocks" 2 "$(gate agent-RN)"
+tcontains "RN sees the new path" "new name.txt" "$(gate_msg agent-RN)"
+
+# A `git status` THAT FAILS is not an empty tree. The stub answers `status` with
+# 128 and passes everything else - including the `rev-parse --git-dir` probe
+# above it - through to the real git, which is the only shape in which this
+# branch is reachable.
+gstub="$tmp/gitstub"
+mkdir -p "$gstub"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = status ] && exit 128; done\nexec %s "$@"\n' \
+  "$(command -v git)" > "$gstub/git"
+chmod +x "$gstub/git"
+gfail_rc=$(PATH="$gstub:$PATH" jq -n --arg c "$wt" --arg a agent-Q '{cwd:$c, agent_id:$a}' \
+             | PATH="$gstub:$PATH" bash "$GATE" >/dev/null 2>&1; printf '%s' "$?")
+gfail_out=$(jq -n --arg c "$wt" --arg a agent-Q '{cwd:$c, agent_id:$a}' \
+            | PATH="$gstub:$PATH" bash "$GATE" 2>&1 >/dev/null)
+t "a failed git status does not block"  0 "$gfail_rc"
+tcontains "but it says so, with the exit" "failed in '$wt' (exit 128)" "$gfail_out"
+tcontains "and claims nothing either way" "nothing is claimed" "$gfail_out"
 
 echo "== harness-reap: it removes only worktrees the harness created"
 # The reaper fed `git worktree list` straight into `git worktree remove --force`
@@ -1621,11 +1711,19 @@ t "and the run goes green"           0 "$ok_rc"
 tcontains "a green run says so"     "0 failed" "$ok_out"
 
 echo "== harness-reap: it refuses to act from anywhere but the root it resolved"
-# SC2164. `cd "$root"` was unchecked, and everything after it - `git worktree
-# remove --force`, `git branch -d`, `go clean -cache`, and the rev-parse that
-# picks the base branch - resolves its repository from the CURRENT DIRECTORY,
-# not from $root. A failed cd therefore did not stop the script; it re-aimed
-# every destructive command at whatever directory the caller was standing in.
+# SC2164. `cd "$root"` was unchecked, and the three GIT commands after it - `git
+# worktree remove --force`, `git branch -d`, and the rev-parse that picks the
+# base branch - resolve their repository from the CURRENT DIRECTORY, not from
+# $root. A failed cd therefore did not stop the script; it re-aimed every
+# destructive git command at whatever directory the caller was standing in.
+#
+# This comment used to name `go clean -cache` as a fourth, and that was false.
+# `go clean -cache` wipes the machine-wide directory `go env GOCACHE` names,
+# which is the same directory from every cwd, so the cd guard neither protects
+# it nor ever could; --apply plus the ceiling check is what stands in front of
+# it. The assertions below passed either way - they are about the git half - so
+# the false premise cost nothing here and was still a claim of coverage this
+# proof does not have.
 #
 # The failure is planted the only way a `cd` to a directory that git just
 # resolved can honestly be made to fail: an exported shell function shadows the
@@ -1657,6 +1755,149 @@ t "a failed cd goes red"           2   "$brk_rc"
 tcontains "and states the reason"  "cannot enter the repository root" "$brk_out"
 t "and nothing was removed"        yes "$(exists "$cdr/.claude/worktrees/agent-cd1")"
 tlacks "no reclaim is claimed"     "removed," "$brk_out"
+
+echo "== harness-reap: a build cache it could not measure is not a cache under the ceiling"
+# The one place in that file where its own countof()/sizeof() discipline was not
+# applied: `kb=$(du -sk "$gocache" | cut -f1)` fed an arithmetic expansion, so a
+# failed du became the empty string, `${kb:-0}` became 0, 0 is below every
+# ceiling, and the section printed "under the ceiling, leaving it". A
+# measurement that never happened, reported as a measurement.
+#
+# `go` and `docker` are stubbed alongside `du` so the section is reachable
+# without a toolchain and without waiting on a docker daemon; the reaper is run
+# WITHOUT --worktrees-only, because that flag skips the section under test.
+rstub="$tmp/reapstub"
+mkdir -p "$rstub"
+fake_cache="$tmp/fakecache"
+mkdir -p "$fake_cache"
+printf 'x\n' > "$fake_cache/blob"
+printf '#!/bin/sh\nif [ "$1" = env ] && [ "$2" = GOCACHE ]; then printf "%%s\\n" "$FAKE_GOCACHE"; exit 0; fi\nif [ "$1" = env ]; then exit 0; fi\nexit 0\n' > "$rstub/go"
+printf '#!/bin/sh\nexit 1\n' > "$rstub/docker"
+chmod +x "$rstub/go" "$rstub/docker"
+# A `du` that fails the way a real one does: no output, non-zero status.
+dustub="$tmp/dustub"
+mkdir -p "$dustub"
+printf '#!/bin/sh\nexit 1\n' > "$dustub/du"
+chmod +x "$dustub/du"
+
+# No helper function here: a function called in `$( )` runs in a SUBSHELL, so an
+# exit code it stashed in a variable never comes back, and reading one that was
+# never set is how this block first failed. The status is taken from the command
+# substitution itself, where `$?` is the reaper's own.
+#
+# FIRES: du fails, so no decision is made and the run goes red.
+du_out=$(cd "$cdr" && PATH="$dustub:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); du_rc=$?
+tcontains "an unmeasurable cache says so" "COULD NOT MEASURE the build cache" "$du_out"
+tlacks "and never decides to leave it"    "leaving it"         "$du_out"
+tlacks "and cleans nothing"               "go clean -cache"    "$du_out"
+t "and the run goes red"               1  "$du_rc"
+
+# ...and the sharper shape, which is the one a real `du` produces: it prints a
+# plausible PARTIAL total and exits non-zero because it could not descend into
+# something. A number is there to be read, and it is not the size of the cache.
+# Only the status says so, which is why sizeof() has to return it.
+dupart="$tmp/dupartial"
+mkdir -p "$dupart"
+printf '#!/bin/sh\nprintf "12\\t%%s\\n" "$2"\nexit 1\n' > "$dupart/du"
+chmod +x "$dupart/du"
+part_out=$(cd "$cdr" && PATH="$dupart:$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); part_rc=$?
+tcontains "a partial du is not a size"  "COULD NOT MEASURE the build cache" "$part_out"
+tlacks "and it is not left as measured" "leaving it" "$part_out"
+t "and that run goes red"            1  "$part_rc"
+
+# DOES NOT OVER-FIRE: the same cache with a working du is measured, found small,
+# left alone, and the run is green. The size is named in the sentence, so a
+# reader can see WHICH number was compared against the ceiling.
+ok_out=$(cd "$cdr" && PATH="$rstub:$PATH" FAKE_GOCACHE="$fake_cache" bash "$REAP" 2>&1); ok_rc=$?
+tcontains "a measured small cache is left" "ceiling, leaving it" "$ok_out"
+tlacks "and is not called unmeasurable"    "COULD NOT MEASURE" "$ok_out"
+t "and that run goes green"             0  "$ok_rc"
+
+# ...and a GOCACHE that could not even be asked for is not "no cache to clean".
+nogo="$tmp/nogostub"
+mkdir -p "$nogo"
+printf '#!/bin/sh\nexit 1\n' > "$nogo/go"
+chmod +x "$nogo/go"
+nogo_out=$(cd "$cdr" && PATH="$nogo:$rstub:$PATH" bash "$REAP" 2>&1); nogo_rc=$?
+tcontains "no GOCACHE answer says so" "returned nothing" "$nogo_out"
+t "and that run goes red too"       1  "$nogo_rc"
+
+echo "== --help prints the whole comment header, never a hardcoded line range"
+# Both of these were mis-slicing in the shipped tree, not hypothetically:
+# quickstart-selfhost.sh's `sed -n '3,42p'` stopped two lines short and dropped
+# two of the three lines under "Host requirements" from the README's headline
+# install script; init-env.sh's `sed -n '3,31p'` overran by one and printed
+# `set -euo pipefail` to the user as help text.
+#
+# The header is re-derived here with a DIFFERENT idiom from the awk under test -
+# sed, quitting at the first non-comment - so this is a comparison and not the
+# same expression written twice.
+real_repo=$(cd "$here/../.." && pwd)
+help_covers() { # help_covers <script> -> "yes" or the first line it dropped
+  local f=$1 out line stripped
+  out=$(bash "$f" --help 2>&1) || { printf '--help exited %s' "$?"; return 1; }
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    stripped=$(printf '%s' "$line" | sed 's/^#\{0,1\} \{0,1\}//')
+    grep -qxF -- "$line" <<<"$out" && continue
+    grep -qxF -- "$stripped" <<<"$out" && continue
+    printf 'DROPPED: %s' "$line"
+    return 1
+  done < <(sed -n '2,$p' "$f" | sed -n '/^#/!q;p')
+  printf 'yes'
+}
+first_code() { awk 'NR>1 && !/^#/ {print; exit}' "$1"; }
+for hs in scripts/quickstart-selfhost.sh scripts/init-env.sh \
+          scripts/claude/harness-reap.sh scripts/claude/route-guard-coverage.sh; do
+  t "$hs: --help covers its whole header" yes "$(help_covers "$real_repo/$hs")"
+  tlacks "$hs: --help stops at the code" \
+    "$(first_code "$real_repo/$hs")" "$(bash "$real_repo/$hs" --help 2>&1)"
+  # ...and asking for help is not a failure. init-env.sh exited 1 here: its EXIT
+  # trap ended on `[ -n "${GEN_FILE}" ]`, false on every run that minted no temp
+  # file, and a trap's return value REPLACES the script's exit status.
+  t "$hs: --help exits 0" 0 "$(bash "$real_repo/$hs" --help >/dev/null 2>&1; printf '%s' "$?")"
+done
+# Named explicitly, because these three lines are the ones that were missing and
+# a coverage loop that silently stopped matching would go green again.
+qs_help=$(bash "$real_repo/scripts/quickstart-selfhost.sh" --help 2>&1)
+tcontains "quickstart help: docker req"  "Docker 24+"  "$qs_help"
+tcontains "quickstart help: curl req"    "curl or wget" "$qs_help"
+tcontains "quickstart help: openssl req" "openssl"      "$qs_help"
+
+echo "== docs-writer's banned-vocabulary snippet refuses what it cannot count once"
+# `grep -oE` prints EVERY match, so a second `banned='...'` made the extraction
+# two lines and both counts became their SUM - printed with no hint that more
+# than one list existed, and larger than the list CI would actually apply. The
+# reassuring direction, on the check that guards the clean-room boundary.
+#
+# The snippet is extracted from the agent definition and run, so this proves the
+# committed text rather than a copy of it that can drift away from it.
+snip="$tmp/banned_counts.sh"
+awk '/^banned_counts\(\) \{/{f=1} f{print} f && /^\}$/{exit}' \
+  "$real_repo/.claude/agents/docs-writer.md" > "$snip"
+t "snippet extracted from the agent file" yes "$([[ -s "$snip" ]] && printf yes || printf no)"
+# shellcheck source=/dev/null
+. "$snip"
+bc_rc() { banned_counts "$1" >/dev/null 2>&1; printf '%s' "$?"; }
+ci_yml="$real_repo/.github/workflows/ci.yml"
+# The honest case first, or every refusal below could be satisfied by a function
+# that refuses everything.
+t "the real ci.yml is accepted"       0 "$(bc_rc "$ci_yml")"
+tcontains "and it reports alternates" "alternates" "$(banned_counts "$ci_yml" 2>&1)"
+# FIRES: a second assignment. The count it prints is the count it found, so this
+# assertion cannot go stale against the real list's length.
+bc_dup="$tmp/ci-dup.yml"
+cp "$ci_yml" "$bc_dup"
+printf "          banned='zzalpha|zzbeta'\n" >> "$bc_dup"
+bc_found=$(grep -oE "banned='[^']+'" "$bc_dup" | grep -c .)
+t "a duplicate banned= is refused"    1 "$(bc_rc "$bc_dup")"
+tcontains "and it says how many"  "found $bc_found single-line" "$(banned_counts "$bc_dup" 2>&1)"
+tlacks "and prints no summed total" "alternates" "$(banned_counts "$bc_dup" 2>&1)"
+# ...and the two directions it already refused stay refused.
+bc_none="$tmp/ci-none.yml"
+grep -v "banned='" "$ci_yml" > "$bc_none"
+t "no banned= at all is refused"      1 "$(bc_rc "$bc_none")"
+t "an unreadable file is refused"     1 "$(bc_rc "$tmp/no-such-workflow.yml")"
 
 # ...and the honest direction, or a reaper that refused unconditionally would
 # pass every assertion above while reclaiming nothing. Same repo, same flags,
