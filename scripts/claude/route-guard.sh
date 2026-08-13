@@ -189,13 +189,31 @@ case "$rel" in
       agent="frontend-architect" ; why="JS/TS surface" ;;
   .github/workflows/*|Makefile|scripts/*|infra/*)
       agent="devops-engineer" ; why="build-gating logic; it needs a committed test" ;;
-  docs/worklog/*) ;;                                     # see below
+  docs/worklog/*)
+      # THIS WAS A SILENT PERMIT until CLAUDE.md changed. It read `docs/worklog/*) ;;`
+      # with a comment saying CLAUDE.md told this session to write its decisions
+      # there, so routing it to a subagent would have the router file a ticket to
+      # have its own notes taken. That reasoning was sound about ROUTING and said
+      # nothing about the path, and the path is now the whole problem.
+      emit deny "A worklog must never enter this repository, and $rel is inside it.
+
+CLAUDE.md, \"## Long sessions\": worklogs go to ~/.wpmgr/worklog/<issue>.md, which
+is outside every checkout and every worktree. Not docs/, not any other path in
+here, not committed, not pushed, not attached to an issue or a PR.
+
+This repository is PUBLIC, and a worklog is the one artefact that routinely holds
+what must not be: an unshipped finding, a defect's file:line before the fix
+exists, the mechanism of a live vulnerability. On 2026-08-12 a worklog for GH #406
+was written to docs/worklog/406.md while the privilege escalation it described was
+live, unpatched and shipped, and while the owner's standing ruling was to disclose
+nothing until the fix was deployed. It was caught before any commit.
+
+Write it to ~/.wpmgr/worklog/ instead. Do not add a worklog path to .gitignore
+either - an ignore file is itself committed, so the line publishes the thing it is
+hiding. The correct location leaves nothing to ignore." ;;
   docs/*|README.md|CHANGELOG.md)
       agent="docs-writer" ; why="two ci.yml gates fail on docs prose, and four version surfaces move in lockstep" ;;
 esac
-# docs/worklog is where CLAUDE.md instructs THIS session to write its decisions
-# as they are made. Routing that to a subagent would have the router file a
-# ticket to have its own notes taken.
 [[ -z "$agent" ]] && exit 0
 
 # ---- escalation: explicit directory prefixes, never a substring match ------

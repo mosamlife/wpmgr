@@ -8,6 +8,21 @@ if [ -d /opt/homebrew/opt/node@22/bin ]; then
   export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 fi
 
+# core.hooksPath is repo-local config and config is NOT committed, so a fresh
+# clone has the hook in its tree and git ignoring it. This is the step that turns
+# it on, and it is FIRST here on purpose: if any later step fails, the clone is
+# still protected.
+#
+# It installs the hook into the repository's common hooks directory, which no
+# checkout of any commit can remove. Pointing config at the tracked .githooks
+# was tried and measured wrong twice: a relative core.hooksPath is resolved by
+# git against whichever working tree runs the hook, and an absolute one still
+# names a directory that vanishes the moment any checkout moves to a commit
+# before the hook existed - in both cases config keeps reading "installed".
+# 'scripts/claude/git-hooks.sh status' prints what is true right now.
+echo "==> Installing the pre-push hook (refuses a push that lands on main)"
+scripts/claude/git-hooks.sh install
+
 echo "==> Checking toolchain"
 command -v go >/dev/null || { echo "go not found"; exit 1; }
 command -v pnpm >/dev/null || { echo "pnpm not found"; exit 1; }

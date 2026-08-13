@@ -21,7 +21,21 @@
 # Never blocks. SessionStart cannot block, and this must stay cheap.
 set -uo pipefail
 
-root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# This used to open `root=$(git rev-parse --show-toplevel) || exit 0`, and that
+# exit produced a FOURTH state nobody had counted: with git off PATH, or with
+# the session started outside a repository, the whole report - header, hook line
+# and toolchain block - was ZERO BYTES and the exit was 0. A session then saw no
+# "NOT INSTALLED" line and had no way to tell that from a healthy machine, which
+# is this project's signature defect sitting inside the script that reports it.
+# So nothing exits early any more: every block that needs $root checks for it and
+# says what it could not measure. git-hooks.sh resolves its own context and
+# answers COULD NOT CHECK in both conditions, so it is asked either way, via this
+# script's own directory rather than via $root.
+# Parameter expansion, not `dirname`: this block has to survive an empty PATH,
+# which is one of the two conditions it exists to report on.
+here=${BASH_SOURCE[0]%/*}
+[[ "$here" == "${BASH_SOURCE[0]}" ]] && here="."
+root=$(git rev-parse --show-toplevel 2>/dev/null) || root=""
 
 echo "## Machine state"
 
@@ -29,6 +43,25 @@ echo "## Machine state"
 if ! command -v jq >/dev/null 2>&1; then
   echo "- route-guard and bash-guard are INACTIVE: jq is not installed. Routing"
   echo "  and the wait-loop deny are unenforced this session. Fix: install jq."
+fi
+
+# The pre-push hook, resolved for THIS checkout. It is committed but inert until
+# core.hooksPath points at it, and core.hooksPath is repo-local config, which is
+# never committed: unprotected is the default state of every clone, and of every
+# checkout made before the hook existed. Nothing told anyone - the setting is
+# invisible until the moment it is needed, which is the moment it is too late.
+# Three states, never two, same as the toolchain block below: INSTALLED, NOT
+# INSTALLED, or COULD NOT CHECK. `status` cannot fail the session; it exits 0
+# whatever it finds, and prints the one command that fixes a negative.
+hooks_status="${here:-$root/scripts/claude}/git-hooks.sh"
+if [[ -x "$hooks_status" ]]; then
+  # Run through THIS interpreter, not through the shebang: `/usr/bin/env bash`
+  # needs bash on PATH, and an empty PATH is one of the two conditions this
+  # block exists to report on. $BASH is the absolute path of the shell already
+  # running this file.
+  "${BASH:-bash}" "$hooks_status" status 2>/dev/null || true
+else
+  echo "- pre-push hook: COULD NOT CHECK - $hooks_status is missing or not executable, so this session does not know whether a push to main is refused here. Do NOT read that as installed."
 fi
 # --- toolchain --------------------------------------------------------------
 # Four states, and the old code collapsed two of them into the loudest one.
@@ -124,14 +157,25 @@ else
   echo "- disk free: could not measure. Neither 'df -g /' nor 'df -BG /' gave a number (got '${avail_g}'), so the under-25Gi warning did NOT run this session. Check it by hand before a build: disk exhaustion has killed a build here mid-link."
 fi
 
+# `du | cut` printed "- Go build cache: " with nothing after it when either
+# command failed, and an empty size reads as "small" - the one thing it does not
+# mean, in the block that exists because a 26GB cache filled the disk.
+sizeof() { # prints the size, or the reason there is not one
+  local s
+  s=$(du -sh "$1" 2>/dev/null | cut -f1)
+  printf '%s' "${s:-could not measure ('du -sh | cut -f1' gave nothing)}"
+}
 gocache=$(go env GOCACHE 2>/dev/null || true)
-[[ -n "$gocache" && -d "$gocache" ]] && echo "- Go build cache: $(du -sh "$gocache" 2>/dev/null | cut -f1)"
+[[ -n "$gocache" && -d "$gocache" ]] && echo "- Go build cache: $(sizeof "$gocache")"
 gomod=$(go env GOMODCACHE 2>/dev/null || true)
-[[ -n "$gomod" && -d "$gomod" ]] && echo "- Go module cache: $(du -sh "$gomod" 2>/dev/null | cut -f1)"
+[[ -n "$gomod" && -d "$gomod" ]] && echo "- Go module cache: $(sizeof "$gomod")"
 
 # --- worktrees --------------------------------------------------------------
 # `git worktree list` always prints the main checkout first, so the agent
 # worktrees are one fewer than the lines.
+if [[ -z "$root" ]]; then
+  echo "- agent worktrees: not measured. '$PWD' is not inside a git checkout (or git is not on PATH), so there is no repository to count them in."
+else
 wt=$(countof git -C "$root" worktree list); wt_ok=$?
 br=$(countof git -C "$root" branch --list 'worktree-*'); br_ok=$?
 [[ $wt_ok -eq 0 ]] && wt=$(( wt > 0 ? wt - 1 : 0 ))
@@ -143,6 +187,7 @@ elif [[ "$wt" -gt 0 || "$br" -gt 0 ]]; then
   size=$(du -sh "$root/.claude/worktrees" 2>/dev/null | cut -f1)
   echo "- agent worktrees: ${wt} live (${size:-size unknown}), ${br} worktree-* branches"
   [[ "$br" -gt "$(( wt + 4 ))" ]] && echo "  $(( br - wt )) orphaned branches. 'make harness-reap' lists them; 'make harness-reap-apply' deletes the merged ones."
+fi
 fi
 
 # --- volumes ----------------------------------------------------------------

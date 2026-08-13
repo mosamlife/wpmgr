@@ -197,6 +197,35 @@ is the pattern.
 
 ## Delivery
 
+**The only route to `main` is a pull request.** Branch, push the branch, open the
+PR, let `ci.yml` and review run, merge. Never commit on `main` in the main
+checkout and never `git push` while `HEAD` is `main` — not for a one-line fix,
+not for a typo, not because CI will pass anyway.
+
+**There is no server-side enforcement.** Branch protection on `main` carries
+required contexts, but `enforce_admins` is deliberately `false` so an
+owner-token push is accepted and no required check ever runs against it. That is
+a standing decision, kept so an incident hotfix stays possible. Everything below
+is therefore client-side, and a determined push always gets through:
+`git push --no-verify`, `git send-pack`, and `git -c core.hooksPath=…` each skip
+it. These layers stop an accident, which is what actually happened.
+
+- `.githooks/pre-push` is the lock. Git hands it the already-resolved refs, so
+  `eval`, a `cd`, quoting, `@`, and exotic refspecs cannot disguise a push from
+  it. **It is repo-local config and config is never committed, so every clone
+  and every fresh worktree starts unprotected.** `make hooks` installs it;
+  `make hooks-status` says whether it is live. `session-brief.sh` prints
+  INSTALLED / NOT INSTALLED / COULD NOT CHECK at every session start, because a
+  guard that is silently absent is worse than none — you would trust it.
+- `bash-guard.sh` is the early stop, and matches command text, so it is
+  structurally incomplete and says so in its own comments. It exists to explain
+  the rule at the moment you would break it, not to be the barrier.
+
+**Approval has to precede the irreversible half.** On 2026-08-12 the #406 fix was
+committed to `main`, pushed, and *then* followed by "want me to open a PR for
+it?". The code was on `origin/main` before the question was asked, which makes it
+an announcement wearing a question mark. Ask, then push.
+
 `ci.yml` is the gate. **It does not run the integration package**, and
 `.claude/rules/ci-and-build-logic.md` names that package and says why. That is
 where the tenancy and RLS proofs live, so run `make test-integration` locally
@@ -235,9 +264,28 @@ every commit id since June 2026 and orphans the release tags.
 
 ## Long sessions
 
-Decisions, measured numbers and owner rulings go to `docs/worklog/<issue>.md`
+Decisions, measured numbers and owner rulings go to `~/.wpmgr/worklog/<issue>.md`
 **as they are made**, each with the command that produced it. Compaction
 summarises the conversation away, and the next session re-derives it wrong.
+
+**A worklog is private and never enters this repository.** Not in `docs/`, not
+under any other path, not committed, not pushed, not attached to an issue or a
+PR. This repository is public, and a worklog is the one artefact that routinely
+holds what must not be: an unshipped finding, a defect's `file:line` before the
+fix exists, the mechanism of a live vulnerability. It is a working note for the
+next session, not a deliverable, and it has no audience outside this machine.
+
+Write it to `~/.wpmgr/worklog/`, which is outside every checkout and every
+worktree. Never create `docs/worklog/`, and never add a worklog path to
+`.gitignore` — an ignore rule is itself committed, so it publishes the thing it
+is hiding. The correct location leaves nothing to ignore.
+
+On 2026-08-12 a worklog for GH #406 was written to `docs/worklog/406.md` while
+the privilege escalation it described was live, unpatched and shipped, and while
+the owner's standing ruling was to disclose nothing until the fix was deployed.
+It was caught before any commit. The rule above exists because the instruction to
+keep a worklog and the instruction to disclose nothing collided, and the session
+followed the first without noticing the second.
 
 This file is re-injected from disk after compaction. Path-scoped
 `.claude/rules/` are not, until a matching file is read again. If a rule must

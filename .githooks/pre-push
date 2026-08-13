@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Refuse any push that would create, move or delete refs/heads/main.
+#
+# WHY THIS EXISTS RATHER THAN ONLY THE BASH GUARD.
+# On 2026-08-12 a one-line fix was committed on main in the main checkout and
+# pushed straight to origin/main, with no branch and no PR. Branch protection on
+# main carries required contexts, but `enforce_admins` is deliberately
+# false - the owner keeps it false so an incident hotfix stays possible - so the
+# push was accepted server-side with none of those contexts running against it.
+#
+# scripts/claude/bash-guard.sh has an arm that reads the command string and
+# denies a push to main. Adversaries kept finding shapes it permits, and every
+# one of them was reproduced: `eval git push origin main`, `bash -c '...'`,
+# `git push origin @` (@ is git's documented synonym for HEAD),
+# `git push origin :`, `git push origin refs/heads/*:refs/heads/*`,
+# `git push origin $(echo main)`, `git p"ush" origin main`,
+# `git -c push.default=matching push`, `(git push origin main)`,
+# `time git push origin main`, `if true; then git push origin main; fi`.
+# That list is a sample and is not maintained here as a count, because it grew
+# every time someone looked and a number in a comment is stale the next day. A
+# text matcher over a shell command cannot decide those without being the shell.
+#
+# This hook runs INSIDE git: after the shell has expanded everything, after
+# eval, after command substitution, after push.default and after refspec
+# resolution. It is handed the refs that are actually about to move, so none of
+# those shapes reaches it disguised - by the time it runs there is no disguise
+# left. It also fires for a push typed in a plain terminal, or made by an IDE or
+# any other tool, which a PreToolUse hook on Bash never sees at all.
+#
+# CONTRACT (githooks(5), git 2.48.1):
+#   $1            remote name; $2 remote URL (both the URL for an unnamed remote)
+#   stdin, one line per ref being pushed:
+#       <local-ref> SP <local-oid> SP <remote-ref> SP <remote-oid> LF
+#   Deleting a ref supplies `(delete)` as <local-ref> and the all-zero oid as
+#   <local-oid>; the REMOTE ref is still named, which is why the decision below
+#   keys on <remote-ref> alone and so covers a delete without a special case.
+#   A non-zero exit aborts the whole push, having transferred nothing.
+#
+# Test: scripts/claude/guards_test.sh
+set -uo pipefail
+
+remote_name="${1-}"
+remote_url="${2-}"
+
+# The case-fold below is on the decision path, and this hook runs with
+# `set -uo pipefail` and no `-e`, so a `tr` that is missing or that fails leaves
+# $lower EMPTY, the `case` falls through to `continue`, $hits stays empty and
+# the push is ALLOWED. Measured end to end: with PATH set to an empty directory,
+# `git push scratch HEAD:refs/heads/main` printed no refusal and the commit
+# landed on the bare remote's main. So the dependency is checked once, up front,
+# and the assignment is checked again at the point of use. Both refuse.
+command -v tr >/dev/null 2>&1 || {
+  echo "pre-push: 'tr' is not on PATH, so this hook cannot case-fold the ref it was asked about. REFUSING rather than guessing - it cannot tell whether this push lands on main. Fix PATH, or bypass deliberately with 'git push --no-verify'." >&2
+  exit 1
+}
+
+hits=""
+# `|| [ -n "$local_ref$remote_ref" ]`: `read` returns non-zero when it consumed
+# input that did not end in a newline, having set the variables anyway. Without
+# this the final ref line of an unterminated stdin was DROPPED and the hook
+# exited 0 in silence, while the identical input with a trailing LF exited 1.
+# git always terminates the line, so this was not reachable from git today - but
+# a guard that fails open on a malformed input is the exact defect this hook
+# exists to close, and it was sitting inside the guard. Asserted in
+# scripts/claude/guards_test.sh, both ways.
+while read -r local_ref local_oid remote_ref remote_oid || [ -n "$local_ref$remote_ref" ]; do
+  [ -n "$remote_ref" ] || continue
+  # git fully qualifies the remote ref, but a bare name costs nothing to also
+  # refuse and cannot match a branch merely CONTAINING "main" - both arms are
+  # whole-string equality, so main-ui, maintenance and feat/remaining pass.
+  #
+  # EVERY REMOTE, including a fork or a scratch mirror, and that is deliberate:
+  # scoping the refusal to "the real origin" means comparing $2 against
+  # remote.origin.url, and ssh/https/insteadOf spell the same repository three
+  # ways, so the comparison would MISS the incident shape (a second remote
+  # pointing at the canonical repo) while the thing it would permit - pushing a
+  # branch literally named main to a personal mirror - is not work this repo
+  # does. An over-fire teaches --no-verify, so this is the one place it is
+  # accepted, and only because the honest alternative is a wrong answer.
+  # CASE-FOLDED. Git refs are case-sensitive, so refs/heads/Main is a different
+  # ref on github.com and the canonical origin is unaffected either way - but
+  # this machine's APFS volume is case-INSENSITIVE, so a push of
+  # HEAD:refs/heads/Main into any local or cloned repository here resolves to
+  # the same loose ref file as refs/heads/main and moves it. That was measured,
+  # so the fold costs one `tr` and closes it. The over-fire it buys is a real
+  # branch named `Main` or `MAIN`, which this repository does not have and could
+  # not have on this filesystem anyway.
+  # `${remote_ref,,}` would drop the dependency, and it is NOT available here:
+  # this hook's shebang is `#!/usr/bin/env bash`, `command -v bash` is /bin/bash
+  # and $BASH_VERSION is 3.2.57(1)-release, where `${x,,}` is a bad substitution.
+  lower=$(printf '%s' "$remote_ref" | tr '[:upper:]' '[:lower:]') || {
+    echo "pre-push: case-folding '$remote_ref' FAILED, so this hook cannot tell whether this push lands on main. REFUSING rather than guessing." >&2
+    exit 1
+  }
+  case "$lower" in
+    refs/heads/main|main) ;;
+    *) continue ;;
+  esac
+  if [ "$local_ref" = "(delete)" ]; then
+    hits="${hits}  DELETE ${remote_ref} (was ${remote_oid})"$'\n'
+  else
+    hits="${hits}  ${local_ref} -> ${remote_ref} (${local_oid})"$'\n'
+  fi
+done
+
+[ -n "$hits" ] || exit 0
+
+cat >&2 <<'REFUSED'
+
+  ------------------------------------------------------------------
+  REFUSED: this push would land on main.
+  ------------------------------------------------------------------
+REFUSED
+printf '%s' "$hits" >&2
+cat >&2 <<REFUSED
+
+  remote: ${remote_name:-<none>} (${remote_url:-<none>})
+
+  CLAUDE.md, "## Delivery": the only route to main is a pull request.
+  Branch, push the branch, open the PR, let ci.yml and review run, then
+  merge. Approval has to precede the irreversible half, and a push to
+  main IS the irreversible half.
+
+  Nothing behind this refusal will catch what it lets through: branch
+  protection on main carries required contexts, but enforce_admins
+  is deliberately false, so an owner-token push is accepted server-side
+  and not one of those contexts ever runs against it.
+
+    git switch -c fix/<name>
+    git push -u origin fix/<name>
+    gh pr create
+
+  Pushing any other branch, or a tag, is untouched by this hook.
+
+  WHAT THIS IS: a client-side hook. It stops an ACCIDENT. It cannot
+  stop deliberate evasion and does not claim to. \`git push
+  --no-verify\` skips it; so does \`git send-pack\`, which never runs a
+  pre-push hook at all; so does overriding core.hooksPath for one
+  command. Those are stated rather than hidden, because an
+  undocumented bypass gets found and then used casually, while a named
+  one is a deliberate act you can be asked about. That list is a
+  sample and not a boundary: the boundary is that the only thing
+  behind this refusal is a person choosing not to route around it.
+
+  Server-side enforcement would be the boundary, and it is OFF by the
+  owner's standing decision: branch protection on main keeps
+  enforce_admins false so an incident hotfix stays possible.
+
+REFUSED
+exit 1
