@@ -3357,6 +3357,89 @@ t "python open() read"           pass \
 t "the word fileinput alone"     pass \
   "$(bdec_at "$repo" 'grep -n fileinput apps/api/internal/db/sqlc/db.go')"
 
+echo "== bash-guard: an in-command 'cd' moves the deny arms too, not just the push arm"
+# The push arm followed `cd` correctly and the write arms did not look at it at
+# all: they rebased every operand onto the PAYLOAD's cwd, which the command had
+# already left. Seven payloads were proved DESTRUCTIVE against the real checkout
+# by running them and watching the target file's sha256 change, and every one of
+# them was silent - no decision, no stdout, no stderr:
+#   cd apps/api && sed -i.bak s/a/b/ migrations/<applied>.sql
+#   cd apps/api/migrations && sed -i.bak s/a/b/ *.sql
+#   cd apps/landing && echo x > index.html
+#   (cd apps/landing; echo x > index.html)
+#   cd apps/api/internal/db/sqlc && echo x > db.go
+#   cd apps/api && python3 -c "open('internal/db/sqlc/db.go','w')..."
+# The repair was to LIFT the push arm's tracker into a shared cd_track, so the
+# two arms cannot drift. These assertions and the push-arm ones below therefore
+# exercise the SAME code: a cd shape that regresses one regresses both.
+t "cd: applied migration"       deny "$(bdec_at "$repo" 'cd apps/api && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+t "cd: glob over migrations"    deny "$(bdec_at "$repo" 'cd apps/api/migrations && sed -i.bak s/a/b/ *.sql')"
+t "cd: redirect into dead app"  deny "$(bdec_at "$repo" 'cd apps/landing && echo x > index.html')"
+t "cd: redirect into sqlc"      deny "$(bdec_at "$repo" 'cd apps/api/internal/db/sqlc && echo x > db.go')"
+t "cd in a subshell"            deny "$(bdec_at "$repo" '(cd apps/landing; echo x > index.html)')"
+t "cd: interpreter operand"     deny \
+  "$(bdec_at "$repo" "cd apps/api && python3 -c \"open(${q}internal/db/sqlc/db.go${q},${q}w${q}).write(${q}x${q})\"")"
+t "cd: cp into the mig dir"     deny "$(bdec_at "$repo" 'cd apps/api && cp /tmp/20260101000000_m01_applied.sql migrations')"
+t "cd: rm the sqlc tree"        deny "$(bdec_at "$repo" 'cd apps/api && rm -rf internal/db/sqlc/')"
+t "cd: tee into ogen"           deny "$(bdec_at "$repo" 'cd apps/api && echo x | tee internal/api/gen/oas.go')"
+t "cd: dd of= into sqlc"        deny "$(bdec_at "$repo" 'cd apps/api && dd if=/tmp/x of=internal/db/sqlc/db.go')"
+# `..`, `-` in a directory name and pushd/popd are the tracker's own arithmetic,
+# not the write arm's, so they are asserted through a write.
+t "cd .. then down again"       deny "$(bdec_at "$sub_api" 'cd ../api && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+# From a cwd that is in NO checkout, so the repository has to come from where
+# the `cd` went. The sqlc tree and not a migration: which migrations are applied
+# is read from HEAD, and that lookup still starts from the payload's cwd, so a
+# migration named from outside any worktree is a gap this change does not close.
+t "cd absolute, cwd outside"    deny "$(bdec_at /tmp "cd $repo/apps/api && sed -i.bak s/a/b/ internal/db/sqlc/db.go")"
+t "pushd then write"            deny "$(bdec_at "$repo" 'pushd apps/api > /dev/null && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+t "pushd then popd then write"  deny "$(bdec_at "$sub_api" 'pushd /tmp > /dev/null && popd > /dev/null && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+# DOES NOT OVER-FIRE. A `cd` is how everyone in this repo works, so every one of
+# these has to stay ordinary, from the root AND from a subdirectory.
+t "cd: new migration"           pass "$(bdec_at "$repo" 'cd apps/api/migrations && cat > 20260813000000_m99_new.sql')"
+t "cd: new migration, subdir"   pass "$(bdec_at "$sub_api" 'cd migrations && cat > 20260813000000_m99_new.sql')"
+t "cd: ls the mig dir"          pass "$(bdec_at "$repo" 'cd apps/api && ls migrations/*.sql')"
+t "cd: sed -n over a glob"      pass "$(bdec_at "$repo" 'cd apps/api && sed -n 1,5p migrations/*.sql')"
+t "cd: git log over the dir"    pass "$(bdec_at "$repo" 'cd apps/api && git log --oneline -- migrations')"
+t "cd: grep the sqlc tree"      pass "$(bdec_at "$repo" 'cd apps/api && grep -r Querier internal/db/sqlc/')"
+t "cd /tmp then write there"    pass "$(bdec_at "$repo" 'cd /tmp && echo x > file')"
+t "cd /tmp then write, subdir"  pass "$(bdec_at "$sub_api" 'cd /tmp && echo x > file')"
+t "cd out of the repo"          pass "$(bdec_at "$sub_api" "cd $tmp && cp /tmp/x notes.txt")"
+t "cd: a build"                 pass "$(bdec_at "$repo" 'cd apps/web && npm run build')"
+t "cd: a same-named sibling"    pass "$(bdec_at "$repo" 'cd apps/api && cp /tmp/x migrations-notes.txt')"
+t "cd: apps/landing-old"        pass "$(bdec_at "$repo" 'cd apps && echo x > landing-old/index.html')"
+
+echo "== bash-guard: a write it cannot place ASKS, and says so; it never goes silent"
+# The push arm can defer an unresolvable `cd` to .githooks/pre-push, which sees
+# resolved refs. The write arms have no such backstop - they ARE the backstop -
+# so an unresolvable cd followed by a relative write is asked about rather than
+# permitted in silence. It is an ASK and not a DENY because after an unknown cd
+# EVERY relative destination could be inside a protected tree, so denying on
+# that would redden `cd "$(mktemp -d)" && echo x > out.txt` too.
+t "cd \$VAR then write"          ask  "$(bdec_at "$repo" 'cd "$SOMEDIR" && echo x > db.go')"
+t "cd - then write"              ask  "$(bdec_at "$repo" 'cd - && sed -i.bak s/a/b/ 20260101000000_m01_applied.sql')"
+t "bare cd then delete"          ask  "$(bdec_at "$repo" 'cd && rm index.html')"
+t "cd -- then write"             ask  "$(bdec_at "$repo" 'cd -- && cp /tmp/x db.go')"
+t "cd \$(...) then write"        ask  "$(bdec_at "$repo" 'cd "$(git rev-parse --show-toplevel)" && echo x > db.go')"
+t "cd to a dir made at run time" ask  "$(bdec_at "$repo" 'mkdir -p out && cd out && echo x > db.go')"
+t "popd with no pushd"           ask  "$(bdec_at "$repo" 'popd > /dev/null && echo x > db.go')"
+# The reason has to say the directory could not be determined. A reason that
+# named a specific protected file would be a claim this guard cannot support.
+ask_why=$(breason "$repo" 'cd "$SOMEDIR" && echo x > db.go')
+tcontains "reason: names the cause"   "COULD NOT DETERMINE" "$ask_why"
+tcontains "reason: not a safety claim" "not that the destination was" "$ask_why"
+tcontains "reason: lists the operand"  "db.go" "$ask_why"
+# DOES NOT OVER-FIRE. Each of these has an unresolvable cd and must still pass,
+# so the arm is scoped to relative WRITES and not to "the command contains a cd".
+t "unknown cd, absolute write"   pass "$(bdec_at "$repo" 'cd "$SOMEDIR" && echo x > /tmp/out.txt')"
+t "unknown cd, a read"           pass "$(bdec_at "$repo" 'cd "$SOMEDIR" && cat db.go')"
+t "unknown cd, a build"          pass "$(bdec_at "$repo" 'cd "$SOMEDIR" && npm run build')"
+t "unknown cd, a git command"    pass "$(bdec_at "$repo" 'cd "$SOMEDIR" && git status')"
+t "unknown cd, no write at all"  pass "$(bdec_at "$repo" 'cd "$SOMEDIR" && ls')"
+# A RESOLVED cd is not an unknown one, or the arm above would ask about every
+# command in the section before this and both would be worthless.
+t "resolved cd does not ask"     pass "$(bdec_at "$repo" 'cd /tmp && echo x > db.go')"
+t "no cd at all does not ask"    pass "$(bdec_at "$repo" 'echo x > db.go')"
+
 echo "== bash-guard and route-guard REFUSE when jq is missing, never disappear"
 # Measured against the shipped guards before this: with jq off PATH, a write to
 # an applied migration, a glob over the migrations directory and a write into

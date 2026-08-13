@@ -269,6 +269,233 @@ unq() {
 }
 UNQ=""
 
+# ---- where the shell actually IS: ONE `cd` tracker, both callers ------------
+#
+# This used to exist only inside push_hits_main, and the write arms below had
+# nothing at all: they rebased every relative operand onto the PAYLOAD's cwd and
+# never noticed that the command itself had moved. Seven payloads were proved
+# destructive against this checkout by executing them and watching the target
+# file's sha256 change, every one of them silent - no decision, zero bytes:
+#
+#   cd apps/api && sed -i.bak s/a/b/ migrations/<applied>.sql
+#   cd apps/api/migrations && sed -i.bak s/a/b/ *.sql
+#   cd apps/landing && echo x > index.html
+#   (cd apps/landing; echo x > index.html)
+#   cd apps/api/internal/db/sqlc && echo x > db.go
+#   cd apps/api && python3 -c "open('internal/db/sqlc/db.go','w')..."
+#
+# The push arm's tracker already had exactly the semantics they needed, so it is
+# LIFTED here rather than copied: one set of globals, one function, two callers.
+# A second implementation is what would drift, and a tracker that drifts from
+# the one the push arm trusts is worse than none, because both would still look
+# maintained. Anything about `cd` that is true of one arm is now true of both by
+# construction - guards_test.sh asserts the same cd shapes against a write arm
+# and against the push arm, so a change that helps one and not the other cannot
+# be committed green.
+#
+# `(cd x; ...)` and `{ cd x; ...; }` are stripped of their opening brace here
+# and NOT in push_hits_main's own command-word test. That asymmetry is
+# deliberate and it is the only push decision this refactor moves: a subshell cd
+# now retargets the branch lookup, which is the directory the push really runs
+# in. Making push_hits_main strip the brace too would newly deny `(git push
+# origin main)`, a shape no assertion covers, so it is left for its own change.
+CD_CWD=""
+# Set when a `cd`/`pushd`/`popd` moved the shell somewhere this could not
+# resolve. It means "the directory is not knowable from here", which is NOT the
+# same as "the payload gave no cwd" - see the deny and ask sites below, which
+# answer the two differently.
+CD_UNKNOWN=""
+CD_DIRSTACK=()
+cd_reset() {
+  CD_CWD=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  CD_UNKNOWN=""
+  CD_DIRSTACK=()
+}
+# cd_track <segment> -> 0 when the segment WAS a cd/pushd/popd, and the three
+# globals above now describe where the shell is afterwards; 1 for anything else,
+# leaving them untouched. Callers `continue` on 0.
+cd_track() {
+  local seg cn w i n start cdto cdraw
+  local -a words
+  seg=$1
+  words=()
+  IFS=$' \t' read -r -a words <<<"$seg"
+  n=${#words[@]}
+  [[ $n -eq 0 ]] && return 1
+
+  start=0
+  while [[ $start -lt $n ]]; do
+    case "${words[$start]}" in
+      *=*|env|sudo|command|nohup|nice) start=$((start + 1)) ;;
+      *) break ;;
+    esac
+  done
+  [[ $start -ge $n ]] && return 1
+
+  w=${words[$start]}
+  w=${w#\(}; w=${w#\{}
+  unq "$w"; cn=${UNQ##*/}
+  [[ "$cn" == cd || "$cn" == pushd || "$cn" == popd ]] || return 1
+
+  # `cd <path> && git push` RETARGETS the branch lookup, and `cd <path> && sed
+  # -i <file>` retargets the file. This is the incident shape for both arms: an
+  # agent works in a worktree, so the payload's cwd is a worktree, and
+  #   cd /Users/.../wpmgr && git push
+  # was permitted with zero bytes transferred to the guard's attention while
+  # `git -C /Users/.../wpmgr push` was denied. It is the same push.
+  #
+  # It cuts the other way too, and that half was a FALSE REASON rather than a
+  # bypass: from the main checkout, `cd <worktree> && git push` was refused
+  # saying "the current branch is main". It was not. Either follow the cd or
+  # stop claiming to know the directory.
+  #
+  # An operand this cannot resolve - `cd $DIR`, `cd "$(git ...)"`, `cd -`,
+  # `cd ~x`, a directory a previous segment creates at run time - is recorded
+  # as NOT KNOWN rather than guessed at. It used to clear the directory and
+  # fall into the push arm's UNKNOWN deny, and that denied five shapes of
+  # correct work, all reproduced from a worktree whose HEAD was not main:
+  #
+  #     cd "$(git rev-parse --show-toplevel)" && git push   the worktree ITSELF
+  #     cd ~/Desktop/Terminal/wpmgr && git push             tilde, never expanded
+  #     pushd /tmp >/dev/null && ls && popd && git push      popd, never tracked
+  #     mkdir -p out && cd out && cd .. && git push          `out` not there yet
+  #
+  # `~` and `popd` are now followed, because both are small and exact. What is
+  # left unresolvable is recorded as unknown, and what each arm DOES with an
+  # unknown directory is that arm's own decision, stated at its own site: the
+  # push arm defers to `.githooks/pre-push`, which has the resolved refs; the
+  # write arms have no such backstop - they ARE the backstop - so they ask.
+  if [[ "$cn" == popd ]]; then
+    if [[ ${#CD_DIRSTACK[@]} -gt 0 ]]; then
+      CD_CWD=${CD_DIRSTACK[${#CD_DIRSTACK[@]}-1]}
+      unset 'CD_DIRSTACK[${#CD_DIRSTACK[@]}-1]'
+      [[ -n "$CD_CWD" ]] || CD_UNKNOWN=1
+    else
+      # popd with nothing pushed is an error in bash and moves nothing, but
+      # this may have missed the pushd, so it declines to know.
+      CD_CWD=""; CD_UNKNOWN=1
+    fi
+    return 0
+  fi
+
+  cdto=""; cdraw=""
+  i=$((start + 1))
+  while [[ $i -lt $n ]]; do
+    unq "${words[$i]}"; w=$UNQ
+    case "$w" in
+      # `--` ends options, so the NEXT word is the operand even when it starts
+      # with a dash. `cd -- /path` stays fully resolved; `cd --` with nothing
+      # after it falls out with $cdto empty, into the branch below.
+      --) i=$((i + 1))
+          if [[ $i -lt $n ]]; then unq "${words[$i]}"; cdto=$UNQ; cdraw=${words[$i]}; fi
+          break ;;
+      -*) ;;
+      *) cdto=$w; cdraw=${words[$i]}; break ;;
+    esac
+    i=$((i + 1))
+  done
+  [[ "$cn" == pushd ]] && CD_DIRSTACK+=("$CD_CWD")
+  # Every operandless form declines to know, which is what the paragraph above
+  # already promised and what these three did NOT do. Measured from a worktree,
+  # before this: `cd - && git push`, `cd -- && git push` and `cd && git push`
+  # were all resolved to $HOME and then DENIED with "could not determine which
+  # branch", a reason that was untrue of the command - and the symmetric half is
+  # worse, because with $OLDPWD or $HOME being a branch checkout the same code
+  # PERMITS a push that lands on main.
+  #   cd -   goes to $OLDPWD, which is the shell's, not this process's.
+  #   cd --  and bare `cd` go to $HOME, which is not where the shell is.
+  #   bare pushd swaps the top two entries, which is not modelled.
+  # None of the four is knowable from the command string.
+  if [[ -z "$cdto" ]]; then
+    CD_CWD=""; CD_UNKNOWN=1
+    return 0
+  fi
+  # Tilde expansion happens only on an UNQUOTED leading ~, so the RAW word is
+  # what decides it: bash does not expand "~/x", and neither does this.
+  case "$cdraw" in
+    '~')   cdto=${HOME:-} ;;
+    '~/'*) cdto="${HOME:-}/${cdraw#\~/}" ;;
+  esac
+  # A RELATIVE target with no base is not resolvable, and resolving it against
+  # THIS SCRIPT's own cwd is the worst available answer: from a session inside
+  # .claude/worktrees, `cd out && cd ..` then landed on the main checkout and
+  # denied with "the current branch is main", about a directory the command
+  # never visited.
+  if [[ "$cdto" != /* ]]; then
+    if [[ -n "$CD_CWD" ]]; then
+      cdto="${CD_CWD%/}/$cdto"
+    else
+      CD_CWD=""; CD_UNKNOWN=1; return 0
+    fi
+  fi
+  if [[ -d "$cdto" ]]; then
+    CD_CWD=$(cd "$cdto" 2>/dev/null && pwd -P) || CD_CWD=""
+    [[ -n "$CD_CWD" ]] || CD_UNKNOWN=1
+  else
+    CD_CWD=""; CD_UNKNOWN=1
+  fi
+  return 0
+}
+
+# emit_dests <tag> <path>... - the ONE way a destination leaves collect_dests.
+#
+# Every destination is emitted as it was spelled, and a RELATIVE one is emitted
+# a second time rebased onto the directory the tracker above says the shell is
+# actually in. That second line is absolute, which normalise_dests already knows
+# how to fold back to a repo-relative path or discard as outside the checkout,
+# so following a `cd` needed no new matching machinery at all.
+#
+# When the directory is UNKNOWN the operand is tagged `u:` instead. No arm below
+# matches `u:`; it exists so the last arm in this file can say out loud that it
+# could not tell where the write would land, rather than falling through to the
+# bare `exit 0` - which is what all seven payloads above did.
+# The checkout the EFFECTIVE directory belongs to. $CWD_ROOT answers only for
+# the payload's cwd, so `cwd=/tmp` plus `cd <repo>/apps/api && ...` left it empty
+# and every operand went unrebased - the payload cwd being outside any worktree
+# is not rare, it is what happens whenever a command is issued from /tmp. Cached
+# on the directory it was resolved for, because emit_dests runs per operand.
+CD_ROOT=""
+CD_ROOT_FOR=$'\0'
+cd_root() {
+  if [[ -n "$CWD_ROOT" ]]; then printf '%s' "$CWD_ROOT"; return; fi
+  if [[ "$CD_ROOT_FOR" != "$CD_CWD" ]]; then
+    CD_ROOT_FOR=$CD_CWD
+    CD_ROOT=$(git -C "$CD_CWD" rev-parse --show-toplevel 2>/dev/null) || CD_ROOT=""
+    [[ -n "$CD_ROOT" ]] && { CD_ROOT=$(cd "$CD_ROOT" 2>/dev/null && pwd -P) || CD_ROOT=""; }
+  fi
+  printf '%s' "$CD_ROOT"
+}
+
+emit_dests() {
+  local tag=$1 p rel root
+  shift
+  for p in "$@"; do
+    [[ -z "$p" ]] && continue
+    printf '%s:%s\n' "$tag" "$p"
+    # An absolute destination means the same file from every directory, so a
+    # `cd` cannot move it and there is nothing to rebase or to be unsure about.
+    [[ "$p" == /* ]] && continue
+    root=""
+    [[ -n "$CD_CWD" ]] && root=$(cd_root)
+    if [[ -n "$root" ]]; then
+      if [[ "$CD_CWD" == "$root" ]]; then rel=""
+      elif [[ "$CD_CWD" == "$root"/* ]]; then rel="${CD_CWD#"$root"/}"
+      # The shell moved OUTSIDE this checkout, so no repo-relative reading of
+      # the operand exists and none is invented. `cd /tmp && echo x > f` writes
+      # /tmp/f, and this is where that stops looking like a repo path.
+      else rel=""; fi
+      printf '%s:%s\n' "$tag" "$p" | normalise_dests "$rel" "$root"
+    elif [[ -n "$CD_UNKNOWN" ]]; then
+      # ITS LIMIT, stated rather than implied: the operand is emitted whole, so
+      # an interpreter expression whose path happens to be absolute -
+      # `python3 -c "open('/tmp/x','w')"` after an unresolvable cd - is asked
+      # about even though the cd cannot move it. That is an extra question, not
+      # a missed write, and the last arm in this file asks rather than denies.
+      printf 'u:%s\n' "$p"
+    fi
+  done
+}
+
 # The interpreter arm's two tests, and the honest statement of where their
 # boundary is.
 #
@@ -327,9 +554,29 @@ IDELETE="(rmtree\(\
 |(^|[^A-Za-z0-9_])rm(dir)?(Sync)?\()"
 
 collect_dests() {
-  local seg cn w f d tdir inplace i n start probe
+  local seg cn w f d tdir inplace i n start probe rd
   local -a words operands
+  cd_reset
   while IFS= read -r seg; do
+    # A `cd` retargets every operand after it, so it is followed BEFORE anything
+    # in this segment is read, and the segment itself contributes no
+    # destination.
+    cd_track "$seg" && continue
+    # A redirection names its destination in the syntax itself, and this loop is
+    # about to strip redirections out. They used to be read only from the whole
+    # of $cmd, by redir_dests below, which has no idea which segment - and so
+    # which directory - any of them belonged to; `cd apps/landing && echo x >
+    # index.html` went out silent for exactly that reason. So they are taken off
+    # THIS segment first, while the tracker still says where it runs. The
+    # whole-$cmd pass stays: it costs nothing and it covers shapes this
+    # per-segment grep does not reach.
+    while IFS= read -r rd; do
+      [[ -z "$rd" ]] && continue
+      unq "$rd"; emit_dests w "$UNQ"
+    done < <(
+      grep -oE ">>?\|?[[:space:]]*[\"']?${tok}" <<<"$seg" | sed -E 's/^>>?\|?[[:space:]]*//'
+      grep -oE "of=[\"']?${tok}" <<<"$seg" | sed -E 's/^of=//'
+    )
     # Comments and separators are already handled, quote-aware, by the splitter
     # below. Only redirections are stripped here.
     seg=$(printf '%s' "$seg" \
@@ -398,25 +645,25 @@ collect_dests() {
         # resolved name is what the applied-migration check has to see - the
         # command line itself never contains it.
         if [[ -n "$tdir" ]]; then
-          printf 'w:%s\n' "$tdir"
-          for w in "${operands[@]}"; do printf 'w:%s/%s\n' "${tdir%/}" "${w##*/}"; done
+          emit_dests w "$tdir"
+          for w in "${operands[@]}"; do emit_dests w "${tdir%/}/${w##*/}"; done
         else
           d=${operands[$((${#operands[@]} - 1))]}
-          printf 'w:%s\n' "$d"
+          emit_dests w "$d"
           i=0
           while [[ $i -lt $((${#operands[@]} - 1)) ]]; do
-            printf 'w:%s/%s\n' "${d%/}" "${operands[$i]##*/}"
+            emit_dests w "${d%/}/${operands[$i]##*/}"
             i=$((i + 1))
           done
         fi ;;
       tee|truncate)
-        printf 'w:%s\n' "${operands[@]}" ;;
+        emit_dests w "${operands[@]}" ;;
       rm)
-        printf 'r:%s\n' "${operands[@]}" ;;
+        emit_dests r "${operands[@]}" ;;
     esac
     case "$cn" in
       sed|perl|ruby)
-        [[ -n "$inplace" ]] && printf 'w:%s\n' "${operands[@]}" ;;
+        [[ -n "$inplace" ]] && emit_dests w "${operands[@]}" ;;
     esac
     # ruby is in both lists deliberately: `ruby -i` edits in place and
     # `ruby -e 'File.write ...'` does not, and neither shape implies the other.
@@ -428,10 +675,10 @@ collect_dests() {
         # expansion, not a subshell: this runs once per segment.
         probe=${seg//sys.stdout.write(/}
         probe=${probe//sys.stderr.write(/}
-        grep -qE "$IWRITE" <<<"$probe" && printf 'w:%s\n' "${operands[@]}"
+        grep -qE "$IWRITE" <<<"$probe" && emit_dests w "${operands[@]}"
         # Deletion is tagged r, the same as `rm`, so the one arm that permits a
         # delete (the dead app) keeps permitting it however it is spelled.
-        grep -qE "$IDELETE" <<<"$probe" && printf 'r:%s\n' "${operands[@]}" ;;
+        grep -qE "$IDELETE" <<<"$probe" && emit_dests r "${operands[@]}" ;;
     esac
   done < <(split_segments)
 }
@@ -566,8 +813,16 @@ fi
 # Character-by-character rather than a bracket expression: `[`, `]` and `-` are
 # all legal in a glob and all awkward inside one, and getting that wrong fails
 # open.
+# normalise_dests [base] [root]
+# The two arguments default to the payload's cwd, which is every caller but one:
+# emit_dests passes the directory an in-command `cd` actually moved to, so the
+# SAME rebase runs against the SAME tokeniser for both. Rebasing a `cd` any other
+# way meant prefixing the operand string, and an interpreter operand is a whole
+# expression - `open('internal/db/sqlc/db.go','w')` - whose path is a token in
+# the middle of it, so the prefix landed on `open(` and the write stayed
+# permitted. Only the tokeniser below knows where the paths are.
 normalise_dests() {
-  awk -v base="$CWD_REL" -v root="$CWD_ROOT" '
+  awk -v base="${1-$CWD_REL}" -v root="${2-$CWD_ROOT}" '
     function ispath(c) {
       return index("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./*?[]{}$~+@%^-", c) > 0
     }
@@ -633,9 +888,9 @@ redir_dests() {
 # across two of them and the dead-app arm can permit deletion on its own.
 DESTS=$(collect_dests)
 DESTS=$(printf '%s\n%s\n' "$DESTS" "$(redir_dests | sed 's/^/w:/')" \
-        | grep -E '^[wr]:.' | sort -u)
+        | grep -E '^[wru]:.' | sort -u)
 DESTS=$(printf '%s\n%s\n' "$DESTS" "$(printf '%s\n' "$DESTS" | normalise_dests)" \
-        | grep -E '^[wr]:.' | sort -u)
+        | grep -E '^[wru]:.' | sort -u)
 
 # dest_matches <kind> <path-regex>
 # The prefix is matched as a whole path component, never as a substring of a
@@ -891,13 +1146,13 @@ fi
 # project would be refused for a branch nobody was on. A wrong answer is worse
 # than no answer; no answer is handled below, loudly.
 #
-# The base directory is PUSH_CWD, not the payload's cwd directly, because a
+# The base directory is CD_CWD, not the payload's cwd directly, because a
 # leading `cd <path> &&` moves it. See the cd tracking in push_hits_main.
 PBRANCH=""
 push_branch() {
   local d="$1" base
   PBRANCH=""
-  base=$PUSH_CWD
+  base=$CD_CWD
   if [[ -n "$d" ]]; then
     if [[ "$d" != /* ]]; then
       [[ -n "$base" ]] || return 1
@@ -994,21 +1249,22 @@ push_commands() {
 # push_hits_main -> 0 and $PUSH_WHY set, when some segment is a push that lands
 # on main or a push whose target cannot be read ($PUSH_WHY = UNKNOWN).
 PUSH_WHY=""
-PUSH_CWD=""
-# Set when a `cd`/`pushd`/`popd` moved the shell somewhere this arm could not
-# resolve. It means "the branch is not knowable from here", which is NOT the
-# same as "the payload gave no cwd" - the second is still a deny, because a
+# The directory this arm reads the branch from, and whether it is knowable, both
+# come from the shared tracker near the top of this file (CD_CWD / CD_UNKNOWN).
+# They used to be this arm's own private pair of variables, and the write
+# arms had no tracker at all; seven payloads reached a protected file through
+# that gap. One tracker, two callers, so neither can be repaired alone.
+# CD_UNKNOWN means "the directory is not knowable from here", which is NOT the
+# same as "the payload gave no cwd" - the second is still a deny here, because a
 # session with no cwd at all is a broken payload rather than an ordinary
 # command. See the deny sites below.
-PUSH_CD_UNKNOWN=""
-PUSH_DIRSTACK=()
 push_hits_main() {
-  local seg w cn i n start sub d gitdir allrefs tagsonly dryrun r dst np cdto cdraw
+  local seg w cn i n start sub d gitdir allrefs tagsonly dryrun r dst np
   local -a words positional
-  PUSH_CD_UNKNOWN=""
-  PUSH_DIRSTACK=()
-  PUSH_CWD=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  cd_reset
   while IFS= read -r seg; do
+    # `cd`/`pushd`/`popd` retarget the branch lookup and contribute no push.
+    cd_track "$seg" && continue
     words=()
     IFS=$' \t' read -r -a words <<<"$seg"
     n=${#words[@]}
@@ -1023,107 +1279,6 @@ push_hits_main() {
     done
     [[ $start -ge $n ]] && continue
     unq "${words[$start]}"; cn=${UNQ##*/}
-
-    # `cd <path> && git push` RETARGETS the branch lookup. This is the incident
-    # shape and it is why the arm was worth repairing at all: an agent works in a
-    # worktree, so the payload's cwd is a worktree, and
-    #   cd /Users/.../wpmgr && git push
-    # was permitted with zero bytes transferred to the guard's attention while
-    # `git -C /Users/.../wpmgr push` was denied. It is the same push.
-    #
-    # It cuts the other way too, and that half was a FALSE REASON rather than a
-    # bypass: from the main checkout, `cd <worktree> && git push` was refused
-    # saying "the current branch is main". It was not. Either follow the cd or
-    # stop claiming to know the branch.
-    #
-    # An operand this cannot resolve - `cd $DIR`, `cd "$(git ...)"`, `cd -`,
-    # `cd ~x`, a directory a previous segment creates at run time - is recorded
-    # as NOT KNOWN rather than guessed at. It used to clear the directory and
-    # fall into the UNKNOWN deny, and that denied five shapes of correct work,
-    # all reproduced from a worktree whose HEAD was not main:
-    #
-    #     cd "$(git rev-parse --show-toplevel)" && git push   the worktree ITSELF
-    #     cd ~/Desktop/Terminal/wpmgr && git push             tilde, never expanded
-    #     pushd /tmp >/dev/null && ls && popd && git push      popd, never tracked
-    #     mkdir -p out && cd out && cd .. && git push          `out` not there yet
-    #
-    # `~` and `popd` are now followed, because both are small and exact. What is
-    # left unresolvable DEFERS: no deny, no reason, and `.githooks/pre-push`
-    # decides it instead, after the shell has actually expanded it. That is the
-    # trade this file already makes everywhere else - a false reason is worse
-    # than no reason, and the hook is the lock while this arm is the manners.
-    if [[ "$cn" == cd || "$cn" == pushd || "$cn" == popd ]]; then
-      if [[ "$cn" == popd ]]; then
-        if [[ ${#PUSH_DIRSTACK[@]} -gt 0 ]]; then
-          PUSH_CWD=${PUSH_DIRSTACK[${#PUSH_DIRSTACK[@]}-1]}
-          unset 'PUSH_DIRSTACK[${#PUSH_DIRSTACK[@]}-1]'
-          [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1
-        else
-          # popd with nothing pushed is an error in bash and moves nothing, but
-          # this arm may have missed the pushd, so it declines to know.
-          PUSH_CWD=""; PUSH_CD_UNKNOWN=1
-        fi
-        continue
-      fi
-      cdto=""; cdraw=""
-      i=$((start + 1))
-      while [[ $i -lt $n ]]; do
-        unq "${words[$i]}"; w=$UNQ
-        case "$w" in
-          # `--` ends options, so the NEXT word is the operand even when it
-          # starts with a dash. `cd -- /path` stays fully resolved; `cd --` with
-          # nothing after it falls out with $cdto empty, into the branch below.
-          --) i=$((i + 1))
-              if [[ $i -lt $n ]]; then unq "${words[$i]}"; cdto=$UNQ; cdraw=${words[$i]}; fi
-              break ;;
-          -*) ;;
-          *) cdto=$w; cdraw=${words[$i]}; break ;;
-        esac
-        i=$((i + 1))
-      done
-      [[ "$cn" == pushd ]] && PUSH_DIRSTACK+=("$PUSH_CWD")
-      # Every operandless form declines to know, which is what the paragraph
-      # above already promised and what these three did NOT do. Measured from a
-      # worktree, before this: `cd - && git push`, `cd -- && git push` and
-      # `cd && git push` were all resolved to $HOME and then DENIED with "could
-      # not determine which branch", a reason that was untrue of the command -
-      # and the symmetric half is worse, because with $OLDPWD or $HOME being a
-      # branch checkout the same code PERMITS a push that lands on main.
-      #   cd -   goes to $OLDPWD, which is the shell's, not this process's.
-      #   cd --  and bare `cd` go to $HOME, which is not where the shell is.
-      #   bare pushd swaps the top two entries, which is not modelled.
-      # None of the four is knowable from the command string, so all four defer
-      # and `.githooks/pre-push` decides them after the shell has expanded them.
-      if [[ -z "$cdto" ]]; then
-        PUSH_CWD=""; PUSH_CD_UNKNOWN=1
-        continue
-      fi
-      # Tilde expansion happens only on an UNQUOTED leading ~, so the RAW word
-      # is what decides it: bash does not expand "~/x", and neither does this.
-      case "$cdraw" in
-        '~')   cdto=${HOME:-} ;;
-        '~/'*) cdto="${HOME:-}/${cdraw#\~/}" ;;
-      esac
-      # A RELATIVE target with no base is not resolvable, and resolving it
-      # against THIS SCRIPT's own cwd is the worst available answer: from a
-      # session inside .claude/worktrees, `cd out && cd ..` then landed on the
-      # main checkout and denied with "the current branch is main", about a
-      # directory the command never visited.
-      if [[ "$cdto" != /* ]]; then
-        if [[ -n "$PUSH_CWD" ]]; then
-          cdto="${PUSH_CWD%/}/$cdto"
-        else
-          PUSH_CWD=""; PUSH_CD_UNKNOWN=1; continue
-        fi
-      fi
-      if [[ -d "$cdto" ]]; then
-        PUSH_CWD=$(cd "$cdto" 2>/dev/null && pwd -P) || PUSH_CWD=""
-        [[ -n "$PUSH_CWD" ]] || PUSH_CD_UNKNOWN=1
-      else
-        PUSH_CWD=""; PUSH_CD_UNKNOWN=1
-      fi
-      continue
-    fi
 
     [[ "$cn" == git ]] || continue
 
@@ -1208,7 +1363,7 @@ push_hits_main() {
           if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
             # Unreadable BECAUSE a cd could not be followed: defer to the hook
             # rather than deny with a reason that is not true of the command.
-            [[ -n "$PUSH_CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue 2
+            [[ -n "$CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue 2
             PUSH_WHY="UNKNOWN"
             return 0
           fi
@@ -1227,7 +1382,7 @@ push_hits_main() {
     if [[ -n "$gitdir" ]] || ! push_branch "$d"; then
       # Same deferral as above: an unfollowable cd is a gap in this arm's
       # knowledge, not evidence about the branch. The hook decides it.
-      [[ -n "$PUSH_CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue
+      [[ -n "$CD_UNKNOWN" && -z "$gitdir" && "$d" != /* ]] && continue
       PUSH_WHY="UNKNOWN"
       return 0
     fi
@@ -1292,6 +1447,67 @@ matching command text. Both catch an accident; neither stops a determined push.
 
 Pushing a branch, a tag, or a release branch is untouched by this arm; only a
 push that moves main is refused."
+fi
+
+# ---- arm 5: a write whose directory this guard could not determine ----------
+#
+# LAST, so every certain answer above wins. A deny is a statement about a known
+# file; this arm's whole subject is not knowing, and an ask that fires in front
+# of a deny would replace a correct refusal with a question.
+#
+# ASK, NOT DENY, and the reason is arithmetic rather than taste. After an
+# unresolvable `cd` the effective directory is any directory, so for ANY
+# relative destination there exists a directory that puts it inside a protected
+# tree - `db.go` under apps/api/internal/db/sqlc, `index.html` under
+# apps/landing, `20260527115454_initial.sql` under apps/api/migrations. "Could
+# land on a protected path" is therefore true of every relative write here, so
+# denying on it denies `cd "$(mktemp -d)" && echo x > out.txt` too. CLAUDE.md is
+# explicit that a guard which reddens correct work gets switched off, and a
+# switched-off guard protects nothing. An ask keeps a person in the loop for a
+# shape that is rare (an unresolvable cd is `cd $VAR`, `cd "$(...)"`, `cd -`,
+# bare `cd`, or a directory a previous segment has not created yet) without
+# refusing it.
+#
+# WHAT IS NOT AVAILABLE IS SILENCE. Before this arm existed, all four of these
+# produced no decision, no stdout, no stderr and no record that a guard had
+# looked at them. That is this project's signature defect, and it is the one
+# outcome ruled out here.
+#
+# The scope is deliberately narrow, and each exclusion is a case this must not
+# ask about:
+#   an ABSOLUTE destination      is exact whatever the cwd is, so no `u:` line
+#   a READ                       never reaches DESTS at all
+#   a command with no write      `cd $VAR && npm run build` emits no destination
+#   a RESOLVED cd                `cd /tmp && echo x > f` has a known directory
+#   no cd at all                 CD_UNKNOWN is never set, so no `u:` line
+if [[ -n "$DESTS" ]] && printf '%s\n' "$DESTS" | grep -q '^u:'; then
+  unknown_dests=$(printf '%s\n' "$DESTS" | grep '^u:' | sed 's/^u:/  /' | sort -u)
+  emit ask "That command changes directory to somewhere this guard COULD NOT DETERMINE, and
+then writes to a relative path. Where these land is unknown:
+
+${unknown_dests}
+The directory could not be determined - it is not that the destination was
+checked and found safe. A 'cd' is followed here only when the command string
+says where it goes; \`cd \$VAR\`, \`cd \"\$(...)\"\`, \`cd -\`, a bare \`cd\`, and a
+directory an earlier part of the same command creates at run time are all
+unresolvable before the shell expands them.
+
+So this guard cannot rule out that the write lands in a protected tree:
+
+  apps/api/migrations         editing an applied migration breaks fresh installs
+  apps/api/internal/db/sqlc   hand-editing the generated tree caused a prod 500
+  apps/api/internal/api/gen   likewise
+  apps/landing                dead since 2026-06-20, writes there do nothing
+
+Unlike a push, there is no second lock behind this one - .githooks/pre-push sees
+resolved refs, and nothing sees a resolved cwd - so it asks rather than falling
+silent.
+
+Spell the destination absolutely, or put the directory in the command, and it
+needs no guess at all:
+
+  cd \"\$DIR\" && echo x > \"\$DIR\"/out.txt
+  git -C <dir> ... / sed -i '' <dir>/<file>"
 fi
 
 exit 0
