@@ -510,6 +510,55 @@ t "rm the sqlc tree"    deny "$(bdec 'rm -rf apps/api/internal/db/sqlc/')"
 t "python writes sqlc"  deny "$(bdec "python3 -c \"open('apps/api/internal/db/sqlc/db.go','w').write('x')\"")"
 t "write into dead app" deny "$(bdec 'echo x > apps/landing/index.html')"
 
+echo "== bash-guard: the interpreter arm decides on the CALL, in the right direction"
+# The arm's test was `(open\(|writeFile|file_put_contents|\.write\()`, and its
+# polarity was inverted at both ends: it DENIED a read that happened to say
+# `open(` and PERMITTED a `shutil.copy` onto the generated tree, whose
+# hand-editing caused a production 500 here.
+#
+# This suite did not catch it, and the reason is worth keeping in view: both of
+# its python assertions happened to contain the literal token `open(`, so a bare
+# substring match on `open(` would have passed the suite while shipping the bug.
+# An assertion that passes for the wrong reason tests nothing. Every write case
+# below is therefore spelled WITHOUT `open(`, and every read case is spelled
+# with one, so the two halves cannot be satisfied by the same substring.
+t "shutil.copy"          deny "$(bdec "python3 -c \"import shutil; shutil.copy('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.copyfile"      deny "$(bdec "python3 -c \"import shutil; shutil.copyfile('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.move"          deny "$(bdec "python3 -c \"import shutil; shutil.move('/tmp/x','apps/api/internal/api/gen/oas.go')\"")"
+t "pathlib write_text"   deny "$(bdec "python3 -c \"import pathlib; pathlib.Path('apps/api/internal/db/sqlc/db.go').write_text('x')\"")"
+t "pathlib write_bytes"  deny "$(bdec "python3 -c \"import pathlib; pathlib.Path('apps/web/src/routeTree.gen.ts').write_bytes(b'x')\"")"
+t "os.replace"           deny "$(bdec "python3 -c \"import os; os.replace('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "os.rename"            deny "$(bdec "python3 -c \"import os; os.rename('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "shutil.rmtree"        deny "$(bdec "python3 -c \"import shutil; shutil.rmtree('apps/api/internal/db/sqlc')\"")"
+t "os.remove"            deny "$(bdec "python3 -c \"import os; os.remove('apps/api/internal/db/sqlc/db.go')\"")"
+t "node copyFileSync"    deny "$(bdec "node -e \"require('fs').copyFileSync('/tmp/x','apps/api/internal/db/sqlc/db.go')\"")"
+t "node renameSync"      deny "$(bdec "node -e \"require('fs').renameSync('/tmp/x','apps/web/src/routeTree.gen.ts')\"")"
+t "node appendFileSync"  deny "$(bdec "node -e \"require('fs').appendFileSync('apps/api/internal/api/gen/oas.go','x')\"")"
+t "php copy()"           deny "$(bdec "php -r \"copy('/tmp/x','apps/api/internal/db/sqlc/db.go');\"")"
+t "php rename()"         deny "$(bdec "php -r \"rename('/tmp/x','apps/api/internal/db/sqlc/db.go');\"")"
+t "php unlink()"         deny "$(bdec "php -r \"unlink('apps/api/internal/db/sqlc/db.go');\"")"
+# The mode is what makes an `open` a write, so each mode is asserted, not assumed.
+t "open mode a"          deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','a'); f.close()\"")"
+t "open mode x"          deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','x'); f.close()\"")"
+t "open mode r+"         deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','r+'); f.close()\"")"
+t "open mode wb"         deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go','wb'); f.close()\"")"
+t "open mode= keyword"   deny "$(bdec "python3 -c \"f = open('apps/api/internal/db/sqlc/db.go', mode='w'); f.close()\"")"
+
+# ...and the reads. Every one of these was DENIED before, which is the over-fire
+# that gets a guard switched off: the harness would have taught its users that
+# reading a generated file needs a way around the guard.
+t "python read+print"    pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go').read())\"")"
+t "python open mode r"   pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go','r').read())\"")"
+t "python open mode rb"  pass "$(bdec "python3 -c \"print(open('apps/api/internal/db/sqlc/db.go','rb').read())\"")"
+t "python io.open read"  pass "$(bdec "python3 -c \"import io; print(io.open('apps/api/internal/api/gen/oas.go').read())\"")"
+t "python readlines"     pass "$(bdec "python3 -c \"print(open('apps/web/src/routeTree.gen.ts').readlines()[0])\"")"
+t "pathlib read_text"    pass "$(bdec "python3 -c \"import pathlib; print(pathlib.Path('apps/api/internal/db/sqlc/db.go').read_text())\"")"
+t "node readFileSync"    pass "$(bdec "node -e \"console.log(require('fs').readFileSync('apps/api/internal/db/sqlc/db.go','utf8'))\"")"
+t "php file_get_contents" pass "$(bdec "php -r \"echo file_get_contents('apps/api/internal/db/sqlc/db.go');\"")"
+# A read that prints through the stream object rather than through print(): the
+# only `.write(` here belongs to stdout, and the file is opened for reading.
+t "stdout.write a read"  pass "$(bdec "python3 -c \"import sys; sys.stdout.write(open('apps/api/internal/db/sqlc/db.go').read())\"")"
+
 # ...and the honest cases it must NOT block. Reading, listing and grepping these
 # paths is ordinary work, and the regeneration commands must obviously survive.
 t "grep sqlc to a file" pass "$(bdec 'grep -r Query apps/api/internal/db/sqlc/ > /tmp/out.txt')"
@@ -563,6 +612,53 @@ t "new migration ok"    pass "$(bdecw 'cat > apps/api/migrations/20260201000000_
 CREATE TABLE t();
 EOF')"
 t "reading a migration" pass "$(bdecw 'cat apps/api/migrations/20260101000000_m01_applied.sql')"
+
+echo "== bash-guard: a migrations destination it cannot resolve is refused, not read as 'none matched'"
+# The hole: the applied-migration scan extracts a filename with [A-Za-z0-9_.-]+,
+# a class holding no glob metacharacter, so a pattern matched NOTHING, $applied
+# stayed empty and the whole script fell to its bare `exit 0` - zero bytes on
+# stdout, zero on stderr, and one `*` rewriting every migration that has already
+# run. Each of these was ALLOWED, silently, before the shape check.
+t "sed -i mig glob"      deny "$(bdecw "sed -i.bak 's/a/b/' apps/api/migrations/*.sql")"
+t "tee mig glob"         deny "$(bdecw 'tee apps/api/migrations/*.sql')"
+t "redirect mig glob"    deny "$(bdecw 'echo x > apps/api/migrations/*.sql')"
+t "perl -pi mig glob"    deny "$(bdecw 'perl -pi -e s/a/b/ apps/api/migrations/2026*.sql')"
+t "mig ? wildcard"       deny "$(bdecw 'tee apps/api/migrations/2026010100000?_m01_applied.sql')"
+t "mig [ class"          deny "$(bdecw 'tee apps/api/migrations/2026[01]*.sql')"
+t "mig brace"            deny "$(bdecw 'tee apps/api/migrations/{a,b}.sql')"
+t "mig from a variable"  deny "$(bdecw 'tee apps/api/migrations/$f.sql')"
+t "mig from a subshell"  deny "$(bdecw 'tee apps/api/migrations/`ls`.sql')"
+# The glob is on the SOURCE, and the destination is the directory: the file that
+# lands is whatever the pattern expands to at run time, which is exactly the
+# question this guard cannot answer.
+t "cp glob src into dir" deny "$(bdecw 'cp /tmp/*.sql apps/api/migrations/')"
+# `rm` reaches this arm too (allow_rm is not set here), and deleting every
+# applied migration is the same outage as rewriting them.
+t "rm mig glob"          deny "$(bdecw 'rm apps/api/migrations/*.sql')"
+# ...and the honest work it must NOT block. Creating a new migration is the
+# entire purpose of the directory, and every read of it stays ordinary: none of
+# these is a write, so the arm is never entered and no glob is ever inspected.
+t "new mig, literal"     pass "$(bdecw 'cat > apps/api/migrations/20260201000000_m02_new.sql <<EOF
+CREATE TABLE t();
+EOF')"
+t "new mig then ls glob" pass "$(bdecw 'printf x > apps/api/migrations/20260201000000_m02_new.sql && ls apps/api/migrations/*.sql')"
+t "ls a mig glob"        pass "$(bdecw 'ls -la apps/api/migrations/*.sql')"
+t "cat a mig glob"       pass "$(bdecw 'cat apps/api/migrations/*.sql')"
+t "grep a mig glob"      pass "$(bdecw 'grep -l CREATE apps/api/migrations/*.sql')"
+t "wc a mig glob"        pass "$(bdecw 'wc -l apps/api/migrations/*.sql')"
+t "sed READ a mig glob"  pass "$(bdecw 'sed -n 1,5p apps/api/migrations/*.sql')"
+t "git add a mig glob"   pass "$(bdecw 'git add apps/api/migrations/*.sql')"
+# A glob over a path that merely CONTAINS the word migrations is not this
+# directory, and a sibling directory is not it either.
+t "glob docs/migrations"  pass "$(bdecw "sed -i.bak 's/a/b/' docs/migrations/*.md")"
+t "glob migrations-notes" pass "$(bdecw 'tee apps/api/migrations-notes/*.txt')"
+t "glob elsewhere"        pass "$(bdecw 'tee /tmp/migrations/*.sql')"
+# The message has to name the unresolved destination, or it teaches nothing.
+mig_glob_reason=$(jq -n --arg c 'tee apps/api/migrations/*.sql' --arg w "$repo" \
+  '{cwd:$w, tool_input:{command:$c}}' | bash "$BASH_G" 2>/dev/null \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')
+tcontains "names the glob"     'apps/api/migrations/\*.sql' "$mig_glob_reason"
+tcontains "says new is ok"     'NEW migration' "$mig_glob_reason"
 
 echo "== bash-guard: the migration arm never goes quiet because it cannot resolve a root"
 # The hole: the arm resolved its repository from `.cwd` ALONE, and when that was
