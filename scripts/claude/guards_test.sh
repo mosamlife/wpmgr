@@ -2481,6 +2481,26 @@ git -C "$fresh" checkout -- .githooks/pre-push
 fresh_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1)
 t "a fresh copy is not called stale" "" "$(printf '%s' "$fresh_out" | grep -c 'STALE' | grep -v '^0$')"
 
+# THE OVER-FIRE THIS RECOGNITION GATE NEARLY SHIPPED, and it was caught by
+# running it: with recognition resting on the byte-compare alone, `make
+# harness-check` went RED in the main checkout of this repository the moment
+# this branch edited .githooks/pre-push, because the copy installed weeks ago no
+# longer matched the edited source and nothing had been recorded back then. So a
+# copy whose bytes are one .githooks/pre-push HAS HAD, anywhere in history, is
+# ours. The recorded blob is cleared here or this would prove nothing.
+printf '\n# a committed edit\n' >> "$fresh/.githooks/pre-push"
+git -C "$fresh" add .githooks/pre-push >/dev/null
+git -C "$fresh" commit -qm "edit the hook on a branch"
+git -C "$fresh" config --unset wpmgr.installedHookBlob
+t "premise: nothing is recorded now" "" "$(git -C "$fresh" config --get wpmgr.installedHookBlob)"
+hist_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1); hist_rc=$?
+tcontains "an older committed copy is still recognised" "INSTALLED" "$hist_out"
+tcontains "and it is reported STALE, not unknown"       "STALE"     "$hist_out"
+t "and status exits 0"            0 "$hist_rc"
+(cd "$fresh" && bash "$HOOKSH" check >/dev/null 2>&1); t "and check does NOT redden" 0 "$?"
+git -C "$fresh" reset -q --hard HEAD~1
+(cd "$fresh" && bash "$HOOKSH" install >/dev/null 2>&1)
+
 # A PRE-PUSH THIS INSTALLER DID NOT WRITE IS NOT EXECUTED.
 # `status` runs from SessionStart on every start, resume and compact, and its
 # probes EXECUTE the resolved hook. Before the recognition gate that meant

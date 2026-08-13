@@ -149,16 +149,20 @@ resolve() {
   # 18.197s and session-brief.sh to 23.310s, past the 20s SessionStart budget in
   # .claude/settings.json, so the session lost the very report this produces.
   #
-  # So: a hook is EXECUTED only when this installer can show it wrote it. Two
-  # ways to show that, and either is sufficient:
-  #   - it is byte-identical to the committed .githooks/pre-push, i.e. it is
-  #     literally this repository's own code; or
-  #   - its blob id equals the one `install` recorded in wpmgr.installedHookBlob.
-  # The second is not redundant: it is what keeps a source edit on a branch from
-  # reddening the gate. Editing .githooks/pre-push makes the installed copy
-  # differ from the source, and that copy is still ours and still protecting the
-  # repository - it reports INSTALLED and STALE, exactly as before.
-  local blob recorded
+  # So: a hook is EXECUTED only when this installer can show it wrote it. Three
+  # ways to show that, and any one is sufficient:
+  #   - it is byte-identical to the committed .githooks/pre-push in this tree;
+  #   - its blob id equals the one `install` recorded in wpmgr.installedHookBlob;
+  #   - its blob id is one that .githooks/pre-push has HAD, anywhere in this
+  #     repository's history. A copy left by an older `install` is our own code
+  #     whether or not anything was recorded at the time.
+  # The last two are not redundant, and leaving them out was measured: with only
+  # the byte-compare, `make harness-check` went red in the main checkout of this
+  # repository the moment this branch edited .githooks/pre-push, because the
+  # copy installed weeks ago no longer matched the edited source. A gate that
+  # reddens correct work is a gate that gets switched off. With them, a source
+  # edit on a branch still reports INSTALLED and STALE, exactly as before.
+  local blob recorded c hist
   if src=$(hook_source); then
     cmp -s "$src" "$HOOKPATH" || STALE="$src"
   else
@@ -167,7 +171,16 @@ resolve() {
   if [ -n "$STALE" ] || [ -n "$NOCMP" ]; then
     recorded=$(git config --get wpmgr.installedHookBlob 2>/dev/null)
     blob=$(git hash-object "$HOOKPATH" 2>/dev/null)
-    if [ -z "$recorded" ] || [ -z "$blob" ] || [ "$recorded" != "$blob" ]; then
+    if [ -n "$blob" ] && [ "$recorded" != "$blob" ]; then
+      # BOUNDED, and by a count, not by a loop that could run long: the most
+      # recent commits that touched the file across all refs. `--max-count` is
+      # what makes this safe to run from SessionStart.
+      for c in $(git rev-list --max-count=25 --all -- .githooks/pre-push 2>/dev/null); do
+        hist=$(git rev-parse -q --verify "$c:.githooks/pre-push" 2>/dev/null)
+        if [ "$hist" = "$blob" ]; then recorded="$blob"; break; fi
+      done
+    fi
+    if [ -z "$blob" ] || [ "$recorded" != "$blob" ]; then
       CANNOT="'$HOOKPATH' is not a hook this installer wrote - it matches neither the committed .githooks/pre-push nor the copy recorded in wpmgr.installedHookBlob, so it was NOT executed and whether main is protected here is UNKNOWN. Nothing was changed or removed. Look at that file; if it is your own tooling, keep it and integrate the refusal from .githooks/pre-push by hand, otherwise run '$(fix_line)', which preserves it as pre-push.pre-wpmgr.<stamp> before installing"
       HOOKPATH=""; STALE=""; NOCMP=""
       return
