@@ -1895,8 +1895,15 @@ for hs in scripts/quickstart-selfhost.sh scripts/init-env.sh \
   # cannot see this: it re-derives the header with `sed -n '2,$p'`, which skips
   # line 1, and it only asks whether anything was DROPPED - an EXTRA line is
   # invisible to it. So reverting the awk in either script reddened nothing.
+  #
+  # BOTH SPELLINGS. quickstart-selfhost.sh and init-env.sh pipe the awk through
+  # `sed 's/^#\{0,1\} \{0,1\}//'` to strip the comment marker, so a leaked
+  # shebang reaches the reader as `!/usr/bin/env bash` with no `#`. A needle
+  # anchored on `^#!` matched neither of those two, and reverting their awk
+  # reddened nothing while this line sat in the loop looking like it covered all
+  # four.
   t "$hs: --help does not print the shebang" "" \
-    "$(bash "$real_repo/$hs" --help 2>&1 | head -1 | grep '^#!' )"
+    "$(bash "$real_repo/$hs" --help 2>&1 | head -1 | grep -E '^#?!/' )"
 done
 # The failure path of help_covers itself, which is the only path where its
 # diagnostic is ever built. On a healthy script `--help` exits 0 and that printf
