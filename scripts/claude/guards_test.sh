@@ -3385,14 +3385,27 @@ t "cd: tee into ogen"           deny "$(bdec_at "$repo" 'cd apps/api && echo x |
 t "cd: dd of= into sqlc"        deny "$(bdec_at "$repo" 'cd apps/api && dd if=/tmp/x of=internal/db/sqlc/db.go')"
 # `..`, `-` in a directory name and pushd/popd are the tracker's own arithmetic,
 # not the write arm's, so they are asserted through a write.
-t "cd .. then down again"       deny "$(bdec_at "$sub_api" 'cd ../api && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+# From the ROOT and via a sibling, so the payload-cwd rebase cannot reach the
+# protected path on its own. Written as cwd=apps/api plus `cd ../api` first, it
+# stayed green with cd tracking deleted outright: rebasing onto apps/api gave the
+# same answer, and the assertion pinned nothing.
+t "cd .. then down again"       deny "$(bdec_at "$repo" 'cd apps/web && cd ../api && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
 # From a cwd that is in NO checkout, so the repository has to come from where
 # the `cd` went. The sqlc tree and not a migration: which migrations are applied
 # is read from HEAD, and that lookup still starts from the payload's cwd, so a
 # migration named from outside any worktree is a gap this change does not close.
 t "cd absolute, cwd outside"    deny "$(bdec_at /tmp "cd $repo/apps/api && sed -i.bak s/a/b/ internal/db/sqlc/db.go")"
 t "pushd then write"            deny "$(bdec_at "$repo" 'pushd apps/api > /dev/null && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
-t "pushd then popd then write"  deny "$(bdec_at "$sub_api" 'pushd /tmp > /dev/null && popd > /dev/null && sed -i.bak s/a/b/ migrations/20260101000000_m01_applied.sql')"
+# The popd has to be the ONLY thing that puts the shell back in apps/api, or the
+# assertion is satisfied by the payload-cwd rebase and pins nothing. Written the
+# obvious way first - cwd=apps/api, pushd /tmp, popd, write - it stayed green
+# with the whole popd branch replaced by `if false`, because rebasing onto the
+# payload's cwd gave the same answer. So the payload's cwd is the REPO ROOT
+# here, from which the operand below is not protected.
+t "pushd then popd then write"  deny "$(bdec_at "$repo" 'cd apps/api && pushd /tmp > /dev/null && popd > /dev/null && sed -i.bak s/a/b/ internal/db/sqlc/db.go')"
+# And its premise: without the popd, the same command must NOT deny, or the
+# assertion above would pass with the pushd/popd pair doing nothing at all.
+t "  premise: no popd, no deny"  pass "$(bdec_at "$repo" 'cd apps/api && pushd /tmp > /dev/null && sed -i.bak s/a/b/ internal/db/sqlc/db.go')"
 # DOES NOT OVER-FIRE. A `cd` is how everyone in this repo works, so every one of
 # these has to stay ordinary, from the root AND from a subdirectory.
 t "cd: new migration"           pass "$(bdec_at "$repo" 'cd apps/api/migrations && cat > 20260813000000_m99_new.sql')"
