@@ -49,6 +49,16 @@ func (h *Handler) create(c *gin.Context) {
 	if body.Role == "" {
 		role = authz.RoleOperator
 	}
+	// GH #406 — privilege ceiling. The requested role came straight off the
+	// request body with no comparison to the caller, so an admin could POST
+	// {"role":"owner"} and hold an owner-grade credential a moment later. An
+	// actor may never mint a key more privileged than themselves. Mirrors the
+	// members_handler grant ceiling; the code is distinct so it can be grepped
+	// and pinned separately.
+	if !authz.Role(p.Role).AtLeast(role) {
+		httpx.Error(c, domain.Forbidden("apikey_role_exceeds_actor", "you cannot create an API key with a role higher than your own"))
+		return
+	}
 	created, err := h.svc.Create(c.Request.Context(), p.TenantID, body.Name, role)
 	if err != nil {
 		httpx.Error(c, err)
