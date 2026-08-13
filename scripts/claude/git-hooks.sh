@@ -73,6 +73,29 @@ hook_source() {
   return 1
 }
 
+PROBE_SECONDS=5
+
+probe_hook() {
+  # probe_hook <one stdin line> -> 0 the hook allowed it, 1 it refused,
+  #                                2 it did not answer within $PROBE_SECONDS.
+  #
+  # `read -t` is a bash builtin and needs no `timeout`, no `sleep` and no `seq`,
+  # which matters because the suite's hermetic PATH farm contains none of them.
+  # On expiry the read fd is closed, so a hook that later writes its status gets
+  # SIGPIPE; one that never writes is left running rather than waited on, and
+  # that is the deliberate trade - this script's job is to answer inside the
+  # session budget, not to reap someone else's process.
+  local line="$1" status
+  exec 9< <(printf '%s\n' "$line" | "$HOOKPATH" origin probe://none >/dev/null 2>&1; printf '%s\n' "$?")
+  if read -t "$PROBE_SECONDS" -r status <&9; then
+    exec 9<&-
+    [ "$status" = 0 ] && return 0
+    return 1
+  fi
+  exec 9<&-
+  return 2
+}
+
 resolve() {
   if ! command -v git >/dev/null 2>&1; then
     CANNOT="git is not on PATH"; return
@@ -117,38 +140,75 @@ resolve() {
     return
   fi
 
+  # RECOGNITION COMES BEFORE EXECUTION, and this order is the whole point.
+  # `status` runs from SessionStart on every start, resume and compact, and the
+  # probes below EXECUTE the resolved pre-push. Before this ordering, the file
+  # executed was whatever `core.hooksPath` happened to point at - measured: a
+  # clone with `core.hooksPath=.husky` ran husky's pre-push, which received the
+  # synthetic refs on stdin; a foreign hook that slept 9s took `status` to
+  # 18.197s and session-brief.sh to 23.310s, past the 20s SessionStart budget in
+  # .claude/settings.json, so the session lost the very report this produces.
+  #
+  # So: a hook is EXECUTED only when this installer can show it wrote it. Two
+  # ways to show that, and either is sufficient:
+  #   - it is byte-identical to the committed .githooks/pre-push, i.e. it is
+  #     literally this repository's own code; or
+  #   - its blob id equals the one `install` recorded in wpmgr.installedHookBlob.
+  # The second is not redundant: it is what keeps a source edit on a branch from
+  # reddening the gate. Editing .githooks/pre-push makes the installed copy
+  # differ from the source, and that copy is still ours and still protecting the
+  # repository - it reports INSTALLED and STALE, exactly as before.
+  local blob recorded
+  if src=$(hook_source); then
+    cmp -s "$src" "$HOOKPATH" || STALE="$src"
+  else
+    NOCMP="no readable .githooks/pre-push in this working tree or the main checkout"
+  fi
+  if [ -n "$STALE" ] || [ -n "$NOCMP" ]; then
+    recorded=$(git config --get wpmgr.installedHookBlob 2>/dev/null)
+    blob=$(git hash-object "$HOOKPATH" 2>/dev/null)
+    if [ -z "$recorded" ] || [ -z "$blob" ] || [ "$recorded" != "$blob" ]; then
+      CANNOT="'$HOOKPATH' is not a hook this installer wrote - it matches neither the committed .githooks/pre-push nor the copy recorded in wpmgr.installedHookBlob, so it was NOT executed and whether main is protected here is UNKNOWN. Nothing was changed or removed. Look at that file; if it is your own tooling, keep it and integrate the refusal from .githooks/pre-push by hand, otherwise run '$(fix_line)', which preserves it as pre-push.pre-wpmgr.<stamp> before installing"
+      HOOKPATH=""; STALE=""; NOCMP=""
+      return
+    fi
+  fi
+
   # Presence is not protection. Drive the resolved hook with the stdin
   # githooks(5) specifies and require it to actually refuse main and actually
   # allow a branch: a truncated, emptied or replaced hook is executable too.
+  #
+  # BOUNDED, because this runs inside a 20s SessionStart budget. `timeout` and
+  # `gtimeout` are BOTH absent on this machine (`command -v` finds neither), so
+  # the bound is bash's own `read -t` against a process substitution: no
+  # external binary, and none of `until` / `while true`, which the bash guard
+  # denies and which is the shape that has killed most agents here.
   local zero=0000000000000000000000000000000000000000
   local sha=1111111111111111111111111111111111111111
-  if printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$zero" \
-       | "$HOOKPATH" origin probe://none >/dev/null 2>&1; then
-    WHY="'$HOOKPATH' runs but ALLOWS a push to refs/heads/main, so it is not the hook this repository ships"
-    return
-  fi
-  if ! printf 'refs/heads/fix/x %s refs/heads/fix/x %s\n' "$sha" "$zero" \
-       | "$HOOKPATH" origin probe://none >/dev/null 2>&1; then
-    WHY="'$HOOKPATH' refuses an ordinary branch push, so it would block every branch and get switched off"
-    return
-  fi
+  probe_hook "refs/heads/main $sha refs/heads/main $zero"
+  case $? in
+    0) WHY="'$HOOKPATH' runs but ALLOWS a push to refs/heads/main, so it is not the hook this repository ships"; return ;;
+    2) CANNOT="'$HOOKPATH' did not finish within ${PROBE_SECONDS}s when asked about refs/heads/main, so it was abandoned rather than waited on; whether it refuses main is UNKNOWN"
+       HOOKPATH=""; STALE=""; NOCMP=""; return ;;
+  esac
+  probe_hook "refs/heads/fix/x $sha refs/heads/fix/x $zero"
+  case $? in
+    1) WHY="'$HOOKPATH' refuses an ordinary branch push, so it would block every branch and get switched off"; return ;;
+    2) CANNOT="'$HOOKPATH' did not finish within ${PROBE_SECONDS}s when asked about an ordinary branch, so it was abandoned rather than waited on"
+       HOOKPATH=""; STALE=""; NOCMP=""; return ;;
+  esac
 
   # STALENESS. Installing by copy buys a hook no checkout can remove, and the
-  # price is a second copy that can drift from `.githooks/pre-push`. So it is
-  # compared, every time this runs, against the committed source - and when
-  # there is no source to compare against, that is SAID rather than passed over,
-  # because "not compared" and "identical" must never print the same.
+  # price is a second copy that can drift from `.githooks/pre-push`. It is
+  # compared above, every time this runs, against the committed source - and
+  # when there is no source to compare against, that is SAID rather than passed
+  # over, because "not compared" and "identical" must never print the same.
   #
   # Drift does not change the exit code. What `check` gates on is the two probes
   # above: the installed hook refuses main and permits a branch. A copy that
   # still does both is protecting the repository whatever else it says, and
   # reddening every worktree that edits `.githooks/pre-push` on a branch would
   # redden correct work - which is how a gate gets switched off.
-  if src=$(hook_source); then
-    cmp -s "$src" "$HOOKPATH" || STALE="$src"
-  else
-    NOCMP="no readable .githooks/pre-push in this working tree or the main checkout"
-  fi
 }
 
 fix_line() {
@@ -193,16 +253,76 @@ case "$mode" in
       exit 2
     }
     mkdir -p "$dir" || { echo "FAIL: could not create '$dir'." >&2; exit 2; }
+
+    # PRESERVE, NEVER CLOBBER. This ran from `scripts/bootstrap.sh` and from
+    # `make hooks`, i.e. on the ordinary onboarding path, and it overwrote
+    # whatever pre-push was already there without a word. Measured in a throwaway
+    # clone: a hand-written pre-push went from 3 lines to 132, `install` exited 0
+    # and printed nothing about it, no backup existed, and `grep -rl` found the
+    # old text nowhere on disk. `.git/hooks` is untracked and this Mac has no
+    # Time Machine and no APFS snapshots, so that was unrecoverable.
+    #
+    # WHY PRESERVE RATHER THAN REFUSE, since both were on the table: refusing
+    # puts a hard stop in `scripts/bootstrap.sh`, so the first thing a new
+    # contributor with husky meets is a failed bootstrap, and the fix a hurried
+    # person reaches for is deleting their own hook. A copy costs a few hundred
+    # bytes, is announced in the output with the exact command that restores it,
+    # and leaves nothing destroyed. The half that must never be silent is the
+    # ANNOUNCEMENT, not the refusal.
+    backup=""
+    if [ -e "$dir/pre-push" ] && ! cmp -s "$src" "$dir/pre-push"; then
+      backup="$dir/pre-push.pre-wpmgr.$(date +%Y%m%d%H%M%S).$$"
+      cp -p "$dir/pre-push" "$backup" || {
+        echo "FAIL: '$dir/pre-push' already exists, differs from '$src', and could not be copied to '$backup'." >&2
+        echo "      Nothing was overwritten. Move that hook aside yourself, then run '$(fix_line)' again." >&2
+        exit 2; }
+    fi
+
     cp "$src" "$dir/pre-push" || { echo "FAIL: could not copy '$src' to '$dir/pre-push'." >&2; exit 2; }
     chmod +x "$dir/pre-push" || { echo "FAIL: could not make '$dir/pre-push' executable." >&2; exit 2; }
     echo "installed $src -> $dir/pre-push"
+    if [ -n "$backup" ]; then
+      echo "PRESERVED the pre-push that was already there -> $backup"
+      echo "  It was not this repository's hook. It is no longer what git runs."
+      echo "  Read it, and if it is yours, fold it into '$dir/pre-push' by hand."
+      echo "  RESTORE IT ENTIRELY WITH:  cp '$backup' '$dir/pre-push'"
+    fi
+
+    # Record what was installed, so `status` can tell a hook this installer
+    # wrote from a foreign one WITHOUT executing the foreign one to find out.
+    if blob=$(git hash-object "$dir/pre-push" 2>/dev/null) && [ -n "$blob" ]; then
+      git config wpmgr.installedHookBlob "$blob"
+    fi
+
     # core.hooksPath is set to the same directory git would use by default. It
     # is not needed for a clone that never had it, and it is the repair for one
     # that does: an earlier version of this script pointed it at the tracked
     # .githooks, and leaving that value in place would send git looking at a
     # directory that disappears on `git checkout <older commit>`.
+    #
+    # A NON-MATCHING PRIOR VALUE IS SOMEONE ELSE'S TOOLING and it is not
+    # destroyed in silence either. Measured: a clone with `core.hooksPath=.husky`
+    # had it redirected here, and a real push to a local bare remote stopped
+    # printing husky's line - the file survived, git simply no longer resolved
+    # it. It is recorded and named now, with the command that puts it back.
+    prev=$(git config --get core.hooksPath 2>/dev/null)
+    prev_resolved="$prev"
+    if [ -n "$prev" ] && [ "${prev#/}" = "$prev" ]; then
+      prev_top=$(git rev-parse --show-toplevel 2>/dev/null)
+      [ -n "$prev_top" ] && prev_resolved="$prev_top/$prev"
+    fi
     git config core.hooksPath "$dir"
     echo "core.hooksPath = $(git config --get core.hooksPath)"
+    if [ -n "$prev" ] && [ "$prev_resolved" != "$dir" ]; then
+      git config wpmgr.previousHooksPath "$prev"
+      echo "core.hooksPath WAS '$prev' (resolving to '$prev_resolved')."
+      if [ -e "$prev_resolved/pre-push" ]; then
+        echo "  '$prev_resolved/pre-push' STILL EXISTS and was not touched, but git will NOT run it any more."
+      fi
+      echo "  Saved as wpmgr.previousHooksPath."
+      echo "  REVERT WITH:  git config core.hooksPath \"\$(git config --get wpmgr.previousHooksPath)\""
+      echo "  Reverting turns this repository's push-to-main refusal back off."
+    fi
     # Verify what was just installed, through the same resolution a session
     # uses, rather than trusting that `git config` did what it was told.
     resolve

@@ -40,7 +40,7 @@
 # 4. A GIT PUSH THAT WOULD LAND COMMITS ON main - deny.
 #    On 2026-08-12 a one-line fix was committed on main in the main checkout and
 #    pushed straight to origin/main, with no branch and no PR. Branch protection
-#    on main carries four required contexts, but `enforce_admins` is
+#    on main carries required contexts, but `enforce_admins` is
 #    deliberately false, so an owner-token push is accepted server-side and not
 #    one of those contexts ever ran against it. This hook saw that push and
 #    permitted it: its entire notion of git was `git rm` and `git mv`. Nothing

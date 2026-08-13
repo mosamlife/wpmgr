@@ -821,7 +821,7 @@ t "quoted sibling"        pass "$(bdec 'cp /tmp/x "apps/api/internal/db/sqlcx/db
 echo "== bash-guard: a push that would land commits on main"
 # On 2026-08-12 a one-line fix was committed on main in the main checkout and
 # pushed straight to origin/main, with no branch and no PR. Branch protection on
-# main carries four required contexts and enforce_admins is deliberately false,
+# main carries required contexts and enforce_admins is deliberately false,
 # so the push was accepted server-side with none of them running. This guard saw
 # that command and permitted it: its whole notion of git was `git rm`/`git mv`.
 #
@@ -2295,6 +2295,64 @@ t "hook: branch, NO trailing LF" allowed "$(hookdec_nonl origin git@x:o/r.git "r
 t "hook: last of many, no LF" refused "$(hookdec_nonl origin git@x:o/r.git "refs/heads/a $sha refs/heads/a $zero
 refs/heads/main $sha refs/heads/main $zero")"
 
+# THE SECOND FAIL-OPEN ON THE DECISION PATH, and the same treatment as the
+# first. The hook runs `set -uo pipefail` with no `-e`, so a `tr` that is
+# missing or that dies left $lower EMPTY, the `case` fell through to `continue`,
+# $hits stayed empty and the push was ALLOWED. Reproduced through a real push
+# before this: with PATH set to an empty directory, `git push` landed the commit
+# on the bare remote's main and printed no refusal at all.
+#
+# A PATH THIS BLOCK BUILDS, same idiom as the session-brief farm above: linking
+# exactly the binaries the hook needs means the absence of `tr` is decided here
+# and not by whatever the developer has installed.
+trbin=$(command -v tr 2>/dev/null)
+notr="$tmp/no-tr"; mkdir -p "$notr"
+badtr="$tmp/bad-tr"; mkdir -p "$badtr"
+for b in bash cat; do
+  bp=$(command -v "$b" 2>/dev/null)
+  if [[ "$bp" != /* || ! -x "$bp" ]]; then
+    echo "FAIL  tr fixture: '$b' did not resolve to an executable absolute path (got '${bp:-nothing}')"
+    failed=$((failed+1)); continue
+  fi
+  ln -sf "$bp" "$notr/$b"; ln -sf "$bp" "$badtr/$b"
+done
+[[ "$trbin" == /* ]] || { echo "FAIL  tr fixture: tr did not resolve absolutely (got '${trbin:-nothing}')"; failed=$((failed+1)); }
+ln -sf "$trbin" "$badtr/tr.real"
+printf '#!/bin/sh\nexit 127\n' > "$badtr/tr"; chmod +x "$badtr/tr"
+# The premise, asserted rather than assumed: these PATHs really do lack a
+# working tr. Without this the two refusals below could be refusing for any
+# other reason and would still pass.
+t "fixture: no tr on the stripped PATH" "" "$(PATH="$notr" command -v tr 2>/dev/null)"
+t "fixture: the shimmed tr exits 127"  127 "$(PATH="$badtr" tr a b </dev/null >/dev/null 2>&1; echo $?)"
+
+hookdec_path() { # hookdec, run under a PATH this fixture built
+  if printf '%s\n' "$3" | PATH="$1" bash "$HOOK" origin git@x:o/r.git >/dev/null 2>&1; then
+    printf 'allowed'
+  else
+    printf 'refused'
+  fi
+}
+# FAIL CLOSED, both shapes: absent, and present-but-failing. A branch push is
+# used deliberately - it is the case the old code ALLOWED, and it is allowed on
+# a healthy PATH two assertions down, so the refusal here is the dependency and
+# nothing else.
+t "hook: tr absent -> refuses main"   refused "$(hookdec_path "$notr" x "refs/heads/main $sha refs/heads/main $zero")"
+t "hook: tr absent -> refuses a branch too" refused "$(hookdec_path "$notr" x "refs/heads/fix/x $sha refs/heads/fix/x $zero")"
+t "hook: tr broken -> refuses main"   refused "$(hookdec_path "$badtr" x "refs/heads/main $sha refs/heads/main $zero")"
+t "hook: tr broken -> refuses a branch too" refused "$(hookdec_path "$badtr" x "refs/heads/fix/x $sha refs/heads/fix/x $zero")"
+# It has to SAY why, or the refusal is indistinguishable from the hook being
+# broken and the user reaches for --no-verify without knowing what they skipped.
+notr_msg=$(printf 'refs/heads/fix/x %s refs/heads/fix/x %s\n' "$sha" "$zero" | PATH="$notr" bash "$HOOK" origin git@x:o/r.git 2>&1 >/dev/null)
+tcontains "and names tr as the reason" "'tr' is not on PATH" "$notr_msg"
+tcontains "and says it is refusing"    "REFUSING" "$notr_msg"
+# AND IT MUST NOT OVER-FIRE. With tr back, the identical branch push is allowed
+# and the identical main push is still refused: the guard keys on the missing
+# dependency, not on the stripped PATH.
+withtr="$tmp/with-tr"; mkdir -p "$withtr"
+ln -sf "$(command -v bash)" "$withtr/bash"; ln -sf "$(command -v cat)" "$withtr/cat"; ln -sf "$trbin" "$withtr/tr"
+t "hook: tr present -> branch allowed" allowed "$(hookdec_path "$withtr" x "refs/heads/fix/x $sha refs/heads/fix/x $zero")"
+t "hook: tr present -> main refused"   refused "$(hookdec_path "$withtr" x "refs/heads/main $sha refs/heads/main $zero")"
+
 # The hook is inert until core.hooksPath points at it, and that setting lives in
 # .git/config, which is not committed. So the INSTALL is part of the deliverable.
 #
@@ -2408,15 +2466,86 @@ git -C "$fresh" checkout -q -
 # STALENESS is the price of installing a copy, so it is reported. A copy that
 # differs from the committed source still refuses main - that is measured above
 # - so it stays exit 0 and says so in words.
-printf '\n# drift\n' >> "$fresh/.git/hooks/pre-push"
+# The drift is applied to the SOURCE, which is the shape that actually happens:
+# someone edits .githooks/pre-push on a branch and has not re-run `make hooks`.
+# The installed copy is still the one this installer wrote, so it is still
+# probed and still reports INSTALLED - reddening every worktree that edits the
+# source would redden correct work, and a gate that does that gets switched off.
+printf '\n# drift\n' >> "$fresh/.githooks/pre-push"
 stale_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1); stale_rc=$?
 t "a stale copy still exits 0"    0 "$stale_rc"
 tcontains "and says INSTALLED"    "INSTALLED" "$stale_out"
 tcontains "and says STALE"        "STALE" "$stale_out"
 tcontains "and names the fix"     "make hooks" "$stale_out"
-(cd "$fresh" && bash "$HOOKSH" install >/dev/null 2>&1)
+git -C "$fresh" checkout -- .githooks/pre-push
 fresh_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1)
 t "a fresh copy is not called stale" "" "$(printf '%s' "$fresh_out" | grep -c 'STALE' | grep -v '^0$')"
+
+# A PRE-PUSH THIS INSTALLER DID NOT WRITE IS NOT EXECUTED.
+# `status` runs from SessionStart on every start, resume and compact, and its
+# probes EXECUTE the resolved hook. Before the recognition gate that meant
+# running whatever core.hooksPath pointed at: a clone configured for husky had
+# husky's pre-push executed, handed the synthetic refs on stdin; a hook that
+# slept took `status` to 18.197s and the whole brief to 23.310s, past the 20s
+# SessionStart budget in .claude/settings.json, so the session lost the report.
+# The assertion is the log file: if the foreign hook runs, it writes.
+ran_log="$tmp/foreign-ran.log"
+cp "$fresh/.git/hooks/pre-push" "$tmp/ours-pre-push"
+printf '#!/usr/bin/env bash\nprintf "FOREIGN HOOK RAN\\n" >> "%s"\nexit 1\n' "$ran_log" > "$fresh/.git/hooks/pre-push"
+chmod +x "$fresh/.git/hooks/pre-push"
+foreign_out=$(cd "$fresh" && bash "$HOOKSH" status 2>&1); foreign_rc=$?
+t "status still exits 0 on a foreign hook" 0 "$foreign_rc"
+t "the foreign hook was NOT executed"      ""  "$(test -e "$ran_log" && echo ran)"
+tcontains "and status refuses to call it installed" "COULD NOT CHECK" "$foreign_out"
+tcontains "and it names the file it did not run"    ".git/hooks/pre-push" "$foreign_out"
+tcontains "and it says nothing was removed"         "Nothing was changed or removed" "$foreign_out"
+# FAIL CLOSED: not knowing is not passing.
+(cd "$fresh" && bash "$HOOKSH" check >/dev/null 2>&1); t "check FAILS on an unrecognised hook" 1 "$?"
+t "and it still was not executed"          ""  "$(test -e "$ran_log" && echo ran)"
+cp "$tmp/ours-pre-push" "$fresh/.git/hooks/pre-push"
+chmod +x "$fresh/.git/hooks/pre-push"
+(cd "$fresh" && bash "$HOOKSH" check >/dev/null 2>&1); t "check PASSES again once ours is back" 0 "$?"
+
+# INSTALL PRESERVES WHAT WAS THERE. Measured in a throwaway clone before this:
+# a hand-written pre-push went from 3 lines to 132, install exited 0 and printed
+# nothing about it, no backup existed, and the old text was nowhere on disk -
+# unrecoverable, .git/hooks being untracked. bootstrap.sh and `make hooks` both
+# call this, so it was on the ordinary onboarding path.
+pres="$tmp/preserve"
+mkdir -p "$pres/.githooks" "$pres/scripts/claude" "$pres/.husky"
+git -C "$pres" init -q
+git -C "$pres" config user.email t@t.invalid
+git -C "$pres" config user.name t
+cp "$HOOK" "$pres/.githooks/pre-push"; chmod +x "$pres/.githooks/pre-push"
+cp "$HOOKSH" "$pres/scripts/claude/git-hooks.sh"; chmod +x "$pres/scripts/claude/git-hooks.sh"
+git -C "$pres" add .githooks/pre-push scripts/claude/git-hooks.sh >/dev/null
+git -C "$pres" commit -qm seed
+mkdir -p "$pres/.git/hooks"
+printf '#!/usr/bin/env bash\nprintf "CUSTOM SECRET-SCAN HOOK\\n"\nexit 0\n' > "$pres/.git/hooks/pre-push"
+chmod +x "$pres/.git/hooks/pre-push"
+printf '#!/usr/bin/env bash\nprintf "HUSKY\\n"\n' > "$pres/.husky/pre-push"; chmod +x "$pres/.husky/pre-push"
+git -C "$pres" config core.hooksPath .husky
+pres_before=$(cd "$pres" && git hash-object .git/hooks/pre-push)
+pres_out=$(cd "$pres" && bash "$HOOKSH" install 2>&1); pres_rc=$?
+t "install succeeds over a foreign hook" 0 "$pres_rc"
+# THE FINDING, in one assertion: the bytes that were there are still on disk.
+t "the foreign hook text survives"  found "$(grep -rl 'CUSTOM SECRET-SCAN HOOK' "$pres/.git/hooks" >/dev/null 2>&1 && echo found)"
+# ...and byte-identical, not merely something containing that string.
+pres_backup=$(ls "$pres"/.git/hooks/pre-push.pre-wpmgr.* 2>/dev/null | head -1)
+t "the backup is byte-identical"    "$pres_before" "$(test -n "$pres_backup" && git -C "$pres" hash-object "$pres_backup")"
+tcontains "install SAYS it preserved it"  "PRESERVED" "$pres_out"
+tcontains "and prints the restore command" "RESTORE IT ENTIRELY WITH" "$pres_out"
+# Silence about a destroyed hook is the defect; the announcement is the fix.
+tcontains "and names the prior hooksPath" ".husky" "$pres_out"
+tcontains "and prints how to revert it"   "wpmgr.previousHooksPath" "$pres_out"
+t "and the prior hooksPath is recorded"   ".husky" "$(git -C "$pres" config --get wpmgr.previousHooksPath)"
+# And the install is still a real install, not just polite about it.
+(cd "$pres" && bash "$HOOKSH" check >/dev/null 2>&1); t "and main is protected afterwards" 0 "$?"
+# NO OVER-FIRE: installing over a copy identical to the source backs up nothing
+# and says nothing, so re-running `make hooks` does not litter .git/hooks.
+pres_out2=$(cd "$pres" && bash "$HOOKSH" install 2>&1)
+t "a second install makes no second backup" 1 "$(ls "$pres"/.git/hooks/pre-push.pre-wpmgr.* 2>/dev/null | wc -l | tr -d ' ')"
+t "and says nothing about preserving"       0 "$(printf '%s' "$pres_out2" | grep -c 'PRESERVED')"
 
 # The gate has to be wired to the gate. `make harness-check` is what ci.yml
 # runs, and the check above is worth nothing if nothing calls it.

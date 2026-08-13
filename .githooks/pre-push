@@ -4,7 +4,7 @@
 # WHY THIS EXISTS RATHER THAN ONLY THE BASH GUARD.
 # On 2026-08-12 a one-line fix was committed on main in the main checkout and
 # pushed straight to origin/main, with no branch and no PR. Branch protection on
-# main carries four required contexts, but `enforce_admins` is deliberately
+# main carries required contexts, but `enforce_admins` is deliberately
 # false - the owner keeps it false so an incident hotfix stays possible - so the
 # push was accepted server-side with none of those contexts running against it.
 #
@@ -42,6 +42,18 @@ set -uo pipefail
 remote_name="${1-}"
 remote_url="${2-}"
 
+# The case-fold below is on the decision path, and this hook runs with
+# `set -uo pipefail` and no `-e`, so a `tr` that is missing or that fails leaves
+# $lower EMPTY, the `case` falls through to `continue`, $hits stays empty and
+# the push is ALLOWED. Measured end to end: with PATH set to an empty directory,
+# `git push scratch HEAD:refs/heads/main` printed no refusal and the commit
+# landed on the bare remote's main. So the dependency is checked once, up front,
+# and the assignment is checked again at the point of use. Both refuse.
+command -v tr >/dev/null 2>&1 || {
+  echo "pre-push: 'tr' is not on PATH, so this hook cannot case-fold the ref it was asked about. REFUSING rather than guessing - it cannot tell whether this push lands on main. Fix PATH, or bypass deliberately with 'git push --no-verify'." >&2
+  exit 1
+}
+
 hits=""
 # `|| [ -n "$local_ref$remote_ref" ]`: `read` returns non-zero when it consumed
 # input that did not end in a newline, having set the variables anyway. Without
@@ -73,7 +85,13 @@ while read -r local_ref local_oid remote_ref remote_oid || [ -n "$local_ref$remo
   # so the fold costs one `tr` and closes it. The over-fire it buys is a real
   # branch named `Main` or `MAIN`, which this repository does not have and could
   # not have on this filesystem anyway.
-  lower=$(printf '%s' "$remote_ref" | tr '[:upper:]' '[:lower:]')
+  # `${remote_ref,,}` would drop the dependency, and it is NOT available here:
+  # this hook's shebang is `#!/usr/bin/env bash`, `command -v bash` is /bin/bash
+  # and $BASH_VERSION is 3.2.57(1)-release, where `${x,,}` is a bad substitution.
+  lower=$(printf '%s' "$remote_ref" | tr '[:upper:]' '[:lower:]') || {
+    echo "pre-push: case-folding '$remote_ref' FAILED, so this hook cannot tell whether this push lands on main. REFUSING rather than guessing." >&2
+    exit 1
+  }
   case "$lower" in
     refs/heads/main|main) ;;
     *) continue ;;
@@ -104,7 +122,7 @@ cat >&2 <<REFUSED
   main IS the irreversible half.
 
   Nothing behind this refusal will catch what it lets through: branch
-  protection on main carries four required contexts, but enforce_admins
+  protection on main carries required contexts, but enforce_admins
   is deliberately false, so an owner-token push is accepted server-side
   and not one of those contexts ever runs against it.
 

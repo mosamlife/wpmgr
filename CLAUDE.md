@@ -202,8 +202,8 @@ PR, let `ci.yml` and review run, merge. Never commit on `main` in the main
 checkout and never `git push` while `HEAD` is `main` — not for a one-line fix,
 not for a typo, not because CI will pass anyway.
 
-**There is no server-side enforcement.** Branch protection on `main` carries the
-four required contexts, but `enforce_admins` is deliberately `false` so an
+**There is no server-side enforcement.** Branch protection on `main` carries
+required contexts, but `enforce_admins` is deliberately `false` so an
 owner-token push is accepted and no required check ever runs against it. That is
 a standing decision, kept so an incident hotfix stays possible. Everything below
 is therefore client-side, and a determined push always gets through:
