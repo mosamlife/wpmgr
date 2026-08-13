@@ -73,33 +73,6 @@ input=$(cat)
 # agent_id is present only for subagent tool calls.
 [[ -n "$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null)" ]] && exit 0
 
-path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input" 2>/dev/null)
-[[ -z "$path" ]] && exit 0
-case "$path" in /*) ;; *) exit 0 ;; esac
-
-# Repo-relative, derived from the FILE, not from cwd. Deriving it from .cwd
-# silently disabled this guard whenever the session was started in a
-# subdirectory: with cwd=apps/api every control-plane .go file passed.
-#
-# Both sides are resolved to physical paths first: `git rev-parse` returns a
-# physical path, so on any machine where the checkout sits under a symlinked
-# prefix (/tmp -> /private/tmp on macOS) a raw string prefix strip fails to
-# match and the guard silently routes nothing.
-# Walk up to the nearest EXISTING ancestor: a Write that creates a file in a
-# directory that does not exist yet is exactly the case a `dirname` check would
-# wave through, and creating a new migration is that case.
-dir=$(dirname "$path")
-anc="$dir"
-while [[ ! -d "$anc" && "$anc" != "/" && -n "$anc" ]]; do anc=$(dirname "$anc"); done
-[[ -d "$anc" ]] || exit 0
-panc=$(cd "$anc" 2>/dev/null && pwd -P) || exit 0
-root=$(git -C "$panc" rev-parse --show-toplevel 2>/dev/null) || exit 0
-root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
-# Re-express the full path under the physical ancestor.
-ppath="$panc${path#"$anc"}"
-rel="${ppath#"$root"/}"
-[[ "$rel" == "$ppath" ]] && exit 0
-
 emit() { # emit <decision> <reason>
   # The --record arm answers nothing and records nothing here: every caller of
   # emit above the memory block is a deny, and a deny has no ruling to remember.
@@ -114,6 +87,85 @@ emit() { # emit <decision> <reason>
   }'
   exit 0
 }
+
+path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input" 2>/dev/null)
+[[ -z "$path" ]] && exit 0
+
+# A RELATIVE file_path used to `exit 0` right here, printing nothing, for every
+# path in the routing table: a payload carrying no usable cwd was a silent route
+# around every arm below, including the two hard denies. Driven at
+# apps/api/internal/auth/members_handler.go - backend-architect plus a mandatory
+# security review - it exited 0 with zero bytes, and the generated sqlc tree did
+# the same. bash-guard.sh had already been hardened against exactly this shape
+# in its migration arm; this is the same fix on this side.
+#
+# "Relative" only means anything against a base, so a base is resolved from two
+# independent sources, and when neither answers the guard still does not fall
+# silent - it judges the literal string as if it were repo-relative, which is
+# the only reading under which a routed prefix means anything, and says so.
+resolved=1
+case "$path" in
+  /*) ;;
+  *)
+    base=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+    if [[ -n "$base" && -d "$base" && ! -L "$base" ]]; then
+      base=$(cd "$base" 2>/dev/null && pwd -P) || base=""
+    else
+      base=""
+    fi
+    # Second source: this hook script is committed inside the repository it
+    # guards, so its own directory resolves that checkout even with no cwd at
+    # all. A relative path in a payload with no cwd is repo-relative or it is
+    # nothing.
+    if [[ -z "$base" ]]; then
+      self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || self_dir=""
+      if [[ -n "$self_dir" ]]; then
+        base=$(git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null) || base=""
+        [[ -n "$base" ]] && { base=$(cd "$base" 2>/dev/null && pwd -P) || base=""; }
+      fi
+    fi
+    if [[ -n "$base" ]]; then
+      path="$base/$path"
+    else
+      # No cwd, and this script is not inside a checkout either. There is no
+      # base, so there is no physical path to resolve - but there is still a
+      # string, and the routing table is a table of string prefixes. Judge it,
+      # and let the arms below answer. Falling through to `exit 0` here is what
+      # produced zero bytes on the sqlc tree.
+      resolved=0
+      rel="$path"
+      root=""
+    fi
+    ;;
+esac
+
+# Repo-relative, derived from the FILE, not from cwd. Deriving it from .cwd
+# silently disabled this guard whenever the session was started in a
+# subdirectory: with cwd=apps/api every control-plane .go file passed.
+#
+# Both sides are resolved to physical paths first: `git rev-parse` returns a
+# physical path, so on any machine where the checkout sits under a symlinked
+# prefix (/tmp -> /private/tmp on macOS) a raw string prefix strip fails to
+# match and the guard silently routes nothing.
+# Walk up to the nearest EXISTING ancestor: a Write that creates a file in a
+# directory that does not exist yet is exactly the case a `dirname` check would
+# wave through, and creating a new migration is that case.
+if (( resolved )); then
+  dir=$(dirname "$path")
+  anc="$dir"
+  while [[ ! -d "$anc" && "$anc" != "/" && -n "$anc" ]]; do anc=$(dirname "$anc"); done
+  # These three exits are for a path that is outside every checkout on this
+  # machine: there is no repository whose routing table could cover it, so
+  # passing is an answer and not a silence.
+  [[ -d "$anc" ]] || exit 0
+  panc=$(cd "$anc" 2>/dev/null && pwd -P) || exit 0
+  root=$(git -C "$panc" rev-parse --show-toplevel 2>/dev/null) || exit 0
+  root=$(cd "$root" 2>/dev/null && pwd -P) || exit 0
+  # Re-express the full path under the physical ancestor.
+  ppath="$panc${path#"$anc"}"
+  rel="${ppath#"$root"/}"
+  [[ "$rel" == "$ppath" ]] && exit 0
+fi
 
 # ---- deny: generated trees ------------------------------------------------
 case "$rel" in
@@ -143,7 +195,10 @@ esac
 # Editing it is a silent no-op that looks like a fix.
 case "$rel" in
   apps/api/migrations/*.sql)
-    if git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null; then
+    # With no root (the unresolved case above) this question has no answer, so
+    # it is not answered: the file falls through to the database-engineer ask
+    # below rather than to a deny that might be aimed at brand new work.
+    if [[ -n "$root" ]] && git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null; then
       emit deny "$rel already exists in HEAD, so it has been applied and internal/db/migrate.go will never read it again:
 
     sort.Strings(versions) ... if applied[version] { continue }

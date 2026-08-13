@@ -26,7 +26,13 @@
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-ROUTE="$here/route-guard.sh"
+# Overridable for ONE purpose: pointing the suite at a mutated copy of the guard
+# to prove an assertion actually depends on the branch it names. The sister
+# script route-guard-coverage.sh carries --guard for the same reason. An
+# override is announced, because a run against something other than the shipped
+# guard must never be mistaken for a run against it.
+ROUTE="${WPMGR_TEST_ROUTE_GUARD:-$here/route-guard.sh}"
+[[ "$ROUTE" == "$here/route-guard.sh" ]] || echo "NOTE: route-guard under test is $ROUTE (WPMGR_TEST_ROUTE_GUARD), NOT the shipped one"
 BASH_G="$here/bash-guard.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq is not installed, and the guards fail open without it"; exit 0; }
@@ -80,6 +86,16 @@ reason() {
   jq -n --arg p "$1" --arg c "$repo" '{cwd:$c, tool_input:{file_path:$p}}' \
     | bash "$ROUTE" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null
 }
+# The guard's STDERR, which is where every state-directory refusal names itself.
+# Asserting only "it was refused" is what let four refusal branches be deleted
+# with this suite still printing all-passed: a state directory has several
+# independent reasons to be turned down, so an assertion that does not name one
+# is satisfied by any of the others. Pin the branch, not the outcome.
+stderr_of() { # stderr_of <abs file path> <session id>
+  jq -n --arg c "$repo" --arg p "$1" --arg s "$2" \
+    '{cwd:$c, session_id:$s, tool_input:{file_path:$p}}' \
+    | bash "$ROUTE" 2>&1 >/dev/null
+}
 
 t() { # t <label> <expected> <actual>
   if [[ "$2" == "$3" ]]; then pass=$((pass+1))
@@ -122,10 +138,82 @@ echo "== route-guard: it does not over-fire"
 t "inside a subagent"     pass "$(decision "$repo/apps/api/internal/site/service.go" "$repo" "agent-x")"
 t "unrouted root file"    pass "$(decision "$repo/notes.txt")"
 t "outside any repo"      pass "$(decision "/tmp/scratch.go")"
-t "relative path"         pass "$(decision "apps/api/x.go")"
 # The bug that silently disabled the whole guard: cwd in a subdirectory.
 t "cwd=apps/api"          ask  "$(decision "$repo/apps/api/internal/site/service.go" "$repo/apps/api")"
 t "cwd=apps/web/src"      ask  "$(decision "$repo/apps/web/src/routes/_authed/sites/index.tsx" "$repo/apps/web/src")"
+
+echo "== route-guard: a relative file_path is judged, never waved through"
+# THIS SUITE USED TO PIN THE DEFECT AS CORRECT. The line here read
+#   t "relative path"  pass  "$(decision "apps/api/x.go")"
+# and it passed for the wrong reason: the guard did not decide that a relative
+# path was unrouted, it exited 0 at `case "$path" in /*) ;; *) exit 0` before
+# reaching any arm. Every routed path went the same way. Driven at
+# apps/api/internal/auth/members_handler.go - backend-architect plus a mandatory
+# security review - a payload with no cwd produced zero bytes and exit 0, and the
+# generated sqlc tree, which is a hard deny, did the same. bash-guard.sh had
+# already been hardened against this exact shape.
+#
+# "Relative" needs a base, so both sources of one are asserted, and so is the
+# case where neither answers.
+t "relative, cwd resolves it"  ask \
+  "$(decision "apps/api/internal/auth/members_handler.go" "$repo")"
+t "relative, deny arm too"     deny "$(decision "apps/api/internal/db/sqlc/db.go" "$repo")"
+# ...and it is relative to the CWD, not to the repository root. With cwd one
+# level down, the same string names a different file, and that file is unrouted.
+t "relative is cwd-relative"   pass "$(decision "notes.txt" "$repo/apps/api")"
+t "relative, cwd-relative ask" ask  "$(decision "internal/auth/members_handler.go" "$repo/apps/api")"
+
+# Second source: no cwd in the payload at all. The guard script is committed
+# inside the repository it guards, so its own directory resolves that checkout,
+# and a relative path in a cwd-less payload is repo-relative or it is nothing.
+# Asserted against THIS repository, since that is the checkout the shipped guard
+# resolves - the throwaway fixture is not the one under its own feet.
+# `jq '... // "pass"'` on EMPTY stdin prints nothing at all rather than "pass",
+# so the default has to be applied in bash, the way decision() does it. Getting
+# this wrong turns "the guard said nothing" into an empty string that matches no
+# expectation - which at least fails loudly, unlike the shape this suite is here
+# to catch.
+nocwd() { # nocwd <relative path>
+  local out
+  out=$(jq -n --arg p "$1" '{tool_input:{file_path:$p}}' \
+    | bash "$ROUTE" 2>/dev/null \
+    | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+t "no cwd: routed path asks"   ask  "$(nocwd apps/api/internal/auth/members_handler.go)"
+t "no cwd: generated denies"   deny "$(nocwd apps/api/internal/db/sqlc/db.go)"
+t "no cwd: dead app denies"    deny "$(nocwd apps/landing/index.html)"
+# ...and the over-fire it must not commit: an unrouted relative path is still a
+# pass, and it is a pass because no arm matched, not because the guard gave up.
+t "no cwd: unrouted passes"    pass "$(nocwd notes.txt)"
+t "no cwd: a test still passes" pass "$(nocwd apps/web/src/thing.test.tsx)"
+
+# Neither source answers: no cwd, and the guard's own copy is not inside any
+# checkout. It still may not fall silent - it judges the literal string as
+# repo-relative, which is the only reading under which a routed prefix means
+# anything - and it still may not over-fire on a path no arm covers.
+orphan="$tmp/orphan"
+mkdir -p "$orphan"
+cp "$ROUTE" "$orphan/route-guard.sh"
+orphan_dec() { # orphan_dec <relative path>
+  local out
+  out=$(jq -n --arg p "$1" '{tool_input:{file_path:$p}}' \
+    | bash "$orphan/route-guard.sh" 2>/dev/null \
+    | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  printf '%s' "${out:-pass}"
+}
+# Guard the premise: if $orphan were somehow inside a worktree, every assertion
+# below would be testing the resolved path instead and would pass for the wrong
+# reason.
+t "orphan copy is outside any repo" "" \
+  "$(git -C "$orphan" rev-parse --show-toplevel 2>/dev/null)"
+t "orphan: generated still denies"  deny "$(orphan_dec apps/api/internal/db/sqlc/db.go)"
+t "orphan: routed still asks"       ask  "$(orphan_dec apps/api/internal/auth/members_handler.go)"
+t "orphan: unrouted still passes"   pass "$(orphan_dec notes.txt)"
+# With no repository there is no HEAD, so "already applied" has no answer. It
+# must not be answered with a deny aimed at brand new work: the migration falls
+# through to the database-engineer ask.
+t "orphan: migration asks, not denies" ask "$(orphan_dec apps/api/migrations/20260101000000_m01_applied.sql)"
 
 echo "== route-guard: a test whose suite CI runs does not prompt"
 # ci.yml runs `go test` over ./internal/..., `pnpm --filter @wpmgr/web test` and
@@ -242,17 +330,45 @@ t "foreign dir: not adopted"   no  "$(exists "$foreign/.wpmgr-harness-state")"
 
 # A relative override is not a state directory; it is a path relative to
 # whatever directory the hook happened to be invoked from.
+#
+# PINNED BY MESSAGE, and here is why it has to be. The two `exists` assertions
+# below both pass with the relative-path refusal DELETED: the guard then runs
+# `mkdir -p relative-state` in whatever directory the hook process happens to
+# have, which is this script's cwd and is neither $tmp nor $repo, so both
+# assertions look for the directory somewhere it was never going to appear. They
+# are worth keeping - they say the guard did not scatter state into either of the
+# two plausible places - but on their own they test nothing about the branch.
 ( export WPMGR_ROUTE_GUARD_STATE="relative-state"
   decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessG >/dev/null )
 t "relative override refused"  no  "$(exists "$tmp/relative-state")"
 t "relative, cwd-relative too" no  "$(exists "$repo/relative-state")"
+t "relative override still asks" ask \
+  "$(export WPMGR_ROUTE_GUARD_STATE="relative-state"; decision "$repo/apps/api/internal/site/rel.go" "$repo" "" sessG)"
+tcontains "relative override: refused by the absolute-path branch" \
+  "is not an absolute path" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="relative-state"; stderr_of "$repo/apps/api/internal/site/service.go" sessG)"
 
 # The filesystem root: refused outright, and never stamped as ours.
+#
+# PINNED BY MESSAGE for the same reason. With the '/' branch deleted, '/' is
+# still refused - by the ownership check one branch further down, because root
+# owns '/' and this user does not - so "no marker at /.wpmgr-harness-state" and
+# "it still asks" are both satisfied by a completely different line of code. As
+# root, which is what CI runs as in a container, that second reason disappears
+# too and the deletion becomes `rm -rf` over every top-level directory.
 ( export WPMGR_ROUTE_GUARD_STATE="/"
   decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessH >/dev/null )
 t "root override refused"      no  "$(exists "/.wpmgr-harness-state")"
 t "root override still asks"   ask \
   "$(export WPMGR_ROUTE_GUARD_STATE="/"; decision "$repo/apps/api/internal/site/thing.go" "$repo" "" sessH)"
+tcontains "root override: refused by the filesystem-root branch" \
+  "is the filesystem root" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="/"; stderr_of "$repo/apps/api/internal/site/service.go" sessH)"
+# ...and a trailing slash is the same path. '/'+'/' and '//' both normalise to
+# the root, and the branch strips before it compares.
+tcontains "root with a trailing slash too" \
+  "is the filesystem root" \
+  "$(export WPMGR_ROUTE_GUARD_STATE="//"; stderr_of "$repo/apps/api/internal/site/service.go" sessH)"
 
 # A directory the guard creates is its own, and inside it the prune removes only
 # entries with the name shape the guard writes - never a bare glob.
@@ -391,6 +507,24 @@ ln -s "$victim" "$adopt/wpmgr-route-guard/.wpmgr-harness-state"
 t "live symlink: target not truncated" "PRECIOUS" "$(cat "$victim")"
 t "live symlink: still asks"        ask \
   "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; decision "$repo/apps/api/internal/site/w.go" "$repo" "" sessT)"
+# PINNED BY MESSAGE, because both assertions above pass with the marker-claim
+# check DELETED. The PreToolUse arm never writes a marker, so nothing truncates
+# the victim on this path, and the session has no recorded ruling, so it asks
+# anyway. What the deleted check actually costs is invisible to both: the state
+# root gets ACCEPTED on the strength of a symlink, and prune_state then runs
+# `rm -rf` inside a directory whose only claim to being ours points somewhere
+# else.
+tcontains "live symlink: refused by the marker-claim branch" \
+  "is not a plain file owned by this user" \
+  "$(unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"; stderr_of "$repo/apps/api/internal/site/service.go" sessT)"
+# ...and that acceptance is what the refusal prevents: nothing inside the
+# directory is pruned while its claim is a symlink.
+mkdir -p "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
+touch -t 200001010000 "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
+( unset WPMGR_ROUTE_GUARD_STATE; export TMPDIR="$adopt"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessT >/dev/null )
+t "symlinked claim: nothing pruned" yes "$(exists "$adopt/wpmgr-route-guard/sess-stale-claimcheck")"
+rm -rf "$adopt/wpmgr-route-guard/sess-stale-claimcheck"
 
 # The honest case this must not block: no symlink, a loose directory the guard
 # does own gets adopted, closed, and marked with a REAL file.
@@ -408,6 +542,63 @@ t "created dir is 0700"             700 \
      mkdir -p "$tmp/fresh"
      decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessV >/dev/null
      mode_of "$tmp/fresh/wpmgr-route-guard")"
+
+echo "== route-guard state: the READ side trusts a marker only if it is a plain file this user owns"
+# The marker is what SILENCES the prompt, so the read side is where a planted one
+# would pay off, and silencing the prompt is the one outcome this guard exists to
+# prevent. `-f` is true THROUGH a symlink and `find -mmin` follows it, so without
+# the `! -L` tests a link dropped at the marker's name - or at the session
+# directory's name - hands the whole decision to whatever it points at.
+#
+# ASSERTED AGAINST A STATE ROOT THE GUARD OWNS, DELIBERATELY. The existing
+# "planted marker does not silence" assertion plants into the UNOWNED fixture,
+# where resolve_state refuses the directory long before the read side runs; it
+# therefore passes with every read-side check deleted. Reaching the code under
+# test means getting past resolve_state first.
+# NOT pre-created: an override the guard did not create and that carries no
+# marker is refused, correctly, and the read side would never be reached.
+rstate="$tmp/readside-state"
+( export WPMGR_ROUTE_GUARD_STATE="$rstate"
+  decision "$repo/apps/api/internal/site/service.go" "$repo" "" sessR >/dev/null
+  record_route sessR "$repo/apps/api/internal/site/service.go" )
+t "readside: state root adopted"  yes "$(exists "$rstate/.wpmgr-harness-state")"
+# The marker's NAME is the guard's own business, so it is read back rather than
+# spelled out here. A name written into this file would rot the first time the
+# key changes, and a rotted name makes every assertion below pass for the wrong
+# reason. No `head -1`: head closes the pipe and the producer dies on a write
+# error, which this suite has logged from exactly that shape before.
+rmarks=$(find "$rstate/sessR" -type f 2>/dev/null)
+rmark=${rmarks%%$'\n'*}
+t "readside: a ruling was recorded" yes "$([[ -n "$rmark" ]] && printf yes || printf no)"
+# The honest case first: a real marker this user owns DOES silence the next
+# prompt. Without this, every assertion below would be satisfied by a guard that
+# had simply stopped memoising.
+t "readside: real marker silences"  pass \
+  "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/other.go" "$repo" "" sessR)"
+if [[ -n "$rmark" ]]; then
+  rname=${rmark##*/}
+  rvictim="$tmp/readside-victim"; : > "$rvictim"
+  rm -f "$rmark"
+  ln -s "$rvictim" "$rmark"
+  t "symlinked marker does not silence" ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/three.go" "$repo" "" sessR)"
+  t "symlinked marker: target untouched" yes "$(exists "$rvictim")"
+  # ...and the session DIRECTORY is trusted on the same terms. `-d` is true
+  # through a link too, so a symlink at the session's name would let any
+  # directory this user can write supply the ruling.
+  rm -f "$rmark"
+  relse="$tmp/readside-elsewhere"
+  mkdir -p "$relse"
+  : > "$relse/$rname"
+  rm -rf "$rstate/sessR"
+  ln -s "$relse" "$rstate/sessR"
+  t "symlinked session dir does not silence" ask \
+    "$(export WPMGR_ROUTE_GUARD_STATE="$rstate"; decision "$repo/apps/api/internal/site/four.go" "$repo" "" sessR)"
+  rm -f "$rstate/sessR"
+else
+  echo "FAIL  readside fixture: nothing was recorded under $rstate/sessR, so the read-side checks did not run"
+  failed=$((failed+1))
+fi
 
 echo "== route-guard state: a path component is validated, not merely sanitised"
 # sane() is `tr -c 'a-zA-Z0-9._-'`, and '.' is in the keep-set, so the two
