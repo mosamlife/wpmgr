@@ -215,9 +215,21 @@ lead="(${tok}/)?"
 #
 # KNOWN LIMITS, stated rather than papered over: this splits on whitespace with
 # no quote parsing, so a destination inside quotes, or built from a variable, is
-# not seen; and the interpreter arm treats any `open(` as a write, so reading a
-# protected path through python is refused. Both are conservative in the safe
-# direction, and the header already declares the wider gap.
+# not seen. That is conservative in the safe direction only for the OVER-fire
+# half; it under-fires, and the header already declares that wider gap.
+#
+# This comment used to end "the interpreter arm treats any `open(` as a write,
+# so reading a protected path through python is refused ... conservative in the
+# safe direction". Both halves of that were wrong, and the second half was the
+# damaging one: the arm's test was `(open\(|writeFile|file_put_contents|\.write\()`,
+# which denied
+#   python3 -c "print(open('apps/api/internal/db/sqlc/db.go').read())"   a READ
+# and permitted
+#   python3 -c "import shutil; shutil.copy('/tmp/x','apps/.../sqlc/db.go')"
+# because a `shutil.copy` contains none of those four tokens. It refused the
+# harmless half and waved through the overwrite of the tree whose hand-editing
+# caused a production 500 here. A comment that claims safety in both directions
+# is how that survived; the real boundary is stated at $IWRITE below.
 # Strip ONE surrounding layer of quotes from a word, into $UNQ.
 #
 # `read -a` splits on whitespace and does not unquote, so `"apps/api/migrations"`
@@ -239,8 +251,41 @@ unq() {
 }
 UNQ=""
 
+# The interpreter arm's two tests, and the honest statement of where their
+# boundary is.
+#
+# WHAT THEY DECIDE: whether THIS segment performs a write (or a delete), not
+# whether it mentions a file. An interpreter one-liner names its destination
+# inside its own source text, so there is no positional operand to read; the
+# only signal available is the call being made. So the calls are enumerated.
+#
+# WHAT THEY CANNOT DECIDE, since a comment that overstates coverage is worse
+# than none: a call whose name arrives through a variable, an alias, `getattr`,
+# `eval`, an imported helper, or a path assembled by a function call inside the
+# `open(` argument list - `open(os.path.join('a','b'),'w')` is matched only by
+# the `.write(` that usually follows it, and not at all without one. Where the
+# shape is genuinely ambiguous the choice here is to DENY: `open(P,'r+')` is
+# listed as a write because `r+` can write, and a bare `copy(`/`rename(` with
+# no receiver is listed because PHP's are free functions. What is deliberately
+# NOT denied is a plain read - `open(P)`, `open(P,'r')`, `read_text()`,
+# `readFileSync` - because refusing those taught the previous version's users
+# nothing except to route around it.
+IQ='["'"'"']'
+IWRITE="(shutil\.(copy|copy2|copyfile|copytree|move)\(\
+|\.write_(text|bytes)\(\
+|os\.(replace|rename|renames|truncate|ftruncate)\(\
+|open\([^)]*(,|mode=)[[:space:]]*${IQ}[rwaxbt+U]*[wax+][rwaxbt+U]*${IQ}\
+|\.write\(|\.writelines\(\
+|writeFile|appendFile|createWriteStream|copyFile|renameSync|truncateSync\
+|file_put_contents|fwrite|fputs|move_uploaded_file\
+|(^|[^A-Za-z0-9_.\$>-])(copy|rename|touch)\()"
+IDELETE="(rmtree\(\
+|os\.(remove|removedirs|rmdir)\(\
+|unlink(Sync)?\(\
+|(^|[^A-Za-z0-9_])rm(dir)?(Sync)?\()"
+
 collect_dests() {
-  local seg cn w f d tdir inplace i n start
+  local seg cn w f d tdir inplace i n start probe
   local -a words operands
   while IFS= read -r seg; do
     # Comments and separators are already handled, quote-aware, by the splitter
@@ -335,8 +380,16 @@ collect_dests() {
     # `ruby -e 'File.write ...'` does not, and neither shape implies the other.
     case "$cn" in
       python|python3|ruby|node|php)
-        grep -qE '(open\(|writeFile|file_put_contents|\.write\()' <<<"$seg" \
-          && printf 'w:%s\n' "${operands[@]}" ;;
+        # `.write(` first has its two stream forms removed, because
+        # `sys.stdout.write(open(P).read())` is a read that prints and denying
+        # it is exactly the over-fire that gets a guard switched off. Parameter
+        # expansion, not a subshell: this runs once per segment.
+        probe=${seg//sys.stdout.write(/}
+        probe=${probe//sys.stderr.write(/}
+        grep -qE "$IWRITE" <<<"$probe" && printf 'w:%s\n' "${operands[@]}"
+        # Deletion is tagged r, the same as `rm`, so the one arm that permits a
+        # delete (the dead app) keeps permitting it however it is spelled.
+        grep -qE "$IDELETE" <<<"$probe" && printf 'r:%s\n' "${operands[@]}" ;;
     esac
   done < <(split_segments)
 }
@@ -461,6 +514,80 @@ fi
 # An already-applied migration. Which files are applied is not a fixed list, so
 # it is computed the same way route-guard.sh computes it: presence in HEAD.
 if writes_to "$MIGRATIONS"; then
+  # FIRST: a destination that cannot be resolved to a specific file is not the
+  # same answer as "no migration matched", and reading it as one was a silent
+  # bypass of the strongest deny in this file.
+  #
+  # The literal scan further down extracts a filename with the character class
+  # [A-Za-z0-9_.-]+\.sql, which contains no glob metacharacter. So
+  #   sed -i.bak s/a/b/ apps/api/migrations/*.sql
+  # matched NOTHING, $applied stayed empty, the `if` below was false, and
+  # control fell straight to the bare `exit 0` at the end of this script: no
+  # decision, no stdout, no stderr, and one command rewriting every committed
+  # migration at once - the outage .claude/rules/db-migrations.md calls
+  # non-negotiable, reached by adding a single `*`.
+  #
+  # THE GLOB IS NOT EXPANDED HERE, deliberately. This hook runs BEFORE the
+  # command does, from a process whose cwd is not the payload's. What `*.sql`
+  # names at guard time is not what it names at run time, so an expansion that
+  # happened to find only new files would license a write that lands on an
+  # applied one. The destination is judged on its SHAPE.
+  #
+  # DENY, not ask. Nothing honest reaches here. A new migration is created
+  # under a literal timestamped name - that ordinal IS the file's identity, and
+  # `cat > apps/api/migrations/20260813000000_x.sql` resolves fine. Reading the
+  # directory (`ls`, `cat`, `grep` over `*.sql`) never enters this arm at all,
+  # because none of those is a write and only write and delete destinations are
+  # collected below. An ask would put a prompt in front of a shape that is
+  # always wrong, and a prompt that is always answered the same way stops being
+  # read.
+  mig_targets() {
+    # Redirection and `dd of=` name their destination in the syntax itself, and
+    # collect_dests strips redirections, so those two are read from $cmd. Every
+    # other destination is an already-correlated DESTS line, w (write) or r
+    # (delete). READS are deliberately not scanned: writing a new migration and
+    # then listing the directory,
+    #   cat > apps/api/migrations/<new>.sql && ls apps/api/migrations/*.sql
+    # is ordinary work, and taking the glob from the `ls` would redden it.
+    grep -oE ">>?\|?[[:space:]]*[\"']?${lead}${MIGRATIONS}/${tok}" <<<"$cmd"
+    grep -oE "of=[\"']?${lead}${MIGRATIONS}/${tok}" <<<"$cmd"
+    printf '%s\n' "$DESTS" | grep -E '^[wr]:' | grep -oE "${MIGRATIONS}/${tok}"
+  }
+  unresolved=""
+  while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    m=${m##*apps/api/migrations/}
+    # The bare directory, as `cp X apps/api/migrations/` emits it. collect_dests
+    # emits the directory AND the derived `<dir>/<basename>`, and it is that
+    # sibling entry which carries the name; flagging the directory itself would
+    # deny every legitimate copy into it.
+    [[ -z "$m" ]] && continue
+    case "$m" in
+      *'*'*|*'?'*|*'['*|*'{'*|*'$'*|*'`'*)
+        unresolved="$unresolved  ${MIGRATIONS}/$m"$'\n' ;;
+    esac
+  done < <(mig_targets | sort -u)
+
+  if [[ -n "$unresolved" ]]; then
+    emit deny "That command writes under apps/api/migrations/ to a destination this guard
+cannot resolve to a specific file:
+
+${unresolved}
+Whether a migration may be edited is decided by whether that exact file is in
+HEAD, and a pattern has no exact file. It is not expanded here either: this hook
+runs before the command does, so what the pattern matches now is not what it
+will match when the shell runs it.
+
+One glob over this directory rewrites every migration that has already run.
+internal/db/migrate.go skips any version already in schema_migrations, so those
+edits change nothing on an existing database and break every fresh install
+instead - see .claude/rules/db-migrations.md.
+
+Name the one file you mean. Creating a NEW migration under its own timestamped
+name is not blocked. If the change really is to an existing migration, it is a
+new ordinal plus a converge path, and it routes to database-engineer."
+  fi
+
   # Resolve a repository to ask, or refuse. This arm used to leave `root` empty
   # whenever `.cwd` was absent from the payload or was not inside a worktree,
   # and then simply skip the whole check: no decision, no message, command
