@@ -108,6 +108,26 @@ export class MemberError extends Error {
   }
 }
 
+/**
+ * Builds the toast copy for a failed member mutation.
+ *
+ * A documented refusal already reads as a whole sentence about this exact
+ * operation ("That member outranks you, so you can't change or remove them"),
+ * so prefixing it would double the clause. Everything else is the opposite
+ * problem: the generated client throws a raw string for a non-JSON error body
+ * (`generated/client/client.gen.ts:202`, an nginx 502 page) and `{}` for an
+ * empty one (:216). Neither satisfies `isApiError`, so `toError` flattens both
+ * to "Request failed", and a network drop arrives as "Failed to fetch" -- three
+ * toasts that never say which operation failed. Those get the operation name.
+ */
+function withOperationContext(err: Error, operation: string): string {
+  const coded =
+    err instanceof MemberError &&
+    err.code !== undefined &&
+    isMemberErrorCode(err.code);
+  return coded ? err.message : `${operation}: ${err.message}`;
+}
+
 function toMemberError(error: unknown, fallback: string): Error {
   const raw = error as { code?: string; message?: string } | null | undefined;
   const code = typeof raw?.code === "string" ? raw.code : undefined;
@@ -170,9 +190,7 @@ export function useUpdateMemberRole(): UseMutationResult<
       toast.success(`Role updated to ${role}`);
     },
     onError: (err) => {
-      // The message is already self-contained for a documented refusal code
-      // (see mapMemberError); prefixing it would double the "could not" clause.
-      toast.error(err.message);
+      toast.error(withOperationContext(err, "Could not update role"));
     },
   });
 }
@@ -202,7 +220,7 @@ export function useRemoveMember(): UseMutationResult<
       toast.success("Member removed");
     },
     onError: (err) => {
-      toast.error(err.message);
+      toast.error(withOperationContext(err, "Could not remove member"));
     },
   });
 }
@@ -237,7 +255,7 @@ export function useInviteMember(): UseMutationResult<
       void queryClient.invalidateQueries({ queryKey: memberKeys.list() });
     },
     onError: (err) => {
-      toast.error(err.message);
+      toast.error(withOperationContext(err, "Could not send invitation"));
     },
   });
 }

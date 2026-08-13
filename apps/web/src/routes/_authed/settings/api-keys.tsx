@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -58,7 +58,11 @@ export function createApiKeySchema(viewerIsOwner: boolean) {
     name: z.string().min(1, "Name is required").max(200),
     role: viewerIsOwner
       ? z.enum(["owner", "admin", "operator", "viewer"]).optional()
-      : z.enum(["admin", "operator", "viewer"]).optional(),
+      : z
+          .enum(["admin", "operator", "viewer"], {
+            error: "Only an owner can create an owner key. Pick a lower role.",
+          })
+          .optional(),
   });
 }
 
@@ -97,11 +101,26 @@ function ApiKeysPage() {
     register,
     handleSubmit,
     reset,
+    setValue,
+    getValues,
     formState: { errors },
   } = useForm<CreateValues>({
     resolver: zodResolver(schema) as Resolver<CreateValues>,
     defaultValues: { name: "", role: "operator" },
   });
+
+  // The viewer's role can drop while this page stays mounted: the OrgSwitcher
+  // lives in the AppShell top bar, and activating another org resets the query
+  // cache without unmounting a settings route. If "owner" was selected before
+  // that flip it is now unselectable -- the <option> is gone, so the native
+  // select silently falls back to its first option while the form still holds
+  // "owner", and every submit fails validation against a control that looks
+  // fine. Put the form back on a role the new ceiling allows.
+  useEffect(() => {
+    if (!viewerIsOwner && getValues("role") === "owner") {
+      setValue("role", "operator");
+    }
+  }, [viewerIsOwner, getValues, setValue]);
 
   const onCreate = handleSubmit(async (values) => {
     const result = await createMutation.mutateAsync(values, {
@@ -154,6 +173,7 @@ function ApiKeysPage() {
             <select
               id="role"
               className="h-9 rounded-md border border-[var(--color-border)] bg-transparent px-3 text-sm"
+              aria-invalid={errors.role ? true : undefined}
               {...register("role")}
             >
               {viewerIsOwner ? <option value="owner">Owner</option> : null}
@@ -161,6 +181,11 @@ function ApiKeysPage() {
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
             </select>
+            {errors.role ? (
+              <p role="alert" className="text-sm text-[var(--color-destructive)]">
+                {errors.role.message}
+              </p>
+            ) : null}
           </div>
           <Button
             type="button"
