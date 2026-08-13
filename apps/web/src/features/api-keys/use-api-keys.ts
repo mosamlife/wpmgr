@@ -24,6 +24,53 @@ export const apiKeysKeys = {
   list: () => [...apiKeysKeys.all, "list"] as const,
 };
 
+// ---------------------------------------------------------------------------
+// Coded refusals — same idiom as `mapDeleteOrgError` in
+// `features/orgs/use-orgs.ts`.
+//
+// Read out of the Go handler, not guessed:
+//   apps/api/internal/apikey/handler.go:59
+//     Forbidden("apikey_role_exceeds_actor",
+//               "you cannot create an API key with a role higher than your own")
+// ---------------------------------------------------------------------------
+
+/** The refusal codes POST /api/v1/api-keys is documented to return. */
+export type ApiKeyErrorCode = "apikey_role_exceeds_actor";
+
+const API_KEY_ERROR_MESSAGES: Record<ApiKeyErrorCode, string> = {
+  apikey_role_exceeds_actor:
+    "A key can't carry a role higher than your own. Pick a lower role, or ask an owner.",
+};
+
+function isApiKeyErrorCode(code: string): code is ApiKeyErrorCode {
+  return Object.prototype.hasOwnProperty.call(API_KEY_ERROR_MESSAGES, code);
+}
+
+/**
+ * Maps an API-key refusal code into clear, human copy. Falls back to the
+ * server's own message for any undocumented code. Pure + exported so the
+ * documented code is covered by a test without a network call.
+ */
+export function mapApiKeyError(
+  code: string | undefined,
+  fallbackMessage: string,
+): string {
+  if (code && isApiKeyErrorCode(code)) {
+    return API_KEY_ERROR_MESSAGES[code];
+  }
+  return fallbackMessage || "Could not create API key";
+}
+
+/** Raised by useCreateApiKey; carries the server's refusal code. */
+export class ApiKeyError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "ApiKeyError";
+    this.code = code;
+  }
+}
+
 export function useApiKeys(): UseQueryResult<ApiKey[], Error> {
   return useQuery({
     queryKey: apiKeysKeys.list(),
@@ -44,7 +91,14 @@ export function useCreateApiKey(): UseMutationResult<
   return useMutation({
     mutationFn: async (body: ApiKeyCreate) => {
       const { data, error } = await createApiKey({ body });
-      if (error) throw toError(error);
+      if (error) {
+        const raw = error as { code?: string; message?: string } | null;
+        const code = typeof raw?.code === "string" ? raw.code : undefined;
+        throw new ApiKeyError(
+          mapApiKeyError(code, toError(error).message || "Could not create API key"),
+          code,
+        );
+      }
       if (!data) throw new Error("Empty response");
       return data;
     },
