@@ -61,7 +61,7 @@ const RELEASES: ChangeEntry[] = [
       },
       {
         tag: "Security",
-        text: "There was nothing here for anyone to have noticed. No code changed and no behaviour changed on either side of this. A live advisory database was updated overnight, and the same unchanged commit that passed our checks in the evening failed them the next morning. A build of the previous release carries these however and whenever it was built, and a running install shows no symptom that would tell you, so the only reliable way to know which compiler produced a binary is to read it out of that binary rather than infer it from a date.",
+        text: "There was nothing here for anyone to have noticed. No code changed and no behaviour changed on either side of this. A live advisory database was updated overnight, and the same unchanged commit that passed our checks in the evening failed them the next morning. Whether a build of the previous release carries these depends on the day that build ran, because the images followed a floating compiler tag until this release pinned it, and a running install shows no symptom that would tell you which one you have, so the only reliable way to know which compiler produced a binary is to read it out of that binary rather than infer it from a date.",
       },
       {
         tag: "Changed",
