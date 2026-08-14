@@ -34,6 +34,7 @@ INSERT INTO site_perf_config (
     bloat_disable_block_css, bloat_disable_dashicons, bloat_disable_emojis,
     bloat_disable_jquery_migrate, bloat_disable_xml_rpc, bloat_disable_rss_feed,
     bloat_disable_oembeds, bloat_heartbeat_control, bloat_post_revisions_control,
+    preload_concurrency, preload_delay_ms, preload_batch_size, preload_max_load,
     config_version, updated_at
 ) VALUES (
     @site_id, @tenant_id,
@@ -53,6 +54,7 @@ INSERT INTO site_perf_config (
     @bloat_disable_block_css, @bloat_disable_dashicons, @bloat_disable_emojis,
     @bloat_disable_jquery_migrate, @bloat_disable_xml_rpc, @bloat_disable_rss_feed,
     @bloat_disable_oembeds, @bloat_heartbeat_control, @bloat_post_revisions_control,
+    @preload_concurrency, @preload_delay_ms, @preload_batch_size, @preload_max_load,
     @config_version, now()
 )
 ON CONFLICT (site_id) DO UPDATE SET
@@ -106,6 +108,10 @@ ON CONFLICT (site_id) DO UPDATE SET
     bloat_disable_oembeds         = EXCLUDED.bloat_disable_oembeds,
     bloat_heartbeat_control       = EXCLUDED.bloat_heartbeat_control,
     bloat_post_revisions_control  = EXCLUDED.bloat_post_revisions_control,
+    preload_concurrency           = EXCLUDED.preload_concurrency,
+    preload_delay_ms              = EXCLUDED.preload_delay_ms,
+    preload_batch_size            = EXCLUDED.preload_batch_size,
+    preload_max_load              = EXCLUDED.preload_max_load,
     config_version                = EXCLUDED.config_version,
     updated_at                    = now()
 RETURNING *;

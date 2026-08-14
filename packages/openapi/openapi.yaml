@@ -5862,6 +5862,11 @@ components:
         cache_bypass_cookies: { type: array, items: { type: string } }
         cache_include_queries: { type: array, items: { type: string } }
         cache_include_cookies: { type: array, items: { type: string } }
+        # Preload (cache-warm) throttle (M37) — operator-tunable queue drain knobs.
+        preload_concurrency: { type: integer, minimum: 1, maximum: 4, default: 1 }
+        preload_delay_ms: { type: integer, minimum: 0, maximum: 10000, default: 500 }
+        preload_batch_size: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        preload_max_load: { type: number, format: float, minimum: 0, maximum: 64, default: 0 }
         # CSS / JS
         css_js_minify: { type: boolean }
         css_rucss: { type: boolean }

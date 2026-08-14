@@ -265,7 +265,35 @@ func (s *Service) validateConfig(cfg *Config) error {
 	cfg.JSDelayExcludes = normalize(cfg.JSDelayExcludes)
 	cfg.JSDelayThirdPartyExcludes = normalize(cfg.JSDelayThirdPartyExcludes)
 	cfg.LazyLoadExclusions = normalize(cfg.LazyLoadExclusions)
+	// Preload throttle (M37): clamp (do not reject) out-of-range knobs to the
+	// nearest bound for forward-compat. These mirror the agent's local clamps.
+	cfg.PreloadConcurrency = clampInt(cfg.PreloadConcurrency, 1, 4)
+	cfg.PreloadDelayMs = clampInt(cfg.PreloadDelayMs, 0, 10000)
+	cfg.PreloadBatchSize = clampInt(cfg.PreloadBatchSize, 1, 500)
+	cfg.PreloadMaxLoad = clampFloat(cfg.PreloadMaxLoad, 0, 64)
 	return nil
+}
+
+// clampInt returns v constrained to the inclusive [lo, hi] range.
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// clampFloat returns v constrained to the inclusive [lo, hi] range.
+func clampFloat(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +670,10 @@ func defaultConfig(tenantID, siteID uuid.UUID) Config {
 		ProperlySizeImages:   true,
 		CDNFileTypes:         "all",
 		DBAutoCleanInterval:  "weekly",
+		PreloadConcurrency:   1,
+		PreloadDelayMs:       500,
+		PreloadBatchSize:     50,
+		PreloadMaxLoad:       0,
 		ConfigVersion:        0,
 		CreatedAt:            time.Now(),
 		UpdatedAt:            time.Now(),
@@ -674,6 +706,10 @@ func toPerfConfigRequest(c Config) agentcmd.PerfConfigRequest {
 		CacheBypassCookies:       coalesce(c.CacheBypassCookies),
 		CacheIncludeQueries:      coalesce(c.CacheIncludeQueries),
 		CacheIncludeCookies:      coalesce(c.CacheIncludeCookies),
+		PreloadConcurrency:       c.PreloadConcurrency,
+		PreloadDelayMs:           c.PreloadDelayMs,
+		PreloadBatchSize:         c.PreloadBatchSize,
+		PreloadMaxLoad:           c.PreloadMaxLoad,
 		CSSJSMinify:              c.CSSJSMinify,
 		CSSRucss:                 c.CSSRucss,
 		CSSRucssIncludeSelect:    coalesce(c.CSSRucssIncludeSelectors),

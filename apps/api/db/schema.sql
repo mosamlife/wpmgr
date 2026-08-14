@@ -1306,6 +1306,11 @@ CREATE TABLE site_perf_config (
     bloat_disable_oembeds         boolean     NOT NULL DEFAULT false,
     bloat_heartbeat_control       boolean     NOT NULL DEFAULT false,
     bloat_post_revisions_control  boolean     NOT NULL DEFAULT false,
+    -- Preload (cache-warm) throttle (M37) — operator-tunable queue drain knobs.
+    preload_concurrency           integer     NOT NULL DEFAULT 1,
+    preload_delay_ms              integer     NOT NULL DEFAULT 500,
+    preload_batch_size            integer     NOT NULL DEFAULT 50,
+    preload_max_load              real        NOT NULL DEFAULT 0,
     -- Server / install state (agent-reported)
     server_software               text,
     dropin_installed              boolean     NOT NULL DEFAULT false,

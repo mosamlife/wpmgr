@@ -44,6 +44,14 @@ type PerfConfigRequest struct {
 	CacheIncludeQueries  []string `json:"cache_include_queries"`
 	CacheIncludeCookies  []string `json:"cache_include_cookies"`
 
+	// Preload (cache-warm) throttle (M37). Operator-tunable; the agent clamps
+	// each to the same bounds locally (concurrency 1..4, delay 0..10000 ms,
+	// batch 1..500, max-load-per-core 0..64 with 0 disabling the load gate).
+	PreloadConcurrency int     `json:"preload_concurrency"`
+	PreloadDelayMs     int     `json:"preload_delay_ms"`
+	PreloadBatchSize   int     `json:"preload_batch_size"`
+	PreloadMaxLoad     float64 `json:"preload_max_load"`
+
 	// CSS / JS
 	CSSJSMinify             bool     `json:"css_js_minify"`
 	CSSRucss                bool     `json:"css_rucss"`

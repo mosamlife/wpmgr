@@ -33,6 +33,13 @@ type perfConfigDTO struct {
 	CacheIncludeQueries  []string `json:"cache_include_queries"`
 	CacheIncludeCookies  []string `json:"cache_include_cookies"`
 
+	// Preload (cache-warm) throttle (M37). Clamped server-side to bounds:
+	// concurrency 1..4, delay 0..10000 ms, batch 1..500, max-load 0..64.
+	PreloadConcurrency int     `json:"preload_concurrency"`
+	PreloadDelayMs     int     `json:"preload_delay_ms"`
+	PreloadBatchSize   int     `json:"preload_batch_size"`
+	PreloadMaxLoad     float64 `json:"preload_max_load"`
+
 	// CSS / JS
 	CSSJSMinify               bool     `json:"css_js_minify"`
 	CSSRucss                  bool     `json:"css_rucss"`
@@ -108,6 +115,10 @@ func toConfigDTO(c Config) perfConfigDTO {
 		CacheBypassCookies:        nonNil(c.CacheBypassCookies),
 		CacheIncludeQueries:       nonNil(c.CacheIncludeQueries),
 		CacheIncludeCookies:       nonNil(c.CacheIncludeCookies),
+		PreloadConcurrency:        c.PreloadConcurrency,
+		PreloadDelayMs:            c.PreloadDelayMs,
+		PreloadBatchSize:          c.PreloadBatchSize,
+		PreloadMaxLoad:            c.PreloadMaxLoad,
 		CSSJSMinify:               c.CSSJSMinify,
 		CSSRucss:                  c.CSSRucss,
 		CSSRucssIncludeSelectors:  nonNil(c.CSSRucssIncludeSelectors),
@@ -174,6 +185,10 @@ func fromConfigDTO(dto perfConfigDTO, tenantID, siteID uuid.UUID) Config {
 		CacheBypassCookies:        dto.CacheBypassCookies,
 		CacheIncludeQueries:       dto.CacheIncludeQueries,
 		CacheIncludeCookies:       dto.CacheIncludeCookies,
+		PreloadConcurrency:        dto.PreloadConcurrency,
+		PreloadDelayMs:            dto.PreloadDelayMs,
+		PreloadBatchSize:          dto.PreloadBatchSize,
+		PreloadMaxLoad:            dto.PreloadMaxLoad,
 		CSSJSMinify:               dto.CSSJSMinify,
 		CSSRucss:                  dto.CSSRucss,
 		CSSRucssIncludeSelectors:  dto.CSSRucssIncludeSelectors,

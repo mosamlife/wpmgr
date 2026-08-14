@@ -34,6 +34,14 @@ type Config struct {
 	CacheIncludeQueries  []string
 	CacheIncludeCookies  []string
 
+	// Preload (cache-warm) throttle — operator-tunable queue drain knobs (M37).
+	// The agent clamps each to the same bounds locally: concurrency 1..4,
+	// delay 0..10000 ms, batch 1..500, max-load-per-core 0..64 (0 = disabled).
+	PreloadConcurrency int
+	PreloadDelayMs     int
+	PreloadBatchSize   int
+	PreloadMaxLoad     float64
+
 	// CSS / JS
 	CSSJSMinify               bool
 	CSSRucss                  bool
