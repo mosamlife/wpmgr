@@ -92,6 +92,10 @@ if [[ -d "$wf_dir" ]]; then
     rest="${line#*:}"
     lineno="${rest%%:*}"
     text="${rest#*:}"
+    # Comments discuss pins as well as set them — ci.yml's own history note
+    # names the version it moved off. Same trap as the Dockerfile scan below:
+    # test the `#` on the TEXT, not on grep -n's file:line: prefix.
+    [[ "$text" =~ ^[[:space:]]*# ]] && continue
     # go-version: "1.26.6"  |  go-version: 1.26.6  |  go-version: '1.26.6'
     ver="$(printf '%s' "$text" | sed -E "s/.*go-version:[[:space:]]*[\"']?([^\"'[:space:]]+)[\"']?.*/\1/")"
     where="${file#"$ROOT"/}:$lineno"

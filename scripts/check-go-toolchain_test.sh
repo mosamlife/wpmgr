@@ -101,6 +101,13 @@ printf '# CRITICAL: stay on trixie to match golang:1.26 (also trixie).\n' \
   >> "$TMPROOT/comment/infra/Dockerfile.api"
 expect 0 "a comment mentioning golang:1.26 does not trip the guard" "$TMPROOT/comment"
 
+# A workflow comment naming an old pin is prose too. ci.yml carries exactly
+# such a note about the 1.26.5 it moved off, so this is the live case.
+make_tree "$TMPROOT/wfcomment" "1.26.6" "1.26.6" "1.26.3"
+printf '      # this job pinned go-version: "1.26.5" until the 1.26.6 bump\n' \
+  >> "$TMPROOT/wfcomment/.github/workflows/ci.yml"
+expect 0 "a workflow comment naming an old go-version does not trip the guard" "$TMPROOT/wfcomment"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
 exit 0
