@@ -12,7 +12,7 @@
 # this stage. BUILDPLATFORM/TARGETOS/TARGETARCH are injected by BuildKit;
 # when building without --platform (e.g. prod Cloud Build on amd64) they
 # all default to the host, so the amd64-only path is unchanged.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.6 AS build
 
 # TARGETOS / TARGETARCH are populated by BuildKit to match the target
 # platform being built (e.g. linux/arm64). CGO_ENABLED=0 means pure Go
