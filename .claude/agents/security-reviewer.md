@@ -196,7 +196,7 @@ A diff that removes a justified `phpcs:ignore` and reintroduces `wp_cache_*` on
 the anti-replay table defeats the replay shield and is a finding.
 
 **If you cannot run a tool, say so in the verdict.** Never silently skip.
-`session-brief.sh` prints where the toolchain binaries actually are.
+Resolve each binary with `command -v`; nothing announces their locations for you.
 
 **Do not accept a codegen command as a contract gate** until you have watched it
 change a file. Two of this repo's entry points print a line and exit, so

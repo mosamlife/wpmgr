@@ -8,9 +8,10 @@
 # false - the owner keeps it false so an incident hotfix stays possible - so the
 # push was accepted server-side with none of those contexts running against it.
 #
-# scripts/claude/bash-guard.sh has an arm that reads the command string and
-# denies a push to main. Adversaries kept finding shapes it permits, and every
-# one of them was reproduced: `eval git push origin main`, `bash -c '...'`,
+# WHY THIS IS NOW THE ONLY GUARD.
+# A PreToolUse guard used to read the command string and deny a push to main.
+# Adversaries kept finding shapes it permits, and every one of them was
+# reproduced: `eval git push origin main`, `bash -c '...'`,
 # `git push origin @` (@ is git's documented synonym for HEAD),
 # `git push origin :`, `git push origin refs/heads/*:refs/heads/*`,
 # `git push origin $(echo main)`, `git p"ush" origin main`,
@@ -18,7 +19,9 @@
 # `time git push origin main`, `if true; then git push origin main; fi`.
 # That list is a sample and is not maintained here as a count, because it grew
 # every time someone looked and a number in a comment is stale the next day. A
-# text matcher over a shell command cannot decide those without being the shell.
+# text matcher over a shell command cannot decide those without being the shell,
+# so on 2026-08-14 that whole approach was removed rather than patched again.
+# This hook is what is left, and it is different in kind - see below.
 #
 # This hook runs INSIDE git: after the shell has expanded everything, after
 # eval, after command substitution, after push.default and after refspec
@@ -36,7 +39,12 @@
 #   keys on <remote-ref> alone and so covers a delete without a special case.
 #   A non-zero exit aborts the whole push, having transferred nothing.
 #
-# Test: scripts/claude/guards_test.sh
+# HOW THIS IS TESTED, now that the committed suite is gone: by execution,
+# against a throwaway bare repository. `make hooks`, then push HEAD:main to it
+# and require the refusal AND that the ref was never created; then push a
+# branch and require it to land; then uninstall and require the same push to
+# main to LAND, which is the half that proves the refusal came from here.
+# Install it with `make hooks`; `make hooks-status` says whether it is live.
 set -uo pipefail
 
 remote_name="${1-}"
@@ -61,8 +69,8 @@ hits=""
 # exited 0 in silence, while the identical input with a trailing LF exited 1.
 # git always terminates the line, so this was not reachable from git today - but
 # a guard that fails open on a malformed input is the exact defect this hook
-# exists to close, and it was sitting inside the guard. Asserted in
-# scripts/claude/guards_test.sh, both ways.
+# exists to close, and it was sitting inside the guard. Keep this arm: an
+# unterminated final line must still be refused, not dropped.
 while read -r local_ref local_oid remote_ref remote_oid || [ -n "$local_ref$remote_ref" ]; do
   [ -n "$remote_ref" ] || continue
   # git fully qualifies the remote ref, but a bare name costs nothing to also

@@ -19,9 +19,13 @@ fi
 # git against whichever working tree runs the hook, and an absolute one still
 # names a directory that vanishes the moment any checkout moves to a commit
 # before the hook existed - in both cases config keeps reading "installed".
-# 'scripts/claude/git-hooks.sh status' prints what is true right now.
+# 'make hooks-status' prints what is true right now.
+#
+# The install lives in the Makefile so there is ONE copy of it. Do not inline a
+# second one here: the two would drift and the silent-no-hook failure above is
+# exactly what a drifted copy reintroduces.
 echo "==> Installing the pre-push hook (refuses a push that lands on main)"
-scripts/claude/git-hooks.sh install
+make hooks
 
 echo "==> Checking toolchain"
 command -v go >/dev/null || { echo "go not found"; exit 1; }

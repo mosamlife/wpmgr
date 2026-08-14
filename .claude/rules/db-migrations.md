@@ -92,8 +92,8 @@ it. That is m113 and m116.
 
 ## sqlc
 
-`session-brief.sh` prints where `sqlc` is; do not assume the search path finds
-it. The tree is stamped
+Resolve `sqlc` with `command -v sqlc` before you use it; do not assume the
+search path finds it. The tree is stamped
 `v1.31.1`; confirm with
 `grep -h 'sqlc v' apps/api/internal/db/sqlc/*.go | sort -u`. Never hand-edit
 `internal/db/sqlc/*.sql.go`; a hand-sync caused a production 500. Nothing in CI
