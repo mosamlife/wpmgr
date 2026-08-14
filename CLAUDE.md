@@ -1,11 +1,17 @@
 # Working agreements
 
-Binding. Nothing is here that a session can derive by reading the code, and
-nothing is here that a hook already enforces.
+Binding. Nothing is here that a session can derive by reading the code.
+
+**Almost nothing here is mechanically enforced.** The shell guards that used to
+run as hooks were removed on 2026-08-14; they tried to decide what a command
+would write by parsing its text, which is undecidable, and across a full day
+they caught none of the real defects while the review process caught all of
+them. What survives is `permissions.deny` in `.claude/settings.json`, the
+`.githooks/pre-push` lock, and `ci.yml`. Everything else below is a standing
+instruction to you, and it holds because you follow it.
 
 Detail lives in `.claude/rules/*.md`, which load when you touch the files they
-cover. `docs/harness.md` says which rules are enforced by a hook and which are
-only written down.
+cover. `docs/harness.md` says what still enforces what.
 
 ## The map
 
@@ -20,9 +26,11 @@ superseded by `apps/marketing`, absent from `pnpm-workspace.yaml`), `apps/cli`
 (untouched since the 2026-06-01 squash).
 
 Generated, never hand-edit: `apps/api/internal/api/gen/**`,
-`apps/api/internal/db/sqlc/**`, `apps/web/src/routeTree.gen.ts`. A hand-sync of
-the sqlc tree caused a production 500. Regenerate; a `deny` permission rule and
-the route guard both refuse the edit.
+`apps/api/internal/db/sqlc/**`, `apps/web/src/routeTree.gen.ts`,
+`packages/openapi-client/src/generated/**`. A hand-sync of the sqlc tree caused a
+production 500. Regenerate. A `deny` rule refuses `Edit`, `Write` and
+`NotebookEdit` on all four; it does not see a shell write, so `sed -i`, `tee`, a
+heredoc or `git apply` reaches them unchallenged.
 
 ## Routing: who writes the code
 
@@ -43,12 +51,13 @@ replying: yours. Writing code: a specialist's, in its own worktree.
 test. The path is the test. The one exception: a change you can describe in one
 sentence, in one file, on no path in that table.
 
-A `PreToolUse` hook asks before a main-thread write to a routed path and names
-the specialist. It asks rather than denies so you can still approve an inline
-edit deliberately; approving it without saying why is the failure it exists to
-catch. Two things it denies outright, because neither is a judgement call:
-editing a migration that already exists in `HEAD` (see `.claude/rules/db-migrations.md`),
-and hand-editing a generated tree.
+**Nothing asks you before a main-thread write to a routed path.** A hook used to,
+and it is gone. The table above is a standing instruction, and the moment it
+matters is the moment nothing interrupts you: you notice the path, or the change
+ships unrouted and unreviewed. Two of those paths were previously refused
+outright rather than queried, because neither is a judgement call, and both are
+now on you: editing a migration that already exists in `HEAD` (see
+`.claude/rules/db-migrations.md`), and hand-editing a generated tree by shell.
 
 **A change that spans a migration and Go code is two agents in sequence,
 `database-engineer` first**, never one agent doing both.
@@ -109,8 +118,9 @@ then narrower, carrying the previous attempt's partial findings.
 
 **Never wait on a process with an unbounded loop.** `until … sleep` / `while
 true` against a build, a CI run or a log file is the single shape that produced
-most of this project's killed agents. A hook denies that shape and its denial
-prints the three bounded alternatives that work on this machine.
+most of this project's killed agents. Nothing denies that shape any more, so
+write the bounded form yourself: a fixed number of polls, or a command run under
+an explicit timeout, and report where it had got to when the count runs out.
 
 ## Isolation
 
@@ -124,9 +134,11 @@ here.
   delimiters and brace expansion are refused and cannot be re-enabled.
 - `.env` is gitignored; `.worktreeinclude` carries it into worktrees.
   Missing-config errors inside a worktree start there.
-- Finish by handing the worktree back. `make harness-reap` removes merged ones
-  and prunes orphaned `worktree-*` branches. Nothing else reaps them, and disk
-  exhaustion has killed a build here mid-link.
+- Finish by handing the worktree back. **Nothing reaps worktrees now** — the
+  target that did was removed with the guards. Clear merged ones and orphaned
+  `worktree-*` branches by hand (`git worktree list`, `git worktree remove`,
+  `git branch -d`), and watch the disk: exhaustion has killed a build here
+  mid-link.
 
 ## Claims
 
@@ -192,8 +204,11 @@ policies inert while every test passed; a documented recovery statement worked
 as superuser and failed as `wpmgr_app`, which is the role every install runs as.
 
 **Build-gating logic goes in a repo script with a committed test suite**, never
-in a YAML block scalar. `scripts/check-version-surfaces.sh` plus its test file
-is the pattern.
+in a YAML block scalar. `scripts/check-version-surfaces.sh` plus
+`scripts/check-version-surfaces_test.sh` is the pattern. `ci.yml` runs the two
+scripts directly, the self-test first, so a broken guard cannot pass by failing
+open; `make check-versions-test` and `make check-versions` are the local names
+for the same two.
 
 ## Delivery
 
@@ -210,16 +225,15 @@ is therefore client-side, and a determined push always gets through:
 `git push --no-verify`, `git send-pack`, and `git -c core.hooksPath=…` each skip
 it. These layers stop an accident, which is what actually happened.
 
-- `.githooks/pre-push` is the lock. Git hands it the already-resolved refs, so
-  `eval`, a `cd`, quoting, `@`, and exotic refspecs cannot disguise a push from
-  it. **It is repo-local config and config is never committed, so every clone
-  and every fresh worktree starts unprotected.** `make hooks` installs it;
-  `make hooks-status` says whether it is live. `session-brief.sh` prints
-  INSTALLED / NOT INSTALLED / COULD NOT CHECK at every session start, because a
-  guard that is silently absent is worse than none — you would trust it.
-- `bash-guard.sh` is the early stop, and matches command text, so it is
-  structurally incomplete and says so in its own comments. It exists to explain
-  the rule at the moment you would break it, not to be the barrier.
+- `.githooks/pre-push` is the lock, and now the only one. Git hands it the
+  already-resolved refs, so `eval`, a `cd`, quoting, `@`, and exotic refspecs
+  cannot disguise a push from it. **It is repo-local config and config is never
+  committed, so every clone and every fresh worktree starts unprotected.**
+  `make hooks` installs it; `make hooks-status` says whether it is live and
+  fails if the installed copy has drifted from the tracked one. **Run
+  `make hooks-status` yourself at the start of a session that will push** —
+  nothing reports its absence for you any more, and a guard that is silently
+  absent is worse than none, because you would trust it.
 
 **Approval has to precede the irreversible half.** On 2026-08-12 the #406 fix was
 committed to `main`, pushed, and *then* followed by "want me to open a PR for
@@ -239,8 +253,10 @@ marketing hero badge names the **agent** version, so it must not move on a
 control-plane-only release.
 
 A DoD step that cannot find its binary must fail loudly, never be skipped.
-`session-brief.sh` prints where each toolchain binary actually is, every session,
-because that answer is a property of the machine and not of this file.
+Where a toolchain binary lives is a property of this machine and not of this
+file, and nothing prints it for you at session start any more: resolve it with
+`command -v` in the turn you need it, and if that comes back empty, say so and
+stop rather than skipping the step.
 
 ## Reporting outside this repository
 

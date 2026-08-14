@@ -53,8 +53,9 @@ nine minutes locally. A reviewer interrupted mid-suite with uncommitted notes
 loses all of them.
 
 **Never wait with an unbounded loop.** `until … sleep` against a build or a CI
-run is what got most killed runs here killed. A hook denies that shape and its
-denial prints the bounded alternatives.
+run is what got most killed runs here killed. Nothing denies that shape any
+more, so this one is on you: poll a bounded number of times, or run the wait
+with an explicit timeout, and report where it got to when the budget runs out.
 
 ## The four non-negotiables
 
@@ -120,8 +121,9 @@ and they have been confidently wrong.
 - `make test-integration` locally for any diff touching RLS, tenant scoping, the
   email domain, or reclamation: CI does not run that package.
 - `make check-versions` for anything that moves a version surface.
-- `scripts/claude/agent-lint.sh` and `scripts/claude/guards_test.sh` green for
-  anything under `.claude/` or `scripts/claude/`.
+- For anything under `.claude/`, a human read of the whole diff. There is no
+  lint and no test suite over the agent definitions or the settings, so a broken
+  one fails silently, at dispatch time, in someone else's session.
 - The mutation performed by hand, both outputs pasted.
 - Every number recounted, every behavioural claim executed.
 - Every bot thread read and answered.
