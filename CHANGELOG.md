@@ -6,6 +6,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.135] - 2026-08-14
+
+### Security
+
+- The Go toolchain moves from 1.26.5 to 1.26.6, which closes seven vulnerabilities in the Go standard library that the binaries published with the previous release still carry. None of them is remote code execution. Five are denial of service: missing recursion-depth limits in the XML and the ASN.1 decoders, where deeply nested input drives the decoder down until it exhausts the stack; a routine in the URL package whose cost grew quadratically with the length of its input; a header timeout that was not applied on one server path; and an unbounded number of messages accepted after a TLS handshake has completed. The other two are input validation rather than exhaustion: a name-encoding check on outbound requests, and escaping context tracking in the HTML templating package. That distinction is what should decide your urgency, because the realistic exposure here is a process that stops answering rather than one that runs somebody else's code. In this codebase the affected packages are reached through the object-storage client, the database connection pool, outbound HTTP, every outbound TLS connection, and the HTTP server itself, so they sit under code handling input from outside your control plane. Rebuilding on the newer toolchain is the whole fix. No WPMgr code changed.
+- There was nothing here for an operator to have noticed. No code changed and no behaviour changed on either side of it: a live advisory database was updated overnight, and the same commit that passed CI in the evening failed the next morning. So whether a build of the previous release carries these depends on when it was built, because the base image tag floated until this release pinned it, and a running install shows no symptom that would tell you which you have. The toolchain a binary was built with is readable out of the binary itself (`go version -m` against the `wpmgr` binary inside the image), which is the only reliable way to tell what you are running.
+
+### Changed
+
+- The published images now name an exact Go version instead of a floating one. The API and media encoder images built from `golang:1.26`, which resolved to whichever patch release that tag happened to point at on the day the build ran, so the compiler that produced a shipped image was not recoverable from this repository and could move without anyone deciding it should. Both now pin the exact version, as the development Compose overlay does. If you build these images yourself you get the same compiler CI does, and a toolchain change becomes a commit somebody made rather than something that happened to you.
+- Internal development tooling for this repository was removed: a set of shell guards that ran against contributor sessions. This affects people working on WPMgr itself and changes nothing about installing or running it.
+
 ## [0.61.134] - 2026-08-14
 
 ### Security
