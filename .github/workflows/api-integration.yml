@@ -187,7 +187,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.6"
           cache-dependency-path: apps/api/go.sum
 
       # The tests build their containers with testcontainers-go talking to the

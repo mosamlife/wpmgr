@@ -123,6 +123,18 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# Which Go toolchain compiles the shipped binaries. CI pinned 1.26.5 while
+# infra/Dockerfile.api built FROM golang:1.26 (floating), so the tested
+# toolchain and the shipped one could differ and nothing noticed. This is the
+# check that makes them unable to disagree.
+.PHONY: check-go-toolchain
+check-go-toolchain: ## Check every Go toolchain pin (workflows, Dockerfiles) agrees
+	scripts/check-go-toolchain.sh
+
+.PHONY: check-go-toolchain-test
+check-go-toolchain-test: ## Run the Go toolchain guard's regression suite
+	scripts/check-go-toolchain_test.sh
+
 # ---- Agent harness (.claude) ------------------------------------------------
 # The harness is build-gating logic, so it lives in tested scripts, not in prose
 # and not in a YAML block scalar. `harness-check` is what ci.yml runs.

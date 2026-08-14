@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.6"
           cache-dependency-path: apps/api/go.sum
 
       # Build the api module on its own (workspace disabled) so it does not
@@ -326,9 +326,22 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # Which Go toolchain compiles the shipped binaries. This job pinned
+      # go-version 1.26.5 while infra/Dockerfile.api built FROM golang:1.26, a
+      # floating tag — so the govulncheck below cleared a toolchain that was not
+      # necessarily the one in the image. Nothing detected that; the only way to
+      # learn the deployed toolchain was `go version -m` on a binary pulled out
+      # of the published image. Self-test first, same as above: a regressed
+      # guard is the more useful failure to read.
+      - name: Go toolchain guard self-test
+        run: scripts/check-go-toolchain_test.sh
+
+      - name: Go toolchain guard (workflow pins vs container base images)
+        run: scripts/check-go-toolchain.sh
+
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.6"
           cache-dependency-path: apps/api/go.sum
 
       # govulncheck does call-graph reachability analysis, so it only fails on
