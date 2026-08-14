@@ -1,7 +1,7 @@
 {
-  "$comment": "Project harness. These hooks execute shell from scripts/claude/ - read them before trusting them; they are committed precisely so they can be read. The guards fail OPEN when jq is missing and session-brief.sh announces that at the top of every session, because a guard that stops guarding in silence is the defect this project keeps shipping. See docs/harness.md.",
+  "$comment": "Project settings. There are deliberately NO hooks here. The shell guards that used to run from scripts/claude/ were removed on 2026-08-14: deciding what a shell command will write by parsing its text is undecidable, four rounds of fixes each closed real bypasses and each following round found more, and over a full day they caught none of the real defects - a privilege escalation, a check-then-act race, an unclamped API-key role - every one of which came from an agent or a review bot attacking the work. The review process in CLAUDE.md and review.md is what works and is what is kept, together with .githooks/pre-push, which git hands already-resolved refs so it is not guessing. Install that with 'make hooks'.",
 
-  "$comment_deny": "The deny rules below are written as Edit(...) and that is NOT a narrowing to the Edit tool: a path denied here is refused for Write and NotebookEdit too. Checked on 2026-08-12 by attempting a Write to apps/api/internal/db/sqlc/ and a Write to apps/web/src/routeTree.gen.ts; both were refused with 'File is in a directory that is denied by your permission settings', and both shapes are covered - the ** prefix rule and the single-file rule. None of this reaches a Bash write; scripts/claude/bash-guard.sh covers that, and its header states what it cannot cover.",
+  "$comment_deny": "The deny rules below are written as Edit(...) and that is NOT a narrowing to the Edit tool: a path denied here is refused for Write and NotebookEdit too. Checked on 2026-08-12 by attempting a Write to apps/api/internal/db/sqlc/ and a Write to apps/web/src/routeTree.gen.ts; both were refused with 'File is in a directory that is denied by your permission settings', and both shapes are covered - the ** prefix rule and the single-file rule. None of this reaches a Bash write: a shell redirect into a generated tree is NOT blocked by anything here, and since the guards were removed nothing else blocks it either. Regenerate those trees, never hand-sync them - a hand-sync of the sqlc tree caused a production 500.",
 
   "worktree": {
     "baseRef": "head"
@@ -24,72 +24,6 @@
       "Edit(apps/web/src/routeTree.gen.ts)",
       "Edit(packages/openapi-client/src/generated/**)",
       "Edit(apps/landing/**)"
-    ]
-  },
-
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/route-guard.sh\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/bash-guard.sh\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/agent-writes.sh\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/route-guard.sh\" --record",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/commit-gate.sh\"",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "startup|resume|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude/session-brief.sh\"",
-            "timeout": 20
-          }
-        ]
-      }
     ]
   }
 }

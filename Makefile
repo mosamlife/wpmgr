@@ -19,24 +19,77 @@ bootstrap: ## First-time dev setup
 # is never committed, so without it a clone carries .githooks/pre-push and git
 # never runs it - the push to main is permitted exactly as it was on 2026-08-12.
 #
-# A checkout that PREDATES this rule has no `hooks` target, so `make hooks`
-# there prints "No rule to make target" and installs nothing. That clone needs
-# `git pull` first, or one direct run of the script from a tree that carries it:
-#   scripts/claude/git-hooks.sh install
+# A checkout that PREDATES this target prints "No rule to make target" and
+# installs nothing. That clone needs `git pull` first.
 #
-# The resolution, the copy into $GIT_COMMON_DIR/hooks and the verification live
-# in the script, with a committed test suite, because that is where build-gating
-# logic belongs. The first version of this was three inline lines that set a
-# RELATIVE core.hooksPath, which every linked worktree resolved against its own
-# tree; the second set an absolute path to the tracked .githooks, which any
-# checkout of an older commit then deleted out from under it.
+# THREE THINGS HERE ARE NOT STYLE, each measured wrong before:
+#   1. core.hooksPath is set to an ABSOLUTE path derived from --git-common-dir.
+#      A relative one is resolved by git against whichever working tree runs the
+#      hook, so a linked worktree - or a checkout of a commit that predates the
+#      hook - silently runs no hook while config keeps reading "installed".
+#   2. The hook is COPIED into the common hooks directory rather than config
+#      pointing at the tracked .githooks, because checking out an older commit
+#      deletes that directory out from under a config still naming it.
+#   3. The destination is REMOVED before the copy. `cp` follows a symlink and
+#      writes through it, so a pre-push symlinked in from a dotfiles repo or
+#      another checkout had that FOREIGN FILE overwritten with this hook's text
+#      - measured, in a fresh clone. The copy-aside above does not prevent it:
+#      it saves the contents and `cp` then clobbers the target anyway. `rm -f`
+#      makes the new file replace the LINK instead.
+# So re-run this after editing .githooks/pre-push; `make hooks-status` says
+# whether the installed copy is still current.
 .PHONY: hooks
 hooks: ## Install the committed git hooks (pre-push refuses a push that lands on main)
-	scripts/claude/git-hooks.sh install
+	@set -eu; \
+	hooks_dir="$$(cd "$$(git rev-parse --git-common-dir)" && pwd)/hooks"; \
+	mkdir -p "$$hooks_dir"; \
+	if [ -e "$$hooks_dir/pre-push" ] && ! cmp -s .githooks/pre-push "$$hooks_dir/pre-push"; then \
+		aside="$$hooks_dir/pre-push.replaced-$$(date +%Y%m%d%H%M%S)"; \
+		cp "$$hooks_dir/pre-push" "$$aside"; \
+		if [ -L "$$hooks_dir/pre-push" ]; then \
+			echo "NOTE: a DIFFERENT pre-push hook was already installed, as a SYMLINK to:"; \
+			echo "      $$(readlink "$$hooks_dir/pre-push")"; \
+			echo "      That file is left untouched; the LINK is replaced. Its contents were copied aside to:"; \
+		else \
+			echo "NOTE: a DIFFERENT pre-push hook was already installed. Copied aside to:"; \
+		fi; \
+		echo "      $$aside"; \
+		echo "      Merge anything you need from it back into .githooks/pre-push."; \
+	fi; \
+	rm -f "$$hooks_dir/pre-push"; \
+	cp .githooks/pre-push "$$hooks_dir/pre-push"; \
+	chmod +x "$$hooks_dir/pre-push"; \
+	git config core.hooksPath "$$hooks_dir"; \
+	echo "pre-push INSTALLED: $$hooks_dir/pre-push"
 
+# Exits NON-ZERO when the hook is not actually live, so it is usable as a check
+# and cannot report success over its own absence. It compares the installed copy
+# against the tracked one: "core.hooksPath is set" alone is not installed.
+#
+# Both paths resolve against `git rev-parse --show-toplevel`, never against the
+# cwd. Git resolves a relative core.hooksPath against the working-tree root, so
+# resolving it against the cwd answered a question nobody asked: run from
+# apps/api it reported a live hook as NOT INSTALLED, and a correctly installed
+# absolute one as STALE, because ".githooks/pre-push" did not exist there either.
 .PHONY: hooks-status
 hooks-status: ## Report whether the pre-push hook is actually running in this checkout
-	@scripts/claude/git-hooks.sh status
+	@hp="$$(git config --get core.hooksPath || true)"; \
+	if [ -z "$$hp" ]; then \
+		echo "pre-push NOT INSTALLED: core.hooksPath is unset, so git ignores .githooks/. Run 'make hooks'."; \
+		exit 1; \
+	fi; \
+	root="$$(git rev-parse --show-toplevel)"; \
+	case "$$hp" in /*) ;; *) hp="$$root/$$hp";; esac; \
+	if [ ! -x "$$hp/pre-push" ]; then \
+		echo "pre-push NOT INSTALLED: core.hooksPath=$$hp has no executable pre-push. Run 'make hooks'."; \
+		exit 1; \
+	fi; \
+	if cmp -s "$$root/.githooks/pre-push" "$$hp/pre-push"; then \
+		echo "pre-push INSTALLED and current: $$hp/pre-push"; \
+	else \
+		echo "pre-push INSTALLED but STALE: $$hp/pre-push differs from .githooks/pre-push. Run 'make hooks'."; \
+		exit 1; \
+	fi
 
 .PHONY: quickstart
 quickstart: ## One-command self-host bootstrap: write .env + generate secrets
@@ -124,28 +177,17 @@ check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
 # ---- Agent harness (.claude) ------------------------------------------------
-# The harness is build-gating logic, so it lives in tested scripts, not in prose
-# and not in a YAML block scalar. `harness-check` is what ci.yml runs.
-
-.PHONY: harness-check
-harness-check: ## Lint the agent definitions and run the guard regression suite
-	scripts/claude/agent-lint.sh --self-test
-	scripts/claude/agent-lint.sh
-	scripts/claude/guards_test.sh
-# LAST, and it asserts the hook is RUNNING in this checkout, not that an
-# installer string appears in a file. The previous version of that assertion
-# passed in full inside a clone where no hook was installed and `git push
-# origin HEAD:refs/heads/main` landed. A check that passes when the thing it
-# checks is absent is worse than no check.
-	scripts/claude/git-hooks.sh check
-
-.PHONY: harness-reap
-harness-reap: ## REPORT what agent worktrees, branches, caches and volumes can be reclaimed
-	scripts/claude/harness-reap.sh
-
-.PHONY: harness-reap-apply
-harness-reap-apply: ## Actually reclaim them (removes only clean, merged worktrees and merged branches)
-	scripts/claude/harness-reap.sh --apply
+# The shell guards that used to live in scripts/claude/ are gone: deciding what
+# a shell command will write by parsing its text is undecidable (eval, bash -c,
+# a path built at run time), and four rounds of fixes closed real bypasses while
+# each following round found more. What actually caught this project's real
+# defects - a privilege escalation, a check-then-act race, an unclamped API-key
+# role - was the review process in CLAUDE.md and review.md, which is kept.
+#
+# .githooks/pre-push is kept and is different in kind: git hands it
+# already-resolved refs, so eval, quoting and exotic refspecs are gone before it
+# runs. It is not guessing. `make hooks` installs it; `make hooks-status` says
+# whether it is live. Those two are above, next to bootstrap.
 
 # reproducible_zip: package $2 (a directory) inside $1 into $3, byte for byte
 # identically every time the same tree is packaged.

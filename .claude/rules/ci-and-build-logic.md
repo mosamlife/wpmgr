@@ -55,8 +55,8 @@ by name, so the tenancy and RLS proofs never run on a PR.
 `plugincheck.yml` runs automatically on any PR touching the agent plugin.
 `wporg-deploy.yml` is manual only and irreversible.
 
-A gate that cannot find its binary must fail loudly, never be skipped.
-`session-brief.sh` prints where each toolchain binary actually is, every session.
+A gate that cannot find its binary must fail loudly, never be skipped. Resolve
+each one with `command -v`; nothing prints their locations for you.
 
 `govulncheck` reads a live advisory database, so it can redden `main` with zero
 code change and a green PR can fail on merge. Fix the dependency. Never tag a

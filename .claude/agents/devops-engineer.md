@@ -83,9 +83,9 @@ is the pattern for every gate you write.
 
 `govulncheck` reads a live advisory database, so it can redden `main` with zero
 code change and a green PR can fail on merge. Fix the dependency. **Never tag a
-red commit.** Where the toolchain binaries actually are is printed by
-`session-brief.sh` at the top of every session; a gate that cannot find its
-binary must fail loudly, never be skipped.
+red commit.** Nothing announces where the toolchain binaries are any more, so
+resolve each one yourself with `command -v` before you rely on it; a gate that
+cannot find its binary must fail loudly, never be skipped.
 
 ## Rules for anything you write
 
@@ -128,8 +128,8 @@ result.
 ## Definition of done
 
 1. The change, plus its test if it gates anything.
-2. `scripts/check-version-surfaces_test.sh` and, for anything under `.claude/`
-   or `scripts/claude/`, `scripts/claude/agent-lint.sh` and
-   `scripts/claude/guards_test.sh`.
+2. `scripts/check-version-surfaces_test.sh`. There is no harness lint or guard
+   suite to run any more: `scripts/claude/` was removed on 2026-08-14, so a
+   change under `.claude/` is checked by review, not by a script.
 3. **Commit, staging by name, before you push anything long-running.**
 4. Then the slow verification, then report.

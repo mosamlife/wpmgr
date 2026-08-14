@@ -247,34 +247,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          # The route guard resolves the repo root and asks git whether a
-          # migration already exists in HEAD, so it needs real history.
-          fetch-depth: 0
+          # No fetch-depth here on purpose. The only step in this job that ever
+          # needed real history was the agent route guard, which was removed
+          # with the rest of scripts/claude/. What remains reads the index
+          # (`git ls-files`) or no git at all, so the default shallow checkout
+          # is correct and faster. Restore `fetch-depth: 0` if a step added
+          # below reads commits.
 
-      # ---- Agent harness ----------------------------------------------------
-      # The .claude/ harness gates real work, so it is gated itself. Before this
-      # step existed, the committed agent definitions carried a dead app, a
-      # finished branch and a wp.org slug that no longer existed, for two
-      # months, while the project shipped six releases.
+      # ---- The one shipped guard --------------------------------------------
+      # .githooks/pre-push is now the only executable guard in the repo, and the
+      # state every clone starts in is UNPROTECTED: core.hooksPath is repo-local
+      # config, config is never committed, so a fresh checkout carries the hook
+      # in its tree and git ignores it. That is exactly the clone
+      # actions/checkout produces, which makes this runner the honest place to
+      # prove the INSTALLER still works on one.
       #
-      # The self-tests run FIRST: if the linter or the guards have regressed,
-      # that is the more useful failure to read.
+      # This is deliberately the cheap half. It is a copy, a chmod and a git
+      # config, and it does not re-test the hook's push logic - that is proved
+      # by execution against a throwaway bare remote, not on a runner. What it
+      # catches is `make hooks` breaking, after which every developer's next
+      # clone would silently have no hook at all.
       #
-      # `make hooks` is a separate step and runs BEFORE it, because
-      # harness-check now asserts the committed pre-push hook is actually
-      # running - core.hooksPath is repo-local config, config is never
-      # committed, and actions/checkout produces exactly the unprotected clone
-      # every developer starts with. Installing it here is not a way around the
-      # assertion: it makes CI prove the INSTALLER works on a clean checkout,
-      # which is the half a runner can prove. The unprotected-clone failure
-      # itself is proved in scripts/claude/guards_test.sh, which builds a clone
-      # with no hook, requires the check to go red, installs, and requires it to
-      # go green.
-      - name: Install the committed git hooks
-        run: make hooks
-
-      - name: Agent harness self-test and lint
-        run: make harness-check
+      # hooks-status runs SECOND and exits non-zero unless the installed copy is
+      # byte-identical to the tracked one, so this step cannot pass by printing
+      # a success message over an install that did not happen.
+      - name: Install the committed git hooks, and prove they are live
+        run: |
+          make hooks
+          make hooks-status
 
       # House rule: competitor products are never named in docs or root markdown.
       # Functional source references (conflict-detection slugs, plugin-signature

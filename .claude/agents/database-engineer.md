@@ -141,8 +141,8 @@ because the table is `FORCE ROW LEVEL SECURITY`.
 
 ## sqlc
 
-`session-brief.sh` prints where `sqlc` is; do not assume the search path finds
-it. The tree is stamped `v1.31.1` (`grep -h 'sqlc v' apps/api/internal/db/sqlc/*.go | sort -u`);
+Resolve `sqlc` with `command -v sqlc` before you use it; do not assume the
+search path finds it, and never skip the regeneration because it is missing. The tree is stamped `v1.31.1` (`grep -h 'sqlc v' apps/api/internal/db/sqlc/*.go | sort -u`);
 confirm that yourself rather than trusting this line. Regenerate after any
 column or query change and **never hand-edit `internal/db/sqlc/*.sql.go`**, a
 hand-sync caused a production 500. Nothing in CI or the Makefile runs or
