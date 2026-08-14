@@ -68,9 +68,11 @@ the conflict out loud and get a ruling; never resolve it silently. Taking such
 an instruction literally is how a whole OAuth sign-in feature got hand-built
 inline and unreviewed here.
 
-**Pass `model: "opus"` when the change is irreversible.** The builders are
-pinned `sonnet` in their frontmatter, and frontmatter beats inheriting from this
-loop, so a dispatch drops to Sonnet even when you are on Opus. Override for:
+**Pass `model: "opus"` when the change is irreversible.** Frontmatter beats
+inheriting from this loop, so a dispatch drops to whatever the agent pins even
+when you are on Opus. `database-engineer` and `security-reviewer` already pin
+`opus`; every other builder pins `sonnet`, so the override is what raises them.
+Check the frontmatter rather than trusting this sentence. Override for:
 deletes, GC, retention sweeps and object-storage reclamation; locks, leader
 election, job claiming and anything racing a live process; auth, crypto, key
 storage, RLS and tenancy; destructive migrations. Leave UI, copy, docs, additive
@@ -148,10 +150,14 @@ Recount at the moment of writing, not from memory, not from the PR body, not
 from earlier in the session, because this session compacts.
 
 **Never hard-code a count** in a comment, a workflow, a CHANGELOG entry or a
-commit message. Make the script print it. Four hard-coded counts in this repo
-were wrong within days: `.github/workflows/api-integration.yml` and `ci.yml`
-still say "344 tests" in four places, and
-`grep -rhoE '^func Test[A-Za-z0-9_]+' apps/api/tests/*.go | wc -l` says 386.
+commit message. Make the script print it. `.github/workflows/api-integration.yml`
+and `ci.yml` still say "344 tests" in four places; run
+`grep -rhoE '^func Test[A-Za-z0-9_]+' apps/api/tests/*.go | wc -l` and compare.
+
+This paragraph carried its own worked example until 2026-08-14, quoting what
+that command returned on the day it was written. The number had drifted by six
+before anyone re-ran it, inside the rule against hard-coding counts. The command
+stays; the answer does not.
 
 A claim in prose is part of the deliverable. **Wrong prose is a defect.**
 
