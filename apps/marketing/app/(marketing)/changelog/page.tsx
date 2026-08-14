@@ -50,6 +50,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.135",
+    date: "2026-08-14",
+    summary:
+      "A rebuild on a newer Go compiler, which closes seven vulnerabilities in the Go standard library that the previous release's binaries carry. None of them is remote code execution and the realistic exposure is a process that stops answering, so this is worth taking at your next convenient window rather than tonight. Nothing in WPMgr itself changed, and there is no symptom to look for in a running install. If you self-host, pull the new images; the fix arrives only with a rebuild.",
+    items: [
+      {
+        tag: "Security",
+        text: "The Go compiler this software is built with moves from 1.26.5 to 1.26.6, which closes seven vulnerabilities in the Go standard library. None of them is remote code execution. Five are denial of service: two decoders that could be driven down through deeply nested input until they exhausted the stack, a URL routine whose cost grew quadratically with the length of its input, a header timeout that was not applied on one server path, and an unbounded number of messages accepted after a TLS connection had finished negotiating. The other two are input validation rather than exhaustion: a name-encoding check on outbound requests, and escaping context tracking in the HTML templating package. The affected packages sit under the object storage client, the database connection pool, outbound HTTP, every outbound TLS connection, and the web server itself, which is to say under code that handles input from outside. Rebuilding on the newer compiler is the entire fix and no WPMgr code changed.",
+      },
+      {
+        tag: "Security",
+        text: "There was nothing here for anyone to have noticed. No code changed and no behaviour changed on either side of this. A live advisory database was updated overnight, and the same unchanged commit that passed our checks in the evening failed them the next morning. A build of the previous release carries these however and whenever it was built, and a running install shows no symptom that would tell you, so the only reliable way to know which compiler produced a binary is to read it out of that binary rather than infer it from a date.",
+      },
+      {
+        tag: "Changed",
+        text: "The published container images now name an exact Go version instead of a floating one. They previously built from a tag that resolved to whichever patch release it happened to point at on the day the build ran, so the compiler that produced a shipped image was not recoverable from the source repository and could move without anyone deciding it should. If you build these images yourself you now get the same compiler our own builds do, and a compiler change becomes a commit somebody made rather than something that happened to you.",
+      },
+    ],
+  },
+  {
     version: "0.61.134",
     date: "2026-08-14",
     summary:
