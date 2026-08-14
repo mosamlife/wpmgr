@@ -36,7 +36,7 @@ services:
   # Mounts the api module so edits are picked up on container restart.
   api:
     build: !reset null
-    image: golang:1.26
+    image: golang:1.26.6
     working_dir: /src/apps/api
     environment:
       GOWORK: "off"

@@ -7,7 +7,7 @@
 # native codec libs (libaom/dav1d/etc.), so it builds with CGO_ENABLED=1 against
 # a glibc base. The main API NEVER imports the encoder — these are two distinct
 # images by design.
-FROM golang:1.26 AS build
+FROM golang:1.26.6 AS build
 
 # CGO ON. linux/amd64 (lilliput ships prebuilt static codec libs for it).
 ENV CGO_ENABLED=1 \
@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # debian:trixie-slim ships glibc 2.41 + libstdc++ from GCC 14 (identical ABI
 # to distroless/cc-debian13), so the lilliput CGO requirement is still met.
 #
-# CRITICAL: stay on Debian 13 "trixie" to match golang:1.26 (also trixie).
+# CRITICAL: stay on Debian 13 "trixie" to match golang:1.26.6 (also trixie).
 # The binary requires GLIBC_2.38+ and GLIBCXX_3.4.32+; a debian12 runtime
 # dies at startup before it can bind $PORT.
 #
