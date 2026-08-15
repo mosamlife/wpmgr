@@ -209,12 +209,20 @@ func TestGH414_AutoResume_NotYetDueIsUntouched(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	n2, err := site.NewAutoResumer(repo, nil, nil).Sweep(ctx, time.Now().Add(365*24*time.Hour))
-	if err != nil {
+	// Sweep a YEAR into the future. The count is deliberately NOT asserted here:
+	// the +24h site above is genuinely due at that instant and resuming it is
+	// correct, and an assertion of "0 resumed" would redden correct work — which
+	// is exactly what it did on the first run of this file. The claim under test
+	// is about ONE row, so the assertion is about that one row.
+	if _, err := site.NewAutoResumer(repo, nil, nil).Sweep(ctx, time.Now().Add(365*24*time.Hour)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if n2 != 0 {
-		t.Errorf("sweep resumed %d indefinitely-paused sites a year later, want 0", n2)
+	foreverPausedAt, foreverResumeAt, _ := readMonitoringState(t, pool, tenantID, forever.ID)
+	if foreverPausedAt == nil {
+		t.Error("an indefinitely-paused site was auto-resumed; a NULL monitoring_resume_at means 'until someone resumes it', never 'eventually'")
+	}
+	if foreverResumeAt != nil {
+		t.Errorf("the sweep invented a resume instant: %v", *foreverResumeAt)
 	}
 }
 
