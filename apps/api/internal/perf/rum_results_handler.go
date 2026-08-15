@@ -886,32 +886,22 @@ func (h *Handler) rumFleet(c *gin.Context) {
 			continue
 		}
 
-		// Distribution of the metric that produced `worst` (GH #391): pull the
-		// SAME per-(site,metric) bucket accumulator that fed siteVerdicts above
-		// (siteAcc, built in the rollup loop earlier in this function) — no new
-		// query, the histogram is already in memory.
-		var dist *RumDistribution
-		var distSamples int64
-		distSuppressed := true
-		if acc, ok := siteAcc[siteMetricKey{siteID: siteID, metric: worstMetric}]; ok {
-			distSamples = acc.sampleCount
-			dist, distSuppressed = offenderDistribution(worstMetric, acc.counts, acc.sampleCount, int64(minSampleCount))
-		}
-
+		// DistributionMetric only names which metric produced `worst`; the
+		// histogram fold itself (GH #391) happens below, after sort+cap,
+		// alongside the Name/URL enrichment — same reason: bounded to <=10
+		// rows instead of running once per qualifying site.
 		worstOffenders = append(worstOffenders, fleetRumWorstOffender{
-			SiteID:                  siteID,
-			Name:                    "", // enriched below, after sort+cap (GH #202); left empty here by design
-			URL:                     "",
-			LCPP75:                  sv.lcpP75,
-			INPP75:                  sv.inpP75,
-			CLSP75:                  sv.clsP75,
-			OverallRating:           worst,
-			SampleCount:             sv.lcpSamples + sv.inpSamples + sv.clsSamples,
-			DistributionMetric:      worstMetric,
-			Distribution:            dist,
-			DistributionSuppressed:  distSuppressed,
-			DistributionSampleCount: distSamples,
-			DistributionSampleFloor: int64(minSampleCount),
+			SiteID:             siteID,
+			Name:               "", // enriched below, after sort+cap (GH #202); left empty here by design
+			URL:                "",
+			LCPP75:             sv.lcpP75,
+			INPP75:             sv.inpP75,
+			CLSP75:             sv.clsP75,
+			OverallRating:      worst,
+			SampleCount:        sv.lcpSamples + sv.inpSamples + sv.clsSamples,
+			DistributionMetric: worstMetric,
+			// Distribution / DistributionSuppressed / DistributionSampleCount /
+			// DistributionSampleFloor are filled in below, after sort+cap.
 		})
 	}
 	sort.Slice(worstOffenders, func(i, j int) bool {
@@ -935,9 +925,27 @@ func (h *Handler) rumFleet(c *gin.Context) {
 	}
 
 	// Enrich the (already-capped, <=10) offenders with a display name/url
-	// (GH #202). Deliberately done AFTER sort+cap so this never scales with
-	// the number of reporting sites — one bulk lookup, not an N+1 per site.
+	// (GH #202) and with their offender distribution (GH #391). Deliberately
+	// done AFTER sort+cap so neither scales with the number of reporting
+	// sites — one bulk name/url lookup, and at most ten histogram folds,
+	// not one per qualifying site.
 	if len(worstOffenders) > 0 {
+		for i := range worstOffenders {
+			wo := &worstOffenders[i]
+			wo.DistributionSampleFloor = int64(minSampleCount)
+			// Pull the SAME per-(site,metric) bucket accumulator that fed
+			// siteVerdicts above (siteAcc, built in the rollup loop earlier
+			// in this function) — no new query, the histogram is already in
+			// memory.
+			acc, ok := siteAcc[siteMetricKey{siteID: wo.SiteID, metric: wo.DistributionMetric}]
+			if !ok {
+				wo.DistributionSuppressed = true
+				continue
+			}
+			wo.DistributionSampleCount = acc.sampleCount
+			wo.Distribution, wo.DistributionSuppressed = offenderDistribution(wo.DistributionMetric, acc.counts, acc.sampleCount, int64(minSampleCount))
+		}
+
 		if metas, merr := h.svc.ListSitesMeta(c.Request.Context(), p.TenantID); merr == nil {
 			metaByID := make(map[uuid.UUID]SiteMeta, len(metas))
 			for _, m := range metas {
