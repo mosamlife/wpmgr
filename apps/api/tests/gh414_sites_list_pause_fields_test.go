@@ -74,6 +74,13 @@ func rawSite(t *testing.T, body []byte) map[string]any {
 }
 
 // wantTime asserts a wire field is present and parses as the expected instant.
+//
+// Compared at second granularity because the generated encoder formats
+// date-time as plain RFC 3339, which drops the fractional seconds Postgres'
+// now() carries. That is the real contract the web client parses, so the
+// assertion matches it rather than the DB's microseconds; the deliberate
+// hour/minute gaps between the fixtures below are far wider than a second, so
+// nothing here can pass by rounding into the wrong value.
 func wantTime(t *testing.T, obj map[string]any, key string, want time.Time) {
 	t.Helper()
 	raw, ok := obj[key]
@@ -88,8 +95,8 @@ func wantTime(t *testing.T, obj map[string]any, key string, want time.Time) {
 	if err != nil {
 		t.Fatalf("%s = %q does not parse as RFC 3339: %v", key, s, err)
 	}
-	if !got.Equal(want) {
-		t.Fatalf("%s = %v, want %v", key, got, want)
+	if !got.Truncate(time.Second).Equal(want.Truncate(time.Second)) {
+		t.Fatalf("%s = %v, want %v (compared to the second)", key, got, want)
 	}
 }
 
