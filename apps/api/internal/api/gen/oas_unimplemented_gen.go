@@ -3245,6 +3245,27 @@ func (UnimplementedHandler) PatchSiteErrorConfig(ctx context.Context, req *SiteE
 	return r, ht.ErrNotImplemented
 }
 
+// PauseSiteMonitoring implements pauseSiteMonitoring operation.
+//
+// GH #414 phase 1. Records the operator's intent to pause scheduled
+// monitoring on each site in `site_ids`. Requires the `site.write`
+// permission.
+// Idempotent: pausing a site that is already paused succeeds and
+// changes nothing — in particular it does NOT overwrite the existing
+// `reason` or paused-at instant — and comes back with `changed: false`.
+// Per-site, not all-or-nothing: ids the caller cannot access, or that
+// do not exist in this tenant, come back with `ok: false` rather than
+// failing the whole call. `changed` is true only for the sites this
+// request actually moved.
+// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+// beacon ingestion, retention jobs and every operator-initiated action
+// continue to run on a paused site.
+//
+// POST /api/v1/sites/monitoring/pause
+func (UnimplementedHandler) PauseSiteMonitoring(ctx context.Context, req *PauseMonitoringRequest) (r PauseSiteMonitoringRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // PreloadCache implements preloadCache operation.
 //
 // Triggers the agent to begin warming the page cache. Returns an
@@ -3917,6 +3938,18 @@ func (UnimplementedHandler) RestoreSiteFileVersion(ctx context.Context, req *Fil
 //
 // POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
 func (UnimplementedHandler) RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (r RestoreSiteVulnerabilityRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ResumeSiteMonitoring implements resumeSiteMonitoring operation.
+//
+// GH #414 phase 1. Clears the monitoring pause on each site in
+// `site_ids`. Requires the `site.write` permission.
+// Idempotent: resuming a site that is already active succeeds with
+// `changed: false`. Same per-site result contract as the pause route.
+//
+// POST /api/v1/sites/monitoring/resume
+func (UnimplementedHandler) ResumeSiteMonitoring(ctx context.Context, req *ResumeMonitoringRequest) (r ResumeSiteMonitoringRes, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

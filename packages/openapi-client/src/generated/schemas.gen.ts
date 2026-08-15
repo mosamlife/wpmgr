@@ -593,6 +593,112 @@ export const SiteTagUpdateSchema = {
   },
 } as const;
 
+export const PauseMonitoringRequestSchema = {
+  type: "object",
+  required: ["site_ids"],
+  properties: {
+    site_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+    reason: {
+      type: "string",
+      maxLength: 500,
+      description: "Free-text note stored on every site this request pauses.",
+    },
+    resume_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "Optional instant a later phase's sweep will auto-resume at. Must\nbe in the future; a past instant is rejected with\n`resume_at_in_past` rather than stored as a pause that instantly\nun-pauses.\n",
+    },
+  },
+} as const;
+
+export const ResumeMonitoringRequestSchema = {
+  type: "object",
+  required: ["site_ids"],
+  properties: {
+    site_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+  },
+} as const;
+
+export const MonitoringResultSchema = {
+  type: "object",
+  required: ["site_id", "ok", "changed", "detail"],
+  properties: {
+    site_id: {
+      type: "string",
+    },
+    ok: {
+      type: "boolean",
+      description: "The site was accepted and is now in the requested state.",
+    },
+    changed: {
+      type: "boolean",
+      description:
+        "THIS request moved the site. False for an accepted retry\n(`already_paused` / `already_active`).\n",
+    },
+    detail: {
+      type: "string",
+      description: "Stable machine-readable outcome, not prose.\n",
+      enum: [
+        "paused",
+        "already_paused",
+        "resumed",
+        "already_active",
+        "forbidden",
+        "invalid_site_id",
+        "site_not_found",
+      ],
+    },
+    monitoring_paused_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    monitoring_paused_reason: {
+      type: "string",
+    },
+    monitoring_resume_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const MonitoringBulkResultSchema = {
+  type: "object",
+  required: ["results", "changed_count"],
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/MonitoringResult",
+      },
+    },
+    changed_count: {
+      type: "integer",
+      description: "How many sites this request actually moved.",
+    },
+  },
+} as const;
+
 export const BulkTagApplyRequestSchema = {
   type: "object",
   required: ["site_ids"],

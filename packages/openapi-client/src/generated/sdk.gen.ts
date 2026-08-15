@@ -756,6 +756,9 @@ import type {
   PatchSiteErrorConfigData,
   PatchSiteErrorConfigErrors,
   PatchSiteErrorConfigResponses,
+  PauseSiteMonitoringData,
+  PauseSiteMonitoringErrors,
+  PauseSiteMonitoringResponses,
   PreloadCacheData,
   PreloadCacheResponses,
   PrepareSiteFileDownloadData,
@@ -902,6 +905,9 @@ import type {
   RestoreSiteVulnerabilityData,
   RestoreSiteVulnerabilityErrors,
   RestoreSiteVulnerabilityResponses,
+  ResumeSiteMonitoringData,
+  ResumeSiteMonitoringErrors,
+  ResumeSiteMonitoringResponses,
   RetryUpdateRunData,
   RetryUpdateRunErrors,
   RetryUpdateRunResponses,
@@ -3175,6 +3181,69 @@ export const updateTag = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: "/api/v1/tags/{tagId}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Pause scheduled monitoring on many sites
+ *
+ * GH #414 phase 1. Records the operator's intent to pause scheduled
+ * monitoring on each site in `site_ids`. Requires the `site.write`
+ * permission.
+ *
+ * Idempotent: pausing a site that is already paused succeeds and
+ * changes nothing — in particular it does NOT overwrite the existing
+ * `reason` or paused-at instant — and comes back with `changed: false`.
+ *
+ * Per-site, not all-or-nothing: ids the caller cannot access, or that
+ * do not exist in this tenant, come back with `ok: false` rather than
+ * failing the whole call. `changed` is true only for the sites this
+ * request actually moved.
+ *
+ * Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+ * beacon ingestion, retention jobs and every operator-initiated action
+ * continue to run on a paused site.
+ *
+ */
+export const pauseSiteMonitoring = <ThrowOnError extends boolean = false>(
+  options: Options<PauseSiteMonitoringData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    PauseSiteMonitoringResponses,
+    PauseSiteMonitoringErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/monitoring/pause",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Resume scheduled monitoring on many sites
+ *
+ * GH #414 phase 1. Clears the monitoring pause on each site in
+ * `site_ids`. Requires the `site.write` permission.
+ *
+ * Idempotent: resuming a site that is already active succeeds with
+ * `changed: false`. Same per-site result contract as the pause route.
+ *
+ */
+export const resumeSiteMonitoring = <ThrowOnError extends boolean = false>(
+  options: Options<ResumeSiteMonitoringData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    ResumeSiteMonitoringResponses,
+    ResumeSiteMonitoringErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/monitoring/resume",
     ...options,
     headers: {
       "Content-Type": "application/json",

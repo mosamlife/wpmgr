@@ -135,6 +135,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/sites", authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), h.create)
 	r.GET("/sites", authz.RequirePermission(authz.PermSiteRead), h.list)
 	r.POST("/sites/pairing-codes", authz.RequirePermission(authz.PermSiteWrite), h.createPairingCode)
+	// GH #414 m117 — bulk monitoring pause/resume. Literal "/sites/monitoring"
+	// segment, declared before the ":siteId" routes below so Gin never has to
+	// choose between them.
+	h.RegisterMonitoring(r)
 	// M21 connection-lifecycle mutations (revoke/archive/restore/re-enroll).
 	h.RegisterConnection(r)
 	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for

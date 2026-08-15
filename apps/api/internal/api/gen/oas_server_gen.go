@@ -2440,6 +2440,24 @@ type Handler interface {
 	//
 	// PATCH /api/v1/sites/{siteId}/errors/config
 	PatchSiteErrorConfig(ctx context.Context, req *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error)
+	// PauseSiteMonitoring implements pauseSiteMonitoring operation.
+	//
+	// GH #414 phase 1. Records the operator's intent to pause scheduled
+	// monitoring on each site in `site_ids`. Requires the `site.write`
+	// permission.
+	// Idempotent: pausing a site that is already paused succeeds and
+	// changes nothing — in particular it does NOT overwrite the existing
+	// `reason` or paused-at instant — and comes back with `changed: false`.
+	// Per-site, not all-or-nothing: ids the caller cannot access, or that
+	// do not exist in this tenant, come back with `ok: false` rather than
+	// failing the whole call. `changed` is true only for the sites this
+	// request actually moved.
+	// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+	// beacon ingestion, retention jobs and every operator-initiated action
+	// continue to run on a paused site.
+	//
+	// POST /api/v1/sites/monitoring/pause
+	PauseSiteMonitoring(ctx context.Context, req *PauseMonitoringRequest) (PauseSiteMonitoringRes, error)
 	// PreloadCache implements preloadCache operation.
 	//
 	// Triggers the agent to begin warming the page cache. Returns an
@@ -2963,6 +2981,15 @@ type Handler interface {
 	//
 	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
 	RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (RestoreSiteVulnerabilityRes, error)
+	// ResumeSiteMonitoring implements resumeSiteMonitoring operation.
+	//
+	// GH #414 phase 1. Clears the monitoring pause on each site in
+	// `site_ids`. Requires the `site.write` permission.
+	// Idempotent: resuming a site that is already active succeeds with
+	// `changed: false`. Same per-site result contract as the pause route.
+	//
+	// POST /api/v1/sites/monitoring/resume
+	ResumeSiteMonitoring(ctx context.Context, req *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error)
 	// RetryUpdateRun implements retryUpdateRun operation.
 	//
 	// Creates a NEW update run repeating the named tasks of an existing one.

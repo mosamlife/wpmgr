@@ -90,6 +90,13 @@ const (
 	ActionSiteRestored     = "site.restored"
 	ActionSiteReEnrolled   = "site.reenrolled"
 
+	// GH #414 m117 — monitoring pause/resume (phase 1). Recorded ONE PER SITE
+	// even for a bulk request, so filtering the audit log by a single site's
+	// target_id finds the pause that governs it. audit_log.action is plain
+	// text with no CHECK and no enum, so these need no migration.
+	ActionSiteMonitoringPaused  = "site.monitoring.paused"
+	ActionSiteMonitoringResumed = "site.monitoring.resumed"
+
 	// Updates feature: an operator requested an immediate inventory refresh, or
 	// the post-update worker autonomously enqueued one for a site. Metadata
 	// fields: site_id, source ("api"|"post_update"|"unknown").

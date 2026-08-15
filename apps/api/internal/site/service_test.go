@@ -13,6 +13,8 @@ import (
 
 // fakeRepo is an in-memory Repo for unit-testing the service without a DB.
 type fakeRepo struct {
+	pauseCalls  []PauseMonitoringInput
+	resumeCalls []ResumeMonitoringInput
 	createErr error
 	created   CreateInput
 	getErr    error
@@ -255,4 +257,17 @@ func TestServiceDeletePropagatesNotFound(t *testing.T) {
 			t.Fatalf("want not found, got %v", err)
 		}
 	}
+}
+
+// GH #414 m117 — monitoring pause/resume. The service-level validation tests
+// never reach the repo (they fail before it), so the fake records the call and
+// returns an empty report.
+func (f *fakeRepo) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) ([]MonitoringState, error) {
+	f.pauseCalls = append(f.pauseCalls, in)
+	return nil, nil
+}
+
+func (f *fakeRepo) ResumeMonitoring(ctx context.Context, in ResumeMonitoringInput) ([]MonitoringState, error) {
+	f.resumeCalls = append(f.resumeCalls, in)
+	return nil, nil
 }

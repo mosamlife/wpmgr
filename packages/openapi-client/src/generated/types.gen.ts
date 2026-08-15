@@ -325,6 +325,63 @@ export type SiteTagUpdate = {
   merge?: boolean;
 };
 
+export type PauseMonitoringRequest = {
+  site_ids: Array<string>;
+  /**
+   * Free-text note stored on every site this request pauses.
+   */
+  reason?: string;
+  /**
+   * Optional instant a later phase's sweep will auto-resume at. Must
+   * be in the future; a past instant is rejected with
+   * `resume_at_in_past` rather than stored as a pause that instantly
+   * un-pauses.
+   *
+   */
+  resume_at?: string;
+};
+
+export type ResumeMonitoringRequest = {
+  site_ids: Array<string>;
+};
+
+export type MonitoringResult = {
+  site_id: string;
+  /**
+   * The site was accepted and is now in the requested state.
+   */
+  ok: boolean;
+  /**
+   * THIS request moved the site. False for an accepted retry
+   * (`already_paused` / `already_active`).
+   *
+   */
+  changed: boolean;
+  /**
+   * Stable machine-readable outcome, not prose.
+   *
+   */
+  detail:
+    | "paused"
+    | "already_paused"
+    | "resumed"
+    | "already_active"
+    | "forbidden"
+    | "invalid_site_id"
+    | "site_not_found";
+  monitoring_paused_at?: string;
+  monitoring_paused_reason?: string;
+  monitoring_resume_at?: string;
+};
+
+export type MonitoringBulkResult = {
+  results: Array<MonitoringResult>;
+  /**
+   * How many sites this request actually moved.
+   */
+  changed_count: number;
+};
+
 export type BulkTagApplyRequest = {
   site_ids: Array<string>;
   add?: Array<string>;
@@ -11865,6 +11922,63 @@ export type UpdateTagResponses = {
 };
 
 export type UpdateTagResponse = UpdateTagResponses[keyof UpdateTagResponses];
+
+export type PauseSiteMonitoringData = {
+  body: PauseMonitoringRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/sites/monitoring/pause";
+};
+
+export type PauseSiteMonitoringErrors = {
+  /**
+   * Validation failed: empty `site_ids`, more than 200 entries, a
+   * `reason` over 500 characters, or a `resume_at` that is not in the
+   * future (`resume_at_in_past`).
+   *
+   */
+  422: Error;
+};
+
+export type PauseSiteMonitoringError =
+  PauseSiteMonitoringErrors[keyof PauseSiteMonitoringErrors];
+
+export type PauseSiteMonitoringResponses = {
+  /**
+   * Per-site pause results
+   */
+  200: MonitoringBulkResult;
+};
+
+export type PauseSiteMonitoringResponse =
+  PauseSiteMonitoringResponses[keyof PauseSiteMonitoringResponses];
+
+export type ResumeSiteMonitoringData = {
+  body: ResumeMonitoringRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/sites/monitoring/resume";
+};
+
+export type ResumeSiteMonitoringErrors = {
+  /**
+   * Validation failed (empty `site_ids`, or more than 200 entries)
+   */
+  422: Error;
+};
+
+export type ResumeSiteMonitoringError =
+  ResumeSiteMonitoringErrors[keyof ResumeSiteMonitoringErrors];
+
+export type ResumeSiteMonitoringResponses = {
+  /**
+   * Per-site resume results
+   */
+  200: MonitoringBulkResult;
+};
+
+export type ResumeSiteMonitoringResponse =
+  ResumeSiteMonitoringResponses[keyof ResumeSiteMonitoringResponses];
 
 export type BulkApplyTagsData = {
   body: BulkTagApplyRequest;

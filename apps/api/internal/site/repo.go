@@ -36,6 +36,11 @@ type Repo interface {
 	SetTags(ctx context.Context, in SetTagsInput) (Site, error)
 	SetAgeRecipient(ctx context.Context, tenantID, siteID uuid.UUID, recipient string) (Site, error)
 
+	// GH #414 m117 — monitoring pause/resume. Bulk by construction (the UI
+	// entry point is a multi-select) and idempotent: see monitoring_repo.go.
+	PauseMonitoring(ctx context.Context, in PauseMonitoringInput) ([]MonitoringState, error)
+	ResumeMonitoring(ctx context.Context, in ResumeMonitoringInput) ([]MonitoringState, error)
+
 	// Enrollment path (public /enroll; app.enroll GUC).
 	CreatePairingCode(ctx context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error)
 	Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, error)

@@ -869,6 +869,10 @@ type PatchSiteErrorConfigRes interface {
 	patchSiteErrorConfigRes()
 }
 
+type PauseSiteMonitoringRes interface {
+	pauseSiteMonitoringRes()
+}
+
 type PrepareSiteFileDownloadRes interface {
 	prepareSiteFileDownloadRes()
 }
@@ -1051,6 +1055,10 @@ type RestoreSiteRes interface {
 
 type RestoreSiteVulnerabilityRes interface {
 	restoreSiteVulnerabilityRes()
+}
+
+type ResumeSiteMonitoringRes interface {
+	resumeSiteMonitoringRes()
 }
 
 type RetryUpdateRunRes interface {
