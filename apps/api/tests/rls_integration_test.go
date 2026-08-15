@@ -118,7 +118,9 @@ var (
 // It is only used to simulate out-of-band tampering in tests.
 func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
 	t.Helper()
+	adminDSNsMu.Lock()
 	dsn, ok := adminDSNs[app]
+	adminDSNsMu.Unlock()
 	if !ok {
 		t.Fatal("no admin DSN recorded for this pool")
 	}
