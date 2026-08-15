@@ -13,9 +13,10 @@ import { buildSiteColumns } from "./performance";
 // data): every row sharing a rating rendered the IDENTICAL bar, labelled
 // "Overall" even though no such derivable distribution exists (rollups are
 // per-metric histograms with no cross-metric join key — see the design
-// note in the route's own worklog). Before this file, none of the 132 test
-// files under apps/web/src (`find apps/web/src -name "*.test.*" | wc -l`)
-// referenced RumDistributionBar or worst_offenders, so this defect had zero
+// note in the route's own worklog). Before this file, no test under
+// apps/web/src referenced RumDistributionBar or worst_offenders (verify with
+// `git grep -l 'RumDistributionBar\|worst_offenders' -- apps/web/src
+// '*.test.*'` against the commit before this one), so this defect had zero
 // coverage.
 //
 // This file renders the real `buildSiteColumns` cell defs through the real
