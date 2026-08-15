@@ -50,6 +50,27 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.136",
+    date: "2026-08-15",
+    summary:
+      "The \"28d distribution\" bar on the performance tab's worst-offenders table has been showing a picture derived from a site's rating word, not its real data, for about two months. It now shows the real histogram for whichever metric produced the rating, labelled with that metric's name, and shows \"Insufficient samples\" when there is not enough data to be meaningful. If you drew a conclusion about a specific site from that bar since mid-June, the picture it showed did not reflect that site. Nothing was stored wrongly, no other number in the product was affected, and no action is required beyond upgrading.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The \"28d distribution\" bar on the performance tab did not show a site's real data. It read only the row's rating word and looked up one of two fixed pictures: every site rated needs-improvement showed 40% good, 45% needs-improvement, 15% poor, and every site rated poor showed 10% good, 30% needs-improvement, 60% poor, whatever that site's real numbers were. The table only lists sites rated poor or needs-improvement, so those two pictures were the only ones the column ever produced. The sample count shown beside the bar was real, which made the fabricated bar look measured. It shipped as an acknowledged placeholder in mid-June, the code comment recording that was removed the same day while the placeholder itself stayed, and it was live for about two months. If you drew a conclusion about a specific site from that bar in that time, the picture it showed did not reflect that site. Nothing was stored wrongly, no other number in the product was affected, and no action is required beyond upgrading.",
+      },
+      {
+        tag: "Fixed",
+        text: "The bar now shows the real histogram for whichever metric, LCP, INP or CLS, produced the row's rating, built from data already being gathered. It shows \"Insufficient samples\" instead of a bar when a site does not have enough of that metric's data to be meaningful.",
+      },
+      {
+        tag: "Changed",
+        text: "The distribution bar now names the metric it is showing rather than being labelled \"Overall\". A site's LCP, INP and CLS distributions have no single combined meaning, and \"Overall\" implied a share of pageviews good on all three, a figure this product does not compute.",
+      },
+    ],
+    featureLinks: [{ label: "Real User Monitoring", href: "/features/real-user-monitoring" }],
+  },
+  {
     version: "0.61.135",
     date: "2026-08-14",
     summary:
