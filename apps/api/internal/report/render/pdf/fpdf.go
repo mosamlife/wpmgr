@@ -102,6 +102,9 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, 
 		f.CellFormat(contentW, 5, s.URL, "", 1, "L", false, 0, "")
 		f.Ln(2)
 
+		if s.MonitoringPaused {
+			drawPausedRow(f, s)
+		}
 		if s.Uptime != nil {
 			drawUptimeRow(f, s.Uptime)
 		}
@@ -163,9 +166,21 @@ func sectionHeader(f *fpdflib.Fpdf, accent [3]int, title string) {
 }
 
 func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
+	// GH #414 phase 5 — the average is over the MEASURED population, so when any
+	// site was paused the label says which population, and when NOTHING was
+	// measured it prints an em dash rather than 0.0%, which would read as a
+	// total outage.
+	avgUptime := "—"
+	if data.Totals.UptimeSiteCount > 0 {
+		avgUptime = fmt.Sprintf("%.1f%%", data.Totals.AvgUptimePct)
+	}
+	avgLabel := "Avg Uptime"
+	if data.Totals.PausedSiteCount > 0 {
+		avgLabel = fmt.Sprintf("Avg Uptime (%d of %d)", data.Totals.UptimeSiteCount, data.Totals.SiteCount)
+	}
 	cells := []struct{ val, label string }{
 		{fmt.Sprintf("%d", data.Totals.SiteCount), "Sites"},
-		{fmt.Sprintf("%.1f%%", data.Totals.AvgUptimePct), "Avg Uptime"},
+		{avgUptime, avgLabel},
 		{fmt.Sprintf("%d", data.Totals.Incidents), "Incidents"},
 		{fmt.Sprintf("%d", data.Totals.BackupsCount), "Backups"},
 		{fmt.Sprintf("%d", data.Totals.UpdatesApplied), "Updates"},
@@ -187,6 +202,37 @@ func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
 		f.CellFormat(cellW, 5, c.label, "", 0, "C", false, 0, "")
 	}
 	f.Ln(6)
+}
+
+// drawPausedRow states, in the client's own PDF, that this site's monitoring is
+// paused and why no uptime figures follow.
+//
+// GH #414 phase 5. It is the PDF twin of the .paused-note block in
+// report.html.tmpl and it must keep saying the same three things: monitoring is
+// paused, uptime is therefore absent rather than zero, and BACKUPS CONTINUE.
+// The last clause is not filler — a client reading "monitoring paused" on a
+// maintenance report will otherwise assume their backups stopped too, and that
+// is the one assumption this feature must never leave standing.
+//
+// Grey, never red: a pause is a decision, not an incident.
+func drawPausedRow(f *fpdflib.Fpdf, s reportdata.SiteReport) {
+	f.SetFont("dejavu", "B", 10)
+	f.SetTextColor(75, 85, 99)
+	title := "Monitoring paused"
+	if s.MonitoringPausedAt != nil {
+		title += " since " + s.MonitoringPausedAt.Format("2 Jan 2006")
+	}
+	f.CellFormat(contentW, 5, title, "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	f.MultiCell(contentW, 4.5,
+		"Uptime checks are not running for this site, so no uptime figures are shown for this period. Backups continue as normal.",
+		"", "L", false)
+	if s.MonitoringPausedReason != "" {
+		f.SetFont("dejavu", "I", 9)
+		f.MultiCell(contentW, 4.5, "Reason: "+s.MonitoringPausedReason, "", "L", false)
+	}
+	f.Ln(2)
 }
 
 func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {

@@ -41,6 +41,12 @@ type Repo interface {
 	PauseMonitoring(ctx context.Context, in PauseMonitoringInput) ([]MonitoringState, error)
 	ResumeMonitoring(ctx context.Context, in ResumeMonitoringInput) ([]MonitoringState, error)
 
+	// GH #414 phase 5 — the auto-resume sweep's claim. Cross-tenant (InAgentTx),
+	// so it takes no tenant id and no principal; see monitoring_resume_worker.go
+	// for why the exactly-once and concurrency properties live in the statement
+	// rather than in the caller.
+	ClaimDueAutoResumes(ctx context.Context, now time.Time, limit int) ([]AutoResumed, error)
+
 	// Enrollment path (public /enroll; app.enroll GUC).
 	CreatePairingCode(ctx context.Context, in CreatePairingCodeInput, codeHash string, expiresAt time.Time) (PairingCode, error)
 	Enroll(ctx context.Context, codeHash string, in EnrollInput) (Site, error)

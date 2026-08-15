@@ -271,3 +271,10 @@ func (f *fakeRepo) ResumeMonitoring(ctx context.Context, in ResumeMonitoringInpu
 	f.resumeCalls = append(f.resumeCalls, in)
 	return nil, nil
 }
+
+// GH #414 phase 5 — the auto-resume claim. This fake satisfies the Repo
+// interface only; the sweep's own tests drive a dedicated fake
+// (monitoring_auto_resume_test.go) that can return rows.
+func (f *fakeRepo) ClaimDueAutoResumes(context.Context, time.Time, int) ([]AutoResumed, error) {
+	return nil, nil
+}

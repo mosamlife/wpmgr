@@ -131,13 +131,36 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 			URL:    s.URL,
 		}
 
-		// Uptime section.
-		if sections.Uptime && sources.QueryUptimeAggregateRange != nil {
+		// GH #414 phase 5. A monitoring-paused site stays IN the report and is
+		// NAMED as paused; what it loses is the uptime section, because the
+		// prober stopped for it in phase 2 and its daily series is therefore
+		// empty for every paused day. See SiteReport.MonitoringPaused for the
+		// full argument, including why backups/updates/performance/email are
+		// deliberately left alone.
+		//
+		// The flag is read from the site row the report already enumerated, not
+		// from a second query: site.Service.List carries monitoring_paused_at
+		// since phase 4a, inside the same tenant transaction and therefore under
+		// the same RLS policies.
+		if s.MonitoringPausedAt != nil {
+			sr.MonitoringPaused = true
+			sr.MonitoringPausedAt = s.MonitoringPausedAt
+			sr.MonitoringPausedReason = s.MonitoringPausedReason
+			totals.PausedSiteCount++
+		}
+
+		// Uptime section. Skipped entirely for a paused site — and skipped
+		// BEFORE the source is called, so a paused site costs no query either.
+		if sections.Uptime && sources.QueryUptimeAggregateRange != nil && !sr.MonitoringPaused {
 			us := buildUptimeSection(ctx, sources, in.TenantID, s.ID, in.PeriodStart, in.PeriodEnd)
 			if us != nil {
 				sr.Uptime = us
 				totals.AvgUptimePct += us.UptimePct
 				totals.Incidents += us.Incidents
+				// The denominator is the population that was MEASURED, counted
+				// here at the one place a site contributes to the numerator, so
+				// the two can never be computed over different sets.
+				totals.UptimeSiteCount++
 			}
 		}
 
@@ -182,9 +205,22 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 		siteReports = append(siteReports, sr)
 	}
 
-	// Compute average uptime.
-	if len(sites) > 0 {
-		totals.AvgUptimePct = totals.AvgUptimePct / float64(len(sites))
+	// Compute average uptime over the MEASURED population, never over len(sites).
+	//
+	// GH #414 phase 5. Dividing by len(sites) let a monitoring-paused site — which
+	// contributes no uptime section at all — enter the average as a 0%, so
+	// pausing a site made the fleet number worse than the truth, and the same
+	// arithmetic had always been silently counting never-probed sites as 0% too.
+	// A site nobody measured is not a site measured at 0%. UptimeSiteCount is
+	// incremented at the single point a site adds to the numerator above, so the
+	// two halves of this division cannot drift apart.
+	if totals.UptimeSiteCount > 0 {
+		totals.AvgUptimePct = totals.AvgUptimePct / float64(totals.UptimeSiteCount)
+	} else {
+		// Nothing was measured: 0 is the zero value, and it means "no data",
+		// which the renderers say in words rather than printing 0.0% as if it
+		// were an observation.
+		totals.AvgUptimePct = 0
 	}
 	rd.Sites = siteReports
 	rd.Totals = totals
