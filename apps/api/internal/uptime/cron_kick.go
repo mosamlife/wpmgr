@@ -91,6 +91,16 @@ func (k *CronKicker) Work(ctx context.Context, _ *river.Job[CronKickArgs]) error
 // It is exposed (not just Work) so it is directly testable without River.
 // Per-site failures are swallowed; the overall function never returns an error.
 func (k *CronKicker) Kick(ctx context.Context) error {
+	// GH #414 phase 2: this is ListEnrolledForProbe, the UNFILTERED
+	// enumeration, and it must stay that way. A paused site is skipped by the
+	// uptime PROBE sweep (ListEnrolledForMonitoringProbe) because monitoring
+	// is what the operator paused. The cron kick is not monitoring: it records
+	// nothing, alerts on nothing, and its only effect is to boot PHP on the
+	// site so the site's OWN WP-Cron queue drains - which is what runs the
+	// agent's heartbeats and its scheduled BACKUPS. Filtering paused sites out
+	// here would silently stop backups on every fully page-cached paused site,
+	// which is precisely the failure mode GH #414's design refuses: pause
+	// governs monitoring, never data protection.
 	sites, err := k.repo.ListEnrolledForProbe(ctx)
 	if err != nil {
 		// A DB failure is the only error this function propagates; it lets River

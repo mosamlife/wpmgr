@@ -19,7 +19,59 @@ import (
 // tenant-scoped alert-config CRUD. Every tenant-scoped method runs under RLS.
 type Repo interface {
 	// Probe-job path (app.agent GUC, cross-tenant).
+	//
+	// ListEnrolledForProbe is the UNFILTERED whole-fleet enumeration. It is
+	// what the CRON-KICKER uses and it must stay unfiltered - see
+	// ListEnrolledForMonitoringProbe below, and cron_kick.go's Kick, for why
+	// filtering this one would stop BACKUPS on a paused site.
 	ListEnrolledForProbe(ctx context.Context) ([]EnrolledSite, error)
+
+	// ListEnrolledForMonitoringProbe is ListEnrolledForProbe restricted to
+	// sites whose MONITORING is active (sites.monitoring_paused_at IS NULL,
+	// m117 / GH #414). It is the enumeration the uptime PROBE SWEEP uses, and
+	// it exists as a separate method rather than as a predicate added to
+	// ListEnrolledForProbe because the two callers want different fleets:
+	//
+	//   - ProbeWorker.Sweep      wants MONITORED sites. Pause means "stop
+	//                            watching this site and stop telling me about
+	//                            it", so a paused site must not be probed.
+	//   - CronKicker.Kick        wants EVERY enrolled site, paused included.
+	//                            The kick is a GET to the site's own
+	//                            wp-cron.php; it is what boots PHP on a fully
+	//                            page-cached site so the site's WP-Cron queue
+	//                            drains, and that queue is what runs the
+	//                            agent's heartbeats and its BACKUP work. Give
+	//                            this method to the kicker and pausing
+	//                            "monitoring" silently stops backups on
+	//                            page-cached sites - the one failure people do
+	//                            not recover from. GH #414 phase 2 scopes
+	//                            pause to uptime probing and uptime alerting
+	//                            and to nothing else; this split is where that
+	//                            scope is actually enforced.
+	//
+	// Written as raw SQL rather than a sqlc query for the same reason the
+	// fleet reads below are: db/query/**.sql is database-engineer's tree, and
+	// this predicate needs no schema change (m117 already landed the column).
+	// If it later earns a place in db/query/sites.sql, that is a
+	// database-engineer change plus a regeneration, not a hand-sync.
+	ListEnrolledForMonitoringProbe(ctx context.Context) ([]EnrolledSite, error)
+
+	// IsMonitoringPaused reports whether sites.monitoring_paused_at is set for
+	// one site, read FRESH at dispatch time (app.agent GUC, cross-tenant).
+	//
+	// This is the second half of the belt-and-braces. The query filter above
+	// only decides which sites a sweep ADMITS; phase 1 deliberately does not
+	// drain jobs that are already queued, so a probe admitted a second before
+	// the pause landed is still in flight and will still reach the alert
+	// dispatch. A stale snapshot cannot see that pause - only a fresh read
+	// can - so the fire path re-reads here. A missing site reads as NOT
+	// paused: fail towards alerting, never towards silence.
+	//
+	// The cost is one small indexed-by-primary-key read per FIRED alert, not
+	// per probed site: fire() and fireApp() are only reached on an actual
+	// transition, which is rare by construction.
+	IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error)
+
 	SetSiteHealth(ctx context.Context, siteID uuid.UUID, status string) (bool, error)
 	GetAlertState(ctx context.Context, siteID uuid.UUID) (AlertState, bool, error)
 	UpsertAlertState(ctx context.Context, st AlertState) error
@@ -163,6 +215,80 @@ func (r *pgRepo) ListEnrolledForProbe(ctx context.Context) ([]EnrolledSite, erro
 		return nil
 	})
 	return out, err
+}
+
+// listEnrolledForMonitoringProbeSQL mirrors db/query/sites.sql's
+// ListEnrolledSitesForProbe column-for-column and adds ONE predicate:
+// monitoring_paused_at IS NULL (m117, GH #414).
+//
+// PLAN NOTE, checked with EXPLAIN rather than assumed. m117's migration
+// deliberately shipped NO index on monitoring_paused_at, on the reasoning that
+// the predicate matches nearly every row and that this enumeration is an
+// uncapped sequential scan already. That reasoning still holds: the added
+// predicate is a filter applied during a scan that has to happen anyway (there
+// is no index on enrolled_at either), so the plan is the same Seq Scan with one
+// more cheap IS NULL filter. Do not add an index for this query.
+const listEnrolledForMonitoringProbeSQL = `
+SELECT id, tenant_id, url, health_status, last_seen_at, app_probe_path, app_alerts_disabled, connection_state
+  FROM sites
+ WHERE enrolled_at IS NOT NULL
+   AND monitoring_paused_at IS NULL`
+
+func (r *pgRepo) ListEnrolledForMonitoringProbe(ctx context.Context) ([]EnrolledSite, error) {
+	var out []EnrolledSite
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, listEnrolledForMonitoringProbeSQL)
+		if err != nil {
+			return domain.Internal("uptime_list_monitored_failed", "failed to list monitored sites").WithCause(err)
+		}
+		defer rows.Close()
+		out = out[:0]
+		for rows.Next() {
+			var (
+				s            EnrolledSite
+				lastSeen     pgtype.Timestamptz
+				appProbePath *string
+			)
+			if err := rows.Scan(&s.ID, &s.TenantID, &s.URL, &s.HealthStatus, &lastSeen,
+				&appProbePath, &s.AppAlertsDisabled, &s.ConnectionState); err != nil {
+				return domain.Internal("uptime_list_monitored_failed", "failed to list monitored sites").WithCause(err)
+			}
+			if lastSeen.Valid {
+				t := lastSeen.Time
+				s.LastSeenAt = &t
+			}
+			if appProbePath != nil {
+				s.AppProbePath = *appProbePath
+			}
+			out = append(out, s)
+		}
+		if err := rows.Err(); err != nil {
+			return domain.Internal("uptime_list_monitored_failed", "failed to list monitored sites").WithCause(err)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (r *pgRepo) IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error) {
+	var paused bool
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT monitoring_paused_at IS NOT NULL FROM sites WHERE id = $1`, siteID).Scan(&paused)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No row: the site was deleted between the probe and the fire.
+			// Report NOT paused - the caller's next step is a normal alert
+			// dispatch that will find no config or no site and drop it
+			// harmlessly, which is a better failure than inventing a pause.
+			paused = false
+			return nil
+		}
+		if err != nil {
+			return domain.Internal("uptime_monitoring_pause_read_failed", "failed to read monitoring pause state").WithCause(err)
+		}
+		return nil
+	})
+	return paused, err
 }
 
 func (r *pgRepo) SetSiteHealth(ctx context.Context, siteID uuid.UUID, status string) (bool, error) {

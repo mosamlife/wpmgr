@@ -24,6 +24,12 @@ type stubRepo struct {
 func (r *stubRepo) ListEnrolledForProbe(_ context.Context) ([]EnrolledSite, error) {
 	panic("not called")
 }
+func (r *stubRepo) ListEnrolledForMonitoringProbe(_ context.Context) ([]EnrolledSite, error) {
+	panic("not called")
+}
+func (r *stubRepo) IsMonitoringPaused(_ context.Context, _ uuid.UUID) (bool, error) {
+	panic("not called")
+}
 func (r *stubRepo) SetSiteHealth(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 	panic("not called")
 }

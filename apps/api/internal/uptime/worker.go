@@ -340,8 +340,38 @@ func (w *ProbeWorker) Work(ctx context.Context, _ *river.Job[ProbeArgs]) error {
 // It returns the number of sites probed. Exposed (not just Work) so it is
 // directly testable without River. A per-site failure is logged and does not
 // abort the sweep.
+// GH #414 phase 2: the sweep enumerates only MONITORED sites
+// (monitoring_paused_at IS NULL). This is the first of the two gates; the
+// second is the fresh re-read in fire()/fireApp(), which catches a probe that
+// was already admitted when the pause landed.
+//
+// WHAT HAPPENS TO A SITE THAT IS ALREADY IN AN OPEN INCIDENT WHEN IT IS
+// PAUSED. Decided deliberately; the choice is LEAVE IT OPEN AND SILENT, and it
+// is implemented by NOT writing any code here at all - which is the point.
+//
+//   - Not resolved. Closing the incident would stamp a recovery that never
+//     happened: site_incidents' closing write is what the dashboard and the
+//     incident history read as "the site came back". Pausing a notification
+//     is not evidence about the site. An incident history that claims a
+//     recovery is a lie that outlives the pause, and this feature's whole
+//     promise is "do not tell me", never "lie to me".
+//   - Not kept alerting. That is simply the feature not working.
+//   - So: the incident row stays open and untouched, and no further alert is
+//     dispatched for it. The state machine is not advanced either, because the
+//     site is no longer probed - there are no observations to advance it with.
+//
+// The operator can tell exactly what happened afterwards, from three durable
+// facts that need no extra bookkeeping: sites.monitoring_paused_at /
+// _paused_by / _paused_reason say who paused it, when and why; the incident
+// stays open with its real opened-at and its last real probe data; and the gap
+// in site_uptime_probes over the paused window is visible in the same UI. On
+// resume the state machine picks up from the state it was left in: if the site
+// is still down, ConsecutiveDown is already past the threshold and no
+// duplicate down-alert fires; if it recovered while paused, the first probe
+// after resume produces a genuine FireRecovery and closes the incident with a
+// timestamp that is real - late, but real. Neither path invents an observation.
 func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
-	sites, err := w.repo.ListEnrolledForProbe(ctx)
+	sites, err := w.repo.ListEnrolledForMonitoringProbe(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -621,9 +651,71 @@ func (w *ProbeWorker) processSite(ctx context.Context, s EnrolledSite, res Probe
 	}
 }
 
+// monitoringPaused is the DISPATCH-side half of the pause gate (m117, GH #414
+// phase 2): it re-reads sites.monitoring_paused_at at fire time and reports
+// whether this site's uptime alert must be withheld.
+//
+// WHY A SECOND CHECK EXISTS AT ALL. Sweep already refuses to enumerate a paused
+// site, so in the steady state this never returns true. It exists for the one
+// window the selection filter cannot cover: phase 1 deliberately does not drain
+// jobs that are already queued, so a probe admitted a second before the pause
+// landed runs to completion and arrives here carrying a snapshot taken while
+// the site was still active. Only a fresh read sees the pause. Without this,
+// pausing during an in-flight sweep still pages someone.
+//
+// WHY IT WITHHOLDS THE DISPATCH AND NOTHING ELSE. Everything upstream of this
+// point has already run and is left exactly as it was: the probe result is
+// recorded, health_status is refreshed, and TransitionAlertState has persisted
+// the transition and opened or closed the incident. That is deliberate. Pause
+// means "do not tell me", never "lie to me" - the record of what the site
+// actually did stays true, and only the notification is withheld. An incident
+// that opens in this window is therefore open, real, visible in the UI, and
+// silent, which is the same end state as an incident that was already open when
+// the pause landed (see Sweep's doc comment).
+//
+// HOW IT COMPOSES WITH THE FLEET CIRCUIT BREAKER. This gate sits in the
+// per-site dispatchers (fire, fireApp) and deliberately does NOT touch
+// resolveAppAlerts' ratio maths or the aggregate's SuppressedSites list. Those
+// counts come from GetTenantAppAlertRatio, a server-side query, and
+// appAlertEligible exists precisely so the fire path and the breaker's ratio
+// can never disagree about which sites count; adding a pause predicate to one
+// side only would recreate exactly the drift GH #291 Phase 3 Fix 2 removed, and
+// adding it to the other side is a db/query change that belongs to
+// database-engineer. The composition is still correct as it stands: a paused
+// site is not probed, so it can neither newly go down nor newly recover, so it
+// contributes no NEW transition to a breaker window; and if the breaker is
+// tripped the tenant gets one aggregate notification about the fleet rather
+// than a per-site page about the paused site. Folding pause into the ratio
+// itself is a later phase, and it is a query change, not this one.
+//
+// A DB error fails OPEN: log it and dispatch. The alternative - swallowing an
+// alert because a pause lookup failed - turns a transient database blip into
+// silent monitoring, which is the failure this whole feature is supposed to
+// make deliberate and visible rather than accidental.
+func (w *ProbeWorker) monitoringPaused(ctx context.Context, s EnrolledSite, kind string) bool {
+	paused, err := w.repo.IsMonitoringPaused(ctx, s.ID)
+	if err != nil {
+		w.logger.Warn("uptime: monitoring pause check failed, dispatching anyway",
+			slog.String("site_id", s.ID.String()),
+			slog.String("alert_kind", kind),
+			slog.Any("error", err))
+		return false
+	}
+	if paused {
+		w.logger.Info("uptime: alert withheld, monitoring paused",
+			slog.String("site_id", s.ID.String()),
+			slog.String("tenant_id", s.TenantID.String()),
+			slog.String("alert_kind", kind))
+	}
+	return paused
+}
+
 // fire resolves the tenant's alert config and dispatches the transition alert.
 func (w *ProbeWorker) fire(ctx context.Context, s EnrolledSite, res ProbeResult, tr Transition, now time.Time) {
 	if w.dispatcher == nil {
+		return
+	}
+	if w.monitoringPaused(ctx, s, "reachability") {
 		return
 	}
 	cfg, found, err := w.repo.GetAlertConfig(ctx, s.TenantID)
@@ -867,6 +959,9 @@ func (w *ProbeWorker) fireAppIndividually(ctx context.Context, fires []pendingAp
 // receiving app-health alerts too.
 func (w *ProbeWorker) fireApp(ctx context.Context, s EnrolledSite, tr AppTransition, appReason string, now time.Time) {
 	if w.dispatcher == nil {
+		return
+	}
+	if w.monitoringPaused(ctx, s, "app") {
 		return
 	}
 	cfg, found, err := w.repo.GetAlertConfig(ctx, s.TenantID)
