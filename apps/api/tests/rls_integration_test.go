@@ -19,6 +19,29 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
 
+// setupFatalf fails the test with a message that cannot be mistaken for an
+// assertion made by the test body. A full-package run starts hundreds of
+// testcontainers over roughly ten minutes, and under that load an
+// infrastructure hiccup at one of these stages (container start, connection
+// string, migrate, connect, role provisioning) otherwise surfaces as a bare
+// "%v" attached to whatever test happened to be running when it hit — which
+// reads exactly like that test's own assertion failed. The SETUP FAILURE
+// prefix plus the named stage let the next reader classify it in one glance
+// instead of re-running the investigation that produced this comment.
+func setupFatalf(t *testing.T, err error, stage string) {
+	t.Helper()
+	t.Fatalf("SETUP FAILURE (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
+}
+
+// setupSkipf is setupFatalf's skip counterpart, used only for "Docker is not
+// available on this machine at all" — the one setup failure that is not a
+// mid-run flake and that every other test in the package would hit
+// identically, so skipping (rather than failing) is the honest signal.
+func setupSkipf(t *testing.T, err error, stage string) {
+	t.Helper()
+	t.Skipf("SETUP SKIP (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
+}
+
 // startPostgres spins up an ephemeral Postgres, applies the embedded
 // migrations as the bootstrap superuser, then provisions a dedicated
 // NON-superuser application role and returns a pool connected as that role.
@@ -43,22 +66,22 @@ func startPostgres(t *testing.T) *db.Pool {
 		),
 	)
 	if err != nil {
-		t.Skipf("skipping: cannot start postgres container (docker unavailable?): %v", err)
+		setupSkipf(t, err, "postgres: container start (docker unavailable?)")
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
 	adminDSN, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		setupFatalf(t, err, "postgres: connection string")
 	}
 
 	// Apply migrations as the bootstrap superuser.
 	adminPool, err := db.Connect(ctx, adminDSN)
 	if err != nil {
-		t.Fatalf("connect admin: %v", err)
+		setupFatalf(t, err, "postgres: connect as bootstrap superuser")
 	}
 	if err := adminPool.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
+		setupFatalf(t, err, "postgres: run embedded migrations")
 	}
 
 	// The auth migration already created the wpmgr_app role (NOLOGIN, no
@@ -74,7 +97,7 @@ func startPostgres(t *testing.T) *db.Pool {
 		"REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
-			t.Fatalf("provision app role (%q): %v", stmt, err)
+			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")
 		}
 	}
 	adminPool.Close()
@@ -82,7 +105,7 @@ func startPostgres(t *testing.T) *db.Pool {
 	appDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_app:app@", 1)
 	pool, err := db.Connect(ctx, appDSN)
 	if err != nil {
-		t.Fatalf("connect app: %v", err)
+		setupFatalf(t, err, "postgres: connect as wpmgr_app")
 	}
 	t.Cleanup(pool.Close)
 
@@ -102,11 +125,13 @@ func connectAdmin(t *testing.T, app *db.Pool) *db.Pool {
 	t.Helper()
 	dsn, ok := adminDSNs[app]
 	if !ok {
-		t.Fatal("no admin DSN recorded for this pool")
+		// Caller misuse, not a container flake: connectAdmin only knows a DSN
+		// for a pool that startPostgres itself returned.
+		t.Fatal("SETUP FAILURE (test helper misuse, not the test's own assertion): connectAdmin called with a pool startPostgres never returned")
 	}
 	pool, err := db.Connect(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("connect admin: %v", err)
+		setupFatalf(t, err, "postgres: connectAdmin reconnect as bootstrap superuser")
 	}
 	return pool
 }
