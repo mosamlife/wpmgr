@@ -107,8 +107,12 @@ describe("performance.tsx worst-offenders distribution cell (GH #391)", () => {
     ).toBeInTheDocument();
 
     // The fabricated split for "needs-improvement" never appears anywhere.
+    // This text lives only inside the bar's `title` attribute (and its
+    // identical aria-label) — `queryByText` searches rendered text content
+    // and can never see an attribute, so it must be `queryByTitle` here, not
+    // `queryByText`, or this assertion passes no matter what the code does.
     expect(
-      screen.queryByText(/40% good, 45% needs improvement, 15% poor/),
+      screen.queryByTitle(/40% good, 45% needs improvement, 15% poor/),
     ).not.toBeInTheDocument();
   });
 
@@ -170,7 +174,12 @@ describe("performance.tsx worst-offenders distribution cell (GH #391)", () => {
     expect(
       screen.getByRole("img", { name: /^CLS distribution:/ }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/^Overall distribution:/)).not.toBeInTheDocument();
+    // Same defect as above: "Overall distribution:" (the old fabricated
+    // label) lives only in the `title` attribute, never in text content, so
+    // this must query the attribute directly rather than `queryByText`.
+    expect(
+      screen.queryByTitle(/^Overall distribution:/),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /^Overall/ })).not.toBeInTheDocument();
   });
 });

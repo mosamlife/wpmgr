@@ -396,6 +396,7 @@ export function buildSiteColumns(
             suppressed={o.distribution_suppressed}
             sampleCount={o.distribution_sample_count}
             minSampleCount={o.distribution_sample_floor}
+            showMetricLabel
           />
         );
       },
