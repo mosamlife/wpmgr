@@ -56,6 +56,7 @@ import { cn } from "@/lib/utils";
 import { dur, ease } from "@/lib/motion-presets";
 import type { SitesDensity } from "@/features/sites/use-sites-density";
 import type { SitesSelection } from "@/features/sites/use-sites-selection";
+import type { MonitoringMenuView } from "@/features/sites/monitoring-pause";
 import type { SitesView, CardSize } from "@/features/sites/use-sites-view";
 import type { TagMatchMode } from "@/features/sites/use-sites";
 
@@ -186,6 +187,15 @@ export interface SitesToolbarProps {
   onBulkTag: () => void;
   onBulkSetClient: () => void;
   onBulkPauseMonitoring: () => void;
+  /** GH #414 — resumes monitoring on the paused half of the selection. */
+  onBulkResumeMonitoring: () => void;
+  /**
+   * GH #414 — which monitoring items to offer, each with its own count. A
+   * mixed selection renders BOTH, so neither is ambiguous about what it
+   * touches. Computed by the caller from the FULL selection (never from the
+   * visible rows), same invariant every other bulk action holds.
+   */
+  monitoringMenu: MonitoringMenuView;
   onBulkDelete: () => void;
   /**
    * GH #255 Phase 2: arms the agent self-update confirmation dialog for the
@@ -1108,6 +1118,8 @@ function ActionMode({
   onBulkTag,
   onBulkSetClient,
   onBulkPauseMonitoring,
+  onBulkResumeMonitoring,
+  monitoringMenu,
   onBulkDelete,
   onUpdateAgent,
 }: SitesToolbarProps) {
@@ -1191,6 +1203,8 @@ function ActionMode({
             onBulkTag={onBulkTag}
             onBulkSetClient={onBulkSetClient}
             onBulkPauseMonitoring={onBulkPauseMonitoring}
+            onBulkResumeMonitoring={onBulkResumeMonitoring}
+            monitoringMenu={monitoringMenu}
             onBulkDelete={onBulkDelete}
             onUpdateAgent={onUpdateAgent}
             count={count}
@@ -1253,6 +1267,8 @@ function MoreActions({
   onBulkTag,
   onBulkSetClient,
   onBulkPauseMonitoring,
+  onBulkResumeMonitoring,
+  monitoringMenu,
   onBulkDelete,
   onUpdateAgent,
   count,
@@ -1261,6 +1277,8 @@ function MoreActions({
   onBulkTag: () => void;
   onBulkSetClient: () => void;
   onBulkPauseMonitoring: () => void;
+  onBulkResumeMonitoring: () => void;
+  monitoringMenu: MonitoringMenuView;
   onBulkDelete: () => void;
   onUpdateAgent?: () => void;
   count: number;
@@ -1288,9 +1306,23 @@ function MoreActions({
         <DropdownMenuItem onSelect={onBulkSetClient}>
           Set client on {count} {sitesNoun}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onBulkPauseMonitoring}>
-          Pause monitoring on {count} {sitesNoun}
-        </DropdownMenuItem>
+        {/*
+          GH #414. Both items render for a MIXED selection, each carrying its
+          own count, so "Pause monitoring on 3 sites" and "Resume monitoring on
+          2 sites" can sit together over a selection of 5 and neither one lies
+          about its reach. A uniform selection renders only the item that
+          applies to it.
+        */}
+        {monitoringMenu.pause ? (
+          <DropdownMenuItem onSelect={onBulkPauseMonitoring}>
+            {monitoringMenu.pause.label}
+          </DropdownMenuItem>
+        ) : null}
+        {monitoringMenu.resume ? (
+          <DropdownMenuItem onSelect={onBulkResumeMonitoring}>
+            {monitoringMenu.resume.label}
+          </DropdownMenuItem>
+        ) : null}
         {onUpdateAgent ? (
           <>
             <DropdownMenuSeparator />

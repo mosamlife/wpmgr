@@ -55,6 +55,9 @@ export {
   updateTag,
   deleteTag,
   bulkApplyTags,
+  // monitoring pause (GH #414, m117)
+  pauseSiteMonitoring,
+  resumeSiteMonitoring,
   // updates
   createUpdateRun,
   listUpdateRuns,
@@ -317,6 +320,15 @@ export type {
   DeleteTagData,
   UpdateTagData,
   UpdateTagResponse,
+  // monitoring pause (GH #414, m117)
+  PauseMonitoringRequest,
+  ResumeMonitoringRequest,
+  MonitoringResult,
+  MonitoringBulkResult,
+  PauseSiteMonitoringData,
+  PauseSiteMonitoringResponse,
+  ResumeSiteMonitoringData,
+  ResumeSiteMonitoringResponse,
   BulkApplyTagsData,
   BulkApplyTagsResponse,
   LoginData,

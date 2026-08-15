@@ -1,32 +1,69 @@
+import { PauseCircle } from "lucide-react";
 import type { Site } from "@wpmgr/api";
 
 import { Badge } from "@/components/ui/badge";
-import { StatusChip, type StatusTone } from "@/components/status";
-
-// Health status maps to a StatusTone so the chip reads correctly at a glance.
-// "healthy" maps to success (green), "unreachable" to destructive (red), and
-// "unknown" to muted (gray) — same tone mapping used in the sites table.
-const healthMeta: Record<
-  Site["health_status"],
-  { label: string; tone: StatusTone; pulse: boolean }
-> = {
-  healthy: { label: "Healthy", tone: "success", pulse: true },
-  unreachable: { label: "Unreachable", tone: "destructive", pulse: false },
-  unknown: { label: "Unknown", tone: "muted", pulse: false },
-};
+import { StatusChip } from "@/components/status";
+import { useNow } from "@/lib/use-now";
+import { cn } from "@/lib/utils";
+import { healthBadgeFor, pausedBadgeFor } from "@/features/sites/monitoring-pause";
 
 /**
  * HealthBadge — StatusChip variant of the health indicator. Dot + label,
  * no bare colored dot, no purple, tokens only.
+ *
+ * GH #414. It takes the whole `site` rather than the bare status because a
+ * paused site's `health_status` is FROZEN: phase 2 filters paused sites out of
+ * the uptime prober's enumeration, and the prober is what refreshes the field.
+ * `healthBadgeFor` greys the chip and stamps it with the age of
+ * `health_checked_at`; see that function for the decision and why.
  */
-export function HealthBadge({ status }: { status: Site["health_status"] }) {
-  const meta = healthMeta[status];
+export function HealthBadge({ site }: { site: Site }) {
+  // 30 s cadence: coarse enough not to thrash, fine enough that "as of 4m ago"
+  // does not sit stale on a long-open dashboard.
+  const now = useNow(30_000);
+  const view = healthBadgeFor(site, now);
   return (
     <StatusChip
-      tone={meta.tone}
-      label={meta.label}
-      pulse={meta.pulse}
+      tone={view.tone}
+      label={view.label}
+      time={view.time ?? undefined}
+      pulse={view.pulse}
+      className={view.tone === "muted" ? "text-muted-foreground" : undefined}
     />
+  );
+}
+
+/**
+ * PausedBadge — GH #414. A pause you cannot see is a pause you forget, so this
+ * rides the site card and the site row whenever `monitoring_paused_at` is set.
+ * Who paused it, since when, why, and when it comes back are all in the hover
+ * text; the chip itself stays short enough not to crowd the row.
+ */
+export function PausedBadge({
+  site,
+  resolveActor,
+  className,
+}: {
+  site: Site;
+  resolveActor?: (userId: string) => string | null;
+  className?: string;
+}) {
+  const now = useNow(30_000);
+  const view = pausedBadgeFor(site, resolveActor, now);
+  if (!view) return null;
+  return (
+    <Badge
+      variant="outline"
+      title={view.title}
+      aria-label={view.title}
+      className={cn(
+        "gap-1 border-warning/40 text-warning-foreground",
+        className,
+      )}
+    >
+      <PauseCircle aria-hidden="true" className="size-3" />
+      {view.label}
+    </Badge>
   );
 }
 

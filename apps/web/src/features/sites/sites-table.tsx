@@ -62,6 +62,7 @@ import {
   type SitesSelection,
 } from "@/features/sites/use-sites-selection";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
+import { PausedBadge } from "@/features/sites/site-badges";
 import { siteUptimeBadge, siteUptimeTextClass } from "@/features/sites/uptime-badge";
 import { AgentColumnFleetNote } from "@/features/sites/agent-column-header";
 import {
@@ -414,11 +415,15 @@ function buildColumns(
             ) : null}
             {/* Phase 5 connection lifecycle badge — dot + label + relative time,
                 auto-updating, with a one-shot pulse on state change. */}
-            <ConnectionStateBadge
-              state={connectionState}
-              lastSeenAt={lastSeenAt}
-              disconnectedReason={row.original.disconnectedReason}
-            />
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <ConnectionStateBadge
+                state={connectionState}
+                lastSeenAt={lastSeenAt}
+                disconnectedReason={row.original.disconnectedReason}
+              />
+              {/* GH #414 — a pause you cannot see is a pause you forget. */}
+              <PausedBadge site={site} />
+            </div>
           </div>
         );
       },

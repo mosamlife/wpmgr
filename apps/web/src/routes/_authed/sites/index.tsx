@@ -48,6 +48,21 @@ import { AgentSelfUpdateDialog } from "@/features/updates/agent-self-update-dial
 import { useMe, canOperate, canManage } from "@/features/auth/use-auth";
 import { useBulkBackup } from "@/features/backups/use-bulk-backup";
 import { useBulkAction } from "@/features/sites/use-bulk-action";
+import {
+  MonitoringRequestError,
+  usePauseMonitoring,
+  useResumeMonitoring,
+} from "@/features/sites/use-site-monitoring";
+import {
+  MONITORING_PAUSE_SCOPE_SENTENCE,
+  fleetCountLabel,
+  monitoringMenuFor,
+  pausedCount,
+  splitByPauseState,
+  summarizeMonitoringResult,
+} from "@/features/sites/monitoring-pause";
+import { PauseMonitoringDialog } from "@/features/sites/pause-monitoring-dialog";
+import type { MonitoringBulkResult } from "@wpmgr/api";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import { connectionStateOf } from "@/features/sites/connection-state";
@@ -514,7 +529,9 @@ function SitesPage() {
       return `${shown} matching site${shown === 1 ? "" : "s"}`;
     }
     if (sites.length === 0) return undefined;
-    return `${sites.length} site${sites.length === 1 ? "" : "s"} enrolled`;
+    // GH #414 — "34 sites, 2 paused", never a quiet "34". A pause invisible
+    // from the roster is a pause the operator forgets they set.
+    return fleetCountLabel(sites.length, pausedCount(sites));
   }, [isPending, isError, sites, hasActiveFilters, visibleSites.length]);
 
   // ── Auto-login ─────────────────────────────────────────────────────────────
@@ -786,9 +803,133 @@ function SitesPage() {
     setSetClientOpen(true);
   }, []);
 
+  // GH #414 — the monitoring pause/resume pair.
+  //
+  // Targets come from the FULL `selection.selected` set split by pause state,
+  // never from `visibleSites`, matching every other bulk action's invariant. A
+  // pause only ever sends the ACTIVE half and a resume only the paused half,
+  // so neither menu item's count can disagree with what the request touches.
+  const pauseMonitoring = usePauseMonitoring();
+  const resumeMonitoring = useResumeMonitoring();
+  const [pauseDialogOpen, setPauseDialogOpen] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+
+  const monitoringMenu = useMemo(
+    () => monitoringMenuFor(selectedSites),
+    [selectedSites],
+  );
+  const monitoringSplit = useMemo(
+    () => splitByPauseState(selectedSites),
+    [selectedSites],
+  );
+
   const handleBulkPauseMonitoring = useCallback(() => {
-    toast.info(`Pausing monitoring on ${selection.count} sites lands in Sprint 4`);
-  }, [selection.count]);
+    if (monitoringSplit.active.length === 0) return;
+    setPauseError(null);
+    setPauseDialogOpen(true);
+  }, [monitoringSplit.active.length]);
+
+  // Reports the per-site half of a 200: some sites can be refused
+  // (site_archived / site_revoked) while the rest of the same call succeeded,
+  // so this is a partial-success toast and never a request failure.
+  const reportMonitoringOutcome = useCallback(
+    (verb: "paused" | "resumed", result: MonitoringBulkResult) => {
+      const summary = summarizeMonitoringResult(result.results);
+      const moved = summary.changed;
+      const noun = moved === 1 ? "site" : "sites";
+
+      if (summary.refused.length > 0) {
+        const reasons = Array.from(
+          new Set(summary.refused.map((r) => r.message)),
+        ).join("; ");
+        toast.warning(
+          `Monitoring ${verb} on ${moved} ${noun}; ${summary.refused.length} skipped`,
+          { description: `Skipped because the site is ${reasons}.` },
+        );
+        return;
+      }
+
+      if (moved === 0 && summary.unchanged > 0) {
+        toast.info(
+          `Already ${verb}: ${summary.unchanged} ${summary.unchanged === 1 ? "site" : "sites"} were unchanged`,
+        );
+        return;
+      }
+
+      toast.success(`Monitoring ${verb} on ${moved} ${noun}`, {
+        description:
+          verb === "paused" ? MONITORING_PAUSE_SCOPE_SENTENCE : undefined,
+      });
+    },
+    [],
+  );
+
+  // A whole-request failure. `MonitoringRequestError.code` carries the
+  // server's stable code, so each of request_too_large / principal_required /
+  // too_many_sites / resume_at_in_past gets its own sentence and its own
+  // remedy rather than one generic "Request failed".
+  const reportMonitoringError = useCallback((error: unknown) => {
+    const message =
+      error instanceof MonitoringRequestError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "Monitoring could not be changed.";
+    return message;
+  }, []);
+
+  const confirmPauseMonitoring = useCallback(
+    async (reason: string) => {
+      const ids = monitoringSplit.active.map((s) => s.id);
+      if (ids.length === 0) {
+        setPauseDialogOpen(false);
+        return;
+      }
+      setPauseError(null);
+      try {
+        const result = await pauseMonitoring.mutateAsync({
+          siteIds: ids,
+          ...(reason ? { reason } : {}),
+        });
+        setPauseDialogOpen(false);
+        selection.replace([]);
+        reportMonitoringOutcome("paused", result);
+      } catch (error) {
+        // Keep the dialog open on a request failure: the operator's typed
+        // reason survives, and several of these codes are retryable as-is.
+        setPauseError(reportMonitoringError(error));
+      }
+    },
+    [
+      monitoringSplit.active,
+      pauseMonitoring,
+      selection,
+      reportMonitoringOutcome,
+      reportMonitoringError,
+    ],
+  );
+
+  // Resume needs no confirmation: it restores the default state, and the
+  // dialog's whole job is explaining a scope that resuming does not narrow.
+  const handleBulkResumeMonitoring = useCallback(async () => {
+    const ids = monitoringSplit.paused.map((s) => s.id);
+    if (ids.length === 0) return;
+    try {
+      const result = await resumeMonitoring.mutateAsync({ siteIds: ids });
+      selection.replace([]);
+      reportMonitoringOutcome("resumed", result);
+    } catch (error) {
+      toast.error("Monitoring could not be resumed", {
+        description: reportMonitoringError(error),
+      });
+    }
+  }, [
+    monitoringSplit.paused,
+    resumeMonitoring,
+    selection,
+    reportMonitoringOutcome,
+    reportMonitoringError,
+  ]);
 
   const handleBulkDelete = useCallback(() => {
     if (selection.count === 0) return;
@@ -966,6 +1107,8 @@ function SitesPage() {
             onBulkTag={handleBulkTag}
             onBulkSetClient={handleBulkSetClient}
             onBulkPauseMonitoring={handleBulkPauseMonitoring}
+            onBulkResumeMonitoring={() => void handleBulkResumeMonitoring()}
+            monitoringMenu={monitoringMenu}
             onBulkDelete={handleBulkDelete}
             // GH #255 Phase 2: undefined hides the menu item entirely; the
             // action must not appear usable while the control-plane kill
@@ -1193,6 +1336,19 @@ function SitesPage() {
           onClose={() => setSetClientOpen(false)}
           siteIds={Array.from(selection.selected)}
           onSuccess={() => selection.replace([])}
+        />
+      ) : null}
+
+      {/* GH #414 — the pause confirmation. Its body is the one string that
+          decides whether this feature is useful or a support ticket. */}
+      {operate ? (
+        <PauseMonitoringDialog
+          open={pauseDialogOpen}
+          onClose={() => setPauseDialogOpen(false)}
+          onConfirm={confirmPauseMonitoring}
+          count={monitoringSplit.active.length}
+          isPending={pauseMonitoring.isPending}
+          errorMessage={pauseError}
         />
       ) : null}
 

@@ -56,6 +56,7 @@ import {
   asConnectedSite,
 } from "@/features/sites/connection-state";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
+import { PausedBadge } from "@/features/sites/site-badges";
 import { SiteCardThumbnail } from "@/features/sites/site-card-thumbnail";
 import { siteUptimeBadge } from "@/features/sites/uptime-badge";
 import {
@@ -339,11 +340,15 @@ export function SiteCard({
         {/* Reserved height: hostname slot is always rendered (min-h-5) so
             cards with/without a distinct hostname stay aligned. */}
         <div className="flex min-w-0 flex-col gap-1">
-          <ConnectionStateBadge
-            state={connectionState}
-            lastSeenAt={site.last_seen_at ?? null}
-            disconnectedReason={disconnectedReason}
-          />
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <ConnectionStateBadge
+              state={connectionState}
+              lastSeenAt={site.last_seen_at ?? null}
+              disconnectedReason={disconnectedReason}
+            />
+            {/* GH #414 — a pause you cannot see is a pause you forget. */}
+            <PausedBadge site={site} />
+          </div>
           {/* Hostname (mono) — always reserve the slot height */}
           <div className="min-h-4">
             {site.name && site.name !== hostname ? (
