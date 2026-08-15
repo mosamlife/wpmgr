@@ -290,7 +290,11 @@ function HeadlineStrip({
 // All-sites CWV table columns
 // ---------------------------------------------------------------------------
 
-function buildSiteColumns(
+// Exported for -performance.distribution.test.tsx, which renders these
+// columns through the real FleetTable to cover the worst-offenders
+// distribution cell (GH #391) — otherwise untested (see that file's header
+// comment).
+export function buildSiteColumns(
   windowDays: number,
   onRowClick: (row: FleetRumOffender) => void,
 ): ColumnDef<FleetRumOffender>[] {
@@ -382,25 +386,38 @@ function buildSiteColumns(
       enableSorting: false,
       meta: { width: "20%" },
       cell: ({ row }) => {
-        const r = row.original.overall_rating;
-        const goodPct = r === "good" ? 75 : r === "needs-improvement" ? 40 : 10;
-        const poorPct = r === "poor" ? 60 : r === "needs-improvement" ? 15 : 5;
-        const dist = {
-          good: 0, needs_improvement: 0, poor: 0,
-          good_pct: goodPct,
-          needs_improvement_pct: 100 - goodPct - poorPct,
-          poor_pct: poorPct,
-        };
+        const o = row.original;
+        const metricLabel =
+          DISTRIBUTION_METRIC_LABELS[o.distribution_metric] || "Rating";
         return (
           <RumDistributionBar
-            metricLabel="Overall"
-            distribution={dist}
+            metricLabel={metricLabel}
+            distribution={o.distribution}
+            suppressed={o.distribution_suppressed}
+            sampleCount={o.distribution_sample_count}
+            minSampleCount={o.distribution_sample_floor}
+            showMetricLabel
           />
         );
       },
     },
   ];
 }
+
+// Labels the distribution bar with the metric that actually produced
+// overall_rating (worstOfThree's lcp -> inp -> cls tie-break; see
+// rum_results_handler.go) instead of the fabricated "Overall" this column
+// used to claim. "" only occurs for a row whose winning metric is unrated,
+// which worst_offenders never emits (GH #391).
+const DISTRIBUTION_METRIC_LABELS: Record<
+  FleetRumOffender["distribution_metric"],
+  string
+> = {
+  lcp: "LCP",
+  inp: "INP",
+  cls: "CLS",
+  "": "Rating",
+};
 
 // ---------------------------------------------------------------------------
 // Fleet CWV trend chart (28-day)

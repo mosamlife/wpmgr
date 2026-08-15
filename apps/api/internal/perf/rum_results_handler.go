@@ -489,6 +489,14 @@ type fleetPerMetric struct {
 
 // fleetRumWorstOffender is a site with poor CWV p75 ratings.
 // JSON field names are pinned to the frontend FleetRumOffender contract.
+//
+// GH #391 — the dashboard's per-row distribution bar used to be fabricated: a
+// fixed good/NI/poor split keyed only on OverallRating's word, with no
+// reference to actual sample data (never derivable to "good" in practice,
+// since a site only reaches worst_offenders at all when its worst band is
+// poor or needs-improvement). Distribution* below instead folds the SAME
+// bucket histogram that decided OverallRating, for the metric that actually
+// produced it, so the bar explains the rating sitting beside it.
 type fleetRumWorstOffender struct {
 	SiteID        uuid.UUID `json:"site_id"`
 	Name          string    `json:"name"`
@@ -498,6 +506,47 @@ type fleetRumWorstOffender struct {
 	CLSP75        *float64  `json:"cls_p75"`
 	OverallRating string    `json:"overall_rating"`
 	SampleCount   int64     `json:"sample_count"`
+
+	// DistributionMetric names which metric ("lcp", "inp", or "cls") produced
+	// OverallRating — worstOfThree's tie-break order (lcp, then inp, then
+	// cls; the first metric at max severity wins) is deterministic, so this
+	// never flips between refreshes for a tied row. The frontend labels the
+	// bar with this name instead of the misleading "Overall".
+	DistributionMetric string `json:"distribution_metric"`
+	// Distribution is DistributionMetric's good/needs-improvement/poor split,
+	// folded from the same bucket histogram InterpolateP75FromCounts used for
+	// that metric's p75 — nil when DistributionSuppressed is true.
+	Distribution *RumDistribution `json:"distribution,omitempty"`
+	// DistributionSuppressed is true when DistributionMetric's own sample
+	// count is below DistributionSampleFloor: the frontend must render
+	// "insufficient samples" for this row's bar rather than a confident
+	// split, exactly as the per-site summary endpoint already does for
+	// RumMetricSummary.Suppressed. In the current worst_offenders selection
+	// this metric always already cleared the floor (worstOfThree only
+	// returns a rated metric — see siteVerdict construction above — once its
+	// sample count clears minSampleCount), so this is defence-in-depth
+	// against that gate ever changing rather than a state reachable today;
+	// see the offenderDistribution doc comment.
+	DistributionSuppressed bool `json:"distribution_suppressed"`
+	// DistributionSampleCount is DistributionMetric's own sample count (NOT
+	// the LCP+INP+CLS sum SampleCount above).
+	DistributionSampleCount int64 `json:"distribution_sample_count"`
+	// DistributionSampleFloor is the threshold DistributionSampleCount was
+	// compared against. This is the GLOBAL default (the minSampleCount const
+	// local to rumFleet) — the same floor that already
+	// gates every rating in this fleet aggregation (siteVerdict.*Rating,
+	// fleetPassPct) — and deliberately NOT the site's own configured
+	// site_perf_config.min_sample_count that the per-site summary endpoint
+	// (rumSummary, RumSummaryDTO.MinSampleCount) honours. rumFleet collapses
+	// many sites' rollups in one pass and loads no per-site config; sending a
+	// per-site floor here while every other rating in the same response used
+	// the global one would let a row's bar disagree with its own rating word
+	// on the exact question of whether there was "enough data" — a more
+	// confusing failure than naming the floor honestly as global. Loading
+	// per-site config for this field is a legitimate follow-up (bounded to
+	// the <=10 capped offenders, same pattern as the Name/URL enrichment
+	// below) if the two floors ever need to diverge.
+	DistributionSampleFloor int64 `json:"distribution_sample_floor"`
 }
 
 // fleetRumTrendPoint is one day's fleet-level p75 values for the three
@@ -549,17 +598,40 @@ func ratingRank(rating string) int {
 }
 
 // worstOfThree returns the most severe of the (already-normalized) lcp/inp/cls
-// ratings, ignoring any that are "" (unrated). Returns "" if none are rated.
-func worstOfThree(lcp, inp, cls string) string {
-	worst := ""
+// ratings, ignoring any that are "" (unrated), together with the name of the
+// metric that produced it ("lcp", "inp", or "cls"). Ties are broken by
+// iteration order below (lcp, inp, cls): the FIRST metric at the max severity
+// wins, deterministically — a row whose bar changed metric between refreshes
+// on a tie would be worse than no bar (GH #391). Returns ("", "") if none are
+// rated.
+func worstOfThree(lcp, inp, cls string) (rating string, metric string) {
+	type candidate struct {
+		rating string
+		metric string
+	}
+	worst := candidate{}
 	worstRank := -1
-	for _, r := range [3]string{lcp, inp, cls} {
-		if rank := ratingRank(r); rank > worstRank {
+	for _, cand := range [3]candidate{{lcp, "lcp"}, {inp, "inp"}, {cls, "cls"}} {
+		if rank := ratingRank(cand.rating); rank > worstRank {
 			worstRank = rank
-			worst = r
+			worst = cand
 		}
 	}
-	return worst
+	return worst.rating, worst.metric
+}
+
+// offenderDistribution folds metric's bucket histogram into a RumDistribution
+// for a worst-offender row, or marks it suppressed when sampleCount is below
+// floor. Factored out of rumFleet so the suppression gate is one
+// independently-testable place instead of being inlined at the call site —
+// see the DistributionSuppressed doc on fleetRumWorstOffender for why this
+// gate cannot currently fire for a row that already made the offenders list,
+// and is kept anyway as defence-in-depth.
+func offenderDistribution(metric string, counts []int64, sampleCount, floor int64) (dist *RumDistribution, suppressed bool) {
+	if sampleCount < floor {
+		return nil, true
+	}
+	return foldBucketsIntoDistribution(metric, counts), false
 }
 
 // rumFleet handles GET /api/v1/perf/rum/fleet.
@@ -809,19 +881,27 @@ func (h *Handler) rumFleet(c *gin.Context) {
 	// OverallRating is the worst band among whichever metrics are rated.
 	worstOffenders := make([]fleetRumWorstOffender, 0, len(siteVerdicts))
 	for siteID, sv := range siteVerdicts {
-		worst := worstOfThree(sv.lcpRating, sv.inpRating, sv.clsRating)
+		worst, worstMetric := worstOfThree(sv.lcpRating, sv.inpRating, sv.clsRating)
 		if worst != "poor" && worst != "needs-improvement" {
 			continue
 		}
+
+		// DistributionMetric only names which metric produced `worst`; the
+		// histogram fold itself (GH #391) happens below, after sort+cap,
+		// alongside the Name/URL enrichment — same reason: bounded to <=10
+		// rows instead of running once per qualifying site.
 		worstOffenders = append(worstOffenders, fleetRumWorstOffender{
-			SiteID:        siteID,
-			Name:          "", // enriched below, after sort+cap (GH #202); left empty here by design
-			URL:           "",
-			LCPP75:        sv.lcpP75,
-			INPP75:        sv.inpP75,
-			CLSP75:        sv.clsP75,
-			OverallRating: worst,
-			SampleCount:   sv.lcpSamples + sv.inpSamples + sv.clsSamples,
+			SiteID:             siteID,
+			Name:               "", // enriched below, after sort+cap (GH #202); left empty here by design
+			URL:                "",
+			LCPP75:             sv.lcpP75,
+			INPP75:             sv.inpP75,
+			CLSP75:             sv.clsP75,
+			OverallRating:      worst,
+			SampleCount:        sv.lcpSamples + sv.inpSamples + sv.clsSamples,
+			DistributionMetric: worstMetric,
+			// Distribution / DistributionSuppressed / DistributionSampleCount /
+			// DistributionSampleFloor are filled in below, after sort+cap.
 		})
 	}
 	sort.Slice(worstOffenders, func(i, j int) bool {
@@ -845,9 +925,27 @@ func (h *Handler) rumFleet(c *gin.Context) {
 	}
 
 	// Enrich the (already-capped, <=10) offenders with a display name/url
-	// (GH #202). Deliberately done AFTER sort+cap so this never scales with
-	// the number of reporting sites — one bulk lookup, not an N+1 per site.
+	// (GH #202) and with their offender distribution (GH #391). Deliberately
+	// done AFTER sort+cap so neither scales with the number of reporting
+	// sites — one bulk name/url lookup, and at most ten histogram folds,
+	// not one per qualifying site.
 	if len(worstOffenders) > 0 {
+		for i := range worstOffenders {
+			wo := &worstOffenders[i]
+			wo.DistributionSampleFloor = int64(minSampleCount)
+			// Pull the SAME per-(site,metric) bucket accumulator that fed
+			// siteVerdicts above (siteAcc, built in the rollup loop earlier
+			// in this function) — no new query, the histogram is already in
+			// memory.
+			acc, ok := siteAcc[siteMetricKey{siteID: wo.SiteID, metric: wo.DistributionMetric}]
+			if !ok {
+				wo.DistributionSuppressed = true
+				continue
+			}
+			wo.DistributionSampleCount = acc.sampleCount
+			wo.Distribution, wo.DistributionSuppressed = offenderDistribution(wo.DistributionMetric, acc.counts, acc.sampleCount, int64(minSampleCount))
+		}
+
 		if metas, merr := h.svc.ListSitesMeta(c.Request.Context(), p.TenantID); merr == nil {
 			metaByID := make(map[uuid.UUID]SiteMeta, len(metas))
 			for _, m := range metas {

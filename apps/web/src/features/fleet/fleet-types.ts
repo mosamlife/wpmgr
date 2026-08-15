@@ -2,6 +2,8 @@
 // Performance). These are hand-rolled to match the pinned API contract; the
 // endpoints are NOT in the generated @wpmgr/api SDK yet.
 
+import type { RumDistribution } from "@/features/perf/types";
+
 // ---------------------------------------------------------------------------
 // Uptime
 // ---------------------------------------------------------------------------
@@ -180,6 +182,22 @@ export interface FleetRumOffender {
   cls_p75: number | null;
   overall_rating: "good" | "needs-improvement" | "poor";
   sample_count: number;
+  /**
+   * Which of lcp/inp/cls produced `overall_rating` (worstOfThree's
+   * deterministic lcp -> inp -> cls tie-break; see rum_results_handler.go).
+   * The distribution below is THIS metric's own good/NI/poor split, not an
+   * average across all three (different units, different thresholds, and
+   * the rollups are per-metric histograms with no cross-metric join key).
+   */
+  distribution_metric: "lcp" | "inp" | "cls" | "";
+  /** distribution_metric's own good/needs-improvement/poor split. Absent when distribution_suppressed is true. */
+  distribution?: RumDistribution;
+  /** True when distribution_sample_count is below distribution_sample_floor: render "insufficient samples", not a bar. */
+  distribution_suppressed: boolean;
+  /** distribution_metric's own sample count (NOT the lcp+inp+cls sum in sample_count above). */
+  distribution_sample_count: number;
+  /** The floor distribution_sample_count was compared against (fleet aggregation's global minSampleCount). */
+  distribution_sample_floor: number;
 }
 
 export interface FleetRumTrendPoint {

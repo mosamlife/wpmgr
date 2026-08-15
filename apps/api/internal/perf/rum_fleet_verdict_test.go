@@ -319,3 +319,102 @@ func TestRumFleet_worstOffendersEnrichmentIsSingleBulkCall(t *testing.T) {
 		t.Errorf("ListSitesMeta called %d times, want exactly 1 (bulk lookup, not N+1)", calls)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GH #391 — worst_offenders rows must carry the REAL distribution of the
+// metric that produced OverallRating, not a fabricated split keyed on the
+// rating word.
+// ---------------------------------------------------------------------------
+
+// TestRumFleet_worstOffenderDistribution_matchesWorstMetric is the GH #391
+// regression test: a site with a good LCP but a poor INP must return INP's
+// own bucket distribution and "inp" as DistributionMetric — not LCP's, even
+// though LCP data is also present on the row (LCPP75 is populated). LCP's
+// samples are ALL "good" (100/0/0) and INP's are ALL "poor" (0/0/100), so the
+// two distributions cannot be confused for one another by accident.
+func TestRumFleet_worstOffenderDistribution_matchesWorstMetric(t *testing.T) {
+	siteA := uuid.New()
+
+	// Bucket 0 ([0,200)) interpolates to p75≈150ms/milli — "good" for LCP
+	// (<=2500) and would also read "good" for INP (<=200) were it INP's data.
+	goodCounts := fleetInt32Counts(0, 50)
+	// Bucket 4 lower bound is 500, already >= INP's poor threshold (500), so
+	// this is wholly "poor" for INP regardless of within-bucket interpolation.
+	poorINPCounts := fleetInt32Counts(4, 40)
+
+	rollups := []rum.HourlyRollup{
+		{RollupKey: rum.RollupKey{SiteID: siteA, Metric: "lcp"}, SampleCount: 50, BucketCounts: goodCounts, MaxValue: 190},
+		{RollupKey: rum.RollupKey{SiteID: siteA, Metric: "inp"}, SampleCount: 40, BucketCounts: poorINPCounts, MaxValue: 590},
+	}
+
+	h := newFleetRumHandler([]uuid.UUID{siteA}, rollups)
+	resp := callRumFleet(t, h)
+
+	off := findOffender(resp, siteA)
+	if off == nil {
+		t.Fatalf("expected site A (good LCP, poor INP) in worst_offenders, got none")
+	}
+	if off.OverallRating != "poor" {
+		t.Fatalf("overall_rating = %q, want %q (worst of lcp=good/inp=poor)", off.OverallRating, "poor")
+	}
+	if off.DistributionMetric != "inp" {
+		t.Fatalf("distribution_metric = %q, want %q (INP is the worst-rated metric, not LCP)", off.DistributionMetric, "inp")
+	}
+	if off.DistributionSuppressed {
+		t.Fatalf("distribution_suppressed = true, want false (INP has 40 samples, floor is 30)")
+	}
+	if off.Distribution == nil {
+		t.Fatalf("distribution is nil, want a populated good/needs_improvement/poor split")
+	}
+	if off.Distribution.PoorPct != 100 || off.Distribution.GoodPct != 0 {
+		t.Errorf("distribution = %+v, want 100%% poor / 0%% good (all 40 INP samples are in the poor band, matching INP's own data — LCP's data is 100%% good and must not leak in)", off.Distribution)
+	}
+	if off.DistributionSampleCount != 40 {
+		t.Errorf("distribution_sample_count = %d, want 40 (INP's own sample count, not LCP+INP's combined %d)", off.DistributionSampleCount, off.SampleCount)
+	}
+	if off.DistributionSampleFloor != 30 {
+		t.Errorf("distribution_sample_floor = %d, want 30 (the global minSampleCount default)", off.DistributionSampleFloor)
+	}
+}
+
+// TestOffenderDistribution_belowFloor_isSuppressed verifies offenderDistribution
+// — the gate rum_fleet's worst-offender loop uses to decide whether a row's
+// bar is trustworthy — marks a metric below the sample floor as suppressed
+// with a nil distribution, rather than folding a low-confidence bucket count
+// into a bar the operator would read as measurement (GH #391). Exercised
+// directly (not through the HTTP handler): a row only reaches worst_offenders
+// once its worst metric has already cleared this same floor (see
+// DistributionSuppressed's doc comment on fleetRumWorstOffender), so this
+// state is not reachable via callRumFleet today — this proves the mechanism
+// that guards it stays correct in isolation, e.g. if that upstream gate is
+// ever loosened.
+func TestOffenderDistribution_belowFloor_isSuppressed(t *testing.T) {
+	counts := fleetInt32CountsAsInt64(0, 29) // 29 < floor of 30
+	dist, suppressed := offenderDistribution("lcp", counts, 29, 30)
+	if !suppressed {
+		t.Fatalf("suppressed = false, want true (29 samples < floor of 30)")
+	}
+	if dist != nil {
+		t.Fatalf("distribution = %+v, want nil when suppressed", dist)
+	}
+
+	// Sanity check the non-suppressed side too, so a change that always
+	// returns suppressed=true would also be caught.
+	dist, suppressed = offenderDistribution("lcp", counts, 30, 30)
+	if suppressed {
+		t.Fatalf("suppressed = true, want false (30 samples meets floor of 30)")
+	}
+	if dist == nil {
+		t.Fatalf("distribution is nil, want a populated split (sample count meets the floor)")
+	}
+}
+
+// fleetInt32CountsAsInt64 builds a NumBuckets int64 slice (the shape
+// offenderDistribution/foldBucketsIntoDistribution take directly, vs.
+// fleetInt32Counts' int32 rollup-wire shape) with a single bucket holding the
+// full sample count.
+func fleetInt32CountsAsInt64(idx int, count int64) []int64 {
+	c := make([]int64, rum.NumBuckets)
+	c[idx] = count
+	return c
+}
