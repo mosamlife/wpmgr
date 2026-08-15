@@ -3,6 +3,7 @@ package vuln
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -990,6 +991,72 @@ type ClaimedFinding struct {
 	SiteURL  string
 }
 
+// listUnpausedSiteIDsForRescanSQL is the SCHEDULED vuln-rescan fan-out's own
+// enumeration (m117, GH #414). It deliberately does NOT reuse
+// site.Service.ListAllSiteIDs: that call has nine other non-test callers,
+// including org/purge_worker.go's delete path and perf's operator-facing RUM
+// fleet handler, and filtering it would silently change all of them. This
+// query exists so the pause predicate lands on exactly one caller.
+//
+// It mirrors db/query/sites.sql's ListAllSiteIDs (non-archived sites for one
+// tenant) and adds monitoring_paused_at IS NULL. Same plan note as uptime's
+// listEnrolledForMonitoringProbeSQL: no index on monitoring_paused_at, on
+// purpose — this is a filter on a scan that happens anyway.
+const listUnpausedSiteIDsForRescanSQL = `
+SELECT id FROM sites
+ WHERE tenant_id = $1
+   AND archived_at IS NULL
+   AND monitoring_paused_at IS NULL
+ ORDER BY created_at DESC, id DESC`
+
+// ListUnpausedSiteIDsForRescan returns every non-archived, non-paused site ID
+// for the tenant. Used ONLY by Service.RescanAll's fan-out; the operator's
+// per-site "rescan now" route never consults it.
+func (r *Repo) ListUnpausedSiteIDsForRescan(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error) {
+	var out []uuid.UUID
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, listUnpausedSiteIDsForRescanSQL, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out = out[:0]
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vuln: list unpaused site ids for tenant %s: %w", tenantID, err)
+	}
+	return out, nil
+}
+
+// IsMonitoringPaused reports whether the site's monitoring is paused. This is
+// the point-of-action re-check for a scheduled rescan job that was queued
+// before the pause; nothing drains the River queue on pause.
+//
+// A missing row reports NOT paused (the site was deleted between the fan-out
+// and the job): the rescan then finds no inventory and does nothing, which is
+// a better failure than inventing a pause.
+func (r *Repo) IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error) {
+	var paused bool
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT monitoring_paused_at IS NOT NULL FROM sites WHERE id = $1`, siteID).Scan(&paused)
+		if errors.Is(err, pgx.ErrNoRows) {
+			paused = false
+			return nil
+		}
+		return err
+	})
+	return paused, err
+}
+
 // ListTenantsWithUnnotifiedFindings returns the distinct set of tenants that
 // currently have at least one open, not-yet-notified finding
 // (status='open' AND notified_at IS NULL). Runs under InAgentTx (cross-tenant
@@ -999,9 +1066,17 @@ type ClaimedFinding struct {
 func (r *Repo) ListTenantsWithUnnotifiedFindings(ctx context.Context) ([]uuid.UUID, error) {
 	var out []uuid.UUID
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		// m117 (GH #414): a tenant whose only unnotified findings all sit on
+		// paused sites is not a tenant to dispatch for. The EXISTS mirrors the
+		// identical predicate in ClaimUnnotifiedFindings — if the two ever
+		// disagree, this one over-selects and the claim returns zero rows,
+		// which costs one wasted tx and tells nobody anything wrong.
 		rows, err := tx.Query(ctx, `
-			SELECT DISTINCT tenant_id FROM site_vulnerabilities
-			WHERE status = 'open' AND notified_at IS NULL`)
+			SELECT DISTINCT v.tenant_id FROM site_vulnerabilities v
+			WHERE v.status = 'open' AND v.notified_at IS NULL
+			  AND EXISTS (
+			      SELECT 1 FROM sites s
+			       WHERE s.id = v.site_id AND s.monitoring_paused_at IS NULL)`)
 		if err != nil {
 			return err
 		}
@@ -1033,12 +1108,26 @@ func (r *Repo) ListTenantsWithUnnotifiedFindings(ctx context.Context) ([]uuid.UU
 // notify_vulns/severity gate AFTER claiming. Stamping unconditionally means
 // enabling alerts later (or lowering the threshold) never floods the tenant
 // with a backlog of old findings that predate the change.
+//
+// m117 (GH #414) adds the ONE exception, and it is deliberately the opposite
+// shape: a paused site's findings are NOT claimed. Not-claiming is what makes
+// resume work — the rows stay notified_at IS NULL, so the first dispatch after
+// the resume sends them. Stamping them (the notify_vulns treatment) would mean
+// a pause silently ate the findings and the operator was never told, which is
+// "lie to me", not "do not tell me". The rescan itself still runs for these
+// sites when a person asks for it, so the findings are visible in the UI the
+// whole time they are unsent. NOTE this is an unbounded backlog by design: a
+// site paused for a year resumes into every finding it accrued.
 func (r *Repo) ClaimUnnotifiedFindings(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) ([]ClaimedFinding, error) {
 	rows, err := tx.Query(ctx, `
 		WITH claimed AS (
 			UPDATE site_vulnerabilities
 			SET notified_at = now()
 			WHERE tenant_id = $1 AND status = 'open' AND notified_at IS NULL
+			  AND EXISTS (
+			      SELECT 1 FROM sites s
+			       WHERE s.id = site_vulnerabilities.site_id
+			         AND s.monitoring_paused_at IS NULL)
 			RETURNING id, tenant_id, site_id, vuln_id, kind, slug, name,
 			          installed_version, fixed_version, severity, cvss_score,
 			          cve, title, status, first_seen, last_seen,

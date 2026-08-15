@@ -23,8 +23,12 @@ type SiteLoader interface {
 	// does not own it.
 	GetSiteForVuln(ctx context.Context, tenantID, siteID uuid.UUID) (SiteSnapshot, error)
 
-	// ListAllSiteIDs returns every site ID under a tenant (for RescanAll fan-out).
-	ListAllSiteIDs(ctx context.Context, tenantID uuid.UUID) ([]uuid.UUID, error)
+	// m117 (GH #414) removed ListAllSiteIDs from this interface. RescanAll now
+	// enumerates through Repo.ListUnpausedSiteIDsForRescan, and re-adding an
+	// unfiltered fleet enumeration here is how the pause would silently come
+	// undone. site.Service.ListAllSiteIDs still exists and still returns ALL
+	// sites — its nine other callers need that — it is simply not reachable
+	// from the scheduled vuln fan-out any more.
 }
 
 // UpdateCreator is the narrow interface the remediation endpoint uses to
@@ -216,20 +220,27 @@ func (s *Service) RescanSite(ctx context.Context, tenantID, siteID uuid.UUID) er
 // across ALL tenants when tenantID is uuid.Nil (used after a feed refresh).
 // Enqueues individual per-site River jobs rather than running inline to bound
 // memory and support partial failure.
+//
+// m117 (GH #414): this is the SCHEDULED path, so it enumerates through
+// Repo.ListUnpausedSiteIDsForRescan and marks every job Scheduled. It no longer
+// calls SiteLoader.ListAllSiteIDs — that method has nine other non-test callers
+// (org's purge worker, perf's operator RUM handler, the CLI adapters) and must
+// keep returning ALL sites for them.
 func (s *Service) RescanAll(ctx context.Context, tenantID uuid.UUID) error {
 	if s.enqueue == nil {
 		return nil
 	}
 	if tenantID != uuid.Nil {
 		// Enqueue per-site jobs for one tenant.
-		ids, err := s.sites.ListAllSiteIDs(ctx, tenantID)
+		ids, err := s.repo.ListUnpausedSiteIDsForRescan(ctx, tenantID)
 		if err != nil {
 			return err
 		}
 		for _, id := range ids {
 			if err := s.enqueue.EnqueueRescanSite(ctx, RescanSiteArgs{
-				TenantID: tenantID,
-				SiteID:   id,
+				TenantID:  tenantID,
+				SiteID:    id,
+				Scheduled: true,
 			}); err != nil {
 				s.logger.Warn("vuln: enqueue rescan failed",
 					slog.String("site_id", id.String()), slog.Any("error", err))
@@ -259,15 +270,16 @@ func (s *Service) RescanAll(ctx context.Context, tenantID uuid.UUID) error {
 		return fmt.Errorf("vuln: list tenants for rescan-all: %w", err)
 	}
 	for _, tid := range tenantIDs {
-		ids, err := s.sites.ListAllSiteIDs(ctx, tid)
+		ids, err := s.repo.ListUnpausedSiteIDsForRescan(ctx, tid)
 		if err != nil {
 			s.logger.Warn("vuln: list site IDs failed", slog.String("tenant_id", tid.String()), slog.Any("error", err))
 			continue
 		}
 		for _, sid := range ids {
 			if err := s.enqueue.EnqueueRescanSite(ctx, RescanSiteArgs{
-				TenantID: tid,
-				SiteID:   sid,
+				TenantID:  tid,
+				SiteID:    sid,
+				Scheduled: true,
 			}); err != nil {
 				s.logger.Warn("vuln: enqueue rescan failed",
 					slog.String("site_id", sid.String()), slog.Any("error", err))
