@@ -2,6 +2,7 @@ package site
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,14 +16,24 @@ import (
 // These are hand-written SQL rather than sqlc queries on purpose:
 // apps/api/db/query/**.sql belongs to database-engineer, and raw SQL inside a
 // tx helper is the established shape in this tree (internal/scan/repo.go,
-// internal/security/repo.go, internal/activity/repo.go and ~17 others). The
-// RLS contract is unchanged either way — every statement below runs inside
-// InTenantTxAsUser, which sets app.tenant_id and app.user_id, and carries an
-// explicit tenant_id in its WHERE as defence in depth.
+// internal/security/repo.go, internal/activity/repo.go and ~17 others).
 //
-// InTenantTxAsUser rather than InTenantTx: the audit hash chain keys on
-// app.user_id, and the handler records one audit event per site inside the
-// same request.
+// EVERY STATEMENT BELOW RUNS THROUGH pool.RunTenantTx, NEVER InTenantTxAsUser
+// DIRECTLY. That dispatch (internal/db/db.go) is the only thing that sets
+// app.site_scope and app.allowed_site_ids for a site-scoped principal, which
+// is what the RESTRICTIVE sites_site_scope policy keys on. Hard-coding
+// InTenantTxAsUser here left that policy inert and reduced a site-scoped
+// collaborator's containment to one Go `if` in the handler: the same UPDATE
+// wrote 1 row through the repo and 0 rows under InScopedTenantTx. The Go gate
+// stays, but it is now the second layer rather than the only one.
+// internal/site/repo.go:List is the same dispatch in this package.
+//
+// For an org-scoped user principal RunTenantTx still lands on
+// InTenantTxAsUser, which the audit hash chain needs: it keys on app.user_id
+// and the handler records one audit event per site in the same request.
+//
+// Every statement also carries an explicit tenant_id in its WHERE even though
+// RLS scopes the rows: defence in depth, and it keeps the index in play.
 
 // pauseMonitoringSQL pauses every named site in the tenant, idempotently.
 //
@@ -38,33 +49,65 @@ import (
 // .monitoring_paused_at is the value before this statement, which is how
 // `changed` is computed without a second round trip.
 //
+// NOT PAUSABLE: archived and revoked. Both are lifecycle dead-ends for this
+// purpose. 'archived' is the soft-delete state the default sites list hides, so
+// a pause applied there could never be resumed from the interface; 'revoked' is
+// an operator-disconnected site that has no monitoring left to pause. They come
+// back in the report as site_archived / site_revoked rather than silently
+// succeeding, and the state list is bound as $6 so Go owns it in one place
+// (monitoringPauseBlockedStates) instead of being spelled twice.
+//
+// UPDATED_AT IS DELIBERATELY NOT TOUCHED. sites.updated_at is not a private
+// mtime: handler.go:577 serves it as `as_of` on GET /sites/{id}/updates, the
+// freshness stamp for the plugin/theme inventory. Bumping it on a pause would
+// claim the inventory had just been refreshed when nothing was fetched, which
+// is the one thing monitoring.go says pause must never do — pause means "do not
+// tell me", never "lie to me". "When did the pause change" is already answerable
+// from monitoring_paused_at, which is the timestamp that actually moved.
+//
 // $1 tenant_id, $2 site ids, $3 actor user id (NULL for an API-key actor),
-// $4 reason, $5 resume_at.
+// $4 reason, $5 resume_at, $6 the connection_states that refuse a pause.
 const pauseMonitoringSQL = `
-UPDATE sites s
-   SET monitoring_paused_at     = COALESCE(s.monitoring_paused_at, now()),
-       monitoring_paused_by     = CASE WHEN s.monitoring_paused_at IS NULL
-                                       THEN $3::uuid ELSE s.monitoring_paused_by END,
-       monitoring_paused_reason = CASE WHEN s.monitoring_paused_at IS NULL
-                                       THEN $4::text ELSE s.monitoring_paused_reason END,
-       monitoring_resume_at     = CASE WHEN s.monitoring_paused_at IS NULL
-                                       THEN $5::timestamptz ELSE s.monitoring_resume_at END,
-       updated_at               = CASE WHEN s.monitoring_paused_at IS NULL
-                                       THEN now() ELSE s.updated_at END
-  FROM (
-        SELECT id, monitoring_paused_at
+WITH prior AS (
+        SELECT id,
+               monitoring_paused_at,
+               monitoring_paused_by,
+               monitoring_paused_reason,
+               monitoring_resume_at,
+               connection_state
           FROM sites
          WHERE tenant_id = $1 AND id = ANY($2::uuid[])
            FOR UPDATE
-       ) prior
- WHERE s.id = prior.id
-   AND s.tenant_id = $1
-RETURNING s.id,
-          s.monitoring_paused_at,
-          s.monitoring_paused_by,
-          s.monitoring_paused_reason,
-          s.monitoring_resume_at,
-          (prior.monitoring_paused_at IS NOT NULL) AS was_paused`
+), updated AS (
+        UPDATE sites s
+           SET monitoring_paused_at     = COALESCE(s.monitoring_paused_at, now()),
+               monitoring_paused_by     = CASE WHEN s.monitoring_paused_at IS NULL
+                                               THEN $3::uuid ELSE s.monitoring_paused_by END,
+               monitoring_paused_reason = CASE WHEN s.monitoring_paused_at IS NULL
+                                               THEN $4::text ELSE s.monitoring_paused_reason END,
+               monitoring_resume_at     = CASE WHEN s.monitoring_paused_at IS NULL
+                                               THEN $5::timestamptz ELSE s.monitoring_resume_at END
+          FROM prior
+         WHERE s.id = prior.id
+           AND s.tenant_id = $1
+           AND NOT (prior.connection_state::text = ANY($6::text[]))
+        RETURNING s.id,
+                  s.monitoring_paused_at,
+                  s.monitoring_paused_by,
+                  s.monitoring_paused_reason,
+                  s.monitoring_resume_at,
+                  (prior.monitoring_paused_at IS NOT NULL) AS was_paused,
+                  prior.connection_state::text            AS connection_state
+)
+SELECT id, monitoring_paused_at, monitoring_paused_by,
+       monitoring_paused_reason, monitoring_resume_at, was_paused, connection_state
+  FROM updated
+ UNION ALL
+SELECT p.id, p.monitoring_paused_at, p.monitoring_paused_by,
+       p.monitoring_paused_reason, p.monitoring_resume_at,
+       (p.monitoring_paused_at IS NOT NULL), p.connection_state::text
+  FROM prior p
+ WHERE p.connection_state::text = ANY($6::text[])`
 
 // resumeMonitoringSQL clears the pause on every named site in the tenant.
 //
@@ -75,14 +118,19 @@ RETURNING s.id,
 //
 // Resuming an already-active site writes NULL over NULL: a success with
 // changed=false, never an error.
+//
+// NO connection_state GATE HERE, unlike pause: an archived or revoked site that
+// is already paused must still be resumable, otherwise a row could be stranded
+// paused forever by archiving it. Refusing the pause is what keeps that from
+// arising; refusing the resume would create it.
+//
+// updated_at is untouched for the same reason as the pause — see above.
 const resumeMonitoringSQL = `
 UPDATE sites s
    SET monitoring_paused_at     = NULL,
        monitoring_paused_by     = NULL,
        monitoring_paused_reason = '',
-       monitoring_resume_at     = NULL,
-       updated_at               = CASE WHEN s.monitoring_paused_at IS NULL
-                                       THEN s.updated_at ELSE now() END
+       monitoring_resume_at     = NULL
   FROM (
         SELECT id, monitoring_paused_at
           FROM sites
@@ -96,17 +144,37 @@ RETURNING s.id,
           s.monitoring_paused_by,
           s.monitoring_paused_reason,
           s.monitoring_resume_at,
-          (prior.monitoring_paused_at IS NOT NULL) AS was_paused`
+          (prior.monitoring_paused_at IS NOT NULL) AS was_paused,
+          s.connection_state::text                 AS connection_state`
+
+// monitoringTx is the ONE place these two writes acquire a transaction, so
+// there is a single line to audit for the site-scope dispatch.
+//
+// A nil principal is refused rather than quietly falling back to a tenant-wide
+// transaction: the fallback is exactly the shape that made the RESTRICTIVE
+// policy inert here in the first place, and every caller of these two methods
+// arrives from an authenticated request that has one. It returns an error
+// rather than dereferencing nil — a nil interface would panic inside
+// RunTenantTx, and nothing in a request path may panic.
+func (r *pgRepo) monitoringTx(ctx context.Context, p ScopedPrincipal, fn func(tx pgx.Tx) error) error {
+	if p == nil {
+		return errMonitoringPrincipalRequired
+	}
+	return r.pool.RunTenantTx(ctx, p, fn)
+}
+
+var errMonitoringPrincipalRequired = errors.New("monitoring: principal required for tenant transaction")
 
 func (r *pgRepo) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) ([]MonitoringState, error) {
 	var out []MonitoringState
-	err := r.pool.InTenantTxAsUser(ctx, in.TenantID, in.ActorUserID, func(tx pgx.Tx) error {
+	err := r.monitoringTx(ctx, in.Principal, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, pauseMonitoringSQL,
 			in.TenantID,
 			in.SiteIDs,
 			nullableUUID(in.ActorUserID),
 			in.Reason,
 			in.ResumeAt,
+			monitoringPauseBlockedStates,
 		)
 		if err != nil {
 			return err
@@ -123,7 +191,7 @@ func (r *pgRepo) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) (
 
 func (r *pgRepo) ResumeMonitoring(ctx context.Context, in ResumeMonitoringInput) ([]MonitoringState, error) {
 	var out []MonitoringState
-	err := r.pool.InTenantTxAsUser(ctx, in.TenantID, in.ActorUserID, func(tx pgx.Tx) error {
+	err := r.monitoringTx(ctx, in.Principal, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, resumeMonitoringSQL, in.TenantID, in.SiteIDs)
 		if err != nil {
 			return err
@@ -148,11 +216,12 @@ func scanMonitoringStates(rows pgx.Rows) ([]MonitoringState, error) {
 			reason    string
 			resumeAt  pgtype.Timestamptz
 			wasPaused bool
+			connState string
 		)
-		if err := rows.Scan(&id, &pausedAt, &pausedBy, &reason, &resumeAt, &wasPaused); err != nil {
+		if err := rows.Scan(&id, &pausedAt, &pausedBy, &reason, &resumeAt, &wasPaused, &connState); err != nil {
 			return nil, err
 		}
-		st := MonitoringState{SiteID: id, PausedReason: reason}
+		st := MonitoringState{SiteID: id, PausedReason: reason, ConnectionState: connState}
 		if pausedAt.Valid {
 			t := pausedAt.Time
 			st.PausedAt = &t

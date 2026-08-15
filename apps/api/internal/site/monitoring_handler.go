@@ -1,6 +1,7 @@
 package site
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -58,7 +59,7 @@ type monitoringResultDTO struct {
 	Changed bool   `json:"changed"`
 	// Detail is a stable machine-readable reason, not prose: "paused",
 	// "already_paused", "resumed", "already_active", "forbidden",
-	// "invalid_site_id", "site_not_found".
+	// "invalid_site_id", "site_not_found", "site_archived", "site_revoked".
 	Detail string `json:"detail"`
 	// MonitoringPausedAt/Reason/ResumeAt echo the state AFTER the request, so
 	// a retry that changed nothing still tells the caller what is stored.
@@ -115,22 +116,30 @@ func (h *Handler) pauseMonitoring(c *gin.Context) {
 		return
 	}
 	var body pauseMonitoringBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+	if err := bindMonitoringBody(c, &body); err != nil {
+		httpx.Error(c, err)
 		return
 	}
-	if len(body.SiteIDs) == 0 {
-		httpx.Error(c, domain.Validation("site_ids_required", "site_ids must not be empty"))
+	if err := checkMonitoringSiteIDs(body.SiteIDs); err != nil {
+		httpx.Error(c, err)
 		return
 	}
 	rejected, authorized := partitionSiteIDs(p, body.SiteIDs)
 
-	// Validate the pause itself BEFORE the authorization filter has a chance to
-	// empty the list: a resume_at in the past must be a 422 whether or not the
-	// caller also happened to name sites they cannot touch, otherwise the same
-	// bad request 422s for one caller and 200s for another.
+	// The pause itself is validated BEFORE the authorization filter can empty
+	// the list — that ordering now lives in Service.PauseMonitoring, which
+	// checks resume_at and the reason length before it looks at the list at all
+	// and treats an emptied list as "nothing to do", not as an error. A
+	// resume_at in the past is therefore a 422 for every caller, and a caller
+	// whose ids were all rejected gets the per-site report the route promises
+	// instead of site_ids_required. This comment used to claim that property
+	// while the code did the opposite.
 	states, err := h.svc.PauseMonitoring(c.Request.Context(), PauseMonitoringInput{
 		TenantID: p.TenantID,
+		// The principal, not just its tenant: it is what routes the write to
+		// InScopedTenantTx for a site-scoped collaborator so the RESTRICTIVE
+		// sites_site_scope policy engages underneath the Go gate below.
+		Principal: p,
 		// From the PRINCIPAL, never from the body. The FK is to users(id)
 		// alone; Postgres cannot check that the referenced user belongs to
 		// this site's tenant, so accepting an id from input would let a caller
@@ -158,12 +167,12 @@ func (h *Handler) resumeMonitoring(c *gin.Context) {
 		return
 	}
 	var body resumeMonitoringBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
+	if err := bindMonitoringBody(c, &body); err != nil {
+		httpx.Error(c, err)
 		return
 	}
-	if len(body.SiteIDs) == 0 {
-		httpx.Error(c, domain.Validation("site_ids_required", "site_ids must not be empty"))
+	if err := checkMonitoringSiteIDs(body.SiteIDs); err != nil {
+		httpx.Error(c, err)
 		return
 	}
 	rejected, authorized := partitionSiteIDs(p, body.SiteIDs)
@@ -171,6 +180,7 @@ func (h *Handler) resumeMonitoring(c *gin.Context) {
 	states, err := h.svc.ResumeMonitoring(c.Request.Context(), ResumeMonitoringInput{
 		TenantID:    p.TenantID,
 		ActorUserID: p.UserID,
+		Principal:   p,
 		SiteIDs:     authorized,
 	})
 	if err != nil {
@@ -180,18 +190,67 @@ func (h *Handler) resumeMonitoring(c *gin.Context) {
 	h.respondMonitoring(c, p.TenantID, rejected, authorized, states, false)
 }
 
+// bindMonitoringBody caps the REQUEST BEFORE IT IS PARSED, then binds it.
+//
+// http.MaxBytesReader is the half that matters: without it the whole body is
+// read and unmarshalled before any length check can run, so an 888 KB body of
+// 100k junk ids was parsed in full, failed uuid.Parse one id at a time into
+// 100,001 per-site "invalid_site_id" results, and came back 200 with a 7.5 MB
+// response — against a published maxItems of 200. Refusing at the reader means
+// the work is bounded by the cap, not by what the caller chose to send.
+//
+// The oversize case is reported as request_too_large rather than folded into
+// invalid_body: the body may be perfectly valid JSON, and telling a client its
+// syntax is wrong when its size is wrong sends it looking in the wrong place.
+func bindMonitoringBody(c *gin.Context, dst any) error {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMonitoringBodyBytes)
+	if err := c.ShouldBindJSON(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return domain.Validation("request_too_large", "request body is too large")
+		}
+		return domain.Validation("invalid_body", "request body is not valid JSON")
+	}
+	return nil
+}
+
+// checkMonitoringSiteIDs bounds the LIST BEFORE partitionSiteIDs walks it.
+//
+// The cap is also enforced in the service, but the service only ever sees the
+// AUTHORIZED ids — the ones that survived parsing and the site-scope filter —
+// so it can never see an over-long list of junk. The published contract caps
+// the array the caller sends, so that is what is measured here, before a single
+// id is parsed.
+func checkMonitoringSiteIDs(ids []string) error {
+	if len(ids) == 0 {
+		return domain.Validation("site_ids_required", "site_ids must not be empty")
+	}
+	if len(ids) > maxBulkMonitoringSites {
+		return domain.Validation("too_many_sites", "site_ids must contain at most 200 entries per request")
+	}
+	return nil
+}
+
 // partitionSiteIDs splits the raw body ids into the per-site rejections
 // (unparseable, or outside a site-scoped collaborator's grant) and the ids the
 // service may act on. Duplicates collapse to one result so a repeated id is
 // never counted or audited twice.
+//
+// THIS IS THE SECOND LAYER, NOT THE ONLY ONE. The authoritative gate is in the
+// database: the write runs through pool.RunTenantTx, which sends a site-scoped
+// principal to InScopedTenantTx and sets app.site_scope / app.allowed_site_ids,
+// so the RESTRICTIVE sites_site_scope policy excludes a site outside the grant
+// even with this whole function deleted. That was not true when these routes
+// were written — the repo hard-coded InTenantTxAsUser, the policy never
+// engaged, and the `if !p.CanAccessSite(id)` below was the entire boundary.
+// Keep both: this one gives the caller a per-site "forbidden" instead of a
+// silent absence, and the policy is what holds when this one is wrong.
 //
 // A site id belonging to ANOTHER TENANT survives this filter — CanAccessSite
 // only knows the caller's share list, not tenancy. It is stopped at the
 // database instead: the UPDATE carries an explicit tenant_id and runs under
 // the app.tenant_id RLS policy, so a foreign row matches nothing, comes back
 // in neither RETURNING nor the results as ok, and is reported site_not_found.
-// Two independent gates, and the authoritative one is the one the request
-// cannot talk its way around.
 func partitionSiteIDs(p domain.Principal, raw []string) (rejected []monitoringResultDTO, authorized []uuid.UUID) {
 	rejected = make([]monitoringResultDTO, 0, len(raw))
 	authorized = make([]uuid.UUID, 0, len(raw))
@@ -250,6 +309,21 @@ func (h *Handler) respondMonitoring(c *gin.Context, tenantID uuid.UUID, rejected
 			// The same answer for both on purpose — telling the caller which
 			// is which turns this route into a cross-tenant existence oracle.
 			results = append(results, monitoringResultDTO{SiteID: id.String(), Detail: "site_not_found"})
+			continue
+		}
+		// A pause the DATABASE refused: an archived or revoked site came back
+		// with its row unchanged and its lifecycle state attached. Report which
+		// state refused it rather than ok:true over a write that never
+		// happened — and rather than site_not_found, which would send the
+		// operator hunting for a row that is right there.
+		if pausing && !st.Pausable() {
+			results = append(results, monitoringResultDTO{
+				SiteID:                 id.String(),
+				Detail:                 "site_" + st.ConnectionState,
+				MonitoringPausedAt:     st.PausedAt,
+				MonitoringPausedReason: st.PausedReason,
+				MonitoringResumeAt:     st.ResumeAt,
+			})
 			continue
 		}
 		res := monitoringResultDTO{
