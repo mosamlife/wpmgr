@@ -24,7 +24,7 @@ SET agent_public_key = $3,
     php_version = $5,
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type AttachAgentToSiteParams struct {
@@ -79,6 +79,10 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -88,7 +92,7 @@ func (q *Queries) AttachAgentToSite(ctx context.Context, arg AttachAgentToSitePa
 const createSite = `-- name: CreateSite :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type CreateSiteParams struct {
@@ -146,6 +150,10 @@ func (q *Queries) CreateSite(ctx context.Context, arg CreateSiteParams) (Site, e
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -156,7 +164,7 @@ const createSiteForEnroll = `-- name: CreateSiteForEnroll :one
 INSERT INTO sites (tenant_id, url, name, status, wp_version, php_version,
                    agent_public_key, enrolled_at, last_seen_at, health_status, tags)
 VALUES ($1, $2, $3, 'active', $4, $5, $6, now(), now(), 'healthy', $7)
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type CreateSiteForEnrollParams struct {
@@ -214,6 +222,10 @@ func (q *Queries) CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnro
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -239,7 +251,7 @@ func (q *Queries) DeleteSite(ctx context.Context, arg DeleteSiteParams) (int64, 
 }
 
 const getSite = `-- name: GetSite :one
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -256,43 +268,47 @@ type GetSiteParams struct {
 }
 
 type GetSiteRow struct {
-	ID                    uuid.UUID          `json:"id"`
-	TenantID              uuid.UUID          `json:"tenant_id"`
-	Url                   string             `json:"url"`
-	Name                  string             `json:"name"`
-	Status                string             `json:"status"`
-	WpVersion             string             `json:"wp_version"`
-	PhpVersion            string             `json:"php_version"`
-	AgentVersion          string             `json:"agent_version"`
-	AgentPublicKey        string             `json:"agent_public_key"`
-	EnrolledAt            pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt            pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus          string             `json:"health_status"`
-	ServerInfo            string             `json:"server_info"`
-	Multisite             bool               `json:"multisite"`
-	ActiveTheme           string             `json:"active_theme"`
-	Components            []byte             `json:"components"`
-	Tags                  []string           `json:"tags"`
-	AgeRecipient          string             `json:"age_recipient"`
-	WpTimezone            string             `json:"wp_timezone"`
-	WpGmtOffset           float32            `json:"wp_gmt_offset"`
-	HostProvider          string             `json:"host_provider"`
-	HostProviderOrg       string             `json:"host_provider_org"`
-	HostProviderIp        string             `json:"host_provider_ip"`
-	HostProviderCheckedAt pgtype.Timestamptz `json:"host_provider_checked_at"`
-	ConnectionState       string             `json:"connection_state"`
-	ConnectionGeneration  int32              `json:"connection_generation"`
-	DisconnectedAt        pgtype.Timestamptz `json:"disconnected_at"`
-	DisconnectedReason    *string            `json:"disconnected_reason"`
-	ArchivedAt            pgtype.Timestamptz `json:"archived_at"`
-	MissedHeartbeats      int32              `json:"missed_heartbeats"`
-	ClientID              pgtype.UUID        `json:"client_id"`
-	AppProbePath          *string            `json:"app_probe_path"`
-	AppAlertsDisabled     bool               `json:"app_alerts_disabled"`
-	CreatedAt             time.Time          `json:"created_at"`
-	UpdatedAt             time.Time          `json:"updated_at"`
-	PageCacheEnabled      bool               `json:"page_cache_enabled"`
-	ObjectCacheEnabled    bool               `json:"object_cache_enabled"`
+	ID                     uuid.UUID          `json:"id"`
+	TenantID               uuid.UUID          `json:"tenant_id"`
+	Url                    string             `json:"url"`
+	Name                   string             `json:"name"`
+	Status                 string             `json:"status"`
+	WpVersion              string             `json:"wp_version"`
+	PhpVersion             string             `json:"php_version"`
+	AgentVersion           string             `json:"agent_version"`
+	AgentPublicKey         string             `json:"agent_public_key"`
+	EnrolledAt             pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt             pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus           string             `json:"health_status"`
+	ServerInfo             string             `json:"server_info"`
+	Multisite              bool               `json:"multisite"`
+	ActiveTheme            string             `json:"active_theme"`
+	Components             []byte             `json:"components"`
+	Tags                   []string           `json:"tags"`
+	AgeRecipient           string             `json:"age_recipient"`
+	WpTimezone             string             `json:"wp_timezone"`
+	WpGmtOffset            float32            `json:"wp_gmt_offset"`
+	HostProvider           string             `json:"host_provider"`
+	HostProviderOrg        string             `json:"host_provider_org"`
+	HostProviderIp         string             `json:"host_provider_ip"`
+	HostProviderCheckedAt  pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState        string             `json:"connection_state"`
+	ConnectionGeneration   int32              `json:"connection_generation"`
+	DisconnectedAt         pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason     *string            `json:"disconnected_reason"`
+	ArchivedAt             pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats       int32              `json:"missed_heartbeats"`
+	ClientID               pgtype.UUID        `json:"client_id"`
+	AppProbePath           *string            `json:"app_probe_path"`
+	AppAlertsDisabled      bool               `json:"app_alerts_disabled"`
+	MonitoringPausedAt     pgtype.Timestamptz `json:"monitoring_paused_at"`
+	MonitoringPausedBy     pgtype.UUID        `json:"monitoring_paused_by"`
+	MonitoringPausedReason string             `json:"monitoring_paused_reason"`
+	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
+	CreatedAt              time.Time          `json:"created_at"`
+	UpdatedAt              time.Time          `json:"updated_at"`
+	PageCacheEnabled       bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled     bool               `json:"object_cache_enabled"`
 }
 
 // GH #243: page_cache_enabled / object_cache_enabled surface the REAL
@@ -340,6 +356,10 @@ func (q *Queries) GetSite(ctx context.Context, arg GetSiteParams) (GetSiteRow, e
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PageCacheEnabled,
@@ -374,7 +394,7 @@ func (q *Queries) GetSiteAppHealthSettings(ctx context.Context, arg GetSiteAppHe
 
 const getSiteByAgentKey = `-- name: GetSiteByAgentKey :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at FROM sites
 WHERE agent_public_key = $1 AND agent_public_key <> ''
 `
 
@@ -418,6 +438,10 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -426,7 +450,7 @@ func (q *Queries) GetSiteByAgentKey(ctx context.Context, agentPublicKey string) 
 
 const getSiteByURLForEnroll = `-- name: GetSiteByURLForEnroll :one
 
-SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at FROM sites
+SELECT id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at FROM sites
 WHERE tenant_id = $1 AND url = $2
 `
 
@@ -475,6 +499,10 @@ func (q *Queries) GetSiteByURLForEnroll(ctx context.Context, arg GetSiteByURLFor
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -742,7 +770,7 @@ func (q *Queries) ListLatestBackupsForSites(ctx context.Context, arg ListLatestB
 }
 
 const listSites = `-- name: ListSites :many
-SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.created_at, s.updated_at,
+SELECT s.id, s.tenant_id, s.url, s.name, s.status, s.wp_version, s.php_version, s.agent_version, s.agent_public_key, s.enrolled_at, s.last_seen_at, s.health_status, s.server_info, s.multisite, s.active_theme, s.components, s.tags, s.age_recipient, s.wp_timezone, s.wp_gmt_offset, s.host_provider, s.host_provider_org, s.host_provider_ip, s.host_provider_checked_at, s.connection_state, s.connection_generation, s.disconnected_at, s.disconnected_reason, s.archived_at, s.missed_heartbeats, s.client_id, s.app_probe_path, s.app_alerts_disabled, s.monitoring_paused_at, s.monitoring_paused_by, s.monitoring_paused_reason, s.monitoring_resume_at, s.created_at, s.updated_at,
        COALESCE(pc.cache_enabled, false) AS page_cache_enabled,
        COALESCE(oc.enabled, false) AS object_cache_enabled
 FROM sites s
@@ -791,43 +819,47 @@ type ListSitesParams struct {
 }
 
 type ListSitesRow struct {
-	ID                    uuid.UUID          `json:"id"`
-	TenantID              uuid.UUID          `json:"tenant_id"`
-	Url                   string             `json:"url"`
-	Name                  string             `json:"name"`
-	Status                string             `json:"status"`
-	WpVersion             string             `json:"wp_version"`
-	PhpVersion            string             `json:"php_version"`
-	AgentVersion          string             `json:"agent_version"`
-	AgentPublicKey        string             `json:"agent_public_key"`
-	EnrolledAt            pgtype.Timestamptz `json:"enrolled_at"`
-	LastSeenAt            pgtype.Timestamptz `json:"last_seen_at"`
-	HealthStatus          string             `json:"health_status"`
-	ServerInfo            string             `json:"server_info"`
-	Multisite             bool               `json:"multisite"`
-	ActiveTheme           string             `json:"active_theme"`
-	Components            []byte             `json:"components"`
-	Tags                  []string           `json:"tags"`
-	AgeRecipient          string             `json:"age_recipient"`
-	WpTimezone            string             `json:"wp_timezone"`
-	WpGmtOffset           float32            `json:"wp_gmt_offset"`
-	HostProvider          string             `json:"host_provider"`
-	HostProviderOrg       string             `json:"host_provider_org"`
-	HostProviderIp        string             `json:"host_provider_ip"`
-	HostProviderCheckedAt pgtype.Timestamptz `json:"host_provider_checked_at"`
-	ConnectionState       string             `json:"connection_state"`
-	ConnectionGeneration  int32              `json:"connection_generation"`
-	DisconnectedAt        pgtype.Timestamptz `json:"disconnected_at"`
-	DisconnectedReason    *string            `json:"disconnected_reason"`
-	ArchivedAt            pgtype.Timestamptz `json:"archived_at"`
-	MissedHeartbeats      int32              `json:"missed_heartbeats"`
-	ClientID              pgtype.UUID        `json:"client_id"`
-	AppProbePath          *string            `json:"app_probe_path"`
-	AppAlertsDisabled     bool               `json:"app_alerts_disabled"`
-	CreatedAt             time.Time          `json:"created_at"`
-	UpdatedAt             time.Time          `json:"updated_at"`
-	PageCacheEnabled      bool               `json:"page_cache_enabled"`
-	ObjectCacheEnabled    bool               `json:"object_cache_enabled"`
+	ID                     uuid.UUID          `json:"id"`
+	TenantID               uuid.UUID          `json:"tenant_id"`
+	Url                    string             `json:"url"`
+	Name                   string             `json:"name"`
+	Status                 string             `json:"status"`
+	WpVersion              string             `json:"wp_version"`
+	PhpVersion             string             `json:"php_version"`
+	AgentVersion           string             `json:"agent_version"`
+	AgentPublicKey         string             `json:"agent_public_key"`
+	EnrolledAt             pgtype.Timestamptz `json:"enrolled_at"`
+	LastSeenAt             pgtype.Timestamptz `json:"last_seen_at"`
+	HealthStatus           string             `json:"health_status"`
+	ServerInfo             string             `json:"server_info"`
+	Multisite              bool               `json:"multisite"`
+	ActiveTheme            string             `json:"active_theme"`
+	Components             []byte             `json:"components"`
+	Tags                   []string           `json:"tags"`
+	AgeRecipient           string             `json:"age_recipient"`
+	WpTimezone             string             `json:"wp_timezone"`
+	WpGmtOffset            float32            `json:"wp_gmt_offset"`
+	HostProvider           string             `json:"host_provider"`
+	HostProviderOrg        string             `json:"host_provider_org"`
+	HostProviderIp         string             `json:"host_provider_ip"`
+	HostProviderCheckedAt  pgtype.Timestamptz `json:"host_provider_checked_at"`
+	ConnectionState        string             `json:"connection_state"`
+	ConnectionGeneration   int32              `json:"connection_generation"`
+	DisconnectedAt         pgtype.Timestamptz `json:"disconnected_at"`
+	DisconnectedReason     *string            `json:"disconnected_reason"`
+	ArchivedAt             pgtype.Timestamptz `json:"archived_at"`
+	MissedHeartbeats       int32              `json:"missed_heartbeats"`
+	ClientID               pgtype.UUID        `json:"client_id"`
+	AppProbePath           *string            `json:"app_probe_path"`
+	AppAlertsDisabled      bool               `json:"app_alerts_disabled"`
+	MonitoringPausedAt     pgtype.Timestamptz `json:"monitoring_paused_at"`
+	MonitoringPausedBy     pgtype.UUID        `json:"monitoring_paused_by"`
+	MonitoringPausedReason string             `json:"monitoring_paused_reason"`
+	MonitoringResumeAt     pgtype.Timestamptz `json:"monitoring_resume_at"`
+	CreatedAt              time.Time          `json:"created_at"`
+	UpdatedAt              time.Time          `json:"updated_at"`
+	PageCacheEnabled       bool               `json:"page_cache_enabled"`
+	ObjectCacheEnabled     bool               `json:"object_cache_enabled"`
 }
 
 // Defaults to hiding archived sites (ADR-041). When sqlc.narg('state') is set
@@ -926,6 +958,10 @@ func (q *Queries) ListSites(ctx context.Context, arg ListSitesParams) ([]ListSit
 			&i.ClientID,
 			&i.AppProbePath,
 			&i.AppAlertsDisabled,
+			&i.MonitoringPausedAt,
+			&i.MonitoringPausedBy,
+			&i.MonitoringPausedReason,
+			&i.MonitoringResumeAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PageCacheEnabled,
@@ -1029,7 +1065,7 @@ const setSiteAgeRecipient = `-- name: SetSiteAgeRecipient :one
 UPDATE sites
 SET age_recipient = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type SetSiteAgeRecipientParams struct {
@@ -1077,6 +1113,10 @@ func (q *Queries) SetSiteAgeRecipient(ctx context.Context, arg SetSiteAgeRecipie
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1108,7 +1148,7 @@ const setSiteTags = `-- name: SetSiteTags :one
 UPDATE sites
 SET tags = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type SetSiteTagsParams struct {
@@ -1154,6 +1194,10 @@ func (q *Queries) SetSiteTags(ctx context.Context, arg SetSiteTagsParams) (Site,
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1166,7 +1210,7 @@ SET last_seen_at = now(),
     health_status = 'healthy',
     updated_at = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type TouchSiteSeenParams struct {
@@ -1211,6 +1255,10 @@ func (q *Queries) TouchSiteSeen(ctx context.Context, arg TouchSiteSeenParams) (S
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1267,7 +1315,7 @@ SET wp_version   = $3,
     health_status = 'healthy',
     updated_at   = now()
 WHERE id = $1 AND tenant_id = $2
-RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, created_at, updated_at
+RETURNING id, tenant_id, url, name, status, wp_version, php_version, agent_version, agent_public_key, enrolled_at, last_seen_at, health_status, server_info, multisite, active_theme, components, tags, age_recipient, wp_timezone, wp_gmt_offset, host_provider, host_provider_org, host_provider_ip, host_provider_checked_at, connection_state, connection_generation, disconnected_at, disconnected_reason, archived_at, missed_heartbeats, client_id, app_probe_path, app_alerts_disabled, monitoring_paused_at, monitoring_paused_by, monitoring_paused_reason, monitoring_resume_at, created_at, updated_at
 `
 
 type UpdateSiteMetadataParams struct {
@@ -1331,6 +1379,10 @@ func (q *Queries) UpdateSiteMetadata(ctx context.Context, arg UpdateSiteMetadata
 		&i.ClientID,
 		&i.AppProbePath,
 		&i.AppAlertsDisabled,
+		&i.MonitoringPausedAt,
+		&i.MonitoringPausedBy,
+		&i.MonitoringPausedReason,
+		&i.MonitoringResumeAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
