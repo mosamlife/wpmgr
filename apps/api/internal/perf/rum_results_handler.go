@@ -532,8 +532,8 @@ type fleetRumWorstOffender struct {
 	// the LCP+INP+CLS sum SampleCount above).
 	DistributionSampleCount int64 `json:"distribution_sample_count"`
 	// DistributionSampleFloor is the threshold DistributionSampleCount was
-	// compared against. This is the GLOBAL default (the package-level
-	// minSampleCount const, currently 30) — the same floor that already
+	// compared against. This is the GLOBAL default (the minSampleCount const
+	// local to rumFleet) — the same floor that already
 	// gates every rating in this fleet aggregation (siteVerdict.*Rating,
 	// fleetPassPct) — and deliberately NOT the site's own configured
 	// site_perf_config.min_sample_count that the per-site summary endpoint
