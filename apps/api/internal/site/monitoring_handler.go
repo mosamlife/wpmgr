@@ -116,8 +116,9 @@ func (h *Handler) pauseMonitoring(c *gin.Context) {
 		return
 	}
 	var body pauseMonitoringBody
-	if err := bindMonitoringBody(c, &body); err != nil {
-		httpx.Error(c, err)
+	capMonitoringRequestBody(c)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, monitoringBindError(err))
 		return
 	}
 	if err := checkMonitoringSiteIDs(body.SiteIDs); err != nil {
@@ -167,8 +168,9 @@ func (h *Handler) resumeMonitoring(c *gin.Context) {
 		return
 	}
 	var body resumeMonitoringBody
-	if err := bindMonitoringBody(c, &body); err != nil {
-		httpx.Error(c, err)
+	capMonitoringRequestBody(c)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, monitoringBindError(err))
 		return
 	}
 	if err := checkMonitoringSiteIDs(body.SiteIDs); err != nil {
@@ -190,28 +192,37 @@ func (h *Handler) resumeMonitoring(c *gin.Context) {
 	h.respondMonitoring(c, p.TenantID, rejected, authorized, states, false)
 }
 
-// bindMonitoringBody caps the REQUEST BEFORE IT IS PARSED, then binds it.
+// capMonitoringRequestBody bounds the REQUEST BEFORE IT IS PARSED.
 //
-// http.MaxBytesReader is the half that matters: without it the whole body is
-// read and unmarshalled before any length check can run, so an 888 KB body of
-// 100k junk ids was parsed in full, failed uuid.Parse one id at a time into
-// 100,001 per-site "invalid_site_id" results, and came back 200 with a 7.5 MB
-// response — against a published maxItems of 200. Refusing at the reader means
-// the work is bounded by the cap, not by what the caller chose to send.
+// Without it the whole body is read and unmarshalled before any length check
+// can run: a 3.5 MB body of 100k junk ids was parsed in full, failed uuid.Parse
+// one id at a time into 100,001 per-site "invalid_site_id" results, and came
+// back 200 with a multi-megabyte response — against a published maxItems of
+// 200. Refusing at the reader means the work is bounded by the cap rather than
+// by what the caller chose to send.
 //
-// The oversize case is reported as request_too_large rather than folded into
-// invalid_body: the body may be perfectly valid JSON, and telling a client its
-// syntax is wrong when its size is wrong sends it looking in the wrong place.
-func bindMonitoringBody(c *gin.Context, dst any) error {
+// THE ShouldBindJSON CALL STAYS INLINE IN EACH HANDLER, and this helper does
+// not wrap it. tests/contract/openapi_request_body_test.go finds a handler's
+// request body by looking for that call BY NAME inside the handler function; a
+// bind hidden behind a helper makes the handler unanalysable, and the whole
+// request-body/OpenAPI field-drift check silently stops covering these two
+// routes. Wrapping it here is what first turned that check red. Two lines of
+// duplication is the price of staying inside it.
+func capMonitoringRequestBody(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMonitoringBodyBytes)
-	if err := c.ShouldBindJSON(dst); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return domain.Validation("request_too_large", "request body is too large")
-		}
-		return domain.Validation("invalid_body", "request body is not valid JSON")
+}
+
+// monitoringBindError maps a bind failure to its domain error.
+//
+// The oversize case is request_too_large rather than invalid_body: the body may
+// be perfectly valid JSON, and telling a client its syntax is wrong when its
+// size is wrong sends it looking in the wrong place.
+func monitoringBindError(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return domain.Validation("request_too_large", "request body is too large")
 	}
-	return nil
+	return domain.Validation("invalid_body", "request body is not valid JSON")
 }
 
 // checkMonitoringSiteIDs bounds the LIST BEFORE partitionSiteIDs walks it.
