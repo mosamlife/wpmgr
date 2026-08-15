@@ -6,6 +6,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.136] - 2026-08-15
+
+### Fixed
+
+- The "28d distribution" bar on the performance tab's worst-offenders table did not show a site's real data. The cell read only the row's rating word and looked up a fixed set of percentages for it: every site rated needs-improvement showed 40% good, 45% needs-improvement, 15% poor, and every site rated poor showed 10% good, 30% needs-improvement, 60% poor, regardless of that site's actual numbers. The table only lists sites rated poor or needs-improvement, so those two pictures were the only ones the column ever produced, across every site and every time window. The sample count shown beside the bar was real, which made a fabricated bar look measured. It shipped as an acknowledged placeholder on 2026-06-15, and the code comment recording that was deleted the same day while the placeholder itself stayed; it was live for about two months. If you drew a conclusion about a specific site from that bar during that time, the picture it showed did not reflect that site. Nothing was stored wrongly, no other number in the product was affected, and no action is required beyond upgrading.
+- The bar now shows the real histogram for whichever metric, LCP, INP or CLS, produced the row's rating, built from data the product was already gathering. It shows "Insufficient samples" instead of a bar when a site does not have enough of that metric's data to be meaningful.
+
+### Changed
+
+- The distribution bar now names the metric it is showing rather than being labelled "Overall". A site's LCP, INP and CLS distributions have no single combined meaning, and "Overall" implied a share of pageviews good on all three, a figure this product does not compute.
+
 ## [0.61.135] - 2026-08-14
 
 ### Security
