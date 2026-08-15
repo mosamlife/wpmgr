@@ -22,11 +22,15 @@ import (
 //	AND sas.ever_app_up = true
 //	AND s.app_alerts_disabled = false
 //	AND s.connection_state NOT IN ('revoked', 'archived')
+//	AND s.monitoring_paused_at IS NULL
 //
 // appAlertEligible deliberately covers only the app_alerts_disabled and
-// connection_state legs (ever_app_up is enforced one layer down, inside
-// EvaluateApp itself - see appAlertEligible's own doc comment for why that
-// third leg is not restated here). If GetTenantAppAlertRatio's WHERE clause
+// connection_state legs. ever_app_up is enforced one layer down, inside
+// EvaluateApp itself, and monitoring_paused_at one layer UP, in the probe
+// enumeration plus the dispatch-side re-read (monitoringPaused) - neither can
+// reach `pending`, and a paused site's flag is deliberately not carried on
+// EnrolledSite because a snapshot pause is a stale pause. See
+// appAlertEligible's own doc comment. If GetTenantAppAlertRatio's WHERE clause
 // ever changes, this test's expectations must change with it - that
 // coupling is the point: it is the mechanism that keeps this Go predicate
 // and the SQL predicate from silently drifting apart again.

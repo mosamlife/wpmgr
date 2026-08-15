@@ -15,12 +15,23 @@ package tests
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 	"github.com/mosamlife/wpmgr/apps/api/internal/uptime"
 )
+
+// containsSiteRef reports whether the sweeper enumeration returned this site.
+func containsSiteRef(refs []site.SiteRef, id uuid.UUID) bool {
+	for _, r := range refs {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
+}
 
 // TestMonitoringPauseProbeSelection proves the query predicate itself: a paused
 // site drops out of the probe enumeration, an active site in the SAME tenant
@@ -108,12 +119,16 @@ func TestMonitoringPauseProbeSelection(t *testing.T) {
 	// pinning that, and each one is a different subsystem reading `sites`.
 	// -------------------------------------------------------------------
 
-	t.Run("the connection sweep still sees the paused site", func(t *testing.T) {
-		// site.Repo.ListEnrolled is the health-check job's enumeration
-		// (ListEnrolledSitesAllTenants). Connection state must stay TRUTHFUL:
-		// stopping this would freeze a paused site at 'connected' forever
-		// after its agent died. Pause means "do not tell me", never "lie to
-		// me".
+	t.Run("the health job's enumeration still sees the paused site", func(t *testing.T) {
+		// site.Repo.ListEnrolled is the HEALTH-CHECK job's enumeration
+		// (ListEnrolledSitesAllTenants) — NOT the connection sweeper's, which
+		// is the separate pair pinned in the subtest below. This subtest was
+		// previously named for the sweeper while calling this; both promises
+		// are worth pinning, so both are, each under its own name.
+		//
+		// Connection state must stay TRUTHFUL: stopping this would freeze a
+		// paused site at 'connected' forever after its agent died. Pause means
+		// "do not tell me", never "lie to me".
 		enrolled, err := siteRepo.ListEnrolled(ctx)
 		if err != nil {
 			t.Fatalf("ListEnrolled: %v", err)
@@ -125,7 +140,62 @@ func TestMonitoringPauseProbeSelection(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("the connection/health sweep must still enumerate a paused site")
+			t.Fatalf("the health job must still enumerate a paused site")
+		}
+	})
+
+	t.Run("the connection sweep still sees the paused site", func(t *testing.T) {
+		// The ACTUAL sweeper enumeration: site.Sweeper calls exactly
+		// ListToDegrade and ListToDisconnect (internal/site/sweeper.go:330,367)
+		// and nothing else. Neither may ever gain a pause predicate — the
+		// sweeper is what turns a dead agent into connection_state
+		// 'degraded'/'disconnected', and a paused site whose agent dies must
+		// still show as disconnected in the UI. Pause silences the
+		// NOTIFICATION, never the record.
+		//
+		// Mutation that reddens this: add "AND monitoring_paused_at IS NULL"
+		// to ListSitesToDegrade or ListSitesToDisconnect in
+		// db/query/site_connection.sql.
+		admin := connectAdmin(t, pool)
+		defer admin.Close()
+		// Both selects key on connection_state + a stale last_seen_at; the
+		// seeded rows carry neither, so put them in the state a real fleet
+		// would be in when the sweeper runs.
+		if _, err := admin.Exec(ctx,
+			`UPDATE sites SET connection_state = 'connected', last_seen_at = now() - interval '1 hour'
+			  WHERE id = ANY($1)`, []uuid.UUID{paused, active}); err != nil {
+			t.Fatalf("stage sweeper preconditions: %v", err)
+		}
+		cutoff := time.Now()
+
+		toDegrade, err := siteRepo.ListToDegrade(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("ListToDegrade: %v", err)
+		}
+		if !containsSiteRef(toDegrade, paused) {
+			t.Fatalf("the connection sweeper's degrade select must still enumerate a PAUSED site: %d rows", len(toDegrade))
+		}
+		if !containsSiteRef(toDegrade, active) {
+			t.Fatalf("over-fire control: the ACTIVE site must be in the degrade select too, %d rows", len(toDegrade))
+		}
+
+		// Second leg: the disconnect select, which reads 'degraded' rows.
+		if _, err := admin.Exec(ctx,
+			`UPDATE sites SET connection_state = 'degraded' WHERE id = $1`, paused); err != nil {
+			t.Fatalf("stage degraded: %v", err)
+		}
+		toDisconnect, err := siteRepo.ListToDisconnect(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("ListToDisconnect: %v", err)
+		}
+		if !containsSiteRef(toDisconnect, paused) {
+			t.Fatalf("the connection sweeper's disconnect select must still enumerate a PAUSED site: %d rows", len(toDisconnect))
+		}
+
+		// Hand the row back exactly as the later subtests expect to find it.
+		if _, err := admin.Exec(ctx,
+			`UPDATE sites SET connection_state = 'connected' WHERE id = $1`, paused); err != nil {
+			t.Fatalf("restore connection_state: %v", err)
 		}
 	})
 

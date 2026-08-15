@@ -558,13 +558,25 @@ func (w *ProbeWorker) Sweep(ctx context.Context, now time.Time) (int, error) {
 // multi-site incident diluted by an uncounted revoked site, or trip it on a
 // ratio that does not match what was actually dispatched).
 //
-// GetTenantAppAlertRatio's THIRD eligibility criterion, ever_app_up, is
-// deliberately NOT restated here: EvaluateApp itself already refuses to fire
-// (FireDown or FireRecovery) for a site with EverAppUp=false, so such a site
-// can never reach `pending` in the first place - restating the same gate
-// here would be redundant, never a second source of truth to drift out of
-// sync. See TestAppAlertEligibleMatchesRatioQueryPredicate, which pins this
-// function's three inputs against the SQL predicate's literal text.
+// TWO of GetTenantAppAlertRatio's legs are deliberately NOT restated here,
+// each because a layer BELOW this one already makes them unreachable:
+//
+//   - ever_app_up: EvaluateApp itself refuses to fire (FireDown or
+//     FireRecovery) for a site with EverAppUp=false, so such a site can never
+//     reach `pending` in the first place.
+//   - monitoring_paused_at IS NULL (m117, GH #414 phase 2): a paused site is
+//     not enumerated by ListEnrolledForMonitoringProbe, so it is never
+//     probed, never evaluated and never lands in `pending`; and the one case
+//     that gets past that - a probe already in flight when the pause landed -
+//     is caught by monitoringPaused at dispatch, with a read fresher than
+//     anything a per-site predicate here could do. EnrolledSite does not even
+//     carry the column, deliberately (see the note on
+//     ListEnrolledSitesForProbe): a snapshot value would be a STALE pause,
+//     which is the one thing this feature cannot afford.
+//
+// Restating either here would be redundant, never a second source of truth to
+// drift out of sync. See TestAppAlertEligibleMatchesRatioQueryPredicate, which
+// pins this function's inputs against the SQL predicate's literal text.
 func appAlertEligible(s EnrolledSite) bool {
 	return !s.AppAlertsDisabled && s.ConnectionState != "revoked" && s.ConnectionState != "archived"
 }
@@ -673,20 +685,20 @@ func (w *ProbeWorker) processSite(ctx context.Context, s EnrolledSite, res Probe
 // silent, which is the same end state as an incident that was already open when
 // the pause landed (see Sweep's doc comment).
 //
-// HOW IT COMPOSES WITH THE FLEET CIRCUIT BREAKER. This gate sits in the
-// per-site dispatchers (fire, fireApp) and deliberately does NOT touch
-// resolveAppAlerts' ratio maths or the aggregate's SuppressedSites list. Those
-// counts come from GetTenantAppAlertRatio, a server-side query, and
-// appAlertEligible exists precisely so the fire path and the breaker's ratio
-// can never disagree about which sites count; adding a pause predicate to one
-// side only would recreate exactly the drift GH #291 Phase 3 Fix 2 removed, and
-// adding it to the other side is a db/query change that belongs to
-// database-engineer. The composition is still correct as it stands: a paused
-// site is not probed, so it can neither newly go down nor newly recover, so it
-// contributes no NEW transition to a breaker window; and if the breaker is
-// tripped the tenant gets one aggregate notification about the fleet rather
-// than a per-site page about the paused site. Folding pause into the ratio
-// itself is a later phase, and it is a query change, not this one.
+// HOW IT COMPOSES WITH THE FLEET CIRCUIT BREAKER. The breaker's counts come
+// from GetTenantAppAlertRatio, and that query now carries the pause predicate
+// too - on BOTH sides of the ratio, numerator and denominator. It has to: a
+// paused site is not probed, so its site_app_alert_state.in_incident is frozen
+// at whatever it was when the pause landed. Pause a site while its app-health
+// incident is OPEN and, without the predicate, that frozen `true` counts as
+// down forever, and two of them permanently trip the breaker for any tenant
+// with seven or fewer eligible sites - which suppresses the individual alerts
+// of every ACTIVE site in that tenant, indefinitely. That is the worst outcome
+// this feature can produce: a site nobody paused going silent. Filtering the
+// numerator alone would not fix it, only move it - the paused row would keep
+// padding the denominator. This gate (fire, fireApp) and fireAppAggregate's
+// population gate are the DISPATCH-side complement of that query: they cover
+// the window between the query running and the notification going out.
 //
 // A DB error fails OPEN: log it and dispatch. The alternative - swallowing an
 // alert because a pause lookup failed - turns a transient database blip into
@@ -855,14 +867,17 @@ func (w *ProbeWorker) resolveAppAlerts(ctx context.Context, pending []pendingApp
 				// naming everything suppressed on this first tick (at this
 				// exact moment nothing has been suppressed yet, so `fires`
 				// IS the complete affected population).
+				// SuppressedSites is filled in by fireAppAggregate from the
+				// pause-filtered subset of `fires` - it is deliberately NOT
+				// resolved here, so no path can name a site the gate would
+				// have dropped.
 				w.fireAppAggregate(ctx, tenantID, AppAggregateAlert{
-					Recovered:       false,
-					TenantID:        tenantID,
-					DownCount:       down,
-					EligibleCount:   eligible,
-					SuppressedSites: w.appFireDisplayNames(ctx, fires),
-					FiredAt:         now,
-				})
+					Recovered:     false,
+					TenantID:      tenantID,
+					DownCount:     down,
+					EligibleCount: eligible,
+					FiredAt:       now,
+				}, fires)
 			case brTr.FireUpdate:
 				// Fix 3: still tripped, but materially worse than the last
 				// notification (and at least appAlertBreakerUpdateMinInterval
@@ -892,7 +907,7 @@ func (w *ProbeWorker) resolveAppAlerts(ctx context.Context, pending []pendingApp
 					EligibleCount:   eligible,
 					SuppressedSites: suppressed,
 					FiredAt:         now,
-				})
+				}, nil)
 			}
 			// Steady tripped tick with neither FireTrip nor FireUpdate:
 			// silent, exactly like an already-open site incident does not
@@ -916,7 +931,7 @@ func (w *ProbeWorker) resolveAppAlerts(ctx context.Context, pending []pendingApp
 				DownCount:     down,
 				EligibleCount: eligible,
 				FiredAt:       now,
-			})
+			}, nil)
 			w.fireAppIndividually(ctx, appFireDownOnly(fires), now)
 		default:
 			// Never tripped, or recovered on a PRIOR tick and steady since:
@@ -995,11 +1010,74 @@ func (w *ProbeWorker) fireApp(ctx context.Context, s EnrolledSite, tr AppTransit
 	w.dispatcher.Fire(ctx, cfg, alert)
 }
 
+// appFireUnpaused returns the subset of fires whose site is NOT currently
+// monitoring-paused, using the SAME dispatch-side re-read (monitoringPaused)
+// that fire and fireApp use. It is the belt to the query's braces: the ratio
+// and down-list queries exclude paused sites server-side, but a site paused a
+// second AFTER those queries ran is still in their result set, and this is the
+// only read late enough to see it.
+func (w *ProbeWorker) appFireUnpaused(ctx context.Context, fires []pendingAppFire) []pendingAppFire {
+	live := make([]pendingAppFire, 0, len(fires))
+	for _, p := range fires {
+		if w.monitoringPaused(ctx, p.site, "app_aggregate") {
+			continue
+		}
+		live = append(live, p)
+	}
+	return live
+}
+
 // fireAppAggregate resolves the tenant's alert config and dispatches the
 // fleet circuit breaker's aggregate notification. Same AppAlertsEnabled gate
 // as fireApp - the breaker's own notification is still an app-health alert.
-func (w *ProbeWorker) fireAppAggregate(ctx context.Context, tenantID uuid.UUID, alert AppAggregateAlert) {
+//
+// PAUSE (m117, GH #414 phase 2). The aggregate is tenant-wide, so it has no
+// single site to hand monitoringPaused; it is gated on its POPULATION instead,
+// in the same place and the same way fire/fireApp are gated - at the top,
+// before the config lookup, on a fresh read of sites.monitoring_paused_at:
+//
+//   - `affected` is the tick's pending fires, i.e. the sites this notification
+//     is about (non-nil only on the initial trip, which is the only case that
+//     names sites from in-process state). Each is re-read through
+//     monitoringPaused. Survivors become SuppressedSites, so the body can
+//     never name a site that was paused after the ratio query ran; and if the
+//     ENTIRE affected population turns out to be paused, the notification is
+//     withheld - it would otherwise page a tenant about nothing but sites
+//     nobody is monitoring, which is HOLE 2 (a fully paused tenant received an
+//     aggregate naming its paused sites).
+//   - EligibleCount == 0 is the tenant-level leg, for the two cases that reach
+//     here with no site ids at all: the Updated notification (names come from
+//     ListTenantAppDownSites, already pause-filtered server-side) and the
+//     recovery notification (names nothing). Eligible is
+//     GetTenantAppAlertRatio's count and now excludes paused sites, so zero
+//     means the aggregate speaks for an empty population - every site of the
+//     tenant is paused, archived or revoked. A notification about no sites is
+//     not a safer notification, it is noise, and for the paused case it is
+//     precisely the mail the operator asked not to receive. Note this can only
+//     ever affect a RECOVERY aggregate: wantTrip requires eligible > 0, so
+//     neither a trip nor an update can be produced with a zero eligible count.
+//
+// It deliberately does NOT withhold merely because SuppressedSites came back
+// empty on the Updated path: that list is also empty when
+// ListTenantAppDownSites errored, and the counts alongside it are still true,
+// so swallowing the notification would turn a query blip into silence.
+func (w *ProbeWorker) fireAppAggregate(ctx context.Context, tenantID uuid.UUID, alert AppAggregateAlert, affected []pendingAppFire) {
 	if w.dispatcher == nil {
+		return
+	}
+	if len(affected) > 0 {
+		live := w.appFireUnpaused(ctx, affected)
+		if len(live) == 0 {
+			w.logger.Info("uptime: app aggregate withheld, every affected site is monitoring-paused",
+				slog.String("tenant_id", tenantID.String()),
+				slog.Int("affected", len(affected)))
+			return
+		}
+		alert.SuppressedSites = w.appFireDisplayNames(ctx, live)
+	} else if alert.EligibleCount == 0 {
+		w.logger.Info("uptime: app aggregate withheld, no alert-eligible site left in tenant",
+			slog.String("tenant_id", tenantID.String()),
+			slog.Bool("recovered", alert.Recovered))
 		return
 	}
 	cfg, found, err := w.repo.GetAlertConfig(ctx, tenantID)
