@@ -844,10 +844,10 @@ func (w *ProbeWorker) resolveAppAlerts(ctx context.Context, pending []pendingApp
 		// down, regardless of how small the eligible population is.
 		wantTrip := appBreakerBarMet(eligible, down, ratio)
 
-		// GH #414 phase 3. A trip about to NAME this tick's fires is the one
-		// path whose counts can be contradicted between the ratio read above
-		// and the mail: an operator pausing a site in that window leaves the
-		// numbers pre-pause and the names post-pause. Substantiate the
+		// GH #414 phase 3. A trip is the one path whose counts can be
+		// contradicted between the ratio read above and the mail: an operator
+		// pausing a site in that window leaves the numbers pre-pause and the
+		// names post-pause. Substantiate the
 		// population HERE, before the breaker records what we are about to
 		// say, so the stored last_down_count is the count the mail quotes
 		// (phase 3 finding: the mail said "2/3" while the row kept 3, and the
