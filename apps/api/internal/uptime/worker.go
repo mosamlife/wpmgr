@@ -1032,49 +1032,91 @@ func (w *ProbeWorker) appFireUnpaused(ctx context.Context, fires []pendingAppFir
 // as fireApp - the breaker's own notification is still an app-health alert.
 //
 // PAUSE (m117, GH #414 phase 2). The aggregate is tenant-wide, so it has no
-// single site to hand monitoringPaused; it is gated on its POPULATION instead,
-// in the same place and the same way fire/fireApp are gated - at the top,
-// before the config lookup, on a fresh read of sites.monitoring_paused_at:
+// single site to hand monitoringPaused. It asks TWO SEPARATE questions, and
+// keeping them separate is the whole point - conflating them is how a paused
+// site silenced an unpaused one for the third time (GH #414 phase 2 finding 2):
 //
-//   - `affected` is the tick's pending fires, i.e. the sites this notification
-//     is about (non-nil only on the initial trip, which is the only case that
-//     names sites from in-process state). Each is re-read through
-//     monitoringPaused. Survivors become SuppressedSites, so the body can
-//     never name a site that was paused after the ratio query ran; and if the
-//     ENTIRE affected population turns out to be paused, the notification is
-//     withheld - it would otherwise page a tenant about nothing but sites
-//     nobody is monitoring, which is HOLE 2 (a fully paused tenant received an
-//     aggregate naming its paused sites).
-//   - EligibleCount == 0 is the tenant-level leg, for the two cases that reach
-//     here with no site ids at all: the Updated notification (names come from
-//     ListTenantAppDownSites, already pause-filtered server-side) and the
-//     recovery notification (names nothing). Eligible is
-//     GetTenantAppAlertRatio's count and now excludes paused sites, so zero
-//     means the aggregate speaks for an empty population - every site of the
-//     tenant is paused, archived or revoked. A notification about no sites is
-//     not a safer notification, it is noise, and for the paused case it is
-//     precisely the mail the operator asked not to receive. Note this can only
-//     ever affect a RECOVERY aggregate: wantTrip requires eligible > 0, so
-//     neither a trip nor an update can be produced with a zero eligible count.
+//	Q1 WHICH SITES DOES THIS NAME? A pause removes a site from the body. It
+//	   never, on its own, removes the notification.
+//	Q2 SHOULD THIS SEND AT ALL? Exactly one condition, asked identically for
+//	   every aggregate: EligibleCount == 0, i.e. this tenant has no site left
+//	   that anyone could be alerted about.
+//
+// Q1, in detail. `affected` is the tick's pending fires - the transitions this
+// notification would otherwise have sent individually (non-nil only on the
+// initial trip, the one case that names sites from in-process state). Each is
+// re-read through monitoringPaused, so the body can never name a site paused
+// after the ratio query ran. Two consequences of a drop:
+//
+//   - The COUNTS must be re-derived, or the subject contradicts the body: the
+//     ratio was read before the pause landed, so it still counts a site the
+//     body no longer names ("3/4 sites are simultaneously app-down" over a body
+//     naming 2 - GH #414 phase 2 finding 3). A drop is rare (it needs a pause
+//     inside the window between the ratio query and the dispatch), so re-reading
+//     the ratio then, and only then, costs nothing in the ordinary case and
+//     gives counts and names that were pause-filtered at the same instant. The
+//     re-read cannot be substituted with arithmetic on the fires: a fire whose
+//     pause landed BEFORE the ratio query was never in the count to subtract
+//     from, and this path cannot tell the two apart. If the re-read fails, the
+//     pre-pause counts stand - they are stale by at most one site, which is a
+//     far better outcome than swallowing the notification.
+//   - If EVERY affected site was dropped, the names come from
+//     ListTenantAppDownSites instead - the live, server-side pause-filtered
+//     down set, the same source the Updated notification uses. This is the
+//     finding-2 case: the tick's transitions were all paused sites while OTHER,
+//     unpaused sites are what actually holds the ratio above threshold. The
+//     breaker is tripped and suppressing their individual alerts, so withholding
+//     the aggregate too would produce total silence for genuinely down,
+//     unmuted sites.
+//
+// Q2, in detail. EligibleCount is GetTenantAppAlertRatio's denominator and it
+// excludes paused sites, so zero means the aggregate speaks for an empty
+// population - every site of the tenant is paused, archived or revoked. A
+// notification about no sites is not a safer notification, it is noise, and for
+// the paused case it is precisely the mail the operator asked not to receive
+// (HOLE 2: a fully paused tenant received an aggregate naming its paused
+// sites). Reached in two ways: directly, for the recovery aggregate of a tenant
+// that has gone entirely paused; and via the re-read above, when the pause that
+// landed mid-dispatch was the tenant's last eligible site.
 //
 // It deliberately does NOT withhold merely because SuppressedSites came back
-// empty on the Updated path: that list is also empty when
-// ListTenantAppDownSites errored, and the counts alongside it are still true,
-// so swallowing the notification would turn a query blip into silence.
+// empty: that list is also empty when ListTenantAppDownSites errored, and the
+// counts alongside it are still true, so swallowing the notification would turn
+// a query blip into silence. "Suppressed sites: none named" is the rendered
+// result, and a named count with no list beats no mail at all.
 func (w *ProbeWorker) fireAppAggregate(ctx context.Context, tenantID uuid.UUID, alert AppAggregateAlert, affected []pendingAppFire) {
 	if w.dispatcher == nil {
 		return
 	}
+	// Q1: which sites does this name.
 	if len(affected) > 0 {
 		live := w.appFireUnpaused(ctx, affected)
-		if len(live) == 0 {
-			w.logger.Info("uptime: app aggregate withheld, every affected site is monitoring-paused",
-				slog.String("tenant_id", tenantID.String()),
-				slog.Int("affected", len(affected)))
-			return
-		}
 		alert.SuppressedSites = w.appFireDisplayNames(ctx, live)
-	} else if alert.EligibleCount == 0 {
+		if dropped := len(affected) - len(live); dropped > 0 {
+			eligible, down, err := w.repo.GetTenantAppAlertRatio(ctx, tenantID)
+			if err != nil {
+				w.logger.Warn("uptime: app aggregate ratio re-read failed, counts predate the pause",
+					slog.String("tenant_id", tenantID.String()),
+					slog.Int("dropped", dropped), slog.Any("error", err))
+			} else {
+				alert.DownCount, alert.EligibleCount = down, eligible
+			}
+			if len(live) == 0 {
+				w.logger.Info("uptime: every affected site is monitoring-paused, naming the live down set instead",
+					slog.String("tenant_id", tenantID.String()),
+					slog.Int("affected", len(affected)))
+				names, nErr := w.repo.ListTenantAppDownSites(ctx, tenantID, 0)
+				if nErr != nil {
+					w.logger.Warn("uptime: list tenant app down sites failed (aggregate fallback)",
+						slog.String("tenant_id", tenantID.String()), slog.Any("error", nErr))
+				} else {
+					alert.SuppressedSites = names
+				}
+			}
+		}
+	}
+	// Q2: should this send at all.
+	if alert.EligibleCount == 0 {
 		w.logger.Info("uptime: app aggregate withheld, no alert-eligible site left in tenant",
 			slog.String("tenant_id", tenantID.String()),
 			slog.Bool("recovered", alert.Recovered))

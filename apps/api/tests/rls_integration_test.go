@@ -6,6 +6,7 @@ package tests
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,15 +87,32 @@ func startPostgres(t *testing.T) *db.Pool {
 	}
 	t.Cleanup(pool.Close)
 
+	adminDSNsMu.Lock()
 	adminDSNs[pool] = adminDSN
-	t.Cleanup(func() { delete(adminDSNs, pool) })
+	adminDSNsMu.Unlock()
+	t.Cleanup(func() {
+		adminDSNsMu.Lock()
+		delete(adminDSNs, pool)
+		adminDSNsMu.Unlock()
+	})
 	return pool
 }
 
 // adminDSNs maps an app pool to its container's superuser DSN, so tests that
 // must act outside the app's RLS/privilege constraints (e.g. tampering with the
 // append-only audit_log) can open a superuser connection.
-var adminDSNs = map[*db.Pool]string{}
+//
+// adminDSNsMu is not tidiness. startPostgres is called from t.Parallel() tests
+// (scan_plugin_checksums_regression_test.go holds the package's only two), so
+// two goroutines write this map at once, and a concurrent map write is a FATAL
+// Go runtime error: it aborts the whole test binary, taking every unrelated
+// test with it, with a stack that points at whichever test happened to be
+// running. That is the shape of an intermittent full-suite failure that never
+// reproduces in isolation.
+var (
+	adminDSNsMu sync.Mutex
+	adminDSNs   = map[*db.Pool]string{}
+)
 
 // connectAdmin opens a superuser pool for the most recently started container.
 // It is only used to simulate out-of-band tampering in tests.

@@ -78,10 +78,22 @@ type appPauseRepo struct {
 	tripped []uuid.UUID
 }
 
+// GetTenantAppAlertRatio answers from the fleet as it stands, then commits any
+// pending "paused between the ratio query and the dispatch" pause. That is what
+// the race actually is: the FIRST read of a tick happens before the operator's
+// UPDATE commits and still counts the site; every read after it sees the pause.
+// Modelling the flip is what lets the fire path's re-read (fireAppAggregate,
+// finding 3) be tested at all - without it the fake would insist a late pause
+// is invisible to every query forever, which is not how Postgres behaves.
 func (r *appPauseRepo) GetTenantAppAlertRatio(_ context.Context, _ uuid.UUID) (int, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	eligible, down := appRatio(r.fleet)
+	for i := range r.fleet {
+		if r.fleet[i].pausedAfterTheRow {
+			r.fleet[i].paused = true
+		}
+	}
 	return eligible, down, nil
 }
 
@@ -459,6 +471,132 @@ func TestAggregateDropsSitePausedAfterTheQuery(t *testing.T) {
 	}
 	if strings.Contains(bodies[0], late.url) {
 		t.Fatalf("a site paused after the ratio query ran must not be named, body:\n%s", bodies[0])
+	}
+	for _, want := range []string{a.url, b.url} {
+		if !strings.Contains(bodies[0], want) {
+			t.Fatalf("the aggregate must still name %s, body:\n%s", want, bodies[0])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HOLE 3 — the tick's transitions are paused, the sites holding the ratio up
+// are not, and the breaker suppresses BOTH halves.
+// ---------------------------------------------------------------------------
+
+// TestAggregateStillFiresWhenEveryTransitionIsPaused is the third total-silence
+// hole, a different shape from the first two.
+//
+// Two sites transition this tick and are paused before the sweep resolves;
+// TWO OTHER SITES, unpaused and genuinely app-down, are what actually holds the
+// ratio above the trip threshold. The breaker trips — which suppresses every
+// per-site alert for the tenant — and the aggregate that is supposed to replace
+// them must therefore go out. Withholding it because THIS TICK's transitions
+// happened to be paused ones produces total silence over two unpaused, broken
+// sites, which is the same class of bug as the two holes above.
+//
+// The pause must remove the paused sites from the BODY and nothing else. What
+// the body names instead is the live down set, which is exactly the population
+// the notification is speaking for.
+//
+// RED: restore `if len(live) == 0 { ...; return }` as the first thing
+// fireAppAggregate does with `affected` — subjects comes back empty.
+func TestAggregateStillFiresWhenEveryTransitionIsPaused(t *testing.T) {
+	ctx := context.Background()
+	tenant := uuid.New()
+
+	// This tick's transitions, both paused before resolveAppAlerts ran.
+	pausedA := appPauseFleetSite("https://tick-paused-a.example.com")
+	pausedA.paused, pausedA.inIncident = true, true
+	pausedB := appPauseFleetSite("https://tick-paused-b.example.com")
+	pausedB.paused, pausedB.inIncident = true, true
+	// The sites that actually hold the ratio above threshold: unpaused, down,
+	// and about to have every one of their individual alerts suppressed.
+	liveC := appPauseFleetSite("https://tick-live-c.example.com")
+	liveC.inIncident = true
+	liveD := appPauseFleetSite("https://tick-live-d.example.com")
+	liveD.inIncident = true
+
+	repo := &appPauseRepo{
+		fleet:   []appPauseSite{pausedA, pausedB, liveC, liveD},
+		breaker: map[uuid.UUID]AppBreakerState{},
+	}
+	w, mailer := newAppPauseRig(t, repo)
+
+	fires := []pendingAppFire{fireFor(pausedA, true), fireFor(pausedB, true)}
+	for i := range fires {
+		fires[i].site.TenantID = tenant
+	}
+	w.resolveAppAlerts(ctx, fires, time.Now())
+
+	subjects, bodies := mailer.sent()
+	if !repo.breaker[tenant].Tripped {
+		t.Fatalf("two unpaused down sites out of two eligible must trip the breaker: %+v", repo.breaker[tenant])
+	}
+	if len(subjects) != 1 {
+		t.Fatalf("the breaker suppressed every per-site alert, so the aggregate MUST be sent: got %d subjects=%v bodies=%v", len(subjects), subjects, bodies)
+	}
+	body := bodies[0]
+	if !strings.Contains(body, "2 of 2") {
+		t.Fatalf("the aggregate must state the unpaused truth, 2 down of 2 eligible, body:\n%s", body)
+	}
+	for _, want := range []string{liveC.url, liveD.url} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the aggregate must name the unpaused down site %s, body:\n%s", want, body)
+		}
+	}
+	for _, never := range []string{pausedA.url, pausedB.url} {
+		if strings.Contains(body, never) {
+			t.Fatalf("a paused site (%s) must never be named, body:\n%s", never, body)
+		}
+	}
+}
+
+// TestAggregateCountMatchesTheNamesAfterALatePause pins the subject to the
+// body. The ratio query runs, THEN one of the sites it counted is paused, and
+// the fire-time re-read drops that site from the list — so the counts the
+// subject quotes were taken before the pause and the list was not. The mail
+// then reads "3/4 sites are simultaneously app-down" over a body naming two,
+// which is the shape of the originally reported symptom.
+//
+// RED: delete the `GetTenantAppAlertRatio` re-read block from fireAppAggregate
+// — the subject says 3/4 while the body names 2.
+func TestAggregateCountMatchesTheNamesAfterALatePause(t *testing.T) {
+	ctx := context.Background()
+	tenant := uuid.New()
+
+	a := appPauseFleetSite("https://count-a.example.com")
+	a.inIncident = true
+	b := appPauseFleetSite("https://count-b.example.com")
+	b.inIncident = true
+	late := appPauseFleetSite("https://count-late.example.com")
+	late.inIncident, late.pausedAfterTheRow = true, true
+	up := appPauseFleetSite("https://count-up.example.com")
+
+	repo := &appPauseRepo{
+		fleet:   []appPauseSite{a, b, late, up},
+		breaker: map[uuid.UUID]AppBreakerState{},
+	}
+	w, mailer := newAppPauseRig(t, repo)
+
+	fires := []pendingAppFire{fireFor(a, true), fireFor(b, true), fireFor(late, true)}
+	for i := range fires {
+		fires[i].site.TenantID = tenant
+	}
+	w.resolveAppAlerts(ctx, fires, time.Now())
+
+	subjects, bodies := mailer.sent()
+	if len(subjects) != 1 {
+		t.Fatalf("expected exactly one aggregate, got %d: %v", len(subjects), subjects)
+	}
+	if !strings.Contains(subjects[0], "2/3") {
+		t.Fatalf("the subject must quote the pause-filtered counts (2/3), got %q with body:\n%s", subjects[0], bodies[0])
+	}
+	if !strings.Contains(bodies[0], "2 of 3") {
+		t.Fatalf("the body's count must agree with the sites it names, body:\n%s", bodies[0])
+	}
+	if strings.Contains(bodies[0], late.url) {
+		t.Fatalf("the late-paused site must not be named, body:\n%s", bodies[0])
 	}
 	for _, want := range []string{a.url, b.url} {
 		if !strings.Contains(bodies[0], want) {

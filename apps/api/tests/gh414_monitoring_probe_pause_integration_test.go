@@ -220,12 +220,16 @@ func TestMonitoringPauseProbeSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("a hand-triggered probe of a paused site still runs", func(t *testing.T) {
-		// Pause governs the SCHEDULE, never the operator. The prober is a
-		// pure function of a URL — it consults no pause state at all — so the
-		// operator-triggered path is unaffected by construction. This
-		// assertion pins that: the only pause gates in the package are the
-		// scheduled enumeration and the alert dispatch.
+	t.Run("a paused site's pause flag and alert state stay readable", func(t *testing.T) {
+		// Named for what it executes. It previously claimed to run a
+		// "hand-triggered probe", which nothing here does and no endpoint
+		// offers — there is no operator-triggered probe route.
+		//
+		// What it does pin is that a pause makes no read fail: the pause flag
+		// itself and the site's uptime alert state are both still readable
+		// through the ordinary repo path, so the UI and the fire path can
+		// still ask about a paused site. Pause silences the notification, it
+		// does not take the row out of service.
 		if _, err := uptimeRepo.IsMonitoringPaused(ctx, paused); err != nil {
 			t.Fatalf("pause read: %v", err)
 		}
