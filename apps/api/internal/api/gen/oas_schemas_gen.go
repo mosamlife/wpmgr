@@ -42848,9 +42848,43 @@ type Site struct {
 	// not an inference from an installed-plugin slug (the feature ships as a
 	// drop-in, not a plugin, so no such slug can ever exist). false both when
 	// object caching is off AND when the site has no object cache config yet.
-	ObjectCacheEnabled bool      `json:"object_cache_enabled"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ObjectCacheEnabled bool `json:"object_cache_enabled"`
+	// GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.
+	// Absent/null means monitoring is ACTIVE; the flag and the since-when are one
+	// column (sites.monitoring_paused_at) so they cannot disagree.
+	// Pause means "do not tell me", never "lie to me". It suppresses scheduled
+	// monitoring (uptime probes and their alerts) and nothing else: backups, the
+	// cron kick, the connection sweep, RUM ingestion, retention and everything a
+	// person clicks all keep running for a paused site.
+	MonitoringPausedAt OptDateTime `json:"monitoring_paused_at"`
+	// GH #414 — the user who paused monitoring. Absent when monitoring is active,
+	// and also absent for a paused site whose pausing user has since been deleted
+	// (the FK is ON DELETE SET NULL, so a pause outlives its author).
+	MonitoringPausedBy OptUUID `json:"monitoring_paused_by"`
+	// GH #414 — the operator's free-text note for why monitoring is paused.
+	// Empty/absent when monitoring is active or when no reason was given.
+	MonitoringPausedReason OptString `json:"monitoring_paused_reason"`
+	// GH #414 — the scheduled auto-resume instant. Absent means "paused until
+	// someone resumes it". Never present without monitoring_paused_at (enforced
+	// by sites_monitoring_resume_requires_pause_check).
+	MonitoringResumeAt OptDateTime `json:"monitoring_resume_at"`
+	// GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran
+	// against this site (site_uptime_status.last_probed_at), i.e. the "as of" for
+	// `health_status`. Absent when the site has never been probed.
+	// Read this WITH `health_status`, never instead of it. The uptime prober is
+	// what refreshes `health_status`, and pausing monitoring stops the prober — so
+	// a paused site's `health_status` freezes at its last value while this stamp
+	// stops advancing. A paused site whose server died an hour ago therefore still
+	// reports `health_status: healthy`, and this field is the only thing that says
+	// how old that verdict is. Render it as "as of <time>" rather than implying now.
+	HealthCheckedAt OptDateTime `json:"health_checked_at"`
+	CreatedAt       time.Time   `json:"created_at"`
+	// The site row's mtime: bumped by heartbeats, agent metadata pushes and
+	// health_status changes. Deliberately NOT bumped by monitoring pause/resume
+	// writes (GH #414 Phase 1), so pausing a site does not make its inventory look
+	// freshly synced. It is the inventory freshness stamp, not the health one —
+	// use health_checked_at for health_status.
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -43046,6 +43080,31 @@ func (s *Site) GetPageCacheEnabled() bool {
 // GetObjectCacheEnabled returns the value of ObjectCacheEnabled.
 func (s *Site) GetObjectCacheEnabled() bool {
 	return s.ObjectCacheEnabled
+}
+
+// GetMonitoringPausedAt returns the value of MonitoringPausedAt.
+func (s *Site) GetMonitoringPausedAt() OptDateTime {
+	return s.MonitoringPausedAt
+}
+
+// GetMonitoringPausedBy returns the value of MonitoringPausedBy.
+func (s *Site) GetMonitoringPausedBy() OptUUID {
+	return s.MonitoringPausedBy
+}
+
+// GetMonitoringPausedReason returns the value of MonitoringPausedReason.
+func (s *Site) GetMonitoringPausedReason() OptString {
+	return s.MonitoringPausedReason
+}
+
+// GetMonitoringResumeAt returns the value of MonitoringResumeAt.
+func (s *Site) GetMonitoringResumeAt() OptDateTime {
+	return s.MonitoringResumeAt
+}
+
+// GetHealthCheckedAt returns the value of HealthCheckedAt.
+func (s *Site) GetHealthCheckedAt() OptDateTime {
+	return s.HealthCheckedAt
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -43251,6 +43310,31 @@ func (s *Site) SetPageCacheEnabled(val bool) {
 // SetObjectCacheEnabled sets the value of ObjectCacheEnabled.
 func (s *Site) SetObjectCacheEnabled(val bool) {
 	s.ObjectCacheEnabled = val
+}
+
+// SetMonitoringPausedAt sets the value of MonitoringPausedAt.
+func (s *Site) SetMonitoringPausedAt(val OptDateTime) {
+	s.MonitoringPausedAt = val
+}
+
+// SetMonitoringPausedBy sets the value of MonitoringPausedBy.
+func (s *Site) SetMonitoringPausedBy(val OptUUID) {
+	s.MonitoringPausedBy = val
+}
+
+// SetMonitoringPausedReason sets the value of MonitoringPausedReason.
+func (s *Site) SetMonitoringPausedReason(val OptString) {
+	s.MonitoringPausedReason = val
+}
+
+// SetMonitoringResumeAt sets the value of MonitoringResumeAt.
+func (s *Site) SetMonitoringResumeAt(val OptDateTime) {
+	s.MonitoringResumeAt = val
+}
+
+// SetHealthCheckedAt sets the value of HealthCheckedAt.
+func (s *Site) SetHealthCheckedAt(val OptDateTime) {
+	s.HealthCheckedAt = val
 }
 
 // SetCreatedAt sets the value of CreatedAt.

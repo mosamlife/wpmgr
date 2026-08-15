@@ -739,6 +739,30 @@ func toAPI(s Site) gen.Site {
 		out.TLSExpiresAt = gen.NewOptDateTime(*s.TLSExpiresAt)
 	}
 
+	// GH #414 — monitoring pause state. Absent monitoring_paused_at means
+	// ACTIVE, which is why the whole group is Opt: the wire carries "paused
+	// since X" or nothing at all, never a separate boolean that could disagree
+	// with the timestamp.
+	if s.MonitoringPausedAt != nil {
+		out.MonitoringPausedAt = gen.NewOptDateTime(*s.MonitoringPausedAt)
+	}
+	if s.MonitoringPausedBy != nil {
+		out.MonitoringPausedBy = gen.NewOptUUID(*s.MonitoringPausedBy)
+	}
+	if s.MonitoringPausedReason != "" {
+		out.MonitoringPausedReason = gen.NewOptString(s.MonitoringPausedReason)
+	}
+	if s.MonitoringResumeAt != nil {
+		out.MonitoringResumeAt = gen.NewOptDateTime(*s.MonitoringResumeAt)
+	}
+	// The "as of" for HealthStatus above. Pause stops the uptime prober, so a
+	// paused site's health_status freezes while this stamp stops advancing;
+	// shipping the verdict without its age is what would turn "do not tell me"
+	// into "lie to me". Absent = never probed, which is also not "now".
+	if s.HealthCheckedAt != nil {
+		out.HealthCheckedAt = gen.NewOptDateTime(*s.HealthCheckedAt)
+	}
+
 	if len(s.Components) > 0 {
 		var comp struct {
 			Plugins    []Component `json:"plugins"`

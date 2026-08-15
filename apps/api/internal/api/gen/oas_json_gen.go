@@ -103665,6 +103665,36 @@ func (s *Site) encodeFields(e *jx.Encoder) {
 		e.Bool(s.ObjectCacheEnabled)
 	}
 	{
+		if s.MonitoringPausedAt.Set {
+			e.FieldStart("monitoring_paused_at")
+			s.MonitoringPausedAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		if s.MonitoringPausedBy.Set {
+			e.FieldStart("monitoring_paused_by")
+			s.MonitoringPausedBy.Encode(e)
+		}
+	}
+	{
+		if s.MonitoringPausedReason.Set {
+			e.FieldStart("monitoring_paused_reason")
+			s.MonitoringPausedReason.Encode(e)
+		}
+	}
+	{
+		if s.MonitoringResumeAt.Set {
+			e.FieldStart("monitoring_resume_at")
+			s.MonitoringResumeAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
+		if s.HealthCheckedAt.Set {
+			e.FieldStart("health_checked_at")
+			s.HealthCheckedAt.Encode(e, json.EncodeDateTime)
+		}
+	}
+	{
 		e.FieldStart("created_at")
 		json.EncodeDateTime(e, s.CreatedAt)
 	}
@@ -103674,7 +103704,7 @@ func (s *Site) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfSite = [41]string{
+var jsonFieldsNameOfSite = [46]string{
 	0:  "id",
 	1:  "tenant_id",
 	2:  "url",
@@ -103714,8 +103744,13 @@ var jsonFieldsNameOfSite = [41]string{
 	36: "tls_expires_at",
 	37: "page_cache_enabled",
 	38: "object_cache_enabled",
-	39: "created_at",
-	40: "updated_at",
+	39: "monitoring_paused_at",
+	40: "monitoring_paused_by",
+	41: "monitoring_paused_reason",
+	42: "monitoring_resume_at",
+	43: "health_checked_at",
+	44: "created_at",
+	45: "updated_at",
 }
 
 // Decode decodes Site from json.
@@ -104145,8 +104180,58 @@ func (s *Site) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"object_cache_enabled\"")
 			}
+		case "monitoring_paused_at":
+			if err := func() error {
+				s.MonitoringPausedAt.Reset()
+				if err := s.MonitoringPausedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"monitoring_paused_at\"")
+			}
+		case "monitoring_paused_by":
+			if err := func() error {
+				s.MonitoringPausedBy.Reset()
+				if err := s.MonitoringPausedBy.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"monitoring_paused_by\"")
+			}
+		case "monitoring_paused_reason":
+			if err := func() error {
+				s.MonitoringPausedReason.Reset()
+				if err := s.MonitoringPausedReason.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"monitoring_paused_reason\"")
+			}
+		case "monitoring_resume_at":
+			if err := func() error {
+				s.MonitoringResumeAt.Reset()
+				if err := s.MonitoringResumeAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"monitoring_resume_at\"")
+			}
+		case "health_checked_at":
+			if err := func() error {
+				s.HealthCheckedAt.Reset()
+				if err := s.HealthCheckedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"health_checked_at\"")
+			}
 		case "created_at":
-			requiredBitSet[4] |= 1 << 7
+			requiredBitSet[5] |= 1 << 4
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.CreatedAt = v
@@ -104158,7 +104243,7 @@ func (s *Site) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		case "updated_at":
-			requiredBitSet[5] |= 1 << 0
+			requiredBitSet[5] |= 1 << 5
 			if err := func() error {
 				v, err := json.DecodeDateTime(d)
 				s.UpdatedAt = v
@@ -104183,8 +104268,8 @@ func (s *Site) Decode(d *jx.Decoder) error {
 		0b01010000,
 		0b00000000,
 		0b00000000,
-		0b11100000,
-		0b00000001,
+		0b01100000,
+		0b00110000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

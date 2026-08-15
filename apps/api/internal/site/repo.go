@@ -316,6 +316,17 @@ func (r *pgRepo) Get(ctx context.Context, tenantID, id uuid.UUID) (Site, error) 
 			return domain.Internal("site_get_failed", "failed to load site").WithCause(err)
 		}
 		out = toModelFromGetSiteRow(row)
+		// GH #414 — stamp the health verdict with when it was last actually
+		// probed. Same tx, so RLS covers it; a site that has never been probed
+		// simply has no row and HealthCheckedAt stays nil.
+		probed, perr := loadHealthCheckedAt(ctx, tx, tenantID, []uuid.UUID{id})
+		if perr != nil {
+			return perr
+		}
+		if at, ok := probed[id]; ok {
+			t := at
+			out.HealthCheckedAt = &t
+		}
 		return nil
 	})
 	return out, err
@@ -394,6 +405,20 @@ func (r *pgRepo) List(ctx context.Context, in ListInput) ([]Site, error) {
 			for i := range out {
 				ids[i] = out[i].ID
 			}
+			// GH #414 — the "as of" for health_status. One PK-keyed batch read
+			// in the same tx as the backup/client/screenshot enrichments above.
+			// Sites never probed have no row and keep HealthCheckedAt nil.
+			probed, perr := loadHealthCheckedAt(ctx, tx, in.TenantID, ids)
+			if perr != nil {
+				return perr
+			}
+			for i := range out {
+				if at, ok := probed[out[i].ID]; ok {
+					t := at
+					out[i].HealthCheckedAt = &t
+				}
+			}
+
 			bks, berr := sqlc.New(tx).ListLatestBackupsForSites(ctx, sqlc.ListLatestBackupsForSitesParams{
 				TenantID: in.TenantID,
 				Column2:  ids,
@@ -969,7 +994,71 @@ func toModel(s sqlc.Site) Site {
 		id := uuid.UUID(s.ClientID.Bytes)
 		m.ClientID = &id
 	}
+	// GH #414 — monitoring pause state (m117). Read here rather than in a
+	// separate enrichment because all four columns live on the sites row every
+	// caller of toModel already has in hand.
+	if s.MonitoringPausedAt.Valid {
+		t := s.MonitoringPausedAt.Time
+		m.MonitoringPausedAt = &t
+	}
+	if s.MonitoringPausedBy.Valid {
+		id := uuid.UUID(s.MonitoringPausedBy.Bytes)
+		m.MonitoringPausedBy = &id
+	}
+	m.MonitoringPausedReason = s.MonitoringPausedReason
+	if s.MonitoringResumeAt.Valid {
+		t := s.MonitoringResumeAt.Time
+		m.MonitoringResumeAt = &t
+	}
 	return m
+}
+
+// healthCheckedAtSQL reads site_uptime_status.last_probed_at for a set of
+// sites: the last uptime probe that actually ran, which is the "as of" for
+// sites.health_status (GH #414).
+//
+// Raw SQL in the owning domain's repo rather than a new db/query entry, and
+// deliberately NOT a join added to ListSites/GetSite — both of those live in
+// db/query/sites.sql, which this layer does not own. It runs inside the
+// caller's already-open tenant/scope tx, so site_uptime_status's tenant
+// isolation AND its RESTRICTIVE _site_scope policy both apply; tenant_id is
+// still named explicitly so the index stays in play.
+//
+// PK-keyed: site_uptime_status.site_id is the primary key, so this is one
+// index seek per listed site. Row absence means "never probed" — the same
+// contract QueryFleetUptime already relies on — and leaves HealthCheckedAt nil.
+const healthCheckedAtSQL = `
+SELECT site_id, last_probed_at
+  FROM site_uptime_status
+ WHERE tenant_id = $1
+   AND site_id = ANY($2::uuid[])`
+
+// loadHealthCheckedAt runs healthCheckedAtSQL and returns site_id →
+// last_probed_at. Callers treat a missing key as "never probed".
+func loadHealthCheckedAt(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]time.Time, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, healthCheckedAtSQL, tenantID, ids)
+	if err != nil {
+		return nil, domain.Internal("site_health_checked_at_failed", "failed to fetch health check times").WithCause(err)
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]time.Time, len(ids))
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			at time.Time
+		)
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, domain.Internal("site_health_checked_at_failed", "failed to fetch health check times").WithCause(err)
+		}
+		out[id] = at
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.Internal("site_health_checked_at_failed", "failed to fetch health check times").WithCause(err)
+	}
+	return out, nil
 }
 
 // toModelFromGetSiteRow converts the GH #243 GetSite row (the sites.* columns
@@ -1010,8 +1099,13 @@ func toModelFromGetSiteRow(row sqlc.GetSiteRow) Site {
 		ArchivedAt:            row.ArchivedAt,
 		MissedHeartbeats:      row.MissedHeartbeats,
 		ClientID:              row.ClientID,
-		CreatedAt:             row.CreatedAt,
-		UpdatedAt:             row.UpdatedAt,
+		// GH #414 — m117 pause columns; toModel maps them onto the Site.
+		MonitoringPausedAt:     row.MonitoringPausedAt,
+		MonitoringPausedBy:     row.MonitoringPausedBy,
+		MonitoringPausedReason: row.MonitoringPausedReason,
+		MonitoringResumeAt:     row.MonitoringResumeAt,
+		CreatedAt:              row.CreatedAt,
+		UpdatedAt:              row.UpdatedAt,
 	})
 	m.PageCacheEnabled = row.PageCacheEnabled
 	m.ObjectCacheEnabled = row.ObjectCacheEnabled
@@ -1054,8 +1148,13 @@ func toModelFromListSitesRow(row sqlc.ListSitesRow) Site {
 		ArchivedAt:            row.ArchivedAt,
 		MissedHeartbeats:      row.MissedHeartbeats,
 		ClientID:              row.ClientID,
-		CreatedAt:             row.CreatedAt,
-		UpdatedAt:             row.UpdatedAt,
+		// GH #414 — m117 pause columns; toModel maps them onto the Site.
+		MonitoringPausedAt:     row.MonitoringPausedAt,
+		MonitoringPausedBy:     row.MonitoringPausedBy,
+		MonitoringPausedReason: row.MonitoringPausedReason,
+		MonitoringResumeAt:     row.MonitoringResumeAt,
+		CreatedAt:              row.CreatedAt,
+		UpdatedAt:              row.UpdatedAt,
 	})
 	m.PageCacheEnabled = row.PageCacheEnabled
 	m.ObjectCacheEnabled = row.ObjectCacheEnabled
