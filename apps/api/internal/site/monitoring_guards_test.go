@@ -135,6 +135,17 @@ func TestMonitoringGuard_CapIsEnforcedBeforePartition(t *testing.T) {
 // The service keeps its own copy of the cap for callers that are not the
 // handler. Mutation: delete the service's cap branch; this reddens while the
 // handler test above stays green, which is the point of having both.
+//
+// DELIBERATELY CALLS svc.PauseMonitoring DIRECTLY rather than through
+// postMonitoring/HTTP: checkMonitoringSiteIDs at the handler (GUARD 3, above)
+// always runs first and returns the same too_many_sites code, so an
+// over-the-limit request never reaches the service in a state that could
+// exercise its own cap. An HTTP-route test cannot observe this branch at all;
+// calling the service directly is the only way to prove it independently
+// enforces the limit rather than relying on the handler never being
+// bypassed. It stops at the fake repo (never touches Postgres) because the
+// thing under test is Go validation logic, not anything RLS or a DB role
+// could affect.
 func TestMonitoringGuard_CapIsAlsoEnforcedInTheService(t *testing.T) {
 	svc, repo := newMonitoringSvc()
 	tenant := uuid.New()

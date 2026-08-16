@@ -45,6 +45,17 @@ func TestMonitoringGuards_Phase1DB(t *testing.T) {
 	// RESTRICTIVE sites_site_scope policy, which only engages because
 	// PauseMonitoring now runs through pool.RunTenantTx.
 	//
+	// DELIBERATELY NOT AN HTTP-ROUTE TEST, and not a gap to close by adding
+	// one: going through POST /api/v1/sites/monitoring/pause would hit the
+	// handler's CanAccessSite gate FIRST, which would refuse the out-of-scope
+	// site before the request ever reached this repo call — proving the Go
+	// gate, and saying nothing about whether the RESTRICTIVE policy would
+	// have caught the write on its own. Calling repo.PauseMonitoring directly
+	// is the only way to isolate the database as the sole remaining guard,
+	// which is the second layer this test exists to prove (see the file
+	// header, m112). It still goes through pool.RunTenantTx and the real
+	// wpmgr_app role — nothing here opens its own connection.
+	//
 	// Mutation: change monitoringTx back to
 	// r.pool.InTenantTxAsUser(ctx, in.TenantID, in.ActorUserID, fn). The
 	// policy goes inert, the UPDATE writes the out-of-scope row, and this
