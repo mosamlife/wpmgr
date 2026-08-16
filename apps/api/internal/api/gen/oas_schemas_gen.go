@@ -26039,6 +26039,8 @@ const (
 	MonitoringResultDetailForbidden     MonitoringResultDetail = "forbidden"
 	MonitoringResultDetailInvalidSiteID MonitoringResultDetail = "invalid_site_id"
 	MonitoringResultDetailSiteNotFound  MonitoringResultDetail = "site_not_found"
+	MonitoringResultDetailSiteArchived  MonitoringResultDetail = "site_archived"
+	MonitoringResultDetailSiteRevoked   MonitoringResultDetail = "site_revoked"
 )
 
 // AllValues returns all MonitoringResultDetail values.
@@ -26051,6 +26053,8 @@ func (MonitoringResultDetail) AllValues() []MonitoringResultDetail {
 		MonitoringResultDetailForbidden,
 		MonitoringResultDetailInvalidSiteID,
 		MonitoringResultDetailSiteNotFound,
+		MonitoringResultDetailSiteArchived,
+		MonitoringResultDetailSiteRevoked,
 	}
 }
 
@@ -26070,6 +26074,10 @@ func (s MonitoringResultDetail) MarshalText() ([]byte, error) {
 	case MonitoringResultDetailInvalidSiteID:
 		return []byte(s), nil
 	case MonitoringResultDetailSiteNotFound:
+		return []byte(s), nil
+	case MonitoringResultDetailSiteArchived:
+		return []byte(s), nil
+	case MonitoringResultDetailSiteRevoked:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -26099,6 +26107,12 @@ func (s *MonitoringResultDetail) UnmarshalText(data []byte) error {
 		return nil
 	case MonitoringResultDetailSiteNotFound:
 		*s = MonitoringResultDetailSiteNotFound
+		return nil
+	case MonitoringResultDetailSiteArchived:
+		*s = MonitoringResultDetailSiteArchived
+		return nil
+	case MonitoringResultDetailSiteRevoked:
+		*s = MonitoringResultDetailSiteRevoked
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

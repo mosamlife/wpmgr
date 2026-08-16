@@ -422,7 +422,9 @@ export type MonitoringResult = {
     | "already_active"
     | "forbidden"
     | "invalid_site_id"
-    | "site_not_found";
+    | "site_not_found"
+    | "site_archived"
+    | "site_revoked";
   monitoring_paused_at?: string;
   monitoring_paused_reason?: string;
   monitoring_resume_at?: string;
