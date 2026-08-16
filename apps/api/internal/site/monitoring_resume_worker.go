@@ -86,6 +86,32 @@ const autoResumeBatchSize = 200
 // whenever it is non-empty in some future revision and two paths that disagree
 // is how that becomes a bug.
 //
+// BOTH `IS NOT NULL` CLAUSES ARE LOAD-BEARING FOR THE PLAN, NOT JUST THE LOGIC,
+// and this is the trap for anyone writing a SECOND sweep by copying this one.
+//
+// sites_monitoring_resume_due_idx (m117) is a PARTIAL index:
+//
+//	ON sites (monitoring_resume_at)
+//	WHERE monitoring_resume_at IS NOT NULL AND monitoring_paused_at IS NOT NULL
+//
+// sites_monitoring_resume_requires_pause_check makes the second half of that
+// predicate logically redundant — a row with a resume instant always has a
+// pause instant, so the two WHERE clauses select exactly the same rows. The
+// planner does not know that. It proves a partial index usable from the
+// QUERY's own clauses alone; it does not consult check constraints to discharge
+// an index predicate. So the redundant-looking clause is what makes the index
+// reachable, and dropping it silently costs the index rather than raising an
+// error.
+//
+// Measured on 200k sites (95 MB table, 300 of them due), EXPLAIN ANALYZE as
+// wpmgr_app with app.agent set:
+//
+//	both clauses (this query):   Index Scan ...resume_due_idx    13.8 ms
+//	monitoring_resume_at only:   Seq Scan, 199,700 rows removed  395.0 ms
+//
+// A sweep written as the natural `WHERE monitoring_resume_at <= now()` is
+// correct, passes every test, and scans the whole fleet. Repeat both clauses.
+//
 // $1 the sweep instant, $2 the batch cap.
 const claimDueAutoResumesSQL = `
 WITH due AS (
