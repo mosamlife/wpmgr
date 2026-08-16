@@ -72,6 +72,35 @@ describe("PausedBadge", () => {
   });
 });
 
+describe("PausedBadge - legible in dark mode (GH #414)", () => {
+  // GH #414, reported with screenshots: on the site card and the site detail
+  // page the badge rendered as an amber outline with text so dark it was
+  // invisible against the dark surface (one screenshot showed a completely
+  // empty pill). This is a repeat of GH #322's defect shape in
+  // AgentColumnFleetNote (agent-column-header.tsx:186-199): the badge has no
+  // warning FILL, only a border, so its text sits on the ordinary card/row
+  // surface. --warning-foreground is the text colour for content sitting ON a
+  // --warning background, so it is near-black in both themes and its dark
+  // override is darker still (L 20% light, L 15% dark). The right token for
+  // warning-tinted text on an ordinary surface is --warning-subtle-fg, which
+  // inverts properly (L 38% light, L 86% dark).
+  //
+  // Asserting the token rather than a rendered colour is deliberate: jsdom
+  // does not resolve CSS custom properties, so a computed-style assertion
+  // here would pass against either token and prove nothing.
+  it("uses the surface-text warning token, not the on-warning-background one", () => {
+    renderWithProviders(
+      <PausedBadge
+        site={buildSite({ monitoring_paused_at: new Date().toISOString() })}
+      />,
+    );
+    const badge = screen.getByText("Monitoring paused").closest("[title]");
+    expect(badge?.className).toContain("text-warning-subtle-fg");
+    // The token that made it invisible must not come back.
+    expect(badge?.className).not.toContain("text-warning-foreground");
+  });
+});
+
 describe("UptimeBadge", () => {
   it("shows a confident Up while monitoring is active", () => {
     renderWithProviders(<UptimeBadge site={buildSite({ up: true })} />);
