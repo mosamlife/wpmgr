@@ -129,6 +129,10 @@ export interface SiteCardProps {
   onOpenDetail?: (site: Site) => void;
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation. */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -141,6 +145,8 @@ export function SiteCard({
   onOpenDetail,
   onDisconnect,
   onReconnect,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SiteCardProps) {
   const selection = useSitesSelection();
   const navigate = useNavigate();
@@ -333,6 +339,8 @@ export function SiteCard({
               onOpenDetail={onOpenDetail}
               onDisconnect={onDisconnect}
               onReconnect={onReconnect}
+              onPauseMonitoring={onPauseMonitoring}
+              onResumeMonitoring={onResumeMonitoring}
             />
           </div>
         </div>
