@@ -6,6 +6,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.137] - 2026-08-16
+
+### Added
+
+- Monitoring can now be paused on a site, from the site's row menu, from its own page, or in bulk from the sites list (GH #414). A pause takes a reason and, optionally, a resume time, and both are shown wherever the paused state appears, in all three places. Pausing stops uptime probes, uptime alerts, the weekly screenshot fanout, and scheduled vulnerability rescans. It does not stop backups, the WP-Cron kick, connection checks, RUM, or retention, and it never stops anything a person clicks by hand, including an on-demand rescan or update check: pausing stops the schedule, never the operator. Resuming happens by hand, or automatically at the stored resume time if one was set, exactly once either way, and both the pause and the resume are recorded in the audit log.
+
+### Changed
+
+- The monthly report's uptime section is now keyed on whether a pause actually overlapped the reporting period, not on whether the site happens to be paused when the report runs. A period a pause never touched is measured and shown in full, even for a site that is paused today. A period a pause partly covered is shown with a "Partial coverage" note naming the hours that went unmeasured, instead of being presented as a complete month. A period a pause covered in full still names the site and states that monitoring was paused and why, rather than showing an empty section. If the pause history itself cannot be read, the report says coverage is unconfirmed rather than defaulting to a clean bill, so a read failure can no longer look like a fully measured month.
+
 ## [0.61.136] - 2026-08-15
 
 ### Fixed
