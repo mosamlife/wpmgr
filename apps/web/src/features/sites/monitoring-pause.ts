@@ -202,20 +202,38 @@ export function pausedBadgeFor(
  * recover from, so the sentence names backups explicitly on the "continues"
  * side rather than leaving it to be inferred from silence.
  *
- * It matches what phases 1 and 2 actually built: the uptime prober and its
- * alerts filter on the pause flag, and nothing else does. Backups, the cron
- * kick that keeps WP-Cron draining (and therefore keeps backups running), the
- * connection sweep, RUM ingestion and retention are all unfiltered.
+ * It matches what phases 1 through 3 actually built. FOUR things stop:
+ * - uptime checks — ProbeWorker.Sweep enumerates
+ *   ListEnrolledForMonitoringProbe (m117's `AND monitoring_paused_at IS
+ *   NULL`).
+ * - uptime alerts — fire()/fireApp() re-read the pause state fresh before
+ *   dispatch.
+ * - SCHEDULED screenshots only — screenshot_weekly_fanout filters on
+ *   monitoring_paused_at IS NULL (sitelister.go); a person clicking Refresh,
+ *   and an enroll capture, still run on a paused site.
+ * - SCHEDULED vulnerability rescans only, and their alert dispatch —
+ *   Repo.ListUnpausedSiteIDsForRescan gates the fan-out and
+ *   ListTenantsWithUnnotifiedFindings/ClaimUnnotifiedFindings exclude paused
+ *   sites from dispatch; the operator's per-site "rescan now" route is
+ *   unfiltered and always runs.
+ *
+ * Update checks (RefreshInventoryArgs, `cmd/wpmgr/siteadapter.go:167` and
+ * `internal/update/worker.go:971`) and scans (ScanRunArgs,
+ * `internal/scan/service.go:58`) have NO scheduled producer at all — both are
+ * always operator-triggered — so pause has nothing to filter them from and
+ * they belong on the "continues" side, not "stops". Backups, the cron kick
+ * that keeps WP-Cron draining (and therefore keeps backups running), the
+ * connection sweep, RUM ingestion and retention are all unfiltered too.
  */
 export const MONITORING_PAUSE_SCOPE_SENTENCE =
   "Backups and connection tracking keep running.";
 
 /** The long form, used in the confirmation dialog. */
 export const MONITORING_PAUSE_STOPS =
-  "Uptime checks, update checks, scans and screenshots stop.";
+  "Uptime checks, uptime alerts, scheduled screenshots and scheduled vulnerability rescans stop.";
 
 export const MONITORING_PAUSE_CONTINUES =
-  "Backups and connection tracking continue, and anything you click yourself still runs.";
+  "Backups, connection tracking, update checks and scans keep running, and anything else you click yourself still runs too.";
 
 // ── Menu labelling ──────────────────────────────────────────────────────────
 
