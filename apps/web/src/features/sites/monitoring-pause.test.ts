@@ -366,4 +366,28 @@ describe("summarizeMonitoringResult", () => {
     ]);
     expect(summary.refused[0]?.message).toBe("could not be changed");
   });
+
+  // `ok` and `changed` are independent booleans on the wire — see
+  // MonitoringResult in packages/openapi-client/src/generated/types.gen.ts:402-413
+  // — not a discriminated union, so nothing in the published type stops a
+  // server from ever pairing changed:true with ok:false. The current handler
+  // happens to maintain the invariant by construction (every
+  // monitoringResultDTO{} literal that sets Changed also sets OK: true; see
+  // apps/api/internal/site/monitoring_handler.go:340-343 versus the four
+  // rejection/not-found/refusal literals at lines 277, 285, 322 and 331,
+  // none of which ever sets Changed), but that invariant is not enforced by
+  // the type, so the summary must not trust `changed` on its own. Without the
+  // `ok` half of the conjunct at monitoring-pause.ts:346, this fixture would
+  // be folded into `changed` and a refused site would be reported to the user
+  // as paused.
+  it("treats a refusal as refused even if `changed` is set, never as a success", () => {
+    const summary = summarizeMonitoringResult([
+      { site_id: "a", ok: false, changed: true, detail: "site_archived" },
+    ]);
+    expect(summary.changed).toBe(0);
+    expect(summary.unchanged).toBe(0);
+    expect(summary.refused).toHaveLength(1);
+    expect(summary.refused[0]?.siteId).toBe("a");
+    expect(summary.refused[0]?.message).toContain("archived");
+  });
 });
