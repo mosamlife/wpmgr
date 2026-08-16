@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1716,6 +1717,53 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			GetDailyRollups: rumStore.GetDailyRollups,
 			GetFleetStatsBySite: func(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]email.SiteStatsRow, error) {
 				return emailRepo.GetFleetStatsBySite(ctx, tenantID, from, to, limit)
+			},
+			// Pause history, reconstructed from the audit trail (GH #414 follow-up
+			// fix — see pauseIntervalsFor's doc in aggregator.go for why the
+			// site's CURRENT monitoring_paused_at can't answer "was this site
+			// paused DURING [from, to)"). Reuses auditRec, the one shared Recorder,
+			// rather than constructing a second one. 200 is a generous cap: pause/
+			// resume events are one row per toggle, not per probe.
+			QueryMonitoringPauseIntervals: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]reportpkg.PauseInterval, error) {
+				entries, err := auditRec.ListFiltered(ctx, tenantID, audit.Filter{
+					ActionPrefix: "site.monitoring.",
+					SiteID:       &siteID,
+				}, 200, 0)
+				if err != nil {
+					return nil, err
+				}
+				// ListFiltered returns newest-first; pairing paused->resumed needs
+				// oldest-first.
+				sort.Slice(entries, func(i, j int) bool {
+					return entries[i].CreatedAt.Before(entries[j].CreatedAt)
+				})
+				var intervals []reportpkg.PauseInterval
+				var open *reportpkg.PauseInterval
+				for _, e := range entries {
+					switch e.Action {
+					case audit.ActionSiteMonitoringPaused:
+						// A paused row while one is already open means the prior
+						// pause never recorded its resume (data gap, not expected in
+						// practice) — close it at its own start rather than let it
+						// silently swallow the next interval, then start the new one.
+						if open != nil {
+							intervals = append(intervals, *open)
+						}
+						startedAt := e.CreatedAt
+						open = &reportpkg.PauseInterval{Start: startedAt}
+					case audit.ActionSiteMonitoringResumed:
+						if open != nil {
+							resumedAt := e.CreatedAt
+							open.End = &resumedAt
+							intervals = append(intervals, *open)
+							open = nil
+						}
+					}
+				}
+				if open != nil {
+					intervals = append(intervals, *open)
+				}
+				return intervals, nil
 			},
 		}
 		// FIX-1: build a dedicated SSRF-hardened client for logo fetching.

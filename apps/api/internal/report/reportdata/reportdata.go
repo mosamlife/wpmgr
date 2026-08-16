@@ -144,6 +144,21 @@ type UptimeSection struct {
 	Incidents    int         `json:"incidents"`
 	TLSExpiry    *time.Time  `json:"tls_expiry,omitempty"`
 	Daily        []UptimeDay `json:"daily"`
+
+	// PartialCoverage is true when monitoring was paused for part, but not
+	// all, of the reporting window (a real pause interval overlaps
+	// [PeriodStart, PeriodEnd) without covering it entirely). The section is
+	// still populated with real data — it is NOT suppressed — but it must
+	// never be read as a complete measurement of the period: the prober was
+	// off for UnmonitoredHours of it. A full-window pause suppresses the
+	// section instead of setting this flag (SiteReport.Uptime is nil); a
+	// pause with no overlap at all leaves this false. See the aggregator's
+	// pause-interval overlap logic.
+	PartialCoverage bool `json:"partial_coverage,omitempty"`
+	// UnmonitoredHours is the portion of [PeriodStart, PeriodEnd) covered by
+	// a monitoring pause, in hours. Only meaningful when PartialCoverage is
+	// true; zero otherwise.
+	UnmonitoredHours float64 `json:"unmonitored_hours,omitempty"`
 }
 
 // UptimeDay is one day bucket in the uptime sparkline series.

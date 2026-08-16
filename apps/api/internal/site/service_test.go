@@ -15,11 +15,11 @@ import (
 type fakeRepo struct {
 	pauseCalls  []PauseMonitoringInput
 	resumeCalls []ResumeMonitoringInput
-	createErr error
-	created   CreateInput
-	getErr    error
-	listErr   error
-	deleteErr error
+	createErr   error
+	created     CreateInput
+	getErr      error
+	listErr     error
+	deleteErr   error
 }
 
 func (f *fakeRepo) Create(_ context.Context, in CreateInput) (Site, error) {

@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,13 @@ func newPauseFixture(t *testing.T, activePcts []float64, pausedCount int) *pause
 		f.sites = append(f.sites, site.Site{ID: id, Name: "active-" + string(rune('a'+i)), URL: "https://a.example"})
 		f.uptimePcts[id] = pct
 	}
-	pausedAt := time.Date(2026, 5, 3, 9, 0, 0, 0, time.UTC)
+	// Before PeriodStart (buildFixture's window is 2026-05-01..2026-06-01), so
+	// this fixture represents a pause that genuinely covers the ENTIRE
+	// reporting window — see classifyPauseOverlap's overlapFull case. A date
+	// inside the window would only be a PARTIAL overlap under GH #414's
+	// window-relative fix and is covered by the dedicated partial-overlap
+	// tests below instead.
+	pausedAt := time.Date(2026, 4, 15, 9, 0, 0, 0, time.UTC)
 	for i := 0; i < pausedCount; i++ {
 		id := uuid.New()
 		f.sites = append(f.sites, site.Site{
@@ -239,5 +246,171 @@ func TestRenderedReportSaysPausedAndSaysBackupsContinue(t *testing.T) {
 	}
 	if !strings.Contains(body, "monitored") {
 		t.Error("the Avg Uptime label does not disclose the shrunken denominator")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #414 follow-up: uptime suppression is keyed on whether a pause interval
+// actually OVERLAPS the reporting window, not on the site's CURRENT pause
+// state at render time (aggregator.go's pauseIntervalsFor / overlapForIntervals).
+// The original phase-5 fixture above always keeps pausedAt BEFORE the window,
+// so it is a genuine full-window pause; these tests cover the two directions
+// that a render-time snapshot gets wrong.
+// ---------------------------------------------------------------------------
+
+// TestPauseAfterWindowDoesNotSuppressUptime is the first failure mode: a site
+// paused THIS MORNING — long after the reporting window closed — must not
+// lose its fully-monitored PREVIOUS MONTH. The old code read
+// s.MonitoringPausedAt as a boolean ("is it set at all?"), with no regard to
+// when; this proves the date itself now matters.
+func TestPauseAfterWindowDoesNotSuppressUptime(t *testing.T) {
+	siteID := uuid.New()
+	windowStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	// Four days AFTER the window closed.
+	pausedAt := time.Date(2026, 6, 5, 8, 0, 0, 0, time.UTC)
+	s := site.Site{ID: siteID, Name: "paused-after-window", URL: "https://p.example", MonitoringPausedAt: &pausedAt}
+
+	sources := Sources{
+		ListClientSites: func(context.Context, uuid.UUID, uuid.UUID) ([]site.Site, error) {
+			return []site.Site{s}, nil
+		},
+		QueryUptimeAggregateRange: func(context.Context, uuid.UUID, uuid.UUID, time.Time, time.Time) (metrics.Aggregate, error) {
+			return metrics.Aggregate{Checks: 1000, UpChecks: 995, UptimePct: 99.5}, nil
+		},
+	}
+	rd, err := BuildReportData(context.Background(), sources, BuildInput{
+		TenantID: uuid.New(), ClientID: uuid.New(), Client: ClientInfo{Name: "Acme"}, AgencyName: "Agency",
+		PeriodStart: windowStart, PeriodEnd: windowEnd,
+	})
+	if err != nil {
+		t.Fatalf("BuildReportData: %v", err)
+	}
+	if len(rd.Sites) != 1 {
+		t.Fatalf("want 1 site report, got %d", len(rd.Sites))
+	}
+	sr := rd.Sites[0]
+	if !sr.MonitoringPaused {
+		t.Error("site should still be labelled as currently paused")
+	}
+	if sr.Uptime == nil {
+		t.Fatal("uptime section was suppressed for a pause that began AFTER the reporting window closed — true, fully-monitored history was discarded")
+	}
+	if sr.Uptime.UptimePct != 99.5 {
+		t.Errorf("UptimePct = %.2f, want 99.5 — the real measured figure must survive", sr.Uptime.UptimePct)
+	}
+	if sr.Uptime.PartialCoverage {
+		t.Error("a pause entirely outside the window must not be flagged as partial coverage either")
+	}
+}
+
+// TestPauseResumedMidWindowIsPartialCoverage is the second, more dangerous
+// failure mode: a site paused for three weeks of the month and resumed
+// yesterday must not report a FULL uptime section with a silent three-week
+// hole presented as a measurement. The site's CURRENT state (MonitoringPausedAt)
+// is nil here — it was resumed — so only the audit-backed
+// QueryMonitoringPauseIntervals source (wired below, standing in for
+// cmd/wpmgr/main.go's real audit.Recorder-backed implementation) can see this
+// pause happened at all.
+func TestPauseResumedMidWindowIsPartialCoverage(t *testing.T) {
+	siteID := uuid.New()
+	windowStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	pauseStart := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
+	pauseEnd := time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC) // 21 days, resumed before windowEnd
+
+	s := site.Site{ID: siteID, Name: "resumed-mid-window", URL: "https://p.example"}
+	sources := Sources{
+		ListClientSites: func(context.Context, uuid.UUID, uuid.UUID) ([]site.Site, error) {
+			return []site.Site{s}, nil
+		},
+		QueryUptimeAggregateRange: func(context.Context, uuid.UUID, uuid.UUID, time.Time, time.Time) (metrics.Aggregate, error) {
+			// Real data for the days actually probed (outside the pause) — a
+			// genuine figure, not invented.
+			return metrics.Aggregate{Checks: 240, UpChecks: 238, UptimePct: 99.2}, nil
+		},
+		QueryMonitoringPauseIntervals: func(_ context.Context, _, gotSiteID uuid.UUID, _, _ time.Time) ([]PauseInterval, error) {
+			if gotSiteID != siteID {
+				t.Fatalf("QueryMonitoringPauseIntervals called for wrong site: %s", gotSiteID)
+			}
+			end := pauseEnd
+			return []PauseInterval{{Start: pauseStart, End: &end}}, nil
+		},
+	}
+	rd, err := BuildReportData(context.Background(), sources, BuildInput{
+		TenantID: uuid.New(), ClientID: uuid.New(), Client: ClientInfo{Name: "Acme"}, AgencyName: "Agency",
+		PeriodStart: windowStart, PeriodEnd: windowEnd,
+	})
+	if err != nil {
+		t.Fatalf("BuildReportData: %v", err)
+	}
+	if len(rd.Sites) != 1 {
+		t.Fatalf("want 1 site report, got %d", len(rd.Sites))
+	}
+	sr := rd.Sites[0]
+	if sr.Uptime == nil {
+		t.Fatal("uptime section was suppressed entirely for a pause that covered only PART of the window — real, measured data was discarded")
+	}
+	if !sr.Uptime.PartialCoverage {
+		t.Error("a three-week mid-window pause, resumed before the window closed, was NOT flagged as partial coverage — the report presents a hole as a complete measurement")
+	}
+	wantHours := pauseEnd.Sub(pauseStart).Hours()
+	if diff := sr.Uptime.UnmonitoredHours - wantHours; diff > 0.01 || diff < -0.01 {
+		t.Errorf("UnmonitoredHours = %.2f, want %.2f", sr.Uptime.UnmonitoredHours, wantHours)
+	}
+	if sr.Uptime.UptimePct != 99.2 {
+		t.Errorf("UptimePct = %.2f, want 99.2 — the real measured figure for the unpaused days must survive, not be discarded or zeroed", sr.Uptime.UptimePct)
+	}
+}
+
+// TestNoPauseProducesUnchangedUptimeSection is the honest case this fix must
+// NOT touch: a site with no pause history at all — never paused, nothing in
+// the audit trail, no QueryMonitoringPauseIntervals source even wired — must
+// produce the exact same uptime section buildUptimeSection alone computes,
+// field for field, with PartialCoverage/UnmonitoredHours left at their zero
+// values.
+func TestNoPauseProducesUnchangedUptimeSection(t *testing.T) {
+	siteID := uuid.New()
+	s := site.Site{ID: siteID, Name: "always-active", URL: "https://a.example"}
+	windowStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	newSources := func() Sources {
+		return Sources{
+			ListClientSites: func(context.Context, uuid.UUID, uuid.UUID) ([]site.Site, error) {
+				return []site.Site{s}, nil
+			},
+			QueryUptimeAggregateRange: func(context.Context, uuid.UUID, uuid.UUID, time.Time, time.Time) (metrics.Aggregate, error) {
+				return metrics.Aggregate{Checks: 500, UpChecks: 497, UptimePct: 99.4}, nil
+			},
+			// No QueryMonitoringPauseIntervals wired — matches every Sources value
+			// that predated this fix. Behaviour for this site must be identical.
+		}
+	}
+	in := BuildInput{
+		TenantID: uuid.New(), ClientID: uuid.New(), Client: ClientInfo{Name: "Acme"}, AgencyName: "Agency",
+		PeriodStart: windowStart, PeriodEnd: windowEnd,
+	}
+
+	rd, err := BuildReportData(context.Background(), newSources(), in)
+	if err != nil {
+		t.Fatalf("BuildReportData: %v", err)
+	}
+	if len(rd.Sites) != 1 || rd.Sites[0].Uptime == nil {
+		t.Fatalf("expected exactly one site with a populated uptime section, got %+v", rd.Sites)
+	}
+	got := rd.Sites[0].Uptime
+
+	want := buildUptimeSection(context.Background(), newSources(), in.TenantID, siteID, windowStart, windowEnd)
+	if want == nil {
+		t.Fatal("buildUptimeSection returned nil for the reference computation")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("uptime section changed for an unpaused site with no pause history:\ngot:  %+v\nwant: %+v", got, want)
+	}
+	if got.PartialCoverage {
+		t.Error("PartialCoverage is true for a site with no pause history at all")
+	}
+	if got.UnmonitoredHours != 0 {
+		t.Errorf("UnmonitoredHours = %.2f, want 0", got.UnmonitoredHours)
 	}
 }

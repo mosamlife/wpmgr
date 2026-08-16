@@ -80,7 +80,7 @@ const autoResumeBatchSize = 200
 // clearing the pause while leaving the resume instant behind raises 23514 and
 // would abort the whole sweep.
 //
-// monitoring_paused_reason is reset to '' rather than left as stale text,
+// monitoring_paused_reason is reset to ” rather than left as stale text,
 // matching resumeMonitoringSQL. The constraint does not require it; consistency
 // between the two resume paths does, because the sites list renders the reason
 // whenever it is non-empty in some future revision and two paths that disagree

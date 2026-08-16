@@ -60,6 +60,103 @@ type Sources struct {
 	GetDailyRollups func(ctx context.Context, siteID, tenantID uuid.UUID, sinceDay time.Time) ([]rum.DailyRollup, error)
 	// Email data.
 	GetFleetStatsBySite func(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]email.SiteStatsRow, error)
+	// Pause history. Returns this site's monitoring-pause intervals that could
+	// overlap [from, to), in any order. Backed by the audit trail in
+	// production (site.monitoring.paused / .resumed — see cmd/wpmgr/main.go),
+	// which is the only way to see a pause that has ALREADY been resumed
+	// before render time. When this is nil, pauseIntervalsFor falls back to
+	// the site's CURRENT pause state alone (see its doc) — real data, but
+	// blind to any already-closed pause.
+	QueryMonitoringPauseIntervals func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]PauseInterval, error)
+}
+
+// PauseInterval is one monitoring-pause interval for a site, reconstructed
+// from the audit trail (site.monitoring.paused / site.monitoring.resumed —
+// internal/audit/audit.go). End is nil for a pause that has not been resumed
+// (open-ended, ongoing through "now").
+type PauseInterval struct {
+	Start time.Time
+	End   *time.Time
+}
+
+// pauseOverlap classifies how a site's pause history overlaps a reporting
+// window.
+type pauseOverlap int
+
+const (
+	// overlapNone: no pause interval touches the window at all — includes a
+	// pause that began after the window closed, and a pause that was resumed
+	// before the window opened. Full, un-degraded history.
+	overlapNone pauseOverlap = iota
+	// overlapPartial: at least one pause interval overlaps the window, but
+	// not for its entire duration. The section must be kept, not suppressed,
+	// and must say it is only a partial measurement.
+	overlapPartial
+	// overlapFull: the window is entirely covered by pause interval(s). No
+	// uptime data exists for the period; the section is suppressed.
+	overlapFull
+)
+
+// pauseIntervalsFor returns the pause intervals to use for site s's overlap
+// analysis. It prefers the injected audit-backed source; only when that is
+// nil does it fall back to synthesizing a single open interval from the
+// site's CURRENT MonitoringPausedAt (already fetched on s — no extra query).
+//
+// The two are never merged: in production the audit-backed source already
+// includes the currently-open pause (it was recorded as a "paused" audit
+// entry with no matching "resumed" one), so unioning it with the current-state
+// fallback would double-count the same interval and could inflate a partial
+// overlap into a false "full". The fallback exists for callers that have not
+// wired the richer source (tests, or a degraded path) — it can only
+// UNDER-detect (it has no memory of a pause that was already resumed before
+// render time), never over-suppress a window the site was never paused for.
+func pauseIntervalsFor(ctx context.Context, src Sources, tenantID uuid.UUID, s site.Site, from, to time.Time) []PauseInterval {
+	if src.QueryMonitoringPauseIntervals != nil {
+		intervals, err := src.QueryMonitoringPauseIntervals(ctx, tenantID, s.ID, from, to)
+		if err != nil {
+			slog.Warn("report aggregator: query monitoring pause intervals failed",
+				slog.String("site_id", s.ID.String()), slog.Any("error", err))
+			return nil
+		}
+		return intervals
+	}
+	if s.MonitoringPausedAt != nil {
+		return []PauseInterval{{Start: *s.MonitoringPausedAt}}
+	}
+	return nil
+}
+
+// overlapForIntervals classifies how pause intervals overlap [from, to) and
+// returns the total unmonitored duration within the window (equal to the
+// window length when overlap is overlapFull). Empty intervals classify as
+// overlapNone.
+func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOverlap, time.Duration) {
+	if len(intervals) == 0 {
+		return overlapNone, 0
+	}
+	windowDur := to.Sub(from)
+	var covered time.Duration
+	for _, iv := range intervals {
+		start := iv.Start
+		if start.Before(from) {
+			start = from
+		}
+		end := to
+		if iv.End != nil && iv.End.Before(to) {
+			end = *iv.End
+		}
+		if end.After(start) {
+			covered += end.Sub(start)
+		}
+	}
+	switch {
+	case covered <= 0:
+		return overlapNone, 0
+	case covered >= windowDur:
+		return overlapFull, windowDur
+	default:
+		return overlapPartial, covered
+	}
 }
 
 // BuildReportData aggregates all section data for the given client and period.
@@ -132,16 +229,15 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 		}
 
 		// GH #414 phase 5. A monitoring-paused site stays IN the report and is
-		// NAMED as paused; what it loses is the uptime section, because the
-		// prober stopped for it in phase 2 and its daily series is therefore
-		// empty for every paused day. See SiteReport.MonitoringPaused for the
-		// full argument, including why backups/updates/performance/email are
-		// deliberately left alone.
+		// NAMED as paused; the report also says why backups/updates/performance
+		// /email are deliberately left alone (see SiteReport.MonitoringPaused).
 		//
 		// The flag is read from the site row the report already enumerated, not
 		// from a second query: site.Service.List carries monitoring_paused_at
 		// since phase 4a, inside the same tenant transaction and therefore under
-		// the same RLS policies.
+		// the same RLS policies. It reflects CURRENT pause state and is used only
+		// for the "this site is currently paused" label — it must NOT gate the
+		// uptime section below, which is keyed on the reporting window instead.
 		if s.MonitoringPausedAt != nil {
 			sr.MonitoringPaused = true
 			sr.MonitoringPausedAt = s.MonitoringPausedAt
@@ -149,18 +245,35 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 			totals.PausedSiteCount++
 		}
 
-		// Uptime section. Skipped entirely for a paused site — and skipped
-		// BEFORE the source is called, so a paused site costs no query either.
-		if sections.Uptime && sources.QueryUptimeAggregateRange != nil && !sr.MonitoringPaused {
-			us := buildUptimeSection(ctx, sources, in.TenantID, s.ID, in.PeriodStart, in.PeriodEnd)
-			if us != nil {
-				sr.Uptime = us
-				totals.AvgUptimePct += us.UptimePct
-				totals.Incidents += us.Incidents
-				// The denominator is the population that was MEASURED, counted
-				// here at the one place a site contributes to the numerator, so
-				// the two can never be computed over different sets.
-				totals.UptimeSiteCount++
+		// Uptime section. Suppression is keyed on whether a pause interval
+		// actually OVERLAPS [PeriodStart, PeriodEnd) — never on s.MonitoringPaused
+		// (current state), which is a render-time snapshot that has nothing to do
+		// with what the window measured. Two failure modes that fix replaces:
+		// a site paused after the window closed must not lose fully-monitored
+		// history (current-state gate wrongly suppressed it), and a site paused
+		// for only part of the window, then resumed, must not present a silent
+		// gap as a complete measurement (current-state gate wrongly did not
+		// suppress OR flag it). A full-window pause still suppresses the section
+		// entirely, and — like before — costs no uptime query, only the (cheap,
+		// audit-backed) pause-history query.
+		if sections.Uptime && sources.QueryUptimeAggregateRange != nil {
+			intervals := pauseIntervalsFor(ctx, sources, in.TenantID, s, in.PeriodStart, in.PeriodEnd)
+			overlap, unmonitored := overlapForIntervals(intervals, in.PeriodStart, in.PeriodEnd)
+			if overlap != overlapFull {
+				us := buildUptimeSection(ctx, sources, in.TenantID, s.ID, in.PeriodStart, in.PeriodEnd)
+				if us != nil {
+					if overlap == overlapPartial {
+						us.PartialCoverage = true
+						us.UnmonitoredHours = unmonitored.Hours()
+					}
+					sr.Uptime = us
+					totals.AvgUptimePct += us.UptimePct
+					totals.Incidents += us.Incidents
+					// The denominator is the population that was MEASURED, counted
+					// here at the one place a site contributes to the numerator, so
+					// the two can never be computed over different sets.
+					totals.UptimeSiteCount++
+				}
 			}
 		}
 
