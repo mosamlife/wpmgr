@@ -11,7 +11,18 @@ import { PauseMonitoringDialog } from "./pause-monitoring-dialog";
 // not recover from. If this test is ever deleted, the sentence goes with it.
 
 describe("PauseMonitoringDialog", () => {
-  it("names BACKUPS as continuing, in the body, before the button", () => {
+  // GH #414 adversarial-review finding 1 — the two constants were swapped once
+  // already (backups/update-checks/scans reported as STOPPING, uptime
+  // checks/alerts reported as CONTINUING — the exact inversion). The original
+  // assertions here used unanchored `screen.getByText(/…/)`, which matches
+  // whichever paragraph holds the string regardless of which label ("Stops:"
+  // vs "Keeps running:") sits in front of it, so a swap of
+  // MONITORING_PAUSE_STOPS/MONITORING_PAUSE_CONTINUES at the call site slid
+  // straight past every assertion below, `not.toContain` included, because
+  // those ran against whichever paragraph the regex happened to find. Anchor
+  // to the labelled `<p>` instead: find the "Stops:"/"Keeps running:" label,
+  // then require the DOM to hold that string INSIDE that specific paragraph.
+  it("puts the CONTINUES sentence (backups etc.) under the 'Keeps running:' label", () => {
     renderWithProviders(
       <PauseMonitoringDialog
         open
@@ -20,12 +31,15 @@ describe("PauseMonitoringDialog", () => {
         count={3}
       />,
     );
-    expect(
-      screen.getByText(/Backups, connection tracking, update checks and scans keep running/),
-    ).toBeInTheDocument();
+    const continuesLabel = screen.getByText("Keeps running:");
+    const continuesParagraph = continuesLabel.closest("p");
+    expect(continuesParagraph).not.toBeNull();
+    expect(continuesParagraph).toHaveTextContent(
+      /Backups, connection tracking, update checks and scans keep running/,
+    );
   });
 
-  it("names what stops (uptime checks/alerts, SCHEDULED screenshots/rescans), and never lists backups, update checks or scans among them", () => {
+  it("puts the STOPS sentence (uptime checks/alerts, SCHEDULED screenshots/rescans) under the 'Stops:' label, and it never lists backups, update checks or scans", () => {
     renderWithProviders(
       <PauseMonitoringDialog
         open
@@ -34,13 +48,16 @@ describe("PauseMonitoringDialog", () => {
         count={3}
       />,
     );
-    const stops = screen.getByText(
+    const stopsLabel = screen.getByText("Stops:");
+    const stopsParagraph = stopsLabel.closest("p");
+    expect(stopsParagraph).not.toBeNull();
+    expect(stopsParagraph).toHaveTextContent(
       /Uptime checks, uptime alerts, scheduled screenshots and scheduled vulnerability rescans stop/,
     );
-    expect(stops).toBeInTheDocument();
-    expect(stops.textContent?.toLowerCase()).not.toContain("backup");
-    expect(stops.textContent).not.toContain("update checks");
-    expect(stops.textContent?.toLowerCase()).not.toMatch(/\bscans\b/);
+    const stopsText = stopsParagraph?.textContent ?? "";
+    expect(stopsText.toLowerCase()).not.toContain("backup");
+    expect(stopsText).not.toContain("update checks");
+    expect(stopsText.toLowerCase()).not.toMatch(/\bscans\b/);
   });
 
   it("counts the sites it will touch in its title", () => {
