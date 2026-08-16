@@ -3,9 +3,11 @@ package site
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -165,6 +167,69 @@ func (r *pgRepo) monitoringTx(ctx context.Context, p ScopedPrincipal, fn func(tx
 
 var errMonitoringPrincipalRequired = errors.New("monitoring: principal required for tenant transaction")
 
+// monitoringTxFailureCause classifies a monitoringTx error for the diagnostic
+// log line only. It never changes what PauseMonitoring/ResumeMonitoring
+// return to their caller — the client-facing domain.Internal code stays
+// generic and stable on purpose, since callers and the integration tests
+// (tests/gh414_*_test.go) key on "monitoring_pause_failed"/
+// "monitoring_resume_failed" — but a check violation, a foreign-key
+// violation, a deadlock, a context cancellation and a plain connection
+// failure otherwise land in the SAME response with nothing logged, which is
+// exactly the gap that stayed invisible until an incident.
+//
+// errMonitoringPrincipalRequired gets its own cause label rather than falling
+// into "unknown": it is not a database failure at all. Service.PauseMonitoring
+// and Service.ResumeMonitoring (monitoring.go) already refuse a nil principal
+// before ever calling the repo, so monitoringTx's own nil check is a second,
+// defense-in-depth layer that should be unreachable from a real request. If
+// it fires, an on-call reader needs to know immediately that the first guard
+// was bypassed by some caller — a worker, a future direct repo caller — not
+// spend time down the pgconn/SQLSTATE branch chasing a phantom DB incident.
+// It still comes back as the same generic domain.Internal code: the caller
+// did nothing wrong here (there is no request input that could trigger this),
+// so there is nothing for a 4xx to tell them.
+func monitoringTxFailureCause(err error) (cause, sqlstate, pgMessage string) {
+	switch {
+	case errors.Is(err, errMonitoringPrincipalRequired):
+		return "nil_principal_invariant", "", ""
+	case errors.Is(err, context.Canceled):
+		return "context_canceled", "", ""
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline_exceeded", "", ""
+	default:
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			// pgErr.Message only, never pgErr.Detail: Detail can embed the
+			// offending row's values (e.g. a unique-violation's
+			// "Key (col)=(value) already exists"), which is exactly the
+			// tenant data this log line must not carry.
+			return "pg_error", pgErr.Code, pgErr.Message
+		}
+		return "unknown", "", ""
+	}
+}
+
+// logMonitoringTxFailure preserves the cause of a pause/resume failure for
+// diagnosis. Only tenant_id and a site COUNT are logged — never the site ids,
+// the pause reason (free text an operator typed), or a pg error's Detail —
+// so nothing here can put tenant data or a site secret in the log line.
+func logMonitoringTxFailure(ctx context.Context, op string, tenantID uuid.UUID, siteCount int, err error) {
+	cause, sqlstate, pgMessage := monitoringTxFailureCause(err)
+	attrs := []any{
+		slog.String("op", op),
+		slog.String("tenant_id", tenantID.String()),
+		slog.Int("site_count", siteCount),
+		slog.String("cause", cause),
+	}
+	switch cause {
+	case "pg_error":
+		attrs = append(attrs, slog.String("sqlstate", sqlstate), slog.String("pg_message", pgMessage))
+	case "unknown":
+		attrs = append(attrs, slog.String("error", err.Error()))
+	}
+	slog.ErrorContext(ctx, "monitoring: tx failed", attrs...)
+}
+
 func (r *pgRepo) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) ([]MonitoringState, error) {
 	var out []MonitoringState
 	err := r.monitoringTx(ctx, in.Principal, func(tx pgx.Tx) error {
@@ -184,7 +249,8 @@ func (r *pgRepo) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) (
 		return err
 	})
 	if err != nil {
-		return nil, domain.Internal("monitoring_pause_failed", "could not pause monitoring")
+		logMonitoringTxFailure(ctx, "pause", in.TenantID, len(in.SiteIDs), err)
+		return nil, domain.Internal("monitoring_pause_failed", "could not pause monitoring").WithCause(err)
 	}
 	return out, nil
 }
@@ -201,7 +267,8 @@ func (r *pgRepo) ResumeMonitoring(ctx context.Context, in ResumeMonitoringInput)
 		return err
 	})
 	if err != nil {
-		return nil, domain.Internal("monitoring_resume_failed", "could not resume monitoring")
+		logMonitoringTxFailure(ctx, "resume", in.TenantID, len(in.SiteIDs), err)
+		return nil, domain.Internal("monitoring_resume_failed", "could not resume monitoring").WithCause(err)
 	}
 	return out, nil
 }
