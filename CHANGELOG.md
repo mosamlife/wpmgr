@@ -6,6 +6,12 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.138] - 2026-08-16
+
+### Fixed
+
+- The "Monitoring paused" badge was illegible in dark mode: an amber outline around text you effectively could not read, and on some sites the pill looked completely empty (GH #414). The badge has no warning-colored fill, only a border, so its text always sits on the ordinary card surface, and it was using the color meant for text sitting directly on a solid warning-colored background instead of the color meant for warning-tinted text on an ordinary surface. Measured contrast on the dark surfaces where the badge appears ranged from 1.0:1 to 1.14:1; at the low end the text was rendered in exactly the same color as the surface behind it. It now uses the correct color, and contrast on those same surfaces ranges from 11.1:1 to 12.65:1, well past the 4.5:1 minimum for readable text.
+
 ## [0.61.137] - 2026-08-16
 
 ### Added
