@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1721,49 +1720,56 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			// Pause history, reconstructed from the audit trail (GH #414 follow-up
 			// fix — see pauseIntervalsFor's doc in aggregator.go for why the
 			// site's CURRENT monitoring_paused_at can't answer "was this site
-			// paused DURING [from, to)"). Reuses auditRec, the one shared Recorder,
-			// rather than constructing a second one. 200 is a generous cap: pause/
-			// resume events are one row per toggle, not per probe.
+			// paused DURING [from, to)"). Reuses auditRec, the one shared Recorder.
+			//
+			// The read is bounded by the REPORTING WINDOW, not by a row count.
+			// audit.Filter carries no time predicate and ListFiltered returns
+			// newest-first, so the previous single 200-row page silently lost
+			// every event covering an older window once a site had been toggled
+			// 200 times — one nightly maintenance window is two rows, so that is
+			// months, not years, of ordinary use. A report for the earlier period
+			// then reconstructed no interval at all and printed the uptime section
+			// as fully covered for a stretch the site was demonstrably paused.
+			// Truncation could also cut BETWEEN a paused row and its resumed row;
+			// PauseIntervalsFromEvents no longer drops that orphaned resume.
+			//
+			// Paging back until the oldest row on a page is at or before `from`
+			// covers a pause that opened before the window and is still open
+			// inside it. The loop is capped so it can never walk an unbounded
+			// history; if the cap is hit, the events still reach back further
+			// than a single page did, and an orphaned resume is reconstructed
+			// rather than dropped.
 			QueryMonitoringPauseIntervals: func(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time) ([]reportpkg.PauseInterval, error) {
-				entries, err := auditRec.ListFiltered(ctx, tenantID, audit.Filter{
-					ActionPrefix: "site.monitoring.",
-					SiteID:       &siteID,
-				}, 200, 0)
-				if err != nil {
-					return nil, err
-				}
-				// ListFiltered returns newest-first; pairing paused->resumed needs
-				// oldest-first.
-				sort.Slice(entries, func(i, j int) bool {
-					return entries[i].CreatedAt.Before(entries[j].CreatedAt)
-				})
-				var intervals []reportpkg.PauseInterval
-				var open *reportpkg.PauseInterval
-				for _, e := range entries {
-					switch e.Action {
-					case audit.ActionSiteMonitoringPaused:
-						// A paused row while one is already open means the prior
-						// pause never recorded its resume (data gap, not expected in
-						// practice) — close it at its own start rather than let it
-						// silently swallow the next interval, then start the new one.
-						if open != nil {
-							intervals = append(intervals, *open)
-						}
-						startedAt := e.CreatedAt
-						open = &reportpkg.PauseInterval{Start: startedAt}
-					case audit.ActionSiteMonitoringResumed:
-						if open != nil {
-							resumedAt := e.CreatedAt
-							open.End = &resumedAt
-							intervals = append(intervals, *open)
-							open = nil
+				const pageSize = 200
+				const maxPages = 25
+				var events []reportpkg.PauseEvent
+				for page := 0; page < maxPages; page++ {
+					batch, err := auditRec.ListFiltered(ctx, tenantID, audit.Filter{
+						ActionPrefix: "site.monitoring.",
+						SiteID:       &siteID,
+					}, pageSize, int32(page)*pageSize)
+					if err != nil {
+						return nil, err
+					}
+					for _, e := range batch {
+						switch e.Action {
+						case audit.ActionSiteMonitoringPaused:
+							events = append(events, reportpkg.PauseEvent{At: e.CreatedAt, Paused: true})
+						case audit.ActionSiteMonitoringResumed:
+							events = append(events, reportpkg.PauseEvent{At: e.CreatedAt})
 						}
 					}
+					if len(batch) < pageSize {
+						break
+					}
+					// batch is newest-first, so its last row is its oldest. Once
+					// that row is at or before the window start, everything the
+					// window needs has been read.
+					if !batch[len(batch)-1].CreatedAt.After(from) {
+						break
+					}
 				}
-				if open != nil {
-					intervals = append(intervals, *open)
-				}
-				return intervals, nil
+				return reportpkg.PauseIntervalsFromEvents(events, from), nil
 			},
 		}
 		// FIX-1: build a dedicated SSRF-hardened client for logo fetching.
