@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getLastAuditHash = `-- name: GetLastAuditHash :one
@@ -228,17 +229,23 @@ WHERE al.tenant_id = $1
     OR (al.metadata->>'site_id' = $3::text)
     OR (al.target_type = 'backup_schedule' AND al.target_id = $3::text)
   )
+  AND ($4::timestamptz IS NULL
+       OR al.created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL
+       OR al.created_at < $5::timestamptz)
 ORDER BY al.created_at DESC, al.id DESC
-LIMIT  $5
-OFFSET $4
+LIMIT  $7
+OFFSET $6
 `
 
 type ListAuditEntriesFilteredParams struct {
-	TenantID     uuid.UUID   `json:"tenant_id"`
-	ActionPrefix interface{} `json:"action_prefix"`
-	SiteID       string      `json:"site_id"`
-	RowOffset    int32       `json:"row_offset"`
-	RowLimit     int32       `json:"row_limit"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	ActionPrefix interface{}        `json:"action_prefix"`
+	SiteID       string             `json:"site_id"`
+	CreatedFrom  pgtype.Timestamptz `json:"created_from"`
+	CreatedTo    pgtype.Timestamptz `json:"created_to"`
+	RowOffset    int32              `json:"row_offset"`
+	RowLimit     int32              `json:"row_limit"`
 }
 
 type ListAuditEntriesFilteredRow struct {
@@ -258,10 +265,38 @@ type ListAuditEntriesFilteredRow struct {
 	ActorEmail    *string   `json:"actor_email"`
 }
 
-// Optional filters: action prefix (LIKE 'prefix%'), site_id. Passing an empty
-// string for action_prefix or a zero UUID for site_id disables those filters
-// respectively. RLS is still the primary tenant-isolation gate; the explicit
-// tenant_id is defense-in-depth.
+// Optional filters: action prefix (LIKE 'prefix%'), site_id, and a created_at
+// range. Passing an empty string for action_prefix, a zero UUID for site_id,
+// or NULL for either time bound disables those filters respectively. RLS is
+// still the primary tenant-isolation gate; the explicit tenant_id is
+// defense-in-depth.
+//
+// The created_at range (GH #414) is HALF-OPEN — `>= created_from` and
+// `< created_to` — matching the [from, to) reporting window the aggregator
+// documents (internal/report/aggregator.go, Sources.QueryMonitoringPauseIntervals).
+// Half-open is load-bearing, not a style choice: it lets a caller read the
+// window itself AND the state the window opened in with two NON-OVERLAPPING
+// calls to this one query, no row counted twice and no second query needed:
+//
+//	window read : created_from=from,  created_to=to    -> [from, to)
+//	carry-in    : created_from=NULL,  created_to=from  -> (-inf, from), LIMIT 1
+//
+// The carry-in read is why a plain `created_at >= from` is NOT sufficient for
+// the monthly report. A site paused BEFORE the window opened and never resumed
+// inside it emits no row in [from, to) at all, so a window-only read
+// reconstructs no pause and the report prints the uptime section as fully
+// covered for a period the site was demonstrably paused — wrong in the
+// direction of claiming coverage it did not have, on a document a customer
+// reads. The newest single row strictly before the window carries that state
+// in. (A resume that closes a pre-window pause is already handled downstream:
+// PauseIntervalsFromEvents clamps a resume with no matching pause to
+// windowStart. It is the never-resumed pause that has no downstream safety
+// net, and only the carry-in read can see it.)
+//
+// Both bounds compare against al.created_at, which is covered by
+// audit_log_tenant_id_created_at_idx (tenant_id, created_at) from
+// 20260527130000_auth_multitenancy.sql — the same index the newest-first
+// ORDER BY already uses. No new index; see the commit message for the EXPLAIN.
 // Newest-first (see ListAuditEntries); actor_user_name/actor_key_name/
 // actor_email resolve the same way, including the CASE-guarded ::uuid cast
 // (see ListAuditEntries for the full join contract and why a plain regex-AND
@@ -288,6 +323,8 @@ func (q *Queries) ListAuditEntriesFiltered(ctx context.Context, arg ListAuditEnt
 		arg.TenantID,
 		arg.ActionPrefix,
 		arg.SiteID,
+		arg.CreatedFrom,
+		arg.CreatedTo,
 		arg.RowOffset,
 		arg.RowLimit,
 	)

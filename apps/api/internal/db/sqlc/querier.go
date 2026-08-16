@@ -1499,10 +1499,38 @@ type Querier interface {
 	// across a CASE/COALESCE spanning two different LEFT JOINs — see the LEFT
 	// JOIN LATERAL note in alerts.sql for the same class of limitation.
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]ListAuditEntriesRow, error)
-	// Optional filters: action prefix (LIKE 'prefix%'), site_id. Passing an empty
-	// string for action_prefix or a zero UUID for site_id disables those filters
-	// respectively. RLS is still the primary tenant-isolation gate; the explicit
-	// tenant_id is defense-in-depth.
+	// Optional filters: action prefix (LIKE 'prefix%'), site_id, and a created_at
+	// range. Passing an empty string for action_prefix, a zero UUID for site_id,
+	// or NULL for either time bound disables those filters respectively. RLS is
+	// still the primary tenant-isolation gate; the explicit tenant_id is
+	// defense-in-depth.
+	//
+	// The created_at range (GH #414) is HALF-OPEN — `>= created_from` and
+	// `< created_to` — matching the [from, to) reporting window the aggregator
+	// documents (internal/report/aggregator.go, Sources.QueryMonitoringPauseIntervals).
+	// Half-open is load-bearing, not a style choice: it lets a caller read the
+	// window itself AND the state the window opened in with two NON-OVERLAPPING
+	// calls to this one query, no row counted twice and no second query needed:
+	//
+	//   window read : created_from=from,  created_to=to    -> [from, to)
+	//   carry-in    : created_from=NULL,  created_to=from  -> (-inf, from), LIMIT 1
+	//
+	// The carry-in read is why a plain `created_at >= from` is NOT sufficient for
+	// the monthly report. A site paused BEFORE the window opened and never resumed
+	// inside it emits no row in [from, to) at all, so a window-only read
+	// reconstructs no pause and the report prints the uptime section as fully
+	// covered for a period the site was demonstrably paused — wrong in the
+	// direction of claiming coverage it did not have, on a document a customer
+	// reads. The newest single row strictly before the window carries that state
+	// in. (A resume that closes a pre-window pause is already handled downstream:
+	// PauseIntervalsFromEvents clamps a resume with no matching pause to
+	// windowStart. It is the never-resumed pause that has no downstream safety
+	// net, and only the carry-in read can see it.)
+	//
+	// Both bounds compare against al.created_at, which is covered by
+	// audit_log_tenant_id_created_at_idx (tenant_id, created_at) from
+	// 20260527130000_auth_multitenancy.sql — the same index the newest-first
+	// ORDER BY already uses. No new index; see the commit message for the EXPLAIN.
 	// Newest-first (see ListAuditEntries); actor_user_name/actor_key_name/
 	// actor_email resolve the same way, including the CASE-guarded ::uuid cast
 	// (see ListAuditEntries for the full join contract and why a plain regex-AND
