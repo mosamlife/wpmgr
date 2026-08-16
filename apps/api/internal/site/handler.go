@@ -135,6 +135,10 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/sites", authz.RequirePermission(authz.PermSiteWrite), authz.RequireOrgScope(), h.create)
 	r.GET("/sites", authz.RequirePermission(authz.PermSiteRead), h.list)
 	r.POST("/sites/pairing-codes", authz.RequirePermission(authz.PermSiteWrite), h.createPairingCode)
+	// GH #414 m117 — bulk monitoring pause/resume. Literal "/sites/monitoring"
+	// segment, declared before the ":siteId" routes below so Gin never has to
+	// choose between them.
+	h.RegisterMonitoring(r)
 	// M21 connection-lifecycle mutations (revoke/archive/restore/re-enroll).
 	h.RegisterConnection(r)
 	// Per-siteId routes: RequireSiteAccess enforces the site allowlist for
@@ -733,6 +737,30 @@ func toAPI(s Site) gen.Site {
 	}
 	if s.TLSExpiresAt != nil {
 		out.TLSExpiresAt = gen.NewOptDateTime(*s.TLSExpiresAt)
+	}
+
+	// GH #414 — monitoring pause state. Absent monitoring_paused_at means
+	// ACTIVE, which is why the whole group is Opt: the wire carries "paused
+	// since X" or nothing at all, never a separate boolean that could disagree
+	// with the timestamp.
+	if s.MonitoringPausedAt != nil {
+		out.MonitoringPausedAt = gen.NewOptDateTime(*s.MonitoringPausedAt)
+	}
+	if s.MonitoringPausedBy != nil {
+		out.MonitoringPausedBy = gen.NewOptUUID(*s.MonitoringPausedBy)
+	}
+	if s.MonitoringPausedReason != "" {
+		out.MonitoringPausedReason = gen.NewOptString(s.MonitoringPausedReason)
+	}
+	if s.MonitoringResumeAt != nil {
+		out.MonitoringResumeAt = gen.NewOptDateTime(*s.MonitoringResumeAt)
+	}
+	// The "as of" for HealthStatus above. Pause stops the uptime prober, so a
+	// paused site's health_status freezes while this stamp stops advancing;
+	// shipping the verdict without its age is what would turn "do not tell me"
+	// into "lie to me". Absent = never probed, which is also not "now".
+	if s.HealthCheckedAt != nil {
+		out.HealthCheckedAt = gen.NewOptDateTime(*s.HealthCheckedAt)
 	}
 
 	if len(s.Components) > 0 {

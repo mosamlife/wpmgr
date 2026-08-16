@@ -90,6 +90,13 @@ const (
 	ActionSiteRestored     = "site.restored"
 	ActionSiteReEnrolled   = "site.reenrolled"
 
+	// GH #414 m117 — monitoring pause/resume (phase 1). Recorded ONE PER SITE
+	// even for a bulk request, so filtering the audit log by a single site's
+	// target_id finds the pause that governs it. audit_log.action is plain
+	// text with no CHECK and no enum, so these need no migration.
+	ActionSiteMonitoringPaused  = "site.monitoring.paused"
+	ActionSiteMonitoringResumed = "site.monitoring.resumed"
+
 	// Updates feature: an operator requested an immediate inventory refresh, or
 	// the post-update worker autonomously enqueued one for a site. Metadata
 	// fields: site_id, source ("api"|"post_update"|"unknown").
@@ -547,7 +554,9 @@ func (r *Recorder) List(ctx context.Context, tenantID uuid.UUID, limit, offset i
 
 // Filter holds the optional narrowing criteria for ListFiltered. Zero values
 // disable the respective filter: empty ActionPrefix matches all actions; a nil
-// SiteID matches all target sites.
+// SiteID matches all target sites; nil CreatedFrom/CreatedTo leave the
+// respective end of the time range unbounded. A zero Filter is therefore
+// "every entry for the tenant", which is what the pre-existing callers pass.
 type Filter struct {
 	// ActionPrefix, when non-empty, restricts results to entries whose action
 	// starts with this string (prefix match). An exact action string also works
@@ -562,10 +571,41 @@ type Filter struct {
 	// backup_schedule special case: target_id=site_id, no metadata.site_id).
 	// See ListAuditEntriesFiltered in audit_log.sql for the full predicate.
 	SiteID *uuid.UUID
+	// CreatedFrom / CreatedTo bound created_at as a HALF-OPEN range:
+	// created_at >= CreatedFrom and created_at < CreatedTo. Either may be nil
+	// to leave that end unbounded. Half-open matches the [from, to) reporting
+	// window in internal/report/aggregator.go and, more importantly, makes two
+	// reads of this one query non-overlapping, so a caller can read a window
+	// and the state that window opened in without double-counting a row that
+	// sits exactly on the boundary:
+	//
+	//	window read : CreatedFrom=&from, CreatedTo=&to    -> [from, to)
+	//	carry-in    : CreatedFrom=nil,   CreatedTo=&from  -> (-inf, from), limit 1
+	//
+	// The carry-in read exists because a site paused BEFORE a window and never
+	// resumed inside it writes no row inside the window at all; a window-only
+	// read reconstructs no pause and the monthly report then claims uptime
+	// coverage for a period the site was paused. See the query's comment.
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+}
+
+// tsParam converts an optional bound into the nullable timestamptz the
+// generated params struct wants. A nil bound yields the zero
+// pgtype.Timestamptz (Valid:false, i.e. SQL NULL), which is exactly what the
+// query's `... IS NULL OR ...` disables the predicate on — so a Filter that
+// sets no bounds produces the same plan and the same rows as before the bounds
+// existed.
+func tsParam(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
 }
 
 // ListFiltered returns a page of a tenant's audit entries with optional
-// action-prefix and site-id filters applied, newest first (see List). RLS is
+// action-prefix, site-id and created_at-range filters applied, newest first
+// (see List; the range is half-open, see Filter). RLS is
 // the primary tenancy gate; the explicit tenantID in the query is
 // defense-in-depth. The hash/prev_hash fields are included so the integrity
 // badge on the web layer keeps working. ActionPrefix is a LIKE 'prefix%'
@@ -583,6 +623,8 @@ func (r *Recorder) ListFiltered(ctx context.Context, tenantID uuid.UUID, f Filte
 			TenantID:     tenantID,
 			ActionPrefix: f.ActionPrefix,
 			SiteID:       siteIDStr,
+			CreatedFrom:  tsParam(f.CreatedFrom),
+			CreatedTo:    tsParam(f.CreatedTo),
 			RowOffset:    offset,
 			RowLimit:     limit,
 		})

@@ -102,6 +102,9 @@ func (r *FpdfRenderer) Render(data reportdata.ReportData, logo []byte) ([]byte, 
 		f.CellFormat(contentW, 5, s.URL, "", 1, "L", false, 0, "")
 		f.Ln(2)
 
+		if s.MonitoringPaused {
+			drawPausedRow(f, s)
+		}
 		if s.Uptime != nil {
 			drawUptimeRow(f, s.Uptime)
 		}
@@ -163,9 +166,21 @@ func sectionHeader(f *fpdflib.Fpdf, accent [3]int, title string) {
 }
 
 func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
+	// GH #414 phase 5 — the average is over the MEASURED population, so when any
+	// site was paused the label says which population, and when NOTHING was
+	// measured it prints an em dash rather than 0.0%, which would read as a
+	// total outage.
+	avgUptime := "—"
+	if data.Totals.UptimeSiteCount > 0 {
+		avgUptime = fmt.Sprintf("%.1f%%", data.Totals.AvgUptimePct)
+	}
+	avgLabel := "Avg Uptime"
+	if data.Totals.PausedSiteCount > 0 {
+		avgLabel = fmt.Sprintf("Avg Uptime (%d of %d)", data.Totals.UptimeSiteCount, data.Totals.SiteCount)
+	}
 	cells := []struct{ val, label string }{
 		{fmt.Sprintf("%d", data.Totals.SiteCount), "Sites"},
-		{fmt.Sprintf("%.1f%%", data.Totals.AvgUptimePct), "Avg Uptime"},
+		{avgUptime, avgLabel},
 		{fmt.Sprintf("%d", data.Totals.Incidents), "Incidents"},
 		{fmt.Sprintf("%d", data.Totals.BackupsCount), "Backups"},
 		{fmt.Sprintf("%d", data.Totals.UpdatesApplied), "Updates"},
@@ -189,6 +204,53 @@ func drawTotalsGrid(f *fpdflib.Fpdf, data reportdata.ReportData) {
 	f.Ln(6)
 }
 
+// drawPausedRow states, in the client's own PDF, that this site's monitoring is
+// currently paused, and — only when the uptime section is genuinely absent for
+// this document — that no uptime figures follow.
+//
+// GH #414 phase 5. It is the PDF twin of the .paused-note block in
+// report.html.tmpl and it must keep saying the same things: monitoring is
+// paused, and BACKUPS CONTINUE. The backups clause is not filler — a client
+// reading "monitoring paused" on a maintenance report will otherwise assume
+// their backups stopped too, and that is the one assumption this feature must
+// never leave standing. It is therefore printed unconditionally, alongside the
+// pause title, whenever this row is drawn at all.
+//
+// The "no uptime figures" sentence is the one part of this row that is NOT
+// unconditional, because it answers a different question than the title does.
+// s.MonitoringPaused (why this row is drawn) is the site's CURRENT pause
+// state; s.Uptime == nil (checked here) is whether a pause interval overlapped
+// the REPORTING WINDOW closely enough to suppress the section entirely (see
+// aggregator.go's overlapForIntervals and reportdata.go's SiteReport.Uptime
+// doc). A site paused after the window closed is currently paused but has a
+// fully-populated Uptime section a few lines below this row — printing the
+// "no uptime figures are shown" sentence there had the document deny and then
+// immediately show the same numbers. Gate the sentence on s.Uptime == nil, the
+// actual state of this document, never on s.MonitoringPaused.
+//
+// Grey, never red: a pause is a decision, not an incident.
+func drawPausedRow(f *fpdflib.Fpdf, s reportdata.SiteReport) {
+	f.SetFont("dejavu", "B", 10)
+	f.SetTextColor(75, 85, 99)
+	title := "Monitoring paused"
+	if s.MonitoringPausedAt != nil {
+		title += " since " + s.MonitoringPausedAt.Format("2 Jan 2006")
+	}
+	f.CellFormat(contentW, 5, title, "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	note := "Backups continue as normal."
+	if s.Uptime == nil {
+		note = "Uptime checks are not running for this site, so no uptime figures are shown for this period. " + note
+	}
+	f.MultiCell(contentW, 4.5, note, "", "L", false)
+	if s.MonitoringPausedReason != "" {
+		f.SetFont("dejavu", "I", 9)
+		f.MultiCell(contentW, 4.5, "Reason: "+s.MonitoringPausedReason, "", "L", false)
+	}
+	f.Ln(2)
+}
+
 func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
 	f.SetFont("dejavu", "B", 10)
 	f.SetTextColor(55, 65, 81)
@@ -208,6 +270,73 @@ func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
 	} else {
 		f.Ln(2)
 	}
+
+	if u.PartialCoverage {
+		drawPartialCoverageNote(f, u)
+	}
+	if u.CoverageUnknown {
+		drawCoverageUnknownNote(f)
+	}
+}
+
+// drawCoverageUnknownNote is the PDF twin of the "Coverage unconfirmed"
+// .paused-note block in report.html.tmpl. It is what a FAILED pause-history
+// read renders as: the checks are real and are shown, but the document does
+// not claim the period was monitored end to end when nothing could confirm it.
+func drawCoverageUnknownNote(f *fpdflib.Fpdf) {
+	f.SetFont("dejavu", "B", 9)
+	f.SetTextColor(75, 85, 99)
+	f.CellFormat(contentW, 4.5, "Coverage unconfirmed", "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	f.MultiCell(contentW, 4.5,
+		"The monitoring pause history for this site could not be read, so we cannot confirm the prober ran for the whole period. The figures above cover every check that was recorded.",
+		"", "L", false)
+	f.Ln(1)
+}
+
+// drawPartialCoverageNote states, next to the uptime figures it qualifies,
+// that they cover only part of the reporting period. It is the PDF twin of
+// the "Partial coverage" .paused-note block in report.html.tmpl.
+//
+// GH #414 phase 5 follow-up. The aggregator now classifies a pause interval's
+// overlap with the reporting window as none/partial/full and suppresses the
+// section only on full (drawPausedRow handles that case, above). A partial
+// overlap leaves real, measured data in u — it must render — but a reader
+// must not mistake a month with a hole in it for a complete measurement, so
+// this must sit beside the numbers, not in a footnote.
+func drawPartialCoverageNote(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
+	f.SetFont("dejavu", "B", 9)
+	f.SetTextColor(75, 85, 99)
+	f.CellFormat(contentW, 4.5, "Partial coverage", "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	f.MultiCell(contentW, 4.5,
+		fmt.Sprintf("Monitoring was paused for part of this period — about %s went unmeasured, so the figures above are partial, not a full month.", humanizeHours(u.UnmonitoredHours)),
+		"", "L", false)
+	f.Ln(1)
+}
+
+// humanizeHours formats UnmonitoredHours the way a person would say it, not
+// as a raw float. Kept identical in wording to the HTML twin's helper of the
+// same name (internal/report/render/html/renderer.go) — the two renderers
+// must never disagree about how much of the period went unmeasured.
+func humanizeHours(hours float64) string {
+	if hours < 1 {
+		return "under an hour"
+	}
+	if hours < 24 {
+		h := int(math.Round(hours))
+		if h == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", h)
+	}
+	d := int(math.Round(hours / 24))
+	if d == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", d)
 }
 
 // drawSparkline draws a bar chart from UptimeDay series using native fpdf Rect.

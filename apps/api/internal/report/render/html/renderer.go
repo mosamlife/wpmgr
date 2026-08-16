@@ -87,13 +87,37 @@ func (r *Renderer) Render(data reportdata.ReportData, logoBytes []byte) ([]byte,
 
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		"upper":       strings.ToUpper,
-		"uptimeColor": uptimeColor,
-		"sparkHeight": sparkHeight,
-		"bytesHuman":  bytesHuman,
-		"ratingClass": ratingClass,
-		"cwvDisplay":  cwvDisplay,
+		"upper":         strings.ToUpper,
+		"uptimeColor":   uptimeColor,
+		"sparkHeight":   sparkHeight,
+		"bytesHuman":    bytesHuman,
+		"ratingClass":   ratingClass,
+		"cwvDisplay":    cwvDisplay,
+		"humanizeHours": humanizeHours,
 	}
+}
+
+// humanizeHours formats a duration given in hours (reportdata.UptimeSection's
+// UnmonitoredHours) the way a person would say it, not as a raw float: "about
+// 21 days", "about 5 hours", "under an hour". GH #414 phase 5 follow-up — the
+// aggregator computes real pause/window overlap in hours; this is prose, not
+// a measurement, so it rounds to the unit a reader actually thinks in.
+func humanizeHours(hours float64) string {
+	if hours < 1 {
+		return "under an hour"
+	}
+	if hours < 24 {
+		h := int(math.Round(hours))
+		if h == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", h)
+	}
+	d := int(math.Round(hours / 24))
+	if d == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", d)
 }
 
 // uptimeColor returns a CSS color for a given uptime percentage.

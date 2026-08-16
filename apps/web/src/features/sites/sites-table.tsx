@@ -62,7 +62,8 @@ import {
   type SitesSelection,
 } from "@/features/sites/use-sites-selection";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
-import { siteUptimeBadge, siteUptimeTextClass } from "@/features/sites/uptime-badge";
+import { PausedBadge } from "@/features/sites/site-badges";
+import { uptimeBadgeFor, type UptimeBadgeTone } from "@/features/sites/monitoring-pause";
 import { AgentColumnFleetNote } from "@/features/sites/agent-column-header";
 import {
   computeSitesColumnWidths,
@@ -156,6 +157,10 @@ export interface SitesTableProps {
   onReconnect?: (site: Site) => void;
   /** Hard-remove an archived/disconnected site from WPMgr (operator-only). */
   onRemove?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation. */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 interface SiteRow {
@@ -331,6 +336,15 @@ function trackWidth(id: string): number {
 
 const TABLE_MIN_WIDTH_PX = SITES_TABLE_MIN_WIDTH_PX;
 
+// Text-color classes for the plain-text Uptime cell (GH #414), keyed off
+// `UptimeBadgeView.tone` rather than re-deriving from `up` so this can never
+// disagree with `uptimeBadgeFor`, the pause-aware source of truth.
+const UPTIME_TONE_TEXT_CLASS: Record<UptimeBadgeTone, string> = {
+  success: "text-[var(--color-foreground)]",
+  destructive: "text-[var(--color-destructive)]",
+  muted: "text-[var(--color-muted-foreground)]",
+};
+
 /**
  * Resolved column widths (one per column, plus the trailing spacer) for the
  * current container width. Read by the hoisted <VirtuosoTable> slot, which
@@ -355,6 +369,8 @@ function buildColumns(
   onReconnect: ((site: Site) => void) | undefined,
   onRemove: ((site: Site) => void) | undefined,
   agentReferenceSource: FleetAgentVersions["reference_source"] | undefined,
+  onPauseMonitoring: ((site: Site) => void) | undefined,
+  onResumeMonitoring: ((site: Site) => void) | undefined,
 ): ColumnDef<SiteRow>[] {
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selection.selected.has(id));
@@ -414,11 +430,15 @@ function buildColumns(
             ) : null}
             {/* Phase 5 connection lifecycle badge — dot + label + relative time,
                 auto-updating, with a one-shot pulse on state change. */}
-            <ConnectionStateBadge
-              state={connectionState}
-              lastSeenAt={lastSeenAt}
-              disconnectedReason={row.original.disconnectedReason}
-            />
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <ConnectionStateBadge
+                state={connectionState}
+                lastSeenAt={lastSeenAt}
+                disconnectedReason={row.original.disconnectedReason}
+              />
+              {/* GH #414 — a pause you cannot see is a pause you forget. */}
+              <PausedBadge site={site} />
+            </div>
           </div>
         );
       },
@@ -601,32 +621,43 @@ function buildColumns(
       enableSorting: false,
       size: COL_UPTIME_PX,
       cell: ({ row }) => {
-        const { up, uptime_pct } = row.original.site;
-        // Neither field present: site has never been probed.
-        if (up == null && uptime_pct === undefined) {
+        const site = row.original.site;
+        const { up, uptime_pct, monitoring_paused_at } = site;
+        const paused = Boolean(monitoring_paused_at);
+        // Neither field present and not paused: site has never been probed
+        // and there is no stale result to date either.
+        if (!paused && up == null && uptime_pct === undefined) {
           return <span aria-hidden="true" />;
         }
-        // GH #272 — tri-state (never green/foreground-as-ok unless
-        // up === true); see uptime-badge.ts.
-        const badge = siteUptimeBadge(up);
-        const toneClass = siteUptimeTextClass(badge.status);
+        // GH #414 — a paused site's uptime result is frozen; the muted tone
+        // and the "as of" stamp (in the hover text; the column is 72px wide)
+        // ride the same helper that drives the card's UptimeBadge, so the
+        // grid and the table can't drift apart. GH #272's tri-state rule
+        // (never green/foreground-as-ok unless up === true) lives in
+        // uptime-badge.ts, which this helper reads from underneath.
+        const view = uptimeBadgeFor(site);
+        const toneClass = UPTIME_TONE_TEXT_CLASS[view.tone];
         // Show the 30-day percentage when available, otherwise the live
-        // up/down/unknown indicator.
+        // up/down/unknown/not-checked label.
         if (uptime_pct !== undefined) {
           const pct = uptime_pct.toFixed(1);
           return (
             <span
               className={cn("tabular-nums text-xs font-medium", toneClass)}
-              title={`${pct}% uptime (30 days)`}
+              title={paused ? view.description : `${pct}% uptime (30 days)`}
             >
               {pct}%
             </span>
           );
         }
-        // Only live up/down/unknown is available (no 30-day window yet).
+        // Only live up/down/unknown/not-checked is available (no 30-day
+        // window yet).
         return (
-          <span className={cn("text-xs font-medium", toneClass)}>
-            {badge.label}
+          <span
+            className={cn("text-xs font-medium", toneClass)}
+            title={paused ? view.description : undefined}
+          >
+            {view.label}
           </span>
         );
       },
@@ -645,6 +676,8 @@ function buildColumns(
           onDisconnect={onDisconnect}
           onReconnect={onReconnect}
           onRemove={onRemove}
+          onPauseMonitoring={onPauseMonitoring}
+          onResumeMonitoring={onResumeMonitoring}
         />
       ),
     },
@@ -763,6 +796,8 @@ export function SitesTable({
   onDisconnect,
   onReconnect,
   onRemove,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SitesTableProps) {
   const internalSelection = useSitesSelection();
   const selection = externalSelection ?? internalSelection;
@@ -789,6 +824,8 @@ export function SitesTable({
         onReconnect,
         onRemove,
         agentReferenceSource,
+        onPauseMonitoring,
+        onResumeMonitoring,
       ),
     [
       selection,
@@ -799,6 +836,8 @@ export function SitesTable({
       onReconnect,
       onRemove,
       agentReferenceSource,
+      onPauseMonitoring,
+      onResumeMonitoring,
     ],
   );
 

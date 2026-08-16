@@ -42,6 +42,14 @@ const RescanSiteQueue = "vuln_rescan_site"
 type RescanSiteArgs struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 	SiteID   uuid.UUID `json:"site_id"`
+	// Scheduled marks a job produced by the post-feed-refresh RescanAll
+	// fan-out, as opposed to the operator's per-site "rescan now" route
+	// (handler.go rescan). Only a scheduled job is subject to the m117
+	// (GH #414) monitoring-pause re-check; a person clicking Rescan always
+	// gets a rescan, paused or not. The zero value is the safe one: an
+	// unmarshalled pre-m117 job, or any future caller that forgets the field,
+	// is treated as operator-initiated and runs.
+	Scheduled bool `json:"scheduled,omitempty"`
 }
 
 // Kind implements river.JobArgs.
@@ -1267,16 +1275,39 @@ type RescanSiteWorker struct {
 	// enqueuer, wired post-boot via SetAlertDispatchEnqueuer. Nil is safe
 	// (the dispatch hook below is skipped).
 	alertEnqueue AlertDispatchEnqueuer
+	// pause is the m117 (GH #414) point-of-action pause re-check. It is
+	// auto-wired from the service's repo by NewRescanSiteWorker and SetService,
+	// so no boot path can forget it; SetMonitoringPauseChecker exists only so
+	// tests can substitute a fake. Nil disables the check.
+	pause MonitoringPauseChecker
+}
+
+// MonitoringPauseChecker reports whether a site's monitoring is paused
+// (m117, GH #414). *Repo satisfies it.
+type MonitoringPauseChecker interface {
+	IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error)
 }
 
 // NewRescanSiteWorker builds a RescanSiteWorker.
 func NewRescanSiteWorker(svc *Service, logger *slog.Logger) *RescanSiteWorker {
-	return &RescanSiteWorker{svc: svc, logger: logger}
+	w := &RescanSiteWorker{svc: svc, logger: logger}
+	w.SetService(svc)
+	return w
 }
 
 // SetService wires the vuln service into the worker after construction. Called
 // once at boot after startRiver returns (the service needs the River client).
-func (w *RescanSiteWorker) SetService(svc *Service) { w.svc = svc }
+// It also (re-)wires the m117 pause checker from the service's repo.
+func (w *RescanSiteWorker) SetService(svc *Service) {
+	w.svc = svc
+	if svc != nil && svc.repo != nil {
+		w.pause = svc.repo
+	}
+}
+
+// SetMonitoringPauseChecker overrides the m117 pause checker. Production code
+// must not call this — SetService already wires it from the service's repo.
+func (w *RescanSiteWorker) SetMonitoringPauseChecker(p MonitoringPauseChecker) { w.pause = p }
 
 // SetAlertDispatchEnqueuer wires the debounced batched-alert-dispatch
 // enqueuer. Called once at boot after River starts (mirrors SetService).
@@ -1289,6 +1320,25 @@ func (w *RescanSiteWorker) SetAlertDispatchEnqueuer(e AlertDispatchEnqueuer) { w
 // caller): all of them enqueue a RescanSiteArgs job, which always lands here.
 func (w *RescanSiteWorker) Work(ctx context.Context, job *river.Job[RescanSiteArgs]) error {
 	args := job.Args
+
+	// m117 (GH #414) point-of-action pause re-check. RescanAll already filters
+	// paused sites out of its fan-out, but nothing drains jobs queued before
+	// the pause. Only scheduled jobs are gated — see RescanSiteArgs.Scheduled.
+	// A check error does not skip: rescanning is the reversible half (findings
+	// are stored, and the alert dispatch has its own independent pause filter,
+	// so a stored finding for a paused site still tells nobody).
+	if args.Scheduled && w.pause != nil {
+		paused, err := w.pause.IsMonitoringPaused(ctx, args.SiteID)
+		if err != nil {
+			w.logger.Warn("vuln: pause check failed, rescanning anyway",
+				slog.String("site_id", args.SiteID.String()), slog.Any("error", err))
+		} else if paused {
+			w.logger.Info("vuln: scheduled rescan skipped, monitoring paused",
+				slog.String("site_id", args.SiteID.String()))
+			return nil
+		}
+	}
+
 	if err := w.svc.RescanSite(ctx, args.TenantID, args.SiteID); err != nil {
 		w.logger.Warn("vuln: site rescan failed",
 			slog.String("tenant_id", args.TenantID.String()),

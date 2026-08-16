@@ -108,6 +108,31 @@ type Site struct {
 	// plugin slugs that can never exist — both features ship as drop-ins.
 	PageCacheEnabled   bool
 	ObjectCacheEnabled bool
+	// GH #414 — monitoring pause state, read straight off the sites row (m117).
+	// MonitoringPausedAt nil means monitoring is ACTIVE; the flag and the
+	// since-when are one column so they cannot disagree. MonitoringPausedBy can
+	// be nil on a paused site: the FK is ON DELETE SET NULL, so a pause outlives
+	// the user who set it.
+	MonitoringPausedAt     *time.Time
+	MonitoringPausedBy     *uuid.UUID
+	MonitoringPausedReason string
+	MonitoringResumeAt     *time.Time
+	// HealthCheckedAt is site_uptime_status.last_probed_at: the last uptime
+	// probe that actually RAN against this site, which is the "as of" for
+	// HealthStatus. Nil when the site has never been probed.
+	//
+	// This exists because pause freezes HealthStatus. The uptime prober is what
+	// refreshes health_status (uptime/worker.go processSite), and GH #414 Phase 2
+	// filters paused sites out of the probe enumeration — so a paused site keeps
+	// serving its last health_status forever while this stamp stops advancing.
+	// Serving the verdict without its age is the "lie to me" failure the whole
+	// feature is built to avoid, so the two travel together.
+	//
+	// NOT UpdatedAt. sites.updated_at is the row mtime — heartbeats, metadata
+	// pushes and operator writes all move it — so it says nothing about when the
+	// health verdict was last confirmed. Populated by repo.Get/List from
+	// site_uptime_status (PK-keyed, inside the same RLS-scoped tx).
+	HealthCheckedAt *time.Time
 }
 
 // CreateInput is the validated input for creating a site under a tenant.

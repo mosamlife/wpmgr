@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Acme — 1 May 2026 – 31 May 2026</title>
+<style>
+ 
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.6; color: #1a1a2e; background: #f8f9fa; }
+.container { max-width: 860px; margin: 0 auto; padding: 32px 16px; }
+ 
+.report-header { background: #fff; border-radius: 12px; padding: 32px; margin-bottom: 24px; border-left: 6px solid #3b82f6; box-shadow: 0 1px 4px rgba(0,0,0,.07); }
+.report-header .logo img { max-height: 56px; max-width: 200px; }
+.report-header h1 { font-size: 26px; font-weight: 700; margin-top: 16px; color: #0f172a; }
+.report-header .meta { color: #64748b; font-size: 13px; margin-top: 4px; }
+.intro-text { margin-top: 16px; color: #374151; white-space: pre-wrap; }
+ 
+.totals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.total-card { background: #fff; border-radius: 8px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.total-card .value { font-size: 28px; font-weight: 700; color: #3b82f6; }
+.total-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+ 
+.section-header { font-size: 18px; font-weight: 700; color: #0f172a; padding: 12px 0 8px; border-bottom: 2px solid #3b82f6; margin: 28px 0 16px; }
+ 
+.site-card { background: #fff; border-radius: 10px; padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.06); page-break-inside: avoid; }
+.site-card h3 { font-size: 16px; font-weight: 600; color: #0f172a; }
+.site-card .url { font-size: 13px; color: #6b7280; }
+.metrics-row { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 12px; }
+.metric-item { flex: 1; min-width: 120px; }
+.metric-item .m-val { font-size: 20px; font-weight: 700; }
+.metric-item .m-lbl { font-size: 12px; color: #6b7280; }
+ 
+.rating-good { color: #16a34a; }
+.rating-needs { color: #ca8a04; }
+.rating-poor  { color: #dc2626; }
+ 
+.paused-note { margin-top: 12px; padding: 10px 12px; border-radius: 6px; background: #f3f4f6; border-left: 3px solid #9ca3af; font-size: 13px; color: #4b5563; }
+.paused-note .paused-title { font-weight: 600; color: #374151; }
+.paused-note .paused-reason { display: block; margin-top: 4px; font-style: italic; }
+ 
+.sparkline { display: flex; align-items: flex-end; gap: 2px; height: 32px; margin-top: 10px; }
+.spark-bar { flex: 1; border-radius: 2px; min-height: 4px; }
+ 
+.powered-by { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+ 
+@media print {
+  body { background: #fff; }
+  .container { max-width: 100%; padding: 0; }
+  .site-card { box-shadow: none; border: 1px solid #e5e7eb; }
+  .report-header { box-shadow: none; }
+  @page { margin: 20mm; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+
+<div class="report-header">
+  
+  <h1>Acme</h1>
+  <div class="meta">Report for 1 May 2026 – 31 May 2026 · Prepared by Agency</div>
+  
+</div>
+
+
+
+<div class="section-header">Overview</div>
+<div class="totals-grid">
+  <div class="total-card"><div class="value">1</div><div class="label">Sites</div></div>
+  <div class="total-card"><div class="value">99.2%</div><div class="label">Avg Uptime</div></div>
+  <div class="total-card"><div class="value">0</div><div class="label">Incidents</div></div>
+  <div class="total-card"><div class="value">0</div><div class="label">Backups</div></div>
+  <div class="total-card"><div class="value">0</div><div class="label">Updates</div></div>
+  <div class="total-card"><div class="value">0</div><div class="label">Emails Sent</div></div>
+</div>
+
+
+
+
+<div class="section-header">site-a</div>
+<div class="site-card">
+  <h3>site-a</h3>
+  <div class="url">https://a.example</div>
+
+  
+
+  
+  <div class="metrics-row" style="margin-top:12px;">
+    <div class="metric-item"><div class="m-val">99.20%</div><div class="m-lbl">Uptime</div></div>
+    <div class="metric-item"><div class="m-val">210ms</div><div class="m-lbl">Avg Latency</div></div>
+    <div class="metric-item"><div class="m-val">2</div><div class="m-lbl">Incidents</div></div>
+    
+  </div>
+  
+  
+
+  
+
+  
+
+  
+
+  
+
+</div>
+
+
+
+
+
+<div class="powered-by">Prepared with WPMgr</div>
+
+
+</div>
+</body>
+</html>

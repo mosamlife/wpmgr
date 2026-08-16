@@ -289,8 +289,49 @@ CREATE TABLE sites (
     -- flag never touches app_probe_path. Operator-settable via
     -- GET/PUT /sites/{siteId}/app-health-settings.
     app_alerts_disabled boolean NOT NULL DEFAULT false,
+    -- m117 (GH #414 Phase 1): "pause monitoring". SCHEMA ONLY in this phase —
+    -- no scheduler reads these yet, so nothing pauses. Pause is orthogonal to
+    -- connection_state (ADR-041): connection_state says whether the AGENT IS
+    -- REACHABLE, pause says whether WE CHOOSE TO ACT, and a connected site can
+    -- be paused while a paused site can lose its agent.
+    --
+    -- Pause will eventually stop uptime probes and their alerts, update
+    -- inventory refresh, scheduled security scans, vulnerability rescans and
+    -- their alerts, and screenshots. It must NEVER stop backups (data
+    -- protection is not monitoring), the connection sweep (site_connection_sweep
+    -- / site_health_check — stopping it would freeze a paused site at
+    -- connection_state 'connected' forever after its agent died; pause means
+    -- "do not tell me", never "lie to me"), RUM ingestion, retention/cleanup, or
+    -- anything a person clicks. Pause governs the SCHEDULE, never the operator.
+    --
+    -- NULL = monitoring active. Non-NULL = paused, and the value is when: the
+    -- flag and the since-when in one column so they cannot disagree.
+    monitoring_paused_at     timestamptz,
+    -- Who paused it, for the badge. The FK to users (id) ON DELETE SET NULL is
+    -- added after the users table below, matching the sites_client_tenant_fkey
+    -- pattern: users is defined later in this file and a forward reference here
+    -- would not resolve.
+    monitoring_paused_by     uuid,
+    -- Optional free text, shown on hover. NOT NULL DEFAULT '' like every other
+    -- optional text column here, so readers never distinguish NULL from empty.
+    monitoring_paused_reason text NOT NULL DEFAULT '',
+    -- Optional auto-resume instant; NULL means "until someone resumes it".
+    monitoring_resume_at     timestamptz,
     created_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at  timestamptz NOT NULL DEFAULT now()
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    -- m117: a resume time with no pause is incoherent, and a later phase reads
+    -- it as an instruction — the auto-resume sweep's predicate is
+    -- "monitoring_resume_at <= now()", so a dangling resume instant on an
+    -- unpaused site is a phantom state transition, not a cosmetic
+    -- inconsistency. Enforced in the schema rather than the service because
+    -- four writers will exist (pause route, resume route, auto-resume worker,
+    -- bulk action) and three do not exist yet; m115 exists because m113 left a
+    -- check constraint open. It deliberately does NOT tie monitoring_paused_by
+    -- to the pause — the FK's own ON DELETE SET NULL would violate that —
+    -- nor require an empty reason while active, nor require resume_at to be
+    -- after paused_at (a past instant sanely means "due now").
+    CONSTRAINT sites_monitoring_resume_requires_pause_check
+        CHECK (monitoring_resume_at IS NULL OR monitoring_paused_at IS NOT NULL)
 );
 
 CREATE INDEX idx_sites_connection_state ON sites (tenant_id, connection_state);
@@ -455,6 +496,45 @@ CREATE UNIQUE INDEX user_identities_user_provider_key
 
 CREATE INDEX user_identities_user_id_idx
     ON user_identities (user_id);
+
+-- ---------------------------------------------------------------------------
+-- m117 (GH #414 Phase 1): sites.monitoring_paused_by → users. Declared here
+-- rather than inline on sites because users is defined after sites in this
+-- file (same reason as sites_client_tenant_fkey).
+--
+-- ON DELETE SET NULL. sites rows outlive users, and the pause must survive the
+-- deletion of whoever set it: CASCADE would delete the SITE, and RESTRICT would
+-- make an old pause block account deletion with 23503. SET NULL keeps the
+-- operational fact (this site is paused) and drops only the display fact (who
+-- paused it), which is the right degradation and this schema's unanimous
+-- convention for an actor column — update_runs.created_by, invitations.revoked_by,
+-- site_connection_events.actor_user_id, client_members.invited_by. The CASCADE
+-- references to users are ownership rows (client_members.user_id,
+-- user_identities.user_id), which this is not.
+--
+-- Not composite with tenant_id: users are tenant-agnostic here (membership is a
+-- join table) so there is no users (id, tenant_id) key to reference, and the
+-- database therefore cannot enforce that the pauser belongs to the site's
+-- tenant. The service must set this from the authenticated actor, never from
+-- request input.
+ALTER TABLE sites
+    ADD CONSTRAINT sites_monitoring_paused_by_fkey
+    FOREIGN KEY (monitoring_paused_by) REFERENCES users (id)
+    ON DELETE SET NULL;
+
+-- m117: the auto-resume sweep's index, and deliberately NOT an index on
+-- "monitoring_paused_at IS NULL". That predicate matches ~99% of rows, so a
+-- partial index on it is a full-size index wearing a WHERE clause, paid for on
+-- every write to the hottest-written table in this schema; and no scheduler
+-- could use it, because the fleet-wide enumerations in db/query/sites.sql
+-- (ListEnrolledSitesAllTenants, ListEnrolledSitesForProbe,
+-- ListConnectedSiteIDsForScreenshot) are uncapped sequential scans with no
+-- index on enrolled_at at all. This index is the inverse and is near-empty by
+-- construction: it covers only sites with a live pause AND a scheduled resume,
+-- which is what the phase-2 auto-resume sweep ("resume_at <= now()") reads.
+CREATE INDEX sites_monitoring_resume_due_idx ON sites (monitoring_resume_at)
+    WHERE monitoring_resume_at IS NOT NULL
+      AND monitoring_paused_at IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- memberships

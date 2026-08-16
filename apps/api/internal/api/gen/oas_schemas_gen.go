@@ -18151,6 +18151,7 @@ func (*Error) listTrustedDevicesRes()             {}
 func (*Error) listWebAuthnCredentialsRes()        {}
 func (*Error) logoutRes()                         {}
 func (*Error) oidcLoginRes()                      {}
+func (*Error) pauseSiteMonitoringRes()            {}
 func (*Error) purgeCacheRes()                     {}
 func (*Error) putAlertConfigRes()                 {}
 func (*Error) putBackupScheduleRes()              {}
@@ -18162,6 +18163,7 @@ func (*Error) putSiteLoginBrandRes()              {}
 func (*Error) putSiteLoginProtectionRes()         {}
 func (*Error) refreshSiteDiagnosticsRes()         {}
 func (*Error) restoreSiteRes()                    {}
+func (*Error) resumeSiteMonitoringRes()           {}
 func (*Error) revokeAllTrustedDevicesRes()        {}
 func (*Error) revokeSiteRes()                     {}
 func (*Error) setSiteTagsRes()                    {}
@@ -25910,6 +25912,212 @@ func (s *MembershipList) SetItems(val []Membership) {
 }
 
 func (*MembershipList) listMembersRes() {}
+
+// Ref: #/components/schemas/MonitoringBulkResult
+type MonitoringBulkResult struct {
+	Results []MonitoringResult `json:"results"`
+	// How many sites this request actually moved.
+	ChangedCount int `json:"changed_count"`
+}
+
+// GetResults returns the value of Results.
+func (s *MonitoringBulkResult) GetResults() []MonitoringResult {
+	return s.Results
+}
+
+// GetChangedCount returns the value of ChangedCount.
+func (s *MonitoringBulkResult) GetChangedCount() int {
+	return s.ChangedCount
+}
+
+// SetResults sets the value of Results.
+func (s *MonitoringBulkResult) SetResults(val []MonitoringResult) {
+	s.Results = val
+}
+
+// SetChangedCount sets the value of ChangedCount.
+func (s *MonitoringBulkResult) SetChangedCount(val int) {
+	s.ChangedCount = val
+}
+
+func (*MonitoringBulkResult) pauseSiteMonitoringRes()  {}
+func (*MonitoringBulkResult) resumeSiteMonitoringRes() {}
+
+// Ref: #/components/schemas/MonitoringResult
+type MonitoringResult struct {
+	SiteID string `json:"site_id"`
+	// The site was accepted and is now in the requested state.
+	Ok bool `json:"ok"`
+	// THIS request moved the site. False for an accepted retry
+	// (`already_paused` / `already_active`).
+	Changed bool `json:"changed"`
+	// Stable machine-readable outcome, not prose.
+	Detail                 MonitoringResultDetail `json:"detail"`
+	MonitoringPausedAt     OptNilDateTime         `json:"monitoring_paused_at"`
+	MonitoringPausedReason OptString              `json:"monitoring_paused_reason"`
+	MonitoringResumeAt     OptNilDateTime         `json:"monitoring_resume_at"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *MonitoringResult) GetSiteID() string {
+	return s.SiteID
+}
+
+// GetOk returns the value of Ok.
+func (s *MonitoringResult) GetOk() bool {
+	return s.Ok
+}
+
+// GetChanged returns the value of Changed.
+func (s *MonitoringResult) GetChanged() bool {
+	return s.Changed
+}
+
+// GetDetail returns the value of Detail.
+func (s *MonitoringResult) GetDetail() MonitoringResultDetail {
+	return s.Detail
+}
+
+// GetMonitoringPausedAt returns the value of MonitoringPausedAt.
+func (s *MonitoringResult) GetMonitoringPausedAt() OptNilDateTime {
+	return s.MonitoringPausedAt
+}
+
+// GetMonitoringPausedReason returns the value of MonitoringPausedReason.
+func (s *MonitoringResult) GetMonitoringPausedReason() OptString {
+	return s.MonitoringPausedReason
+}
+
+// GetMonitoringResumeAt returns the value of MonitoringResumeAt.
+func (s *MonitoringResult) GetMonitoringResumeAt() OptNilDateTime {
+	return s.MonitoringResumeAt
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *MonitoringResult) SetSiteID(val string) {
+	s.SiteID = val
+}
+
+// SetOk sets the value of Ok.
+func (s *MonitoringResult) SetOk(val bool) {
+	s.Ok = val
+}
+
+// SetChanged sets the value of Changed.
+func (s *MonitoringResult) SetChanged(val bool) {
+	s.Changed = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *MonitoringResult) SetDetail(val MonitoringResultDetail) {
+	s.Detail = val
+}
+
+// SetMonitoringPausedAt sets the value of MonitoringPausedAt.
+func (s *MonitoringResult) SetMonitoringPausedAt(val OptNilDateTime) {
+	s.MonitoringPausedAt = val
+}
+
+// SetMonitoringPausedReason sets the value of MonitoringPausedReason.
+func (s *MonitoringResult) SetMonitoringPausedReason(val OptString) {
+	s.MonitoringPausedReason = val
+}
+
+// SetMonitoringResumeAt sets the value of MonitoringResumeAt.
+func (s *MonitoringResult) SetMonitoringResumeAt(val OptNilDateTime) {
+	s.MonitoringResumeAt = val
+}
+
+// Stable machine-readable outcome, not prose.
+type MonitoringResultDetail string
+
+const (
+	MonitoringResultDetailPaused        MonitoringResultDetail = "paused"
+	MonitoringResultDetailAlreadyPaused MonitoringResultDetail = "already_paused"
+	MonitoringResultDetailResumed       MonitoringResultDetail = "resumed"
+	MonitoringResultDetailAlreadyActive MonitoringResultDetail = "already_active"
+	MonitoringResultDetailForbidden     MonitoringResultDetail = "forbidden"
+	MonitoringResultDetailInvalidSiteID MonitoringResultDetail = "invalid_site_id"
+	MonitoringResultDetailSiteNotFound  MonitoringResultDetail = "site_not_found"
+	MonitoringResultDetailSiteArchived  MonitoringResultDetail = "site_archived"
+	MonitoringResultDetailSiteRevoked   MonitoringResultDetail = "site_revoked"
+)
+
+// AllValues returns all MonitoringResultDetail values.
+func (MonitoringResultDetail) AllValues() []MonitoringResultDetail {
+	return []MonitoringResultDetail{
+		MonitoringResultDetailPaused,
+		MonitoringResultDetailAlreadyPaused,
+		MonitoringResultDetailResumed,
+		MonitoringResultDetailAlreadyActive,
+		MonitoringResultDetailForbidden,
+		MonitoringResultDetailInvalidSiteID,
+		MonitoringResultDetailSiteNotFound,
+		MonitoringResultDetailSiteArchived,
+		MonitoringResultDetailSiteRevoked,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s MonitoringResultDetail) MarshalText() ([]byte, error) {
+	switch s {
+	case MonitoringResultDetailPaused:
+		return []byte(s), nil
+	case MonitoringResultDetailAlreadyPaused:
+		return []byte(s), nil
+	case MonitoringResultDetailResumed:
+		return []byte(s), nil
+	case MonitoringResultDetailAlreadyActive:
+		return []byte(s), nil
+	case MonitoringResultDetailForbidden:
+		return []byte(s), nil
+	case MonitoringResultDetailInvalidSiteID:
+		return []byte(s), nil
+	case MonitoringResultDetailSiteNotFound:
+		return []byte(s), nil
+	case MonitoringResultDetailSiteArchived:
+		return []byte(s), nil
+	case MonitoringResultDetailSiteRevoked:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *MonitoringResultDetail) UnmarshalText(data []byte) error {
+	switch MonitoringResultDetail(data) {
+	case MonitoringResultDetailPaused:
+		*s = MonitoringResultDetailPaused
+		return nil
+	case MonitoringResultDetailAlreadyPaused:
+		*s = MonitoringResultDetailAlreadyPaused
+		return nil
+	case MonitoringResultDetailResumed:
+		*s = MonitoringResultDetailResumed
+		return nil
+	case MonitoringResultDetailAlreadyActive:
+		*s = MonitoringResultDetailAlreadyActive
+		return nil
+	case MonitoringResultDetailForbidden:
+		*s = MonitoringResultDetailForbidden
+		return nil
+	case MonitoringResultDetailInvalidSiteID:
+		*s = MonitoringResultDetailInvalidSiteID
+		return nil
+	case MonitoringResultDetailSiteNotFound:
+		*s = MonitoringResultDetailSiteNotFound
+		return nil
+	case MonitoringResultDetailSiteArchived:
+		*s = MonitoringResultDetailSiteArchived
+		return nil
+	case MonitoringResultDetailSiteRevoked:
+		*s = MonitoringResultDetailSiteRevoked
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // NewNilAgentMirrorStatusLastAttemptOutcome returns new NilAgentMirrorStatusLastAttemptOutcome with value set to v.
 func NewNilAgentMirrorStatusLastAttemptOutcome(v AgentMirrorStatusLastAttemptOutcome) NilAgentMirrorStatusLastAttemptOutcome {
@@ -34917,6 +35125,48 @@ type PatchSiteErrorConfigNotFound Error
 
 func (*PatchSiteErrorConfigNotFound) patchSiteErrorConfigRes() {}
 
+// Ref: #/components/schemas/PauseMonitoringRequest
+type PauseMonitoringRequest struct {
+	SiteIds []uuid.UUID `json:"site_ids"`
+	// Free-text note stored on every site this request pauses.
+	Reason OptString `json:"reason"`
+	// Optional instant a later phase's sweep will auto-resume at. Must
+	// be in the future; a past instant is rejected with
+	// `resume_at_in_past` rather than stored as a pause that instantly
+	// un-pauses.
+	ResumeAt OptNilDateTime `json:"resume_at"`
+}
+
+// GetSiteIds returns the value of SiteIds.
+func (s *PauseMonitoringRequest) GetSiteIds() []uuid.UUID {
+	return s.SiteIds
+}
+
+// GetReason returns the value of Reason.
+func (s *PauseMonitoringRequest) GetReason() OptString {
+	return s.Reason
+}
+
+// GetResumeAt returns the value of ResumeAt.
+func (s *PauseMonitoringRequest) GetResumeAt() OptNilDateTime {
+	return s.ResumeAt
+}
+
+// SetSiteIds sets the value of SiteIds.
+func (s *PauseMonitoringRequest) SetSiteIds(val []uuid.UUID) {
+	s.SiteIds = val
+}
+
+// SetReason sets the value of Reason.
+func (s *PauseMonitoringRequest) SetReason(val OptString) {
+	s.Reason = val
+}
+
+// SetResumeAt sets the value of ResumeAt.
+func (s *PauseMonitoringRequest) SetResumeAt(val OptNilDateTime) {
+	s.ResumeAt = val
+}
+
 // The `{ok, detail}` acknowledgement returned by the cache action
 // endpoints (purge / preload / enable / disable). `ok` is false when the
 // agent rejected the action (still HTTP 200).
@@ -39955,6 +40205,21 @@ type RestoreSiteVulnerabilityUnauthorized Error
 
 func (*RestoreSiteVulnerabilityUnauthorized) restoreSiteVulnerabilityRes() {}
 
+// Ref: #/components/schemas/ResumeMonitoringRequest
+type ResumeMonitoringRequest struct {
+	SiteIds []uuid.UUID `json:"site_ids"`
+}
+
+// GetSiteIds returns the value of SiteIds.
+func (s *ResumeMonitoringRequest) GetSiteIds() []uuid.UUID {
+	return s.SiteIds
+}
+
+// SetSiteIds sets the value of SiteIds.
+func (s *ResumeMonitoringRequest) SetSiteIds(val []uuid.UUID) {
+	s.SiteIds = val
+}
+
 type RetryUpdateRunConflict Error
 
 func (*RetryUpdateRunConflict) retryUpdateRunRes() {}
@@ -42597,9 +42862,43 @@ type Site struct {
 	// not an inference from an installed-plugin slug (the feature ships as a
 	// drop-in, not a plugin, so no such slug can ever exist). false both when
 	// object caching is off AND when the site has no object cache config yet.
-	ObjectCacheEnabled bool      `json:"object_cache_enabled"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ObjectCacheEnabled bool `json:"object_cache_enabled"`
+	// GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.
+	// Absent/null means monitoring is ACTIVE; the flag and the since-when are one
+	// column (sites.monitoring_paused_at) so they cannot disagree.
+	// Pause means "do not tell me", never "lie to me". It suppresses scheduled
+	// monitoring (uptime probes and their alerts) and nothing else: backups, the
+	// cron kick, the connection sweep, RUM ingestion, retention and everything a
+	// person clicks all keep running for a paused site.
+	MonitoringPausedAt OptDateTime `json:"monitoring_paused_at"`
+	// GH #414 — the user who paused monitoring. Absent when monitoring is active,
+	// and also absent for a paused site whose pausing user has since been deleted
+	// (the FK is ON DELETE SET NULL, so a pause outlives its author).
+	MonitoringPausedBy OptUUID `json:"monitoring_paused_by"`
+	// GH #414 — the operator's free-text note for why monitoring is paused.
+	// Empty/absent when monitoring is active or when no reason was given.
+	MonitoringPausedReason OptString `json:"monitoring_paused_reason"`
+	// GH #414 — the scheduled auto-resume instant. Absent means "paused until
+	// someone resumes it". Never present without monitoring_paused_at (enforced
+	// by sites_monitoring_resume_requires_pause_check).
+	MonitoringResumeAt OptDateTime `json:"monitoring_resume_at"`
+	// GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran
+	// against this site (site_uptime_status.last_probed_at), i.e. the "as of" for
+	// `health_status`. Absent when the site has never been probed.
+	// Read this WITH `health_status`, never instead of it. The uptime prober is
+	// what refreshes `health_status`, and pausing monitoring stops the prober — so
+	// a paused site's `health_status` freezes at its last value while this stamp
+	// stops advancing. A paused site whose server died an hour ago therefore still
+	// reports `health_status: healthy`, and this field is the only thing that says
+	// how old that verdict is. Render it as "as of <time>" rather than implying now.
+	HealthCheckedAt OptDateTime `json:"health_checked_at"`
+	CreatedAt       time.Time   `json:"created_at"`
+	// The site row's mtime: bumped by heartbeats, agent metadata pushes and
+	// health_status changes. Deliberately NOT bumped by monitoring pause/resume
+	// writes (GH #414 Phase 1), so pausing a site does not make its inventory look
+	// freshly synced. It is the inventory freshness stamp, not the health one —
+	// use health_checked_at for health_status.
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -42795,6 +43094,31 @@ func (s *Site) GetPageCacheEnabled() bool {
 // GetObjectCacheEnabled returns the value of ObjectCacheEnabled.
 func (s *Site) GetObjectCacheEnabled() bool {
 	return s.ObjectCacheEnabled
+}
+
+// GetMonitoringPausedAt returns the value of MonitoringPausedAt.
+func (s *Site) GetMonitoringPausedAt() OptDateTime {
+	return s.MonitoringPausedAt
+}
+
+// GetMonitoringPausedBy returns the value of MonitoringPausedBy.
+func (s *Site) GetMonitoringPausedBy() OptUUID {
+	return s.MonitoringPausedBy
+}
+
+// GetMonitoringPausedReason returns the value of MonitoringPausedReason.
+func (s *Site) GetMonitoringPausedReason() OptString {
+	return s.MonitoringPausedReason
+}
+
+// GetMonitoringResumeAt returns the value of MonitoringResumeAt.
+func (s *Site) GetMonitoringResumeAt() OptDateTime {
+	return s.MonitoringResumeAt
+}
+
+// GetHealthCheckedAt returns the value of HealthCheckedAt.
+func (s *Site) GetHealthCheckedAt() OptDateTime {
+	return s.HealthCheckedAt
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -43000,6 +43324,31 @@ func (s *Site) SetPageCacheEnabled(val bool) {
 // SetObjectCacheEnabled sets the value of ObjectCacheEnabled.
 func (s *Site) SetObjectCacheEnabled(val bool) {
 	s.ObjectCacheEnabled = val
+}
+
+// SetMonitoringPausedAt sets the value of MonitoringPausedAt.
+func (s *Site) SetMonitoringPausedAt(val OptDateTime) {
+	s.MonitoringPausedAt = val
+}
+
+// SetMonitoringPausedBy sets the value of MonitoringPausedBy.
+func (s *Site) SetMonitoringPausedBy(val OptUUID) {
+	s.MonitoringPausedBy = val
+}
+
+// SetMonitoringPausedReason sets the value of MonitoringPausedReason.
+func (s *Site) SetMonitoringPausedReason(val OptString) {
+	s.MonitoringPausedReason = val
+}
+
+// SetMonitoringResumeAt sets the value of MonitoringResumeAt.
+func (s *Site) SetMonitoringResumeAt(val OptDateTime) {
+	s.MonitoringResumeAt = val
+}
+
+// SetHealthCheckedAt sets the value of HealthCheckedAt.
+func (s *Site) SetHealthCheckedAt(val OptDateTime) {
+	s.HealthCheckedAt = val
 }
 
 // SetCreatedAt sets the value of CreatedAt.

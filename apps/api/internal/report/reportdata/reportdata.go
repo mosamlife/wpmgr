@@ -61,13 +61,34 @@ func DefaultSectionFlags() SectionFlags {
 
 // ReportTotals is the fleet-wide rollup across all client sites.
 type ReportTotals struct {
-	SiteCount      int     `json:"site_count"`
-	AvgUptimePct   float64 `json:"avg_uptime_pct"`
-	Incidents      int     `json:"incidents"`
-	BackupsCount   int64   `json:"backups_count"`
-	UpdatesApplied int64   `json:"updates_applied"`
-	EmailsSent     int64   `json:"emails_sent"`
-	EmailsFailed   int64   `json:"emails_failed"`
+	SiteCount    int     `json:"site_count"`
+	AvgUptimePct float64 `json:"avg_uptime_pct"`
+	// UptimeSiteCount is the DENOMINATOR AvgUptimePct was actually divided by:
+	// the number of sites that contributed an uptime figure. It is written out
+	// rather than left implicit because SiteCount is no longer that number and a
+	// reader of the snapshot would otherwise have no way to check the average.
+	//
+	// GH #414 phase 5. The old denominator was len(sites), which made a fleet
+	// percentage a lie in two independent directions. A MONITORING-PAUSED site
+	// contributes no uptime section at all (see MonitoringPaused below), so
+	// dividing by len(sites) would have counted it as 0% and dragged the average
+	// down; and before pause existed, a site the prober had simply never reached
+	// did the same thing silently. Both are the same defect — a site with no
+	// observation is not a site observed at 0% — and both are fixed by dividing
+	// by the population that was actually measured. The client portal's own
+	// recomputation (internal/portal/handler.go) has always divided by the
+	// contributing count, so this also ends a standing disagreement between the
+	// report PDF and the portal summary of the same period.
+	UptimeSiteCount int `json:"uptime_site_count"`
+	// PausedSiteCount is how many of SiteCount had monitoring paused for the
+	// period. Reported so "8 sites, average over 6" is answerable from the
+	// snapshot without re-walking Sites.
+	PausedSiteCount int   `json:"paused_site_count"`
+	Incidents       int   `json:"incidents"`
+	BackupsCount    int64 `json:"backups_count"`
+	UpdatesApplied  int64 `json:"updates_applied"`
+	EmailsSent      int64 `json:"emails_sent"`
+	EmailsFailed    int64 `json:"emails_failed"`
 }
 
 // SiteReport is the per-site section of the report.
@@ -75,6 +96,37 @@ type SiteReport struct {
 	SiteID uuid.UUID `json:"site_id"`
 	Name   string    `json:"name"`
 	URL    string    `json:"url"`
+
+	// MonitoringPaused is GH #414 phase 5: the site is IN the report and NAMED
+	// AS PAUSED, rather than dropped from it or shown with a month of gaps.
+	//
+	// Dropping it was rejected: a client who is billed for eight sites and
+	// receives a report covering six has been handed a document that disagrees
+	// with their invoice, and nothing in it says why. Leaving the uptime section
+	// in was rejected for the reason the feature exists: the prober stops for a
+	// paused site (uptime.listEnrolledForMonitoringProbeSQL), so its daily
+	// series is empty for every paused day and the sparkline renders a month of
+	// floor-height bars that are indistinguishable from a month of downtime.
+	// Pause means "do not tell me", never "lie to me", and an unexplained
+	// outage-shaped hole in a client-facing PDF is the loudest lie this feature
+	// could tell.
+	//
+	// ONLY THE UPTIME SECTION IS SUPPRESSED. Backups keep running for a paused
+	// site and keep being reported — data protection is not monitoring, and a
+	// backup section that vanished on pause would understate the one thing the
+	// agency is actually being paid for. Updates, performance and email are
+	// likewise untouched: no phase filters their collection, so their numbers
+	// are real and suppressing them would invent a gap rather than explain one.
+	MonitoringPaused bool `json:"monitoring_paused,omitempty"`
+	// MonitoringPausedAt is when the pause began, so the report can say "paused
+	// since 3 May" instead of the bare word.
+	MonitoringPausedAt *time.Time `json:"monitoring_paused_at,omitempty"`
+	// MonitoringPausedReason is the operator's note, verbatim. It reaches a
+	// CLIENT-FACING document, which is a deliberate call: the operator typed it
+	// into a field whose label says it is shown to the client, and a reason
+	// ("migrating to new host") is the whole difference between an explained
+	// pause and an unexplained hole. Rendered escaped by html/template.
+	MonitoringPausedReason string `json:"monitoring_paused_reason,omitempty"`
 
 	Uptime      *UptimeSection `json:"uptime,omitempty"`
 	Backups     *BackupSection `json:"backups,omitempty"`
@@ -92,6 +144,31 @@ type UptimeSection struct {
 	Incidents    int         `json:"incidents"`
 	TLSExpiry    *time.Time  `json:"tls_expiry,omitempty"`
 	Daily        []UptimeDay `json:"daily"`
+
+	// PartialCoverage is true when monitoring was paused for part, but not
+	// all, of the reporting window (a real pause interval overlaps
+	// [PeriodStart, PeriodEnd) without covering it entirely). The section is
+	// still populated with real data — it is NOT suppressed — but it must
+	// never be read as a complete measurement of the period: the prober was
+	// off for UnmonitoredHours of it. A full-window pause suppresses the
+	// section instead of setting this flag (SiteReport.Uptime is nil); a
+	// pause with no overlap at all leaves this false. See the aggregator's
+	// pause-interval overlap logic.
+	PartialCoverage bool `json:"partial_coverage,omitempty"`
+	// UnmonitoredHours is the portion of [PeriodStart, PeriodEnd) covered by
+	// a monitoring pause, in hours. Only meaningful when PartialCoverage is
+	// true; zero otherwise.
+	UnmonitoredHours float64 `json:"unmonitored_hours,omitempty"`
+	// CoverageUnknown is true when the pause history could not be read at all,
+	// so whether monitoring was paused during this window is unknown. The
+	// section still carries every check that was recorded — suppressing it
+	// would discard a measured period — but it must not be presented as a
+	// complete month either: a failed history read is not evidence that the
+	// site was monitored throughout. It is the third state between
+	// PartialCoverage (a pause of known size) and a plain, fully-covered
+	// section, and the renderers say so in words rather than printing a
+	// duration nobody computed.
+	CoverageUnknown bool `json:"coverage_unknown,omitempty"`
 }
 
 // UptimeDay is one day bucket in the uptime sparkline series.

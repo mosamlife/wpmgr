@@ -197,7 +197,61 @@ export type Site = {
    *
    */
   object_cache_enabled: boolean;
+  /**
+   * GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.
+   * Absent/null means monitoring is ACTIVE; the flag and the since-when are one
+   * column (sites.monitoring_paused_at) so they cannot disagree.
+   *
+   * Pause means "do not tell me", never "lie to me". It suppresses scheduled
+   * monitoring (uptime probes and their alerts) and nothing else: backups, the
+   * cron kick, the connection sweep, RUM ingestion, retention and everything a
+   * person clicks all keep running for a paused site.
+   *
+   */
+  monitoring_paused_at?: string;
+  /**
+   * GH #414 — the user who paused monitoring. Absent when monitoring is active,
+   * and also absent for a paused site whose pausing user has since been deleted
+   * (the FK is ON DELETE SET NULL, so a pause outlives its author).
+   *
+   */
+  monitoring_paused_by?: string;
+  /**
+   * GH #414 — the operator's free-text note for why monitoring is paused.
+   * Empty/absent when monitoring is active or when no reason was given.
+   *
+   */
+  monitoring_paused_reason?: string;
+  /**
+   * GH #414 — the scheduled auto-resume instant. Absent means "paused until
+   * someone resumes it". Never present without monitoring_paused_at (enforced
+   * by sites_monitoring_resume_requires_pause_check).
+   *
+   */
+  monitoring_resume_at?: string;
+  /**
+   * GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran
+   * against this site (site_uptime_status.last_probed_at), i.e. the "as of" for
+   * `health_status`. Absent when the site has never been probed.
+   *
+   * Read this WITH `health_status`, never instead of it. The uptime prober is
+   * what refreshes `health_status`, and pausing monitoring stops the prober — so
+   * a paused site's `health_status` freezes at its last value while this stamp
+   * stops advancing. A paused site whose server died an hour ago therefore still
+   * reports `health_status: healthy`, and this field is the only thing that says
+   * how old that verdict is. Render it as "as of <time>" rather than implying now.
+   *
+   */
+  health_checked_at?: string;
   created_at: string;
+  /**
+   * The site row's mtime: bumped by heartbeats, agent metadata pushes and
+   * health_status changes. Deliberately NOT bumped by monitoring pause/resume
+   * writes (GH #414 Phase 1), so pausing a site does not make its inventory look
+   * freshly synced. It is the inventory freshness stamp, not the health one —
+   * use health_checked_at for health_status.
+   *
+   */
   updated_at: string;
 };
 
@@ -323,6 +377,65 @@ export type SiteTagUpdate = {
    *
    */
   merge?: boolean;
+};
+
+export type PauseMonitoringRequest = {
+  site_ids: Array<string>;
+  /**
+   * Free-text note stored on every site this request pauses.
+   */
+  reason?: string;
+  /**
+   * Optional instant a later phase's sweep will auto-resume at. Must
+   * be in the future; a past instant is rejected with
+   * `resume_at_in_past` rather than stored as a pause that instantly
+   * un-pauses.
+   *
+   */
+  resume_at?: string;
+};
+
+export type ResumeMonitoringRequest = {
+  site_ids: Array<string>;
+};
+
+export type MonitoringResult = {
+  site_id: string;
+  /**
+   * The site was accepted and is now in the requested state.
+   */
+  ok: boolean;
+  /**
+   * THIS request moved the site. False for an accepted retry
+   * (`already_paused` / `already_active`).
+   *
+   */
+  changed: boolean;
+  /**
+   * Stable machine-readable outcome, not prose.
+   *
+   */
+  detail:
+    | "paused"
+    | "already_paused"
+    | "resumed"
+    | "already_active"
+    | "forbidden"
+    | "invalid_site_id"
+    | "site_not_found"
+    | "site_archived"
+    | "site_revoked";
+  monitoring_paused_at?: string;
+  monitoring_paused_reason?: string;
+  monitoring_resume_at?: string;
+};
+
+export type MonitoringBulkResult = {
+  results: Array<MonitoringResult>;
+  /**
+   * How many sites this request actually moved.
+   */
+  changed_count: number;
 };
 
 export type BulkTagApplyRequest = {
@@ -11865,6 +11978,63 @@ export type UpdateTagResponses = {
 };
 
 export type UpdateTagResponse = UpdateTagResponses[keyof UpdateTagResponses];
+
+export type PauseSiteMonitoringData = {
+  body: PauseMonitoringRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/sites/monitoring/pause";
+};
+
+export type PauseSiteMonitoringErrors = {
+  /**
+   * Validation failed: empty `site_ids`, more than 200 entries, a
+   * `reason` over 500 characters, or a `resume_at` that is not in the
+   * future (`resume_at_in_past`).
+   *
+   */
+  422: Error;
+};
+
+export type PauseSiteMonitoringError =
+  PauseSiteMonitoringErrors[keyof PauseSiteMonitoringErrors];
+
+export type PauseSiteMonitoringResponses = {
+  /**
+   * Per-site pause results
+   */
+  200: MonitoringBulkResult;
+};
+
+export type PauseSiteMonitoringResponse =
+  PauseSiteMonitoringResponses[keyof PauseSiteMonitoringResponses];
+
+export type ResumeSiteMonitoringData = {
+  body: ResumeMonitoringRequest;
+  path?: never;
+  query?: never;
+  url: "/api/v1/sites/monitoring/resume";
+};
+
+export type ResumeSiteMonitoringErrors = {
+  /**
+   * Validation failed (empty `site_ids`, or more than 200 entries)
+   */
+  422: Error;
+};
+
+export type ResumeSiteMonitoringError =
+  ResumeSiteMonitoringErrors[keyof ResumeSiteMonitoringErrors];
+
+export type ResumeSiteMonitoringResponses = {
+  /**
+   * Per-site resume results
+   */
+  200: MonitoringBulkResult;
+};
+
+export type ResumeSiteMonitoringResponse =
+  ResumeSiteMonitoringResponses[keyof ResumeSiteMonitoringResponses];
 
 export type BulkApplyTagsData = {
   body: BulkTagApplyRequest;

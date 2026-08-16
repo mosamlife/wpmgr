@@ -2460,6 +2460,24 @@ type Invoker interface {
 	//
 	// PATCH /api/v1/sites/{siteId}/errors/config
 	PatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error)
+	// PauseSiteMonitoring invokes pauseSiteMonitoring operation.
+	//
+	// GH #414 phase 1. Records the operator's intent to pause scheduled
+	// monitoring on each site in `site_ids`. Requires the `site.write`
+	// permission.
+	// Idempotent: pausing a site that is already paused succeeds and
+	// changes nothing — in particular it does NOT overwrite the existing
+	// `reason` or paused-at instant — and comes back with `changed: false`.
+	// Per-site, not all-or-nothing: ids the caller cannot access, or that
+	// do not exist in this tenant, come back with `ok: false` rather than
+	// failing the whole call. `changed` is true only for the sites this
+	// request actually moved.
+	// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+	// beacon ingestion, retention jobs and every operator-initiated action
+	// continue to run on a paused site.
+	//
+	// POST /api/v1/sites/monitoring/pause
+	PauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (PauseSiteMonitoringRes, error)
 	// PreloadCache invokes preloadCache operation.
 	//
 	// Triggers the agent to begin warming the page cache. Returns an
@@ -2983,6 +3001,15 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/vulnerabilities/{id}/restore
 	RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (RestoreSiteVulnerabilityRes, error)
+	// ResumeSiteMonitoring invokes resumeSiteMonitoring operation.
+	//
+	// GH #414 phase 1. Clears the monitoring pause on each site in
+	// `site_ids`. Requires the `site.write` permission.
+	// Idempotent: resuming a site that is already active succeeds with
+	// `changed: false`. Same per-site result contract as the pause route.
+	//
+	// POST /api/v1/sites/monitoring/resume
+	ResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error)
 	// RetryUpdateRun invokes retryUpdateRun operation.
 	//
 	// Creates a NEW update run repeating the named tasks of an existing one.
@@ -31136,6 +31163,95 @@ func (c *Client) sendPatchSiteErrorConfig(ctx context.Context, request *SiteErro
 	return result, nil
 }
 
+// PauseSiteMonitoring invokes pauseSiteMonitoring operation.
+//
+// GH #414 phase 1. Records the operator's intent to pause scheduled
+// monitoring on each site in `site_ids`. Requires the `site.write`
+// permission.
+// Idempotent: pausing a site that is already paused succeeds and
+// changes nothing — in particular it does NOT overwrite the existing
+// `reason` or paused-at instant — and comes back with `changed: false`.
+// Per-site, not all-or-nothing: ids the caller cannot access, or that
+// do not exist in this tenant, come back with `ok: false` rather than
+// failing the whole call. `changed` is true only for the sites this
+// request actually moved.
+// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+// beacon ingestion, retention jobs and every operator-initiated action
+// continue to run on a paused site.
+//
+// POST /api/v1/sites/monitoring/pause
+func (c *Client) PauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (PauseSiteMonitoringRes, error) {
+	res, err := c.sendPauseSiteMonitoring(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendPauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (res PauseSiteMonitoringRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("pauseSiteMonitoring"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/monitoring/pause"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PauseSiteMonitoringOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/sites/monitoring/pause"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePauseSiteMonitoringRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodePauseSiteMonitoringResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // PreloadCache invokes preloadCache operation.
 //
 // Triggers the agent to begin warming the page cache. Returns an
@@ -36118,6 +36234,86 @@ func (c *Client) sendRestoreSiteVulnerability(ctx context.Context, params Restor
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteVulnerabilityResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ResumeSiteMonitoring invokes resumeSiteMonitoring operation.
+//
+// GH #414 phase 1. Clears the monitoring pause on each site in
+// `site_ids`. Requires the `site.write` permission.
+// Idempotent: resuming a site that is already active succeeds with
+// `changed: false`. Same per-site result contract as the pause route.
+//
+// POST /api/v1/sites/monitoring/resume
+func (c *Client) ResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error) {
+	res, err := c.sendResumeSiteMonitoring(ctx, request)
+	return res, err
+}
+
+func (c *Client) sendResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (res ResumeSiteMonitoringRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("resumeSiteMonitoring"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/monitoring/resume"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ResumeSiteMonitoringOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/sites/monitoring/resume"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeResumeSiteMonitoringRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeResumeSiteMonitoringResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

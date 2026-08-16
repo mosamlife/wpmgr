@@ -24,6 +24,19 @@ type fakeCronRepo struct {
 func (r *fakeCronRepo) ListEnrolledForProbe(_ context.Context) ([]EnrolledSite, error) {
 	return r.sites, r.err
 }
+
+// ListEnrolledForMonitoringProbe panics on purpose (GH #414 phase 2). The
+// cron kick boots the site's own WP-Cron, which is what drains its heartbeat
+// and BACKUP queue; it must enumerate every enrolled site, paused included.
+// If the kicker is ever switched to the monitoring-filtered enumeration,
+// pausing monitoring would silently stop backups on page-cached sites - so
+// that switch fails here loudly instead of shipping.
+func (r *fakeCronRepo) ListEnrolledForMonitoringProbe(_ context.Context) ([]EnrolledSite, error) {
+	panic("CronKicker must use the UNFILTERED ListEnrolledForProbe: a paused site still needs its WP-Cron kicked or its backups stop")
+}
+func (r *fakeCronRepo) IsMonitoringPaused(_ context.Context, _ uuid.UUID) (bool, error) {
+	panic("CronKicker must not call IsMonitoringPaused")
+}
 func (r *fakeCronRepo) SetSiteHealth(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 	panic("CronKicker must not call SetSiteHealth")
 }

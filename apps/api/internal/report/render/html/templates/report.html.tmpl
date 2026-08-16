@@ -34,6 +34,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Ar
 .rating-good { color: #16a34a; }
 .rating-needs { color: #ca8a04; }
 .rating-poor  { color: #dc2626; }
+/* GH #414 — the monitoring-paused notice. Muted, never red: a pause is an
+   operator decision, not an incident, and colouring it like a fault would be
+   the same lie as showing the empty sparkline it replaces. */
+.paused-note { margin-top: 12px; padding: 10px 12px; border-radius: 6px; background: #f3f4f6; border-left: 3px solid #9ca3af; font-size: 13px; color: #4b5563; }
+.paused-note .paused-title { font-weight: 600; color: #374151; }
+.paused-note .paused-reason { display: block; margin-top: 4px; font-style: italic; }
 /* Uptime sparkline */
 .sparkline { display: flex; align-items: flex-end; gap: 2px; height: 32px; margin-top: 10px; }
 .spark-bar { flex: 1; border-radius: 2px; min-height: 4px; }
@@ -65,7 +71,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Ar
 <div class="section-header">Overview</div>
 <div class="totals-grid">
   <div class="total-card"><div class="value">{{.Totals.SiteCount}}</div><div class="label">Sites</div></div>
-  <div class="total-card"><div class="value">{{printf "%.1f" .Totals.AvgUptimePct}}%</div><div class="label">Avg Uptime</div></div>
+  <div class="total-card"><div class="value">{{if .Totals.UptimeSiteCount}}{{printf "%.1f" .Totals.AvgUptimePct}}%{{else}}—{{end}}</div><div class="label">Avg Uptime{{if .Totals.PausedSiteCount}} ({{.Totals.UptimeSiteCount}} of {{.Totals.SiteCount}} monitored){{end}}</div></div>
   <div class="total-card"><div class="value">{{.Totals.Incidents}}</div><div class="label">Incidents</div></div>
   <div class="total-card"><div class="value">{{.Totals.BackupsCount}}</div><div class="label">Backups</div></div>
   <div class="total-card"><div class="value">{{.Totals.UpdatesApplied}}</div><div class="label">Updates</div></div>
@@ -80,6 +86,26 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Ar
   <h3>{{.Name}}</h3>
   <div class="url">{{.URL}}</div>
 
+  {{if .MonitoringPaused}}
+  {{/* GH #414 phase 5 follow-up. .MonitoringPaused is the site's CURRENT pause
+       state and gates this whole note; .Uptime is whether the uptime section
+       below is genuinely absent from THIS document (suppressed because a
+       pause interval overlapped the reporting window, see aggregator.go's
+       overlapForIntervals). A site paused after the window closed is
+       currently paused but still carries a full .Uptime section — the "no
+       uptime figures are shown" sentence must therefore be gated on
+       `not .Uptime`, never folded into the unconditional part of this note,
+       or the document denies and then shows the same numbers. The pause
+       title and the backups sentence stay unconditional: backups keep
+       running for a paused site and that reassurance must not depend on
+       whether uptime data happens to exist for the window. */}}
+  <div class="paused-note">
+    <span class="paused-title">Monitoring paused{{if .MonitoringPausedAt}} since {{.MonitoringPausedAt.Format "2 Jan 2006"}}{{end}}.</span>
+    {{if not .Uptime}}Uptime checks are not running for this site, so no uptime figures are shown for this period. {{end}}Backups continue as normal.
+    {{if .MonitoringPausedReason}}<span class="paused-reason">Reason: {{.MonitoringPausedReason}}</span>{{end}}
+  </div>
+  {{end}}
+
   {{if .Uptime}}
   <div class="metrics-row" style="margin-top:12px;">
     <div class="metric-item"><div class="m-val">{{printf "%.2f" .Uptime.UptimePct}}%</div><div class="m-lbl">Uptime</div></div>
@@ -90,6 +116,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Ar
   {{if .Uptime.Daily}}
   <div class="sparkline" title="Daily uptime">
     {{range .Uptime.Daily}}<div class="spark-bar" style="background:{{uptimeColor .UptimePct}};height:{{sparkHeight .UptimePct}}px;" title="{{printf "%.1f" .UptimePct}}%"></div>{{end}}
+  </div>
+  {{end -}}
+  {{if .Uptime.PartialCoverage}}
+  <div class="paused-note">
+    <span class="paused-title">Partial coverage.</span>
+    Monitoring was paused for part of this period — about {{humanizeHours .Uptime.UnmonitoredHours}} went unmeasured, so the figures above are partial, not a full month.
+  </div>
+  {{end -}}
+  {{if .Uptime.CoverageUnknown}}
+  <div class="paused-note">
+    <span class="paused-title">Coverage unconfirmed.</span>
+    The monitoring pause history for this site could not be read, so we cannot confirm the prober ran for the whole period. The figures above cover every check that was recorded.
   </div>
   {{end}}
   {{end}}

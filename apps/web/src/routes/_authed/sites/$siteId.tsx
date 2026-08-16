@@ -5,6 +5,8 @@ import {
   Check,
   Copy,
   MoreHorizontal,
+  PauseCircle,
+  PlayCircle,
   RefreshCw,
   RotateCw,
   Share2,
@@ -50,6 +52,20 @@ import { useMe, canManage } from "@/features/auth/use-auth";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import type { Site } from "@wpmgr/api";
+// GH #414 — pause is reachable from the detail page too, not only the bulk
+// menu on /sites: the same dialog, the same mutations, one site.
+import { PausedBadge } from "@/features/sites/site-badges";
+import {
+  isMonitoringPaused,
+  summarizeMonitoringResult,
+  MONITORING_PAUSE_SCOPE_SENTENCE,
+} from "@/features/sites/monitoring-pause";
+import {
+  usePauseMonitoring,
+  useResumeMonitoring,
+  MonitoringRequestError,
+} from "@/features/sites/use-site-monitoring";
+import { PauseMonitoringDialog } from "@/features/sites/pause-monitoring-dialog";
 
 // Site detail page (Sprint 3 → Sprint 5 → restored).
 //
@@ -171,11 +187,13 @@ function SiteShellSkeleton() {
 
 // ── Header + tab bar shell ──────────────────────────────────────────────────
 
-function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
+export function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [pauseDialogOpen, setPauseDialogOpen] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
   const [reconnect, setReconnect] = useState<{
     siteId: string;
     url: string;
@@ -197,6 +215,9 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
   const restore = useRestoreSite();
   const enrollmentCode = useCreateEnrollmentCode();
   const recheck = useRecheckConnection();
+  const pauseMonitoring = usePauseMonitoring();
+  const resumeMonitoring = useResumeMonitoring();
+  const paused = isMonitoringPaused(site);
 
   const hostname = hostnameOf(site.url);
   const adminUrl = `${stripTrailingSlash(site.url)}/wp-admin/`;
@@ -215,6 +236,12 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
     connectionState === "connected" || connectionState === "degraded";
   const canArchive =
     connectionState === "disconnected" || connectionState === "revoked";
+  // GH #414 — same enrolled states as re-check/reconnect; a pending/revoked/
+  // archived site has nothing to pause.
+  const canToggleMonitoring =
+    connectionState === "connected" ||
+    connectionState === "degraded" ||
+    connectionState === "disconnected";
 
   const copySiteId = () => {
     void navigator.clipboard.writeText(site.id).then(() => {
@@ -292,6 +319,60 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
     );
   }, [enrollmentCode, site.id, site.url, hostname]);
 
+  // GH #414 — pause/resume for this one site. Same mutations, same dialog and
+  // scope copy as the bulk menu on /sites; no second mutationFn here.
+  const monitoringErrorMessage = useCallback((error: unknown): string => {
+    if (error instanceof MonitoringRequestError) return error.message;
+    if (error instanceof Error) return error.message;
+    return "Monitoring could not be changed.";
+  }, []);
+
+  const confirmPauseThisSite = useCallback(
+    async (reason: string) => {
+      setPauseError(null);
+      try {
+        const result = await pauseMonitoring.mutateAsync({
+          siteIds: [site.id],
+          ...(reason ? { reason } : {}),
+        });
+        setPauseDialogOpen(false);
+        const summary = summarizeMonitoringResult(result.results);
+        if (summary.refused.length > 0) {
+          toast.warning(`Could not pause ${hostname}`, {
+            description: summary.refused[0]?.message,
+          });
+        } else {
+          toast.success(`Monitoring paused on ${hostname}`, {
+            description: MONITORING_PAUSE_SCOPE_SENTENCE,
+          });
+        }
+      } catch (error) {
+        setPauseError(monitoringErrorMessage(error));
+      }
+    },
+    [pauseMonitoring, site.id, hostname, monitoringErrorMessage],
+  );
+
+  const handleResumeThisSite = useCallback(async () => {
+    try {
+      const result = await resumeMonitoring.mutateAsync({
+        siteIds: [site.id],
+      });
+      const summary = summarizeMonitoringResult(result.results);
+      if (summary.refused.length > 0) {
+        toast.warning(`Could not resume ${hostname}`, {
+          description: summary.refused[0]?.message,
+        });
+      } else {
+        toast.success(`Monitoring resumed on ${hostname}`);
+      }
+    } catch (error) {
+      toast.error(`Could not resume ${hostname}`, {
+        description: monitoringErrorMessage(error),
+      });
+    }
+  }, [resumeMonitoring, site.id, hostname, monitoringErrorMessage]);
+
   return (
     <>
       {/* Site header strip. Scrolls with the page — only the AppShell topbar
@@ -326,6 +407,9 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
             lastSeenAt={site.last_seen_at ?? null}
             disconnectedReason={disconnectedReason}
           />
+          {/* GH #414 — a pause you cannot see on the site's own page is a
+              pause you forget. Renders nothing when unpaused. */}
+          <PausedBadge site={site} />
           {/* UptimePill renders nothing when no monitor is configured for this
               site, so no conditional guard needed here. */}
           <UptimePill siteId={site.id} />
@@ -445,6 +529,32 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
                   </DropdownMenuItem>
                 </>
               ) : null}
+              {manage && canToggleMonitoring ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      if (paused) void handleResumeThisSite();
+                      else {
+                        setPauseError(null);
+                        setPauseDialogOpen(true);
+                      }
+                    }}
+                  >
+                    {paused ? (
+                      <>
+                        <PlayCircle aria-hidden="true" className="size-4" />
+                        Resume monitoring
+                      </>
+                    ) : (
+                      <>
+                        <PauseCircle aria-hidden="true" className="size-4" />
+                        Pause monitoring
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               {manage && canArchive ? (
                 <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
                   <Archive aria-hidden="true" className="size-4" />
@@ -525,6 +635,17 @@ function SiteShell({ site, siteId }: { site: Site; siteId: string }) {
           open={reconnect !== null}
           onClose={() => setReconnect(null)}
           initialSite={reconnect ?? undefined}
+        />
+
+        {/* GH #414 — pause confirmation for this one site. Same dialog and
+            scope copy as the bulk menu on /sites. */}
+        <PauseMonitoringDialog
+          open={pauseDialogOpen}
+          onClose={() => setPauseDialogOpen(false)}
+          onConfirm={confirmPauseThisSite}
+          count={1}
+          isPending={pauseMonitoring.isPending}
+          errorMessage={pauseError}
         />
       </header>
 

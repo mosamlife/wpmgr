@@ -207,6 +207,10 @@ func run() error {
 	// The fanout enqueuer is wired after River starts (post-client start) via
 	// screenshotFanoutWorker.SetEnqueuer; a nil enqueuer logs and skips enqueue.
 	screenshotSiteLister := capture.NewDBSiteIDLister(pool)
+	// m117 (GH #414): the fanout filters paused sites out of its enumeration and
+	// the capture worker re-checks at the moment it runs, because nothing drains
+	// jobs queued before the pause. Same lister for both.
+	screenshotCaptureWorker.SetMonitoringPauseChecker(screenshotSiteLister)
 	screenshotFanoutWorker := capture.NewWeeklyFanoutWorker(
 		screenshotSiteLister,
 		nil, // wired below after River starts

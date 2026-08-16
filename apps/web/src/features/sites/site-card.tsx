@@ -13,7 +13,8 @@
  *                           HTTPS / Multisite — always visible
  *   5. Chip flow          — UpdateChip / calm "Up to date" | BackupChip / calm
  *                           "No backups yet" | SslChip (when tls_expires_at)
- *   6. Uptime row         — pct + latency + StatusDot, reserved slot
+ *   6. Uptime row         — UptimeBadge (dot + label, GH #414 pause-aware) +
+ *                           pct + latency, reserved slot
  *   7. Meta footer        — labeled DefinitionList: Versions / Host / Client /
  *                           Tags / Screenshot; comfortable=always, compact=hover
  *
@@ -46,7 +47,6 @@ import {
   BackupChip,
   ConnectionStateBadge,
   SslChip,
-  StatusDot,
   UpdateChip,
   type BackupChipStatus,
 } from "@/components/status";
@@ -56,8 +56,9 @@ import {
   asConnectedSite,
 } from "@/features/sites/connection-state";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
+import { PausedBadge, UptimeBadge } from "@/features/sites/site-badges";
 import { SiteCardThumbnail } from "@/features/sites/site-card-thumbnail";
-import { siteUptimeBadge } from "@/features/sites/uptime-badge";
+import { isMonitoringPaused } from "@/features/sites/monitoring-pause";
 import {
   CapabilityGroup,
   type CapabilityItem,
@@ -128,6 +129,10 @@ export interface SiteCardProps {
   onOpenDetail?: (site: Site) => void;
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation. */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -140,6 +145,8 @@ export function SiteCard({
   onOpenDetail,
   onDisconnect,
   onReconnect,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SiteCardProps) {
   const selection = useSitesSelection();
   const navigate = useNavigate();
@@ -161,8 +168,9 @@ export function SiteCard({
   const backupTimeTitle = backupTime
     ? new Date(backupTime).toLocaleString()
     : undefined;
-  // GH #272 — tri-state (never green unless up === true); see uptime-badge.ts.
-  const uptimeBadge = siteUptimeBadge(site.up);
+  // GH #414 — a paused site's uptime result is frozen; the row below shows
+  // the stale/"as of" treatment for a paused site even with no prior probe.
+  const showUptimeRow = site.uptime_pct != null || isMonitoringPaused(site);
 
   const capabilityItems = buildCapabilityItems(site);
   const isCompact = cardSize === "compact";
@@ -331,6 +339,8 @@ export function SiteCard({
               onOpenDetail={onOpenDetail}
               onDisconnect={onDisconnect}
               onReconnect={onReconnect}
+              onPauseMonitoring={onPauseMonitoring}
+              onResumeMonitoring={onResumeMonitoring}
             />
           </div>
         </div>
@@ -339,11 +349,15 @@ export function SiteCard({
         {/* Reserved height: hostname slot is always rendered (min-h-5) so
             cards with/without a distinct hostname stay aligned. */}
         <div className="flex min-w-0 flex-col gap-1">
-          <ConnectionStateBadge
-            state={connectionState}
-            lastSeenAt={site.last_seen_at ?? null}
-            disconnectedReason={disconnectedReason}
-          />
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <ConnectionStateBadge
+              state={connectionState}
+              lastSeenAt={site.last_seen_at ?? null}
+              disconnectedReason={disconnectedReason}
+            />
+            {/* GH #414 — a pause you cannot see is a pause you forget. */}
+            <PausedBadge site={site} />
+          </div>
           {/* Hostname (mono) — always reserve the slot height */}
           <div className="min-h-4">
             {site.name && site.name !== hostname ? (
@@ -394,22 +408,23 @@ export function SiteCard({
         {/* Reserved-height slot (min-h-5) prevents layout shift when
             monitoring data arrives later. Text-only (no sparkline; deferred). */}
         <div className="flex min-h-5 items-center">
-          {site.uptime_pct != null ? (
+          {showUptimeRow ? (
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <StatusDot tone={uptimeBadge.tone} label={uptimeBadge.label} />
-              <span className="tabular-nums">
-                {uptimeBadge.label}
-                {" · Uptime "}
-                <span className="font-medium text-foreground tabular-nums">
-                  {site.uptime_pct.toFixed(2)}%
+              <UptimeBadge site={site} />
+              {site.uptime_pct != null ? (
+                <span className="tabular-nums">
+                  {" · Uptime "}
+                  <span className="font-medium text-foreground tabular-nums">
+                    {site.uptime_pct.toFixed(2)}%
+                  </span>
+                  {site.avg_latency_ms != null ? (
+                    <>
+                      {" · "}
+                      <span className="tabular-nums">{site.avg_latency_ms}ms</span>
+                    </>
+                  ) : null}
                 </span>
-                {site.avg_latency_ms != null ? (
-                  <>
-                    {" · "}
-                    <span className="tabular-nums">{site.avg_latency_ms}ms</span>
-                  </>
-                ) : null}
-              </span>
+              ) : null}
             </div>
           ) : (
             <span className="text-xs text-muted-foreground/60">

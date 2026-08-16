@@ -33,6 +33,10 @@ export interface SitesGridProps {
   onOpenDetail?: (site: Site) => void;
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation. */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -44,6 +48,8 @@ export function SitesGrid({
   onOpenDetail,
   onDisconnect,
   onReconnect,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SitesGridProps) {
   const selection = useSitesSelection();
 
@@ -76,6 +82,8 @@ export function SitesGrid({
             onOpenDetail={onOpenDetail}
             onDisconnect={onDisconnect}
             onReconnect={onReconnect}
+            onPauseMonitoring={onPauseMonitoring}
+            onResumeMonitoring={onResumeMonitoring}
           />
         ))}
       </div>

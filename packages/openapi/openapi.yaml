@@ -4043,6 +4043,80 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/sites/monitoring/pause:
+    post:
+      operationId: pauseSiteMonitoring
+      summary: Pause scheduled monitoring on many sites
+      description: |
+        GH #414 phase 1. Records the operator's intent to pause scheduled
+        monitoring on each site in `site_ids`. Requires the `site.write`
+        permission.
+
+        Idempotent: pausing a site that is already paused succeeds and
+        changes nothing — in particular it does NOT overwrite the existing
+        `reason` or paused-at instant — and comes back with `changed: false`.
+
+        Per-site, not all-or-nothing: ids the caller cannot access, or that
+        do not exist in this tenant, come back with `ok: false` rather than
+        failing the whole call. `changed` is true only for the sites this
+        request actually moved.
+
+        Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
+        beacon ingestion, retention jobs and every operator-initiated action
+        continue to run on a paused site.
+      tags: [sites]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PauseMonitoringRequest"
+      responses:
+        "200":
+          description: Per-site pause results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringBulkResult"
+        "422":
+          description: |
+            Validation failed: empty `site_ids`, more than 200 entries, a
+            `reason` over 500 characters, or a `resume_at` that is not in the
+            future (`resume_at_in_past`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/monitoring/resume:
+    post:
+      operationId: resumeSiteMonitoring
+      summary: Resume scheduled monitoring on many sites
+      description: |
+        GH #414 phase 1. Clears the monitoring pause on each site in
+        `site_ids`. Requires the `site.write` permission.
+
+        Idempotent: resuming a site that is already active succeeds with
+        `changed: false`. Same per-site result contract as the pause route.
+      tags: [sites]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeMonitoringRequest"
+      responses:
+        "200":
+          description: Per-site resume results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringBulkResult"
+        "422":
+          description: Validation failed (empty `site_ids`, or more than 200 entries)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/tags/bulk-apply:
     post:
       operationId: bulkApplyTags
@@ -13192,12 +13266,63 @@ components:
             not an inference from an installed-plugin slug (the feature ships as a
             drop-in, not a plugin, so no such slug can ever exist). false both when
             object caching is off AND when the site has no object cache config yet.
+        monitoring_paused_at:
+          type: string
+          format: date-time
+          description: |
+            GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.
+            Absent/null means monitoring is ACTIVE; the flag and the since-when are one
+            column (sites.monitoring_paused_at) so they cannot disagree.
+
+            Pause means "do not tell me", never "lie to me". It suppresses scheduled
+            monitoring (uptime probes and their alerts) and nothing else: backups, the
+            cron kick, the connection sweep, RUM ingestion, retention and everything a
+            person clicks all keep running for a paused site.
+        monitoring_paused_by:
+          type: string
+          format: uuid
+          description: |
+            GH #414 — the user who paused monitoring. Absent when monitoring is active,
+            and also absent for a paused site whose pausing user has since been deleted
+            (the FK is ON DELETE SET NULL, so a pause outlives its author).
+        monitoring_paused_reason:
+          type: string
+          description: |
+            GH #414 — the operator's free-text note for why monitoring is paused.
+            Empty/absent when monitoring is active or when no reason was given.
+        monitoring_resume_at:
+          type: string
+          format: date-time
+          description: |
+            GH #414 — the scheduled auto-resume instant. Absent means "paused until
+            someone resumes it". Never present without monitoring_paused_at (enforced
+            by sites_monitoring_resume_requires_pause_check).
+        health_checked_at:
+          type: string
+          format: date-time
+          description: |
+            GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran
+            against this site (site_uptime_status.last_probed_at), i.e. the "as of" for
+            `health_status`. Absent when the site has never been probed.
+
+            Read this WITH `health_status`, never instead of it. The uptime prober is
+            what refreshes `health_status`, and pausing monitoring stops the prober — so
+            a paused site's `health_status` freezes at its last value while this stamp
+            stops advancing. A paused site whose server died an hour ago therefore still
+            reports `health_status: healthy`, and this field is the only thing that says
+            how old that verdict is. Render it as "as of <time>" rather than implying now.
         created_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+          description: |
+            The site row's mtime: bumped by heartbeats, agent metadata pushes and
+            health_status changes. Deliberately NOT bumped by monitoring pause/resume
+            writes (GH #414 Phase 1), so pausing a site does not make its inventory look
+            freshly synced. It is the inventory freshness stamp, not the health one —
+            use health_checked_at for health_status.
     SiteComponents:
       type: object
       description: Installed plugin/theme inventory pushed by the agent.
@@ -13381,6 +13506,85 @@ components:
             When the new `name` collides with an existing tag, merge the
             source tag INTO that existing survivor instead of returning 409
             tag_name_exists.
+    PauseMonitoringRequest:
+      type: object
+      required: [site_ids]
+      properties:
+        site_ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: string, format: uuid }
+        reason:
+          type: string
+          maxLength: 500
+          description: Free-text note stored on every site this request pauses.
+        resume_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Optional instant a later phase's sweep will auto-resume at. Must
+            be in the future; a past instant is rejected with
+            `resume_at_in_past` rather than stored as a pause that instantly
+            un-pauses.
+    ResumeMonitoringRequest:
+      type: object
+      required: [site_ids]
+      properties:
+        site_ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: string, format: uuid }
+    MonitoringResult:
+      type: object
+      required: [site_id, ok, changed, detail]
+      properties:
+        site_id: { type: string }
+        ok:
+          type: boolean
+          description: The site was accepted and is now in the requested state.
+        changed:
+          type: boolean
+          description: |
+            THIS request moved the site. False for an accepted retry
+            (`already_paused` / `already_active`).
+        detail:
+          type: string
+          description: |
+            Stable machine-readable outcome, not prose.
+          enum:
+            [
+              paused,
+              already_paused,
+              resumed,
+              already_active,
+              forbidden,
+              invalid_site_id,
+              site_not_found,
+              site_archived,
+              site_revoked,
+            ]
+        monitoring_paused_at:
+          type: string
+          format: date-time
+          nullable: true
+        monitoring_paused_reason: { type: string }
+        monitoring_resume_at:
+          type: string
+          format: date-time
+          nullable: true
+    MonitoringBulkResult:
+      type: object
+      required: [results, changed_count]
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MonitoringResult" }
+        changed_count:
+          type: integer
+          description: How many sites this request actually moved.
     BulkTagApplyRequest:
       type: object
       required: [site_ids]

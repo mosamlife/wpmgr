@@ -317,6 +317,35 @@ export const SiteSchema = {
       description:
         "GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),\nnot an inference from an installed-plugin slug (the feature ships as a\ndrop-in, not a plugin, so no such slug can ever exist). false both when\nobject caching is off AND when the site has no object cache config yet.\n",
     },
+    monitoring_paused_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        'GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.\nAbsent/null means monitoring is ACTIVE; the flag and the since-when are one\ncolumn (sites.monitoring_paused_at) so they cannot disagree.\n\nPause means "do not tell me", never "lie to me". It suppresses scheduled\nmonitoring (uptime probes and their alerts) and nothing else: backups, the\ncron kick, the connection sweep, RUM ingestion, retention and everything a\nperson clicks all keep running for a paused site.\n',
+    },
+    monitoring_paused_by: {
+      type: "string",
+      format: "uuid",
+      description:
+        "GH #414 — the user who paused monitoring. Absent when monitoring is active,\nand also absent for a paused site whose pausing user has since been deleted\n(the FK is ON DELETE SET NULL, so a pause outlives its author).\n",
+    },
+    monitoring_paused_reason: {
+      type: "string",
+      description:
+        "GH #414 — the operator's free-text note for why monitoring is paused.\nEmpty/absent when monitoring is active or when no reason was given.\n",
+    },
+    monitoring_resume_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        'GH #414 — the scheduled auto-resume instant. Absent means "paused until\nsomeone resumes it". Never present without monitoring_paused_at (enforced\nby sites_monitoring_resume_requires_pause_check).\n',
+    },
+    health_checked_at: {
+      type: "string",
+      format: "date-time",
+      description:
+        'GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran\nagainst this site (site_uptime_status.last_probed_at), i.e. the "as of" for\n`health_status`. Absent when the site has never been probed.\n\nRead this WITH `health_status`, never instead of it. The uptime prober is\nwhat refreshes `health_status`, and pausing monitoring stops the prober — so\na paused site\'s `health_status` freezes at its last value while this stamp\nstops advancing. A paused site whose server died an hour ago therefore still\nreports `health_status: healthy`, and this field is the only thing that says\nhow old that verdict is. Render it as "as of <time>" rather than implying now.\n',
+    },
     created_at: {
       type: "string",
       format: "date-time",
@@ -324,6 +353,8 @@ export const SiteSchema = {
     updated_at: {
       type: "string",
       format: "date-time",
+      description:
+        "The site row's mtime: bumped by heartbeats, agent metadata pushes and\nhealth_status changes. Deliberately NOT bumped by monitoring pause/resume\nwrites (GH #414 Phase 1), so pausing a site does not make its inventory look\nfreshly synced. It is the inventory freshness stamp, not the health one —\nuse health_checked_at for health_status.\n",
     },
   },
 } as const;
@@ -589,6 +620,114 @@ export const SiteTagUpdateSchema = {
       default: false,
       description:
         "When the new `name` collides with an existing tag, merge the\nsource tag INTO that existing survivor instead of returning 409\ntag_name_exists.\n",
+    },
+  },
+} as const;
+
+export const PauseMonitoringRequestSchema = {
+  type: "object",
+  required: ["site_ids"],
+  properties: {
+    site_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+    reason: {
+      type: "string",
+      maxLength: 500,
+      description: "Free-text note stored on every site this request pauses.",
+    },
+    resume_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+      description:
+        "Optional instant a later phase's sweep will auto-resume at. Must\nbe in the future; a past instant is rejected with\n`resume_at_in_past` rather than stored as a pause that instantly\nun-pauses.\n",
+    },
+  },
+} as const;
+
+export const ResumeMonitoringRequestSchema = {
+  type: "object",
+  required: ["site_ids"],
+  properties: {
+    site_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "string",
+        format: "uuid",
+      },
+    },
+  },
+} as const;
+
+export const MonitoringResultSchema = {
+  type: "object",
+  required: ["site_id", "ok", "changed", "detail"],
+  properties: {
+    site_id: {
+      type: "string",
+    },
+    ok: {
+      type: "boolean",
+      description: "The site was accepted and is now in the requested state.",
+    },
+    changed: {
+      type: "boolean",
+      description:
+        "THIS request moved the site. False for an accepted retry\n(`already_paused` / `already_active`).\n",
+    },
+    detail: {
+      type: "string",
+      description: "Stable machine-readable outcome, not prose.\n",
+      enum: [
+        "paused",
+        "already_paused",
+        "resumed",
+        "already_active",
+        "forbidden",
+        "invalid_site_id",
+        "site_not_found",
+        "site_archived",
+        "site_revoked",
+      ],
+    },
+    monitoring_paused_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+    monitoring_paused_reason: {
+      type: "string",
+    },
+    monitoring_resume_at: {
+      type: "string",
+      format: "date-time",
+      nullable: true,
+    },
+  },
+} as const;
+
+export const MonitoringBulkResultSchema = {
+  type: "object",
+  required: ["results", "changed_count"],
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/MonitoringResult",
+      },
+    },
+    changed_count: {
+      type: "integer",
+      description: "How many sites this request actually moved.",
     },
   },
 } as const;

@@ -1366,6 +1366,20 @@ func encodePatchSiteErrorConfigRequest(
 	return nil
 }
 
+func encodePauseSiteMonitoringRequest(
+	req *PauseMonitoringRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodePrepareSiteFileDownloadRequest(
 	req *FileDownloadRequest,
 	r *http.Request,
@@ -1848,6 +1862,20 @@ func encodeRestoreMediaRequest(
 
 func encodeRestoreSiteFileVersionRequest(
 	req *FileVersionRestoreRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeResumeSiteMonitoringRequest(
+	req *ResumeMonitoringRequest,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

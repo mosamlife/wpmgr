@@ -1411,6 +1411,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	siteSweeper.SetLogger(logger)
 	siteSweepWorker := site.NewSweepWorker(siteSweeper)
 	siteEventPruneWorker := site.NewEventPruneWorker(siteSweeper)
+	// GH #414 phase 5 — the monitoring auto-resume sweep. Always wired: it is
+	// cross-tenant (InAgentTx), needs no agent signing key, and its predicate is
+	// backed by m117's partial index, so a deployment with nothing scheduled
+	// pays one near-empty index read a minute.
+	siteAutoResumeWorker := site.NewAutoResumeWorker(
+		site.NewAutoResumer(siteRepo, auditRec, logger), logger)
 	// SSE endpoint + the dedicated LISTEN listener.
 	siteEventsH := siteevents.NewHandler(pool, siteEventsHub)
 	siteEventsListener := siteevents.NewListener(pool, siteEventsHub, logger)
@@ -1711,6 +1717,19 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			GetFleetStatsBySite: func(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]email.SiteStatsRow, error) {
 				return emailRepo.GetFleetStatsBySite(ctx, tenantID, from, to, limit)
 			},
+			// Pause history, reconstructed from the audit trail (GH #414 follow-up
+			// fix — see pauseIntervalsFor's doc in aggregator.go for why the
+			// site's CURRENT monitoring_paused_at can't answer "was this site
+			// paused DURING [from, to)"). Reuses auditRec, the one shared Recorder.
+			//
+			// Bounded by the reporting window via two ListFiltered reads —
+			// the window itself, and a single carried-in row for the state it
+			// opened in — instead of paging backward through the tenant's whole
+			// audit history. See QueryMonitoringPauseIntervalsFromAudit's doc for
+			// why the second read is required for correctness, not an
+			// optimization: a pause opened before the window and never resumed
+			// writes no row inside it at all.
+			QueryMonitoringPauseIntervals: reportpkg.QueryMonitoringPauseIntervalsFromAudit(auditRec),
 		}
 		// FIX-1: build a dedicated SSRF-hardened client for logo fetching.
 		// A 5s timeout is enough for an image fetch; retries are off because the
@@ -1846,6 +1865,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		healthInterval:           cfg.Agent.HealthInterval,
 		siteSweepWorker:          siteSweepWorker,
 		siteEventPruneWorker:     siteEventPruneWorker,
+		siteAutoResumeWorker:     siteAutoResumeWorker,
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
 		updateAgentConfirmWorker: updateAgentConfirmWorker,
@@ -3158,6 +3178,7 @@ type riverDeps struct {
 	// M21 connection lifecycle: the timeout sweeper (15s) + site_events prune (1m).
 	siteSweepWorker      *site.SweepWorker
 	siteEventPruneWorker *site.EventPruneWorker
+	siteAutoResumeWorker *site.AutoResumeWorker
 	updateWorker         *update.Worker
 	// #131 follow-up — periodic reaper for update_tasks stuck in
 	// pending/running past the stale-task threshold (always wired).
@@ -3343,6 +3364,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			river.PeriodicInterval(time.Minute),
 			func() (river.JobArgs, *river.InsertOpts) { return site.EventPruneArgs{}, nil },
 			nil,
+		))
+	}
+	// GH #414 phase 5 — monitoring auto-resume. Every minute: sites.monitoring_
+	// resume_at is an operator-chosen wall-clock instant, and a minute is the
+	// finest granularity anyone can meaningfully act on, so a longer interval
+	// would make "resume at 09:00" mean "some time after 09:00". RunOnStart is
+	// TRUE, unlike the GC sweeps: a control plane that was down over a scheduled
+	// resume instant must un-pause those sites on the way back up rather than
+	// leaving them dark for up to another interval, and the sweep is idempotent
+	// so an extra run at boot costs one index read.
+	if d.siteAutoResumeWorker != nil {
+		river.AddWorker(workers, d.siteAutoResumeWorker)
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return site.AutoResumeArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 

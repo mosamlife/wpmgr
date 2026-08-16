@@ -149,6 +149,12 @@ type EventPublisher interface {
 	Publish(ctx context.Context, ev site.ConnectionEvent) error
 }
 
+// MonitoringPauseChecker reports whether a site's monitoring is paused
+// (m117, GH #414). Nil on the Worker disables the re-check.
+type MonitoringPauseChecker interface {
+	IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error)
+}
+
 // Worker is the site_screenshot_capture River worker.
 type Worker struct {
 	river.WorkerDefaults[screenshot.CaptureArgs]
@@ -156,6 +162,10 @@ type Worker struct {
 	store  StoreWriter
 	events EventPublisher
 	logger *slog.Logger
+	// pause is the m117 point-of-action pause re-check. Only consulted for
+	// screenshot.ReasonScheduled captures — a manual or enroll capture is
+	// something a person asked for and always runs. Nil disables the check.
+	pause MonitoringPauseChecker
 	// sem caps concurrent Chromium captures. Sized at construction.
 	sem chan struct{}
 	// captureFn is the browser-capture step, extracted as a field (defaulting
@@ -190,6 +200,10 @@ func NewWorker(
 	return w
 }
 
+// SetMonitoringPauseChecker wires the m117 pause re-check. Called once at boot
+// (media-encoder main) with the same DB lister the fanout uses.
+func (w *Worker) SetMonitoringPauseChecker(p MonitoringPauseChecker) { w.pause = p }
+
 // SetCaptureFuncForTest overrides the browser-capture step. Exported so tests
 // in other packages (capture_test) can simulate infra vs. site-level capture
 // failures deterministically, without a real Chromium binary. Production code
@@ -208,6 +222,27 @@ func (w *Worker) Timeout(*river.Job[screenshot.CaptureArgs]) time.Duration {
 // best-effort deletes the prior GCS object.
 func (w *Worker) Work(ctx context.Context, job *river.Job[screenshot.CaptureArgs]) error {
 	a := job.Args
+
+	// m117 (GH #414) point-of-action pause re-check. The weekly fanout already
+	// filters paused sites out of its enumeration, but nothing drains jobs that
+	// were queued before the pause, so a scheduled capture asks again here.
+	//
+	// ONLY ReasonScheduled is gated. ReasonManual is a person clicking, and
+	// ReasonEnroll is a person adding a site; both must work on a paused site.
+	// A checker error is NOT a skip: failing open captures a screenshot the
+	// operator may not have wanted, failing closed silently drops one they did.
+	// Capturing is the reversible half, so we capture and log.
+	if w.pause != nil && a.Reason == screenshot.ReasonScheduled {
+		paused, err := w.pause.IsMonitoringPaused(ctx, a.SiteID)
+		if err != nil {
+			w.logger.WarnContext(ctx, "screenshot capture: pause check failed, capturing anyway",
+				slog.String("site_id", a.SiteID.String()), slog.Any("error", err))
+		} else if paused {
+			w.logger.InfoContext(ctx, "screenshot capture skipped: monitoring paused",
+				slog.String("site_id", a.SiteID.String()))
+			return nil
+		}
+	}
 
 	// Acquire a concurrency slot (blocks until one is free or ctx expires).
 	select {

@@ -1131,6 +1131,58 @@ type Querier interface {
 	// would dilute the ratio and mask a real "every site we can actually watch
 	// just went down together" event behind a large population of sites nobody
 	// can alert on anyway (e.g. every site with REST permanently blocked).
+	//
+	// GH #414 phase 2: monitoring_paused_at IS NULL leaves BOTH sides at once.
+	//
+	// A paused site MUST leave the numerator, and this is the severe half. Phase 2
+	// stops probing a paused site, so site_app_alert_state.in_incident is frozen at
+	// whatever it held the instant the pause landed and is never written again.
+	// Pausing a site that is currently in an open app incident - which is the
+	// ORDINARY reason to pause one, because it is broken - therefore freezes
+	// in_incident = true forever. Without this predicate those frozen rows keep
+	// counting as "down" on every subsequent tick, so two of them permanently trip
+	// the fleet breaker for any tenant with 7 or fewer eligible sites (down=2 over
+	// eligible<=7 clears both minAppAlertBreakerDownCount=2 and the default 0.25
+	// ratio). A permanently tripped breaker suppresses every per-site app alert for
+	// that tenant, so an ACTIVE, UNPAUSED site's outage produces no notification at
+	// all. Pause means "do not tell me about THIS site"; a pause that silences a
+	// different site nobody paused is the worst outcome this feature can produce.
+	//
+	// It must leave the DENOMINATOR in the same predicate, not just the numerator.
+	// Removing a frozen-down site from "down" alone would shrink the numerator
+	// while leaving the paused site padding "eligible", which understates the ratio
+	// and makes the breaker trip LATER than it should - a different wrong answer,
+	// not a safer one. The denominator's meaning is "sites this tenant could be
+	// alerted about right now", and a paused site is not one, by the operator's own
+	// instruction. This mirrors the ever_app_up reasoning above exactly: a site
+	// that cannot reach the numerator must not dilute the denominator either.
+	//
+	// Consequence, stated because it is a real behaviour change and not a rounding
+	// detail: pausing HEALTHY sites raises the ratio (eligible falls, down does
+	// not), so the breaker can trip sooner for the sites that remain. That is
+	// correct. The question the breaker asks is "is the batch of alerts I am about
+	// to send mostly one shared cause rather than real per-site news?", and sites
+	// the operator has muted are not part of that batch. The absolute floor still
+	// applies to the numerator, so a trip still requires at least
+	// minAppAlertBreakerDownCount genuinely-monitored sites down together.
+	//
+	// IS THE BREAKER'S HISTORY DISCONTINUOUS IN A WAY THAT MATTERS? No. Checked
+	// against the callers rather than assumed. Both counts are consumed only at the
+	// instant they are read: uptime.ProbeWorker.resolveAppAlerts computes wantTrip
+	// from this one row and passes the pair into the notification body it may build
+	// on the same tick. Nothing persists a series of them and nothing charts one -
+	// tenant_app_alert_breaker holds current state only, and its single historical
+	// field, last_down_count, is "the down count at the last NOTIFICATION", not a
+	// sample of yesterday. The only cross-tick comparison in the system is
+	// uptime.wantBreakerUpdate's `if down <= prev.LastDownCount { return false }`,
+	// which is one-directional: a pause can only make `down` FALL, and a fall can
+	// never manufacture a spurious "materially worse" update. The reverse
+	// transition a pause CAN cause is the honest one - the ratio drops back under
+	// threshold and the breaker fires its recovery, which is precisely the intended
+	// repair, because it is what restores per-site alerting to the sites nobody
+	// paused. The counts quoted in that recovery mail are the true current counts
+	// of sites the operator asked to hear about, so a "3/8 -> 1/6" step reads
+	// correctly to a human even though no site's health moved.
 	GetTenantAppAlertRatio(ctx context.Context, tenantID uuid.UUID) (GetTenantAppAlertRatioRow, error)
 	// Returns the M16 Phase A billing/plan fields used by internal/billing's
 	// entitlement resolution. tenants carries no RLS (see schema.sql); every
@@ -1447,10 +1499,38 @@ type Querier interface {
 	// across a CASE/COALESCE spanning two different LEFT JOINs — see the LEFT
 	// JOIN LATERAL note in alerts.sql for the same class of limitation.
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]ListAuditEntriesRow, error)
-	// Optional filters: action prefix (LIKE 'prefix%'), site_id. Passing an empty
-	// string for action_prefix or a zero UUID for site_id disables those filters
-	// respectively. RLS is still the primary tenant-isolation gate; the explicit
-	// tenant_id is defense-in-depth.
+	// Optional filters: action prefix (LIKE 'prefix%'), site_id, and a created_at
+	// range. Passing an empty string for action_prefix, a zero UUID for site_id,
+	// or NULL for either time bound disables those filters respectively. RLS is
+	// still the primary tenant-isolation gate; the explicit tenant_id is
+	// defense-in-depth.
+	//
+	// The created_at range (GH #414) is HALF-OPEN — `>= created_from` and
+	// `< created_to` — matching the [from, to) reporting window the aggregator
+	// documents (internal/report/aggregator.go, Sources.QueryMonitoringPauseIntervals).
+	// Half-open is load-bearing, not a style choice: it lets a caller read the
+	// window itself AND the state the window opened in with two NON-OVERLAPPING
+	// calls to this one query, no row counted twice and no second query needed:
+	//
+	//   window read : created_from=from,  created_to=to    -> [from, to)
+	//   carry-in    : created_from=NULL,  created_to=from  -> (-inf, from), LIMIT 1
+	//
+	// The carry-in read is why a plain `created_at >= from` is NOT sufficient for
+	// the monthly report. A site paused BEFORE the window opened and never resumed
+	// inside it emits no row in [from, to) at all, so a window-only read
+	// reconstructs no pause and the report prints the uptime section as fully
+	// covered for a period the site was demonstrably paused — wrong in the
+	// direction of claiming coverage it did not have, on a document a customer
+	// reads. The newest single row strictly before the window carries that state
+	// in. (A resume that closes a pre-window pause is already handled downstream:
+	// PauseIntervalsFromEvents clamps a resume with no matching pause to
+	// windowStart. It is the never-resumed pause that has no downstream safety
+	// net, and only the carry-in read can see it.)
+	//
+	// Both bounds compare against al.created_at, which is covered by
+	// audit_log_tenant_id_created_at_idx (tenant_id, created_at) from
+	// 20260527130000_auth_multitenancy.sql — the same index the newest-first
+	// ORDER BY already uses. No new index; see the commit message for the EXPLAIN.
 	// Newest-first (see ListAuditEntries); actor_user_name/actor_key_name/
 	// actor_email resolve the same way, including the CASE-guarded ::uuid cast
 	// (see ListAuditEntries for the full join contract and why a plain regex-AND
@@ -1911,6 +1991,25 @@ type Querier interface {
 	// incomplete set. row_limit bounds the list for a large tenant; the
 	// notification's DownCount/EligibleCount (not this list) are always the
 	// authoritative, complete counts.
+	//
+	// GH #414 phase 2: monitoring_paused_at IS NULL, for the SAME reason the word
+	// "IDENTICAL" appears above. This query's contract is that it names exactly the
+	// rows GetTenantAppAlertRatio counted as down; the two predicates must move
+	// together or the mail's prose contradicts its own numbers. The observed
+	// failure was a tenant with EVERY site paused receiving a body that named the
+	// paused sites and claimed 3/3 were simultaneously app-down when only one had
+	// ever actually been observed down - the other two were frozen in_incident
+	// values that no probe had touched since the pause. Naming a paused site in an
+	// alert is the same broken promise as alerting on it: the operator muted it and
+	// the product said its name anyway.
+	//
+	// This predicate does NOT make the notification safe on its own. It empties the
+	// list for a fully paused tenant, but the caller must still not SEND an
+	// aggregate whose entire population is paused - an empty affected list with a
+	// non-zero count is a worse mail, not a better one. With the ratio query
+	// filtered too, down/eligible both fall to 0 for that tenant, so wantTrip goes
+	// false and the breaker recovers rather than re-firing; the remaining
+	// responsibility is the fire path's, in uptime.fireAppAggregate.
 	ListTenantAppDownSites(ctx context.Context, arg ListTenantAppDownSitesParams) ([]string, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	// Distinct tenant IDs the periodic retention GC should visit. Runs cross-tenant

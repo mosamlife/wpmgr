@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -70,6 +70,20 @@ const OWNER_ME: Me = {
   hosted: false,
 };
 
+// GH #414 adversarial-review finding 3 — a viewer (no operate permission).
+const VIEWER_ME: Me = {
+  user: {
+    id: "00000000-0000-0000-0000-0000000000v1",
+    email: "viewer@example.com",
+    name: "Viewer",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+  memberships: [{ user_id: "00000000-0000-0000-0000-0000000000v1", tenant_id: "t1", role: "viewer" }],
+  active_tenant_id: "t1",
+  hosted: false,
+};
+
 function buildSite(overrides: Partial<Site> = {}): Site {
   return {
     id: "11111111-0000-0000-0000-000000000001",
@@ -108,9 +122,9 @@ function buildSitesRouter(initialPath: string, queryClient: QueryClient) {
   });
 }
 
-function renderSitesPage(initialPath = "/sites") {
+function renderSitesPage(initialPath = "/sites", me: Me = OWNER_ME) {
   const queryClient = createTestQueryClient();
-  queryClient.setQueryData(authKeys.me, OWNER_ME);
+  queryClient.setQueryData(authKeys.me, me);
   const router = buildSitesRouter(initialPath, queryClient);
   renderWithProviders(<RouterProvider router={router} />, { queryClient });
   return router;
@@ -204,5 +218,70 @@ describe("Sites page: exactly one 'Add site' trigger for an operator (GH #252)",
     ).toBeInTheDocument();
 
     expect(addSiteButtons).toHaveLength(1);
+  });
+});
+
+// GH #414 adversarial-review finding 3 — `index.tsx`'s `operate` gate
+// (`const operate = canOperate(me)`) is the ONLY thing standing between a
+// viewer and a working pause/resume control: `SiteRowActions` carries no
+// permission check of its own, it gates on connection state plus callback
+// presence (`onPauseMonitoring`/`onResumeMonitoring`). Forcing `operate` to
+// `true` at index.tsx:159 was previously undetected because nothing rendered
+// the real page tree for a non-operator and looked for the row menu item.
+// Grid view (`?view=grid`) is used deliberately: the default table view's
+// TableVirtuoso never mounts rows in jsdom (see
+// features/sites/gh414-pause-real-tree.test.tsx's file header), but
+// SiteRowActions is the exact same shared component in both views.
+describe("Sites page: pause/resume control gated behind operate permission (GH #414 adversarial-review finding 3)", () => {
+  it("a viewer (non-operator) gets no Pause monitoring control in the row menu", async () => {
+    mockedUseSites.mockImplementation((options?: UseSitesOptions) =>
+      mockQueryResult<Site[]>({
+        data:
+          options?.view === "archived"
+            ? []
+            : [buildSite({ enrolled: true, health_status: "healthy" })],
+      }),
+    );
+
+    renderSitesPage("/sites?view=grid", VIEWER_ME);
+
+    const moreActionsButton = await screen.findByRole(
+      "button",
+      { name: /more actions for acme/i },
+      { timeout: FIND_TIMEOUT },
+    );
+    fireEvent.keyDown(moreActionsButton, { key: "Enter" });
+    await screen.findByRole("menu");
+
+    expect(
+      screen.queryByRole("menuitem", { name: /pause monitoring/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitem", { name: /resume monitoring/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("an owner (operator) DOES get the Pause monitoring control in the same row menu (sanity control)", async () => {
+    mockedUseSites.mockImplementation((options?: UseSitesOptions) =>
+      mockQueryResult<Site[]>({
+        data:
+          options?.view === "archived"
+            ? []
+            : [buildSite({ enrolled: true, health_status: "healthy" })],
+      }),
+    );
+
+    renderSitesPage("/sites?view=grid", OWNER_ME);
+
+    const moreActionsButton = await screen.findByRole(
+      "button",
+      { name: /more actions for acme/i },
+      { timeout: FIND_TIMEOUT },
+    );
+    fireEvent.keyDown(moreActionsButton, { key: "Enter" });
+
+    expect(
+      await screen.findByRole("menuitem", { name: /pause monitoring/i }),
+    ).toBeInTheDocument();
   });
 });
