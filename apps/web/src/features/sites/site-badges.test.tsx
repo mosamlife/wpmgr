@@ -75,8 +75,16 @@ describe("PausedBadge", () => {
 describe("UptimeBadge", () => {
   it("shows a confident Up while monitoring is active", () => {
     renderWithProviders(<UptimeBadge site={buildSite({ up: true })} />);
-    expect(screen.getByText("Up")).toBeInTheDocument();
+    const label = screen.getByText("Up");
+    expect(label).toBeInTheDocument();
     expect(screen.queryByText(/as of/)).not.toBeInTheDocument();
+    // GH #414 adversarial-review finding 2 — `uptimeBadgeFor`'s pure tone is
+    // pinned in monitoring-pause.test.ts, but the component's tone->className
+    // translation (site-badges.tsx: `view.tone === "muted" ? "text-muted-foreground"
+    // : undefined`) is the thing an operator actually sees, and nothing here
+    // asserted it. A LIVE site's chip must render at full strength, never
+    // greyed.
+    expect(label.parentElement).not.toHaveClass("text-muted-foreground");
   });
 
   it("does NOT show a confident up state for a paused site", () => {
@@ -92,6 +100,11 @@ describe("UptimeBadge", () => {
     // The word survives, but it is dated and drained of colour: the prober
     // stopped confirming it the moment the pause landed.
     expect(screen.getByText(/as of 3h ago/)).toBeInTheDocument();
+    // GH #414 adversarial-review finding 2 — a PAUSED site's frozen chip must
+    // render muted. If the tone->className check were inverted, this is the
+    // half that would silently render at full strength instead.
+    const label = screen.getByText("Up");
+    expect(label.parentElement).toHaveClass("text-muted-foreground");
   });
 
   it("says Not checked, never Up, for a paused site never probed", () => {
