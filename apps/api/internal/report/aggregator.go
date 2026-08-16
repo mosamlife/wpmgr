@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,6 +80,72 @@ type PauseInterval struct {
 	End   *time.Time
 }
 
+// PauseEvent is one site.monitoring.paused / site.monitoring.resumed audit row
+// reduced to what interval reconstruction needs. Paused is true for a pause
+// event, false for a resume.
+type PauseEvent struct {
+	At     time.Time
+	Paused bool
+}
+
+// PauseIntervalsFromEvents reconstructs pause intervals from audit events, in
+// any order. It lives here rather than inline in cmd/wpmgr/main.go so it can
+// be tested: the wiring there is a query and a field mapping, this is the
+// logic, and every defect this function has had was in the logic.
+//
+// windowStart is the reporting window's start, used only to bound a resume
+// event that has no matching pause — which happens when the pause is older
+// than the history that was read, or its audit write was lost. Dropping such
+// an event (the previous behaviour) makes the report claim coverage it did not
+// have, which is the wrong direction for a document a customer reads, so the
+// pause is instead taken to have been open since the window began.
+//
+// A pause event arriving while another pause is already open means the earlier
+// one never recorded its resume. It is closed at its OWN start, not at the new
+// event: the earlier pause's true length is unknown, and assuming it ran until
+// the next event would let one lost site.monitoring.resumed write swallow a
+// month of real observations. Zero-length is the choice that keeps the
+// measured period and still records that a pause was opened.
+//
+// A pause still open at the end is left open (End nil). Only the aggregator
+// knows whether the site is paused RIGHT NOW, which is the one condition that
+// makes an unbounded interval legitimate; normalizePauseIntervals closes it
+// otherwise.
+func PauseIntervalsFromEvents(events []PauseEvent, windowStart time.Time) []PauseInterval {
+	sorted := make([]PauseEvent, len(events))
+	copy(sorted, events)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].At.Before(sorted[j].At) })
+
+	var intervals []PauseInterval
+	var open *PauseInterval
+	for _, e := range sorted {
+		if e.Paused {
+			if open != nil {
+				closedAt := open.Start
+				open.End = &closedAt
+				intervals = append(intervals, *open)
+			}
+			started := e.At
+			open = &PauseInterval{Start: started}
+			continue
+		}
+		resumedAt := e.At
+		if open != nil {
+			open.End = &resumedAt
+			intervals = append(intervals, *open)
+			open = nil
+			continue
+		}
+		if resumedAt.After(windowStart) {
+			intervals = append(intervals, PauseInterval{Start: windowStart, End: &resumedAt})
+		}
+	}
+	if open != nil {
+		intervals = append(intervals, *open)
+	}
+	return intervals
+}
+
 // pauseOverlap classifies how a site's pause history overlaps a reporting
 // window.
 type pauseOverlap int
@@ -102,40 +169,100 @@ const (
 // nil does it fall back to synthesizing a single open interval from the
 // site's CURRENT MonitoringPausedAt (already fetched on s — no extra query).
 //
-// The two are never merged: in production the audit-backed source already
-// includes the currently-open pause (it was recorded as a "paused" audit
-// entry with no matching "resumed" one), so unioning it with the current-state
-// fallback would double-count the same interval and could inflate a partial
-// overlap into a false "full". The fallback exists for callers that have not
-// wired the richer source (tests, or a degraded path) — it can only
-// UNDER-detect (it has no memory of a pause that was already resumed before
-// render time), never over-suppress a window the site was never paused for.
-func pauseIntervalsFor(ctx context.Context, src Sources, tenantID uuid.UUID, s site.Site, from, to time.Time) []PauseInterval {
+// Whichever source produced them, the result is passed through
+// normalizePauseIntervals with the site's current pause state, which is the
+// only place that knows whether an OPEN-ENDED interval is legitimate. The two
+// sources used to be kept strictly apart because unioning them was said to
+// risk double-counting the same pause; that reasoning died with
+// overlapForIntervals' sum. Coverage is now measured over the union, where
+// counting the same interval twice is a no-op, so the current pause can be
+// merged in safely — and it must be, because the audit source can miss it when
+// its history is truncated.
+// The second return value is true when the pause history could NOT be read.
+// That is not the same as "no pause": returning nil intervals on a failed read
+// would render the window as a confident, fully-covered month on the strength
+// of an error. Suppressing the section instead would discard every check the
+// site really produced. Neither extreme is honest, so the caller keeps the
+// data and marks it CoverageUnknown.
+func pauseIntervalsFor(ctx context.Context, src Sources, tenantID uuid.UUID, s site.Site, from, to time.Time) ([]PauseInterval, bool) {
+	var intervals []PauseInterval
 	if src.QueryMonitoringPauseIntervals != nil {
-		intervals, err := src.QueryMonitoringPauseIntervals(ctx, tenantID, s.ID, from, to)
+		var err error
+		intervals, err = src.QueryMonitoringPauseIntervals(ctx, tenantID, s.ID, from, to)
 		if err != nil {
 			slog.Warn("report aggregator: query monitoring pause intervals failed",
 				slog.String("site_id", s.ID.String()), slog.Any("error", err))
-			return nil
+			// The site's CURRENT pause state is still trustworthy — it came
+			// from the site row, not from the audit trail — so it is still
+			// used. It just cannot see a pause that was already resumed.
+			return normalizePauseIntervals(nil, s.MonitoringPausedAt), true
 		}
-		return intervals
 	}
-	if s.MonitoringPausedAt != nil {
-		return []PauseInterval{{Start: *s.MonitoringPausedAt}}
-	}
-	return nil
+	return normalizePauseIntervals(intervals, s.MonitoringPausedAt), false
 }
 
-// overlapForIntervals classifies how pause intervals overlap [from, to) and
-// returns the total unmonitored duration within the window (equal to the
-// window length when overlap is overlapFull). Empty intervals classify as
-// overlapNone.
-func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOverlap, time.Duration) {
+// normalizePauseIntervals repairs an incomplete pause history before it is
+// measured.
+//
+// An interval with a nil End means "still paused, running through the window
+// end" (see PauseInterval), which is the single most destructive shape this
+// data can take: one such interval subsumes every later one and classifies
+// EVERY window from then on as fully paused, so the site's uptime silently
+// vanishes from every future report. It is legitimate for exactly one
+// interval, the latest, and only when the site is paused RIGHT NOW. If
+// currentPausedAt is nil the site is not paused, so an unbounded interval is a
+// data gap — one lost or failed site.monitoring.resumed audit write — not a
+// conservative default.
+//
+// Such an interval is closed at its own start. That is the direction that
+// keeps the measured period: it records that a pause was opened without
+// letting an unknown-length gap swallow a month of real observations. The
+// opposite choice (closing it at the next event, or leaving it open) discards
+// data the site actually produced, and this report is what the agency's
+// customer reads.
+//
+// When the site IS currently paused but no open interval survives in the
+// history — the audit trail did not reach back far enough — the current pause
+// is appended, so a truncated history under-reports nothing.
+func normalizePauseIntervals(intervals []PauseInterval, currentPausedAt *time.Time) []PauseInterval {
 	if len(intervals) == 0 {
-		return overlapNone, 0
+		if currentPausedAt != nil {
+			return []PauseInterval{{Start: *currentPausedAt}}
+		}
+		return nil
 	}
-	windowDur := to.Sub(from)
-	var covered time.Duration
+	out := make([]PauseInterval, len(intervals))
+	copy(out, intervals)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+
+	// The one interval permitted to stay open: the latest open-ended one, and
+	// only when the site is paused now.
+	openIdx := -1
+	if currentPausedAt != nil {
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].End == nil {
+				openIdx = i
+				break
+			}
+		}
+	}
+	for i := range out {
+		if out[i].End != nil || i == openIdx {
+			continue
+		}
+		end := out[i].Start
+		out[i].End = &end
+	}
+	if currentPausedAt != nil && openIdx == -1 {
+		out = append(out, PauseInterval{Start: *currentPausedAt})
+	}
+	return out
+}
+
+// mergePauseIntervals clips intervals to [from, to) and returns their UNION,
+// sorted and non-overlapping. A nil End runs through the window end.
+func mergePauseIntervals(intervals []PauseInterval, from, to time.Time) [][2]time.Time {
+	clipped := make([][2]time.Time, 0, len(intervals))
 	for _, iv := range intervals {
 		start := iv.Start
 		if start.Before(from) {
@@ -146,8 +273,45 @@ func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOv
 			end = *iv.End
 		}
 		if end.After(start) {
-			covered += end.Sub(start)
+			clipped = append(clipped, [2]time.Time{start, end})
 		}
+	}
+	sort.Slice(clipped, func(i, j int) bool { return clipped[i][0].Before(clipped[j][0]) })
+	merged := make([][2]time.Time, 0, len(clipped))
+	for _, c := range clipped {
+		if n := len(merged); n > 0 && !c[0].After(merged[n-1][1]) {
+			if c[1].After(merged[n-1][1]) {
+				merged[n-1][1] = c[1]
+			}
+			continue
+		}
+		merged = append(merged, c)
+	}
+	return merged
+}
+
+// overlapForIntervals classifies how pause intervals overlap [from, to) and
+// returns the unmonitored duration within the window (equal to the window
+// length when overlap is overlapFull). Empty intervals classify as overlapNone.
+//
+// Coverage is the measure of the UNION of the intervals, never the sum of
+// their lengths. Summing double-counts every overlap, and overlapping
+// intervals are exactly what the audit-trail reconstruction produces when a
+// resume event is missing (cmd/wpmgr/main.go). Two pauses of 16 days each
+// overlapping by 14 sum to 32 days over a 30-day window: classified full,
+// the uptime section suppressed, the site dropped from
+// ReportTotals.UptimeSiteCount, and the customer told monitoring was off all
+// period for a period that was measured for 12 of its 30 days. Because the
+// union is a subset of the window, covered can no longer exceed windowDur, so
+// overlapFull now means what it says.
+func overlapForIntervals(intervals []PauseInterval, from, to time.Time) (pauseOverlap, time.Duration) {
+	if len(intervals) == 0 {
+		return overlapNone, 0
+	}
+	windowDur := to.Sub(from)
+	var covered time.Duration
+	for _, m := range mergePauseIntervals(intervals, from, to) {
+		covered += m[1].Sub(m[0])
 	}
 	switch {
 	case covered <= 0:
@@ -257,7 +421,7 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 		// entirely, and — like before — costs no uptime query, only the (cheap,
 		// audit-backed) pause-history query.
 		if sections.Uptime && sources.QueryUptimeAggregateRange != nil {
-			intervals := pauseIntervalsFor(ctx, sources, in.TenantID, s, in.PeriodStart, in.PeriodEnd)
+			intervals, historyUnknown := pauseIntervalsFor(ctx, sources, in.TenantID, s, in.PeriodStart, in.PeriodEnd)
 			overlap, unmonitored := overlapForIntervals(intervals, in.PeriodStart, in.PeriodEnd)
 			if overlap != overlapFull {
 				us := buildUptimeSection(ctx, sources, in.TenantID, s.ID, in.PeriodStart, in.PeriodEnd)
@@ -266,6 +430,7 @@ func BuildReportData(ctx context.Context, sources Sources, in BuildInput) (Repor
 						us.PartialCoverage = true
 						us.UnmonitoredHours = unmonitored.Hours()
 					}
+					us.CoverageUnknown = historyUnknown
 					sr.Uptime = us
 					totals.AvgUptimePct += us.UptimePct
 					totals.Incidents += us.Incidents

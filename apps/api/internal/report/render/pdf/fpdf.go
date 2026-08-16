@@ -258,6 +258,25 @@ func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
 	if u.PartialCoverage {
 		drawPartialCoverageNote(f, u)
 	}
+	if u.CoverageUnknown {
+		drawCoverageUnknownNote(f)
+	}
+}
+
+// drawCoverageUnknownNote is the PDF twin of the "Coverage unconfirmed"
+// .paused-note block in report.html.tmpl. It is what a FAILED pause-history
+// read renders as: the checks are real and are shown, but the document does
+// not claim the period was monitored end to end when nothing could confirm it.
+func drawCoverageUnknownNote(f *fpdflib.Fpdf) {
+	f.SetFont("dejavu", "B", 9)
+	f.SetTextColor(75, 85, 99)
+	f.CellFormat(contentW, 4.5, "Coverage unconfirmed", "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	f.MultiCell(contentW, 4.5,
+		"The monitoring pause history for this site could not be read, so we cannot confirm the prober ran for the whole period. The figures above cover every check that was recorded.",
+		"", "L", false)
+	f.Ln(1)
 }
 
 // drawPartialCoverageNote states, next to the uptime figures it qualifies,

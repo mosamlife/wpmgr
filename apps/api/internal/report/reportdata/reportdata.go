@@ -159,6 +159,16 @@ type UptimeSection struct {
 	// a monitoring pause, in hours. Only meaningful when PartialCoverage is
 	// true; zero otherwise.
 	UnmonitoredHours float64 `json:"unmonitored_hours,omitempty"`
+	// CoverageUnknown is true when the pause history could not be read at all,
+	// so whether monitoring was paused during this window is unknown. The
+	// section still carries every check that was recorded — suppressing it
+	// would discard a measured period — but it must not be presented as a
+	// complete month either: a failed history read is not evidence that the
+	// site was monitored throughout. It is the third state between
+	// PartialCoverage (a pause of known size) and a plain, fully-covered
+	// section, and the renderers say so in words rather than printing a
+	// duration nobody computed.
+	CoverageUnknown bool `json:"coverage_unknown,omitempty"`
 }
 
 // UptimeDay is one day bucket in the uptime sparkline series.

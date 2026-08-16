@@ -87,14 +87,28 @@ func TestPDFStatesPartialCoverage(t *testing.T) {
 	if !bytes.Contains(out, asciiUTF16BE("Partial coverage")) {
 		t.Error("rendered PDF never says coverage is partial")
 	}
-	// "21 days" is checked as two separate tokens rather than one contiguous
-	// substring: MultiCell line-wraps the sentence at word boundaries, and a
-	// wrap could legitimately fall between the number and the unit.
-	if !bytes.Contains(out, asciiUTF16BE("21")) {
-		t.Error("rendered PDF does not print the humanized day count (21)")
+	// The count and its unit are asserted as ONE contiguous token, "21 days".
+	// Splitting them into separate "21" and "days" checks made this assertion
+	// incapable of failing: the same fixture sets AvgLatencyMs: 210, which
+	// renders "210 ms", so the bare "21" matched the latency no matter what
+	// the note printed. Under a mutation making humanizeHours return a
+	// constant — "about 3 days went unmeasured" — both halves still passed,
+	// while the identical mutation on the HTML twin was caught. The two
+	// renderers could be made to disagree, which is exactly what the comment
+	// at fpdf.go's humanizeHours says must never happen, with only one side
+	// able to notice.
+	//
+	// Contiguity is safe here: MultiCell wraps at word boundaries, and for
+	// this fixed fixture (contentW, dejavu 9pt, this sentence) the wrap does
+	// not fall between the number and its unit. If a future wording change
+	// moves the wrap, this test fails loudly rather than silently passing,
+	// which is the correct direction for an assertion whose whole job is to
+	// notice the phrase changing.
+	if !bytes.Contains(out, asciiUTF16BE("21 days")) {
+		t.Error(`rendered PDF does not print the humanized duration "21 days" — the PDF and HTML renderers disagree about how much of the period went unmeasured`)
 	}
-	if !bytes.Contains(out, asciiUTF16BE("days")) {
-		t.Error("rendered PDF does not print the humanized unit (days)")
+	if !bytes.Contains(out, asciiUTF16BE("about 21 days went unmeasured")) {
+		t.Error(`rendered PDF does not contain the partial-coverage phrase "about 21 days went unmeasured"`)
 	}
 	if bytes.Contains(out, asciiUTF16BE("504")) {
 		t.Error("rendered PDF prints the raw UnmonitoredHours float (504) instead of a human duration")
