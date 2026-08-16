@@ -1229,11 +1229,14 @@ func (w *ProbeWorker) appAggregatePopulation(ctx context.Context, tenantID uuid.
 //
 // It asks ONE question, of ONE population: does this notification have
 // something true to say? `affected` non-nil means the population has not been
-// resolved yet and this call resolves it (see appAggregatePopulation);
-// resolveAppAlerts's trip path passes nil because it resolved the same
-// population a moment earlier, before recording the count in the breaker row.
-// Either way the counts and the names that go out are the same population's,
-// never two populations read at two instants.
+// resolved yet and this call resolves it (see appAggregatePopulation) - an
+// EMPTY but non-nil slice still counts as "please resolve", matching a caller
+// with zero known fires who nonetheless wants the live population. `nil`
+// specifically, not merely a short slice, is the caller's signal that
+// resolution already happened. resolveAppAlerts's trip path passes nil
+// because it resolved the same population a moment earlier, before recording
+// the count in the breaker row. Either way the counts and the names that go
+// out are the same population's, never two populations read at two instants.
 //
 // The send gate, in its two halves:
 //
@@ -1260,7 +1263,7 @@ func (w *ProbeWorker) fireAppAggregate(ctx context.Context, tenantID uuid.UUID, 
 	if w.dispatcher == nil {
 		return
 	}
-	if len(affected) > 0 {
+	if affected != nil {
 		pop := w.appAggregatePopulation(ctx, tenantID, alert.EligibleCount, alert.DownCount, affected)
 		if !pop.resolved {
 			return
