@@ -134,7 +134,20 @@ func TestPDFStatesPartialCoverage(t *testing.T) {
 // of the same input in a throwaway test and observing the font object
 // numbering (e.g. "utf8dejavuB" vs "utf8dejavu" at object 5) swap places
 // across otherwise-identical runs.
+//
+// Compression must be disabled here too, exactly as in
+// TestPDFStatesPartialCoverage above, and for the same reason in reverse: with
+// the package default (compression on), r.Render emits a zlib-compressed
+// content stream, and bytes.Contains against compressed bytes cannot match a
+// literal string regardless of what the renderer printed. That makes this a
+// negative assertion that passes whether or not "Partial coverage" was ever
+// drawn — it was true for the wrong reason. Disabling compression makes the
+// search meaningful, and the sibling test in this file proves the search
+// itself works when the phrase IS present.
 func TestPDFFullCoverageUnchanged(t *testing.T) {
+	fpdflib.SetDefaultCompression(false)
+	t.Cleanup(func() { fpdflib.SetDefaultCompression(true) })
+
 	r := NewFpdfRenderer()
 	data := pdfPartialFixture(false)
 
