@@ -254,6 +254,54 @@ func drawUptimeRow(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
 	} else {
 		f.Ln(2)
 	}
+
+	if u.PartialCoverage {
+		drawPartialCoverageNote(f, u)
+	}
+}
+
+// drawPartialCoverageNote states, next to the uptime figures it qualifies,
+// that they cover only part of the reporting period. It is the PDF twin of
+// the "Partial coverage" .paused-note block in report.html.tmpl.
+//
+// GH #414 phase 5 follow-up. The aggregator now classifies a pause interval's
+// overlap with the reporting window as none/partial/full and suppresses the
+// section only on full (drawPausedRow handles that case, above). A partial
+// overlap leaves real, measured data in u — it must render — but a reader
+// must not mistake a month with a hole in it for a complete measurement, so
+// this must sit beside the numbers, not in a footnote.
+func drawPartialCoverageNote(f *fpdflib.Fpdf, u *reportdata.UptimeSection) {
+	f.SetFont("dejavu", "B", 9)
+	f.SetTextColor(75, 85, 99)
+	f.CellFormat(contentW, 4.5, "Partial coverage", "", 1, "L", false, 0, "")
+	f.SetFont("dejavu", "", 9)
+	f.SetTextColor(107, 114, 128)
+	f.MultiCell(contentW, 4.5,
+		fmt.Sprintf("Monitoring was paused for part of this period — about %s went unmeasured, so the figures above are partial, not a full month.", humanizeHours(u.UnmonitoredHours)),
+		"", "L", false)
+	f.Ln(1)
+}
+
+// humanizeHours formats UnmonitoredHours the way a person would say it, not
+// as a raw float. Kept identical in wording to the HTML twin's helper of the
+// same name (internal/report/render/html/renderer.go) — the two renderers
+// must never disagree about how much of the period went unmeasured.
+func humanizeHours(hours float64) string {
+	if hours < 1 {
+		return "under an hour"
+	}
+	if hours < 24 {
+		h := int(math.Round(hours))
+		if h == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", h)
+	}
+	d := int(math.Round(hours / 24))
+	if d == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", d)
 }
 
 // drawSparkline draws a bar chart from UptimeDay series using native fpdf Rect.

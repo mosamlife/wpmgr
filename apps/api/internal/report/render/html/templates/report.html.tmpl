@@ -105,6 +105,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Ar
   <div class="sparkline" title="Daily uptime">
     {{range .Uptime.Daily}}<div class="spark-bar" style="background:{{uptimeColor .UptimePct}};height:{{sparkHeight .UptimePct}}px;" title="{{printf "%.1f" .UptimePct}}%"></div>{{end}}
   </div>
+  {{end -}}
+  {{if .Uptime.PartialCoverage}}
+  <div class="paused-note">
+    <span class="paused-title">Partial coverage.</span>
+    Monitoring was paused for part of this period — about {{humanizeHours .Uptime.UnmonitoredHours}} went unmeasured, so the figures above are partial, not a full month.
+  </div>
   {{end}}
   {{end}}
 
