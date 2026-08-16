@@ -72728,6 +72728,10 @@ func (s *MonitoringResultDetail) Decode(d *jx.Decoder) error {
 		*s = MonitoringResultDetailInvalidSiteID
 	case MonitoringResultDetailSiteNotFound:
 		*s = MonitoringResultDetailSiteNotFound
+	case MonitoringResultDetailSiteArchived:
+		*s = MonitoringResultDetailSiteArchived
+	case MonitoringResultDetailSiteRevoked:
+		*s = MonitoringResultDetailSiteRevoked
 	default:
 		*s = MonitoringResultDetail(v)
 	}

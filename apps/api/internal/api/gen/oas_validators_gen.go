@@ -8806,6 +8806,10 @@ func (s MonitoringResultDetail) Validate() error {
 		return nil
 	case "site_not_found":
 		return nil
+	case "site_archived":
+		return nil
+	case "site_revoked":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}

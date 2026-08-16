@@ -209,6 +209,59 @@ func TestMonitoringGuard_ReasonLengthCap(t *testing.T) {
 	}
 }
 
+// GUARD 4b — the cap counts UNICODE CHARACTERS, not bytes.
+//
+// len(string) in Go counts bytes. A byte-bounded 500 is 500 Latin characters
+// but only ~166 in a 3-byte script such as Japanese, Chinese or Devanagari, so
+// an operator writing an ordinary sentence in one alphabet is refused where an
+// English one is not. Mutation: replace utf8.RuneCountInString(in.Reason) with
+// len(in.Reason) (byte count) in the guard. The first assertion below then
+// fails: 400 Japanese characters is 1200 bytes, over a byte-bounded 500, so a
+// reason well under the published character limit is wrongly refused.
+func TestMonitoringGuard_ReasonLengthCapCountsRunesNotBytes(t *testing.T) {
+	svc, repo := newMonitoringSvc()
+	tenant := uuid.New()
+
+	// One character past the limit, multi-byte: must be refused with the same
+	// client-facing code as the ASCII case, and must never reach the repo.
+	overLimit := strings.Repeat("あ", maxPauseReasonLen+1) // 501 runes, 1503 bytes
+	_, err := svc.PauseMonitoring(context.Background(), PauseMonitoringInput{
+		TenantID: tenant, Principal: orgPrincipal(tenant),
+		SiteIDs: []uuid.UUID{uuid.New()},
+		Reason:  overLimit,
+	})
+	requireDomainCode(t, err, "reason_too_long")
+	if len(repo.pauseCalls) != 0 {
+		t.Fatalf("an over-limit multi-byte reason must never reach the repo, got %d calls", len(repo.pauseCalls))
+	}
+
+	// Exactly at the character limit, multi-byte: 500 runes, 1500 bytes — well
+	// over a byte-bounded cap of 500 but exactly at the honest character cap.
+	// Must be accepted.
+	atLimit := strings.Repeat("あ", maxPauseReasonLen) // 500 runes, 1500 bytes
+	if _, err := svc.PauseMonitoring(context.Background(), PauseMonitoringInput{
+		TenantID: tenant, Principal: orgPrincipal(tenant),
+		SiteIDs: []uuid.UUID{uuid.New()},
+		Reason:  atLimit,
+	}); err != nil {
+		t.Fatalf("exactly %d multi-byte characters must be accepted, got %v", maxPauseReasonLen, err)
+	}
+
+	// Under the character limit but over the OLD byte limit: 400 runes of a
+	// 3-byte script is 1200 bytes — more than the byte-bounded cap this test
+	// guards against, well under the 500-character limit the contract
+	// publishes. This is the case a Japanese operator hits writing an ordinary
+	// sentence. Must be accepted.
+	underCharOverByte := strings.Repeat("あ", 400) // 400 runes, 1200 bytes
+	if _, err := svc.PauseMonitoring(context.Background(), PauseMonitoringInput{
+		TenantID: tenant, Principal: orgPrincipal(tenant),
+		SiteIDs: []uuid.UUID{uuid.New()},
+		Reason:  underCharOverByte,
+	}); err != nil {
+		t.Fatalf("400 multi-byte characters (1200 bytes, under the %d-character limit) must be accepted, got %v", maxPauseReasonLen, err)
+	}
+}
+
 // GUARD 5 — tenant_required.
 //
 // Mutation: delete the `in.TenantID == uuid.Nil` branch. The write then runs

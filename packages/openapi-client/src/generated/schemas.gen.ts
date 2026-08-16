@@ -695,6 +695,8 @@ export const MonitoringResultSchema = {
         "forbidden",
         "invalid_site_id",
         "site_not_found",
+        "site_archived",
+        "site_revoked",
       ],
     },
     monitoring_paused_at: {

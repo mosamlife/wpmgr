@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -156,8 +157,17 @@ type ResumeMonitoringInput struct {
 	SiteIDs   []uuid.UUID
 }
 
-// maxPauseReasonLen bounds the stored note. The column is unbounded text; the
-// cap keeps a pasted logfile out of the audit metadata and the sites list.
+// maxPauseReasonLen bounds the stored note, in UNICODE CHARACTERS (runes), not
+// bytes. The column is unbounded text with no length CHECK constraint, so
+// there is nothing at the database layer forcing the choice either way; the
+// cap exists to keep a pasted logfile out of the audit metadata and the sites
+// list, and it is checked with utf8.RuneCountInString for exactly that reason.
+// len(string) in Go counts bytes: a byte-bounded 500 is 500 Latin characters,
+// but roughly 250 in Greek or Cyrillic and 166 in Chinese, Japanese or
+// Devanagari, so an operator writing an ordinary sentence in one alphabet
+// would be refused where an English one was not. The OpenAPI contract's
+// `maxLength: 500` on this field, and ogen's generated validator, already
+// count Unicode code points — this constant matches that, not bytes.
 const maxPauseReasonLen = 500
 
 // PauseMonitoring validates the request and pauses every named site that
@@ -194,7 +204,7 @@ func (s *Service) PauseMonitoring(ctx context.Context, in PauseMonitoringInput) 
 	if len(in.SiteIDs) > maxBulkMonitoringSites {
 		return nil, domain.Validation("too_many_sites", "site_ids must contain at most 200 entries per request")
 	}
-	if len(in.Reason) > maxPauseReasonLen {
+	if utf8.RuneCountInString(in.Reason) > maxPauseReasonLen {
 		return nil, domain.Validation("reason_too_long", "reason must be at most 500 characters")
 	}
 	if in.ResumeAt != nil {
