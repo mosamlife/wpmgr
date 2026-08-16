@@ -21,11 +21,11 @@ describe("PauseMonitoringDialog", () => {
       />,
     );
     expect(
-      screen.getByText(/Backups and connection tracking continue/),
+      screen.getByText(/Backups, connection tracking, update checks and scans keep running/),
     ).toBeInTheDocument();
   });
 
-  it("names what stops, and never lists backups among them", () => {
+  it("names what stops (uptime checks/alerts, SCHEDULED screenshots/rescans), and never lists backups, update checks or scans among them", () => {
     renderWithProviders(
       <PauseMonitoringDialog
         open
@@ -35,10 +35,12 @@ describe("PauseMonitoringDialog", () => {
       />,
     );
     const stops = screen.getByText(
-      /Uptime checks, update checks, scans and screenshots stop/,
+      /Uptime checks, uptime alerts, scheduled screenshots and scheduled vulnerability rescans stop/,
     );
     expect(stops).toBeInTheDocument();
     expect(stops.textContent?.toLowerCase()).not.toContain("backup");
+    expect(stops.textContent).not.toContain("update checks");
+    expect(stops.textContent?.toLowerCase()).not.toMatch(/\bscans\b/);
   });
 
   it("counts the sites it will touch in its title", () => {

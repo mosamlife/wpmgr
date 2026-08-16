@@ -84,6 +84,11 @@ function openMenuAndFindRefreshItem() {
   return screen.findByRole("menuitem", { name: /refresh screenshot/i });
 }
 
+function openMenu() {
+  const trigger = screen.getByRole("button", { name: /more actions/i });
+  fireEvent.keyDown(trigger, { key: "Enter" });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedUseRecheckConnection.mockReturnValue(
@@ -148,4 +153,87 @@ describe("SiteRowActions — Refresh screenshot wiring (GH #187)", () => {
       );
     },
   );
+});
+
+// GH #414 (adversarial-review finding B) — the row menu is the FIRST of the
+// two per-site pause entry points; the second is the detail page
+// (`routes/_authed/sites/-siteId-pause.test.tsx`). `SiteRowActions` takes
+// `onPauseMonitoring`/`onResumeMonitoring` as plain callback props (the
+// mutation itself lives one level up, shared with the bulk menu — see
+// routes/_authed/sites/index.tsx), so this only has to prove the row item is
+// present and targets exactly this site.
+describe("SiteRowActions — pause/resume monitoring reachability (GH #414)", () => {
+  it("shows 'Pause monitoring' for an unpaused site and calls onPauseMonitoring with this site", async () => {
+    const onPauseMonitoring = vi.fn();
+    renderWithProviders(
+      <SiteRowActions
+        site={buildSite()}
+        connectionState="connected"
+        onPauseMonitoring={onPauseMonitoring}
+      />,
+    );
+
+    openMenu();
+    const item = await screen.findByRole("menuitem", {
+      name: /pause monitoring/i,
+    });
+    fireEvent.click(item);
+
+    expect(onPauseMonitoring).toHaveBeenCalledTimes(1);
+    expect(onPauseMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "site-1" }),
+    );
+    expect(
+      screen.queryByRole("menuitem", { name: /resume monitoring/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows 'Resume monitoring' for a paused site and calls onResumeMonitoring with this site", async () => {
+    const onResumeMonitoring = vi.fn();
+    renderWithProviders(
+      <SiteRowActions
+        site={buildSite({
+          monitoring_paused_at: new Date().toISOString(),
+        })}
+        connectionState="connected"
+        onResumeMonitoring={onResumeMonitoring}
+      />,
+    );
+
+    openMenu();
+    const item = await screen.findByRole("menuitem", {
+      name: /resume monitoring/i,
+    });
+    fireEvent.click(item);
+
+    expect(onResumeMonitoring).toHaveBeenCalledTimes(1);
+    expect(onResumeMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "site-1" }),
+    );
+    expect(
+      screen.queryByRole("menuitem", { name: /^pause monitoring$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the pause/resume item entirely for a pending-enrollment site (nothing to pause)", async () => {
+    renderWithProviders(
+      <SiteRowActions
+        site={buildSite()}
+        connectionState="pending_enrollment"
+        onPauseMonitoring={vi.fn()}
+        onResumeMonitoring={vi.fn()}
+      />,
+    );
+
+    openMenu();
+    // Some menu item is always present ("Copy ID" etc.) so wait for the menu
+    // to actually open before asserting absence.
+    await screen.findByRole("menu");
+    expect(
+      screen.queryByRole("menuitem", { name: /pause monitoring/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitem", { name: /resume monitoring/i }),
+    ).not.toBeInTheDocument();
+  });
 });

@@ -157,6 +157,10 @@ export interface SitesTableProps {
   onReconnect?: (site: Site) => void;
   /** Hard-remove an archived/disconnected site from WPMgr (operator-only). */
   onRemove?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation. */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 interface SiteRow {
@@ -365,6 +369,8 @@ function buildColumns(
   onReconnect: ((site: Site) => void) | undefined,
   onRemove: ((site: Site) => void) | undefined,
   agentReferenceSource: FleetAgentVersions["reference_source"] | undefined,
+  onPauseMonitoring: ((site: Site) => void) | undefined,
+  onResumeMonitoring: ((site: Site) => void) | undefined,
 ): ColumnDef<SiteRow>[] {
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selection.selected.has(id));
@@ -670,6 +676,8 @@ function buildColumns(
           onDisconnect={onDisconnect}
           onReconnect={onReconnect}
           onRemove={onRemove}
+          onPauseMonitoring={onPauseMonitoring}
+          onResumeMonitoring={onResumeMonitoring}
         />
       ),
     },
@@ -788,6 +796,8 @@ export function SitesTable({
   onDisconnect,
   onReconnect,
   onRemove,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SitesTableProps) {
   const internalSelection = useSitesSelection();
   const selection = externalSelection ?? internalSelection;
@@ -814,6 +824,8 @@ export function SitesTable({
         onReconnect,
         onRemove,
         agentReferenceSource,
+        onPauseMonitoring,
+        onResumeMonitoring,
       ),
     [
       selection,
@@ -824,6 +836,8 @@ export function SitesTable({
       onReconnect,
       onRemove,
       agentReferenceSource,
+      onPauseMonitoring,
+      onResumeMonitoring,
     ],
   );
 

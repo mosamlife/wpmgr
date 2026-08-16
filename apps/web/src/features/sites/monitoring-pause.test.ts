@@ -259,7 +259,7 @@ describe("the pause scope copy", () => {
     // The single most important string in this phase. Backups silently
     // stopping is the one failure people do not recover from.
     expect(MONITORING_PAUSE_CONTINUES).toContain("Backups");
-    expect(MONITORING_PAUSE_CONTINUES).toContain("continue");
+    expect(MONITORING_PAUSE_CONTINUES).toContain("keep running");
     expect(MONITORING_PAUSE_SCOPE_SENTENCE).toContain("Backups");
   });
 
@@ -268,12 +268,26 @@ describe("the pause scope copy", () => {
     expect(MONITORING_PAUSE_SCOPE_SENTENCE).toContain("connection tracking");
   });
 
-  it("names what actually stops, and does not claim backups among them", () => {
+  it("names what actually stops: uptime checks/alerts and SCHEDULED screenshots/rescans only", () => {
     expect(MONITORING_PAUSE_STOPS).toContain("Uptime checks");
-    expect(MONITORING_PAUSE_STOPS).toContain("update checks");
-    expect(MONITORING_PAUSE_STOPS).toContain("scans");
-    expect(MONITORING_PAUSE_STOPS).toContain("screenshots");
+    expect(MONITORING_PAUSE_STOPS).toContain("uptime alerts");
+    expect(MONITORING_PAUSE_STOPS).toContain("scheduled screenshots");
+    expect(MONITORING_PAUSE_STOPS).toContain("scheduled vulnerability rescans");
     expect(MONITORING_PAUSE_STOPS.toLowerCase()).not.toContain("backup");
+  });
+
+  it("does NOT claim update checks or scans stop: both are operator-only with no scheduled producer to pause", () => {
+    // RefreshInventoryArgs has exactly two producers, both operator-driven
+    // (cmd/wpmgr/siteadapter.go:167 Refresh click, internal/update/worker.go:971
+    // post-update), and ScanRunArgs has exactly one (internal/scan/service.go:58,
+    // the operator clicking Scan). Neither has a scheduled producer, so pause
+    // has nothing to filter and both belong on "continues".
+    expect(MONITORING_PAUSE_STOPS).not.toContain("update checks");
+    // Word-boundary match: "rescans" legitimately appears (vulnerability
+    // rescans DO stop), but the standalone word "scans" must not.
+    expect(MONITORING_PAUSE_STOPS.toLowerCase()).not.toMatch(/\bscans\b/);
+    expect(MONITORING_PAUSE_CONTINUES).toContain("update checks");
+    expect(MONITORING_PAUSE_CONTINUES).toContain("scans");
   });
 });
 

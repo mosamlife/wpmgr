@@ -813,6 +813,13 @@ function SitesPage() {
   const resumeMonitoring = useResumeMonitoring();
   const [pauseDialogOpen, setPauseDialogOpen] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
+  // A single row's "Pause monitoring" menu item targets exactly this one
+  // site, bypassing the bulk `selection` entirely (a per-row action must not
+  // silently widen its blast radius to whatever else happens to be ticked).
+  // null means "use the bulk selection" — the dialog and its confirm handler
+  // below read `pauseTargetIds`/`pauseTargetCount`, never the bulk split
+  // directly, so there is exactly one pause mutation call site for both.
+  const [singlePauseSite, setSinglePauseSite] = useState<Site | null>(null);
 
   const monitoringMenu = useMemo(
     () => monitoringMenuFor(selectedSites),
@@ -823,11 +830,30 @@ function SitesPage() {
     [selectedSites],
   );
 
+  const pauseTargetIds = useMemo(
+    () =>
+      singlePauseSite
+        ? [singlePauseSite.id]
+        : monitoringSplit.active.map((s) => s.id),
+    [singlePauseSite, monitoringSplit.active],
+  );
+  const pauseTargetCount = pauseTargetIds.length;
+
   const handleBulkPauseMonitoring = useCallback(() => {
     if (monitoringSplit.active.length === 0) return;
+    setSinglePauseSite(null);
     setPauseError(null);
     setPauseDialogOpen(true);
   }, [monitoringSplit.active.length]);
+
+  // Row-level pause: the per-row "Pause monitoring" item, from the sites
+  // table/grid AND the site detail page. Same dialog, same mutation, one
+  // site.
+  const handleRowPauseMonitoring = useCallback((site: Site) => {
+    setSinglePauseSite(site);
+    setPauseError(null);
+    setPauseDialogOpen(true);
+  }, []);
 
   // Reports the per-site half of a 200: some sites can be refused
   // (site_archived / site_revoked) while the rest of the same call succeeded,
@@ -878,9 +904,31 @@ function SitesPage() {
     return message;
   }, []);
 
+  // Row-level resume needs no confirmation, matching the bulk resume below:
+  // it restores the default state rather than narrowing anything.
+  const handleRowResumeMonitoring = useCallback(
+    async (site: Site) => {
+      try {
+        const result = await resumeMonitoring.mutateAsync({
+          siteIds: [site.id],
+        });
+        reportMonitoringOutcome("resumed", result);
+      } catch (error) {
+        toast.error("Monitoring could not be resumed", {
+          description: reportMonitoringError(error),
+        });
+      }
+    },
+    [resumeMonitoring, reportMonitoringOutcome, reportMonitoringError],
+  );
+
+  // Single call site for BOTH the bulk and the per-row pause: `pauseTargetIds`
+  // already resolved which one this confirm is for (singlePauseSite set, or
+  // the bulk active split), so there is exactly one mutateAsync call for
+  // "pause" in this file.
   const confirmPauseMonitoring = useCallback(
     async (reason: string) => {
-      const ids = monitoringSplit.active.map((s) => s.id);
+      const ids = pauseTargetIds;
       if (ids.length === 0) {
         setPauseDialogOpen(false);
         return;
@@ -892,7 +940,8 @@ function SitesPage() {
           ...(reason ? { reason } : {}),
         });
         setPauseDialogOpen(false);
-        selection.replace([]);
+        setSinglePauseSite(null);
+        if (!singlePauseSite) selection.replace([]);
         reportMonitoringOutcome("paused", result);
       } catch (error) {
         // Keep the dialog open on a request failure: the operator's typed
@@ -901,7 +950,8 @@ function SitesPage() {
       }
     },
     [
-      monitoringSplit.active,
+      pauseTargetIds,
+      singlePauseSite,
       pauseMonitoring,
       selection,
       reportMonitoringOutcome,
@@ -1179,6 +1229,10 @@ function SitesPage() {
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
               onReconnect={operate ? handleReconnect : undefined}
+              onPauseMonitoring={operate ? handleRowPauseMonitoring : undefined}
+              onResumeMonitoring={
+                operate ? (site) => void handleRowResumeMonitoring(site) : undefined
+              }
             />
           ) : (
             <SitesTable
@@ -1193,6 +1247,10 @@ function SitesPage() {
               onOpenDetail={handleOpenDetail}
               onDisconnect={operate ? handleDisconnect : undefined}
               onReconnect={operate ? handleReconnect : undefined}
+              onPauseMonitoring={operate ? handleRowPauseMonitoring : undefined}
+              onResumeMonitoring={
+                operate ? (site) => void handleRowResumeMonitoring(site) : undefined
+              }
             />
           )}
         </>
@@ -1344,9 +1402,12 @@ function SitesPage() {
       {operate ? (
         <PauseMonitoringDialog
           open={pauseDialogOpen}
-          onClose={() => setPauseDialogOpen(false)}
+          onClose={() => {
+            setPauseDialogOpen(false);
+            setSinglePauseSite(null);
+          }}
           onConfirm={confirmPauseMonitoring}
-          count={monitoringSplit.active.length}
+          count={pauseTargetCount}
           isPending={pauseMonitoring.isPending}
           errorMessage={pauseError}
         />

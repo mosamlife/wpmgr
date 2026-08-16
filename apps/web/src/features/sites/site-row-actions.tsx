@@ -7,6 +7,8 @@
 import {
   Camera,
   MoreHorizontal,
+  PauseCircle,
+  PlayCircle,
   RefreshCw,
   RotateCw,
   Trash2,
@@ -31,6 +33,7 @@ import {
   AgentUnreachableError,
 } from "@/features/sites/use-site-connection";
 import { useRefreshScreenshot } from "@/features/sites/use-sites";
+import { isMonitoringPaused } from "@/features/sites/monitoring-pause";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/toast";
 
@@ -42,6 +45,10 @@ export interface SiteRowActionsProps {
   onDisconnect?: (site: Site) => void;
   onReconnect?: (site: Site) => void;
   onRemove?: (site: Site) => void;
+  /** GH #414 — opens the pause-confirmation dialog for this one site. */
+  onPauseMonitoring?: (site: Site) => void;
+  /** GH #414 — resumes this one site directly, no confirmation (matches bulk). */
+  onResumeMonitoring?: (site: Site) => void;
 }
 
 export function SiteRowActions({
@@ -52,6 +59,8 @@ export function SiteRowActions({
   onDisconnect,
   onReconnect,
   onRemove,
+  onPauseMonitoring,
+  onResumeMonitoring,
 }: SiteRowActionsProps) {
   // pending_enrollment ("Awaiting agent") also needs the code action — the raw
   // code is shown once, so a stuck-pending site has no other way back to it.
@@ -86,6 +95,15 @@ export function SiteRowActions({
     connectionState === "connected" ||
     connectionState === "degraded" ||
     connectionState === "disconnected";
+
+  // GH #414 — pause/resume is meaningful for the same enrolled states as
+  // re-check/refresh-screenshot; pending/revoked/archived sites have nothing
+  // to pause.
+  const canToggleMonitoring =
+    connectionState === "connected" ||
+    connectionState === "degraded" ||
+    connectionState === "disconnected";
+  const paused = isMonitoringPaused(site);
 
   return (
     <div className="flex items-center justify-end gap-1">
@@ -194,6 +212,30 @@ export function SiteRowActions({
               >
                 <Camera aria-hidden="true" className="size-4" />
                 Refresh screenshot
+              </DropdownMenuItem>
+            </>
+          ) : null}
+          {canToggleMonitoring && (paused ? onResumeMonitoring : onPauseMonitoring) ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  if (paused) onResumeMonitoring?.(site);
+                  else onPauseMonitoring?.(site);
+                }}
+              >
+                {paused ? (
+                  <>
+                    <PlayCircle aria-hidden="true" className="size-4" />
+                    Resume monitoring
+                  </>
+                ) : (
+                  <>
+                    <PauseCircle aria-hidden="true" className="size-4" />
+                    Pause monitoring
+                  </>
+                )}
               </DropdownMenuItem>
             </>
           ) : null}
