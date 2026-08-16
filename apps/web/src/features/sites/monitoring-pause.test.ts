@@ -13,6 +13,7 @@ import {
   monitoringRequestErrorMessage,
   pausedBadgeFor,
   pausedCount,
+  refusedSitesSentence,
   splitByPauseState,
   summarizeMonitoringResult,
 } from "./monitoring-pause";
@@ -347,6 +348,53 @@ describe("monitoringDetailMessage", () => {
   });
 });
 
+describe("principal_required does not overclaim (review finding, monitoring-pause.ts:293)", () => {
+  // The Go service only ever confirms "an authenticated principal is
+  // required" (apps/api/internal/site/monitoring.go:192,229) — it never
+  // learns or reports WHY there is no principal. "Your session has expired"
+  // asserted a specific, unconfirmed cause; a stale tab that never had a
+  // session, or a revoked session, would be told the same wrong story.
+  it("names the remedy without asserting the unconfirmed cause of an expired session", () => {
+    const message = monitoringRequestErrorMessage("principal_required");
+    expect(message).not.toMatch(/expired/i);
+    expect(message).toContain("Sign in again");
+  });
+});
+
+describe("refusedSitesSentence — grammatical for every detail code (review finding, sites/index.tsx:876)", () => {
+  // GH #414 published nine `detail` values on MonitoringResult
+  // (apps/api/internal/site/monitoring_handler.go:60-63); the toast used to
+  // glue every one of them onto a fixed "the site is" stem, which produced
+  // "the site is no longer exists" and "the site is could not be identified"
+  // for two of them.
+  const KNOWN_DETAILS = [
+    "site_archived",
+    "site_revoked",
+    "site_not_found",
+    "invalid_site_id",
+    "forbidden",
+  ];
+
+  it.each(KNOWN_DETAILS)("reads as one grammatical sentence for %s", (detail) => {
+    const message = monitoringDetailMessage(detail) ?? "the site could not be changed";
+    const sentence = refusedSitesSentence([{ message }]);
+    expect(sentence.startsWith("Skipped because the site")).toBe(true);
+    expect(sentence).not.toMatch(/site is no longer exists/);
+    expect(sentence).not.toMatch(/site is could not/);
+    expect(sentence).not.toMatch(/\bis is\b/);
+    expect(sentence.endsWith(".")).toBe(true);
+  });
+
+  it("handles a detail code this client build has not seen without producing nonsense", () => {
+    // e.g. `site_expired` — a code the server could start sending tomorrow
+    // that the client bundle was built before.
+    const message = monitoringDetailMessage("site_expired") ?? "the site could not be changed";
+    expect(refusedSitesSentence([{ message }])).toBe(
+      "Skipped because the site could not be changed.",
+    );
+  });
+});
+
 describe("summarizeMonitoringResult", () => {
   it("separates moved, already-in-state and refused", () => {
     const summary = summarizeMonitoringResult([
@@ -364,7 +412,7 @@ describe("summarizeMonitoringResult", () => {
     const summary = summarizeMonitoringResult([
       { site_id: "a", ok: false, changed: false, detail: "something_new" },
     ]);
-    expect(summary.refused[0]?.message).toBe("could not be changed");
+    expect(summary.refused[0]?.message).toBe("the site could not be changed");
   });
 
   // `ok` and `changed` are independent booleans on the wire — see
