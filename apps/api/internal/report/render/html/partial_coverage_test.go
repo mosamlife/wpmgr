@@ -2,8 +2,7 @@ package html
 
 import (
 	"bytes"
-	"html/template"
-	"os/exec"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -90,11 +89,29 @@ func TestHTMLStatesPartialCoverage(t *testing.T) {
 
 // TestHTMLFullCoverageUnchanged is the negative and the byte-identity proof
 // together. It renders a fully-covered site (PartialCoverage=false) with the
-// CURRENT template and separately with the template exactly as it stood at
-// 3ac5f15 — the aggregator-fix commit this work builds on, before the prose
-// change — and requires byte-for-byte identical output. The new block is
-// gated entirely behind {{if .Uptime.PartialCoverage}}, so a full-coverage
-// render must not move a single byte.
+// CURRENT template and compares it byte-for-byte against
+// testdata/full_coverage_pre_partial_coverage.html, a committed fixture
+// captured from the template exactly as it stood at 3ac5f15 — the
+// aggregator-fix commit this work builds on, before the prose change. The new
+// block is gated entirely behind {{if .Uptime.PartialCoverage}}, so a
+// full-coverage render must not move a single byte.
+//
+// The fixture is a fixed, reviewed artifact, not something this test (or any
+// test) regenerates. It was produced once, offline, by executing the pre-fix
+// template (via `git show 3ac5f15:.../report.html.tmpl`, which requires
+// developer-machine git history CI does not have) against the same
+// partialFixture(t, false) data this test builds today, then committed. A
+// future change to the template's full-coverage output must edit this
+// fixture deliberately, as a visible diff in review — see
+// testdata/full_coverage_pre_partial_coverage.html for how to regenerate it
+// if that ever legitimately needs to happen.
+//
+// This is safe against the fixture's own randomness: partialFixture assigns
+// fresh uuid.New() values to ClientID and Sites[].SiteID on every call, but
+// neither field is ever rendered into the HTML template (confirmed by
+// `grep -n "ClientID\|SiteID" templates/*.tmpl`, zero matches), so the
+// captured bytes do not depend on which random UUIDs were live when the
+// fixture was generated.
 func TestHTMLFullCoverageUnchanged(t *testing.T) {
 	data := partialFixture(t, false)
 
@@ -110,23 +127,12 @@ func TestHTMLFullCoverageUnchanged(t *testing.T) {
 		t.Error("full-coverage render mentions partial coverage")
 	}
 
-	oldSrc, err := exec.Command("git", "show", "3ac5f15:apps/api/internal/report/render/html/templates/report.html.tmpl").Output()
+	before, err := os.ReadFile("testdata/full_coverage_pre_partial_coverage.html")
 	if err != nil {
-		t.Fatalf("git show 3ac5f15 template: %v", err)
+		t.Fatalf("read golden fixture: %v", err)
 	}
-	oldTmpl, err := template.New("report.html.tmpl").Funcs(funcMap()).Parse(string(oldSrc))
-	if err != nil {
-		t.Fatalf("parse pre-fix template: %v", err)
-	}
-	td := renderData{ReportData: data}
-	td.ReportData.LogoURL = ""
-	var buf bytes.Buffer
-	if err := oldTmpl.Execute(&buf, td); err != nil {
-		t.Fatalf("execute pre-fix template: %v", err)
-	}
-	before := buf.Bytes()
 
 	if !bytes.Equal(before, after) {
-		t.Errorf("full-coverage render changed vs 3ac5f15:\n--- before (3ac5f15) ---\n%s\n--- after ---\n%s", before, after)
+		t.Errorf("full-coverage render changed vs testdata/full_coverage_pre_partial_coverage.html (the pre-#414 3ac5f15 template):\n--- before (golden) ---\n%s\n--- after ---\n%s", before, after)
 	}
 }
