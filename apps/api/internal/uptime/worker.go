@@ -951,8 +951,11 @@ func (w *ProbeWorker) resolveAppAlerts(ctx context.Context, pending []pendingApp
 				// appAggregatePopulation now names the live down set for every
 				// caller, so an update several ticks after the sites it
 				// describes went down still names them - the reason this branch
-				// read the live set in the first place - without the count and
-				// the list being able to disagree.
+				// read the live set in the first place. That does not make the
+				// count and the list unable to disagree: they are two separate
+				// reads a moment apart (see appAggregatePopulation's PAUSE
+				// section), and a pause landing between them still skews the
+				// count against the names by one tick, self-healing on the next.
 				w.fireAppAggregate(ctx, tenantID, AppAggregateAlert{
 					Recovered:       false,
 					Updated:         true,
@@ -1144,8 +1147,12 @@ type appAggregatePopulation struct {
 //     body no longer names ("3/4 sites are simultaneously app-down" over a body
 //     naming 2 - phase 2 finding 3). A drop is rare (it needs a pause inside the
 //     window between the ratio query and the dispatch), so re-reading the ratio
-//     then, and only then, costs nothing in the ordinary case and gives counts
-//     and names pause-filtered at the same instant. The re-read cannot be
+//     then, and only then, costs nothing in the ordinary case and closes that
+//     specific window. It does not make the re-read atomic with the names query
+//     below: that is a second, separate read, and a pause landing between the
+//     two - or a pause on a site that never dropped out of `affected`, so
+//     `dropped` stayed 0 and the ratio was never re-read at all - still leaves
+//     the count and the list one pause apart. The re-read cannot be
 //     substituted with arithmetic on the fires: a fire whose pause landed
 //     BEFORE the ratio query was never in the count to subtract from, and this
 //     path cannot tell the two apart.
@@ -1170,11 +1177,14 @@ type appAggregatePopulation struct {
 //     the sites it describes went down, so the fires are empty or stale (the
 //     reason this branch already read the live set); and even at the instant of
 //     a trip, sites that entered their incident on an EARLIER tick are in the
-//     count while nothing this tick transitioned them. The live set is the same
-//     server-side pause-filtered population the counts come from, so it is the
-//     only list that cannot contradict them. It is bounded by the query's own
-//     limit, so on a large fleet it names fewer sites than `down` - by
-//     construction, not by disagreement.
+//     count while nothing this tick transitioned them. The live set is drawn
+//     from the same server-side pause-filtered population the counts come
+//     from, one query later - the closest the two can get without holding a
+//     lock across both reads on the alerting hot path, and a pause landing in
+//     that one-query gap still leaves the list one tick out of step with the
+//     count (see the PAUSE section above). It is also bounded by the query's
+//     own limit, so on a large fleet it names fewer sites than `down` even
+//     with no pause involved - by construction, not by disagreement.
 //
 //     This also subsumes the phase 2 finding-2 case, where the tick's
 //     transitions were all paused sites while OTHER, unpaused sites held the
