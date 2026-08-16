@@ -305,6 +305,31 @@ $$;
 -- ---------------------------------------------------------------------------
 -- The auto-resume sweep index - see DECISION 2. Deliberately NOT an index on
 -- "monitoring_paused_at IS NULL".
+--
+-- THE "AND monitoring_paused_at IS NOT NULL" BELOW IS REDUNDANT AND MUST STAY.
+--
+-- sites_monitoring_resume_requires_pause_check already guarantees it: a row
+-- with a resume instant always has a pause instant, so that clause selects no
+-- row the first clause did not already select. It is not here to filter rows.
+-- It is here to be REPEATED BY THE QUERY.
+--
+-- The planner proves a partial index usable from the query's own WHERE clauses
+-- alone. It does not consult check constraints to discharge an index predicate,
+-- so it cannot derive "paused_at IS NOT NULL" from the constraint, and a query
+-- that omits that clause cannot use this index however logically implied it is.
+-- Both halves of the predicate must therefore appear in both places, and the
+-- consumer (claimDueAutoResumesSQL, internal/site/monitoring_resume_worker.go)
+-- repeats both deliberately.
+--
+-- Measured on 200k sites (95 MB table, 300 due), EXPLAIN ANALYZE as wpmgr_app:
+--
+--   query repeats both clauses:  Index Scan on this index          13.8 ms
+--   query filters resume_at only: Seq Scan, 199,700 rows removed  395.0 ms
+--
+-- A later phase adding a second sweep will naturally write
+-- "WHERE monitoring_resume_at <= now()". That is correct, and it scans the
+-- whole fleet. Anyone dropping the redundant clause from EITHER side gets a
+-- slower plan and no error.
 -- ---------------------------------------------------------------------------
 
 DO $$
