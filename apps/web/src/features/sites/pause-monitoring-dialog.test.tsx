@@ -98,11 +98,11 @@ describe("PauseMonitoringDialog", () => {
         onClose={() => {}}
         onConfirm={() => {}}
         count={2}
-        errorMessage="Your session has expired. Sign in again, then retry the change."
+        errorMessage="You're not signed in. Sign in again, then retry the change."
       />,
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Your session has expired.",
+      "You're not signed in.",
     );
   });
 

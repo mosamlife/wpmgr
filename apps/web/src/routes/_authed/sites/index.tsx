@@ -58,6 +58,7 @@ import {
   fleetCountLabel,
   monitoringMenuFor,
   pausedCount,
+  refusedSitesSentence,
   splitByPauseState,
   summarizeMonitoringResult,
 } from "@/features/sites/monitoring-pause";
@@ -865,12 +866,9 @@ function SitesPage() {
       const noun = moved === 1 ? "site" : "sites";
 
       if (summary.refused.length > 0) {
-        const reasons = Array.from(
-          new Set(summary.refused.map((r) => r.message)),
-        ).join("; ");
         toast.warning(
           `Monitoring ${verb} on ${moved} ${noun}; ${summary.refused.length} skipped`,
-          { description: `Skipped because the site is ${reasons}.` },
+          { description: refusedSitesSentence(summary.refused) },
         );
         return;
       }

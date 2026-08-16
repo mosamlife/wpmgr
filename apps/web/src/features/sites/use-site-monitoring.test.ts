@@ -238,7 +238,7 @@ describe("useResumeMonitoring — real hook against a faked transport (GH #414)"
     expect(invalidateSpy).not.toHaveBeenCalled();
   });
 
-  it("a different status (500, unknown code) rejects as request_failed, and never invalidates", async () => {
+  it("a 500 with no parsed error body rejects via the empty_response guard, and never invalidates", async () => {
     resumeMock.mockResolvedValue({
       data: undefined,
       error: undefined,

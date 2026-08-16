@@ -290,7 +290,7 @@ const REQUEST_ERROR_MESSAGES: Record<string, string> = {
     "Monitoring can be changed on at most 200 sites per request. Narrow the selection and try again.",
   site_ids_required: "No sites were selected.",
   principal_required:
-    "Your session has expired. Sign in again, then retry the change.",
+    "You're not signed in. Sign in again, then retry the change.",
   resume_at_in_past:
     "The resume time has to be in the future. Pick a later time and try again.",
 };
@@ -312,16 +312,48 @@ export function monitoringRequestErrorMessage(code: string): string | null {
  * returns them (pinned by
  * `apps/api/tests/gh414_monitoring_guards_test.go:214-215`).
  */
+// Each value is a COMPLETE clause ("the site ...") rather than a fragment
+// meant to be glued onto a fixed "the site is" prefix: `site_not_found` and
+// `invalid_site_id` are not adjectives ("is no longer exists" and "is could
+// not be identified" are not English), so the caller must not prepend its own
+// "is". `refusedSitesSentence` below is the one place that assembles these
+// into a toast description, and it reads every value as self-contained.
 const SITE_DETAIL_MESSAGES: Record<string, string> = {
-  site_archived: "archived, so monitoring was left as it is",
-  site_revoked: "revoked, so monitoring was left as it is",
-  site_not_found: "no longer exists",
-  invalid_site_id: "could not be identified",
-  forbidden: "is outside your site access",
+  site_archived: "the site is archived, so monitoring was left as it is",
+  site_revoked: "the site is revoked, so monitoring was left as it is",
+  site_not_found: "the site no longer exists",
+  invalid_site_id: "the site could not be identified",
+  forbidden: "the site is outside your site access",
 };
+
+/** Fallback clause for a `detail` code not in `SITE_DETAIL_MESSAGES` — a code
+ * the client has not seen yet (a future addition to the published enum, e.g.
+ * `site_archived`/`site_revoked` before they were pinned) still reads as a
+ * complete, honest sentence rather than nonsense. */
+const UNKNOWN_DETAIL_MESSAGE = "the site could not be changed";
 
 export function monitoringDetailMessage(detail: string): string | null {
   return SITE_DETAIL_MESSAGES[detail] ?? null;
+}
+
+/**
+ * The refused-toast description: "Skipped because <reason>; <reason>."
+ *
+ * Every `message` fed in here is already a complete clause (from
+ * `monitoringDetailMessage`, or `UNKNOWN_DETAIL_MESSAGE` for a code this
+ * client build does not recognise), so this never assumes a shared "the site
+ * is" stem the way the previous copy did — that stem produced "the site is no
+ * longer exists" and "the site is could not be identified" for two of the
+ * nine published detail codes.
+ */
+export function refusedSitesSentence(refused: { message: string }[]): string {
+  const reasons = Array.from(new Set(refused.map((r) => r.message))).join("; ");
+  return `Skipped because ${reasons}.`;
+}
+
+/** The clause used for a `detail` this client build does not recognise. */
+export function unknownDetailMessage(): string {
+  return UNKNOWN_DETAIL_MESSAGE;
 }
 
 export interface MonitoringOutcomeSummary {
@@ -349,7 +381,7 @@ export function summarizeMonitoringResult(
       summary.refused.push({
         siteId: r.site_id,
         detail: r.detail,
-        message: monitoringDetailMessage(r.detail) ?? "could not be changed",
+        message: monitoringDetailMessage(r.detail) ?? unknownDetailMessage(),
       });
     }
   }
