@@ -63,7 +63,7 @@ import {
 } from "@/features/sites/use-sites-selection";
 import { SiteRowActions } from "@/features/sites/site-row-actions";
 import { PausedBadge } from "@/features/sites/site-badges";
-import { siteUptimeBadge, siteUptimeTextClass } from "@/features/sites/uptime-badge";
+import { uptimeBadgeFor, type UptimeBadgeTone } from "@/features/sites/monitoring-pause";
 import { AgentColumnFleetNote } from "@/features/sites/agent-column-header";
 import {
   computeSitesColumnWidths,
@@ -331,6 +331,15 @@ function trackWidth(id: string): number {
 }
 
 const TABLE_MIN_WIDTH_PX = SITES_TABLE_MIN_WIDTH_PX;
+
+// Text-color classes for the plain-text Uptime cell (GH #414), keyed off
+// `UptimeBadgeView.tone` rather than re-deriving from `up` so this can never
+// disagree with `uptimeBadgeFor`, the pause-aware source of truth.
+const UPTIME_TONE_TEXT_CLASS: Record<UptimeBadgeTone, string> = {
+  success: "text-[var(--color-foreground)]",
+  destructive: "text-[var(--color-destructive)]",
+  muted: "text-[var(--color-muted-foreground)]",
+};
 
 /**
  * Resolved column widths (one per column, plus the trailing spacer) for the
@@ -606,32 +615,43 @@ function buildColumns(
       enableSorting: false,
       size: COL_UPTIME_PX,
       cell: ({ row }) => {
-        const { up, uptime_pct } = row.original.site;
-        // Neither field present: site has never been probed.
-        if (up == null && uptime_pct === undefined) {
+        const site = row.original.site;
+        const { up, uptime_pct, monitoring_paused_at } = site;
+        const paused = Boolean(monitoring_paused_at);
+        // Neither field present and not paused: site has never been probed
+        // and there is no stale result to date either.
+        if (!paused && up == null && uptime_pct === undefined) {
           return <span aria-hidden="true" />;
         }
-        // GH #272 — tri-state (never green/foreground-as-ok unless
-        // up === true); see uptime-badge.ts.
-        const badge = siteUptimeBadge(up);
-        const toneClass = siteUptimeTextClass(badge.status);
+        // GH #414 — a paused site's uptime result is frozen; the muted tone
+        // and the "as of" stamp (in the hover text; the column is 72px wide)
+        // ride the same helper that drives the card's UptimeBadge, so the
+        // grid and the table can't drift apart. GH #272's tri-state rule
+        // (never green/foreground-as-ok unless up === true) lives in
+        // uptime-badge.ts, which this helper reads from underneath.
+        const view = uptimeBadgeFor(site);
+        const toneClass = UPTIME_TONE_TEXT_CLASS[view.tone];
         // Show the 30-day percentage when available, otherwise the live
-        // up/down/unknown indicator.
+        // up/down/unknown/not-checked label.
         if (uptime_pct !== undefined) {
           const pct = uptime_pct.toFixed(1);
           return (
             <span
               className={cn("tabular-nums text-xs font-medium", toneClass)}
-              title={`${pct}% uptime (30 days)`}
+              title={paused ? view.description : `${pct}% uptime (30 days)`}
             >
               {pct}%
             </span>
           );
         }
-        // Only live up/down/unknown is available (no 30-day window yet).
+        // Only live up/down/unknown/not-checked is available (no 30-day
+        // window yet).
         return (
-          <span className={cn("text-xs font-medium", toneClass)}>
-            {badge.label}
+          <span
+            className={cn("text-xs font-medium", toneClass)}
+            title={paused ? view.description : undefined}
+          >
+            {view.label}
           </span>
         );
       },

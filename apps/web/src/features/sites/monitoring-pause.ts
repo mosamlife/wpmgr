@@ -1,6 +1,7 @@
 import type { Site } from "@wpmgr/api";
 
 import { relativeTime } from "@/lib/utils";
+import { siteUptimeBadge } from "@/features/sites/uptime-badge";
 
 // GH #414 phase 4b — the interface for "pause monitoring".
 //
@@ -8,11 +9,24 @@ import { relativeTime } from "@/lib/utils";
 // tested without mounting a tree. The components below it are thin.
 //
 // THE RULE THE WHOLE FEATURE IS BUILT ON: pause means "do not tell me", never
-// "lie to me". That is a display constraint as much as a scheduling one, which
-// is why `healthBadgeFor` exists: phase 2 stops the uptime prober on a paused
-// site, so `health_status` FREEZES at whatever it was when the pause landed. A
-// confident green "Healthy" on a site nobody has checked since Tuesday is the
-// interface telling the lie the backend refused to.
+// "lie to me". That is a display constraint as much as a scheduling one.
+//
+// `health_status` has THREE writers, not one: the uptime prober, the
+// connection sweep (sweeper.go -> connection_service.go's
+// MarkSiteDegraded/MarkSiteDisconnected) and site.HealthCheckWorker
+// (health.go, over the unfiltered ListEnrolled). Phase 2 stops only the
+// prober for a paused site — the other two keep writing, deliberately, so
+// `health_status` stays LIVE and TRUE the whole time a site is paused. It is
+// never muted, dated or overridden here, and nothing below should touch it.
+//
+// What phase 2 DOES stop is the prober's own result: `site.up`,
+// `site.uptime_pct` and the "as of" stamp all freeze at whatever they were
+// when the pause landed. `health_checked_at`, despite its name, is
+// `site_uptime_status.last_probed_at` (apps/api/internal/site/model.go:120)
+// — the uptime prober's own clock, not health's. `uptimeBadgeFor` below is
+// what mutes and dates THAT result; a confident green "Up" on a site nobody
+// has probed since Tuesday is the interface telling the lie the backend
+// refused to.
 
 /**
  * Paused when `monitoring_paused_at` is present. There is no boolean on the
@@ -56,13 +70,13 @@ export function fleetCountLabel(total: number, paused: number): string {
   return `${total} ${noun} enrolled, ${paused} paused`;
 }
 
-// ── The health badge ────────────────────────────────────────────────────────
+// ── The uptime badge ────────────────────────────────────────────────────────
 
-export type HealthBadgeTone = "success" | "destructive" | "muted";
+export type UptimeBadgeTone = "success" | "destructive" | "muted";
 
-export interface HealthBadgeView {
+export interface UptimeBadgeView {
   label: string;
-  tone: HealthBadgeTone;
+  tone: UptimeBadgeTone;
   pulse: boolean;
   /** Rendered after the label as a separated suffix; null when there is none. */
   time: string | null;
@@ -70,37 +84,41 @@ export interface HealthBadgeView {
   description: string;
 }
 
-const activeHealthMeta: Record<
-  Site["health_status"],
-  { label: string; tone: HealthBadgeTone; pulse: boolean }
-> = {
-  healthy: { label: "Healthy", tone: "success", pulse: true },
-  unreachable: { label: "Unreachable", tone: "destructive", pulse: false },
-  unknown: { label: "Unknown", tone: "muted", pulse: false },
+/**
+ * THE DECISION, defended in one sentence: a paused site keeps its last uptime
+ * verdict but loses its colour and gains an explicit "as of" stamp, because
+ * hiding the value would throw away the last true thing we know and keeping
+ * the green would assert a freshness the prober stopped supplying.
+ *
+ * `health_status` is deliberately NOT read here — it has two other writers
+ * that never stop under pause (see the file header), so it stays live and
+ * unmuted wherever it is already shown. This reads `site.up` /
+ * `site.uptime_pct` (via `siteUptimeBadge`) instead, dated by
+ * `health_checked_at` — the uptime prober's own `last_probed_at`, which stops
+ * advancing at exactly the moment this badge freezes. Absent means the site
+ * was never probed, and that renders as "not checked", never as now.
+ */
+// siteUptimeBadge's tone is the wider StatusTone (it also covers "warning" /
+// "info" for other callers); GH #414's paused/unpaused states only ever need
+// this three-way palette, so status maps down to it explicitly rather than
+// widening UptimeBadgeTone to match every StatusTone member.
+const activeToneOf: Record<ReturnType<typeof siteUptimeBadge>["status"], UptimeBadgeTone> = {
+  up: "success",
+  down: "destructive",
+  unknown: "muted",
 };
 
-/**
- * THE DECISION, defended in one sentence: a paused site keeps its last verdict
- * but loses its colour and gains an explicit "as of" stamp, because hiding the
- * value would throw away the last true thing we know and keeping the green
- * would assert a freshness the prober stopped supplying.
- *
- * So: tone is always `muted` while paused (no green, no red), the label keeps
- * the word, the pulse is off, and the time suffix is the age of
- * `health_checked_at` — the uptime prober's own `last_probed_at`, which stops
- * advancing at exactly the moment the badge freezes. Absent means the site was
- * never probed, and that renders as "never checked", never as now.
- */
-export function healthBadgeFor(site: Site, now: number = Date.now()): HealthBadgeView {
-  const meta = activeHealthMeta[site.health_status];
+export function uptimeBadgeFor(site: Site, now: number = Date.now()): UptimeBadgeView {
+  const base = siteUptimeBadge(site.up);
+  const pulse = base.status === "up";
 
   if (!isMonitoringPaused(site)) {
     return {
-      label: meta.label,
-      tone: meta.tone,
-      pulse: meta.pulse,
+      label: base.label,
+      tone: activeToneOf[base.status],
+      pulse,
       time: null,
-      description: `Health: ${meta.label.toLowerCase()}`,
+      description: `Uptime: ${base.label.toLowerCase()}`,
     };
   }
 
@@ -113,16 +131,16 @@ export function healthBadgeFor(site: Site, now: number = Date.now()): HealthBadg
       pulse: false,
       time: null,
       description:
-        "Monitoring is paused and this site has never been checked, so there is no health result.",
+        "Monitoring is paused and this site has never been probed for uptime, so there is no result.",
     };
   }
 
   return {
-    label: meta.label,
+    label: base.label,
     tone: "muted",
     pulse: false,
     time: `as of ${checked}`,
-    description: `Monitoring is paused. Last checked ${checked}; this result is not being refreshed.`,
+    description: `Monitoring is paused. Last probed ${checked}; this result is not being refreshed.`,
   };
 }
 

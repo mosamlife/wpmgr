@@ -5,23 +5,28 @@ import { Badge } from "@/components/ui/badge";
 import { StatusChip } from "@/components/status";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
-import { healthBadgeFor, pausedBadgeFor } from "@/features/sites/monitoring-pause";
+import { uptimeBadgeFor, pausedBadgeFor } from "@/features/sites/monitoring-pause";
 
 /**
- * HealthBadge — StatusChip variant of the health indicator. Dot + label,
+ * UptimeBadge — StatusChip variant of the uptime indicator. Dot + label,
  * no bare colored dot, no purple, tokens only.
  *
- * GH #414. It takes the whole `site` rather than the bare status because a
- * paused site's `health_status` is FROZEN: phase 2 filters paused sites out of
- * the uptime prober's enumeration, and the prober is what refreshes the field.
- * `healthBadgeFor` greys the chip and stamps it with the age of
- * `health_checked_at`; see that function for the decision and why.
+ * GH #414. It takes the whole `site` rather than the bare `up` flag because a
+ * paused site's uptime result is FROZEN: phase 2 filters paused sites out of
+ * the uptime prober's enumeration, and the prober is what refreshes `up` /
+ * `uptime_pct`. `uptimeBadgeFor` greys the chip and stamps it with the age of
+ * `health_checked_at` (the prober's own `last_probed_at`); see that function
+ * for the decision and why.
+ *
+ * `site.health_status` is a different, unrelated field with two other writers
+ * that never stop under pause — it is not read here, and nothing in this
+ * component mutes it. See monitoring-pause.ts's file header.
  */
-export function HealthBadge({ site }: { site: Site }) {
+export function UptimeBadge({ site }: { site: Site }) {
   // 30 s cadence: coarse enough not to thrash, fine enough that "as of 4m ago"
   // does not sit stale on a long-open dashboard.
   const now = useNow(30_000);
-  const view = healthBadgeFor(site, now);
+  const view = uptimeBadgeFor(site, now);
   return (
     <StatusChip
       tone={view.tone}

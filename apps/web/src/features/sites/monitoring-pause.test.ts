@@ -6,7 +6,7 @@ import {
   MONITORING_PAUSE_SCOPE_SENTENCE,
   MONITORING_PAUSE_STOPS,
   fleetCountLabel,
-  healthBadgeFor,
+  uptimeBadgeFor,
   isMonitoringPaused,
   monitoringDetailMessage,
   monitoringMenuFor,
@@ -19,9 +19,10 @@ import {
 
 // GH #414 phase 4b. Before this feature there was no coverage of these
 // surfaces at all, so this file pins every decision the interface makes:
-// what the paused badge says, what the health badge is ALLOWED to say while
-// paused, what the fleet count reports, which menu items a mixed selection
-// offers, and that the dialog copy names backups as continuing.
+// what the paused badge says, what the uptime badge is ALLOWED to say while
+// paused (health_status is untouched and unmuted; see monitoring-pause.ts's
+// file header), what the fleet count reports, which menu items a mixed
+// selection offers, and that the dialog copy names backups as continuing.
 
 const NOW = Date.parse("2026-08-15T12:00:00Z");
 
@@ -104,20 +105,26 @@ describe("pausedBadgeFor", () => {
   });
 });
 
-// ── 2. The health badge must not lie ───────────────────────────────────────
+// ── 2. The uptime badge must not lie ───────────────────────────────────────
+//
+// health_status is deliberately absent from every case here: it has two
+// writers (the connection sweep, the health-check worker) that never stop
+// under pause, so it is never muted or dated. Only site.up / site.uptime_pct
+// — the uptime prober's own result — freezes; see monitoring-pause.ts's file
+// header for the full mechanism.
 
-describe("healthBadgeFor", () => {
-  it("is a confident green Healthy while monitoring is ACTIVE", () => {
-    const view = healthBadgeFor(buildSite(), NOW);
-    expect(view.label).toBe("Healthy");
+describe("uptimeBadgeFor", () => {
+  it("is a confident green Up while monitoring is ACTIVE", () => {
+    const view = uptimeBadgeFor(buildSite({ up: true }), NOW);
+    expect(view.label).toBe("Up");
     expect(view.tone).toBe("success");
     expect(view.pulse).toBe(true);
     expect(view.time).toBeNull();
   });
 
-  it("NEVER shows a confident healthy state while paused", () => {
-    const view = healthBadgeFor(
-      pausedSite({ health_checked_at: "2026-08-15T09:00:00Z" }),
+  it("NEVER shows a confident up state while paused", () => {
+    const view = uptimeBadgeFor(
+      pausedSite({ up: true, health_checked_at: "2026-08-15T09:00:00Z" }),
       NOW,
     );
     // The whole point of the phase: no green, no pulse, and an explicit stamp.
@@ -127,36 +134,51 @@ describe("healthBadgeFor", () => {
   });
 
   it("keeps the last verdict but dates it with health_checked_at", () => {
-    const view = healthBadgeFor(
-      pausedSite({ health_checked_at: "2026-08-15T09:00:00Z" }),
+    const view = uptimeBadgeFor(
+      pausedSite({ up: true, health_checked_at: "2026-08-15T09:00:00Z" }),
       NOW,
     );
-    expect(view.label).toBe("Healthy");
+    expect(view.label).toBe("Up");
     expect(view.time).toBe("as of 3h ago");
     expect(view.description).toContain("not being refreshed");
   });
 
   it("renders a never-probed paused site as Not checked, never as now", () => {
-    const view = healthBadgeFor(pausedSite(), NOW);
+    const view = uptimeBadgeFor(pausedSite(), NOW);
     expect(view.label).toBe("Not checked");
     expect(view.tone).toBe("muted");
     expect(view.time).toBeNull();
-    expect(view.label).not.toBe("Healthy");
+    expect(view.label).not.toBe("Up");
   });
 
-  it("drops the red from a paused unreachable site too", () => {
-    // Symmetry matters: a stale "Unreachable" is as much a lie as a stale
-    // "Healthy" once the prober stopped confirming it.
-    const view = healthBadgeFor(
+  it("drops the red from a paused down site too", () => {
+    // Symmetry matters: a stale "Down" is as much a lie as a stale "Up" once
+    // the prober stopped confirming it.
+    const view = uptimeBadgeFor(
       pausedSite({
-        health_status: "unreachable",
+        up: false,
         health_checked_at: "2026-08-15T09:00:00Z",
       }),
       NOW,
     );
     expect(view.tone).toBe("muted");
-    expect(view.label).toBe("Unreachable");
+    expect(view.label).toBe("Down");
     expect(view.time).toBe("as of 3h ago");
+  });
+
+  it("never reads health_status — it stays live and out of scope here", () => {
+    // A paused site whose health_status disagrees with its uptime state
+    // (the real-world case this whole fix exists for) must not change what
+    // uptimeBadgeFor returns.
+    const withHealthy = uptimeBadgeFor(
+      pausedSite({ up: false, health_status: "healthy" }),
+      NOW,
+    );
+    const withUnreachable = uptimeBadgeFor(
+      pausedSite({ up: false, health_status: "unreachable" }),
+      NOW,
+    );
+    expect(withHealthy).toEqual(withUnreachable);
   });
 });
 

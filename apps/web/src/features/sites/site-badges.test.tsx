@@ -4,7 +4,7 @@ import type { Site } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
 
-import { HealthBadge, PausedBadge } from "./site-badges";
+import { UptimeBadge, PausedBadge } from "./site-badges";
 
 // GH #414 phase 4b — the rendered halves of the two badges. The decision logic
 // itself is pinned in monitoring-pause.test.ts; this file proves the components
@@ -72,17 +72,18 @@ describe("PausedBadge", () => {
   });
 });
 
-describe("HealthBadge", () => {
-  it("shows a confident Healthy while monitoring is active", () => {
-    renderWithProviders(<HealthBadge site={buildSite()} />);
-    expect(screen.getByText("Healthy")).toBeInTheDocument();
+describe("UptimeBadge", () => {
+  it("shows a confident Up while monitoring is active", () => {
+    renderWithProviders(<UptimeBadge site={buildSite({ up: true })} />);
+    expect(screen.getByText("Up")).toBeInTheDocument();
     expect(screen.queryByText(/as of/)).not.toBeInTheDocument();
   });
 
-  it("does NOT show a confident healthy state for a paused site", () => {
+  it("does NOT show a confident up state for a paused site", () => {
     renderWithProviders(
-      <HealthBadge
+      <UptimeBadge
         site={buildSite({
+          up: true,
           monitoring_paused_at: new Date(Date.now() - 7_200_000).toISOString(),
           health_checked_at: new Date(Date.now() - 10_800_000).toISOString(),
         })}
@@ -93,15 +94,15 @@ describe("HealthBadge", () => {
     expect(screen.getByText(/as of 3h ago/)).toBeInTheDocument();
   });
 
-  it("says Not checked, never Healthy, for a paused site never probed", () => {
+  it("says Not checked, never Up, for a paused site never probed", () => {
     renderWithProviders(
-      <HealthBadge
+      <UptimeBadge
         site={buildSite({
           monitoring_paused_at: new Date().toISOString(),
         })}
       />,
     );
     expect(screen.getByText("Not checked")).toBeInTheDocument();
-    expect(screen.queryByText("Healthy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up")).not.toBeInTheDocument();
   });
 });
