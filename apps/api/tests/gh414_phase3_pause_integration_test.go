@@ -234,14 +234,17 @@ func TestPhase3PauseSelection(t *testing.T) {
 		}
 
 		// Not-claiming is what makes resume work: the row is still unnotified.
+		var n int
 		if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
-			var n int
 			return tx.QueryRow(ctx,
 				`SELECT count(*) FROM site_vulnerabilities
 				  WHERE tenant_id = $1 AND site_id = $2 AND notified_at IS NULL`,
 				tenant, paused).Scan(&n)
 		}); err != nil {
 			t.Fatalf("re-read finding: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("the paused site's finding must still be unnotified after ClaimUnnotifiedFindings excluded it, got %d unnotified rows (want 1)", n)
 		}
 	})
 

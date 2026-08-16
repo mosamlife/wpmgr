@@ -347,3 +347,54 @@ func TestAggregateUnchangedWhenNothingIsPaused(t *testing.T) {
 		t.Fatalf("with nothing dropped there must be NO dispatch-time re-read: %d ratio reads", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FINDING 3 (review round) — fireAppAggregate's send gate must treat a
+// non-nil EMPTY affected slice as "please resolve", exactly as the doc
+// comment on fireAppAggregate says, not as equivalent to nil. Every
+// production caller passes literal nil (resolveAppAlerts's trip and update
+// branches, having resolved the population itself a moment earlier), so this
+// is unreachable today; it pins the contract for the next caller that hands
+// fireAppAggregate a real, possibly-empty slice instead.
+//
+// RED: revert the fireAppAggregate gate to `len(affected) > 0`. An empty,
+// non-nil `affected` then takes the SAME branch as nil - skips
+// appAggregatePopulation entirely - so the alert goes out quoting whatever
+// stale SuppressedSites the caller passed in, never the live down set.
+func TestEmptyNonNilAffectedStillResolvesThePopulation(t *testing.T) {
+	ctx := context.Background()
+	tenant := uuid.New()
+
+	down := appPauseFleetSite("https://empty-affected-down.example.com")
+	down.inIncident = true
+	up := appPauseFleetSite("https://empty-affected-up.example.com")
+
+	base := &appPauseRepo{fleet: []appPauseSite{down, up}, breaker: map[uuid.UUID]AppBreakerState{}}
+	repo := &countingRatioRepo{appPauseRepo: base}
+	w, mailer := newAggregateRig(t, repo)
+
+	// EligibleCount/DownCount are deliberately junk (99/99, so the send gate's
+	// bar check passes regardless of resolution) and SuppressedSites carries a
+	// name that must NEVER reach the mail once resolution runs: `affected` is
+	// `[]pendingAppFire{}` — non-nil, zero length — which is the case the
+	// buggy `len(affected) > 0` gate could not distinguish from nil.
+	w.fireAppAggregate(ctx, tenant, AppAggregateAlert{
+		TenantID:        tenant,
+		EligibleCount:   99,
+		DownCount:       99,
+		SuppressedSites: []string{"stale-name-must-be-replaced"},
+		FiredAt:         time.Now(),
+	}, []pendingAppFire{})
+
+	subjects, bodies := mailer.sent()
+	if len(subjects) != 1 {
+		t.Fatalf("expected exactly one aggregate, got %d: %v", len(subjects), subjects)
+	}
+	body := bodies[0]
+	if strings.Contains(body, "stale-name-must-be-replaced") {
+		t.Fatalf("an empty-but-non-nil affected must trigger resolution, replacing the caller's stale names - got the stale name in the body:\n%s", body)
+	}
+	if !strings.Contains(body, down.url) {
+		t.Fatalf("resolution must name the LIVE down site %s, body:\n%s", down.url, body)
+	}
+}

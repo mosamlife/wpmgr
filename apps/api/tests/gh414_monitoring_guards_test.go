@@ -375,14 +375,38 @@ func concurrentMonitoringRequests(t *testing.T, pool *db.Pool, engine http.Handl
 		mu      sync.Mutex
 		changed int
 	)
+	// fire runs on its OWN goroutine (via `go fire()` below), so it must never
+	// reach a t.Fatalf, directly or through a helper: t.Fatalf calls
+	// runtime.Goexit on the CALLING goroutine, not the test's own goroutine, so
+	// it would unwind fire (running its deferred wg.Done()) while
+	// concurrentMonitoringRequests keeps executing past wg.Wait() as if nothing
+	// had failed, asserting on a `changed` count that never got incremented for
+	// the failed request and losing the real failure's message from the
+	// subtest's actual failure path. postJSON and decodeMonitoring both call
+	// t.Fatalf internally, so fire is deliberately inlined below instead of
+	// calling them, using t.Errorf + return so a failure here marks the test
+	// failed without killing a goroutine other than the one still running the
+	// test body.
 	fire := func() {
 		defer wg.Done()
-		rec := postJSON(t, engine, path, payload)
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Errorf("marshal: %v", err)
+			return
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("concurrent request failed: %d %s", rec.Code, rec.Body.String())
 			return
 		}
-		got := decodeMonitoring(t, rec.Body.Bytes(), rec.Code)
+		var got monitoringBulkResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Errorf("decode monitoring response (status %d, body %s): %v", rec.Code, rec.Body.String(), err)
+			return
+		}
 		mu.Lock()
 		changed += got.ChangedCount
 		mu.Unlock()
