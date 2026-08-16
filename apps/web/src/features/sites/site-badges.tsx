@@ -62,7 +62,15 @@ export function PausedBadge({
       title={view.title}
       aria-label={view.title}
       className={cn(
-        "gap-1 border-warning/40 text-warning-foreground",
+        // warning-SUBTLE-FG, not warning-foreground (GH #414, a repeat of
+        // GH #322 — see agent-column-header.tsx:186-199 for the full
+        // reasoning). This badge has no warning fill, only a border, so its
+        // text sits on the ordinary card/row surface. --warning-foreground is
+        // the text colour for content sitting ON a --warning background: it
+        // is near-black in both themes and darker still in dark mode, which
+        // is why the pill read as empty. --warning-subtle-fg is the token for
+        // warning-tinted text on an ordinary surface and inverts properly.
+        "gap-1 border-warning/40 text-warning-subtle-fg",
         className,
       )}
     >
