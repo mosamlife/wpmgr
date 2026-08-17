@@ -455,4 +455,293 @@ class EmailLogFailureBypassTest extends TestCase
 
         unset($GLOBALS['wpdb']);
     }
+
+    /**
+     * Round 4 (three review bots + two security reviews, each finding a
+     * DIFFERENT leaking field on this same forced-write path): Cc, Bcc,
+     * Reply-To, mail_from, the body (when store_body is true), and
+     * attachment names. Rather than pin four more named-column assertions
+     * (a blocklist test has the exact same blind spot as the blocklist code
+     * it is proving), this iterates every key of the ACTUAL inserted row
+     * against a small allowlist of columns known to carry no personal data.
+     * Anything else must be empty -- so a fifth field added to the mail
+     * payload or to EmailLogger::write() tomorrow, without anyone touching
+     * this test, still fails it instead of shipping.
+     */
+    private const NON_PERSONAL_COLUMNS = [
+        'message_id', 'provider', 'status', 'response', 'error',
+        'retries', 'resent_count', 'connection_key', 'created_at',
+    ];
+
+    public function test_forced_row_excludes_every_field_outside_the_allowlist(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        // store_body TRUE on purpose: proves the allowlist wins even when
+        // the site's own preference would otherwise permit a body column.
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => true]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'SMTP Error: The following recipients failed: cc@example.com, bcc@example.com: 550 5.1.1 User unknown',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail                 = $this->base_mail();
+        $mail['cc']           = ['cc@example.com'];
+        $mail['bcc']          = ['bcc@example.com'];
+        $mail['reply_to']     = ['reply@example.com'];
+        $mail['attachments']  = [['name' => 'invoice.pdf', 'size_bytes' => 100]];
+        $router->send($mail, $cfg, true);
+
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+
+        foreach ($row as $column => $value) {
+            if (in_array($column, self::NON_PERSONAL_COLUMNS, true)) {
+                continue;
+            }
+            $this->assertTrue(
+                $value === '' || $value === null || $value === 0,
+                "Column '{$column}' must be empty on the forced (log_emails=false) path; got: " . var_export($value, true)
+            );
+        }
+    }
+
+    /**
+     * RED today: a rejected Cc address survives in `error` because
+     * maybe_log() only ever built its redaction dictionary from `to`. Uses a
+     * malformed-but-real (bare-IP domain) address, matching
+     * addressLeakTable() above, because a plain ASCII address is already
+     * caught by AddressParser::redact_email_addresses()'s unconditional
+     * generic regex pass -- that pass is what would mask this exact gap if
+     * the test used an ordinary address instead.
+     */
+    public function test_rejected_cc_address_is_redacted_from_error(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'no valid recipient address (rejected: admin@203.0.113.9)',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail       = $this->base_mail();
+        $mail['cc'] = ['admin@203.0.113.9'];
+        $router->send($mail, $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringNotContainsString('admin@203.0.113.9', $row['error'], 'A rejected Cc address must not survive in the error text.');
+        $this->assertStringNotContainsString('admin@203.0.113.9', (string) json_encode($row));
+    }
+
+    /** RED today: a rejected Bcc address survives in `error` because maybe_log() only ever built its redaction dictionary from `to`. Same malformed-address rationale as the Cc case above. */
+    public function test_rejected_bcc_address_is_redacted_from_error(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'no valid recipient address (rejected: admin@[192.168.13.7])',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail        = $this->base_mail();
+        $mail['bcc'] = ['admin@[192.168.13.7]'];
+        $router->send($mail, $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringNotContainsString('admin@[192.168.13.7]', $row['error'], 'A rejected Bcc address must not survive in the error text.');
+        $this->assertStringNotContainsString('admin@[192.168.13.7]', (string) json_encode($row));
+    }
+
+    /** RED today: a rejected Reply-To address survives in `error` because maybe_log() only ever built its redaction dictionary from `to`. Same malformed-address rationale as the Cc case above. */
+    public function test_rejected_reply_to_address_is_redacted_from_error(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'no valid recipient address (rejected: "john doe"@example.com)',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail             = $this->base_mail();
+        $mail['reply_to'] = ['"john doe"@example.com'];
+        $router->send($mail, $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringNotContainsString('"john doe"@example.com', $row['error'], 'A rejected Reply-To address must not survive in the error text.');
+        $this->assertStringNotContainsString('"john doe"@example.com', (string) json_encode($row));
+    }
+
+    /** RED today: mail_from column carries the real sender address regardless of log_emails. */
+    public function test_sender_mail_from_is_not_persisted(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok' => false, 'message_id' => '', 'error' => 'boom', 'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail         = $this->base_mail();
+        $mail['from'] = 'sender-victim@example.com';
+        $router->send($mail, $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertSame('', $row['mail_from'], 'mail_from must be empty on the forced path.');
+        $this->assertStringNotContainsString('sender-victim@example.com', (string) json_encode($row));
+    }
+
+    /** RED today: store_body=true persists the real message body into a row the owner never asked for. */
+    public function test_body_is_excluded_when_store_body_is_true(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => true]);
+        $handler = $this->make_handler('smtp', [
+            'ok' => false, 'message_id' => '', 'error' => 'boom', 'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $router->send($this->base_mail(), $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertSame(0, $row['body_stored'], 'body_stored must be forced to 0 on the forced path, regardless of store_body.');
+        $this->assertNull($row['body'], 'body must be NULL on the forced path, regardless of store_body.');
+        $this->assertStringNotContainsString('SECRET-BODY-TEXT', (string) json_encode($row));
+    }
+
+    /** RED today: attachment names are persisted regardless of log_emails. */
+    public function test_attachment_name_is_not_persisted(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok' => false, 'message_id' => '', 'error' => 'boom', 'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail                = $this->base_mail();
+        $mail['attachments'] = [['name' => 'confidential-invoice.pdf', 'size_bytes' => 4096]];
+        $router->send($mail, $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertNull($row['attachments'], 'attachments must be NULL on the forced path.');
+        $this->assertStringNotContainsString('confidential-invoice.pdf', (string) json_encode($row));
+    }
+
+    /**
+     * Diagnostics survive: redaction removes only the address-shaped
+     * substring, never the SMTP/provider detail an operator needs to act on.
+     *
+     * @dataProvider diagnosticSurvivesTable
+     */
+    public function test_diagnostic_detail_survives_redaction(string $errorMessage, string $mustSurvive): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok' => false, 'message_id' => '', 'error' => $errorMessage, 'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $router->send($this->base_mail(), $cfg, true);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringContainsString($mustSurvive, $row['error']);
+    }
+
+    /** @return array<string,array{0:string,1:string}> label => [error message, substring that must survive] */
+    public static function diagnosticSurvivesTable(): array
+    {
+        return [
+            'user unknown' => [
+                'SMTP Error: The following recipients failed: to@example.com: 550 5.1.1 User unknown',
+                '550 5.1.1 User unknown',
+            ],
+            'connect timeout, no address at all' => [
+                'connect to mail.example.com:587 failed after 3 tries',
+                'connect to mail.example.com:587 failed after 3 tries',
+            ],
+        ];
+    }
+
+    /**
+     * Over-fire control, round 4: with log_emails TRUE, Cc, Bcc, Reply-To,
+     * mail_from, the body and the attachment name are ALL present and
+     * unchanged -- the allowlist applies only to the forced path; the
+     * opt-in path this fix leaves untouched still means real data.
+     */
+    public function test_log_emails_true_still_includes_every_field_the_allowlist_would_strip(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => true, 'store_body' => true]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'SMTP Error: The following recipients failed: cc@example.com, bcc@example.com: 550 5.1.1 User unknown',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail                = $this->base_mail();
+        $mail['cc']          = ['cc@example.com'];
+        $mail['bcc']         = ['bcc@example.com'];
+        $mail['reply_to']    = ['reply@example.com'];
+        $mail['attachments'] = [['name' => 'invoice.pdf', 'size_bytes' => 100]];
+        $router->send($mail, $cfg, true);
+
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringContainsString('cc@example.com', $row['error']);
+        $this->assertSame('Sender <a@example.com>', $row['mail_from']);
+        $this->assertSame(1, $row['body_stored']);
+        $this->assertSame('SECRET-BODY-TEXT', $row['body']);
+        $this->assertNotNull($row['attachments']);
+        $this->assertStringContainsString('invoice.pdf', (string) $row['attachments']);
+    }
 }
