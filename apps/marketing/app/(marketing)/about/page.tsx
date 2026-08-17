@@ -14,7 +14,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "About WPMgr | Open-Source WordPress Fleet Management",
   description:
-    "WPMgr is an open-source, self-hostable WordPress fleet manager built on the conviction that your data and tooling should belong to you. AGPL control plane, MIT agent.",
+    "WPMgr is an open-source, self-hostable WordPress fleet manager built on the conviction that your data and tooling should belong to you. AGPL, MIT agent.",
   canonical: "/about",
 });
 

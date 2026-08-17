@@ -8,7 +8,7 @@ export const DATABASE_CLEANER_PAGE: FeaturePageData = {
   title: "WordPress Database Cleaner",
   metaTitle: "WordPress Database Cleanup: Clean wp_options and Revisions",
   metaDescription:
-    "WordPress database cleaner that scans first and cleans second. Remove revisions, transients, and bloated wp_options rows. 90-day trend, fully reversible, open source.",
+    "WordPress database cleaner that scans first and cleans second. Remove revisions, transients, and bloated wp_options rows. 90-day trend, fully reversible.",
   hero: {
     eyebrow: "Database Cleaner",
     heading: "WordPress database cleanup that scans first and never guesses",

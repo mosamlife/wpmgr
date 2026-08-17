@@ -9,7 +9,7 @@ export const FREELANCERS_SOLUTION: SolutionPageData = {
   heading: "WordPress tools for freelancers",
   metaTitle: "WordPress Tools for Freelancers",
   metaDescription:
-    "WPMgr is a self-hosted WordPress management tool for freelancers running sites for multiple clients. Automated backups, safe bulk updates, uptime monitoring, and security hardening.",
+    "WPMgr is a self-hosted WordPress tool for freelancers running client sites: automated backups, safe bulk updates, uptime monitoring, and security hardening.",
   layoutVariant: "split",
   hero: {
     eyebrow: "Freelancer toolkit",

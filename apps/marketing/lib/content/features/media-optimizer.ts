@@ -9,7 +9,7 @@ export const MEDIA_OPTIMIZER_PAGE: FeaturePageData = {
   title: "WordPress AVIF and WebP Image Optimization",
   metaTitle: "Convert Images to WebP and AVIF in WordPress | Media Optimizer",
   metaDescription:
-    "WPMgr Media Optimizer converts your WordPress media library to AVIF and WebP in the cloud. Originals stay archived on the site, and every conversion is fully reversible.",
+    "WPMgr Media Optimizer converts your WordPress media library to AVIF and WebP in the cloud. Originals stay archived on the site; every conversion reverses.",
   hero: {
     eyebrow: "Media Optimizer",
     heading: "Convert WordPress images to AVIF and WebP, fully reversible",

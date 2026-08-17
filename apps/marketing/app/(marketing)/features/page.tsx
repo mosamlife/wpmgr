@@ -14,7 +14,7 @@ import { signupHref } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "WordPress Management Features",
   description:
-    "All WordPress fleet management features in one open-source platform: backups, safe updates, Media Optimizer, full-page caching, security hardening, and vulnerability scanning.",
+    "All WordPress fleet management features in one open-source platform: backups, safe updates, Media Optimizer, full-page caching, and security hardening.",
   canonical: "/features",
 });
 

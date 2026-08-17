@@ -9,7 +9,7 @@ export const MANAGE_MULTIPLE_SITES_SOLUTION: SolutionPageData = {
   heading: "Manage multiple WordPress sites from one dashboard",
   metaTitle: "Manage Multiple WordPress Sites",
   metaDescription:
-    "WPMgr is the open-source control plane for managing multiple WordPress sites: backups, safe bulk updates, uptime monitoring, performance, and security in one dashboard.",
+    "WPMgr is the open-source control plane for managing multiple WordPress sites: backups, safe bulk updates, uptime monitoring, and security in one dashboard.",
   layoutVariant: "default",
   hero: {
     eyebrow: "Fleet management",

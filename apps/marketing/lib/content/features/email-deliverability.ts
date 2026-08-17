@@ -8,7 +8,7 @@ export const EMAIL_DELIVERABILITY_PAGE: FeaturePageData = {
   title: "WordPress SMTP Per Site and Email Log",
   metaTitle: "WordPress SMTP Per Site with Central Email Log",
   metaDescription:
-    "Configure WordPress SMTP per site with SES, SendGrid, Mailgun, Postmark, or any SMTP server. Central searchable email log, named connections, automatic failover.",
+    "Configure WordPress SMTP per site with SES, SendGrid, Mailgun, Postmark, or any SMTP server. Central searchable email log with automatic failover.",
   hero: {
     eyebrow: "Per-site email",
     heading: "WordPress SMTP per site with a central email delivery log",
