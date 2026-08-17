@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 0.61.131
+Stable tag: 0.61.139
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -276,6 +276,11 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.139 =
+* Added: this site now also reports an email delivery failure detected through WordPress's own mail-failure signal, not only failures on mail this site routes through WPMgr. Sites sending through their own SMTP setup are now covered too.
+* Added: a detected failure is recorded even when this site's email log is turned off. That setting controls whether successful sends are kept for review; a failure is recorded regardless, and the recipient, subject, sender and message body are withheld from the record unless email logging is on.
+* Fixed: `wp_mail()` reported success on a failed send, so a contact form or password reset could tell a visitor the message went out when nothing was delivered. `wp_mail()` now returns false on a failed send and fires WordPress's own mail-failure hook, so plugins and themes that check the result learn the truth.
+
 = 0.61.131 =
 * Fixed: sending email from this site could silently stop working days after it had been set up and used successfully, showing as "SMTP Error: Could not authenticate" (GH #380). Saving, testing or syncing this site's email settings from the dashboard could send an empty password, and the site read that as an instruction to delete the working password it already had. This site no longer deletes a stored password unless the dashboard actually sends a real replacement, and it now refuses an email settings update it cannot make sense of instead of acting on the part it understood. If this site lost its password this way, the dashboard restores it the next time it syncs this site's email settings, with nothing for you to re-enter.
 * Security: a password belonging to your dashboard account is no longer sent to a mail server you choose from this site's own settings page, and a stored password is no longer carried over automatically when you point this site's email at a different mail server, mailbox user or provider.
@@ -416,6 +421,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.139 =
+Email delivery failures are now detected on sites that send through their own SMTP setup, not only sites routed through WPMgr, and a plugin bug that reported a failed send as successful is fixed: wp_mail() now returns false on a failed send. Forms and other flows that check the result of wp_mail() will start correctly reporting failures they previously hid. Safe to update in place.
 
 = 0.61.131 =
 Fixes a bug that could silently delete this site's working SMTP password when its email settings were saved, tested or synced from the dashboard, breaking outgoing email. Update now if this site sends mail through SMTP, SES, SendGrid, Mailgun or Postmark; the dashboard restores the password automatically on its next sync with this site.

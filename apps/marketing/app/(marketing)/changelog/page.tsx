@@ -50,6 +50,27 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.139",
+    date: "2026-08-17",
+    summary:
+      "Email delivery failure detection now works on sites that send through their own SMTP setup, not only sites that route mail through WPMgr, and the Notifications page states how many connected sites can actually report a failure. Separately, a WordPress bug where a failed send was reported as successful is fixed, so forms and other flows now learn honestly when mail did not go out.",
+    items: [
+      {
+        tag: "Added",
+        text: "Email delivery failure detection now also listens to WordPress's own mail-failure signal, so a site is covered even when it sends through its own SMTP setup instead of through WPMgr. The Notifications page now states how many connected sites can actually report a failure, and says so plainly when none can, rather than promising coverage it cannot deliver.",
+      },
+      {
+        tag: "Added",
+        text: "A detected failure is now recorded even on a site that has email logging turned off. That preference controls whether successful sends are kept for review; a failure is an incident and is written regardless, though the recipient, subject, sender and message body are withheld unless the site has opted into email logging.",
+      },
+      {
+        tag: "Fixed",
+        text: "wp_mail() reported success on a failed send, so a contact form or password reset could tell a visitor the message went out when nothing was delivered. wp_mail() now returns false on a failed send and fires WordPress's own mail-failure hook, so forms and flows that check the result will start surfacing failures they were previously hiding.",
+      },
+    ],
+    featureLinks: [{ label: "Email deliverability", href: "/features/email-deliverability" }],
+  },
+  {
     version: "0.61.138",
     date: "2026-08-16",
     summary:
