@@ -1554,22 +1554,27 @@ func (s *Service) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (No
 // GH #381 entirely and has never depended on agent version. See
 // failureDetectionCoverage below for the full predicate.
 //
-// PLACEHOLDER VALUE. GH #381 phase 1 — the agent-side change that widens
-// failure detection to sites WPMgr does NOT route — has not shipped a release
-// as of this writing. "999.0.0" is deliberately NOT a plausible wpmgr
-// version: it is chosen so that no currently-shipped agent ever compares >=
-// it, which makes the UNROUTED half of sites_covered honestly report 0 until
-// this constant is corrected, instead of silently crediting sites for a
-// capability their agent build does not have. Because coverage is now
-// routed-OR-version, this placeholder can NEVER make a routed fleet read as
-// uncovered — only the unrouted half stays at 0 until updated.
+// GH #381 phase 1 shipped in agent release 0.61.139: the wp_mail_failed
+// listener that lets a site WPMgr does NOT route still report a delivery
+// failure (apps/agent/includes/email/class-mail-failure-capture.php,
+// introduced by commit 1f2eadc, absent from the prior 0.61.138 release —
+// verified via `git log 804bb86..db2b1db -- apps/agent`). 0.61.139 is
+// therefore the correct floor: an unrouted site must report an agent_version
+// at or above it to be credited with the capability its build actually has.
 //
-// UPDATE THIS the moment phase 1's release is cut: set it to the exact agent
-// version (e.g. "0.62.0") that ships the detection-widening change, in the
-// same commit that cuts that release. Until updated, unrouted sites never
-// count toward failure_detection.sites_covered regardless of fleet freshness;
-// routed sites always have.
-const MinAgentVersionForFailureDetection = "999.0.0"
+// Before this was set, it held "999.0.0" — deliberately not a plausible
+// wpmgr version, chosen so no currently-shipped agent could ever compare >=
+// it, so the UNROUTED half of sites_covered honestly reported 0 rather than
+// silently crediting sites for a capability no shipped agent build had yet.
+// Because coverage is routed-OR-version, that placeholder never made a
+// routed fleet read as uncovered — only the unrouted half stayed at 0.
+//
+// If this constant is ever re-gated to a later release (the capability
+// regresses and needs re-fixing, say), bump it in the same commit that cuts
+// that release, and update the pin in
+// TestMinAgentVersionForFailureDetection_NotAheadOfShippingAgent alongside
+// it.
+const MinAgentVersionForFailureDetection = "0.61.139"
 
 // agentVersionPattern accepts the plain dotted-numeric shape WPMgr's own
 // agent versions use, mirroring internal/agentrelease's own guard

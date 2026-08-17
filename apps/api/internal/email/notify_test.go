@@ -7,6 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // ---------------------------------------------------------------------------
@@ -546,6 +551,106 @@ func TestGetNotifySettings_PlaceholderConstant_RoutedFleetNotFalselyUncovered(t 
 	}
 	if wire.FailureDetection.SitesCovered != 1 || wire.FailureDetection.SitesTotal != 1 {
 		t.Errorf("expected 1/1 (full coverage) for a routed site under the placeholder gate, got %+v", wire.FailureDetection)
+	}
+}
+
+// TestGetNotifySettings_UnroutedFleet_CoveredAtShippingAgentVersion is the
+// RED/GREEN case for the release MinAgentVersionForFailureDetection now
+// belongs to: an unrouted site reporting the real, shipping agent version
+// (0.61.139) must read as covered. This is the failure mode the placeholder
+// existed to make honest and the eventual fix existed to correct — while the
+// constant was still "999.0.0" this reported 0/1, meaning a real fleet on
+// the very release that ships the wp_mail_failed listener would still have
+// been told it could not report a delivery failure.
+func TestGetNotifySettings_UnroutedFleet_CoveredAtShippingAgentVersion(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantID: unroutedFacts("0.61.139"),
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesCovered != 1 || wire.FailureDetection.SitesTotal != 1 {
+		t.Errorf("expected 1/1 (covered) for an unrouted site on the shipping agent version 0.61.139, got %+v — MinAgentVersionForFailureDetection must be <= 0.61.139", wire.FailureDetection)
+	}
+}
+
+// agentVersionDefineRe extracts WPMGR_AGENT_VERSION out of
+// apps/agent/wpmgr-agent.php's PHP source, e.g.
+// `define('WPMGR_AGENT_VERSION', '0.61.139');`.
+var agentVersionDefineRe = regexp.MustCompile(`define\(\s*'WPMGR_AGENT_VERSION',\s*'([0-9]+(?:\.[0-9]+){1,3})'\s*\)`)
+
+// currentShippingAgentVersion reads WPMGR_AGENT_VERSION directly out of
+// apps/agent/wpmgr-agent.php instead of duplicating the version as a second
+// literal in this package — a literal copy would only ever go stale in step
+// with the constant it exists to check, catching nothing independently. The
+// live agent source is the one authoritative place that version is defined.
+func currentShippingAgentVersion(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed; cannot locate the repo root to read apps/agent/wpmgr-agent.php")
+	}
+	// thisFile: apps/api/internal/email/notify_test.go — four levels above
+	// the repo root.
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
+	pluginFile := filepath.Join(repoRoot, "apps", "agent", "wpmgr-agent.php")
+	data, err := os.ReadFile(pluginFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", pluginFile, err)
+	}
+	m := agentVersionDefineRe.FindSubmatch(data)
+	if m == nil {
+		t.Fatalf("WPMGR_AGENT_VERSION define not found in %s", pluginFile)
+	}
+	return string(m[1])
+}
+
+// TestMinAgentVersionForFailureDetection_NotAheadOfShippingAgent pins
+// MinAgentVersionForFailureDetection against the release it belongs to.
+//
+// "The exact agent release that first shipped the wp_mail_failed listener"
+// is a historical fact, not something derivable from the repo's current
+// state — a future release keeps bumping WPMGR_AGENT_VERSION forever while
+// this floor rightly stays put, so the two are pinned to the SAME literal
+// only in the release that introduces the capability (this one). That fact
+// is: apps/agent/includes/email/class-mail-failure-capture.php was
+// introduced by commit 1f2eadc, present in the 0.61.139 release and absent
+// from the prior 0.61.138 release — `git log 804bb86..db2b1db -- apps/agent`
+// and `git show 804bb86:apps/agent/includes/email/class-mail-failure-capture.php`
+// (no such path) confirm it. That half of this test is therefore a pinned
+// literal, deliberately, with the derivation recorded here instead of
+// resting on memory.
+//
+// What CAN be checked mechanically, every time this runs, without going
+// stale on an unrelated future release: the floor must never be ahead of
+// the agent version apps/agent actually ships. Read live off
+// wpmgr-agent.php, that property holds automatically forever, because
+// shipped agent versions only increase — and its violation is the literal
+// incident this constant guards against (see MinAgentVersionForFailureDetection's
+// own doc comment): set the floor even one patch too high and every
+// unrouted site reads as uncovered again.
+func TestMinAgentVersionForFailureDetection_NotAheadOfShippingAgent(t *testing.T) {
+	const firstVersionWithWpMailFailedListener = "0.61.139"
+
+	if MinAgentVersionForFailureDetection != firstVersionWithWpMailFailedListener {
+		t.Fatalf("MinAgentVersionForFailureDetection = %q, want %q (the release that first shipped the wp_mail_failed listener); if this constant is being deliberately re-gated to a later release, update this pin in the same commit and restate why in the comment above",
+			MinAgentVersionForFailureDetection, firstVersionWithWpMailFailedListener)
+	}
+
+	shipping := currentShippingAgentVersion(t)
+	if wpversion.Compare(MinAgentVersionForFailureDetection, shipping) > 0 {
+		t.Fatalf("MinAgentVersionForFailureDetection (%q) is ahead of the agent version apps/agent actually ships (%q, from wpmgr-agent.php); no currently-shipped agent could ever satisfy the gate, so every unrouted site reads as uncovered",
+			MinAgentVersionForFailureDetection, shipping)
 	}
 }
 
