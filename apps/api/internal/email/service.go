@@ -101,8 +101,8 @@ type repository interface {
 	GetFleetStatsBySite(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]SiteStatsRow, error)
 	TopFailureSamples(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
 	TopFailureSamplesBySite(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
-	// GH #381 phase 2 — failure-detection coverage.
-	ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error)
+	// GH #381 — failure-detection coverage.
+	ListConnectedSiteEmailCoverage(ctx context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error)
 }
 
 // Service is the email domain business-logic layer. It owns:
@@ -1532,22 +1532,30 @@ func (s *Service) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (No
 // GH #381 phase 2 — failure-detection coverage
 // ---------------------------------------------------------------------------
 
-// MinAgentVersionForFailureDetection gates failure_detection.sites_covered: a
-// connected site is "covered" only when its reported agent_version compares
-// >= this value under internal/wpversion.Compare.
+// MinAgentVersionForFailureDetection gates the UNROUTED half of
+// failure_detection.sites_covered only: a connected site that does not route
+// its mail through WPMgr is "covered" solely when its reported agent_version
+// compares >= this value under internal/wpversion.Compare. A routed site
+// (WPMgr is its active mail transport) is covered regardless of this gate —
+// that capture path (MailRouter::intercept() -> EmailLogger::write()) predates
+// GH #381 entirely and has never depended on agent version. See
+// failureDetectionCoverage below for the full predicate.
 //
-// PLACEHOLDER VALUE. GH #381 phase 1 — the agent-side change that actually
-// widens failure detection beyond "WPMgr is the mail transport" — has not
-// shipped a release as of this writing. "999.0.0" is deliberately NOT a
-// plausible wpmgr version: it is chosen so that no currently-shipped agent
-// ever compares >= it, which makes sites_covered honestly report 0 until this
-// constant is corrected, instead of silently crediting sites for a capability
-// their agent build does not have.
+// PLACEHOLDER VALUE. GH #381 phase 1 — the agent-side change that widens
+// failure detection to sites WPMgr does NOT route — has not shipped a release
+// as of this writing. "999.0.0" is deliberately NOT a plausible wpmgr
+// version: it is chosen so that no currently-shipped agent ever compares >=
+// it, which makes the UNROUTED half of sites_covered honestly report 0 until
+// this constant is corrected, instead of silently crediting sites for a
+// capability their agent build does not have. Because coverage is now
+// routed-OR-version, this placeholder can NEVER make a routed fleet read as
+// uncovered — only the unrouted half stays at 0 until updated.
 //
 // UPDATE THIS the moment phase 1's release is cut: set it to the exact agent
 // version (e.g. "0.62.0") that ships the detection-widening change, in the
-// same commit that cuts that release. Until updated, every tenant's
-// failure_detection.sites_covered will read 0 regardless of fleet freshness.
+// same commit that cuts that release. Until updated, unrouted sites never
+// count toward failure_detection.sites_covered regardless of fleet freshness;
+// routed sites always have.
 const MinAgentVersionForFailureDetection = "999.0.0"
 
 // agentVersionPattern accepts the plain dotted-numeric shape WPMgr's own
@@ -1564,22 +1572,40 @@ func isWellFormedAgentVersion(v string) bool {
 }
 
 // failureDetectionCoverage computes, for tenantID, how many of its currently
-// connected sites (connection_state = 'connected') run an agent_version at or
-// above MinAgentVersionForFailureDetection. A site whose reported version is
-// empty or not well-formed is treated as NOT covered — an unreadable version
-// is never assumed capable, mirroring internal/agentrelease.Classify's
-// StatusUnknown handling, which never risks a false "current" either.
+// connected sites (connection_state = 'connected') can detect and report an
+// email delivery failure. A site is covered when EITHER:
+//
+//   - it is routed: WPMgr is its active mail transport, per
+//     ConnectedSiteEmailFact.Routed (a per-site site_email_config row's
+//     provider, or — absent one — the tenant's org-wide default row's
+//     provider, is non-empty; mirrors the agent's own
+//     EmailConfig::is_configured()). This path is independent of agent
+//     version.
+//   - OR it is unrouted but its agent_version compares >=
+//     MinAgentVersionForFailureDetection. A site whose reported version is
+//     empty or not well-formed is treated as NOT covered by this path — an
+//     unreadable version is never assumed capable, mirroring
+//     internal/agentrelease.Classify's StatusUnknown handling, which never
+//     risks a false "current" either.
+//
+// A routed site is therefore counted as covered even while
+// MinAgentVersionForFailureDetection is still the unreachable placeholder —
+// that gate only ever suppresses the unrouted half.
 func (s *Service) failureDetectionCoverage(ctx context.Context, tenantID uuid.UUID) (FailureDetectionCoverage, error) {
-	versions, err := s.repo.ListConnectedSiteAgentVersions(ctx, tenantID)
+	facts, err := s.repo.ListConnectedSiteEmailCoverage(ctx, tenantID)
 	if err != nil {
-		return FailureDetectionCoverage{}, domain.Internal("email_failure_detection_coverage", "failed to load connected site agent versions").WithCause(err)
+		return FailureDetectionCoverage{}, domain.Internal("email_failure_detection_coverage", "failed to load connected site email coverage facts").WithCause(err)
 	}
 	out := FailureDetectionCoverage{
-		SitesTotal:      len(versions),
-		MinAgentVersion: MinAgentVersionForFailureDetection,
+		SitesTotal:              len(facts),
+		MinAgentVersionUnrouted: MinAgentVersionForFailureDetection,
 	}
-	for _, v := range versions {
-		if isWellFormedAgentVersion(v) && wpversion.Compare(v, MinAgentVersionForFailureDetection) >= 0 {
+	for _, f := range facts {
+		if f.Routed {
+			out.SitesRouted++
+		}
+		versionCovered := isWellFormedAgentVersion(f.AgentVersion) && wpversion.Compare(f.AgentVersion, MinAgentVersionForFailureDetection) >= 0
+		if f.Routed || versionCovered {
 			out.SitesCovered++
 		}
 	}

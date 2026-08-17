@@ -235,21 +235,49 @@ type NotifySettings struct {
 }
 
 // FailureDetectionCoverage summarizes, for a tenant, how many of its
-// currently-connected sites run an agent new enough to detect and report an
-// email delivery failure (GH #381 phase 2). WPMgr can only detect a failure
-// when it is the mail transport in use AND the agent is new enough to report
-// it; a site below MinAgentVersion, or not currently connected, cannot
-// trigger a per-failure alert no matter how the settings above are
-// configured. Computed fresh on every GET, never persisted.
+// currently-connected sites can detect and report an email delivery failure
+// (GH #381). A site is covered by EITHER of two independent paths:
+//
+//  1. Routed: WPMgr is the mail transport the site actively uses
+//     (MailRouter::intercept() -> EmailLogger::write() on the agent). This
+//     path predates GH #381 phase 1 entirely, consults no agent-version gate,
+//     and works on any currently-shipped agent.
+//  2. Unrouted-but-new-enough: the site does not route its mail through
+//     WPMgr, but its agent_version is >= MinAgentVersionUnrouted, so it can
+//     still capture and report a failure on mail WPMgr never saw pass
+//     through it (GH #381 phase 1's widening).
+//
+// A site below MinAgentVersionUnrouted that is ALSO not routed cannot trigger
+// a per-failure alert. A site that IS routed is covered regardless of its
+// agent version. Computed fresh on every GET, never persisted.
 type FailureDetectionCoverage struct {
 	// SitesTotal is the tenant's currently-connected site count.
 	SitesTotal int
-	// SitesCovered is, of SitesTotal, how many report an agent_version at or
-	// above MinAgentVersion.
+	// SitesCovered is, of SitesTotal, how many are covered via EITHER path
+	// above (routed OR agent_version >= MinAgentVersionUnrouted).
 	SitesCovered int
-	// MinAgentVersion is the gate SitesCovered was computed against
+	// SitesRouted is, of SitesTotal, how many have WPMgr actively configured
+	// as their mail transport (path 1 above) and are therefore covered
+	// regardless of agent version. Surfaced separately so the interface can
+	// explain a high sites_covered count on a fleet that is otherwise below
+	// MinAgentVersionUnrouted, instead of that number reading as unexplained.
+	SitesRouted int
+	// MinAgentVersionUnrouted is the gate applied to path 2 only (sites NOT
+	// routed through WPMgr). It says nothing about routed sites, which are
+	// covered independent of this value.
 	// (MinAgentVersionForFailureDetection at call time).
-	MinAgentVersion string
+	MinAgentVersionUnrouted string
+}
+
+// ConnectedSiteEmailFact is one connected site's raw facts needed to compute
+// FailureDetectionCoverage, as returned by
+// repository.ListConnectedSiteEmailCoverage. Routed=true short-circuits the
+// coverage predicate regardless of AgentVersion (see FailureDetectionCoverage
+// doc comment); the version-gate comparison in Go only matters when
+// Routed=false.
+type ConnectedSiteEmailFact struct {
+	AgentVersion string
+	Routed       bool
 }
 
 // NotifySettingsUpsertInput is the PUT body for notify settings.

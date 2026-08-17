@@ -634,11 +634,14 @@ type notifySettingsDTO struct {
 }
 
 // failureDetectionDTO is the wire representation of FailureDetectionCoverage
-// (GH #381 phase 2).
+// (GH #381). min_agent_version_unrouted gates ONLY sites that do not route
+// their mail through WPMgr; a routed site is covered regardless of its agent
+// version, and sites_routed says how many of sites_total are in that state.
 type failureDetectionDTO struct {
-	SitesTotal      int    `json:"sites_total"`
-	SitesCovered    int    `json:"sites_covered"`
-	MinAgentVersion string `json:"min_agent_version"`
+	SitesTotal              int    `json:"sites_total"`
+	SitesCovered            int    `json:"sites_covered"`
+	SitesRouted             int    `json:"sites_routed"`
+	MinAgentVersionUnrouted string `json:"min_agent_version_unrouted"`
 }
 
 // toNotifySettingsDTO maps domain NotifySettings to the wire DTO.
@@ -656,9 +659,10 @@ func toNotifySettingsDTO(s NotifySettings) notifySettingsDTO {
 		Timezone:                 s.Timezone,
 		InstanceMailerConfigured: s.InstanceMailerConfigured,
 		FailureDetection: failureDetectionDTO{
-			SitesTotal:      s.FailureDetection.SitesTotal,
-			SitesCovered:    s.FailureDetection.SitesCovered,
-			MinAgentVersion: s.FailureDetection.MinAgentVersion,
+			SitesTotal:              s.FailureDetection.SitesTotal,
+			SitesCovered:            s.FailureDetection.SitesCovered,
+			SitesRouted:             s.FailureDetection.SitesRouted,
+			MinAgentVersionUnrouted: s.FailureDetection.MinAgentVersionUnrouted,
 		},
 		CreatedAt: s.CreatedAt.Unix(),
 		UpdatedAt: s.UpdatedAt.Unix(),

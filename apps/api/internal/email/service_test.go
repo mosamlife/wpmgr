@@ -88,10 +88,11 @@ type fakeRepo struct {
 	// each into a different answer (see suppression_delete_refusal_test.go).
 	suppressionDeleteErr error
 
-	// connectedAgentVersions is what ListConnectedSiteAgentVersions returns,
-	// keyed by tenant so a cross-tenant test can seed two tenants' fleets
-	// independently (GH #381 phase 2).
-	connectedAgentVersions map[uuid.UUID][]string
+	// connectedSiteFacts is what ListConnectedSiteEmailCoverage returns, keyed
+	// by tenant so a cross-tenant test can seed two tenants' fleets
+	// independently (GH #381). Each fact carries both the agent_version and
+	// whether the site routes its mail through WPMgr.
+	connectedSiteFacts map[uuid.UUID][]ConnectedSiteEmailFact
 
 	// GH #381 phase 5 — maybeAlertFailures exit-path control knobs. Each is
 	// nil/zero by default, which preserves the pre-phase-5 fake behaviour
@@ -499,8 +500,8 @@ func (r *fakeRepo) TopFailureSamplesBySite(_ context.Context, _, _ uuid.UUID, _,
 	return nil, nil
 }
 
-func (r *fakeRepo) ListConnectedSiteAgentVersions(_ context.Context, tenantID uuid.UUID) ([]string, error) {
-	return r.connectedAgentVersions[tenantID], nil
+func (r *fakeRepo) ListConnectedSiteEmailCoverage(_ context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error) {
+	return r.connectedSiteFacts[tenantID], nil
 }
 
 // ---------------------------------------------------------------------------

@@ -245,9 +245,32 @@ func TestBuildDigestData_FlagOff_OmitsSection_PreservesZeroSkip(t *testing.T) {
 // handler's actual SERIALIZED response rather than inspecting Go structs the
 // handler never sends.
 type failureDetectionWire struct {
-	SitesTotal      int    `json:"sites_total"`
-	SitesCovered    int    `json:"sites_covered"`
-	MinAgentVersion string `json:"min_agent_version"`
+	SitesTotal              int    `json:"sites_total"`
+	SitesCovered            int    `json:"sites_covered"`
+	SitesRouted             int    `json:"sites_routed"`
+	MinAgentVersionUnrouted string `json:"min_agent_version_unrouted"`
+}
+
+// unroutedFacts builds ConnectedSiteEmailFact values for sites that do NOT
+// route their mail through WPMgr, keyed only by their reported agent_version
+// — the shape every pre-existing test in this file assumed before routing
+// was modeled at all.
+func unroutedFacts(versions ...string) []ConnectedSiteEmailFact {
+	out := make([]ConnectedSiteEmailFact, len(versions))
+	for i, v := range versions {
+		out[i] = ConnectedSiteEmailFact{AgentVersion: v, Routed: false}
+	}
+	return out
+}
+
+// routedFacts builds ConnectedSiteEmailFact values for sites whose mail IS
+// actively routed through WPMgr — covered regardless of agent_version.
+func routedFacts(versions ...string) []ConnectedSiteEmailFact {
+	out := make([]ConnectedSiteEmailFact, len(versions))
+	for i, v := range versions {
+		out[i] = ConnectedSiteEmailFact{AgentVersion: v, Routed: true}
+	}
+	return out
 }
 
 type notifySettingsWire struct {
@@ -283,8 +306,8 @@ func decodeNotifySettingsWire(t *testing.T, rec *httptest.ResponseRecorder) noti
 func TestGetNotifySettings_ReportsFailureDetectionCoverage(t *testing.T) {
 	tenantID := uuid.New()
 	repo := newFakeRepo()
-	repo.connectedAgentVersions = map[uuid.UUID][]string{
-		tenantID: {"999.5.0", MinAgentVersionForFailureDetection, "0.61.138"},
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantID: unroutedFacts("999.5.0", MinAgentVersionForFailureDetection, "0.61.138"),
 	}
 	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
 	svc.repo = repo
@@ -303,8 +326,11 @@ func TestGetNotifySettings_ReportsFailureDetectionCoverage(t *testing.T) {
 	if wire.FailureDetection.SitesCovered != 2 {
 		t.Errorf("sites_covered = %d, want 2", wire.FailureDetection.SitesCovered)
 	}
-	if wire.FailureDetection.MinAgentVersion != MinAgentVersionForFailureDetection {
-		t.Errorf("min_agent_version = %q, want %q", wire.FailureDetection.MinAgentVersion, MinAgentVersionForFailureDetection)
+	if wire.FailureDetection.SitesRouted != 0 {
+		t.Errorf("sites_routed = %d, want 0 — none of these sites are routed", wire.FailureDetection.SitesRouted)
+	}
+	if wire.FailureDetection.MinAgentVersionUnrouted != MinAgentVersionForFailureDetection {
+		t.Errorf("min_agent_version_unrouted = %q, want %q", wire.FailureDetection.MinAgentVersionUnrouted, MinAgentVersionForFailureDetection)
 	}
 }
 
@@ -315,9 +341,9 @@ func TestGetNotifySettings_ReportsFailureDetectionCoverage(t *testing.T) {
 func TestGetNotifySettings_CoverageIsTenantScoped(t *testing.T) {
 	tenantA, tenantB := uuid.New(), uuid.New()
 	repo := newFakeRepo()
-	repo.connectedAgentVersions = map[uuid.UUID][]string{
-		tenantA: {"999.0.0"},
-		tenantB: {"999.0.0", "999.0.0", "999.0.0", "999.0.0"},
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantA: unroutedFacts("999.0.0"),
+		tenantB: unroutedFacts("999.0.0", "999.0.0", "999.0.0", "999.0.0"),
 	}
 	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
 	svc.repo = repo
@@ -368,8 +394,8 @@ func TestGetNotifySettings_FailureDetectionCoverage_NoOverfire(t *testing.T) {
 	t.Run("all_covered", func(t *testing.T) {
 		tenantID := uuid.New()
 		repo := newFakeRepo()
-		repo.connectedAgentVersions = map[uuid.UUID][]string{
-			tenantID: {"999.0.0", "999.1.0", "1000.0.0"},
+		repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+			tenantID: unroutedFacts("999.0.0", "999.1.0", "1000.0.0"),
 		}
 		svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
 		svc.repo = repo
@@ -386,6 +412,150 @@ func TestGetNotifySettings_FailureDetectionCoverage_NoOverfire(t *testing.T) {
 			t.Errorf("expected 3/3 when every connected site is covered, got %+v", wire.FailureDetection)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GH #381 — coverage predicate corrected: gating sites_covered on
+// agent_version alone told every customer with a fully-working, WPMgr-routed
+// fleet that alerting was broken. A site whose mail WPMgr routes has ALWAYS
+// been able to report a delivery failure (MailRouter::intercept() ->
+// EmailLogger::write(), predates this feature, consults no version gate).
+// Coverage is routed OR new-enough-agent, not agent-version alone.
+// ---------------------------------------------------------------------------
+
+// TestGetNotifySettings_RoutedFleetOnOldAgent_ReportsFullCoverage: every
+// connected site routes its mail through WPMgr but reports an agent_version
+// far below the gate. This must report full coverage. RED before the fix —
+// the old predicate checked agent_version only and reported 0/6.
+func TestGetNotifySettings_RoutedFleetOnOldAgent_ReportsFullCoverage(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantID: routedFacts("0.61.136", "0.61.136", "0.60.2", "0.59.0", "0.58.4", "0.57.1"),
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesTotal != 6 {
+		t.Errorf("sites_total = %d, want 6", wire.FailureDetection.SitesTotal)
+	}
+	if wire.FailureDetection.SitesCovered != 6 {
+		t.Errorf("sites_covered = %d, want 6 — every site is routed, so coverage must be full regardless of agent_version", wire.FailureDetection.SitesCovered)
+	}
+	if wire.FailureDetection.SitesRouted != 6 {
+		t.Errorf("sites_routed = %d, want 6", wire.FailureDetection.SitesRouted)
+	}
+}
+
+// TestGetNotifySettings_PlaceholderConstant_RoutedFleetNotFalselyUncovered is
+// the state that actually ships: MinAgentVersionForFailureDetection is still
+// its impossible placeholder ("999.0.0" at time of writing), and every
+// connected site is on a real, shipped, therefore-always-below-placeholder
+// agent version. This reproduces the adversary's exact finding — "No
+// connected site can report a delivery failure" — for a fleet that is, in
+// fact, fully covered because it is routed. Deliberately uses the real
+// exported constant rather than a plausible-looking stand-in, unlike the
+// frontend tests that hard-coded "1.4.0" and never exercised this branch.
+func TestGetNotifySettings_PlaceholderConstant_RoutedFleetNotFalselyUncovered(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantID: routedFacts("0.61.136"),
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.MinAgentVersionUnrouted != MinAgentVersionForFailureDetection {
+		t.Fatalf("test assumes the constant is still %q; it changed to %q — update this test's story, don't just relax the assertion below", MinAgentVersionForFailureDetection, wire.FailureDetection.MinAgentVersionUnrouted)
+	}
+	if wire.FailureDetection.SitesCovered != 1 || wire.FailureDetection.SitesTotal != 1 {
+		t.Errorf("expected 1/1 (full coverage) for a routed site under the placeholder gate, got %+v", wire.FailureDetection)
+	}
+}
+
+// TestGetNotifySettings_MixedFleet_ReportsHonestSplit: a tenant with routed
+// sites on old agents, an unrouted site new enough to be covered anyway, and
+// unrouted sites on old agents that are genuinely NOT covered. The split must
+// be exact, not rounded toward either extreme.
+func TestGetNotifySettings_MixedFleet_ReportsHonestSplit(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	facts := append(
+		routedFacts("0.61.136", "0.60.2"), // covered via routing, old agent
+		ConnectedSiteEmailFact{AgentVersion: "1000.0.0", Routed: false}, // covered via version
+	)
+	facts = append(facts,
+		unroutedFacts("0.61.136", "0.60.2")..., // NOT covered: neither routed nor new enough
+	)
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{tenantID: facts}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesTotal != 5 {
+		t.Errorf("sites_total = %d, want 5", wire.FailureDetection.SitesTotal)
+	}
+	if wire.FailureDetection.SitesCovered != 3 {
+		t.Errorf("sites_covered = %d, want 3 (2 routed + 1 new-enough-unrouted)", wire.FailureDetection.SitesCovered)
+	}
+	if wire.FailureDetection.SitesRouted != 2 {
+		t.Errorf("sites_routed = %d, want 2", wire.FailureDetection.SitesRouted)
+	}
+}
+
+// TestGetNotifySettings_NoRoutedSites_OldAgents_ReportsZero: the honest
+// zero-coverage case must still be reachable — nothing routed, nothing new
+// enough. If this ever also reports full coverage, the warning banner has
+// become decoration that can never fire.
+func TestGetNotifySettings_NoRoutedSites_OldAgents_ReportsZero(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedSiteFacts = map[uuid.UUID][]ConnectedSiteEmailFact{
+		tenantID: unroutedFacts("0.61.136", "0.60.2", "0.59.0"),
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesTotal != 3 {
+		t.Errorf("sites_total = %d, want 3", wire.FailureDetection.SitesTotal)
+	}
+	if wire.FailureDetection.SitesCovered != 0 {
+		t.Errorf("sites_covered = %d, want 0 — the warning state must stay reachable", wire.FailureDetection.SitesCovered)
+	}
+	if wire.FailureDetection.SitesRouted != 0 {
+		t.Errorf("sites_routed = %d, want 0", wire.FailureDetection.SitesRouted)
+	}
 }
 
 // ---------------------------------------------------------------------------
