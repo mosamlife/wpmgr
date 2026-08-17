@@ -12,6 +12,7 @@ package email
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -69,6 +70,67 @@ type VulnDigestItem struct {
 // included in a per-failure alert email body.
 const maxAlertFailureSamples = 5
 
+// alertGoroutineTimeout bounds the detached maybeAlertFailures goroutine
+// launched from IngestLogBatch (service.go). It is detached deliberately to
+// keep the ingest path fast, so a stalled downstream call (settings lookup,
+// alert-slot claim, site-ref fetch, mailer enqueue) must not leak the
+// goroutine forever. The work itself is a handful of single-row reads/writes
+// plus one enqueue call, so 30s is generous headroom over the expected case
+// while still bounding the worst case (GH #381 phase 5).
+const alertGoroutineTimeout = 30 * time.Second
+
+// alertDecisionEvent is the single grep-able event name for every decision
+// maybeAlertFailures makes, whether or not it ends in a sent alert (GH #381
+// phase 5). The issue this answers: a user reports no alert email and there
+// is nothing to grep. Every exit path below now logs exactly one record
+// carrying this event name and a `reason` field distinguishing it.
+//
+// NEVER add a recipient address to these fields. The failure_count is enough
+// to diagnose; recipient addresses would land in operator logs and in
+// whatever ships them onward.
+const alertDecisionEvent = "email_alert_decision"
+
+// logAlertDecision emits the single structured record for one exit path of
+// maybeAlertFailures. errAttr may be nil.
+func (s *Service) logAlertDecision(ctx context.Context, level slog.Level, reason string, tenantID, siteID uuid.UUID, failureCount int, errAttr error) {
+	attrs := []slog.Attr{
+		slog.String("reason", reason),
+		slog.String("tenant_id", tenantID.String()),
+		slog.String("site_id", siteID.String()),
+		slog.Int("failure_count", failureCount),
+	}
+	if errAttr != nil {
+		attrs = append(attrs, slog.Any("error", errAttr))
+	}
+	s.log.LogAttrs(ctx, level, alertDecisionEvent, attrs...)
+}
+
+// maybeAlertFailuresAsync is the entry point IngestLogBatch launches with
+// `go`. It owns the goroutine's lifetime end to end: a bounded context so a
+// stalled downstream call cannot leak the goroutine past alertGoroutineTimeout,
+// and a recover() so a panic anywhere below cannot take down the API process
+// serving every other tenant's ingest traffic — there was no recover() here
+// before phase 5, so any panic in this detached goroutine was fatal to the
+// whole binary.
+func (s *Service) maybeAlertFailuresAsync(tenantID, siteID uuid.UUID, failureCount int) {
+	ctx, cancel := context.WithTimeout(context.Background(), alertGoroutineTimeout)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.LogAttrs(ctx, slog.LevelError, alertDecisionEvent,
+				slog.String("reason", "panic"),
+				slog.String("tenant_id", tenantID.String()),
+				slog.String("site_id", siteID.String()),
+				slog.Int("failure_count", failureCount),
+				slog.Any("panic", r),
+			)
+		}
+	}()
+
+	s.maybeAlertFailures(ctx, tenantID, siteID, failureCount)
+}
+
 // maxDigestTopFailures is the maximum number of top-failure samples in digest.
 const maxDigestTopFailures = 5
 
@@ -82,48 +144,61 @@ const maxDigestSites = 20
 // strictly best-effort (the save has already succeeded).
 func (s *Service) maybeAlertFailures(ctx context.Context, tenantID, siteID uuid.UUID, failureCount int) {
 	if s.mailer == nil {
+		s.logAlertDecision(ctx, slog.LevelWarn, "nil_mailer", tenantID, siteID, failureCount, nil)
 		return
 	}
 	if failureCount <= 0 {
+		// Unreachable in production: the sole caller (IngestLogBatch,
+		// service.go) only launches this goroutine when failureCount > 0.
+		// No log line here deliberately — see notify.go's phase-5 finding.
 		return
 	}
 
 	// Accumulate failures into the per-site state row.
 	if err := s.repo.AccumulateAlertFailures(ctx, tenantID, siteID, int64(failureCount)); err != nil {
-		s.log.Warn("email alert: accumulate failures failed",
-			slog.String("tenant_id", tenantID.String()),
-			slog.String("site_id", siteID.String()),
-			slog.Any("error", err),
-		)
+		s.logAlertDecision(ctx, slog.LevelWarn, "accumulate_failed", tenantID, siteID, failureCount, err)
 		return
 	}
 
 	// Try to claim an alert slot (single-statement conditional UPDATE).
 	settings, err := s.repo.GetNotifySettings(ctx, tenantID)
 	if err != nil {
-		// No settings row = use defaults (but don't alert when disabled).
+		if errors.Is(err, ErrNotFound) {
+			// No settings row = use defaults (but don't alert when disabled).
+			s.logAlertDecision(ctx, slog.LevelDebug, "no_settings_row", tenantID, siteID, failureCount, nil)
+		} else {
+			s.logAlertDecision(ctx, slog.LevelWarn, "settings_lookup_error", tenantID, siteID, failureCount, err)
+		}
 		return
 	}
 	if !settings.Enabled || !settings.AlertOnFailure {
+		reason := "disabled"
+		if settings.Enabled {
+			reason = "alert_on_failure_off"
+		}
+		s.logAlertDecision(ctx, slog.LevelDebug, reason, tenantID, siteID, failureCount, nil)
 		return
 	}
 	if len(settings.Recipients) == 0 {
+		s.logAlertDecision(ctx, slog.LevelDebug, "no_recipients", tenantID, siteID, failureCount, nil)
 		return
 	}
 
 	claimedState, claimErr := s.repo.ClaimAlertSlot(ctx, tenantID, siteID, 1, settings.AlertThrottleMinutes)
-	if claimErr != nil || claimedState == nil {
-		// Throttled or no row — skip.
+	if claimErr != nil {
+		s.logAlertDecision(ctx, slog.LevelWarn, "claim_alert_slot_error", tenantID, siteID, failureCount, claimErr)
+		return
+	}
+	if claimedState == nil {
+		// Throttled — not an error, just not our turn yet.
+		s.logAlertDecision(ctx, slog.LevelDebug, "throttled", tenantID, siteID, failureCount, nil)
 		return
 	}
 
 	// Resolve site name/URL for the email.
 	siteRef, refErr := s.repo.GetSiteRef(ctx, tenantID, siteID)
 	if refErr != nil {
-		s.log.Warn("email alert: could not resolve site ref",
-			slog.String("site_id", siteID.String()),
-			slog.Any("error", refErr),
-		)
+		s.logAlertDecision(ctx, slog.LevelWarn, "site_ref_error", tenantID, siteID, failureCount, refErr)
 		return
 	}
 
@@ -164,12 +239,10 @@ func (s *Service) maybeAlertFailures(ctx context.Context, tenantID, siteID uuid.
 	}
 
 	if err := s.mailer.Enqueue(ctx, tenantID, settings.Recipients, "email_failure_alert", data); err != nil {
-		s.log.Warn("email alert: enqueue failed",
-			slog.String("tenant_id", tenantID.String()),
-			slog.String("site_id", siteID.String()),
-			slog.Any("error", err),
-		)
+		s.logAlertDecision(ctx, slog.LevelWarn, "enqueue_failed", tenantID, siteID, failureCount, err)
+		return
 	}
+	s.logAlertDecision(ctx, slog.LevelInfo, "alert_sent", tenantID, siteID, failureCount, nil)
 }
 
 // buildDigestData gathers per-tenant digest data for a given [from, to] window.
