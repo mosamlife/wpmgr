@@ -346,4 +346,37 @@ final class AddressParser {
 	private static function strip_crlf( string $value ): string {
 		return trim( str_replace( array( "\r", "\n" ), '', $value ) );
 	}
+
+	/**
+	 * Redact any RFC 5322-shaped email address embedded inside a free-text
+	 * string, replacing each match with a fixed placeholder and leaving the
+	 * surrounding text untouched.
+	 *
+	 * GH #381 phases 1 and 4 (security-reviewer finding): a real
+	 * PHPMailer/SMTP failure message routinely embeds the recipient address
+	 * verbatim -- e.g. "SMTP Error: The following recipients failed:
+	 * a@x.com: 550 5.1.1 User unknown" -- so emptying the `to` column alone
+	 * does not stop the address leaving the site through the `error` (or
+	 * `response`) column when log_emails is off. A blanket empty-string on
+	 * the whole error would also destroy the one part an operator actually
+	 * needs to diagnose the failure (the "550 5.1.1 User unknown" part), so
+	 * this removes only the address-shaped substring and keeps everything
+	 * else.
+	 *
+	 * Deliberately not anchored to a specific known `to` list: a provider
+	 * response can echo back a re-cased/normalised address, or one that was
+	 * never in the `to` array (a bounce target, a Cc/Bcc), so this scans for
+	 * anything address-shaped rather than trusting a caller-supplied
+	 * allow-list of addresses to redact.
+	 *
+	 * @param string $text Free-text error or provider-response string.
+	 * @return string
+	 */
+	public static function redact_email_addresses( string $text ): string {
+		if ( $text === '' ) {
+			return $text;
+		}
+		$redacted = preg_replace( '/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/', '[address removed]', $text );
+		return $redacted === null ? $text : $redacted;
+	}
 }

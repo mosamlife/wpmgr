@@ -111,6 +111,17 @@ class MailFailureCaptureTest extends TestCase
      * write a row -- status='failed', provider='wp_mail', error non-empty --
      * so the alert exists, but the row must contain NEITHER the recipient
      * address NOR the subject line in any column.
+     *
+     * FINDING A / A2 (security review): the fixture here used to be
+     * 'SMTP connect() failed' -- the one common failure shape that happens
+     * to omit the address, which let the assertion below pass for the wrong
+     * reason (nothing to leak, not "nothing leaked"). A real PHPMailer/SMTP
+     * failure routinely embeds the address verbatim in the message text
+     * (this exact shape is what the reviewer used to prove the defect, and
+     * matches tests/Email/fake-phpmailer.php:138's
+     * 'Invalid address:  (%s): %s'), so this fixture now does too, and the
+     * assertion covers the `error` column explicitly, not just the whole
+     * serialized row.
      */
     public function test_row_is_written_but_redacted_when_log_emails_is_disabled(): void
     {
@@ -122,10 +133,14 @@ class MailFailureCaptureTest extends TestCase
         $capture = new MailFailureCapture(new EmailLogger());
         $capture->register_hooks();
 
-        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'SMTP connect() failed', [
-            'to'      => ['a@x.com'],
-            'subject' => 'Order #12',
-        ]));
+        do_action('wp_mail_failed', new WP_Error(
+            'wp_mail_failed',
+            'SMTP Error: The following recipients failed: a@x.com: 550 5.1.1 User unknown',
+            [
+                'to'      => ['a@x.com'],
+                'subject' => 'Order #12',
+            ]
+        ));
 
         $this->assertCount(1, $fakeWpdb->rows, 'A row must always be written for a genuine failure, even with log_emails off.');
 
@@ -133,6 +148,8 @@ class MailFailureCaptureTest extends TestCase
         $this->assertSame('failed', $row['status']);
         $this->assertSame('wp_mail', $row['provider']);
         $this->assertNotSame('', $row['error']);
+        $this->assertStringNotContainsString('a@x.com', $row['error'], 'The address embedded in the error text must not survive when log_emails is off.');
+        $this->assertStringContainsString('550 5.1.1 User unknown', $row['error'], 'Redaction must not destroy the diagnostic detail an operator needs -- only the address.');
 
         $json = (string) json_encode($row);
         $this->assertStringNotContainsString('a@x.com', $json, 'Recipient must not appear anywhere in the row when log_emails is off.');
@@ -156,10 +173,14 @@ class MailFailureCaptureTest extends TestCase
         $capture = new MailFailureCapture(new EmailLogger());
         $capture->register_hooks();
 
-        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'SMTP connect() failed', [
-            'to'      => ['a@x.com'],
-            'subject' => 'Order #12',
-        ]));
+        do_action('wp_mail_failed', new WP_Error(
+            'wp_mail_failed',
+            'SMTP Error: The following recipients failed: a@x.com: 550 5.1.1 User unknown',
+            [
+                'to'      => ['a@x.com'],
+                'subject' => 'Order #12',
+            ]
+        ));
 
         $this->assertCount(1, $fakeWpdb->rows);
         $row = $fakeWpdb->rows[0];
@@ -167,6 +188,7 @@ class MailFailureCaptureTest extends TestCase
         $this->assertSame('wp_mail', $row['provider']);
         $this->assertStringContainsString('a@x.com', $row['mail_to'], 'Opting in to log_emails must actually surface the real recipient.');
         $this->assertSame('Order #12', $row['subject']);
+        $this->assertStringContainsString('a@x.com', $row['error'], 'Opting in to log_emails must not redact the error text either -- the opt-in means the real data, unmodified.');
 
         unset($GLOBALS['wpdb']);
     }
