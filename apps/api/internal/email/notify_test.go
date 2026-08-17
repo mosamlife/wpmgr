@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -279,6 +280,23 @@ type notifySettingsWire struct {
 
 // notifySettingsGetCtx builds a request+principal context for GET
 // /email/notify-settings — an org-level route with no path params.
+//
+// Every test below calls h.getNotifySettings(c) directly instead of going
+// through the real router (qodo flagged this on PR #447 — noting it here so
+// later passes stop re-flagging it). That is deliberate, not a gap: this
+// endpoint has no :siteId, so it carries no authz.RequireSiteAccess gate to
+// bypass, and its own middleware only resolves the principal from context,
+// which notifySettingsGetCtx supplies the same way domain.WithPrincipal does
+// in production. These tests exist to pin the coverage computation's JSON
+// serialization (sites_total/sites_covered/sites_routed, and — PR #447
+// finding 2 — failure_detection's presence/absence on a coverage-query
+// failure), not route wiring or permission enforcement; a router-level test
+// would add HTTP-plumbing noise without exercising anything these don't
+// already cover. Contrast this with the RLS-bypass pattern the project also
+// uses deliberately (a test that skips the Go gate ON PURPOSE to prove the
+// database refuses a write on its own, e.g. the integration suite's tenancy
+// proofs) — that is testing the DB's own enforcement; this is testing this
+// handler's serialization in isolation, a different and narrower claim.
 func notifySettingsGetCtx(t *testing.T, p domain.Principal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -414,6 +432,48 @@ func TestGetNotifySettings_FailureDetectionCoverage_NoOverfire(t *testing.T) {
 	})
 }
 
+// TestGetNotifySettings_CoverageQueryFails_SettingsStillReturned is PR #447
+// bot review finding 2: the failure-detection coverage query used to be on
+// the critical path of GET /email/notify-settings — a fault in that
+// decorative count took down the WHOLE settings page, including the
+// recipients/toggles a user visits this endpoint to edit. RED before the
+// fix (service.go's GetNotifySettings returned early on covErr): the request
+// failed outright instead of degrading. The response must still be 200, must
+// still carry the real settings, and failure_detection must be ABSENT from
+// the wire — never a false "sites_covered: 0" built from an error, which the
+// frontend would render as "no site can report a delivery failure".
+func TestGetNotifySettings_CoverageQueryFails_SettingsStillReturned(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedSiteFactsErr = errors.New("db: connection reset")
+	repo.alertSettings = &NotifySettings{
+		TenantID:             tenantID,
+		Enabled:              true,
+		Recipients:           []string{"ops@example.com"},
+		AlertOnFailure:       true,
+		AlertThrottleMinutes: 45,
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 even when the coverage query fails, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"ops@example.com"`) {
+		t.Errorf("expected the real recipients to still be returned, got body %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"failure_detection"`) {
+		t.Errorf("expected failure_detection to be ABSENT on a coverage-query failure, not present (possibly zeroed), got body %s", rec.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GH #381 — coverage predicate corrected: gating sites_covered on
 // agent_version alone told every customer with a fully-working, WPMgr-routed
@@ -497,7 +557,7 @@ func TestGetNotifySettings_MixedFleet_ReportsHonestSplit(t *testing.T) {
 	tenantID := uuid.New()
 	repo := newFakeRepo()
 	facts := append(
-		routedFacts("0.61.136", "0.60.2"), // covered via routing, old agent
+		routedFacts("0.61.136", "0.60.2"),                               // covered via routing, old agent
 		ConnectedSiteEmailFact{AgentVersion: "1000.0.0", Routed: false}, // covered via version
 	)
 	facts = append(facts,
@@ -653,6 +713,15 @@ func (f *fakeMailer) Enqueue(_ context.Context, _ uuid.UUID, recipients []string
 	return nil
 }
 
+// EnqueueTx is the tx-scoped counterpart maybeAlertFailures actually calls
+// (transactional outbox — see Repo.ClaimAlertSlot). The fake ignores tx
+// (fakeRepo's ClaimAlertSlot never has a real one to hand it) and otherwise
+// behaves exactly like Enqueue, so every existing assertion on calls/
+// lastRecipients/notify still holds for the alert path.
+func (f *fakeMailer) EnqueueTx(ctx context.Context, _ pgx.Tx, tenantID uuid.UUID, recipients []string, template string, data map[string]any) error {
+	return f.Enqueue(ctx, tenantID, recipients, template, data)
+}
+
 func (f *fakeMailer) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -762,6 +831,7 @@ func TestMaybeAlertFailures_EveryExitPathLogsAReason(t *testing.T) {
 			repo: func(r *fakeRepo) {
 				s := fullSettings
 				r.alertSettings = &s
+				r.alertSiteRef = siteRef
 				// alertClaimState/alertClaimErr left nil/nil == throttled.
 			},
 			wantLevel:  slog.LevelDebug,
@@ -773,6 +843,7 @@ func TestMaybeAlertFailures_EveryExitPathLogsAReason(t *testing.T) {
 			repo: func(r *fakeRepo) {
 				s := fullSettings
 				r.alertSettings = &s
+				r.alertSiteRef = siteRef
 				r.alertClaimErr = errors.New("advisory lock timeout")
 			},
 			wantLevel:  slog.LevelWarn,
@@ -987,5 +1058,179 @@ func TestIngestLogBatch_FailureAlert_SendsExactlyOnce_IngestStaysAsync(t *testin
 
 	if got := mailer.Calls(); got != 1 {
 		t.Errorf("mailer.Enqueue called %d times, want exactly 1", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR #447 bot review, finding 1 — a failed enqueue must not silence the site.
+//
+// ClaimAlertSlot used to commit last_alert_at/failures_since_alert=0 BEFORE
+// mailer.Enqueue ran. When Enqueue failed, that commit stood: the site was
+// left looking "recently alerted" with nothing actually sent — a genuine
+// failure reaching the admin as silence, then throttling every subsequent
+// attempt too. This is the original GH #381 bug, reintroduced inside its own
+// fix. The repo-level fix (Repo.ClaimAlertSlot, repo.go) now runs the claim
+// UPDATE and the mailer's EnqueueTx insert in ONE transaction, so a failed
+// enqueue rolls the claim back with it.
+//
+// fakeRepo's static alertClaimState/alertClaimErr fixtures can't exercise
+// this — they don't model accumulation or the claim's reset at all. These
+// two tests use stubAlertRepo instead, which models the real
+// email_alert_state row (accumulate, conditional claim-with-reset,
+// rollback-on-callback-error under a lock standing in for Postgres's row
+// lock) closely enough to prove both halves of the contract.
+// ---------------------------------------------------------------------------
+
+// stubAlertRow mirrors one email_alert_state row.
+type stubAlertRow struct {
+	failuresSinceAlert int64
+	lastAlertAt        *time.Time
+}
+
+// stubAlertRepo is a repository double whose ClaimAlertSlot replicates the
+// REAL query's single-statement conditional claim (see
+// db/query/site_email.sql's ClaimAlertSlot) plus the transactional-outbox
+// rollback Repo.ClaimAlertSlot now performs when onClaim fails. Everything
+// else (settings, site ref, samples) delegates to the embedded fakeRepo.
+type stubAlertRepo struct {
+	*fakeRepo
+	mu   sync.Mutex
+	rows map[uuid.UUID]*stubAlertRow // keyed by siteID
+}
+
+func newStubAlertRepo() *stubAlertRepo {
+	return &stubAlertRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]*stubAlertRow{}}
+}
+
+func (r *stubAlertRepo) AccumulateAlertFailures(_ context.Context, _, siteID uuid.UUID, n int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row := r.rows[siteID]
+	if row == nil {
+		row = &stubAlertRow{}
+		r.rows[siteID] = row
+	}
+	row.failuresSinceAlert += n
+	return nil
+}
+
+// ClaimAlertSlot holds r.mu for the whole onClaim call — the stand-in for
+// Postgres holding the row lock for the transaction's lifetime — so two
+// concurrent callers serialize exactly like two concurrent ticks racing the
+// same email_alert_state row.
+func (r *stubAlertRepo) ClaimAlertSlot(_ context.Context, _, siteID uuid.UUID, minFailures int64, throttleMinutes int, onClaim func(tx pgx.Tx) error) (*AlertState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	row := r.rows[siteID]
+	if row == nil {
+		return nil, nil // nothing accumulated yet == throttled/nothing to claim
+	}
+	now := time.Now()
+	throttleWindow := time.Duration(throttleMinutes) * time.Minute
+	throttled := row.failuresSinceAlert < minFailures ||
+		(row.lastAlertAt != nil && now.Sub(*row.lastAlertAt) < throttleWindow)
+	if throttled {
+		return nil, nil
+	}
+
+	// Speculatively apply the UPDATE's effect (matches its RETURNING *).
+	prevFailures, prevLastAlertAt := row.failuresSinceAlert, row.lastAlertAt
+	row.failuresSinceAlert = 0
+	row.lastAlertAt = &now
+
+	if onClaim != nil {
+		if err := onClaim(nil); err != nil {
+			// Roll back — exactly what InAgentTx's real ROLLBACK does when
+			// the mailer's EnqueueTx call fails.
+			row.failuresSinceAlert, row.lastAlertAt = prevFailures, prevLastAlertAt
+			return nil, err
+		}
+	}
+	return &AlertState{SiteID: siteID, FailuresSinceAlert: row.failuresSinceAlert, LastAlertAt: row.lastAlertAt}, nil
+}
+
+// TestMaybeAlertFailures_EnqueueFailure_DoesNotLeaveSiteThrottled is RED
+// before the repo.go fix: the old two-step claim-then-enqueue committed the
+// claim regardless of the enqueue's outcome, so failures_since_alert stayed
+// reset to 0 and last_alert_at stayed stamped after a failed send — the next
+// tick would see the site as already (falsely) alerted and skip it too.
+func TestMaybeAlertFailures_EnqueueFailure_DoesNotLeaveSiteThrottled(t *testing.T) {
+	tenantID, siteID := uuid.New(), uuid.New()
+	repo := newStubAlertRepo()
+	repo.alertSettings = &NotifySettings{
+		Enabled:              true,
+		AlertOnFailure:       true,
+		Recipients:           []string{"ops@example.com"},
+		AlertThrottleMinutes: 60,
+	}
+	repo.alertSiteRef = &SiteRef{ID: siteID, Name: "example.com", URL: "https://example.com"}
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, slog.New(newCapturingHandler()))
+	svc.repo = repo
+	mailer := &fakeMailer{enqueueErr: errors.New("smtp timeout")}
+	svc.mailer = mailer
+
+	// First tick: 3 failures accumulate, the claim would succeed, but the
+	// enqueue fails.
+	svc.maybeAlertFailures(context.Background(), tenantID, siteID, 3)
+	if got := mailer.Calls(); got != 0 {
+		t.Fatalf("expected 0 sends after a failing enqueue, got %d", got)
+	}
+
+	repo.mu.Lock()
+	row := repo.rows[siteID]
+	repo.mu.Unlock()
+	if row == nil || row.failuresSinceAlert != 3 {
+		t.Fatalf("expected failures_since_alert to still be 3 after a failed enqueue (claim must roll back), got %+v", row)
+	}
+	if row.lastAlertAt != nil {
+		t.Fatalf("expected last_alert_at to remain unset after a failed enqueue (claim must roll back), got %v", *row.lastAlertAt)
+	}
+
+	// Second tick, mailer now works: the site must NOT be throttled by the
+	// first attempt's failure — this is the assertion that matters.
+	mailer.mu.Lock()
+	mailer.enqueueErr = nil
+	mailer.mu.Unlock()
+	svc.maybeAlertFailures(context.Background(), tenantID, siteID, 1)
+	if got := mailer.Calls(); got != 1 {
+		t.Fatalf("expected the next tick to alert successfully (site not throttled by the prior failure), got %d calls", got)
+	}
+}
+
+// TestMaybeAlertFailures_ConcurrentTicks_NeverDoubleSend is the over-fire
+// control for the fix above: combining the claim and the enqueue into one
+// transaction must not let two concurrent ticks both win the claim and both
+// send. The claim UPDATE's row lock (modeled here by holding stubAlertRepo's
+// mutex for onClaim's whole duration) is what still prevents that.
+func TestMaybeAlertFailures_ConcurrentTicks_NeverDoubleSend(t *testing.T) {
+	tenantID, siteID := uuid.New(), uuid.New()
+	repo := newStubAlertRepo()
+	repo.alertSettings = &NotifySettings{
+		Enabled:              true,
+		AlertOnFailure:       true,
+		Recipients:           []string{"ops@example.com"},
+		AlertThrottleMinutes: 60,
+	}
+	repo.alertSiteRef = &SiteRef{ID: siteID, Name: "example.com", URL: "https://example.com"}
+
+	svc := NewService(&Repo{}, &fakeEncryptor{}, slog.New(newCapturingHandler()))
+	svc.repo = repo
+	mailer := &fakeMailer{}
+	svc.mailer = mailer
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			svc.maybeAlertFailures(context.Background(), tenantID, siteID, 3)
+		}()
+	}
+	wg.Wait()
+
+	if got := mailer.Calls(); got != 1 {
+		t.Fatalf("expected exactly 1 send from 2 concurrent ticks racing the same claim, got %d", got)
 	}
 }

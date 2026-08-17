@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/mailer"
 )
@@ -27,7 +28,18 @@ import (
 // with internal/mailer and remains unit-testable with a fake.
 type MailerEnqueuer interface {
 	Enqueue(ctx context.Context, tenantID uuid.UUID, recipients []string, template string, data map[string]any) error
+	// EnqueueTx enqueues within the caller's transaction (transactional
+	// outbox — see maybeAlertFailures/Repo.ClaimAlertSlot). *mailer.Enqueuer
+	// satisfies this via its own EnqueueTx method.
+	EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, recipients []string, template string, data map[string]any) error
 }
+
+// errAlertEnqueueFailed marks a ClaimAlertSlot failure that originated in the
+// onClaim callback (the mailer enqueue) rather than in the claim UPDATE
+// itself, so maybeAlertFailures can log the correct reason
+// ("enqueue_failed" vs "claim_alert_slot_error") after the transaction has
+// already rolled back.
+var errAlertEnqueueFailed = errors.New("email alert enqueue failed")
 
 // MailerStatus reports whether the instance mailer is currently configured.
 // *mailer.Service satisfies this interface.
@@ -184,18 +196,11 @@ func (s *Service) maybeAlertFailures(ctx context.Context, tenantID, siteID uuid.
 		return
 	}
 
-	claimedState, claimErr := s.repo.ClaimAlertSlot(ctx, tenantID, siteID, 1, settings.AlertThrottleMinutes)
-	if claimErr != nil {
-		s.logAlertDecision(ctx, slog.LevelWarn, "claim_alert_slot_error", tenantID, siteID, failureCount, claimErr)
-		return
-	}
-	if claimedState == nil {
-		// Throttled — not an error, just not our turn yet.
-		s.logAlertDecision(ctx, slog.LevelDebug, "throttled", tenantID, siteID, failureCount, nil)
-		return
-	}
-
-	// Resolve site name/URL for the email.
+	// Resolve the email content BEFORE claiming the slot — mirrors
+	// internal/vuln's dispatchTenant (fetch everything the send needs first,
+	// THEN claim + enqueue atomically as the last step). This also means a
+	// site-ref lookup failure can never land after the claim has already
+	// committed the failures-since-alert reset.
 	siteRef, refErr := s.repo.GetSiteRef(ctx, tenantID, siteID)
 	if refErr != nil {
 		s.logAlertDecision(ctx, slog.LevelWarn, "site_ref_error", tenantID, siteID, failureCount, refErr)
@@ -215,14 +220,14 @@ func (s *Service) maybeAlertFailures(ctx context.Context, tenantID, siteID uuid.
 		Error    string
 	}
 	dtoSamples := make([]sampleDTO, 0, len(samples))
-	for _, s := range samples {
+	for _, smp := range samples {
 		// Truncate error to 200 chars per spec (never bodies).
-		errStr := s.Error
+		errStr := smp.Error
 		if len(errStr) > 200 {
 			errStr = errStr[:200] + "..."
 		}
 		dtoSamples = append(dtoSamples, sampleDTO{
-			Subject: s.Subject,
+			Subject: smp.Subject,
 			Error:   errStr,
 		})
 	}
@@ -233,13 +238,44 @@ func (s *Service) maybeAlertFailures(ctx context.Context, tenantID, siteID uuid.
 		"SiteName":      siteRef.Name,
 		"SiteURL":       siteRef.URL,
 		"SiteEmailURL":  dashURL,
-		"FailureCount":  int(claimedState.FailuresSinceAlert) + failureCount,
+		"FailureCount":  failureCount,
 		"WindowMinutes": settings.AlertThrottleMinutes,
 		"Samples":       dtoSamples,
 	}
 
-	if err := s.mailer.Enqueue(ctx, tenantID, settings.Recipients, "email_failure_alert", data); err != nil {
-		s.logAlertDecision(ctx, slog.LevelWarn, "enqueue_failed", tenantID, siteID, failureCount, err)
+	// Claim the alert slot and enqueue the email in the SAME transaction
+	// (transactional outbox — see Repo.ClaimAlertSlot). If the enqueue
+	// fails, the whole transaction rolls back: the failures_since_alert
+	// reset and last_alert_at bump revert together with the failed send, so
+	// a genuine enqueue failure can never leave the site silently marked as
+	// recently-alerted (GH #381's original bug, reintroduced by claiming and
+	// enqueueing as two steps that could disagree).
+	//
+	// This still cannot double-send: the claim UPDATE row-locks
+	// email_alert_state for the life of the transaction, so a second,
+	// concurrent tick blocks on that row until this one commits or rolls
+	// back. If it commits, the concurrent tick re-evaluates the throttle
+	// predicate against the now-reset row and finds nothing to claim. If it
+	// rolls back, the row reverts to its pre-claim state and the concurrent
+	// tick is free to claim and send — never both.
+	claimedState, claimErr := s.repo.ClaimAlertSlot(ctx, tenantID, siteID, 1, settings.AlertThrottleMinutes,
+		func(tx pgx.Tx) error {
+			if err := s.mailer.EnqueueTx(ctx, tx, tenantID, settings.Recipients, "email_failure_alert", data); err != nil {
+				return fmt.Errorf("%w: %v", errAlertEnqueueFailed, err)
+			}
+			return nil
+		})
+	if claimErr != nil {
+		reason := "claim_alert_slot_error"
+		if errors.Is(claimErr, errAlertEnqueueFailed) {
+			reason = "enqueue_failed"
+		}
+		s.logAlertDecision(ctx, slog.LevelWarn, reason, tenantID, siteID, failureCount, claimErr)
+		return
+	}
+	if claimedState == nil {
+		// Throttled — not an error, just not our turn yet.
+		s.logAlertDecision(ctx, slog.LevelDebug, "throttled", tenantID, siteID, failureCount, nil)
 		return
 	}
 	s.logAlertDecision(ctx, slog.LevelInfo, "alert_sent", tenantID, siteID, failureCount, nil)

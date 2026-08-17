@@ -230,8 +230,11 @@ type NotifySettings struct {
 	InstanceMailerConfigured bool
 	// FailureDetection is populated by the service from a live count of the
 	// tenant's connected sites (GH #381 phase 2). It is NOT stored in DB —
-	// injected on GET.
-	FailureDetection FailureDetectionCoverage
+	// injected on GET. Nil means the coverage query itself failed (PR #447
+	// bot review finding 2): the rest of the settings are still valid and
+	// must still be returned, but the caller must render coverage as ABSENT,
+	// never as a false "sites_covered: 0" built from an error.
+	FailureDetection *FailureDetectionCoverage
 }
 
 // FailureDetectionCoverage summarizes, for a tenant, how many of its
