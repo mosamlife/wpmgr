@@ -6,6 +6,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.139] - 2026-08-17
+
+### Added
+
+- Email delivery failure detection now also listens to WordPress's own mail-failure signal, so a site is covered even when it sends through its own SMTP setup instead of through WPMgr (GH #381). Previously WPMgr could only see a failure on mail it routed itself, while the Notifications page promised detection generally; a site sending through its own SMTP configuration could have per-failure alerts turned on and never receive one. The Notifications page now states how many connected sites can actually report a failure, and says so plainly when none can, rather than promising coverage it cannot deliver.
+- A detected failure is now recorded even on a site that has email logging turned off. That preference controls whether successful sends are kept for review; a failure is an incident, not a record of mail that worked, so it is written regardless. The recipient, subject, sender and message body are withheld from the record unless the site has opted into email logging; only the fact that a failure happened is kept.
+
+### Fixed
+
+- `wp_mail()` reported success on a failed send: the filter WPMgr uses to route outgoing mail returned a truthy value on a provider failure, so any caller, a contact form, a password reset, a WooCommerce order email, was told the message went out when nothing was delivered, and WordPress's own mail-failure hook never fired (GH #439). `wp_mail()` now returns false on a failed send and fires that hook itself with the same error shape WordPress's own failure paths use, omitting the message body and any secrets. Forms and flows that check the return value of `wp_mail()` will start surfacing delivery failures they were previously hiding; that is the intent of this fix, not a new fault introduced by it.
+
 ## [0.61.138] - 2026-08-16
 
 ### Fixed
