@@ -19,6 +19,10 @@
  * The X-WPMgr-Site correlation header is stamped on every outgoing message for
  * the Phase-4 CP webhook fan-out.
  *
+ * wp_mail()'s return value is honest: a provider failure makes wp_mail()
+ * return false (never a lie of true) and fires `wp_mail_failed` with a
+ * WP_Error, same as core would on its own send failure. See intercept().
+ *
  * @package WPMgr\Agent\Email
  */
 
@@ -53,10 +57,14 @@ final class MailRouter {
 	 */
 	public function register_hooks(): void {
 		// pre_wp_mail is the primary interception point (WP 5.7+, our baseline).
-		// Returning a non-null value from this filter short-circuits wp_mail()
-		// entirely. We return the result array on success, true on failure (so WP
-		// does NOT fall through to its own PHPMailer path for a message we already
-		// attempted), and null when email is not configured (leaves WP untouched).
+		// Per wp-includes/pluggable.php, wp_mail() only lets WP's own PHPMailer
+		// path run when this filter returns exactly `null`; ANY other value --
+		// including `false` -- short-circuits and becomes wp_mail()'s own return
+		// value verbatim. So we return the result array on success, false on
+		// failure (still short-circuits, so WP never re-attempts a send we
+		// already made -- but wp_mail() now honestly reports the failure instead
+		// of claiming success), and null when email is not configured (leaves
+		// WP untouched).
 		add_filter( 'pre_wp_mail', array( $this, 'intercept' ), 10, 2 );
 	}
 
@@ -84,10 +92,36 @@ final class MailRouter {
 
 		$result = $this->router->send( $mail, $cfg );
 
-		// Return true (truthy non-null) to short-circuit wp_mail() regardless of
-		// the provider outcome; WP's return value from wp_mail() is a bool and we
-		// have already logged the failure via EmailLogger if it occurred.
-		return $result['ok'] ? $result : true;
+		if ( $result['ok'] ) {
+			// Success: unchanged from before -- the provider result array is a
+			// non-null, truthy value, so it short-circuits wp_mail() and becomes
+			// its return value.
+			return $result;
+		}
+
+		// Failure: `false` still short-circuits wp_mail() (see register_hooks()
+		// above) so WP does NOT fall through to its own PHPMailer for a message
+		// we already attempted -- but wp_mail()'s return value is now the
+		// honest `false` instead of a lie. Fire wp_mail_failed ourselves since
+		// short-circuiting skips WP's own call to it entirely, matching the
+		// WP_Error shape core's own failure paths use (code 'wp_mail_failed',
+		// the failure message, and the mail args minus body/secrets) so
+		// existing listeners on that hook keep working.
+		$error_message = $result['detail'] !== '' ? $result['detail'] : 'WPMgr: mail send failed.';
+
+		$error_data = array(
+			'to'                    => $atts['to'] ?? array(),
+			'subject'               => (string) ( $atts['subject'] ?? '' ),
+			'headers'               => $atts['headers'] ?? array(),
+			'attachments'           => $atts['attachments'] ?? array(),
+			// Provider-side failure detail; never credentials or the message body.
+			'wpmgr_provider_detail' => $error_message,
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- firing core's own wp_mail_failed hook, not registering a global
+		do_action( 'wp_mail_failed', new \WP_Error( 'wp_mail_failed', $error_message, $error_data ) );
+
+		return false;
 	}
 
 	/**
