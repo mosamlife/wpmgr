@@ -9141,7 +9141,6 @@ export const EmailNotifySettingsSchema = {
     "digest_hour",
     "timezone",
     "instance_mailer_configured",
-    "failure_detection",
   ],
   properties: {
     enabled: {
