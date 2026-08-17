@@ -60,8 +60,16 @@ export type CostProduct = {
    * inventing one is the fabrication rule at the top of this file.
    */
   replaces?: "full" | "partial";
-  /** What the licence covers that WPMgr does not. Required when replaces
-   *  is "partial", rendered next to the chip. */
+  /**
+   * What the licence covers that WPMgr does not. Required when replaces is
+   * "partial", rendered next to the chip as "Does not include {residual}."
+   * Where a named gap is genuinely on the roadmap, say so in the string
+   * itself (e.g. "..., on our roadmap") rather than leaving a flat denial,
+   * but only for a gap actually planned; one-click migration is on the
+   * explicit skip list in ADR-037 and must read as a plain statement, never
+   * softened into a promise. No dates or sprint numbers here: a roadmap item
+   * with a date on a pricing page becomes a complaint the moment it slips.
+   */
   residual?: string;
   /**
    * True for a figure that could not be confirmed against a single
@@ -133,7 +141,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         note: "Annual licence by site tier. Each of these tiers includes 1 GB of the vendor's own storage; backups to your own remote storage are separate.",
         verifiedOn: "2026-08-07",
         replaces: "partial",
-        residual: "staging sites and one-click migration, both inside the licence",
+        residual: "one-click migration, inside the licence; staging sites, on our roadmap",
       },
     ],
   },
@@ -156,7 +164,8 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         note: "Priced per site, with published volume brackets. The figure shown is the per-site price at your bracket, multiplied by your site count.",
         verifiedOn: "2026-08-07",
         replaces: "partial",
-        residual: "the application firewall, the managed rule feed and rate limiting",
+        residual:
+          "the application firewall, the managed rule feed and rate limiting, all on our roadmap",
       },
       // Sucuri is not added as an alternate: it stops publishing prices above
       // 10 sites, which is well inside this page's slider range, and most of
@@ -362,7 +371,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         verifiedOn: "2026-08-17",
         replaces: "partial",
         residual:
-          "staging sites, visual regression testing, form testing, sandbox updates, virtual patching, and human malware cleanup",
+          "sandbox updates, virtual patching and human malware cleanup; staging sites, visual regression testing and form testing, all on our roadmap",
       },
     ],
   },
