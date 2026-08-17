@@ -1,8 +1,16 @@
 # Throwaway WordPress + WP-CLI harness for the AUTHORITATIVE `wp plugin check`.
 # Driven by ../../tools/plugincheck/run.sh (via `make agent-plugincheck`).
+#
+# Images are pinned by digest, not floating tag, so this gate cannot redden a
+# PR on zero code change because upstream repushed `mariadb:11` or
+# `wordpress:cli-php8.3`. To bump deliberately:
+#   docker pull mariadb:11 && docker inspect --format='{{index .RepoDigests 0}}' mariadb:11
+#   docker pull wordpress:cli-php8.3 && docker inspect --format='{{index .RepoDigests 0}}' wordpress:cli-php8.3
+# then paste the new sha256 below and run `make agent-plugincheck` to confirm
+# it still passes before committing the bump.
 services:
   db:
-    image: mariadb:11
+    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf # mariadb:11, pinned 2026-08-17
     environment:
       MARIADB_ROOT_PASSWORD: wp
       MARIADB_DATABASE: wp
@@ -12,7 +20,7 @@ services:
       timeout: 5s
       retries: 40
   wpcli:
-    image: wordpress:cli-php8.3
+    image: wordpress@sha256:2b5e9d4d3e51909dca1aaa4732e9f5e5bf0377c2114dbd8ff39f060bff202586 # wordpress:cli-php8.3, pinned 2026-08-17
     depends_on:
       db:
         condition: service_healthy

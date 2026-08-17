@@ -103,6 +103,7 @@ use WPMgr\Agent\Email\Handlers\PostmarkHandler;
 use WPMgr\Agent\Email\Handlers\SendgridHandler;
 use WPMgr\Agent\Email\Handlers\SesHandler;
 use WPMgr\Agent\Email\Handlers\SmtpHandler;
+use WPMgr\Agent\Email\MailFailureCapture;
 use WPMgr\Agent\Email\MailRouter;
 use WPMgr\Agent\Email\ProviderRouter;
 use WPMgr\Agent\Email\SuppressionCache;
@@ -335,6 +336,15 @@ final class Plugin
     private MailRouter $mailRouter;
 
     /**
+     * Unconditional listener on core's own `wp_mail_failed` action (GH #381
+     * phase 1). MailRouter only sees a failure on sites where a WPMgr
+     * provider is configured; this listener registers regardless of
+     * EmailConfig, so a failed send is captured even on sites WPMgr never
+     * routes (core PHPMailer, or a third-party SMTP plugin).
+     */
+    private MailFailureCapture $mailFailureCapture;
+
+    /**
      * Provider-level send dispatcher. Instantiated with all five v1 handlers
      * (smtp/ses/sendgrid/mailgun/postmark) and shared by MailRouter +
      * SendTestEmailCommand.
@@ -503,6 +513,7 @@ final class Plugin
         $this->providerRouter->register(new MailgunHandler());
         $this->providerRouter->register(new PostmarkHandler());
         $this->mailRouter        = new MailRouter($this->providerRouter, $this->settings);
+        $this->mailFailureCapture = new MailFailureCapture($emailLogger);
         $this->emailLogReporter  = new EmailLogReporter($this->settings, $this->signer);
 
         $this->router              = new Router($this->connector, $this->commands());
@@ -1022,6 +1033,11 @@ final class Plugin
         // The filter is non-destructive: when no email config is stored it
         // returns null immediately, leaving the default WP mail path untouched.
         $this->mailRouter->register_hooks();
+
+        // GH #381 phase 1 — unconditional wp_mail_failed listener. Unlike
+        // mailRouter above, this registration is NOT gated behind email
+        // config: it must see failures on sites WPMgr never routes.
+        $this->mailFailureCapture->register_hooks();
 
         // Email log retention pruner — runs daily via wp-cron.
         add_action(EmailLogger::HOOK_PRUNE, [$this, 'pruneEmailLog']);

@@ -17010,6 +17010,12 @@ type EmailNotifySettings struct {
 	// True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true
 	// to deliver.
 	InstanceMailerConfigured bool `json:"instance_mailer_configured"`
+	// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). A site is
+	// covered when EITHER WPMgr is the mail transport it actively uses (routing does not depend on agent
+	// version) OR its agent is new enough (>= min_agent_version_unrouted) to capture a failure on mail
+	// WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a
+	// per-failure alert no matter how the settings above are configured.
+	FailureDetection OptEmailNotifySettingsFailureDetection `json:"failure_detection"`
 	// Present when a settings row exists; absent for default response.
 	TenantID  OptNilUUID     `json:"tenant_id"`
 	CreatedAt OptNilDateTime `json:"created_at"`
@@ -17069,6 +17075,11 @@ func (s *EmailNotifySettings) GetNextDigestAt() OptNilDateTime {
 // GetInstanceMailerConfigured returns the value of InstanceMailerConfigured.
 func (s *EmailNotifySettings) GetInstanceMailerConfigured() bool {
 	return s.InstanceMailerConfigured
+}
+
+// GetFailureDetection returns the value of FailureDetection.
+func (s *EmailNotifySettings) GetFailureDetection() OptEmailNotifySettingsFailureDetection {
+	return s.FailureDetection
 }
 
 // GetTenantID returns the value of TenantID.
@@ -17141,6 +17152,11 @@ func (s *EmailNotifySettings) SetInstanceMailerConfigured(val bool) {
 	s.InstanceMailerConfigured = val
 }
 
+// SetFailureDetection sets the value of FailureDetection.
+func (s *EmailNotifySettings) SetFailureDetection(val OptEmailNotifySettingsFailureDetection) {
+	s.FailureDetection = val
+}
+
 // SetTenantID sets the value of TenantID.
 func (s *EmailNotifySettings) SetTenantID(val OptNilUUID) {
 	s.TenantID = val
@@ -17206,6 +17222,68 @@ func (s *EmailNotifySettingsDigestCadence) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). A site is
+// covered when EITHER WPMgr is the mail transport it actively uses (routing does not depend on agent
+// version) OR its agent is new enough (>= min_agent_version_unrouted) to capture a failure on mail
+// WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a
+// per-failure alert no matter how the settings above are configured.
+type EmailNotifySettingsFailureDetection struct {
+	// Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected,
+	// revoked and archived sites).
+	SitesTotal int `json:"sites_total"`
+	// Of sites_total, how many can have a delivery failure detected and alerted on — because WPMgr
+	// routes their mail, because their agent_version is at or above min_agent_version_unrouted, or both.
+	SitesCovered int `json:"sites_covered"`
+	// Of sites_total, how many have WPMgr configured as their active mail transport. These sites are
+	// covered regardless of agent version; this count explains why sites_covered can be high even on a
+	// fleet below min_agent_version_unrouted.
+	SitesRouted int `json:"sites_routed"`
+	// Minimum agent version needed to detect and report a delivery failure ONLY for sites that do NOT
+	// route their mail through WPMgr (sites_total - sites_routed of them). It says nothing about routed
+	// sites, which are covered independent of this value.
+	MinAgentVersionUnrouted string `json:"min_agent_version_unrouted"`
+}
+
+// GetSitesTotal returns the value of SitesTotal.
+func (s *EmailNotifySettingsFailureDetection) GetSitesTotal() int {
+	return s.SitesTotal
+}
+
+// GetSitesCovered returns the value of SitesCovered.
+func (s *EmailNotifySettingsFailureDetection) GetSitesCovered() int {
+	return s.SitesCovered
+}
+
+// GetSitesRouted returns the value of SitesRouted.
+func (s *EmailNotifySettingsFailureDetection) GetSitesRouted() int {
+	return s.SitesRouted
+}
+
+// GetMinAgentVersionUnrouted returns the value of MinAgentVersionUnrouted.
+func (s *EmailNotifySettingsFailureDetection) GetMinAgentVersionUnrouted() string {
+	return s.MinAgentVersionUnrouted
+}
+
+// SetSitesTotal sets the value of SitesTotal.
+func (s *EmailNotifySettingsFailureDetection) SetSitesTotal(val int) {
+	s.SitesTotal = val
+}
+
+// SetSitesCovered sets the value of SitesCovered.
+func (s *EmailNotifySettingsFailureDetection) SetSitesCovered(val int) {
+	s.SitesCovered = val
+}
+
+// SetSitesRouted sets the value of SitesRouted.
+func (s *EmailNotifySettingsFailureDetection) SetSitesRouted(val int) {
+	s.SitesRouted = val
+}
+
+// SetMinAgentVersionUnrouted sets the value of MinAgentVersionUnrouted.
+func (s *EmailNotifySettingsFailureDetection) SetMinAgentVersionUnrouted(val string) {
+	s.MinAgentVersionUnrouted = val
 }
 
 // Static catalog of supported email providers and their field schemas.
@@ -29235,6 +29313,52 @@ func (o OptEmailConnectionConfig) Get() (v EmailConnectionConfig, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptEmailConnectionConfig) Or(d EmailConnectionConfig) EmailConnectionConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptEmailNotifySettingsFailureDetection returns new OptEmailNotifySettingsFailureDetection with value set to v.
+func NewOptEmailNotifySettingsFailureDetection(v EmailNotifySettingsFailureDetection) OptEmailNotifySettingsFailureDetection {
+	return OptEmailNotifySettingsFailureDetection{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptEmailNotifySettingsFailureDetection is optional EmailNotifySettingsFailureDetection.
+type OptEmailNotifySettingsFailureDetection struct {
+	Value EmailNotifySettingsFailureDetection
+	Set   bool
+}
+
+// IsSet returns true if OptEmailNotifySettingsFailureDetection was set.
+func (o OptEmailNotifySettingsFailureDetection) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptEmailNotifySettingsFailureDetection) Reset() {
+	var v EmailNotifySettingsFailureDetection
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptEmailNotifySettingsFailureDetection) SetTo(v EmailNotifySettingsFailureDetection) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptEmailNotifySettingsFailureDetection) Get() (v EmailNotifySettingsFailureDetection, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptEmailNotifySettingsFailureDetection) Or(d EmailNotifySettingsFailureDetection) EmailNotifySettingsFailureDetection {
 	if v, ok := o.Get(); ok {
 		return v
 	}

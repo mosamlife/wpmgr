@@ -41,6 +41,22 @@ import { useEmailNotifySettings, usePutEmailNotifySettings } from "./use-email";
 // The instance_mailer_configured flag controls a warning banner: when false,
 // neither alerts nor digests can deliver. The banner links to /settings/smtp.
 //
+// failure_detection (GH #381) is the OTHER half of the alerting path: even
+// with a working instance mailer, WPMgr can only detect a delivery failure
+// on a site that EITHER routes its mail through WPMgr (covered regardless of
+// agent version — that capture path predates this feature and consults no
+// version gate) OR whose agent is new enough to report a failure on mail it
+// does not route (>= min_agent_version_unrouted). sites_routed says how many
+// of the tenant's sites fall into the first bucket, so a high sites_covered
+// count on a fleet of old agents is explained rather than looking wrong.
+// A tenant whose sites are neither routed nor new enough sees "Per-failure
+// alerts" as an armed toggle that will never fire — the two banners are
+// independent (nothing can SEND vs. nothing can DETECT) and both can be
+// showing at once. sites_total === 0 is an empty fleet, not a warning; the
+// field is absent entirely on an older API (self-hosted instance not yet
+// upgraded), in which case no coverage message is shown at all rather than
+// guessed at.
+//
 // This endpoint never 404s (returns defaults). If the API pre-dates 0.36 and
 // returns 404, useEmailNotifySettings maps it to null and the card is hidden.
 // ---------------------------------------------------------------------------
@@ -230,6 +246,29 @@ export function EmailNotifySettingsCard() {
 
   const instanceMailerConfigured = s?.instance_mailer_configured ?? false;
 
+  // GH #381: WPMgr can only detect a delivery failure on a site that is
+  // either routed through WPMgr (any agent version) or new enough to report
+  // a failure on mail it does not route. `failure_detection` is absent on an
+  // older API (self-hosted instance not yet upgraded) — in that case we have
+  // no coverage numbers to show and say nothing rather than guess. A tenant
+  // with zero sites also gets no coverage message; that is not a warning
+  // state, just an empty fleet.
+  const failureDetection = s?.failure_detection;
+  const sitesTotal = failureDetection?.sites_total ?? 0;
+  const sitesCovered = failureDetection?.sites_covered ?? 0;
+  const sitesRouted = failureDetection?.sites_routed ?? 0;
+  const minAgentVersionUnrouted = failureDetection?.min_agent_version_unrouted;
+  const hasCoverageData = failureDetection != null && sitesTotal > 0;
+  const fullCoverage = hasCoverageData && sitesCovered >= sitesTotal;
+  const zeroCoverage = hasCoverageData && sitesCovered === 0;
+  const partialCoverage = hasCoverageData && sitesCovered > 0 && sitesCovered < sitesTotal;
+  // Of the sitesTotal - sitesRouted sites that are NOT routed, how many are
+  // still uncovered (i.e. also below min_agent_version_unrouted). Because
+  // coverage is routed OR new-enough, every uncovered site is necessarily
+  // unrouted — sitesTotal - sitesCovered is exactly that unrouted-and-old
+  // count, never larger, so this is safe to state without overclaiming.
+  const uncoveredCount = sitesTotal - sitesCovered;
+
   return (
     <Card>
       <CardHeader>
@@ -286,6 +325,42 @@ export function EmailNotifySettingsCard() {
               <p className="text-xs text-[var(--color-muted-foreground)]">
                 Send an alert email when a delivery failure is detected on a site.
               </p>
+              {fullCoverage ? (
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  {sitesRouted >= sitesTotal ? (
+                    <>
+                      Covering all {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}
+                      {" — all of them route mail through WPMgr, so this holds regardless "}
+                      of agent version.
+                    </>
+                  ) : sitesRouted > 0 ? (
+                    <>
+                      Covering all {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}:{" "}
+                      {sitesRouted} via mail routing, the rest by agent version.
+                    </>
+                  ) : (
+                    <>
+                      Covering all {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}.
+                    </>
+                  )}
+                </p>
+              ) : null}
+              {partialCoverage ? (
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  {sitesCovered} of {sitesTotal} connected sites can report a delivery
+                  failure{sitesRouted > 0 ? ` (${sitesRouted} via mail routing)` : ""}. The
+                  other {uncoveredCount}{" "}
+                  {uncoveredCount !== 1 ? "aren't routed through WPMgr and are" : "isn't routed through WPMgr and is"}{" "}
+                  on an agent older than {minAgentVersionUnrouted}; updating the agent
+                  restores alerting.{" "}
+                  <Link
+                    to="/sites"
+                    className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                  >
+                    View sites
+                  </Link>
+                </p>
+              ) : null}
             </div>
             <Switch
               checked={alertsEnabled}
@@ -294,6 +369,31 @@ export function EmailNotifySettingsCard() {
               aria-label="Enable per-failure alerts"
             />
           </div>
+
+          {zeroCoverage ? (
+            <div className="mb-4 flex gap-2 rounded-md border border-[var(--color-warning)]/50 bg-[var(--color-warning)]/10 px-3 py-2.5">
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-[var(--color-warning)]"
+              />
+              <div className="text-sm">
+                <span className="font-medium">
+                  No connected site can report a delivery failure.
+                </span>{" "}
+                None of your {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}{" "}
+                route{sitesTotal !== 1 ? "" : "s"} mail through WPMgr, and{" "}
+                {sitesTotal !== 1 ? "all are" : "it is"} on an agent older than{" "}
+                {minAgentVersionUnrouted}, so this toggle will never fire. Update the
+                agent on at least one site to restore alerting.{" "}
+                <Link
+                  to="/sites"
+                  className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                >
+                  View sites
+                </Link>
+              </div>
+            </div>
+          ) : null}
 
           {alertsEnabled ? (
             <div className="space-y-4 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-4">

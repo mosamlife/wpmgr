@@ -320,8 +320,8 @@ type siteDeliveryItemDTO struct {
 	ComplainedCount int64   `json:"complained_count"`
 	BounceRate      float64 `json:"bounce_rate"`
 	ComplaintRate   float64 `json:"complaint_rate"`
-	LastSentAt      *string `json:"last_sent_at"`        // RFC3339 or null
-	Sparkline       []int64 `json:"sparkline"`            // [] never null
+	LastSentAt      *string `json:"last_sent_at"` // RFC3339 or null
+	Sparkline       []int64 `json:"sparkline"`    // [] never null
 }
 
 // deliverabilityReportDTO is the full response for GET /email/deliverability.
@@ -628,8 +628,25 @@ type notifySettingsDTO struct {
 	Timezone                 string   `json:"timezone"`
 	NextDigestAt             *string  `json:"next_digest_at,omitempty"`
 	InstanceMailerConfigured bool     `json:"instance_mailer_configured"`
-	CreatedAt                int64    `json:"created_at"`
-	UpdatedAt                int64    `json:"updated_at"`
+	// FailureDetection is a pointer so a coverage-query failure can omit it
+	// entirely (PR #447 bot review finding 2) instead of serializing a false
+	// "sites_covered: 0" — the frontend already treats absence as "unknown",
+	// same shape as the older-API-doesn't-send-it case this field was made
+	// optional for.
+	FailureDetection *failureDetectionDTO `json:"failure_detection,omitempty"`
+	CreatedAt        int64                `json:"created_at"`
+	UpdatedAt        int64                `json:"updated_at"`
+}
+
+// failureDetectionDTO is the wire representation of FailureDetectionCoverage
+// (GH #381). min_agent_version_unrouted gates ONLY sites that do not route
+// their mail through WPMgr; a routed site is covered regardless of its agent
+// version, and sites_routed says how many of sites_total are in that state.
+type failureDetectionDTO struct {
+	SitesTotal              int    `json:"sites_total"`
+	SitesCovered            int    `json:"sites_covered"`
+	SitesRouted             int    `json:"sites_routed"`
+	MinAgentVersionUnrouted string `json:"min_agent_version_unrouted"`
 }
 
 // toNotifySettingsDTO maps domain NotifySettings to the wire DTO.
@@ -648,6 +665,14 @@ func toNotifySettingsDTO(s NotifySettings) notifySettingsDTO {
 		InstanceMailerConfigured: s.InstanceMailerConfigured,
 		CreatedAt:                s.CreatedAt.Unix(),
 		UpdatedAt:                s.UpdatedAt.Unix(),
+	}
+	if s.FailureDetection != nil {
+		dto.FailureDetection = &failureDetectionDTO{
+			SitesTotal:              s.FailureDetection.SitesTotal,
+			SitesCovered:            s.FailureDetection.SitesCovered,
+			SitesRouted:             s.FailureDetection.SitesRouted,
+			MinAgentVersionUnrouted: s.FailureDetection.MinAgentVersionUnrouted,
+		}
 	}
 	if dto.Recipients == nil {
 		dto.Recipients = []string{}

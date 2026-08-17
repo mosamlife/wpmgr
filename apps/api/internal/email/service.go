@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +16,11 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // Encryptor age-encrypts and decrypts provider secrets. *cryptbox.AgeIdentity
@@ -93,12 +96,14 @@ type repository interface {
 	GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (NotifySettings, error)
 	UpsertNotifySettings(ctx context.Context, in NotifySettings) (NotifySettings, error)
 	AccumulateAlertFailures(ctx context.Context, tenantID, siteID uuid.UUID, n int64) error
-	ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int) (*AlertState, error)
+	ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int, onClaim func(tx pgx.Tx) error) (*AlertState, error)
 	ListDueDigests(ctx context.Context, limit int32) ([]NotifySettings, error)
 	ClaimAdvanceDigest(ctx context.Context, tenantID uuid.UUID, newNextAt time.Time) (NotifySettings, error)
 	GetFleetStatsBySite(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]SiteStatsRow, error)
 	TopFailureSamples(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
 	TopFailureSamplesBySite(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
+	// GH #381 — failure-detection coverage.
+	ListConnectedSiteEmailCoverage(ctx context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error)
 }
 
 // Service is the email domain business-logic layer. It owns:
@@ -649,7 +654,7 @@ func (s *Service) IngestLogBatch(ctx context.Context, tenantID, siteID uuid.UUID
 		}
 	}
 	if failureCount > 0 {
-		go s.maybeAlertFailures(context.Background(), tenantID, siteID, failureCount)
+		go s.maybeAlertFailuresAsync(tenantID, siteID, failureCount)
 	}
 
 	return IngestResult{AckedThrough: maxSeq}, nil
@@ -1503,18 +1508,121 @@ func (s *Service) PropagateOrgConfig(ctx context.Context, tenantID uuid.UUID) (P
 // GetNotifySettings returns the org-level notify settings. When no row exists
 // the service returns safe defaults with GET-always-200 semantics (lesson from
 // 0.35.1 hotfix: never 404 on a settings GET).
+//
+// The failure-detection coverage count (GH #381 phase 2) is decorative, not
+// load-bearing: a fault in that query must never take down the settings page
+// a user visits to fix recipients/toggles (PR #447 bot review finding 2). On
+// a coverage-query failure this logs a warning and returns the settings with
+// FailureDetection left nil (omitted on the wire), never a false
+// "sites_covered: 0" built from an error.
 func (s *Service) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (NotifySettings, error) {
+	coverage, covErr := s.failureDetectionCoverage(ctx, tenantID)
+	if covErr != nil {
+		s.log.Warn("email notify-settings: failure-detection coverage query failed, degrading to settings without coverage",
+			slog.String("tenant_id", tenantID.String()), slog.Any("error", covErr))
+	}
+
 	settings, err := s.repo.GetNotifySettings(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		defaults := defaultNotifySettings(tenantID)
 		defaults.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
+		if covErr == nil {
+			defaults.FailureDetection = &coverage
+		}
 		return defaults, nil
 	}
 	if err != nil {
 		return NotifySettings{}, domain.Internal("email_get_notify_settings", "failed to load notify settings").WithCause(err)
 	}
 	settings.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
+	if covErr == nil {
+		settings.FailureDetection = &coverage
+	}
 	return settings, nil
+}
+
+// ---------------------------------------------------------------------------
+// GH #381 phase 2 — failure-detection coverage
+// ---------------------------------------------------------------------------
+
+// MinAgentVersionForFailureDetection gates the UNROUTED half of
+// failure_detection.sites_covered only: a connected site that does not route
+// its mail through WPMgr is "covered" solely when its reported agent_version
+// compares >= this value under internal/wpversion.Compare. A routed site
+// (WPMgr is its active mail transport) is covered regardless of this gate —
+// that capture path (MailRouter::intercept() -> EmailLogger::write()) predates
+// GH #381 entirely and has never depended on agent version. See
+// failureDetectionCoverage below for the full predicate.
+//
+// PLACEHOLDER VALUE. GH #381 phase 1 — the agent-side change that widens
+// failure detection to sites WPMgr does NOT route — has not shipped a release
+// as of this writing. "999.0.0" is deliberately NOT a plausible wpmgr
+// version: it is chosen so that no currently-shipped agent ever compares >=
+// it, which makes the UNROUTED half of sites_covered honestly report 0 until
+// this constant is corrected, instead of silently crediting sites for a
+// capability their agent build does not have. Because coverage is now
+// routed-OR-version, this placeholder can NEVER make a routed fleet read as
+// uncovered — only the unrouted half stays at 0 until updated.
+//
+// UPDATE THIS the moment phase 1's release is cut: set it to the exact agent
+// version (e.g. "0.62.0") that ships the detection-widening change, in the
+// same commit that cuts that release. Until updated, unrouted sites never
+// count toward failure_detection.sites_covered regardless of fleet freshness;
+// routed sites always have.
+const MinAgentVersionForFailureDetection = "999.0.0"
+
+// agentVersionPattern accepts the plain dotted-numeric shape WPMgr's own
+// agent versions use, mirroring internal/agentrelease's own guard
+// (internal/agentrelease/classify.go:45). Duplicated rather than imported:
+// internal/email must not cross-import a sibling domain package, and this is
+// a two-line regex, not shared logic worth a shared package for. A malformed
+// or empty agent_version (e.g. a site that has never reported one) must never
+// compare as "covered" by accident.
+var agentVersionPattern = regexp.MustCompile(`^\d+(\.\d+){1,3}([-+][0-9A-Za-z.]+)?$`)
+
+func isWellFormedAgentVersion(v string) bool {
+	return agentVersionPattern.MatchString(strings.TrimSpace(v))
+}
+
+// failureDetectionCoverage computes, for tenantID, how many of its currently
+// connected sites (connection_state = 'connected') can detect and report an
+// email delivery failure. A site is covered when EITHER:
+//
+//   - it is routed: WPMgr is its active mail transport, per
+//     ConnectedSiteEmailFact.Routed (a per-site site_email_config row's
+//     provider, or — absent one — the tenant's org-wide default row's
+//     provider, is non-empty; mirrors the agent's own
+//     EmailConfig::is_configured()). This path is independent of agent
+//     version.
+//   - OR it is unrouted but its agent_version compares >=
+//     MinAgentVersionForFailureDetection. A site whose reported version is
+//     empty or not well-formed is treated as NOT covered by this path — an
+//     unreadable version is never assumed capable, mirroring
+//     internal/agentrelease.Classify's StatusUnknown handling, which never
+//     risks a false "current" either.
+//
+// A routed site is therefore counted as covered even while
+// MinAgentVersionForFailureDetection is still the unreachable placeholder —
+// that gate only ever suppresses the unrouted half.
+func (s *Service) failureDetectionCoverage(ctx context.Context, tenantID uuid.UUID) (FailureDetectionCoverage, error) {
+	facts, err := s.repo.ListConnectedSiteEmailCoverage(ctx, tenantID)
+	if err != nil {
+		return FailureDetectionCoverage{}, domain.Internal("email_failure_detection_coverage", "failed to load connected site email coverage facts").WithCause(err)
+	}
+	out := FailureDetectionCoverage{
+		SitesTotal:              len(facts),
+		MinAgentVersionUnrouted: MinAgentVersionForFailureDetection,
+	}
+	for _, f := range facts {
+		if f.Routed {
+			out.SitesRouted++
+		}
+		versionCovered := isWellFormedAgentVersion(f.AgentVersion) && wpversion.Compare(f.AgentVersion, MinAgentVersionForFailureDetection) >= 0
+		if f.Routed || versionCovered {
+			out.SitesCovered++
+		}
+	}
+	return out, nil
 }
 
 // PutNotifySettings validates and upserts the notify settings, computing

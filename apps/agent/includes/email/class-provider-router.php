@@ -55,6 +55,23 @@ class ProviderRouter {
 	private ?SuppressionCheckerInterface $suppression_cache = null;
 
 	/**
+	 * GH #381 phase 4, round 4: the forced write on the `log_emails=false`
+	 * path is built ALLOWLIST-first. Four independent reviews each found a
+	 * different personal field this path leaked (Cc, Bcc, Reply-To,
+	 * mail_from, the body, attachment names) because the old code took the
+	 * full $mail payload and blanked the fields it remembered. This constant
+	 * is deliberately EMPTY: nothing in the $mail payload is judged safe to
+	 * carry on the forced path, so every key present today (to, from,
+	 * from_name, cc, bcc, reply_to, subject, body_html, body_text,
+	 * attachments, x_site_id, headers, ...) and every key added to that
+	 * payload in the future is excluded by construction in maybe_log(),
+	 * never by whoever remembers to touch this method next.
+	 *
+	 * @var array<int,string>
+	 */
+	private const ALLOWLIST_MAIL_KEYS = array();
+
+	/**
 	 * @param EmailKeystoreInterface          $keystore          Agent keystore (for secret retrieval).
 	 * @param EmailLogger                     $logger            Local send-event logger.
 	 * @param SuppressionCheckerInterface|null $suppression_cache Optional local suppression checker.
@@ -430,7 +447,68 @@ class ProviderRouter {
 	}
 
 	/**
-	 * Write a log row if email logging is enabled.
+	 * Write a log row if email logging is enabled, OR unconditionally when
+	 * the outcome is a detected failure.
+	 *
+	 * log_emails is a volume-and-retention preference about keeping a
+	 * record of mail that WORKED; it is not a request to be blinded to
+	 * failures. By the time this is called, send() has already DETECTED the
+	 * failure and computed its error string -- discarding that here would
+	 * leave no local row, nothing for the push to ship, and nothing for the
+	 * control plane to alert on, purely because the owner asked for a
+	 * quieter log of successful mail. So the early return only applies when
+	 * BOTH log_emails is off AND the outcome is not a failure.
+	 *
+	 * GH #381 phase 4 (security-reviewer finding, ruling against an earlier
+	 * "WPMgr is the transport, it has already seen the recipient" argument):
+	 * having observed the recipient in flight does not license retaining and
+	 * exporting it. log_emails is the site owner's only control over whether
+	 * mail metadata is written down and shipped to the control plane, and
+	 * this forced write is silent (applied on upgrade, no new consent), so
+	 * it must be symmetric with MailFailureCapture::capture() (phase 1):
+	 * the row is always written on a genuine failure, but nothing beyond the
+	 * diagnostic itself is written.
+	 *
+	 * Round 4 (this change): three review bots and two security reviews each
+	 * found a DIFFERENT field this path was still leaking -- Cc, Bcc and
+	 * Reply-To (the routed SMTP path appends rejected values from all three
+	 * into the same error string, and the old code only knew to redact
+	 * `to`), `mail_from` (never blanked), the message body (persisted
+	 * whenever `store_body` was true, which phase 4 made reachable on a row
+	 * that never used to exist), and attachment names. Four rounds of "we
+	 * forgot a field" is a blocklist problem, not a missing-field problem, so
+	 * this branch now builds the row from ALLOWLIST_MAIL_KEYS (see the
+	 * constant's docblock) instead of taking the full $mail payload and
+	 * blanking whichever fields are remembered. Anything not on that list is
+	 * absent from the row by construction, so the next field added to the
+	 * mail payload -- or to EmailLogger::write() -- is excluded by default
+	 * instead of leaking until a fifth reviewer finds it.
+	 *
+	 * Any address-shaped substring embedded in the free-text `error`/
+	 * `response` (a real SMTP/provider failure routinely echoes the
+	 * recipient back, e.g. "550 5.1.1 <a@x.com>: Recipient address
+	 * rejected", and the SMTP handler does the same for a rejected Cc/Bcc/
+	 * Reply-To entry) is scrubbed via AddressParser::redact_email_addresses()
+	 * -- not blanked entirely, so the diagnostic detail ("550 5.1.1 ...
+	 * rejected") survives. The known-address dictionary passed to it now
+	 * covers to/cc/bcc/reply_to/from, not just `to`, so a malformed-but-real
+	 * address in any of those fields (IDN domain, quoted local part, ...) is
+	 * removed as a literal string rather than relying on the regex alone.
+	 * The alert only needs "a failure happened on this site", never "to
+	 * whom", "from whom", "cc'd to whom", "replying to whom", "saying what",
+	 * or "with what attached".
+	 *
+	 * 'suppressed' is deliberately NOT treated as a failure here: a
+	 * suppression-list hit is routine traffic (WPMgr already knows the
+	 * address is bad; there is nothing new to alert on), not an incident,
+	 * so it follows the ordinary log_emails gate like 'sent' does -- no
+	 * forced write, and so nothing to redact.
+	 *
+	 * store_body is FORCED off for this write, regardless of the site's real
+	 * config: that preference was granted for logging the owner explicitly
+	 * asked for (log_emails=true), so it cannot widen a row the owner did
+	 * not ask for. A successful (or suppressed) send is still not recorded
+	 * at all.
 	 *
 	 * @param array<string,mixed> $mail            Normalised mail payload.
 	 * @param string              $connection_key  Resolved connection key ('default' for primary).
@@ -454,9 +532,46 @@ class ProviderRouter {
 		int $retries,
 		EmailConfig $cfg
 	): void {
-		if ( ! $cfg->log_emails ) {
+		$is_failure = ( 'failed' === $status );
+		if ( ! $cfg->log_emails && ! $is_failure ) {
 			return;
 		}
+
+		if ( ! $cfg->log_emails ) {
+			// Build the redaction dictionary from every address-shaped field
+			// in the payload -- to, cc, bcc, reply_to, from -- BEFORE the
+			// payload itself is reduced to the allowlist below, so a
+			// malformed-but-real address (IDN domain, quoted local part,
+			// IP-literal domain, ...) in ANY of those fields is removed from
+			// the free-text error/response as a literal string rather than
+			// relying on the regex net alone to recognise its shape.
+			$known_addresses = array();
+			foreach ( array( 'to', 'cc', 'bcc', 'reply_to' ) as $address_field ) {
+				if ( is_array( $mail[ $address_field ] ?? null ) ) {
+					$known_addresses = array_merge( $known_addresses, $mail[ $address_field ] );
+				}
+			}
+			if ( isset( $mail['from'] ) && is_string( $mail['from'] ) && $mail['from'] !== '' ) {
+				$known_addresses[] = $mail['from'];
+			}
+			$error    = AddressParser::redact_email_addresses( $error, $known_addresses );
+			$response = AddressParser::redact_email_addresses( $response, $known_addresses );
+
+			// Allowlist, not blocklist: reduce $mail to ONLY the keys named
+			// in ALLOWLIST_MAIL_KEYS (currently none). Everything else --
+			// to, from, from_name, cc, bcc, reply_to, subject, body_html,
+			// body_text, attachments, and any key added later -- is absent
+			// from the row EmailLogger::write() builds, by construction.
+			$mail = array_intersect_key( $mail, array_flip( self::ALLOWLIST_MAIL_KEYS ) );
+
+			// store_body is an opt-in preference for the logging the owner
+			// explicitly asked for (log_emails=true); it must not widen a
+			// forced row the owner did not ask for. Force it off for this
+			// write only, regardless of the site's real config.
+			$cfg             = clone $cfg;
+			$cfg->store_body = false;
+		}
+
 		$this->logger->write( $mail, $provider, $status, $msg_id, $error, $response, $retries, $cfg, $connection_key );
 	}
 }

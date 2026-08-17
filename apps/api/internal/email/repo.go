@@ -217,6 +217,36 @@ func (r *Repo) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (Notif
 	return out, err
 }
 
+// ListConnectedSiteEmailCoverage returns, for every site in this tenant
+// currently in the 'connected' connection_state, the two raw facts needed to
+// compute failure-detection coverage (GH #381): its reported agent_version,
+// and whether WPMgr is actively routing its mail (per-site
+// site_email_config.provider, falling back to the org-wide default row when
+// no per-site row exists — mirrors the agent's own
+// EmailConfig::is_configured()). Both the version-gate comparison and the
+// routed-OR-new-enough predicate happen in the service layer.
+//
+// Unlike GetNotifySettings/UpsertNotifySettings, sites and site_email_config
+// are site-keyed tables carrying the m112 RESTRICTIVE site_scope policies, so
+// this runs under scopedTenantTx like every other site-keyed query in this
+// package: a site-scoped collaborator's coverage is correctly narrowed to the
+// sites they can see, and an org-scoped principal sees the whole tenant
+// fleet.
+func (r *Repo) ListConnectedSiteEmailCoverage(ctx context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error) {
+	var out []ConnectedSiteEmailFact
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, qerr := sqlc.New(tx).ListConnectedSiteEmailCoverage(ctx, tenantID)
+		if qerr != nil {
+			return qerr
+		}
+		for _, row := range rows {
+			out = append(out, ConnectedSiteEmailFact{AgentVersion: row.AgentVersion, Routed: row.Routed})
+		}
+		return nil
+	})
+	return out, err
+}
+
 // UpsertNotifySettings creates or updates the notify settings row.
 // Runs under InTenantTx.
 func (r *Repo) UpsertNotifySettings(ctx context.Context, in NotifySettings) (NotifySettings, error) {
@@ -268,10 +298,22 @@ func (r *Repo) AccumulateAlertFailures(ctx context.Context, tenantID, siteID uui
 	})
 }
 
-// ClaimAlertSlot tries to claim an alert slot for a site. Returns the updated
-// AlertState when the claim succeeds, nil when throttled (pgx.ErrNoRows).
-// Runs under InAgentTx.
-func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int) (*AlertState, error) {
+// ClaimAlertSlot tries to claim an alert slot for a site and, when the claim
+// succeeds, invokes onClaim in the SAME transaction as the claim UPDATE
+// before committing — typically an EnqueueTx call. This is the transactional
+// outbox pattern (mirrors internal/vuln's ClaimUnnotifiedFindings +
+// AlertMailer.EnqueueTx): if onClaim returns an error, the WHOLE transaction
+// rolls back, so the failures_since_alert reset and last_alert_at bump are
+// undone together with the failed send. A genuine enqueue failure therefore
+// never leaves the site silently marked as recently-alerted — the original
+// GH #381 bug, reintroduced by claiming and enqueueing as two independent
+// steps that could disagree.
+//
+// Returns the claimed state (nil = throttled, not an error — pgx.ErrNoRows),
+// or the onClaim error, propagated unwrapped after the rollback. onClaim may
+// be nil (claim with no side effect, e.g. tests exercising the throttle gate
+// alone). Runs under InAgentTx.
+func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int, onClaim func(tx pgx.Tx) error) (*AlertState, error) {
 	var state *AlertState
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).ClaimAlertSlot(ctx, sqlc.ClaimAlertSlotParams{
@@ -295,10 +337,18 @@ func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, m
 			t := row.LastAlertAt.Time
 			s.LastAlertAt = &t
 		}
+		if onClaim != nil {
+			if cbErr := onClaim(tx); cbErr != nil {
+				return cbErr // rolls back the claim together with the failed side effect
+			}
+		}
 		state = &s
 		return nil
 	})
-	return state, err
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 // ---------------------------------------------------------------------------

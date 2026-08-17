@@ -139,6 +139,22 @@ WHERE s.tenant_id = $1
   AND s.connection_state <> 'archived'
 ORDER BY s.name;
 
+-- name: ListConnectedSiteAgentVersions :many
+-- Tenant-scoped agent_version per site, restricted to connection_state =
+-- 'connected' (GH #381 phase 2: email failure-detection coverage). "Connected"
+-- here matches ListConnectedSiteIDsForScreenshot's strict definition (not
+-- degraded/pending/disconnected/archived): a site whose agent is not actively
+-- connected cannot report a delivery failure regardless of its version, so it
+-- is excluded from both the coverage numerator and denominator rather than
+-- counted as a gap.
+-- Version comparison happens in Go (internal/wpversion.Compare), matching
+-- ListSitesAgentVersions's convention: this query returns only the raw
+-- per-site fact.
+SELECT agent_version
+FROM sites
+WHERE tenant_id = $1
+  AND connection_state = 'connected';
+
 -- name: ListClientNamesForSites :many
 -- Returns the client id + name for sites that have a client_id set (m63).
 -- Used to enrich the sites-list DTO with client_name in a single batched join.

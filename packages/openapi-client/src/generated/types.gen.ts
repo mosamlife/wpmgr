@@ -5424,6 +5424,32 @@ export type EmailNotifySettings = {
    */
   instance_mailer_configured: boolean;
   /**
+   * Coverage of the tenant's connected sites for email delivery failure detection (GH #381). A site is covered when EITHER WPMgr is the mail transport it actively uses (routing does not depend on agent version) OR its agent is new enough (>= min_agent_version_unrouted) to capture a failure on mail WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a per-failure alert no matter how the settings above are configured.
+   *
+   */
+  failure_detection?: {
+    /**
+     * Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected, revoked and archived sites).
+     *
+     */
+    sites_total: number;
+    /**
+     * Of sites_total, how many can have a delivery failure detected and alerted on — because WPMgr routes their mail, because their agent_version is at or above min_agent_version_unrouted, or both.
+     *
+     */
+    sites_covered: number;
+    /**
+     * Of sites_total, how many have WPMgr configured as their active mail transport. These sites are covered regardless of agent version; this count explains why sites_covered can be high even on a fleet below min_agent_version_unrouted.
+     *
+     */
+    sites_routed: number;
+    /**
+     * Minimum agent version needed to detect and report a delivery failure ONLY for sites that do NOT route their mail through WPMgr (sites_total - sites_routed of them). It says nothing about routed sites, which are covered independent of this value.
+     *
+     */
+    min_agent_version_unrouted: string;
+  };
+  /**
    * Present when a settings row exists; absent for default response.
    */
   tenant_id?: string;

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -87,6 +88,28 @@ type fakeRepo struct {
 	// say "refused" and "absent" as well as "done", and the service has to turn
 	// each into a different answer (see suppression_delete_refusal_test.go).
 	suppressionDeleteErr error
+
+	// connectedSiteFacts is what ListConnectedSiteEmailCoverage returns, keyed
+	// by tenant so a cross-tenant test can seed two tenants' fleets
+	// independently (GH #381). Each fact carries both the agent_version and
+	// whether the site routes its mail through WPMgr.
+	connectedSiteFacts map[uuid.UUID][]ConnectedSiteEmailFact
+	// connectedSiteFactsErr, when set, makes ListConnectedSiteEmailCoverage
+	// fail — PR #447 bot review finding 2: this must degrade GetNotifySettings
+	// to settings-without-coverage, never fail the whole GET.
+	connectedSiteFactsErr error
+
+	// GH #381 phase 5 — maybeAlertFailures exit-path control knobs. Each is
+	// nil/zero by default, which preserves the pre-phase-5 fake behaviour
+	// (GetNotifySettings -> ErrNotFound, ClaimAlertSlot -> throttled, GetSiteRef
+	// -> ErrNotFound) so every existing test keeps passing unchanged.
+	alertAccumulateErr error
+	alertSettings      *NotifySettings
+	alertSettingsErr   error
+	alertClaimState    *AlertState
+	alertClaimErr      error
+	alertSiteRef       *SiteRef
+	alertSiteRefErr    error
 }
 
 func newFakeRepo() *fakeRepo {
@@ -428,10 +451,22 @@ func (r *fakeRepo) ListEmailInheritingSites(_ context.Context, _ uuid.UUID) ([]I
 }
 
 func (r *fakeRepo) GetSiteRef(_ context.Context, _, _ uuid.UUID) (SiteRef, error) {
+	if r.alertSiteRefErr != nil {
+		return SiteRef{}, r.alertSiteRefErr
+	}
+	if r.alertSiteRef != nil {
+		return *r.alertSiteRef, nil
+	}
 	return SiteRef{}, ErrNotFound
 }
 
 func (r *fakeRepo) GetNotifySettings(_ context.Context, _ uuid.UUID) (NotifySettings, error) {
+	if r.alertSettingsErr != nil {
+		return NotifySettings{}, r.alertSettingsErr
+	}
+	if r.alertSettings != nil {
+		return *r.alertSettings, nil
+	}
 	return NotifySettings{}, ErrNotFound
 }
 
@@ -440,11 +475,27 @@ func (r *fakeRepo) UpsertNotifySettings(_ context.Context, in NotifySettings) (N
 }
 
 func (r *fakeRepo) AccumulateAlertFailures(_ context.Context, _, _ uuid.UUID, _ int64) error {
-	return nil
+	return r.alertAccumulateErr
 }
 
-func (r *fakeRepo) ClaimAlertSlot(_ context.Context, _, _ uuid.UUID, _ int64, _ int) (*AlertState, error) {
-	return nil, nil // throttled
+// ClaimAlertSlot mirrors the real Repo's transactional-outbox contract: when
+// a claim is configured to succeed (alertClaimState set) it invokes onClaim
+// (the mailer EnqueueTx call), and an onClaim error is propagated as this
+// call's error — exactly like a rolled-back transaction — instead of a
+// claimed state ever being returned alongside a failed send.
+func (r *fakeRepo) ClaimAlertSlot(_ context.Context, _, _ uuid.UUID, _ int64, _ int, onClaim func(tx pgx.Tx) error) (*AlertState, error) {
+	if r.alertClaimErr != nil {
+		return nil, r.alertClaimErr
+	}
+	if r.alertClaimState == nil {
+		return nil, nil // nil state, nil error == throttled
+	}
+	if onClaim != nil {
+		if err := onClaim(nil); err != nil {
+			return nil, err // rolled back
+		}
+	}
+	return r.alertClaimState, nil
 }
 
 func (r *fakeRepo) ListDueDigests(_ context.Context, _ int32) ([]NotifySettings, error) {
@@ -465,6 +516,13 @@ func (r *fakeRepo) TopFailureSamples(_ context.Context, _ uuid.UUID, _, _ time.T
 
 func (r *fakeRepo) TopFailureSamplesBySite(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int32) ([]FailureSample, error) {
 	return nil, nil
+}
+
+func (r *fakeRepo) ListConnectedSiteEmailCoverage(_ context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error) {
+	if r.connectedSiteFactsErr != nil {
+		return nil, r.connectedSiteFactsErr
+	}
+	return r.connectedSiteFacts[tenantID], nil
 }
 
 // ---------------------------------------------------------------------------

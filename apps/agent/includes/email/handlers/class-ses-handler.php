@@ -31,7 +31,7 @@ use WPMgr\Agent\Email\ProviderHandlerInterface;
 final class SesHandler implements ProviderHandlerInterface {
 
 	/** SES endpoint pattern. */
-	private const ENDPOINT = 'https://email.%s.amazonaws.com/';
+	private const ENDPOINT = 'https://email.%s.amazonaws.com/'; // phpcs:ignore PluginCheck.CodeAnalysis.Offloading.OffloadedContent -- not offloaded front-end content; this is the Amazon SES v1 API endpoint used to send outbound email via the site owner's own AWS SigV4-signed credentials. Flagged only because plugin-check 2.1.0's OffloadingSniff now matches "amazonaws.com" unconditionally in any string literal, not just enqueue/markup contexts.
 
 	/** SES service name for SigV4. */
 	private const SERVICE = 'email';
