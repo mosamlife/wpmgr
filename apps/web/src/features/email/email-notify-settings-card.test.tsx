@@ -52,7 +52,7 @@ function buildSettings(
       min_agent_version: "1.4.0",
     },
     ...overrides,
-  } as EmailNotifySettings;
+  };
 }
 
 function mockSettings(data: EmailNotifySettings | null) {
@@ -157,7 +157,7 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
   it("shows no coverage message when failure_detection is absent (older API)", async () => {
     const { failure_detection: _omit, ...withoutFailureDetection } =
       buildSettings();
-    mockSettings(withoutFailureDetection as EmailNotifySettings);
+    mockSettings(withoutFailureDetection);
 
     renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
 
