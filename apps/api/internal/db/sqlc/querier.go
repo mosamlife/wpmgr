@@ -1607,6 +1607,30 @@ type Querier interface {
 	// ListSitesAgentVersions's convention: this query returns only the raw
 	// per-site fact.
 	ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error)
+	// GH #381 phase 2 fix: per-connected-site facts needed to compute
+	// failure-detection coverage honestly. A site can report a delivery failure
+	// either because WPMgr is the mail transport in use (routed = true) OR
+	// because its agent_version is new enough to capture an unrouted failure
+	// (compared in Go against MinAgentVersionForFailureDetection). Both raw
+	// facts are returned per site; the OR is applied in Go
+	// (internal/email/service.go failureDetectionCoverage).
+	//
+	// routed mirrors the agent's own EmailConfig::is_configured(), which is true
+	// exactly when the stored provider string is non-empty
+	// (apps/agent/includes/email/class-email-config.php): a per-site
+	// site_email_config row, when one exists, governs outright (no fallback to
+	// the org-wide default even if its own provider happens to be empty) --
+	// ONLY the absence of a per-site row falls back to the org-wide default row
+	// (site_id IS NULL). This mirrors GetSiteEmailConfig's documented
+	// ErrNoRows-triggers-fallback contract (site_email.sql, GetSiteEmailConfig /
+	// GetOrgEmailConfig above).
+	//
+	// The ::boolean cast is not cosmetic: without it sqlc cannot infer a type for
+	// the bare CASE and generates the column as interface{}, forcing a type
+	// assertion on every caller. Both branches are already non-NULL boolean
+	// (provider is NOT NULL, and COALESCE covers the absent org row), so the cast
+	// only names the type it already has.
+	ListConnectedSiteEmailCoverage(ctx context.Context, tenantID uuid.UUID) ([]ListConnectedSiteEmailCoverageRow, error)
 	// Cross-tenant enumeration of connected sites for the weekly screenshot fanout.
 	// Returns only sites in the 'connected' state (not degraded/pending/archived).
 	// Runs under the app.agent GUC (sites_agent policy) since it spans tenants.

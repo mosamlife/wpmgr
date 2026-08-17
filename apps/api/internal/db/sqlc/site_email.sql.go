@@ -1365,6 +1365,72 @@ func (q *Queries) IsSuppressed(ctx context.Context, arg IsSuppressedParams) (boo
 	return suppressed, err
 }
 
+const listConnectedSiteEmailCoverage = `-- name: ListConnectedSiteEmailCoverage :many
+SELECT
+    s.id,
+    s.agent_version,
+    (CASE
+        WHEN sec.id IS NOT NULL THEN sec.provider <> ''
+        ELSE COALESCE(org.provider, '') <> ''
+    END)::boolean AS routed
+FROM sites s
+LEFT JOIN site_email_config sec
+    ON sec.tenant_id = s.tenant_id AND sec.site_id = s.id
+LEFT JOIN site_email_config org
+    ON org.tenant_id = s.tenant_id AND org.site_id IS NULL
+WHERE s.tenant_id = $1
+  AND s.connection_state = 'connected'
+`
+
+type ListConnectedSiteEmailCoverageRow struct {
+	ID           uuid.UUID `json:"id"`
+	AgentVersion string    `json:"agent_version"`
+	Routed       bool      `json:"routed"`
+}
+
+// GH #381 phase 2 fix: per-connected-site facts needed to compute
+// failure-detection coverage honestly. A site can report a delivery failure
+// either because WPMgr is the mail transport in use (routed = true) OR
+// because its agent_version is new enough to capture an unrouted failure
+// (compared in Go against MinAgentVersionForFailureDetection). Both raw
+// facts are returned per site; the OR is applied in Go
+// (internal/email/service.go failureDetectionCoverage).
+//
+// routed mirrors the agent's own EmailConfig::is_configured(), which is true
+// exactly when the stored provider string is non-empty
+// (apps/agent/includes/email/class-email-config.php): a per-site
+// site_email_config row, when one exists, governs outright (no fallback to
+// the org-wide default even if its own provider happens to be empty) --
+// ONLY the absence of a per-site row falls back to the org-wide default row
+// (site_id IS NULL). This mirrors GetSiteEmailConfig's documented
+// ErrNoRows-triggers-fallback contract (site_email.sql, GetSiteEmailConfig /
+// GetOrgEmailConfig above).
+//
+// The ::boolean cast is not cosmetic: without it sqlc cannot infer a type for
+// the bare CASE and generates the column as interface{}, forcing a type
+// assertion on every caller. Both branches are already non-NULL boolean
+// (provider is NOT NULL, and COALESCE covers the absent org row), so the cast
+// only names the type it already has.
+func (q *Queries) ListConnectedSiteEmailCoverage(ctx context.Context, tenantID uuid.UUID) ([]ListConnectedSiteEmailCoverageRow, error) {
+	rows, err := q.db.Query(ctx, listConnectedSiteEmailCoverage, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConnectedSiteEmailCoverageRow
+	for rows.Next() {
+		var i ListConnectedSiteEmailCoverageRow
+		if err := rows.Scan(&i.ID, &i.AgentVersion, &i.Routed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueDigests = `-- name: ListDueDigests :many
 
 SELECT tenant_id, enabled, recipients, alert_on_failure, alert_throttle_minutes, digest_enabled, digest_cadence, digest_day, digest_hour, timezone, next_digest_at, created_at, updated_at

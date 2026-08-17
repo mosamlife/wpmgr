@@ -149,6 +149,45 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at DESC, id DESC
 LIMIT @row_limit OFFSET @row_offset;
 
+-- name: ListConnectedSiteEmailCoverage :many
+-- GH #381 phase 2 fix: per-connected-site facts needed to compute
+-- failure-detection coverage honestly. A site can report a delivery failure
+-- either because WPMgr is the mail transport in use (routed = true) OR
+-- because its agent_version is new enough to capture an unrouted failure
+-- (compared in Go against MinAgentVersionForFailureDetection). Both raw
+-- facts are returned per site; the OR is applied in Go
+-- (internal/email/service.go failureDetectionCoverage).
+--
+-- routed mirrors the agent's own EmailConfig::is_configured(), which is true
+-- exactly when the stored provider string is non-empty
+-- (apps/agent/includes/email/class-email-config.php): a per-site
+-- site_email_config row, when one exists, governs outright (no fallback to
+-- the org-wide default even if its own provider happens to be empty) --
+-- ONLY the absence of a per-site row falls back to the org-wide default row
+-- (site_id IS NULL). This mirrors GetSiteEmailConfig's documented
+-- ErrNoRows-triggers-fallback contract (site_email.sql, GetSiteEmailConfig /
+-- GetOrgEmailConfig above).
+--
+-- The ::boolean cast is not cosmetic: without it sqlc cannot infer a type for
+-- the bare CASE and generates the column as interface{}, forcing a type
+-- assertion on every caller. Both branches are already non-NULL boolean
+-- (provider is NOT NULL, and COALESCE covers the absent org row), so the cast
+-- only names the type it already has.
+SELECT
+    s.id,
+    s.agent_version,
+    (CASE
+        WHEN sec.id IS NOT NULL THEN sec.provider <> ''
+        ELSE COALESCE(org.provider, '') <> ''
+    END)::boolean AS routed
+FROM sites s
+LEFT JOIN site_email_config sec
+    ON sec.tenant_id = s.tenant_id AND sec.site_id = s.id
+LEFT JOIN site_email_config org
+    ON org.tenant_id = s.tenant_id AND org.site_id IS NULL
+WHERE s.tenant_id = @tenant_id
+  AND s.connection_state = 'connected';
+
 -- name: GetEmailConfigByRouteTokenHash :one
 -- m61: resolve a config row by its webhook_route_token_hash for the public
 -- webhook dispatcher.  Runs under InAgentTx (webhook path, no tenant GUC).
