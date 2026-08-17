@@ -92,6 +92,18 @@ type fakeRepo struct {
 	// keyed by tenant so a cross-tenant test can seed two tenants' fleets
 	// independently (GH #381 phase 2).
 	connectedAgentVersions map[uuid.UUID][]string
+
+	// GH #381 phase 5 — maybeAlertFailures exit-path control knobs. Each is
+	// nil/zero by default, which preserves the pre-phase-5 fake behaviour
+	// (GetNotifySettings -> ErrNotFound, ClaimAlertSlot -> throttled, GetSiteRef
+	// -> ErrNotFound) so every existing test keeps passing unchanged.
+	alertAccumulateErr error
+	alertSettings      *NotifySettings
+	alertSettingsErr   error
+	alertClaimState    *AlertState
+	alertClaimErr      error
+	alertSiteRef       *SiteRef
+	alertSiteRefErr    error
 }
 
 func newFakeRepo() *fakeRepo {
@@ -433,10 +445,22 @@ func (r *fakeRepo) ListEmailInheritingSites(_ context.Context, _ uuid.UUID) ([]I
 }
 
 func (r *fakeRepo) GetSiteRef(_ context.Context, _, _ uuid.UUID) (SiteRef, error) {
+	if r.alertSiteRefErr != nil {
+		return SiteRef{}, r.alertSiteRefErr
+	}
+	if r.alertSiteRef != nil {
+		return *r.alertSiteRef, nil
+	}
 	return SiteRef{}, ErrNotFound
 }
 
 func (r *fakeRepo) GetNotifySettings(_ context.Context, _ uuid.UUID) (NotifySettings, error) {
+	if r.alertSettingsErr != nil {
+		return NotifySettings{}, r.alertSettingsErr
+	}
+	if r.alertSettings != nil {
+		return *r.alertSettings, nil
+	}
 	return NotifySettings{}, ErrNotFound
 }
 
@@ -445,11 +469,14 @@ func (r *fakeRepo) UpsertNotifySettings(_ context.Context, in NotifySettings) (N
 }
 
 func (r *fakeRepo) AccumulateAlertFailures(_ context.Context, _, _ uuid.UUID, _ int64) error {
-	return nil
+	return r.alertAccumulateErr
 }
 
 func (r *fakeRepo) ClaimAlertSlot(_ context.Context, _, _ uuid.UUID, _ int64, _ int) (*AlertState, error) {
-	return nil, nil // throttled
+	if r.alertClaimErr != nil {
+		return nil, r.alertClaimErr
+	}
+	return r.alertClaimState, nil // nil state, nil error == throttled
 }
 
 func (r *fakeRepo) ListDueDigests(_ context.Context, _ int32) ([]NotifySettings, error) {

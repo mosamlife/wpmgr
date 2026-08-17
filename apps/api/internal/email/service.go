@@ -653,7 +653,7 @@ func (s *Service) IngestLogBatch(ctx context.Context, tenantID, siteID uuid.UUID
 		}
 	}
 	if failureCount > 0 {
-		go s.maybeAlertFailures(context.Background(), tenantID, siteID, failureCount)
+		go s.maybeAlertFailuresAsync(tenantID, siteID, failureCount)
 	}
 
 	return IngestResult{AckedThrough: maxSeq}, nil
