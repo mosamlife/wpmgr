@@ -47271,15 +47271,20 @@ func (s *EmailNotifySettingsFailureDetection) encodeFields(e *jx.Encoder) {
 		e.Int(s.SitesCovered)
 	}
 	{
-		e.FieldStart("min_agent_version")
-		e.Str(s.MinAgentVersion)
+		e.FieldStart("sites_routed")
+		e.Int(s.SitesRouted)
+	}
+	{
+		e.FieldStart("min_agent_version_unrouted")
+		e.Str(s.MinAgentVersionUnrouted)
 	}
 }
 
-var jsonFieldsNameOfEmailNotifySettingsFailureDetection = [3]string{
+var jsonFieldsNameOfEmailNotifySettingsFailureDetection = [4]string{
 	0: "sites_total",
 	1: "sites_covered",
-	2: "min_agent_version",
+	2: "sites_routed",
+	3: "min_agent_version_unrouted",
 }
 
 // Decode decodes EmailNotifySettingsFailureDetection from json.
@@ -47315,17 +47320,29 @@ func (s *EmailNotifySettingsFailureDetection) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"sites_covered\"")
 			}
-		case "min_agent_version":
+		case "sites_routed":
 			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
-				v, err := d.Str()
-				s.MinAgentVersion = string(v)
+				v, err := d.Int()
+				s.SitesRouted = int(v)
 				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"min_agent_version\"")
+				return errors.Wrap(err, "decode field \"sites_routed\"")
+			}
+		case "min_agent_version_unrouted":
+			requiredBitSet[0] |= 1 << 3
+			if err := func() error {
+				v, err := d.Str()
+				s.MinAgentVersionUnrouted = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"min_agent_version_unrouted\"")
 			}
 		default:
 			return d.Skip()
@@ -47337,7 +47354,7 @@ func (s *EmailNotifySettingsFailureDetection) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000111,
+		0b00001111,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

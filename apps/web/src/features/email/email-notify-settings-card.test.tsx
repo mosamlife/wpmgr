@@ -13,6 +13,16 @@ import { mockQueryResult, mockMutationResult } from "@/test/query-mocks";
 // with alerting silently unable to ever trigger because every one of their
 // sites was on an older agent. Phase 2 added `failure_detection` to
 // GET /api/v1/email/notify-settings; this phase surfaces it.
+//
+// GH #381 phase 2 fix: coverage is routed-OR-new-enough-agent, not
+// agent-version-alone. A site WPMgr actively routes mail through has always
+// been able to report a delivery failure regardless of agent version, so a
+// fully-routed fleet on old agents is fully covered, not 0% covered. The
+// "fully routed, real placeholder version" test below is the regression
+// test for the shipped bug: it asserts the full-coverage state renders for
+// exactly that fleet shape, using the real production placeholder
+// ("999.0.0", MinAgentVersionForFailureDetection in
+// apps/api/internal/email/service.go) rather than a plausible fake.
 
 const { useEmailNotifySettingsMock, usePutEmailNotifySettingsMock } = vi.hoisted(
   () => ({
@@ -49,7 +59,8 @@ function buildSettings(
     failure_detection: {
       sites_total: 10,
       sites_covered: 10,
-      min_agent_version: "1.4.0",
+      sites_routed: 0,
+      min_agent_version_unrouted: "1.4.0",
     },
     ...overrides,
   };
@@ -71,7 +82,8 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
         failure_detection: {
           sites_total: 6,
           sites_covered: 0,
-          min_agent_version: "1.4.0",
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
         },
       }),
     );
@@ -87,13 +99,67 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows the zero-coverage warning for a genuinely zero-coverage tenant (nothing routed, nothing new enough) — the banner must still be reachable", async () => {
+    mockSettings(
+      buildSettings({
+        failure_detection: {
+          sites_total: 4,
+          sites_covered: 0,
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
+        },
+      }),
+    );
+
+    renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
+
+    expect(
+      await screen.findByText(/No connected site can report a delivery failure\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1\.4\.0/)).toBeInTheDocument();
+    expect(screen.queryByText(/Covering all/)).not.toBeInTheDocument();
+  });
+
+  // Regression test for the shipped bug: a fully-routed fleet, all on agents
+  // below the real (unreachable-until-shipped) placeholder version, is fully
+  // covered because routing does not depend on agent version. Before the
+  // GH #381 phase 2 fix, sites_covered was computed from agent_version alone,
+  // so this exact fleet shape reported 0 of N covered and told customers to
+  // update to an impossible version.
+  it("shows full coverage for a fully-routed fleet under the real production placeholder version, not the zero-coverage warning", async () => {
+    mockSettings(
+      buildSettings({
+        failure_detection: {
+          sites_total: 12,
+          sites_covered: 12,
+          sites_routed: 12,
+          min_agent_version_unrouted: "999.0.0",
+        },
+      }),
+    );
+
+    renderWithProviders(<EmailNotifySettingsCard />, { withRouter: true });
+
+    expect(
+      await screen.findByText(/Covering all 12 connected sites/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No connected site can report a delivery failure\./),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/999\.0\.0/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/connected sites can report a delivery failure \(/),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows partial coverage as N of M", async () => {
     mockSettings(
       buildSettings({
         failure_detection: {
           sites_total: 8,
           sites_covered: 3,
-          min_agent_version: "1.4.0",
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
         },
       }),
     );
@@ -114,7 +180,8 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
         failure_detection: {
           sites_total: 5,
           sites_covered: 5,
-          min_agent_version: "1.4.0",
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
         },
       }),
     );
@@ -139,7 +206,8 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
         failure_detection: {
           sites_total: 4,
           sites_covered: 0,
-          min_agent_version: "1.4.0",
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
         },
       }),
     );
@@ -181,7 +249,8 @@ describe("EmailNotifySettingsCard failure-detection coverage (GH #381)", () => {
         failure_detection: {
           sites_total: 0,
           sites_covered: 0,
-          min_agent_version: "1.4.0",
+          sites_routed: 0,
+          min_agent_version_unrouted: "1.4.0",
         },
       }),
     );

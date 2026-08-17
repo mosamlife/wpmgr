@@ -17010,10 +17010,11 @@ type EmailNotifySettings struct {
 	// True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true
 	// to deliver.
 	InstanceMailerConfigured bool `json:"instance_mailer_configured"`
-	// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can
-	// only detect a failure when it is the mail transport in use AND the agent is new enough to report
-	// it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure
-	// alert no matter how the settings above are configured.
+	// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). A site is
+	// covered when EITHER WPMgr is the mail transport it actively uses (routing does not depend on agent
+	// version) OR its agent is new enough (>= min_agent_version_unrouted) to capture a failure on mail
+	// WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a
+	// per-failure alert no matter how the settings above are configured.
 	FailureDetection OptEmailNotifySettingsFailureDetection `json:"failure_detection"`
 	// Present when a settings row exists; absent for default response.
 	TenantID  OptNilUUID     `json:"tenant_id"`
@@ -17223,19 +17224,26 @@ func (s *EmailNotifySettingsDigestCadence) UnmarshalText(data []byte) error {
 	}
 }
 
-// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can
-// only detect a failure when it is the mail transport in use AND the agent is new enough to report
-// it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure
-// alert no matter how the settings above are configured.
+// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). A site is
+// covered when EITHER WPMgr is the mail transport it actively uses (routing does not depend on agent
+// version) OR its agent is new enough (>= min_agent_version_unrouted) to capture a failure on mail
+// WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a
+// per-failure alert no matter how the settings above are configured.
 type EmailNotifySettingsFailureDetection struct {
 	// Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected,
 	// revoked and archived sites).
 	SitesTotal int `json:"sites_total"`
-	// Of sites_total, how many report an agent_version at or above min_agent_version and can therefore
-	// have a delivery failure detected and alerted on.
+	// Of sites_total, how many can have a delivery failure detected and alerted on — because WPMgr
+	// routes their mail, because their agent_version is at or above min_agent_version_unrouted, or both.
 	SitesCovered int `json:"sites_covered"`
-	// Minimum agent version that can detect and report an email delivery failure.
-	MinAgentVersion string `json:"min_agent_version"`
+	// Of sites_total, how many have WPMgr configured as their active mail transport. These sites are
+	// covered regardless of agent version; this count explains why sites_covered can be high even on a
+	// fleet below min_agent_version_unrouted.
+	SitesRouted int `json:"sites_routed"`
+	// Minimum agent version needed to detect and report a delivery failure ONLY for sites that do NOT
+	// route their mail through WPMgr (sites_total - sites_routed of them). It says nothing about routed
+	// sites, which are covered independent of this value.
+	MinAgentVersionUnrouted string `json:"min_agent_version_unrouted"`
 }
 
 // GetSitesTotal returns the value of SitesTotal.
@@ -17248,9 +17256,14 @@ func (s *EmailNotifySettingsFailureDetection) GetSitesCovered() int {
 	return s.SitesCovered
 }
 
-// GetMinAgentVersion returns the value of MinAgentVersion.
-func (s *EmailNotifySettingsFailureDetection) GetMinAgentVersion() string {
-	return s.MinAgentVersion
+// GetSitesRouted returns the value of SitesRouted.
+func (s *EmailNotifySettingsFailureDetection) GetSitesRouted() int {
+	return s.SitesRouted
+}
+
+// GetMinAgentVersionUnrouted returns the value of MinAgentVersionUnrouted.
+func (s *EmailNotifySettingsFailureDetection) GetMinAgentVersionUnrouted() string {
+	return s.MinAgentVersionUnrouted
 }
 
 // SetSitesTotal sets the value of SitesTotal.
@@ -17263,9 +17276,14 @@ func (s *EmailNotifySettingsFailureDetection) SetSitesCovered(val int) {
 	s.SitesCovered = val
 }
 
-// SetMinAgentVersion sets the value of MinAgentVersion.
-func (s *EmailNotifySettingsFailureDetection) SetMinAgentVersion(val string) {
-	s.MinAgentVersion = val
+// SetSitesRouted sets the value of SitesRouted.
+func (s *EmailNotifySettingsFailureDetection) SetSitesRouted(val int) {
+	s.SitesRouted = val
+}
+
+// SetMinAgentVersionUnrouted sets the value of MinAgentVersionUnrouted.
+func (s *EmailNotifySettingsFailureDetection) SetMinAgentVersionUnrouted(val string) {
+	s.MinAgentVersionUnrouted = val
 }
 
 // Static catalog of supported email providers and their field schemas.
