@@ -87,6 +87,11 @@ type fakeRepo struct {
 	// say "refused" and "absent" as well as "done", and the service has to turn
 	// each into a different answer (see suppression_delete_refusal_test.go).
 	suppressionDeleteErr error
+
+	// connectedAgentVersions is what ListConnectedSiteAgentVersions returns,
+	// keyed by tenant so a cross-tenant test can seed two tenants' fleets
+	// independently (GH #381 phase 2).
+	connectedAgentVersions map[uuid.UUID][]string
 }
 
 func newFakeRepo() *fakeRepo {
@@ -465,6 +470,10 @@ func (r *fakeRepo) TopFailureSamples(_ context.Context, _ uuid.UUID, _, _ time.T
 
 func (r *fakeRepo) TopFailureSamplesBySite(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int32) ([]FailureSample, error) {
 	return nil, nil
+}
+
+func (r *fakeRepo) ListConnectedSiteAgentVersions(_ context.Context, tenantID uuid.UUID) ([]string, error) {
+	return r.connectedAgentVersions[tenantID], nil
 }
 
 // ---------------------------------------------------------------------------

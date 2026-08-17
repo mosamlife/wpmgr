@@ -228,6 +228,28 @@ type NotifySettings struct {
 	// InstanceMailerConfigured is populated by the service from mailer.Service.Enabled.
 	// It is NOT stored in DB — injected on GET.
 	InstanceMailerConfigured bool
+	// FailureDetection is populated by the service from a live count of the
+	// tenant's connected sites (GH #381 phase 2). It is NOT stored in DB —
+	// injected on GET.
+	FailureDetection FailureDetectionCoverage
+}
+
+// FailureDetectionCoverage summarizes, for a tenant, how many of its
+// currently-connected sites run an agent new enough to detect and report an
+// email delivery failure (GH #381 phase 2). WPMgr can only detect a failure
+// when it is the mail transport in use AND the agent is new enough to report
+// it; a site below MinAgentVersion, or not currently connected, cannot
+// trigger a per-failure alert no matter how the settings above are
+// configured. Computed fresh on every GET, never persisted.
+type FailureDetectionCoverage struct {
+	// SitesTotal is the tenant's currently-connected site count.
+	SitesTotal int
+	// SitesCovered is, of SitesTotal, how many report an agent_version at or
+	// above MinAgentVersion.
+	SitesCovered int
+	// MinAgentVersion is the gate SitesCovered was computed against
+	// (MinAgentVersionForFailureDetection at call time).
+	MinAgentVersion string
 }
 
 // NotifySettingsUpsertInput is the PUT body for notify settings.

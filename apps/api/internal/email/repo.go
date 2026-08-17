@@ -217,6 +217,29 @@ func (r *Repo) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (Notif
 	return out, err
 }
 
+// ListConnectedSiteAgentVersions returns the reported agent_version for every
+// site in this tenant currently in the 'connected' connection_state (GH #381
+// phase 2: failure-detection coverage). Version comparison against the
+// coverage gate happens in the service layer.
+//
+// Unlike GetNotifySettings/UpsertNotifySettings, sites IS a site-keyed table
+// carrying the m112 RESTRICTIVE sites_site_scope policy, so this runs under
+// scopedTenantTx like every other site-keyed query in this package: a
+// site-scoped collaborator's coverage is correctly narrowed to the sites they
+// can see, and an org-scoped principal sees the whole tenant fleet.
+func (r *Repo) ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
+	var out []string
+	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		versions, qerr := sqlc.New(tx).ListConnectedSiteAgentVersions(ctx, tenantID)
+		if qerr != nil {
+			return qerr
+		}
+		out = versions
+		return nil
+	})
+	return out, err
+}
+
 // UpsertNotifySettings creates or updates the notify settings row.
 // Runs under InTenantTx.
 func (r *Repo) UpsertNotifySettings(ctx context.Context, in NotifySettings) (NotifySettings, error) {

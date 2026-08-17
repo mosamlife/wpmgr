@@ -2,10 +2,17 @@ package email
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -224,4 +231,156 @@ func TestBuildDigestData_FlagOff_OmitsSection_PreservesZeroSkip(t *testing.T) {
 	if data != nil {
 		t.Fatalf("expected skip-send (nil) when the flag is off and there is no email activity, got %v", data)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// GH #381 phase 2 — failure-detection coverage on GET notify-settings
+// ---------------------------------------------------------------------------
+
+// failureDetectionWire and notifySettingsWire mirror the wire JSON shape
+// (dto.go's notifySettingsDTO / failureDetectionDTO) so these tests decode the
+// handler's actual SERIALIZED response rather than inspecting Go structs the
+// handler never sends.
+type failureDetectionWire struct {
+	SitesTotal      int    `json:"sites_total"`
+	SitesCovered    int    `json:"sites_covered"`
+	MinAgentVersion string `json:"min_agent_version"`
+}
+
+type notifySettingsWire struct {
+	FailureDetection failureDetectionWire `json:"failure_detection"`
+}
+
+// notifySettingsGetCtx builds a request+principal context for GET
+// /email/notify-settings — an org-level route with no path params.
+func notifySettingsGetCtx(t *testing.T, p domain.Principal) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil).WithContext(domain.WithPrincipal(context.Background(), p))
+	return c, rec
+}
+
+func decodeNotifySettingsWire(t *testing.T, rec *httptest.ResponseRecorder) notifySettingsWire {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var wire notifySettingsWire
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("failed to decode response: %v, body: %s", err, rec.Body.String())
+	}
+	return wire
+}
+
+// TestGetNotifySettings_ReportsFailureDetectionCoverage: RED today because
+// the failure_detection field does not exist yet. 3 connected sites, 2 at or
+// above the gate, must serialize as sites_total=3, sites_covered=2.
+func TestGetNotifySettings_ReportsFailureDetectionCoverage(t *testing.T) {
+	tenantID := uuid.New()
+	repo := newFakeRepo()
+	repo.connectedAgentVersions = map[uuid.UUID][]string{
+		tenantID: {"999.5.0", MinAgentVersionForFailureDetection, "0.61.138"},
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesTotal != 3 {
+		t.Errorf("sites_total = %d, want 3", wire.FailureDetection.SitesTotal)
+	}
+	if wire.FailureDetection.SitesCovered != 2 {
+		t.Errorf("sites_covered = %d, want 2", wire.FailureDetection.SitesCovered)
+	}
+	if wire.FailureDetection.MinAgentVersion != MinAgentVersionForFailureDetection {
+		t.Errorf("min_agent_version = %q, want %q", wire.FailureDetection.MinAgentVersion, MinAgentVersionForFailureDetection)
+	}
+}
+
+// TestGetNotifySettings_CoverageIsTenantScoped: the coverage count for tenant
+// A must never include tenant B's fleet, however much larger it is. This is
+// the one that matters most — get it wrong and the endpoint leaks another
+// tenant's fleet size.
+func TestGetNotifySettings_CoverageIsTenantScoped(t *testing.T) {
+	tenantA, tenantB := uuid.New(), uuid.New()
+	repo := newFakeRepo()
+	repo.connectedAgentVersions = map[uuid.UUID][]string{
+		tenantA: {"999.0.0"},
+		tenantB: {"999.0.0", "999.0.0", "999.0.0", "999.0.0"},
+	}
+	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+	svc.repo = repo
+	h := &Handler{svc: svc}
+
+	c, rec := notifySettingsGetCtx(t, domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantA,
+		Role: "admin", Scope: domain.ScopeOrg,
+	})
+	h.getNotifySettings(c)
+
+	wire := decodeNotifySettingsWire(t, rec)
+	if wire.FailureDetection.SitesTotal != 1 {
+		t.Errorf("sites_total = %d, want 1 — tenant B's 4 sites leaked into tenant A's count", wire.FailureDetection.SitesTotal)
+	}
+	if wire.FailureDetection.SitesCovered != 1 {
+		t.Errorf("sites_covered = %d, want 1", wire.FailureDetection.SitesCovered)
+	}
+}
+
+// TestGetNotifySettings_FailureDetectionCoverage_NoOverfire is the
+// over-fire control: a tenant with zero connected sites, and a tenant where
+// every connected site is covered, must both produce sane values rather than
+// a divide-by-zero or an omitted field.
+func TestGetNotifySettings_FailureDetectionCoverage_NoOverfire(t *testing.T) {
+	t.Run("zero_sites", func(t *testing.T) {
+		tenantID := uuid.New()
+		repo := newFakeRepo() // no entry for tenantID — zero connected sites
+		svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+		svc.repo = repo
+		h := &Handler{svc: svc}
+
+		c, rec := notifySettingsGetCtx(t, domain.Principal{
+			Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+			Role: "admin", Scope: domain.ScopeOrg,
+		})
+		h.getNotifySettings(c)
+
+		wire := decodeNotifySettingsWire(t, rec)
+		if wire.FailureDetection.SitesTotal != 0 || wire.FailureDetection.SitesCovered != 0 {
+			t.Errorf("expected 0/0 for a tenant with no connected sites, got %+v", wire.FailureDetection)
+		}
+		if !strings.Contains(rec.Body.String(), `"failure_detection"`) {
+			t.Error("failure_detection must be present even for a zero-site tenant, never omitted")
+		}
+	})
+
+	t.Run("all_covered", func(t *testing.T) {
+		tenantID := uuid.New()
+		repo := newFakeRepo()
+		repo.connectedAgentVersions = map[uuid.UUID][]string{
+			tenantID: {"999.0.0", "999.1.0", "1000.0.0"},
+		}
+		svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
+		svc.repo = repo
+		h := &Handler{svc: svc}
+
+		c, rec := notifySettingsGetCtx(t, domain.Principal{
+			Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: tenantID,
+			Role: "admin", Scope: domain.ScopeOrg,
+		})
+		h.getNotifySettings(c)
+
+		wire := decodeNotifySettingsWire(t, rec)
+		if wire.FailureDetection.SitesTotal != 3 || wire.FailureDetection.SitesCovered != 3 {
+			t.Errorf("expected 3/3 when every connected site is covered, got %+v", wire.FailureDetection)
+		}
+	})
 }
