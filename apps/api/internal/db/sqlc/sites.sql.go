@@ -582,6 +582,43 @@ func (q *Queries) ListClientNamesForSites(ctx context.Context, arg ListClientNam
 	return items, nil
 }
 
+const listConnectedSiteAgentVersions = `-- name: ListConnectedSiteAgentVersions :many
+SELECT agent_version
+FROM sites
+WHERE tenant_id = $1
+  AND connection_state = 'connected'
+`
+
+// Tenant-scoped agent_version per site, restricted to connection_state =
+// 'connected' (GH #381 phase 2: email failure-detection coverage). "Connected"
+// here matches ListConnectedSiteIDsForScreenshot's strict definition (not
+// degraded/pending/disconnected/archived): a site whose agent is not actively
+// connected cannot report a delivery failure regardless of its version, so it
+// is excluded from both the coverage numerator and denominator rather than
+// counted as a gap.
+// Version comparison happens in Go (internal/wpversion.Compare), matching
+// ListSitesAgentVersions's convention: this query returns only the raw
+// per-site fact.
+func (q *Queries) ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listConnectedSiteAgentVersions, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var agent_version string
+		if err := rows.Scan(&agent_version); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConnectedSiteIDsForScreenshot = `-- name: ListConnectedSiteIDsForScreenshot :many
 SELECT id, tenant_id, url FROM sites
 WHERE connection_state = 'connected'

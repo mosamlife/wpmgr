@@ -1596,6 +1596,17 @@ type Querier interface {
 	// expansion (pin a carry-forward chunk's old origin generation under a live
 	// tip) without a second round-trip.
 	ListCompletedSnapshotsForSite(ctx context.Context, arg ListCompletedSnapshotsForSiteParams) ([]ListCompletedSnapshotsForSiteRow, error)
+	// Tenant-scoped agent_version per site, restricted to connection_state =
+	// 'connected' (GH #381 phase 2: email failure-detection coverage). "Connected"
+	// here matches ListConnectedSiteIDsForScreenshot's strict definition (not
+	// degraded/pending/disconnected/archived): a site whose agent is not actively
+	// connected cannot report a delivery failure regardless of its version, so it
+	// is excluded from both the coverage numerator and denominator rather than
+	// counted as a gap.
+	// Version comparison happens in Go (internal/wpversion.Compare), matching
+	// ListSitesAgentVersions's convention: this query returns only the raw
+	// per-site fact.
+	ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error)
 	// Cross-tenant enumeration of connected sites for the weekly screenshot fanout.
 	// Returns only sites in the 'connected' state (not degraded/pending/archived).
 	// Runs under the app.agent GUC (sites_agent policy) since it spans tenants.
