@@ -46,7 +46,13 @@ WP core download --force
 WP config create --dbname=wp --dbuser=root --dbpass=wp --dbhost=db --force
 WP core install --url=http://localhost --title=pc \
   --admin_user=admin --admin_password=admin --admin_email=a@b.test --skip-email
-WP plugin install plugin-check --activate
+# Pinned: an unpinned install pulls whatever plugin-check released today, so a
+# gate on unchanged code can redden a PR because the linter's opinion changed,
+# not because the plugin did. That happened on 2026-08-17 when 2.1.0 shipped a
+# new sniff rule with zero agent code change in between. To bump deliberately,
+# change the version below, run `make agent-plugincheck` locally, and read the
+# diff in ERROR rows before committing.
+WP plugin install plugin-check --version=2.1.0 --activate
 WP plugin install /tmp/plugin.zip --force
 
 echo "==================== wp plugin check: $SLUG ===================="
