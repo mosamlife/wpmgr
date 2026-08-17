@@ -348,9 +348,9 @@ final class AddressParser {
 	}
 
 	/**
-	 * Redact any RFC 5322-shaped email address embedded inside a free-text
-	 * string, replacing each match with a fixed placeholder and leaving the
-	 * surrounding text untouched.
+	 * Redact any email address embedded inside a free-text string, replacing
+	 * each match with a fixed placeholder and leaving the surrounding text
+	 * untouched.
 	 *
 	 * GH #381 phases 1 and 4 (security-reviewer finding): a real
 	 * PHPMailer/SMTP failure message routinely embeds the recipient address
@@ -363,20 +363,96 @@ final class AddressParser {
 	 * this removes only the address-shaped substring and keeps everything
 	 * else.
 	 *
-	 * Deliberately not anchored to a specific known `to` list: a provider
-	 * response can echo back a re-cased/normalised address, or one that was
-	 * never in the `to` array (a bounce target, a Cc/Bcc), so this scans for
-	 * anything address-shaped rather than trusting a caller-supplied
-	 * allow-list of addresses to redact.
+	 * GH #381 phase 2, second review round: a plain ASCII-only regex is
+	 * weakest on exactly the inputs this path emits, because PHPMailer's
+	 * "Invalid address" errors fire BECAUSE the address failed that same
+	 * validation -- a raw IDN domain, a quoted local part, an IP-literal or
+	 * bare-IP domain, a 1-char/numeric TLD, or a non-ASCII local part all
+	 * survived the old regex untouched (the non-ASCII case left a partial
+	 * leak: only the tail from the first ASCII byte on was matched). So this
+	 * is now two stages:
 	 *
-	 * @param string $text Free-text error or provider-response string.
+	 * 1. Remove every address in $known_addresses literally (case-
+	 *    insensitively), plus its percent-encoded and base64-encoded forms,
+	 *    plus a variant tolerant of whitespace/a line break inserted around
+	 *    the '@'. This is a substring match, not a parse, so it catches any
+	 *    format the regex below cannot recognise -- the caller already knows
+	 *    the real recipient list (it is what it is about to blank from
+	 *    `to`), so there is no format the address needs to be "shaped" like.
+	 * 2. Run the Unicode-aware regex net for anything NOT already known: a
+	 *    provider can echo back a re-cased/normalised address, or one that
+	 *    was never in `to` (a bounce target, a Cc/Bcc), so this still scans
+	 *    for anything address-shaped rather than trusting the allow-list
+	 *    alone. Widened from the original ASCII-only class to \p{L}/\p{N} so
+	 *    an unknown non-ASCII local part is removed whole instead of leaving
+	 *    its leading bytes behind.
+	 *
+	 * Deliberately does not attempt to recognise a bare spaced/base64/
+	 * percent-encoded address that is NOT in $known_addresses: real
+	 * PHPMailer/SMTP output never obfuscates an address that way, and a
+	 * regex broad enough to catch it in free text would false-positive on
+	 * ordinary tokens (version strings, hashes) that are not addresses at
+	 * all.
+	 *
+	 * @param string                  $text            Free-text error or provider-response string.
+	 * @param array<int,string|mixed> $known_addresses Raw recipient header values the caller already
+	 *                                                  holds (e.g. the `to` array before it is blanked).
+	 *                                                  Non-string entries are ignored; each entry may
+	 *                                                  itself be a "Name <addr>" form or a bare address.
 	 * @return string
 	 */
-	public static function redact_email_addresses( string $text ): string {
+	public static function redact_email_addresses( string $text, array $known_addresses = array() ): string {
 		if ( $text === '' ) {
 			return $text;
 		}
-		$redacted = preg_replace( '/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/', '[address removed]', $text );
+
+		foreach ( $known_addresses as $entry ) {
+			if ( ! is_string( $entry ) || trim( $entry ) === '' ) {
+				continue;
+			}
+
+			// The raw entry itself (bare address, or an already-unparseable
+			// form such as a raw IDN domain that AddressParser refuses to
+			// parse and passes through untouched) is always a candidate...
+			$candidates = array( trim( $entry ) );
+			// ...and so is every address parse_list() manages to extract
+			// from it (handles "Name <addr>" and comma/semicolon lists).
+			foreach ( self::parse_list( $entry ) as $parsed ) {
+				if ( $parsed['address'] !== '' ) {
+					$candidates[] = $parsed['address'];
+				}
+			}
+
+			foreach ( array_unique( $candidates ) as $addr ) {
+				if ( $addr === '' ) {
+					continue;
+				}
+
+				$text = str_ireplace( $addr, '[address removed]', $text );
+				$text = str_ireplace( rawurlencode( $addr ), '[address removed]', $text );
+				$text = str_replace( base64_encode( $addr ), '[address removed]', $text );
+
+				$at = strpos( $addr, '@' );
+				if ( false === $at ) {
+					continue;
+				}
+				$local  = substr( $addr, 0, $at );
+				$domain = substr( $addr, $at + 1 );
+				if ( $local === '' || $domain === '' ) {
+					continue;
+				}
+				$spaced = preg_replace(
+					'/' . preg_quote( $local, '/' ) . '\s*@\s*' . preg_quote( $domain, '/' ) . '/iu',
+					'[address removed]',
+					$text
+				);
+				if ( null !== $spaced ) {
+					$text = $spaced;
+				}
+			}
+		}
+
+		$redacted = preg_replace( '/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u', '[address removed]', $text );
 		return $redacted === null ? $text : $redacted;
 	}
 }

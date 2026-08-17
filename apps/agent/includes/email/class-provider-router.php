@@ -497,10 +497,17 @@ class ProviderRouter {
 		}
 
 		if ( ! $cfg->log_emails ) {
+			// FINDING (security review, GH #381 phase 2): pass the real
+			// recipient list to redact_email_addresses() BEFORE it is
+			// blanked below, so a malformed-but-real address (IDN domain,
+			// quoted local part, IP-literal domain, ...) is removed as a
+			// literal string rather than relying on the regex net alone to
+			// recognise its shape.
+			$known_addresses = is_array( $mail['to'] ?? null ) ? $mail['to'] : array();
 			$mail['to']      = array();
 			$mail['subject'] = '';
-			$error           = AddressParser::redact_email_addresses( $error );
-			$response        = AddressParser::redact_email_addresses( $response );
+			$error           = AddressParser::redact_email_addresses( $error, $known_addresses );
+			$response        = AddressParser::redact_email_addresses( $response, $known_addresses );
 		}
 
 		$this->logger->write( $mail, $provider, $status, $msg_id, $error, $response, $retries, $cfg, $connection_key );

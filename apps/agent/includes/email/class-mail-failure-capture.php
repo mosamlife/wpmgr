@@ -167,10 +167,18 @@ final class MailFailureCapture {
 		// verbatim -- e.g. "Invalid address:  (to): a@x.com" -- so the
 		// address must also be scrubbed out of the error text itself, or it
 		// leaves the site through the `error` column instead.
+		//
+		// FINDING (security review, GH #381 phase 2): a bare address-shaped
+		// regex is not enough either -- pass the real recipient list to
+		// redact_email_addresses() BEFORE it is blanked below, so a
+		// malformed-but-real address (IDN domain, quoted local part,
+		// IP-literal domain, ...) is removed as a literal string rather than
+		// relying on the regex to recognise its shape.
 		if ( ! $cfg->log_emails ) {
-			$to            = array();
-			$subject       = '';
-			$error_message = AddressParser::redact_email_addresses( $error_message );
+			$known_addresses = is_array( $to ) ? $to : array( $to );
+			$to              = array();
+			$subject         = '';
+			$error_message   = AddressParser::redact_email_addresses( $error_message, $known_addresses );
 		}
 
 		// Only `to` and `subject` -- never the message body, under any key,

@@ -329,4 +329,98 @@ class AddressParserTest extends TestCase
         $this->assertSame('salesianalibri@gmail.com', $parsed['address']);
         $this->assertSame('Andrea Somigli', $parsed['name']);
     }
+
+    // -------------------------------------------------------------------------
+    // GH #381 phase 2 (security review, second round): the bare regex in
+    // redact_email_addresses() only recognises a well-formed ASCII address,
+    // but PHPMailer's own "Invalid address" errors fire BECAUSE the address
+    // failed that exact validation -- so the regex is weakest on precisely
+    // the inputs this code path emits. The remedy is two-stage: remove every
+    // literal known recipient (and its obvious encoded variants) first, then
+    // run the regex as a net for anything not already known. This table is
+    // the reviewer's full leak catalogue plus the forms that already worked;
+    // every row must come out address-free once a matching known address is
+    // supplied, exactly as the two real call sites now supply it.
+    // -------------------------------------------------------------------------
+
+    /** @return array<string,array{0:string,1:string,2:string}> label => [known address, text, needle that must not survive] */
+    public static function redaction_table(): array
+    {
+        return [
+            'raw IDN domain' => ['kunde@münchen.de', 'SMTP Error: recipients failed: kunde@münchen.de: 550 5.1.1 User unknown', 'kunde@münchen.de'],
+            'quoted local part' => ['"john doe"@example.com', 'Invalid address: (to): "john doe"@example.com', '"john doe"@example.com'],
+            'IP-literal domain' => ['admin@[192.168.13.7]', 'Invalid address: (to): admin@[192.168.13.7]', 'admin@[192.168.13.7]'],
+            'bare-IP domain' => ['admin@203.0.113.9', 'Invalid address: (to): admin@203.0.113.9', 'admin@203.0.113.9'],
+            'spaced' => ['alice@example.com', 'Invalid address: (to): alice @ example.com', 'alice @ example.com'],
+            'percent-encoded bare' => ['alice@example.com', 'Invalid address: (to): alice%40example.com', 'alice%40example.com'],
+            'percent-encoded in URL' => ['alice@example.com', 'see https://relay.example/bounce?addr=alice%40example.com', 'alice%40example.com'],
+            'split across line break' => ['alice@example.com', "Invalid address: (to): alice@\nexample.com", "alice@\nexample.com"],
+            'base64' => ['alice@example.com', 'raw recipient: YWxpY2VAZXhhbXBsZS5jb20=', 'YWxpY2VAZXhhbXBsZS5jb20='],
+            '1-char TLD' => ['x@y.c', 'Invalid address: (to): x@y.c', 'x@y.c'],
+            'numeric TLD' => ['admin@example.12345', 'Invalid address: (to): admin@example.12345', 'admin@example.12345'],
+            'non-ASCII local part' => ['jösef@example.com', 'Invalid address: (to): jösef@example.com', 'jösef@example.com'],
+            // Forms that already redacted correctly before this fix -- must stay fixed.
+            'punycode' => ['user@xn--mnchen-3ya.de', 'Invalid address: (to): user@xn--mnchen-3ya.de', 'user@xn--mnchen-3ya.de'],
+            'angle-bracket' => ['a@x.com', 'Invalid address:  (to): Name <a@x.com>', 'a@x.com'],
+            'uppercase' => ['A@X.COM', 'Invalid address: (to): A@X.COM', 'A@X.COM'],
+            'trailing dot' => ['a@x.com.', 'Invalid address: (to): a@x.com.', 'a@x.com.'],
+        ];
+    }
+
+    /**
+     * @dataProvider redaction_table
+     */
+    public function test_redact_email_addresses_removes_every_leaking_shape_given_the_known_address(string $known, string $text, string $needle): void
+    {
+        $redacted = AddressParser::redact_email_addresses($text, [$known]);
+
+        $this->assertStringNotContainsString($needle, $redacted, "'{$needle}' must not survive redaction when it is a known recipient.");
+    }
+
+    /**
+     * The reviewer's own end-to-end proof case, pinned permanently and
+     * independent of the data provider above.
+     */
+    public function test_redact_email_addresses_removes_the_reviewers_idn_proof_case(): void
+    {
+        $text = 'SMTP Error: The following recipients failed: kunde@münchen.de: 550 5.1.1 User unknown';
+
+        $redacted = AddressParser::redact_email_addresses($text, ['kunde@münchen.de']);
+
+        $this->assertStringNotContainsString('kunde@münchen.de', $redacted);
+        $this->assertStringContainsString('550 5.1.1 User unknown', $redacted, 'Diagnostic detail must survive redaction.');
+    }
+
+    /**
+     * Over-fire control: diagnostic detail that is NOT address-shaped must
+     * come through completely unchanged, known-address list or not.
+     */
+    public function test_redact_email_addresses_preserves_diagnostic_detail(): void
+    {
+        $cases = [
+            '550 5.1.1 User unknown',
+            'connect to mail.example.com:587 failed after 3 tries',
+            'Postfix 3.7.4 error 4.4.1 timeout',
+        ];
+
+        foreach ($cases as $text) {
+            $this->assertSame($text, AddressParser::redact_email_addresses($text, ['unrelated@example.com']));
+        }
+    }
+
+    /**
+     * No catastrophic backtracking: a 40,000-char pathological input must
+     * redact in a small fraction of a second, matching the reviewer's own
+     * 0.0001s measurement on the same shape of input.
+     */
+    public function test_redact_email_addresses_has_no_catastrophic_backtracking(): void
+    {
+        $pathological = str_repeat('a', 40000) . '@' . str_repeat('b.', 20000) . 'com';
+
+        $start = microtime(true);
+        AddressParser::redact_email_addresses($pathological, ['known@example.com']);
+        $elapsed = microtime(true) - $start;
+
+        $this->assertLessThan(1.0, $elapsed, "Redaction took {$elapsed}s on a 40,000-char pathological input -- possible catastrophic backtracking.");
+    }
 }
