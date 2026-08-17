@@ -41,6 +41,16 @@ import { useEmailNotifySettings, usePutEmailNotifySettings } from "./use-email";
 // The instance_mailer_configured flag controls a warning banner: when false,
 // neither alerts nor digests can deliver. The banner links to /settings/smtp.
 //
+// failure_detection (GH #381) is the OTHER half of the alerting path: even
+// with a working instance mailer, WPMgr can only detect a delivery failure
+// on a site whose agent is new enough to report it. A tenant whose sites are
+// all on an older agent sees "Per-failure alerts" as an armed toggle that
+// will never fire — the two banners are independent (nothing can SEND vs.
+// nothing can DETECT) and both can be showing at once. sites_total === 0 is
+// an empty fleet, not a warning; the field is absent entirely on an older
+// API (self-hosted instance not yet upgraded), in which case no coverage
+// message is shown at all rather than guessed at.
+//
 // This endpoint never 404s (returns defaults). If the API pre-dates 0.36 and
 // returns 404, useEmailNotifySettings maps it to null and the card is hidden.
 // ---------------------------------------------------------------------------
@@ -230,6 +240,21 @@ export function EmailNotifySettingsCard() {
 
   const instanceMailerConfigured = s?.instance_mailer_configured ?? false;
 
+  // GH #381: WPMgr can only detect a delivery failure when a site's agent is
+  // new enough to report it. `failure_detection` is absent on an older API
+  // (self-hosted instance not yet upgraded) — in that case we have no
+  // coverage numbers to show and say nothing rather than guess. A tenant
+  // with zero sites also gets no coverage message; that is not a warning
+  // state, just an empty fleet.
+  const failureDetection = s?.failure_detection;
+  const sitesTotal = failureDetection?.sites_total ?? 0;
+  const sitesCovered = failureDetection?.sites_covered ?? 0;
+  const minAgentVersion = failureDetection?.min_agent_version;
+  const hasCoverageData = failureDetection != null && sitesTotal > 0;
+  const fullCoverage = hasCoverageData && sitesCovered >= sitesTotal;
+  const zeroCoverage = hasCoverageData && sitesCovered === 0;
+  const partialCoverage = hasCoverageData && sitesCovered > 0 && sitesCovered < sitesTotal;
+
   return (
     <Card>
       <CardHeader>
@@ -286,6 +311,24 @@ export function EmailNotifySettingsCard() {
               <p className="text-xs text-[var(--color-muted-foreground)]">
                 Send an alert email when a delivery failure is detected on a site.
               </p>
+              {fullCoverage ? (
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  Covering all {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}.
+                </p>
+              ) : null}
+              {partialCoverage ? (
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  {sitesCovered} of {sitesTotal} connected sites can report a delivery
+                  failure. The rest are on an agent older than {minAgentVersion} and
+                  cannot trigger an alert.{" "}
+                  <Link
+                    to="/sites"
+                    className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                  >
+                    View sites
+                  </Link>
+                </p>
+              ) : null}
             </div>
             <Switch
               checked={alertsEnabled}
@@ -294,6 +337,30 @@ export function EmailNotifySettingsCard() {
               aria-label="Enable per-failure alerts"
             />
           </div>
+
+          {zeroCoverage ? (
+            <div className="mb-4 flex gap-2 rounded-md border border-[var(--color-warning)]/50 bg-[var(--color-warning)]/10 px-3 py-2.5">
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-[var(--color-warning)]"
+              />
+              <div className="text-sm">
+                <span className="font-medium">
+                  No connected site can report a delivery failure.
+                </span>{" "}
+                All {sitesTotal} connected site{sitesTotal !== 1 ? "s" : ""}{" "}
+                {sitesTotal !== 1 ? "are" : "is"} on an agent older than{" "}
+                {minAgentVersion}, so this toggle will never fire. Update the agent on
+                at least one site to restore alerting.{" "}
+                <Link
+                  to="/sites"
+                  className="font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+                >
+                  View sites
+                </Link>
+              </div>
+            </div>
+          ) : null}
 
           {alertsEnabled ? (
             <div className="space-y-4 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-4">
