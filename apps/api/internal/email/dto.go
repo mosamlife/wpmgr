@@ -616,21 +616,26 @@ type putConnectionBody struct {
 
 // notifySettingsDTO is the wire representation of NotifySettings.
 type notifySettingsDTO struct {
-	TenantID                 string              `json:"tenant_id"`
-	Enabled                  bool                `json:"enabled"`
-	Recipients               []string            `json:"recipients"`
-	AlertOnFailure           bool                `json:"alert_on_failure"`
-	AlertThrottleMinutes     int                 `json:"alert_throttle_minutes"`
-	DigestEnabled            bool                `json:"digest_enabled"`
-	DigestCadence            string              `json:"digest_cadence"`
-	DigestDay                int                 `json:"digest_day"`
-	DigestHour               int                 `json:"digest_hour"`
-	Timezone                 string              `json:"timezone"`
-	NextDigestAt             *string             `json:"next_digest_at,omitempty"`
-	InstanceMailerConfigured bool                `json:"instance_mailer_configured"`
-	FailureDetection         failureDetectionDTO `json:"failure_detection"`
-	CreatedAt                int64               `json:"created_at"`
-	UpdatedAt                int64               `json:"updated_at"`
+	TenantID                 string   `json:"tenant_id"`
+	Enabled                  bool     `json:"enabled"`
+	Recipients               []string `json:"recipients"`
+	AlertOnFailure           bool     `json:"alert_on_failure"`
+	AlertThrottleMinutes     int      `json:"alert_throttle_minutes"`
+	DigestEnabled            bool     `json:"digest_enabled"`
+	DigestCadence            string   `json:"digest_cadence"`
+	DigestDay                int      `json:"digest_day"`
+	DigestHour               int      `json:"digest_hour"`
+	Timezone                 string   `json:"timezone"`
+	NextDigestAt             *string  `json:"next_digest_at,omitempty"`
+	InstanceMailerConfigured bool     `json:"instance_mailer_configured"`
+	// FailureDetection is a pointer so a coverage-query failure can omit it
+	// entirely (PR #447 bot review finding 2) instead of serializing a false
+	// "sites_covered: 0" — the frontend already treats absence as "unknown",
+	// same shape as the older-API-doesn't-send-it case this field was made
+	// optional for.
+	FailureDetection *failureDetectionDTO `json:"failure_detection,omitempty"`
+	CreatedAt        int64                `json:"created_at"`
+	UpdatedAt        int64                `json:"updated_at"`
 }
 
 // failureDetectionDTO is the wire representation of FailureDetectionCoverage
@@ -658,14 +663,16 @@ func toNotifySettingsDTO(s NotifySettings) notifySettingsDTO {
 		DigestHour:               s.DigestHour,
 		Timezone:                 s.Timezone,
 		InstanceMailerConfigured: s.InstanceMailerConfigured,
-		FailureDetection: failureDetectionDTO{
+		CreatedAt:                s.CreatedAt.Unix(),
+		UpdatedAt:                s.UpdatedAt.Unix(),
+	}
+	if s.FailureDetection != nil {
+		dto.FailureDetection = &failureDetectionDTO{
 			SitesTotal:              s.FailureDetection.SitesTotal,
 			SitesCovered:            s.FailureDetection.SitesCovered,
 			SitesRouted:             s.FailureDetection.SitesRouted,
 			MinAgentVersionUnrouted: s.FailureDetection.MinAgentVersionUnrouted,
-		},
-		CreatedAt: s.CreatedAt.Unix(),
-		UpdatedAt: s.UpdatedAt.Unix(),
+		}
 	}
 	if dto.Recipients == nil {
 		dto.Recipients = []string{}

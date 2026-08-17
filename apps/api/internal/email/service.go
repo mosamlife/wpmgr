@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -95,7 +96,7 @@ type repository interface {
 	GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (NotifySettings, error)
 	UpsertNotifySettings(ctx context.Context, in NotifySettings) (NotifySettings, error)
 	AccumulateAlertFailures(ctx context.Context, tenantID, siteID uuid.UUID, n int64) error
-	ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int) (*AlertState, error)
+	ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int, onClaim func(tx pgx.Tx) error) (*AlertState, error)
 	ListDueDigests(ctx context.Context, limit int32) ([]NotifySettings, error)
 	ClaimAdvanceDigest(ctx context.Context, tenantID uuid.UUID, newNextAt time.Time) (NotifySettings, error)
 	GetFleetStatsBySite(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]SiteStatsRow, error)
@@ -1507,24 +1508,36 @@ func (s *Service) PropagateOrgConfig(ctx context.Context, tenantID uuid.UUID) (P
 // GetNotifySettings returns the org-level notify settings. When no row exists
 // the service returns safe defaults with GET-always-200 semantics (lesson from
 // 0.35.1 hotfix: never 404 on a settings GET).
+//
+// The failure-detection coverage count (GH #381 phase 2) is decorative, not
+// load-bearing: a fault in that query must never take down the settings page
+// a user visits to fix recipients/toggles (PR #447 bot review finding 2). On
+// a coverage-query failure this logs a warning and returns the settings with
+// FailureDetection left nil (omitted on the wire), never a false
+// "sites_covered: 0" built from an error.
 func (s *Service) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (NotifySettings, error) {
 	coverage, covErr := s.failureDetectionCoverage(ctx, tenantID)
 	if covErr != nil {
-		return NotifySettings{}, covErr
+		s.log.Warn("email notify-settings: failure-detection coverage query failed, degrading to settings without coverage",
+			slog.String("tenant_id", tenantID.String()), slog.Any("error", covErr))
 	}
 
 	settings, err := s.repo.GetNotifySettings(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		defaults := defaultNotifySettings(tenantID)
 		defaults.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
-		defaults.FailureDetection = coverage
+		if covErr == nil {
+			defaults.FailureDetection = &coverage
+		}
 		return defaults, nil
 	}
 	if err != nil {
 		return NotifySettings{}, domain.Internal("email_get_notify_settings", "failed to load notify settings").WithCause(err)
 	}
 	settings.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
-	settings.FailureDetection = coverage
+	if covErr == nil {
+		settings.FailureDetection = &coverage
+	}
 	return settings, nil
 }
 

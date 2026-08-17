@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -93,6 +94,10 @@ type fakeRepo struct {
 	// independently (GH #381). Each fact carries both the agent_version and
 	// whether the site routes its mail through WPMgr.
 	connectedSiteFacts map[uuid.UUID][]ConnectedSiteEmailFact
+	// connectedSiteFactsErr, when set, makes ListConnectedSiteEmailCoverage
+	// fail — PR #447 bot review finding 2: this must degrade GetNotifySettings
+	// to settings-without-coverage, never fail the whole GET.
+	connectedSiteFactsErr error
 
 	// GH #381 phase 5 — maybeAlertFailures exit-path control knobs. Each is
 	// nil/zero by default, which preserves the pre-phase-5 fake behaviour
@@ -473,11 +478,24 @@ func (r *fakeRepo) AccumulateAlertFailures(_ context.Context, _, _ uuid.UUID, _ 
 	return r.alertAccumulateErr
 }
 
-func (r *fakeRepo) ClaimAlertSlot(_ context.Context, _, _ uuid.UUID, _ int64, _ int) (*AlertState, error) {
+// ClaimAlertSlot mirrors the real Repo's transactional-outbox contract: when
+// a claim is configured to succeed (alertClaimState set) it invokes onClaim
+// (the mailer EnqueueTx call), and an onClaim error is propagated as this
+// call's error — exactly like a rolled-back transaction — instead of a
+// claimed state ever being returned alongside a failed send.
+func (r *fakeRepo) ClaimAlertSlot(_ context.Context, _, _ uuid.UUID, _ int64, _ int, onClaim func(tx pgx.Tx) error) (*AlertState, error) {
 	if r.alertClaimErr != nil {
 		return nil, r.alertClaimErr
 	}
-	return r.alertClaimState, nil // nil state, nil error == throttled
+	if r.alertClaimState == nil {
+		return nil, nil // nil state, nil error == throttled
+	}
+	if onClaim != nil {
+		if err := onClaim(nil); err != nil {
+			return nil, err // rolled back
+		}
+	}
+	return r.alertClaimState, nil
 }
 
 func (r *fakeRepo) ListDueDigests(_ context.Context, _ int32) ([]NotifySettings, error) {
@@ -501,6 +519,9 @@ func (r *fakeRepo) TopFailureSamplesBySite(_ context.Context, _, _ uuid.UUID, _,
 }
 
 func (r *fakeRepo) ListConnectedSiteEmailCoverage(_ context.Context, tenantID uuid.UUID) ([]ConnectedSiteEmailFact, error) {
+	if r.connectedSiteFactsErr != nil {
+		return nil, r.connectedSiteFactsErr
+	}
 	return r.connectedSiteFacts[tenantID], nil
 }
 

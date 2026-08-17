@@ -298,10 +298,22 @@ func (r *Repo) AccumulateAlertFailures(ctx context.Context, tenantID, siteID uui
 	})
 }
 
-// ClaimAlertSlot tries to claim an alert slot for a site. Returns the updated
-// AlertState when the claim succeeds, nil when throttled (pgx.ErrNoRows).
-// Runs under InAgentTx.
-func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int) (*AlertState, error) {
+// ClaimAlertSlot tries to claim an alert slot for a site and, when the claim
+// succeeds, invokes onClaim in the SAME transaction as the claim UPDATE
+// before committing — typically an EnqueueTx call. This is the transactional
+// outbox pattern (mirrors internal/vuln's ClaimUnnotifiedFindings +
+// AlertMailer.EnqueueTx): if onClaim returns an error, the WHOLE transaction
+// rolls back, so the failures_since_alert reset and last_alert_at bump are
+// undone together with the failed send. A genuine enqueue failure therefore
+// never leaves the site silently marked as recently-alerted — the original
+// GH #381 bug, reintroduced by claiming and enqueueing as two independent
+// steps that could disagree.
+//
+// Returns the claimed state (nil = throttled, not an error — pgx.ErrNoRows),
+// or the onClaim error, propagated unwrapped after the rollback. onClaim may
+// be nil (claim with no side effect, e.g. tests exercising the throttle gate
+// alone). Runs under InAgentTx.
+func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, minFailures int64, throttleMinutes int, onClaim func(tx pgx.Tx) error) (*AlertState, error) {
 	var state *AlertState
 	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
 		row, qerr := sqlc.New(tx).ClaimAlertSlot(ctx, sqlc.ClaimAlertSlotParams{
@@ -325,10 +337,18 @@ func (r *Repo) ClaimAlertSlot(ctx context.Context, tenantID, siteID uuid.UUID, m
 			t := row.LastAlertAt.Time
 			s.LastAlertAt = &t
 		}
+		if onClaim != nil {
+			if cbErr := onClaim(tx); cbErr != nil {
+				return cbErr // rolls back the claim together with the failed side effect
+			}
+		}
 		state = &s
 		return nil
 	})
-	return state, err
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 // ---------------------------------------------------------------------------
