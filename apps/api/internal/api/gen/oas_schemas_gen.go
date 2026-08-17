@@ -17010,6 +17010,11 @@ type EmailNotifySettings struct {
 	// True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true
 	// to deliver.
 	InstanceMailerConfigured bool `json:"instance_mailer_configured"`
+	// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can
+	// only detect a failure when it is the mail transport in use AND the agent is new enough to report
+	// it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure
+	// alert no matter how the settings above are configured.
+	FailureDetection EmailNotifySettingsFailureDetection `json:"failure_detection"`
 	// Present when a settings row exists; absent for default response.
 	TenantID  OptNilUUID     `json:"tenant_id"`
 	CreatedAt OptNilDateTime `json:"created_at"`
@@ -17069,6 +17074,11 @@ func (s *EmailNotifySettings) GetNextDigestAt() OptNilDateTime {
 // GetInstanceMailerConfigured returns the value of InstanceMailerConfigured.
 func (s *EmailNotifySettings) GetInstanceMailerConfigured() bool {
 	return s.InstanceMailerConfigured
+}
+
+// GetFailureDetection returns the value of FailureDetection.
+func (s *EmailNotifySettings) GetFailureDetection() EmailNotifySettingsFailureDetection {
+	return s.FailureDetection
 }
 
 // GetTenantID returns the value of TenantID.
@@ -17141,6 +17151,11 @@ func (s *EmailNotifySettings) SetInstanceMailerConfigured(val bool) {
 	s.InstanceMailerConfigured = val
 }
 
+// SetFailureDetection sets the value of FailureDetection.
+func (s *EmailNotifySettings) SetFailureDetection(val EmailNotifySettingsFailureDetection) {
+	s.FailureDetection = val
+}
+
 // SetTenantID sets the value of TenantID.
 func (s *EmailNotifySettings) SetTenantID(val OptNilUUID) {
 	s.TenantID = val
@@ -17206,6 +17221,51 @@ func (s *EmailNotifySettingsDigestCadence) UnmarshalText(data []byte) error {
 	default:
 		return errors.Errorf("invalid value: %q", data)
 	}
+}
+
+// Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can
+// only detect a failure when it is the mail transport in use AND the agent is new enough to report
+// it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure
+// alert no matter how the settings above are configured.
+type EmailNotifySettingsFailureDetection struct {
+	// Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected,
+	// revoked and archived sites).
+	SitesTotal int `json:"sites_total"`
+	// Of sites_total, how many report an agent_version at or above min_agent_version and can therefore
+	// have a delivery failure detected and alerted on.
+	SitesCovered int `json:"sites_covered"`
+	// Minimum agent version that can detect and report an email delivery failure.
+	MinAgentVersion string `json:"min_agent_version"`
+}
+
+// GetSitesTotal returns the value of SitesTotal.
+func (s *EmailNotifySettingsFailureDetection) GetSitesTotal() int {
+	return s.SitesTotal
+}
+
+// GetSitesCovered returns the value of SitesCovered.
+func (s *EmailNotifySettingsFailureDetection) GetSitesCovered() int {
+	return s.SitesCovered
+}
+
+// GetMinAgentVersion returns the value of MinAgentVersion.
+func (s *EmailNotifySettingsFailureDetection) GetMinAgentVersion() string {
+	return s.MinAgentVersion
+}
+
+// SetSitesTotal sets the value of SitesTotal.
+func (s *EmailNotifySettingsFailureDetection) SetSitesTotal(val int) {
+	s.SitesTotal = val
+}
+
+// SetSitesCovered sets the value of SitesCovered.
+func (s *EmailNotifySettingsFailureDetection) SetSitesCovered(val int) {
+	s.SitesCovered = val
+}
+
+// SetMinAgentVersion sets the value of MinAgentVersion.
+func (s *EmailNotifySettingsFailureDetection) SetMinAgentVersion(val string) {
+	s.MinAgentVersion = val
 }
 
 // Static catalog of supported email providers and their field schemas.
