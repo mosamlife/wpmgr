@@ -320,8 +320,8 @@ type siteDeliveryItemDTO struct {
 	ComplainedCount int64   `json:"complained_count"`
 	BounceRate      float64 `json:"bounce_rate"`
 	ComplaintRate   float64 `json:"complaint_rate"`
-	LastSentAt      *string `json:"last_sent_at"`        // RFC3339 or null
-	Sparkline       []int64 `json:"sparkline"`            // [] never null
+	LastSentAt      *string `json:"last_sent_at"` // RFC3339 or null
+	Sparkline       []int64 `json:"sparkline"`    // [] never null
 }
 
 // deliverabilityReportDTO is the full response for GET /email/deliverability.
@@ -616,20 +616,29 @@ type putConnectionBody struct {
 
 // notifySettingsDTO is the wire representation of NotifySettings.
 type notifySettingsDTO struct {
-	TenantID                 string   `json:"tenant_id"`
-	Enabled                  bool     `json:"enabled"`
-	Recipients               []string `json:"recipients"`
-	AlertOnFailure           bool     `json:"alert_on_failure"`
-	AlertThrottleMinutes     int      `json:"alert_throttle_minutes"`
-	DigestEnabled            bool     `json:"digest_enabled"`
-	DigestCadence            string   `json:"digest_cadence"`
-	DigestDay                int      `json:"digest_day"`
-	DigestHour               int      `json:"digest_hour"`
-	Timezone                 string   `json:"timezone"`
-	NextDigestAt             *string  `json:"next_digest_at,omitempty"`
-	InstanceMailerConfigured bool     `json:"instance_mailer_configured"`
-	CreatedAt                int64    `json:"created_at"`
-	UpdatedAt                int64    `json:"updated_at"`
+	TenantID                 string              `json:"tenant_id"`
+	Enabled                  bool                `json:"enabled"`
+	Recipients               []string            `json:"recipients"`
+	AlertOnFailure           bool                `json:"alert_on_failure"`
+	AlertThrottleMinutes     int                 `json:"alert_throttle_minutes"`
+	DigestEnabled            bool                `json:"digest_enabled"`
+	DigestCadence            string              `json:"digest_cadence"`
+	DigestDay                int                 `json:"digest_day"`
+	DigestHour               int                 `json:"digest_hour"`
+	Timezone                 string              `json:"timezone"`
+	NextDigestAt             *string             `json:"next_digest_at,omitempty"`
+	InstanceMailerConfigured bool                `json:"instance_mailer_configured"`
+	FailureDetection         failureDetectionDTO `json:"failure_detection"`
+	CreatedAt                int64               `json:"created_at"`
+	UpdatedAt                int64               `json:"updated_at"`
+}
+
+// failureDetectionDTO is the wire representation of FailureDetectionCoverage
+// (GH #381 phase 2).
+type failureDetectionDTO struct {
+	SitesTotal      int    `json:"sites_total"`
+	SitesCovered    int    `json:"sites_covered"`
+	MinAgentVersion string `json:"min_agent_version"`
 }
 
 // toNotifySettingsDTO maps domain NotifySettings to the wire DTO.
@@ -646,8 +655,13 @@ func toNotifySettingsDTO(s NotifySettings) notifySettingsDTO {
 		DigestHour:               s.DigestHour,
 		Timezone:                 s.Timezone,
 		InstanceMailerConfigured: s.InstanceMailerConfigured,
-		CreatedAt:                s.CreatedAt.Unix(),
-		UpdatedAt:                s.UpdatedAt.Unix(),
+		FailureDetection: failureDetectionDTO{
+			SitesTotal:      s.FailureDetection.SitesTotal,
+			SitesCovered:    s.FailureDetection.SitesCovered,
+			MinAgentVersion: s.FailureDetection.MinAgentVersion,
+		},
+		CreatedAt: s.CreatedAt.Unix(),
+		UpdatedAt: s.UpdatedAt.Unix(),
 	}
 	if dto.Recipients == nil {
 		dto.Recipients = []string{}

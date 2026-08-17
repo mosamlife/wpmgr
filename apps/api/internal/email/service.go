@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/agentcmd"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/wpversion"
 )
 
 // Encryptor age-encrypts and decrypts provider secrets. *cryptbox.AgeIdentity
@@ -99,6 +101,8 @@ type repository interface {
 	GetFleetStatsBySite(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]SiteStatsRow, error)
 	TopFailureSamples(ctx context.Context, tenantID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
 	TopFailureSamplesBySite(ctx context.Context, tenantID, siteID uuid.UUID, from, to time.Time, limit int32) ([]FailureSample, error)
+	// GH #381 phase 2 — failure-detection coverage.
+	ListConnectedSiteAgentVersions(ctx context.Context, tenantID uuid.UUID) ([]string, error)
 }
 
 // Service is the email domain business-logic layer. It owns:
@@ -1504,17 +1508,82 @@ func (s *Service) PropagateOrgConfig(ctx context.Context, tenantID uuid.UUID) (P
 // the service returns safe defaults with GET-always-200 semantics (lesson from
 // 0.35.1 hotfix: never 404 on a settings GET).
 func (s *Service) GetNotifySettings(ctx context.Context, tenantID uuid.UUID) (NotifySettings, error) {
+	coverage, covErr := s.failureDetectionCoverage(ctx, tenantID)
+	if covErr != nil {
+		return NotifySettings{}, covErr
+	}
+
 	settings, err := s.repo.GetNotifySettings(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		defaults := defaultNotifySettings(tenantID)
 		defaults.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
+		defaults.FailureDetection = coverage
 		return defaults, nil
 	}
 	if err != nil {
 		return NotifySettings{}, domain.Internal("email_get_notify_settings", "failed to load notify settings").WithCause(err)
 	}
 	settings.InstanceMailerConfigured = s.mailerIsConfigured(ctx)
+	settings.FailureDetection = coverage
 	return settings, nil
+}
+
+// ---------------------------------------------------------------------------
+// GH #381 phase 2 — failure-detection coverage
+// ---------------------------------------------------------------------------
+
+// MinAgentVersionForFailureDetection gates failure_detection.sites_covered: a
+// connected site is "covered" only when its reported agent_version compares
+// >= this value under internal/wpversion.Compare.
+//
+// PLACEHOLDER VALUE. GH #381 phase 1 — the agent-side change that actually
+// widens failure detection beyond "WPMgr is the mail transport" — has not
+// shipped a release as of this writing. "999.0.0" is deliberately NOT a
+// plausible wpmgr version: it is chosen so that no currently-shipped agent
+// ever compares >= it, which makes sites_covered honestly report 0 until this
+// constant is corrected, instead of silently crediting sites for a capability
+// their agent build does not have.
+//
+// UPDATE THIS the moment phase 1's release is cut: set it to the exact agent
+// version (e.g. "0.62.0") that ships the detection-widening change, in the
+// same commit that cuts that release. Until updated, every tenant's
+// failure_detection.sites_covered will read 0 regardless of fleet freshness.
+const MinAgentVersionForFailureDetection = "999.0.0"
+
+// agentVersionPattern accepts the plain dotted-numeric shape WPMgr's own
+// agent versions use, mirroring internal/agentrelease's own guard
+// (internal/agentrelease/classify.go:45). Duplicated rather than imported:
+// internal/email must not cross-import a sibling domain package, and this is
+// a two-line regex, not shared logic worth a shared package for. A malformed
+// or empty agent_version (e.g. a site that has never reported one) must never
+// compare as "covered" by accident.
+var agentVersionPattern = regexp.MustCompile(`^\d+(\.\d+){1,3}([-+][0-9A-Za-z.]+)?$`)
+
+func isWellFormedAgentVersion(v string) bool {
+	return agentVersionPattern.MatchString(strings.TrimSpace(v))
+}
+
+// failureDetectionCoverage computes, for tenantID, how many of its currently
+// connected sites (connection_state = 'connected') run an agent_version at or
+// above MinAgentVersionForFailureDetection. A site whose reported version is
+// empty or not well-formed is treated as NOT covered — an unreadable version
+// is never assumed capable, mirroring internal/agentrelease.Classify's
+// StatusUnknown handling, which never risks a false "current" either.
+func (s *Service) failureDetectionCoverage(ctx context.Context, tenantID uuid.UUID) (FailureDetectionCoverage, error) {
+	versions, err := s.repo.ListConnectedSiteAgentVersions(ctx, tenantID)
+	if err != nil {
+		return FailureDetectionCoverage{}, domain.Internal("email_failure_detection_coverage", "failed to load connected site agent versions").WithCause(err)
+	}
+	out := FailureDetectionCoverage{
+		SitesTotal:      len(versions),
+		MinAgentVersion: MinAgentVersionForFailureDetection,
+	}
+	for _, v := range versions {
+		if isWellFormedAgentVersion(v) && wpversion.Compare(v, MinAgentVersionForFailureDetection) >= 0 {
+			out.SitesCovered++
+		}
+	}
+	return out, nil
 }
 
 // PutNotifySettings validates and upserts the notify settings, computing

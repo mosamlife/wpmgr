@@ -5424,6 +5424,27 @@ export type EmailNotifySettings = {
    */
   instance_mailer_configured: boolean;
   /**
+   * Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can only detect a failure when it is the mail transport in use AND the agent is new enough to report it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure alert no matter how the settings above are configured.
+   *
+   */
+  failure_detection?: {
+    /**
+     * Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected, revoked and archived sites).
+     *
+     */
+    sites_total: number;
+    /**
+     * Of sites_total, how many report an agent_version at or above min_agent_version and can therefore have a delivery failure detected and alerted on.
+     *
+     */
+    sites_covered: number;
+    /**
+     * Minimum agent version that can detect and report an email delivery failure.
+     *
+     */
+    min_agent_version: string;
+  };
+  /**
    * Present when a settings row exists; absent for default response.
    */
   tenant_id?: string;

@@ -46926,6 +46926,12 @@ func (s *EmailNotifySettings) encodeFields(e *jx.Encoder) {
 		e.Bool(s.InstanceMailerConfigured)
 	}
 	{
+		if s.FailureDetection.Set {
+			e.FieldStart("failure_detection")
+			s.FailureDetection.Encode(e)
+		}
+	}
+	{
 		if s.TenantID.Set {
 			e.FieldStart("tenant_id")
 			s.TenantID.Encode(e)
@@ -46945,7 +46951,7 @@ func (s *EmailNotifySettings) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfEmailNotifySettings = [14]string{
+var jsonFieldsNameOfEmailNotifySettings = [15]string{
 	0:  "enabled",
 	1:  "recipients",
 	2:  "alert_on_failure",
@@ -46957,9 +46963,10 @@ var jsonFieldsNameOfEmailNotifySettings = [14]string{
 	8:  "timezone",
 	9:  "next_digest_at",
 	10: "instance_mailer_configured",
-	11: "tenant_id",
-	12: "created_at",
-	13: "updated_at",
+	11: "failure_detection",
+	12: "tenant_id",
+	13: "created_at",
+	14: "updated_at",
 }
 
 // Decode decodes EmailNotifySettings from json.
@@ -47107,6 +47114,16 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"instance_mailer_configured\"")
 			}
+		case "failure_detection":
+			if err := func() error {
+				s.FailureDetection.Reset()
+				if err := s.FailureDetection.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"failure_detection\"")
+			}
 		case "tenant_id":
 			if err := func() error {
 				s.TenantID.Reset()
@@ -47232,6 +47249,136 @@ func (s EmailNotifySettingsDigestCadence) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *EmailNotifySettingsDigestCadence) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *EmailNotifySettingsFailureDetection) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *EmailNotifySettingsFailureDetection) encodeFields(e *jx.Encoder) {
+	{
+		e.FieldStart("sites_total")
+		e.Int(s.SitesTotal)
+	}
+	{
+		e.FieldStart("sites_covered")
+		e.Int(s.SitesCovered)
+	}
+	{
+		e.FieldStart("min_agent_version")
+		e.Str(s.MinAgentVersion)
+	}
+}
+
+var jsonFieldsNameOfEmailNotifySettingsFailureDetection = [3]string{
+	0: "sites_total",
+	1: "sites_covered",
+	2: "min_agent_version",
+}
+
+// Decode decodes EmailNotifySettingsFailureDetection from json.
+func (s *EmailNotifySettingsFailureDetection) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode EmailNotifySettingsFailureDetection to nil")
+	}
+	var requiredBitSet [1]uint8
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "sites_total":
+			requiredBitSet[0] |= 1 << 0
+			if err := func() error {
+				v, err := d.Int()
+				s.SitesTotal = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"sites_total\"")
+			}
+		case "sites_covered":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Int()
+				s.SitesCovered = int(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"sites_covered\"")
+			}
+		case "min_agent_version":
+			requiredBitSet[0] |= 1 << 2
+			if err := func() error {
+				v, err := d.Str()
+				s.MinAgentVersion = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"min_agent_version\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode EmailNotifySettingsFailureDetection")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000111,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfEmailNotifySettingsFailureDetection) {
+					name = jsonFieldsNameOfEmailNotifySettingsFailureDetection[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *EmailNotifySettingsFailureDetection) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *EmailNotifySettingsFailureDetection) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -76427,6 +76574,39 @@ func (s OptEmailConnectionConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptEmailConnectionConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes EmailNotifySettingsFailureDetection as json.
+func (o OptEmailNotifySettingsFailureDetection) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes EmailNotifySettingsFailureDetection from json.
+func (o *OptEmailNotifySettingsFailureDetection) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptEmailNotifySettingsFailureDetection to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptEmailNotifySettingsFailureDetection) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptEmailNotifySettingsFailureDetection) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

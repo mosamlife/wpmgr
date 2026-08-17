@@ -9203,6 +9203,29 @@ export const EmailNotifySettingsSchema = {
       description:
         "True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true to deliver.\n",
     },
+    failure_detection: {
+      type: "object",
+      description:
+        "Coverage of the tenant's connected sites for email delivery failure detection (GH #381). WPMgr can only detect a failure when it is the mail transport in use AND the agent is new enough to report it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure alert no matter how the settings above are configured.\n",
+      required: ["sites_total", "sites_covered", "min_agent_version"],
+      properties: {
+        sites_total: {
+          type: "integer",
+          description:
+            "Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected, revoked and archived sites).\n",
+        },
+        sites_covered: {
+          type: "integer",
+          description:
+            "Of sites_total, how many report an agent_version at or above min_agent_version and can therefore have a delivery failure detected and alerted on.\n",
+        },
+        min_agent_version: {
+          type: "string",
+          description:
+            "Minimum agent version that can detect and report an email delivery failure.\n",
+        },
+      },
+    },
     tenant_id: {
       type: "string",
       format: "uuid",
