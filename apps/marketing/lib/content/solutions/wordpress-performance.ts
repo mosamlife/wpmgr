@@ -9,7 +9,7 @@ export const WORDPRESS_PERFORMANCE_SOLUTION: SolutionPageData = {
   heading: "Speed up WordPress and improve Core Web Vitals",
   metaTitle: "Speed Up WordPress and Improve Core Web Vitals",
   metaDescription:
-    "WPMgr accelerates WordPress with full-page caching, Redis object cache, AVIF and WebP image conversion via the Media Optimizer, Real User Monitoring, and unused CSS removal. Open-source, self-hosted, no per-site fee.",
+    "WPMgr speeds up WordPress with full-page caching, Redis object cache, AVIF/WebP conversion, Real User Monitoring, and unused CSS removal. Open-source, self-hosted, no per-site fee.",
   layoutVariant: "default",
   hero: {
     eyebrow: "Performance suite",

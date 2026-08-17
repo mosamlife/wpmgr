@@ -9,7 +9,7 @@ export const HOSTING_PROVIDERS_SOLUTION: SolutionPageData = {
   heading: "Managed WordPress tooling for hosting providers",
   metaTitle: "Managed WordPress Tooling for Hosting Providers",
   metaDescription:
-    "WPMgr is open-source WordPress fleet management you can embed into your hosting stack. Give your customers security hardening, uptime monitoring, and team access control without building the tooling yourself.",
+    "WPMgr is open-source WordPress fleet management to embed in your hosting stack: security hardening, uptime monitoring, and team access, without building it yourself.",
   layoutVariant: "compact",
   hero: {
     eyebrow: "Hosting integrations",

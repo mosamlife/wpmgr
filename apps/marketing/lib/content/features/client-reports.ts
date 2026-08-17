@@ -8,7 +8,7 @@ export const CLIENT_REPORTS_PAGE: FeaturePageData = {
   title: "White-Label WordPress Reports",
   metaTitle: "White-Label WordPress Reports and Client Maintenance Reports",
   metaDescription:
-    "Send branded WordPress maintenance reports to clients on a schedule or on demand. Uptime, backups, updates, Core Web Vitals, and email deliverability in one HTML email or PDF. Powered-by footer removable.",
+    "Send branded WordPress maintenance reports to clients on a schedule or on demand. Uptime, backups, updates, and Core Web Vitals in one HTML email or PDF, footer removable.",
   hero: {
     eyebrow: "Client reports",
     heading: "White-label WordPress maintenance reports for clients",

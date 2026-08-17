@@ -8,7 +8,7 @@ export const RUM_PAGE: FeaturePageData = {
   title: "WordPress Core Web Vitals Monitoring",
   metaTitle: "WordPress Core Web Vitals Monitoring with Real User Data",
   metaDescription:
-    "Monitor WordPress Core Web Vitals with real visitor data at the p75 percentile Google uses. LCP, INP, CLS, FCP, and TTFB with 28-day trends, per-URL breakdowns, and privacy-first anonymous collection.",
+    "Monitor WordPress Core Web Vitals with real visitor data at the p75 percentile Google uses. LCP, INP, CLS, FCP, and TTFB with 28-day trends and per-URL breakdowns.",
   hero: {
     eyebrow: "Real User Monitoring",
     heading: "WordPress Core Web Vitals monitoring from real visitor data",

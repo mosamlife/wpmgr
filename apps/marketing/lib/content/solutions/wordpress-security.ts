@@ -9,7 +9,7 @@ export const WORDPRESS_SECURITY_SOLUTION: SolutionPageData = {
   heading: "WordPress security for your whole fleet",
   metaTitle: "WordPress Security",
   metaDescription:
-    "WPMgr delivers fleet-wide WordPress security hardening, vulnerability scanning via Wordfence Intelligence, file integrity monitoring, two-factor authentication, and IP ban lists from a single self-hosted dashboard.",
+    "WPMgr delivers fleet-wide WordPress security hardening, vulnerability scanning, file integrity monitoring, two-factor authentication, and IP ban lists from one dashboard.",
   layoutVariant: "default",
   hero: {
     eyebrow: "Security suite",

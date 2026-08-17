@@ -8,7 +8,7 @@ export const FILE_MANAGER_PAGE: FeaturePageData = {
   title: "WordPress File Manager",
   metaTitle: "WordPress File Manager: Browse, Edit, and Upload Without SFTP",
   metaDescription:
-    "Browse, edit, upload, download, and manage files on any managed WordPress site from the WPMgr dashboard. Version history, archive and extract, file search, executable-write prevention. Off by default, owner-gated, fully audited.",
+    "Browse, edit, upload, and manage files on any WordPress site from the WPMgr dashboard. Version history, archive support, and executable-write prevention. Off by default, fully audited.",
   hero: {
     eyebrow: "File Manager",
     heading: "Manage WordPress site files from the dashboard, no SFTP needed",

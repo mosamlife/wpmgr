@@ -8,7 +8,7 @@ export const UPDATES_PAGE: FeaturePageData = {
   title: "Safe Fleet Updates",
   metaTitle: "Bulk Update WordPress Plugins Safely",
   metaDescription:
-    "Bulk update WordPress plugins, themes, and core across your whole fleet safely. WPMgr auto-reverts on a failed health check, shows live per-site progress, and keeps the update history in a tamper-evident audit log.",
+    "Bulk update WordPress plugins, themes, and core across your fleet safely. WPMgr auto-reverts on a failed health check and keeps history in a tamper-evident audit log.",
   hero: {
     eyebrow: "Fleet updates",
     heading: "Bulk update WordPress plugins safely with auto-revert",

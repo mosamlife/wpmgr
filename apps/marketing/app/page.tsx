@@ -33,7 +33,7 @@ import {
 export const metadata: Metadata = buildMetadata({
   title: "WPMgr: Open-Source, Self-Hosted WordPress Fleet Management",
   description:
-    "Open-source, self-hostable WordPress fleet manager. Media Optimizer (AVIF and WebP), full-page caching, backups and restore, uptime monitoring, Database Cleaner, and security scanning, with a signed MIT-licensed agent you can audit.",
+    "Open-source, self-hostable WordPress fleet manager: Media Optimizer, full-page caching, backups, uptime monitoring, and security scanning, with a signed MIT-licensed agent.",
   canonical: "/",
 });
 

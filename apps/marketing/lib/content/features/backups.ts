@@ -8,7 +8,7 @@ export const BACKUPS_PAGE: FeaturePageData = {
   title: "WordPress Backup Plugin",
   metaTitle: "WordPress Backup Plugin with Incremental Backups",
   metaDescription:
-    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and client-side encryption. Free and open source.",
+    "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and client-side encryption.",
   hero: {
     eyebrow: "Backups and restore",
     heading: "Incremental WordPress backups with point-in-time restore",

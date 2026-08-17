@@ -8,7 +8,7 @@ export const SECURITY_PAGE: FeaturePageData = {
   title: "WordPress Security Suite",
   metaTitle: "WordPress Security Hardening and Vulnerability Scanner",
   metaDescription:
-    "WordPress security hardening, IP bans, file integrity monitoring, vulnerability scanning via Wordfence Intelligence, site-user 2FA, and password policy. Open source, self-hostable, default-off.",
+    "WordPress security hardening, IP bans, file integrity monitoring, vulnerability scanning, site-user 2FA, and password policy. Open source and self-hostable, default-off.",
   hero: {
     eyebrow: "Security Suite",
     heading: "WordPress security hardening and vulnerability scanning in one dashboard",

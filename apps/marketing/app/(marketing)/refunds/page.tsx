@@ -7,7 +7,7 @@ import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZO
 export const metadata: Metadata = buildMetadata({
   title: "Refund Policy",
   description:
-    "WPMgr refund policy: cancel a monthly subscription anytime, plus a 14-day money-back guarantee on your first paid payment, refunded through your original payment provider.",
+    "WPMgr refund policy: cancel a monthly subscription anytime, plus a 14-day money-back guarantee on your first payment, refunded through your original provider.",
   canonical: "/refunds",
 });
 

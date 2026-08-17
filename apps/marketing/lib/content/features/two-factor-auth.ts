@@ -8,7 +8,7 @@ export const TWO_FACTOR_AUTH_PAGE: FeaturePageData = {
   title: "WordPress Two-Factor Authentication",
   metaTitle: "WordPress 2FA: TOTP and Email Code Authentication",
   metaDescription:
-    "Add WordPress two-factor authentication for site users with TOTP authenticator apps, email codes, and backup codes. Enforced per role, with grace logins and wp-config recovery so operators are never locked out.",
+    "Add WordPress two-factor authentication for site users with TOTP apps, email codes, and backup codes. Enforced per role, with grace logins so operators are never locked out.",
   hero: {
     eyebrow: "Two-factor authentication",
     heading: "WordPress two-factor authentication for site users, enforced per role",
