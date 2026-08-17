@@ -23,10 +23,37 @@
  * presence as "already logged by the router path" and returns without
  * writing a second row.
  *
- * Body is never persisted: the $mail array built here carries only `to` and
- * `subject`, never `message`/`body_html`/`body_text`, so EmailLogger::write()
- * has nothing to read into the `body` column regardless of the site's
- * store_body setting.
+ * Consent governs WHAT is written, never WHETHER a row is written. Phase 1
+ * exists specifically to capture failures on sites WPMgr does not route mail
+ * for -- those sites are unconfigured by definition, so EmailConfig::$log_emails
+ * is false on every one of them (it defaults false). Gating the write itself
+ * on log_emails would mean this feature writes nothing on exactly the
+ * population it exists for. Instead:
+ *   - A row is ALWAYS written on a genuine (non-double-logged) failure:
+ *     site, timestamp, provider='wp_mail', status='failed', the error
+ *     string. None of that is personal data, and it is what the alert needs
+ *     to exist at all.
+ *   - The recipient address and subject line are included in that row ONLY
+ *     when EmailConfig::load()->log_emails is true. When it is false, `to`
+ *     and `subject` are written empty/redacted -- never the real values --
+ *     so opting out still means something even though the row itself
+ *     exists.
+ * This is deliberately NOT the same gate ProviderRouter::maybe_log() applies
+ * (that one skips the write entirely); the two differ on purpose and must
+ * not be unified.
+ *
+ * Body is never persisted, unconditionally, regardless of log_emails or
+ * store_body: the $mail array built here carries only `to` and `subject`,
+ * never `message`/`body_html`/`body_text`, so EmailLogger::write() has
+ * nothing to read into the `body` column.
+ *
+ * Defensive input handling: this class exists specifically to capture
+ * failures from mailers WPMgr does not control, so `to`/`subject` in the
+ * error data are validated defensively (never trusted to be well-typed) and
+ * the write itself is wrapped in a try/catch -- an unenumerable malformed
+ * shape from a third-party filter chain must never escape capture() and
+ * fatal the request that triggered the mail send (checkout, password reset,
+ * etc). Dropping the log write is strictly better than a fatal there.
  *
  * @package WPMgr\Agent\Email
  */
@@ -55,7 +82,9 @@ final class MailFailureCapture {
 	 * UNCONDITIONAL: this registration is not gated behind
 	 * EmailConfig::is_configured() or any other config check. That is the
 	 * entire point -- it must fire on sites with no provider configured, so
-	 * WPMgr sees a failure even when it never routed the send.
+	 * WPMgr sees a failure even when it never routed the send. log_emails
+	 * governs what capture() puts IN the row, never whether the row exists;
+	 * see the class docblock.
 	 *
 	 * @return void
 	 */
@@ -90,18 +119,62 @@ final class MailFailureCapture {
 			return;
 		}
 
+		$cfg = EmailConfig::load();
+
 		$error_message = $error->get_error_message();
 		if ( $error_message === '' ) {
 			$error_message = 'wp_mail_failed';
 		}
 
+		// -- Defensive `to` handling -------------------------------------
+		// Core always sends an array of strings, but a third-party filter
+		// further down the wp_mail_failed chain could hand us anything.
+		// An array containing a non-string element (e.g. an object) would
+		// fatal EmailLogger::write()'s implode(); filter those out. A bare
+		// string is passed through as-is (EmailLogger casts it safely). Any
+		// other shape (object, int, etc. as the whole `to` value) falls back
+		// to an empty array rather than risk a fatal on cast.
+		$to_raw = ( is_array( $data ) && isset( $data['to'] ) ) ? $data['to'] : array();
+		if ( is_array( $to_raw ) ) {
+			$to = array_values( array_filter( $to_raw, 'is_string' ) );
+		} elseif ( is_string( $to_raw ) ) {
+			$to = $to_raw;
+		} else {
+			$to = array();
+		}
+
+		// -- Defensive `subject` handling ---------------------------------
+		// (string) on a non-scalar (e.g. an object with no __toString) would
+		// also fatal; only cast when the value is safely castable.
+		$subject_raw = ( is_array( $data ) && isset( $data['subject'] ) ) ? $data['subject'] : '';
+		$subject     = is_scalar( $subject_raw ) ? (string) $subject_raw : '';
+
+		// Consent governs WHAT is written, not WHETHER (see class docblock):
+		// redact the recipient and subject to empty when the site has not
+		// opted into email logging. The row is still written either way, so
+		// the alert exists, but no real recipient address or subject line
+		// leaves the site without log_emails being on.
+		if ( ! $cfg->log_emails ) {
+			$to      = array();
+			$subject = '';
+		}
+
 		// Only `to` and `subject` -- never the message body, under any key,
 		// regardless of the site's store_body setting (see class docblock).
 		$mail = array(
-			'to'      => ( is_array( $data ) && isset( $data['to'] ) ) ? $data['to'] : array(),
-			'subject' => ( is_array( $data ) && isset( $data['subject'] ) ) ? (string) $data['subject'] : '',
+			'to'      => $to,
+			'subject' => $subject,
 		);
 
-		$this->logger->write( $mail, 'wp_mail', 'failed', '', $error_message, '', 0, EmailConfig::load(), '' );
+		// Belt-and-suspenders: a malformed shape this validation didn't
+		// anticipate must still never escape capture() and fatal the
+		// request that triggered the mail send. Dropping the log write is
+		// strictly better than a WSOD on checkout / password reset / etc.
+		try {
+			$this->logger->write( $mail, 'wp_mail', 'failed', '', $error_message, '', 0, $cfg, '' );
+		} catch ( \Throwable $e ) {
+			// Intentionally swallowed -- see comment above.
+			unset( $e );
+		}
 	}
 }

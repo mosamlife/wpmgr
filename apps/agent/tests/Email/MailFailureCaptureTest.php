@@ -8,6 +8,14 @@
  * plugin was invisible to WPMgr. MailFailureCapture closes that gap by
  * listening on wp_mail_failed unconditionally, independent of EmailConfig.
  *
+ * Consent (log_emails) governs WHAT MailFailureCapture::capture() writes,
+ * never WHETHER it writes: a row always exists for a genuine failure (that
+ * is the alert), but the recipient address and subject line are included
+ * only when the site has opted into email logging -- otherwise they are
+ * redacted to empty. See class-mail-failure-capture.php's docblock for the
+ * full reasoning (security-reviewer finding + owner ruling on the initial
+ * commit).
+ *
  * @package WPMgr\Agent\Tests\Email
  */
 
@@ -57,8 +65,11 @@ class MailFailureCaptureTest extends TestCase
 
         Functions\when('current_time')->justReturn('2026-08-17 00:00:00');
 
-        // EmailConfig::load() -> get_option(OPTION); default to an empty
-        // array so the decoded config is unconfigured (provider === '').
+        // EmailConfig::load() -> get_option(OPTION). Default to an empty
+        // array: unconfigured (provider === '') AND log_emails === false --
+        // the real default shape on a site that never touched email
+        // settings, i.e. this feature's entire target population. Tests
+        // that need log_emails=true override this per-test.
         Functions\when('get_option')->justReturn([]);
     }
 
@@ -95,13 +106,92 @@ class MailFailureCaptureTest extends TestCase
     }
 
     /**
-     * RED/GREEN case: core's own wp_mail_failed fires on an UNCONFIGURED
-     * site (no WPMgr provider set) and must produce exactly one 'failed' row.
-     * The send body ('message' in core's error data) must never appear in
-     * any persisted column, under any key, regardless of store_body.
+     * Required test 1 (owner-specified): on an unrouted site with
+     * log_emails=false (the real default), a wp_mail_failed fire must still
+     * write a row -- status='failed', provider='wp_mail', error non-empty --
+     * so the alert exists, but the row must contain NEITHER the recipient
+     * address NOR the subject line in any column.
      */
-    public function test_wp_mail_failed_writes_a_failed_row_when_no_provider_is_configured(): void
+    public function test_row_is_written_but_redacted_when_log_emails_is_disabled(): void
     {
+        Functions\when('get_option')->justReturn([]); // log_emails=false, provider=''
+
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $capture = new MailFailureCapture(new EmailLogger());
+        $capture->register_hooks();
+
+        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'SMTP connect() failed', [
+            'to'      => ['a@x.com'],
+            'subject' => 'Order #12',
+        ]));
+
+        $this->assertCount(1, $fakeWpdb->rows, 'A row must always be written for a genuine failure, even with log_emails off.');
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertSame('failed', $row['status']);
+        $this->assertSame('wp_mail', $row['provider']);
+        $this->assertNotSame('', $row['error']);
+
+        $json = (string) json_encode($row);
+        $this->assertStringNotContainsString('a@x.com', $json, 'Recipient must not appear anywhere in the row when log_emails is off.');
+        $this->assertStringNotContainsString('Order #12', $json, 'Subject must not appear anywhere in the row when log_emails is off.');
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Required test 2 (owner-specified): on an unrouted site with
+     * log_emails=true, the row DOES carry the real recipient and subject --
+     * the opt-in has to still mean something.
+     */
+    public function test_row_carries_real_recipient_and_subject_when_log_emails_is_enabled(): void
+    {
+        Functions\when('get_option')->justReturn(['log_emails' => true]);
+
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $capture = new MailFailureCapture(new EmailLogger());
+        $capture->register_hooks();
+
+        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'SMTP connect() failed', [
+            'to'      => ['a@x.com'],
+            'subject' => 'Order #12',
+        ]));
+
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+        $this->assertSame('failed', $row['status']);
+        $this->assertSame('wp_mail', $row['provider']);
+        $this->assertStringContainsString('a@x.com', $row['mail_to'], 'Opting in to log_emails must actually surface the real recipient.');
+        $this->assertSame('Order #12', $row['subject']);
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Required test 3 (owner-specified): with store_body=true (in addition
+     * to cases 1/2 above), the message body is still excluded from every
+     * column, regardless of log_emails or store_body. capture() never sets
+     * body_html/body_text on the $mail payload it builds, so
+     * EmailLogger::write() has nothing to read into the body column no
+     * matter what store_body says.
+     *
+     * Note on `body_stored`: that column reflects the SITE's store_body
+     * setting, not whether any body content was actually captured --
+     * EmailLogger::write() sets it from $cfg->store_body unconditionally
+     * inside its `if ( $cfg->store_body )` branch (class-email-logger.php:75-76),
+     * regardless of whether $mail carries body_html/body_text. So
+     * body_stored=1 here is expected and NOT a leak; the actual property
+     * under test is that the `body` column itself, and every other column,
+     * never contains the raw message text.
+     */
+    public function test_body_is_never_persisted_when_store_body_is_enabled(): void
+    {
+        Functions\when('get_option')->justReturn(['log_emails' => true, 'store_body' => true]);
+
         $fakeWpdb        = $this->fakeWpdb();
         $GLOBALS['wpdb'] = $fakeWpdb;
 
@@ -114,19 +204,47 @@ class MailFailureCaptureTest extends TestCase
             'message' => 'SECRET-BODY',
         ]));
 
-        $this->assertCount(1, $fakeWpdb->rows, 'Exactly one failed row must be written for an unrouted core mail_failed.');
-
+        $this->assertCount(1, $fakeWpdb->rows);
         $row = $fakeWpdb->rows[0];
-        $this->assertSame('failed', $row['status']);
-        $this->assertSame('wp_mail', $row['provider']);
-        $this->assertNotSame('', $row['error']);
-
-        // Security-relevant assertion: the raw message body must appear in
-        // NO field of the persisted row.
+        $this->assertNotSame('SECRET-BODY', $row['body'], "The 'body' column must never carry the raw message text.");
         $this->assertStringNotContainsString('SECRET-BODY', (string) json_encode($row));
-        foreach ($row as $column => $value) {
-            $this->assertNotSame('SECRET-BODY', $value, "Column '{$column}' must never carry the raw message body.");
-        }
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Required test 4 / security-reviewer finding B: a malformed `to`
+     * (an array containing a non-string element) must not throw an uncaught
+     * Error out of the wp_mail_failed hook. Without validation,
+     * EmailLogger::write()'s implode(', ', $to_raw) fatals on a non-string
+     * element (e.g. an object with no __toString) -- and since
+     * wp_mail_failed fires from inside core's wp_mail() catch block, an
+     * uncaught Error here WSODs whatever request triggered the mail send
+     * (checkout, password reset, etc). capture() filters non-string
+     * elements out before they can reach implode().
+     */
+    public function test_capture_does_not_fatal_on_non_string_to_element(): void
+    {
+        Functions\when('get_option')->justReturn(['log_emails' => true]);
+
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $capture = new MailFailureCapture(new EmailLogger());
+        $capture->register_hooks();
+
+        $malformedRecipient = new class () {
+            // Deliberately no __toString(): (string) cast or implode() on
+            // this object fatals with an uncaught Error.
+        };
+
+        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'malformed to element', [
+            'to'      => ['good@example.com', $malformedRecipient],
+            'subject' => 'S',
+        ]));
+
+        $this->assertCount(1, $fakeWpdb->rows, 'A malformed to-element must not prevent the well-formed recipient from being logged.');
+        $this->assertStringContainsString('good@example.com', $fakeWpdb->rows[0]['mail_to']);
 
         unset($GLOBALS['wpdb']);
     }
@@ -144,7 +262,9 @@ class MailFailureCaptureTest extends TestCase
      * when that marker is present. It does not exercise
      * ProviderRouter::send()'s own separate EmailLogger::write() call (the
      * "first" log write in "logged once not twice") -- that call happens on
-     * a different code path outside this test's scope.
+     * a different code path outside this test's scope. The marker check
+     * runs before EmailConfig is even loaded, so this holds regardless of
+     * log_emails.
      */
     public function test_router_handled_failure_is_logged_once_not_twice(): void
     {
@@ -176,12 +296,14 @@ class MailFailureCaptureTest extends TestCase
      * core only calls wp_mail_failed on failure, never on a successful send
      * -- so the most meaningful concrete check available here is that
      * capture() is stateless across repeated fires: two INDEPENDENT
-     * unconfigured failures must produce two independent rows, not a single
-     * corrupted/merged entry, proving the listener doesn't leak state or
-     * drop a second in-process failure.
+     * log_emails-enabled failures must produce two independent rows, not a
+     * single corrupted/merged entry, proving the listener doesn't leak
+     * state or drop a second in-process failure.
      */
-    public function test_two_independent_unconfigured_failures_produce_two_independent_rows(): void
+    public function test_two_independent_failures_produce_two_independent_rows(): void
     {
+        Functions\when('get_option')->justReturn(['log_emails' => true]);
+
         $fakeWpdb        = $this->fakeWpdb();
         $GLOBALS['wpdb'] = $fakeWpdb;
 
