@@ -325,6 +325,97 @@ class EmailLogFailureBypassTest extends TestCase
     }
 
     /**
+     * Security review, GH #381 phase 2 (second round): the reviewer's exact
+     * end-to-end proof, on the routed (phase 4) path. kunde@münchen.de is a
+     * raw IDN domain that AddressParser::parse_one() refuses to parse, so
+     * the old ASCII-only regex left it verbatim in `error`. maybe_log() must
+     * now pass the real `to` to redact_email_addresses() so it is removed as
+     * a literal string. Pinned permanently.
+     */
+    public function test_failed_row_redacts_the_reviewers_idn_proof_case(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'SMTP Error: The following recipients failed: kunde@münchen.de: 550 5.1.1 User unknown',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail            = $this->base_mail();
+        $mail['to']      = ['kunde@münchen.de'];
+        $result          = $router->send($mail, $cfg, true);
+
+        $this->assertFalse($result['ok']);
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringNotContainsString('kunde@münchen.de', $row['error'], 'The IDN address embedded in the error text must not survive when log_emails is off.');
+        $this->assertStringContainsString('550 5.1.1 User unknown', $row['error'], 'Redaction must not destroy the diagnostic detail an operator needs -- only the address.');
+
+        $json = (string) json_encode($row);
+        $this->assertStringNotContainsString('kunde@münchen.de', $json, 'Recipient must not appear anywhere in the row when log_emails is off.');
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Data-provider over the full GH #381 phase-2 leak catalogue on the
+     * phase-4 routed path -- same catalogue as
+     * MailFailureCaptureTest::addressLeakTable(), proven independently here
+     * because maybe_log() reads the recipient off `$mail['to']`, not the
+     * WP_Error `to` key phase 1 uses.
+     *
+     * @dataProvider addressLeakTable
+     */
+    public function test_failed_row_redacts_every_leaking_address_shape(string $address, string $errorTemplate): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg          = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $errorMessage = sprintf($errorTemplate, $address);
+        $handler      = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => $errorMessage,
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $mail       = $this->base_mail();
+        $mail['to'] = [$address];
+        $router->send($mail, $cfg, true);
+
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringNotContainsString($address, $row['error'], "'{$address}' must not survive redaction.");
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /** @return array<string,array{0:string,1:string}> label => [address, error sprintf template with one %s] */
+    public static function addressLeakTable(): array
+    {
+        return [
+            'raw IDN domain' => ['kunde@münchen.de', 'Invalid address: (to): %s'],
+            'quoted local part' => ['"john doe"@example.com', 'Invalid address: (to): %s'],
+            'IP-literal domain' => ['admin@[192.168.13.7]', 'Invalid address: (to): %s'],
+            'bare-IP domain' => ['admin@203.0.113.9', 'Invalid address: (to): %s'],
+            '1-char TLD' => ['x@y.c', 'Invalid address: (to): %s'],
+            'numeric TLD' => ['admin@example.12345', 'Invalid address: (to): %s'],
+            'non-ASCII local part' => ['jösef@example.com', 'Invalid address: (to): %s'],
+        ];
+    }
+
+    /**
      * Ruling on the 'suppressed' status (security-reviewer finding B,
      * open question): maybe_log()'s failure gate used to be
      * `'sent' !== $status`, so a routine suppression-list hit was force-
