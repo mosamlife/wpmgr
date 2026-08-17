@@ -17014,7 +17014,7 @@ type EmailNotifySettings struct {
 	// only detect a failure when it is the mail transport in use AND the agent is new enough to report
 	// it; a site below `min_agent_version`, or not currently connected, cannot trigger a per-failure
 	// alert no matter how the settings above are configured.
-	FailureDetection EmailNotifySettingsFailureDetection `json:"failure_detection"`
+	FailureDetection OptEmailNotifySettingsFailureDetection `json:"failure_detection"`
 	// Present when a settings row exists; absent for default response.
 	TenantID  OptNilUUID     `json:"tenant_id"`
 	CreatedAt OptNilDateTime `json:"created_at"`
@@ -17077,7 +17077,7 @@ func (s *EmailNotifySettings) GetInstanceMailerConfigured() bool {
 }
 
 // GetFailureDetection returns the value of FailureDetection.
-func (s *EmailNotifySettings) GetFailureDetection() EmailNotifySettingsFailureDetection {
+func (s *EmailNotifySettings) GetFailureDetection() OptEmailNotifySettingsFailureDetection {
 	return s.FailureDetection
 }
 
@@ -17152,7 +17152,7 @@ func (s *EmailNotifySettings) SetInstanceMailerConfigured(val bool) {
 }
 
 // SetFailureDetection sets the value of FailureDetection.
-func (s *EmailNotifySettings) SetFailureDetection(val EmailNotifySettingsFailureDetection) {
+func (s *EmailNotifySettings) SetFailureDetection(val OptEmailNotifySettingsFailureDetection) {
 	s.FailureDetection = val
 }
 
@@ -29295,6 +29295,52 @@ func (o OptEmailConnectionConfig) Get() (v EmailConnectionConfig, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptEmailConnectionConfig) Or(d EmailConnectionConfig) EmailConnectionConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptEmailNotifySettingsFailureDetection returns new OptEmailNotifySettingsFailureDetection with value set to v.
+func NewOptEmailNotifySettingsFailureDetection(v EmailNotifySettingsFailureDetection) OptEmailNotifySettingsFailureDetection {
+	return OptEmailNotifySettingsFailureDetection{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptEmailNotifySettingsFailureDetection is optional EmailNotifySettingsFailureDetection.
+type OptEmailNotifySettingsFailureDetection struct {
+	Value EmailNotifySettingsFailureDetection
+	Set   bool
+}
+
+// IsSet returns true if OptEmailNotifySettingsFailureDetection was set.
+func (o OptEmailNotifySettingsFailureDetection) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptEmailNotifySettingsFailureDetection) Reset() {
+	var v EmailNotifySettingsFailureDetection
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptEmailNotifySettingsFailureDetection) SetTo(v EmailNotifySettingsFailureDetection) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptEmailNotifySettingsFailureDetection) Get() (v EmailNotifySettingsFailureDetection, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptEmailNotifySettingsFailureDetection) Or(d EmailNotifySettingsFailureDetection) EmailNotifySettingsFailureDetection {
 	if v, ok := o.Get(); ok {
 		return v
 	}

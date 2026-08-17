@@ -46926,8 +46926,10 @@ func (s *EmailNotifySettings) encodeFields(e *jx.Encoder) {
 		e.Bool(s.InstanceMailerConfigured)
 	}
 	{
-		e.FieldStart("failure_detection")
-		s.FailureDetection.Encode(e)
+		if s.FailureDetection.Set {
+			e.FieldStart("failure_detection")
+			s.FailureDetection.Encode(e)
+		}
 	}
 	{
 		if s.TenantID.Set {
@@ -47113,8 +47115,8 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"instance_mailer_configured\"")
 			}
 		case "failure_detection":
-			requiredBitSet[1] |= 1 << 3
 			if err := func() error {
+				s.FailureDetection.Reset()
 				if err := s.FailureDetection.Decode(d); err != nil {
 					return err
 				}
@@ -47163,7 +47165,7 @@ func (s *EmailNotifySettings) Decode(d *jx.Decoder) error {
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
 		0b11111111,
-		0b00001101,
+		0b00000101,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -76572,6 +76574,39 @@ func (s OptEmailConnectionConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptEmailConnectionConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes EmailNotifySettingsFailureDetection as json.
+func (o OptEmailNotifySettingsFailureDetection) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes EmailNotifySettingsFailureDetection from json.
+func (o *OptEmailNotifySettingsFailureDetection) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptEmailNotifySettingsFailureDetection to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptEmailNotifySettingsFailureDetection) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptEmailNotifySettingsFailureDetection) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
