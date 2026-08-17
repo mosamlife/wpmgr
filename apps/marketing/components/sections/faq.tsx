@@ -1,24 +1,20 @@
-"use client";
-
-import { useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { Container, Section, SectionHeading } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/motion/reveal";
 import type { FaqItem } from "@/lib/content/types";
 
+// Native <details>/<summary>: the answer is always in the served HTML (a
+// crawler that never executes JS still reads it), collapsed by default, and
+// expand/collapse plus keyboard operation and the expanded a11y state come
+// from the browser for free. No client JS needed for this component.
 function FaqItemRow({ q, a }: FaqItem) {
-  const [open, setOpen] = useState(false);
-
   return (
-    <div className="border-b border-[var(--border)] last:border-0">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
+    <details className="group border-b border-[var(--border)] last:border-0">
+      <summary
         className={cn(
-          "flex w-full items-center justify-between gap-4 py-4 text-left",
-          "text-base font-medium text-foreground",
+          "flex w-full list-none items-center justify-between gap-4 py-4 text-left",
+          "cursor-pointer text-base font-medium text-foreground [&::-webkit-details-marker]:hidden",
           "transition-colors duration-[var(--duration-fast)] hover:text-[var(--primary)]",
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] rounded-sm",
         )}
@@ -29,14 +25,12 @@ function FaqItemRow({ q, a }: FaqItem) {
           size={18}
           className={cn(
             "shrink-0 text-[var(--muted-foreground)] transition-transform duration-[var(--duration-base)]",
-            open && "rotate-180",
+            "group-open:rotate-180",
           )}
         />
-      </button>
-      {open && (
-        <p className="pb-5 text-sm leading-relaxed text-[var(--muted-foreground)]">{a}</p>
-      )}
-    </div>
+      </summary>
+      <p className="pb-5 text-sm leading-relaxed text-[var(--muted-foreground)]">{a}</p>
+    </details>
   );
 }
 
