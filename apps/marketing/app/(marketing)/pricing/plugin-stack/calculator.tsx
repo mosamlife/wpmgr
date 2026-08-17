@@ -219,7 +219,7 @@ export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] 
           <input
             type="range"
             min={1}
-            max={500}
+            max={200}
             step={1}
             value={sites}
             onChange={(e) => dispatch({ type: "sites", value: Number(e.target.value) })}

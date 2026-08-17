@@ -42,6 +42,15 @@ export type CostProduct = {
   tiers: CostTier[];
   note: string;
   verifiedOn: string;
+  /**
+   * Overrides the tier-times-PER_SITE_KEYS multiplication below, for a vendor
+   * whose published price is neither a flat per-tier fee nor a flat per-site
+   * rate: ManageWP's report add-ons are a per-site rate up to 25 sites and a
+   * stepped per-100-site bundle above it. When present this IS the annual
+   * cost; `tiers` is still used to resolve the bracket label shown next to
+   * the product name.
+   */
+  computeAnnual?: (sites: number) => number;
 };
 
 export type CostCategory = {
@@ -113,18 +122,14 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         note: "Annual licence by site tier, renewing automatically.",
         verifiedOn: "2026-08-07",
       },
-      {
-        name: "FlyingPress",
-        url: "https://flyingpress.com/pricing/",
-        tiers: [
-          { upTo: 1, perYear: 59, label: "Starter, 1 site" },
-          { upTo: 3, perYear: 109, label: "Pro, 3 sites" },
-          { upTo: 25, perYear: 229, label: "Business, 25 sites" },
-          { upTo: Infinity, perYear: 279, label: "Unlimited" },
-        ],
-        note: "Annual licence by site tier. No introductory discount is shown on the pricing page.",
-        verifiedOn: "2026-08-07",
-      },
+      // FlyingPress was here as an alternate and is deliberately removed, not
+      // replaced. Its own feature page sells caching PLUS AVIF/WebP image
+      // optimisation PLUS database optimisation under one licence, so
+      // selecting it alongside the separate image and database rows below
+      // double-counted two categories. There is no partial-credit figure a
+      // vendor has published for "just the caching part," and inventing one
+      // would fabricate a number this file's own rules forbid. Performance is
+      // WP Rocket only until a genuinely single-purpose alternate turns up.
     ],
   },
   {
@@ -134,11 +139,11 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     wpmgr: "AVIF and WebP conversion with originals kept as a fallback",
     products: [
       {
-        name: "ShortPixel Unlimited",
-        url: "https://shortpixel.com/pricing",
-        tiers: [{ upTo: Infinity, perYear: 99.9, label: "Unlimited, billed yearly" }],
-        note: "Priced by image volume rather than by site, so the cost does not rise with fleet size. Billed yearly is the page default.",
-        verifiedOn: "2026-08-07",
+        name: "Imagify Infinite",
+        url: "https://imagify.io/pricing",
+        tiers: [{ upTo: Infinity, perYear: 119.88, label: "Infinite, billed yearly" }],
+        note: "$9.99/month billed yearly, unlimited websites and unlimited images. This line does NOT grow with fleet size: a 1-site reader and a 200-site reader pay the same figure, which is unfavourable to the plugin-stack total but is what the vendor publishes. ShortPixel, the previous product here, is not used because its pricing page ships empty price containers filled in at runtime by a third-party billing widget, and the figure could not be independently confirmed.",
+        verifiedOn: "2026-08-17",
       },
     ],
   },
@@ -189,18 +194,56 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     wpmgr: "White label reports and a client portal, built in",
     products: [
       {
-        name: "WP Umbrella",
-        url: "https://wp-umbrella.com/pricing/",
-        tiers: [{ upTo: Infinity, perYear: 26.28, label: "Pay as you go" }],
-        note: "Priced per site per month, so this line scales linearly with the fleet. The annual figure is the monthly rate multiplied by twelve.",
-        verifiedOn: "2026-08-07",
+        // WP Umbrella was here at "full price" and is deliberately removed,
+        // not adjusted. Its own pricing page sells ONE plan, EUR 1.99/site/
+        // month, that already includes backups, uptime monitoring,
+        // performance, database optimisation, safe updates with rollback,
+        // vulnerability monitoring AND white-label reporting. Charging a
+        // reader for that plan on this row while also charging them for a
+        // separate backup, uptime and database row above double, triple and
+        // quadruple counts one purchase. Its stored figure was also a USD
+        // conversion of a EUR price at an unrecorded FX rate, so it drifted
+        // with the euro and could not be reproduced.
+        //
+        // ManageWP's two report add-ons sell client reporting alone, priced
+        // natively in USD, so neither problem applies.
+        name: "ManageWP Advanced Client Reports + White Label",
+        url: "https://managewp.com/pricing",
+        tiers: [
+          { upTo: 25, perYear: 24, label: "Both add-ons, $1/site/month each, per site" },
+          {
+            upTo: Infinity,
+            perYear: 600,
+            label: "Both add-ons, bundled at $50/month per 100-site bundle",
+          },
+        ],
+        // Each add-on is $1/site/month up to 25 sites. Past 25 sites, ManageWP
+        // sells the add-on in bundles that each cover up to 100 sites for
+        // $25/month, and bundles stack, so both add-ons together are
+        // $50/month per bundle of up to 100 sites. That is a step function,
+        // not a flat per-site rate, so it is computed directly here instead
+        // of through the tier-times-sites multiplication every other per-site
+        // row uses; the tiers above exist only to show the right bracket
+        // label next to the product name.
+        computeAnnual: (sites: number) =>
+          sites <= 25 ? sites * 2 * 12 : Math.ceil(sites / 100) * 50 * 12,
+        note: "Two add-ons on top of a ManageWP plan, each $1/site/month up to 25 sites. Above 25 sites, ManageWP sells each add-on in bundles covering up to 100 sites for $25/month, and bundles stack, so the two add-ons together cost $50/month per bundle of up to 100 sites.",
+        verifiedOn: "2026-08-17",
       },
     ],
   },
 ];
 
-/** Categories whose price is per site rather than per tier. */
-export const PER_SITE_KEYS = ["security", "reports"];
+/**
+ * Categories whose price is per site rather than per tier.
+ *
+ * "reports" is deliberately NOT here even though ManageWP's add-ons are
+ * per-site up to 25 sites: past that they are a stepped per-100-site bundle,
+ * not a flat rate, so a uniform tier-times-sites multiplication would be
+ * wrong at fleet sizes above 25. Its product defines `computeAnnual` instead;
+ * see `annualCost` below.
+ */
+export const PER_SITE_KEYS = ["security"];
 
 /**
  * The cheapest published tier that covers `sites`, or null when the fleet is
@@ -223,6 +266,7 @@ export function annualCost(
   product: CostProduct,
   sites: number,
 ): number | null {
+  if (product.computeAnnual) return product.computeAnnual(sites);
   const tier = resolveTier(product, sites);
   if (!tier) return null;
   // Per-site vendors publish a RATE and a volume bracket, so the bracket
@@ -231,9 +275,14 @@ export function annualCost(
   return PER_SITE_KEYS.includes(category.key) ? tier.perYear * sites : tier.perYear;
 }
 
-/** Site counts offered as presets. 500 is the ceiling because it is the
- *  largest fleet every product above still publishes a price for. */
-export const SITE_PRESETS = [1, 5, 10, 25, 50, 100, 250, 500];
+/** Site counts offered as presets. 200 is the ceiling because it is WPMgr's
+ *  own largest published plan (see PRICING_TIERS in lib/content/pricing.ts):
+ *  past it, the right-hand column has no number to compare against, only
+ *  "on request", and a five-figure plugin-stack total opposite no number at
+ *  all is a strawman rather than a comparison. Nobody buys per-site security
+ *  and reporting licences at that scale either, so the honest range for this
+ *  page stops where WPMgr's own price list does. */
+export const SITE_PRESETS = [1, 5, 10, 25, 50, 100, 200];
 
 /**
  * A WPMgr hosted tier, resolved by the page from PRICING_TIERS plus whatever
