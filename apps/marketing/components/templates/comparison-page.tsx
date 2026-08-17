@@ -6,7 +6,7 @@ import { StackCollapse } from "@/components/sections/compare/stack-collapse";
 import { CostModelSection } from "@/components/sections/compare/cost-model";
 import { DataLocality } from "@/components/sections/compare/data-locality";
 import { CompareHeroPanel } from "@/components/sections/compare/hero-panel";
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 import { Icon } from "@/components/ui/icon";
 import type { ComparisonPageData } from "@/lib/content/types";
 
@@ -59,7 +59,7 @@ export function ComparisonPage({ data }: { data: ComparisonPageData }) {
             <a
               href={signupHref("compare")}
               target="_blank"
-              rel="noreferrer noopener"
+              rel={newTabRel(signupHref("compare"))}
               className="inline-flex h-12 items-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-7 text-base font-medium text-[var(--primary-foreground)] shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
             >
               Get started for free

@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Container, Section } from "@/components/ui/primitives";
 import { Icon } from "@/components/ui/icon";
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 import type { ComparisonPageData, CostModel } from "@/lib/content/types";
 
 /**
@@ -143,7 +143,7 @@ export function CostModelSection({ data }: { data: ComparisonPageData }) {
             <a
               href={signupHref("compare")}
               target="_blank"
-              rel="noreferrer noopener"
+              rel={newTabRel(signupHref("compare"))}
               className="inline-flex h-11 items-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-6 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
             >
               Start free at {sites} sites

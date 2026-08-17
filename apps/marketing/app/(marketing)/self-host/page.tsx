@@ -4,7 +4,7 @@ import { JsonLd } from "@/lib/json-ld";
 import { Container, Section } from "@/components/ui/primitives";
 import { Icon } from "@/components/ui/icon";
 import { SELF_HOST } from "@/lib/content/self-host";
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
   title: SELF_HOST.metaTitle,
@@ -48,7 +48,7 @@ export default function SelfHostPage() {
             <a
               href={signupHref("self-host")}
               target="_blank"
-              rel="noreferrer noopener"
+              rel={newTabRel(signupHref("self-host"))}
               className="mt-7 inline-flex h-11 items-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-6 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
             >
               Let us run it instead

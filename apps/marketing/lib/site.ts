@@ -45,6 +45,29 @@ export function signupHref(source: SignupSource, extra?: Record<string, string>)
   return url.toString();
 }
 
+const FIRST_PARTY_HOSTS = new Set(["wpmgr.app", "manage.wpmgr.app"]);
+
+/**
+ * The `rel` value for a `target="_blank"` anchor, based on the link's
+ * destination host.
+ *
+ * `noopener` is always included: it is a security property (it stops the
+ * opened tab reaching back via `window.opener`) and has nothing to do with
+ * analytics. `noreferrer` additionally suppresses the `Referer` header, which
+ * is only correct for a genuinely external destination. Applying it to our
+ * own dashboard (manage.wpmgr.app) strips the referrer from a first-party
+ * navigation, e.g. a signup click, for no security benefit.
+ */
+export function newTabRel(href: string): string {
+  let host: string;
+  try {
+    host = new URL(href, SITE_CONFIG.baseUrl).hostname;
+  } catch {
+    return "noreferrer noopener";
+  }
+  return FIRST_PARTY_HOSTS.has(host) ? "noopener" : "noreferrer noopener";
+}
+
 export type NavItem = {
   label: string;
   href: string;

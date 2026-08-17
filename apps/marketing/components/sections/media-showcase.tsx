@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Container, Section } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/motion/reveal";
+import { newTabRel } from "@/lib/site";
 import type { Cta, Chip } from "@/lib/content/types";
 
 // ---------------------------------------------------------------------------
@@ -269,7 +270,7 @@ export function MediaShowcase({
               variant={cta.variant ?? "primary"}
               size="lg"
               className="self-start"
-              {...(cta.href.startsWith("http") ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+              {...(cta.href.startsWith("http") ? { target: "_blank", rel: newTabRel(cta.href) } : {})}
             >
               {cta.icon && !trailing ? <Icon name={cta.icon} size={18} /> : null}
               {cta.label}
