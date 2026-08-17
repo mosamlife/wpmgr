@@ -223,14 +223,11 @@ class MailRouterTest extends TestCase
      * while the real registrations landed in this method's own (dead) local
      * scope. Wrapping it in an object gives callers a live handle instead.
      *
-     * @return object{filters: list<array{priority:int,callback:callable}>}
+     * @return PreWpMailFilterBox
      */
-    private function captureRegisteredPreWpMailFilters(): object
+    private function captureRegisteredPreWpMailFilters(): PreWpMailFilterBox
     {
-        $box = new class () {
-            /** @var list<array{priority:int,callback:callable}> */
-            public array $filters = [];
-        };
+        $box = new PreWpMailFilterBox();
         Functions\when('add_filter')->alias(function (string $hook, $callback, int $priority = 10, int $acceptedArgs = 1) use ($box): bool {
             if ($hook === 'pre_wp_mail') {
                 $box->filters[] = ['priority' => $priority, 'callback' => $callback];
