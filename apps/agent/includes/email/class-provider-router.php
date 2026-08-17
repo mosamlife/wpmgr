@@ -430,7 +430,24 @@ class ProviderRouter {
 	}
 
 	/**
-	 * Write a log row if email logging is enabled.
+	 * Write a log row if email logging is enabled, OR unconditionally when
+	 * the outcome is a failure.
+	 *
+	 * log_emails is a volume-and-retention preference about keeping a
+	 * record of mail that WORKED; it is not a request to be blinded to
+	 * failures. By the time this is called, send() has already DETECTED the
+	 * failure and computed its error string -- discarding that here would
+	 * leave no local row, nothing for the push to ship, and nothing for the
+	 * control plane to alert on, purely because the owner asked for a
+	 * quieter log of successful mail. So the early return only applies when
+	 * BOTH log_emails is off AND the outcome is not a failure ('sent' is the
+	 * only non-failure status this method ever receives; 'failed' and
+	 * 'suppressed' are both incidents and are logged regardless).
+	 *
+	 * This does not touch privacy: store_body is gated independently inside
+	 * EmailLogger::write() and still defaults false there, so turning
+	 * log_emails off still means no message body is ever stored, and a
+	 * successful send is still not recorded at all.
 	 *
 	 * @param array<string,mixed> $mail            Normalised mail payload.
 	 * @param string              $connection_key  Resolved connection key ('default' for primary).
@@ -454,7 +471,8 @@ class ProviderRouter {
 		int $retries,
 		EmailConfig $cfg
 	): void {
-		if ( ! $cfg->log_emails ) {
+		$is_failure = ( 'sent' !== $status );
+		if ( ! $cfg->log_emails && ! $is_failure ) {
 			return;
 		}
 		$this->logger->write( $mail, $provider, $status, $msg_id, $error, $response, $retries, $cfg, $connection_key );
