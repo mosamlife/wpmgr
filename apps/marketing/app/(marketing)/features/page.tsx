@@ -12,7 +12,7 @@ import { CTABand } from "@/components/sections/cta-band";
 import { signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
-  title: "WordPress Management Features | WPMgr",
+  title: "WordPress Management Features",
   description:
     "All WordPress fleet management features in one open-source platform: backups and restore, safe updates, Media Optimizer (AVIF and WebP), full-page caching, Redis object cache, Real User Monitoring, database cleanup, security hardening, vulnerability scanning, 2FA, client reports, per-site email, and team access control.",
   canonical: "/features",

@@ -7,7 +7,7 @@ export const FREELANCERS_SOLUTION: SolutionPageData = {
   slug: "freelancers",
   title: "For freelancers",
   heading: "WordPress tools for freelancers",
-  metaTitle: "WordPress Tools for Freelancers | WPMgr",
+  metaTitle: "WordPress Tools for Freelancers",
   metaDescription:
     "WPMgr is a self-hosted WordPress management tool built for freelancers who run sites for multiple clients. Automated backups, safe bulk updates, uptime monitoring, and security hardening from one open-source dashboard.",
   layoutVariant: "split",

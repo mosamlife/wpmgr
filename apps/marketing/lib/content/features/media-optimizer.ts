@@ -7,7 +7,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const MEDIA_OPTIMIZER_PAGE: FeaturePageData = {
   slug: "media-optimizer",
   title: "WordPress AVIF and WebP Image Optimization",
-  metaTitle: "Convert Images to WebP and AVIF in WordPress | WPMgr Media Optimizer",
+  metaTitle: "Convert Images to WebP and AVIF in WordPress | Media Optimizer",
   metaDescription:
     "WPMgr Media Optimizer converts your WordPress media library to AVIF and WebP in the cloud. Originals stay archived on the site, bytes never touch the control plane, and every image is fully reversible.",
   hero: {

@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const SECURITY_PAGE: FeaturePageData = {
   slug: "security",
   title: "WordPress Security Suite",
-  metaTitle: "WordPress Security Hardening and Vulnerability Scanner | WPMgr",
+  metaTitle: "WordPress Security Hardening and Vulnerability Scanner",
   metaDescription:
     "WordPress security hardening, IP bans, file integrity monitoring, vulnerability scanning via Wordfence Intelligence, site-user 2FA, and password policy. Open source, self-hostable, default-off.",
   hero: {

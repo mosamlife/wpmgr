@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const FILE_MANAGER_PAGE: FeaturePageData = {
   slug: "file-manager",
   title: "WordPress File Manager",
-  metaTitle: "WordPress File Manager: Browse, Edit, and Upload Without SFTP | WPMgr",
+  metaTitle: "WordPress File Manager: Browse, Edit, and Upload Without SFTP",
   metaDescription:
     "Browse, edit, upload, download, and manage files on any managed WordPress site from the WPMgr dashboard. Version history, archive and extract, file search, executable-write prevention. Off by default, owner-gated, fully audited.",
   hero: {

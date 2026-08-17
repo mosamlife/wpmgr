@@ -20,7 +20,7 @@ import { fetchLivePricing } from "@/lib/pricing-live";
 import { PricingTierCards } from "./pricing-tiers";
 
 export const metadata: Metadata = buildMetadata({
-  title: "Pricing | WPMgr",
+  title: "Pricing",
   description:
     "WPMgr pricing: a permanent free tier for 3 sites, and hosted plans from $15/mo with managed backup storage and more frequent backups. Self-hosting stays free and unlimited forever.",
   canonical: "/pricing",

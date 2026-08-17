@@ -7,7 +7,7 @@ export const WORDPRESS_BACKUPS_SOLUTION: SolutionPageData = {
   slug: "wordpress-backups",
   title: "WordPress backups",
   heading: "WordPress backup built for fleets",
-  metaTitle: "WordPress Backup | WPMgr",
+  metaTitle: "WordPress Backup",
   metaDescription:
     "WPMgr provides self-hosted incremental WordPress backups with point-in-time restore, fleet-wide backup health, and database cleanup. Free, open-source, no per-site fee.",
   layoutVariant: "split",

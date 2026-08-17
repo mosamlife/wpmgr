@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const TWO_FACTOR_AUTH_PAGE: FeaturePageData = {
   slug: "two-factor-auth",
   title: "WordPress Two-Factor Authentication",
-  metaTitle: "WordPress 2FA: TOTP and Email Code Authentication | WPMgr",
+  metaTitle: "WordPress 2FA: TOTP and Email Code Authentication",
   metaDescription:
     "Add WordPress two-factor authentication for site users with TOTP authenticator apps, email codes, and backup codes. Enforced per role, with grace logins and wp-config recovery so operators are never locked out.",
   hero: {

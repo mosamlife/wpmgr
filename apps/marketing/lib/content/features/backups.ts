@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const BACKUPS_PAGE: FeaturePageData = {
   slug: "backups",
   title: "WordPress Backup Plugin",
-  metaTitle: "WordPress Backup Plugin with Incremental Backups | WPMgr",
+  metaTitle: "WordPress Backup Plugin with Incremental Backups",
   metaDescription:
     "WPMgr is a self-hosted WordPress backup plugin with incremental backups, point-in-time restore, fleet-wide backup health, and client-side encryption. Free and open source.",
   hero: {

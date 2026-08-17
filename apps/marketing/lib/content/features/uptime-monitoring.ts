@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const UPTIME_MONITORING_PAGE: FeaturePageData = {
   slug: "uptime-monitoring",
   title: "WordPress Uptime Monitoring",
-  metaTitle: "WordPress Uptime Monitoring for Your Whole Fleet | WPMgr",
+  metaTitle: "WordPress Uptime Monitoring for Your Whole Fleet",
   metaDescription:
     "WordPress uptime monitoring with a fleet status matrix, response-time trends, TLS expiry warnings, and down-and-recovery alerts. Self-hosted and free to run.",
   hero: {

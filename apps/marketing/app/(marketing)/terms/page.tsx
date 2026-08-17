@@ -6,7 +6,7 @@ import { SITE_CONFIG } from "@/lib/site";
 import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
-  title: "Terms of Service | WPMgr",
+  title: "Terms of Service",
   description:
     "Terms of Service for the WPMgr hosted service at manage.wpmgr.app, including subscription billing and your choice of payment provider at checkout.",
   canonical: "/terms",

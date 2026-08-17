@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const CLIENT_REPORTS_PAGE: FeaturePageData = {
   slug: "client-reports",
   title: "White-Label WordPress Reports",
-  metaTitle: "White-Label WordPress Reports and Client Maintenance Reports | WPMgr",
+  metaTitle: "White-Label WordPress Reports and Client Maintenance Reports",
   metaDescription:
     "Send branded WordPress maintenance reports to clients on a schedule or on demand. Uptime, backups, updates, Core Web Vitals, and email deliverability in one HTML email or PDF. Powered-by footer removable.",
   hero: {

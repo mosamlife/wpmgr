@@ -7,7 +7,7 @@ export const AGENCIES_SOLUTION: SolutionPageData = {
   slug: "agencies",
   title: "For agencies",
   heading: "WordPress management for agencies",
-  metaTitle: "WordPress Management for Agencies | WPMgr",
+  metaTitle: "WordPress Management for Agencies",
   metaDescription:
     "WPMgr gives agencies a self-hosted control plane to manage every client's WordPress site from one dashboard. White-label reports, per-site email, team access control, and automated backups keep clients happy and margins intact.",
   layoutVariant: "default",

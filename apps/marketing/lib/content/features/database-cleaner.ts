@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const DATABASE_CLEANER_PAGE: FeaturePageData = {
   slug: "database-cleaner",
   title: "WordPress Database Cleaner",
-  metaTitle: "WordPress Database Cleanup: Clean wp_options and Revisions | WPMgr",
+  metaTitle: "WordPress Database Cleanup: Clean wp_options and Revisions",
   metaDescription:
     "WordPress database cleaner that scans first and cleans second. Remove revisions, transients, orphaned data, and bloated wp_options rows. 90-day trend, fleet-wide view, fully reversible. Free and open source.",
   hero: {

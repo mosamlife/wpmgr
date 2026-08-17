@@ -6,7 +6,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const PERFORMANCE_PAGE: FeaturePageData = {
   slug: "performance",
   title: "WordPress Performance and Page Caching",
-  metaTitle: "WordPress Caching and Speed Optimization | WPMgr",
+  metaTitle: "WordPress Caching and Speed Optimization",
   metaDescription:
     "Full-page caching, unused CSS removal, WOFF2 font transcoding, and WooCommerce-aware bypasses. WPMgr makes WordPress faster with a toggle, not a rebuild. Free and self-hostable.",
   hero: {
