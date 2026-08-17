@@ -51,7 +51,52 @@ export type CostProduct = {
    * the product name.
    */
   computeAnnual?: (sites: number) => number;
+  /**
+   * "partial" when the vendor's licence covers ground WPMgr does not ship,
+   * so the row renders a visible `Partial` chip plus `residual` in static
+   * markup. Omitted (full replacement, no chip) unless a product is listed
+   * below with both fields set. Never approximated with a discounted price:
+   * no vendor publishes a "just the part WPMgr also does" figure, and
+   * inventing one is the fabrication rule at the top of this file.
+   */
+  replaces?: "full" | "partial";
+  /** What the licence covers that WPMgr does not. Required when replaces
+   *  is "partial", rendered next to the chip. */
+  residual?: string;
+  /**
+   * True for a figure that could not be confirmed against a single
+   * authoritative vendor number as of `verifiedOn` -- e.g. two different
+   * prices shown for the same tier with no way to tell list from
+   * promotional. An unverified product must not appear in
+   * PLUGIN_COST_CATEGORIES; see HELD_TWO_FACTOR_CATEGORY below.
+   */
+  unverified?: boolean;
 };
+
+/**
+ * Purchase-likelihood buckets for the calculator's row groups (NOT our own
+ * feature areas -- grouping by category would turn the bill into our IA with
+ * prices attached, which is the one thing this page must not do).
+ *
+ * "core": bought by nearly every commercial fleet as baseline hygiene --
+ * data safety, break-in protection, page speed.
+ * "common": widely added on top of that baseline, but skippable without the
+ * fleet being obviously under-served.
+ * "situational": bought only by a subset with a specific need -- a
+ * client-facing agency, or a fleet that specifically wants a second,
+ * competing management layer alongside WPMgr.
+ *
+ * This is a judgement call, stated here so it can be argued with rather than
+ * taken as given: it is not derived from a vendor figure the way the prices
+ * are.
+ */
+export type PurchaseLikelihood = "core" | "common" | "situational";
+
+export const PURCHASE_LIKELIHOOD_GROUPS: { key: PurchaseLikelihood; label: string }[] = [
+  { key: "core", label: "Nearly every fleet buys these" },
+  { key: "common", label: "Most agencies add these" },
+  { key: "situational", label: "Situational" },
+];
 
 export type CostCategory = {
   key: string;
@@ -59,6 +104,12 @@ export type CostCategory = {
   icon: string;
   /** What WPMgr gives you instead, for the right-hand column. */
   wpmgr: string;
+  group: PurchaseLikelihood;
+  /** Unchecked on first paint. Used for categories the owner added after the
+   *  page's original seven, so first paint still reads "7 of N selected" and
+   *  the reader opts into the longer bill rather than being defaulted into
+   *  it. */
+  defaultOff?: boolean;
   products: CostProduct[];
 };
 
@@ -68,6 +119,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Backups and restore",
     icon: "DatabaseBackup",
     wpmgr: "Incremental, client-side encrypted, to storage you own",
+    group: "core",
     products: [
       {
         name: "UpdraftPlus Premium",
@@ -80,6 +132,8 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         ],
         note: "Annual licence by site tier. Each of these tiers includes 1 GB of the vendor's own storage; backups to your own remote storage are separate.",
         verifiedOn: "2026-08-07",
+        replaces: "partial",
+        residual: "staging sites and one-click migration, both inside the licence",
       },
     ],
   },
@@ -88,6 +142,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Security and malware scanning",
     icon: "ShieldCheck",
     wpmgr: "Hardening, file integrity and vulnerability matching, built in",
+    group: "core",
     products: [
       {
         name: "Wordfence Premium",
@@ -100,7 +155,13 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         ],
         note: "Priced per site, with published volume brackets. The figure shown is the per-site price at your bracket, multiplied by your site count.",
         verifiedOn: "2026-08-07",
+        replaces: "partial",
+        residual: "the application firewall, the managed rule feed and rate limiting",
       },
+      // Sucuri is not added as an alternate: it stops publishing prices above
+      // 10 sites, which is well inside this page's slider range, and most of
+      // what it sells past the malware scan is a WAF, a CDN, DDoS mitigation
+      // and human-performed malware removal, none of which is this row.
     ],
   },
   {
@@ -108,6 +169,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Page caching and performance",
     icon: "Zap",
     wpmgr: "Page cache, object cache and Core Web Vitals from real visitors",
+    group: "core",
     products: [
       {
         name: "WP Rocket",
@@ -130,6 +192,22 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
       // vendor has published for "just the caching part," and inventing one
       // would fabricate a number this file's own rules forbid. Performance is
       // WP Rocket only until a genuinely single-purpose alternate turns up.
+      //
+      // NitroPack is not added either: it prices per pageview, and its named
+      // tiers cover one or three websites; everything above that is an
+      // unpublished "Agency" master subscription. Multiplying its $18/mo rate
+      // by 25 would invent a tier the vendor does not sell, and it also
+      // bundles a CDN WPMgr does not ship.
+      //
+      // Object Cache Pro is not added: $950/yr flat, but the licence requires
+      // every covered site to be owned and operated by the same entity, which
+      // puts a 25-client agency fleet outside it and into "talk to us." No
+      // figure this page could publish for that persona.
+      //
+      // Cloudflare APO is not added: $5/mo per domain on the Free plan, but
+      // $0 marginal cost on any paid Cloudflare plan. A large line whose real
+      // price is zero for most readers is the single most attackable number
+      // this page could publish.
     ],
   },
   {
@@ -137,6 +215,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Image optimization",
     icon: "ImageDown",
     wpmgr: "AVIF and WebP conversion with originals kept as a fallback",
+    group: "common",
     products: [
       {
         name: "Imagify Infinite",
@@ -152,6 +231,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Database cleaning",
     icon: "Database",
     wpmgr: "Orphan classification with a preview before anything is deleted",
+    group: "situational",
     products: [
       {
         name: "Advanced Database Cleaner Pro",
@@ -171,7 +251,28 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Uptime monitoring",
     icon: "Activity",
     wpmgr: "Built in, with TLS expiry checks",
+    group: "core",
     products: [
+      {
+        name: "ManageWP Uptime Monitor",
+        url: "https://managewp.com/pricing",
+        tiers: [
+          { upTo: 25, perYear: 12, label: "$1/site/month, per site" },
+          {
+            upTo: Infinity,
+            perYear: 300,
+            label: "Bundled at $25/month per 100-site bundle",
+          },
+        ],
+        // Same stepped shape as the ManageWP reports add-ons below: a flat
+        // per-site rate up to 25 sites, then bundles of up to 100 sites for
+        // $25/month each, and bundles stack. `tiers` above exists only to
+        // pick the bracket label shown next to the product name.
+        computeAnnual: (sites: number) =>
+          sites <= 25 ? sites * 1 * 12 : Math.ceil(sites / 100) * 25 * 12,
+        note: "$1/site/month up to 25 sites. Above 25 sites, ManageWP sells this add-on in bundles covering up to 100 sites for $25/month, and bundles stack. This is now the default over UptimeRobot because it is the cheaper of the two at every fleet size on this page's slider.",
+        verifiedOn: "2026-08-17",
+      },
       {
         name: "UptimeRobot",
         url: "https://uptimerobot.com/pricing/",
@@ -182,8 +283,10 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
           { upTo: 200, perYear: 648, label: "Scale, 200 monitors" },
           { upTo: 500, perYear: 1488, label: "Scale, 500 monitors" },
         ],
-        note: "Priced per monitor and billed monthly; the annual figure is the monthly rate multiplied by twelve. A free tier covering 50 monitors exists at a longer check interval.",
+        note: "Priced per monitor and billed monthly; the annual figure is the monthly rate multiplied by twelve. A free tier covering 50 monitors exists at a 5-minute check interval; the paid tiers above buy a shorter interval, more monitor types and alert routing.",
         verifiedOn: "2026-08-07",
+        replaces: "partial",
+        residual: "public and white-label status pages, and PagerDuty or webhook alert routing",
       },
     ],
   },
@@ -192,6 +295,7 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
     label: "Client reporting",
     icon: "FileText",
     wpmgr: "White label reports and a client portal, built in",
+    group: "situational",
     products: [
       {
         // WP Umbrella was here at "full price" and is deliberately removed,
@@ -232,18 +336,81 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
       },
     ],
   },
+  {
+    key: "fleet",
+    label: "Fleet management and updates",
+    icon: "ServerCog",
+    wpmgr: "Bulk updates, one dashboard and one login across the whole fleet",
+    group: "situational",
+    defaultOff: true,
+    products: [
+      {
+        name: "WP Remote Premium",
+        url: "https://wpremote.com/pricing/",
+        tiers: [{ upTo: Infinity, perYear: 49.99, label: "Premium, per site" }],
+        // WP Remote sells three tiers, all per site per year: Essential
+        // $19.99, Premium $49.99, Advanced $199.99. Premium is used here
+        // because it is the tier whose feature list -- staging, uptime,
+        // performance scoring, form and visual-regression testing -- is the
+        // closest match to a general-purpose fleet manager rather than a
+        // bare update runner. Essential is cheaper per site than WPMgr
+        // itself ($19.99 against WPMgr's $28.32/site/yr at 25 sites on the
+        // Agency plan); that comparison is addressed directly in the prose
+        // above the calculator rather than left for a reader to find on
+        // their own.
+        note: "$19.99 (Essential), $49.99 (Premium, used here) or $199.99 (Advanced) per site per year. This row uses Premium; Essential undercuts WPMgr on price alone, which is why the page states that comparison plainly rather than only showing Premium.",
+        verifiedOn: "2026-08-17",
+        replaces: "partial",
+        residual:
+          "staging sites, visual regression testing, form testing, sandbox updates, virtual patching, and human malware cleanup",
+      },
+    ],
+  },
 ];
+
+/**
+ * HELD, NOT SHIPPED. Two-factor authentication (WP 2FA Premium) is
+ * deliberately excluded from PLUGIN_COST_CATEGORIES: melapress.com/
+ * wordpress-2fa/pricing/ shows two different prices for the 25-site bracket,
+ * $199/yr and $129/yr, with nothing on the page saying which is list and
+ * which is a promotional rate. Modeled here with the LOWER of the two and
+ * `unverified: true` so the figure exists for the next pass, but it must not
+ * be spread into PLUGIN_COST_CATEGORIES or shown to a reader until someone
+ * opens that page in a browser and resolves which number is real.
+ *
+ * Duo is not modeled at all, here or anywhere else in this file: it is
+ * priced per user, not per site or per tier, so it does not fit this file's
+ * shape and mixing a per-user line into a per-site bill would misstate both.
+ */
+export const HELD_TWO_FACTOR_CATEGORY: CostCategory = {
+  key: "two-factor",
+  label: "Two-factor authentication",
+  icon: "KeyRound",
+  wpmgr: "TOTP, email code and backup codes, enforced per role, built in",
+  group: "situational",
+  defaultOff: true,
+  products: [
+    {
+      name: "WP 2FA Premium",
+      url: "https://melapress.com/wordpress-2fa/pricing/",
+      tiers: [{ upTo: 25, perYear: 129, label: "25 sites (unresolved, lower of two prices shown)" }],
+      note: "melapress.com/wordpress-2fa/pricing/ showed two different prices for 25 sites, $199/yr and $129/yr, with no indication which is list and which is promotional. This is the lower figure, held back until that is resolved in a browser.",
+      verifiedOn: "2026-08-17",
+      unverified: true,
+    },
+  ],
+};
 
 /**
  * Categories whose price is per site rather than per tier.
  *
- * "reports" is deliberately NOT here even though ManageWP's add-ons are
- * per-site up to 25 sites: past that they are a stepped per-100-site bundle,
- * not a flat rate, so a uniform tier-times-sites multiplication would be
- * wrong at fleet sizes above 25. Its product defines `computeAnnual` instead;
- * see `annualCost` below.
+ * "reports" and "uptime" are deliberately NOT here even though their default
+ * products are per-site up to 25 sites: past that they are a stepped
+ * per-100-site bundle, not a flat rate, so a uniform tier-times-sites
+ * multiplication would be wrong at fleet sizes above 25. Those products
+ * define `computeAnnual` instead; see `annualCost` below.
  */
-export const PER_SITE_KEYS = ["security"];
+export const PER_SITE_KEYS = ["security", "fleet"];
 
 /**
  * The cheapest published tier that covers `sites`, or null when the fleet is

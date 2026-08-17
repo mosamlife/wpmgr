@@ -30,6 +30,12 @@ export const metadata: Metadata = buildMetadata({
   canonical: "/pricing/plugin-stack",
 });
 
+// Derived from the data file rather than written as a number, so the copy
+// below cannot drift from the calculator sitting next to it the way a
+// hand-typed "seven" would the moment a category is added or defaulted off.
+const CATEGORY_COUNT = PLUGIN_COST_CATEGORIES.length;
+const DEFAULT_ON_COUNT = PLUGIN_COST_CATEGORIES.filter((c) => !c.defaultOff).length;
+
 const FAQ_ITEMS = [
   {
     q: "Why is my favourite plugin not on the list?",
@@ -40,12 +46,12 @@ const FAQ_ITEMS = [
     a: "They are the prices you would pay in year two. Several vendors in this market advertise a large first-year discount and renew at full price, and one states that in a footnote on its own pricing page. A calculator built on introductory prices would understate the stack by a third and be wrong for every year but the first, so the figures here are the recurring ones.",
   },
   {
-    q: "Does WPMgr really do all seven?",
-    a: "It does all seven, and the free tier does not withhold any of them. What the paid tiers add is site count, managed backup storage and how often backups run. If you self-host, you get the same feature set on any number of sites for nothing, and the trade is that you run a Postgres database, a control plane and an encoder, and you keep them patched.",
+    q: "Does WPMgr really do everything on the list?",
+    a: `It does, and the free tier does not withhold any of it. What the paid tiers add is site count, managed backup storage and how often backups run. If you self-host, you get the same feature set on any number of sites for nothing, and the trade is that you run a Postgres database, a control plane and an encoder, and you keep them patched.`,
   },
   {
     q: "What is not included in this total?",
-    a: "Storage and your own time. Backups have to land somewhere, and most of these plugins bill remote storage separately or expect you to bring your own bucket, which is also true of WPMgr on the free and self-hosted tiers. The total also excludes the hours spent renewing seven licences on seven dates and updating seven plugins across every site, which is real but not something we can put a number on honestly.",
+    a: `Storage and your own time, and on a few rows, part of the vendor's own product. Backups have to land somewhere, and most of these plugins bill remote storage separately or expect you to bring your own bucket, which is also true of WPMgr on the free and self-hosted tiers. Rows marked "Partial" sell something beyond what WPMgr ships too, such as staging or a managed firewall; the row's price is still the vendor's full price, not a discounted one, because no vendor publishes a "just the overlapping part" figure. The total also excludes the hours spent renewing ${CATEGORY_COUNT} licences on ${CATEGORY_COUNT} dates and updating ${CATEGORY_COUNT} plugins across every site, which is real but not something we can put a number on honestly.`,
   },
   {
     q: "Where did each number come from?",
@@ -57,7 +63,7 @@ const METHOD = [
   {
     icon: "Layers",
     title: "No product counted twice",
-    body: "Every product here sells one of these seven categories and little else. Suites that bundle caching with image compression and database cleaning are excluded on purpose, because including one would put the same licence on two lines.",
+    body: `Every product here sells one of these ${CATEGORY_COUNT} categories and little else. Suites that bundle caching with image compression and database cleaning are excluded on purpose, because including one would put the same licence on two lines.`,
   },
   {
     icon: "RefreshCw",
@@ -110,11 +116,37 @@ export default async function PluginStackPage() {
             Add up what your plugins actually cost
           </h1>
           <p className="mt-5 max-w-[68ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
-            Seven jobs, seven licences, seven renewal dates. Set your fleet size, remove anything
-            you do not buy, and every figure comes from the vendor&apos;s own pricing page.
+            {DEFAULT_ON_COUNT} jobs on by default, {DEFAULT_ON_COUNT} licences, {DEFAULT_ON_COUNT} renewal
+            dates, plus a few more you can add if you actually buy them. Set your fleet size, add or remove
+            anything, and every figure comes from the vendor&apos;s own pricing page.
           </p>
 
-          <div className="mt-10">
+          {/* Two things this page has to say about itself before a reader
+              starts sliding, or a reader who checks either one concludes the
+              page cherry-picked and stops trusting the rest of it. */}
+          <div className="mt-6 flex max-w-[68ch] flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 px-5 py-4 text-sm leading-relaxed text-[var(--muted-foreground)]">
+            <p>
+              <strong className="font-semibold text-foreground">
+                WP Remote&apos;s cheapest tier is cheaper per site than WPMgr.
+              </strong>{" "}
+              Essential is $19.99 per site per year, against WPMgr&apos;s $28.32 per site per year on the
+              25-site Agency plan. The fleet management row below uses Premium ($49.99) instead, because
+              Essential is a bare update runner and does not include the staging, uptime and testing
+              features that make Premium comparable to a fleet manager at all. A reader who only wants
+              scheduled updates would spend less with WP Remote Essential than with WPMgr, and that is
+              worth saying plainly rather than leaving for someone to find on their own.
+            </p>
+            <p>
+              <strong className="font-semibold text-foreground">
+                Past roughly 50 sites, the gap narrows.
+              </strong>{" "}
+              Slide to 100 and remove the security row, and the comparison inverts: this stack runs about
+              $1,733 a year against WPMgr&apos;s Scale plan at $2,028. The calculator is built to let anyone
+              find that, so it is stated here rather than left for a reader to stumble on.
+            </p>
+          </div>
+
+          <div className="mt-8">
             <PluginStackCalculator wpmgrTiers={wpmgrTiers} />
           </div>
         </Container>
