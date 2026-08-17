@@ -53,7 +53,7 @@ const RELEASES: ChangeEntry[] = [
     version: "0.61.139",
     date: "2026-08-17",
     summary:
-      "Email delivery failure detection now works on sites that send through their own SMTP setup, not only sites that route mail through WPMgr, and the Notifications page states how many connected sites can actually report a failure. Separately, a WordPress bug where a failed send was reported as successful is fixed, so forms and other flows now learn honestly when mail did not go out.",
+      "Email delivery failure detection now works on sites that send through their own SMTP setup, not only sites that route mail through WPMgr, and the Notifications page states how many connected sites can actually report a failure. Separately, a bug in WPMgr's own mail routing that reported a failed send as successful is fixed, so forms and other flows now learn honestly when mail did not go out.",
     items: [
       {
         tag: "Added",
