@@ -353,12 +353,12 @@ export const PLUGIN_COST_CATEGORIES: CostCategory[] = [
         // because it is the tier whose feature list -- staging, uptime,
         // performance scoring, form and visual-regression testing -- is the
         // closest match to a general-purpose fleet manager rather than a
-        // bare update runner. Essential is cheaper per site than WPMgr
-        // itself ($19.99 against WPMgr's $28.32/site/yr at 25 sites on the
-        // Agency plan); that comparison is addressed directly in the prose
-        // above the calculator rather than left for a reader to find on
-        // their own.
-        note: "$19.99 (Essential), $49.99 (Premium, used here) or $199.99 (Advanced) per site per year. This row uses Premium; Essential undercuts WPMgr on price alone, which is why the page states that comparison plainly rather than only showing Premium.",
+        // bare update runner. Essential is cheaper per site, but it only
+        // does one of the fourteen jobs WPMgr does, so pricing it against
+        // WPMgr as a whole would compare unlike products; the "Partial"
+        // replaces flag and residual list below say what this row does and
+        // does not cover instead.
+        note: "$19.99 (Essential), $49.99 (Premium, used here) or $199.99 (Advanced) per site per year. This row uses Premium because Essential is a bare update runner and does not include the staging, uptime and testing features that make Premium comparable to a fleet manager.",
         verifiedOn: "2026-08-17",
         replaces: "partial",
         residual:

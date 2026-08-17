@@ -116,35 +116,12 @@ export default async function PluginStackPage() {
             Add up what your plugins actually cost
           </h1>
           <p className="mt-5 max-w-[68ch] text-lg leading-relaxed text-[var(--muted-foreground)]">
-            {DEFAULT_ON_COUNT} jobs on by default, {DEFAULT_ON_COUNT} licences, {DEFAULT_ON_COUNT} renewal
-            dates, plus a few more you can add if you actually buy them. Set your fleet size, add or remove
-            anything, and every figure comes from the vendor&apos;s own pricing page.
+            {DEFAULT_ON_COUNT} job{DEFAULT_ON_COUNT === 1 ? "" : "s"} on by default, {DEFAULT_ON_COUNT}{" "}
+            licence{DEFAULT_ON_COUNT === 1 ? "" : "s"}, {DEFAULT_ON_COUNT} renewal date
+            {DEFAULT_ON_COUNT === 1 ? "" : "s"}, plus a few more you can add if you actually buy them. Set
+            your fleet size, add or remove anything, and every figure comes from the vendor&apos;s own
+            pricing page.
           </p>
-
-          {/* Two things this page has to say about itself before a reader
-              starts sliding, or a reader who checks either one concludes the
-              page cherry-picked and stops trusting the rest of it. */}
-          <div className="mt-6 flex max-w-[68ch] flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 px-5 py-4 text-sm leading-relaxed text-[var(--muted-foreground)]">
-            <p>
-              <strong className="font-semibold text-foreground">
-                WP Remote&apos;s cheapest tier is cheaper per site than WPMgr.
-              </strong>{" "}
-              Essential is $19.99 per site per year, against WPMgr&apos;s $28.32 per site per year on the
-              25-site Agency plan. The fleet management row below uses Premium ($49.99) instead, because
-              Essential is a bare update runner and does not include the staging, uptime and testing
-              features that make Premium comparable to a fleet manager at all. A reader who only wants
-              scheduled updates would spend less with WP Remote Essential than with WPMgr, and that is
-              worth saying plainly rather than leaving for someone to find on their own.
-            </p>
-            <p>
-              <strong className="font-semibold text-foreground">
-                Past roughly 50 sites, the gap narrows.
-              </strong>{" "}
-              Slide to 100 and remove the security row, and the comparison inverts: this stack runs about
-              $1,733 a year against WPMgr&apos;s Scale plan at $2,028. The calculator is built to let anyone
-              find that, so it is stated here rather than left for a reader to stumble on.
-            </p>
-          </div>
 
           <div className="mt-8">
             <PluginStackCalculator wpmgrTiers={wpmgrTiers} />
