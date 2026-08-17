@@ -31,13 +31,18 @@
  * population it exists for. Instead:
  *   - A row is ALWAYS written on a genuine (non-double-logged) failure:
  *     site, timestamp, provider='wp_mail', status='failed', the error
- *     string. None of that is personal data, and it is what the alert needs
- *     to exist at all.
+ *     string. It is what the alert needs to exist at all.
  *   - The recipient address and subject line are included in that row ONLY
  *     when EmailConfig::load()->log_emails is true. When it is false, `to`
  *     and `subject` are written empty/redacted -- never the real values --
  *     so opting out still means something even though the row itself
- *     exists.
+ *     exists. The error string is ALSO scrubbed of any embedded
+ *     address-shaped substring in that case (AddressParser::redact_email_addresses()):
+ *     a real PHPMailer/SMTP failure routinely echoes the recipient back
+ *     inside the message text itself (e.g. "Invalid address:  (to):
+ *     a@x.com"), so redacting only the `to` column is not sufficient --
+ *     see class-address-parser.php for why this is a substring scrub, not
+ *     a whole-string wipe.
  * This is deliberately NOT the same gate ProviderRouter::maybe_log() applies
  * (that one skips the write entirely); the two differ on purpose and must
  * not be unified.
@@ -154,9 +159,18 @@ final class MailFailureCapture {
 		// opted into email logging. The row is still written either way, so
 		// the alert exists, but no real recipient address or subject line
 		// leaves the site without log_emails being on.
+		//
+		// FINDING A (security review, GH #381 phase 1): emptying `to` and
+		// `subject` is not enough. Core passes PHPMailer's getMessage() (or
+		// the SMTP server's own recipients_failed detail) straight into
+		// $error_message, and that string routinely embeds the address
+		// verbatim -- e.g. "Invalid address:  (to): a@x.com" -- so the
+		// address must also be scrubbed out of the error text itself, or it
+		// leaves the site through the `error` column instead.
 		if ( ! $cfg->log_emails ) {
-			$to      = array();
-			$subject = '';
+			$to            = array();
+			$subject       = '';
+			$error_message = AddressParser::redact_email_addresses( $error_message );
 		}
 
 		// Only `to` and `subject` -- never the message body, under any key,

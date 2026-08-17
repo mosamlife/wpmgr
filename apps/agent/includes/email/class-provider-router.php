@@ -431,7 +431,7 @@ class ProviderRouter {
 
 	/**
 	 * Write a log row if email logging is enabled, OR unconditionally when
-	 * the outcome is a failure.
+	 * the outcome is a detected failure.
 	 *
 	 * log_emails is a volume-and-retention preference about keeping a
 	 * record of mail that WORKED; it is not a request to be blinded to
@@ -440,14 +440,34 @@ class ProviderRouter {
 	 * leave no local row, nothing for the push to ship, and nothing for the
 	 * control plane to alert on, purely because the owner asked for a
 	 * quieter log of successful mail. So the early return only applies when
-	 * BOTH log_emails is off AND the outcome is not a failure ('sent' is the
-	 * only non-failure status this method ever receives; 'failed' and
-	 * 'suppressed' are both incidents and are logged regardless).
+	 * BOTH log_emails is off AND the outcome is not a failure.
+	 *
+	 * GH #381 phase 4 (security-reviewer finding, ruling against an earlier
+	 * "WPMgr is the transport, it has already seen the recipient" argument):
+	 * having observed the recipient in flight does not license retaining and
+	 * exporting it. log_emails is the site owner's only control over whether
+	 * mail metadata is written down and shipped to the control plane, and
+	 * this forced write is silent (applied on upgrade, no new consent), so
+	 * it must be symmetric with MailFailureCapture::capture() (phase 1):
+	 * the row is always written on a genuine failure, but `to` and `subject`
+	 * are redacted to empty, and any address-shaped substring embedded in
+	 * the free-text `error`/`response` (a real SMTP/provider failure
+	 * routinely echoes the recipient back, e.g. "550 5.1.1 <a@x.com>:
+	 * Recipient address rejected") is scrubbed via
+	 * AddressParser::redact_email_addresses() -- not blanked entirely, so
+	 * the diagnostic detail ("550 5.1.1 ... rejected") survives. The alert
+	 * only needs "a failure happened on this site", never "to whom".
+	 *
+	 * 'suppressed' is deliberately NOT treated as a failure here: a
+	 * suppression-list hit is routine traffic (WPMgr already knows the
+	 * address is bad; there is nothing new to alert on), not an incident,
+	 * so it follows the ordinary log_emails gate like 'sent' does -- no
+	 * forced write, and so nothing to redact.
 	 *
 	 * This does not touch privacy: store_body is gated independently inside
 	 * EmailLogger::write() and still defaults false there, so turning
 	 * log_emails off still means no message body is ever stored, and a
-	 * successful send is still not recorded at all.
+	 * successful (or suppressed) send is still not recorded at all.
 	 *
 	 * @param array<string,mixed> $mail            Normalised mail payload.
 	 * @param string              $connection_key  Resolved connection key ('default' for primary).
@@ -471,10 +491,18 @@ class ProviderRouter {
 		int $retries,
 		EmailConfig $cfg
 	): void {
-		$is_failure = ( 'sent' !== $status );
+		$is_failure = ( 'failed' === $status );
 		if ( ! $cfg->log_emails && ! $is_failure ) {
 			return;
 		}
+
+		if ( ! $cfg->log_emails ) {
+			$mail['to']      = array();
+			$mail['subject'] = '';
+			$error           = AddressParser::redact_email_addresses( $error );
+			$response        = AddressParser::redact_email_addresses( $response );
+		}
+
 		$this->logger->write( $mail, $provider, $status, $msg_id, $error, $response, $retries, $cfg, $connection_key );
 	}
 }

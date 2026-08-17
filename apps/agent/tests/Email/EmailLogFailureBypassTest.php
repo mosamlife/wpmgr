@@ -27,6 +27,7 @@ use WPMgr\Agent\Email\EmailConfig;
 use WPMgr\Agent\Email\EmailLogger;
 use WPMgr\Agent\Email\ProviderHandlerInterface;
 use WPMgr\Agent\Email\ProviderRouter;
+use WPMgr\Agent\Email\SuppressionCheckerInterface;
 
 /**
  * @covers \WPMgr\Agent\Email\ProviderRouter
@@ -239,6 +240,128 @@ class EmailLogFailureBypassTest extends TestCase
 
         $this->assertCount(1, $fakeWpdbFail->rows, 'a failed send must still be logged when log_emails is on');
         $this->assertSame('failed', $fakeWpdbFail->rows[0]['status']);
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Security-reviewer finding B (GH #381 phase 4): maybe_log()'s forced
+     * write for a detected failure carried the real `to`/`subject`
+     * regardless of log_emails, and the free-text `error` from a real
+     * provider routinely embeds the recipient address too (matching
+     * MailFailureCaptureTest's phase-1 fixture and the reviewer's proof
+     * case). RED before the fix: mail_to/subject were never redacted on
+     * this path at all, and `error` was written verbatim.
+     *
+     * Also proves the redaction line: the address-shaped substring is
+     * removed from `error`, but the diagnostic detail ("550 5.1.1 ...
+     * rejected") survives -- a blanket empty error string would be a
+     * regression in its own right (see class-provider-router.php's
+     * maybe_log() docblock).
+     */
+    public function test_failed_row_redacts_recipient_subject_and_embedded_address_in_error_when_log_emails_is_false(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'SMTP Error: The following recipients failed: to@example.com: 550 5.1.1 User unknown',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $result = $router->send($this->base_mail(), $cfg, true);
+
+        $this->assertFalse($result['ok']);
+        $this->assertCount(1, $fakeWpdb->rows);
+
+        $row = $fakeWpdb->rows[0];
+        $this->assertSame('', $row['mail_to'], 'Recipient must be redacted when log_emails is off.');
+        $this->assertSame('', $row['subject'], 'Subject must be redacted when log_emails is off.');
+        $this->assertStringNotContainsString('to@example.com', $row['error'], 'The address embedded in the error text must not survive when log_emails is off.');
+        $this->assertStringContainsString('550 5.1.1 User unknown', $row['error'], 'Redaction must not destroy the diagnostic detail an operator needs -- only the address.');
+
+        $json = (string) json_encode($row);
+        $this->assertStringNotContainsString('to@example.com', $json, 'Recipient must not appear anywhere in the row when log_emails is off.');
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Over-fire control for finding B: with log_emails=true, the forced
+     * write on failure carries the REAL recipient, subject, and the
+     * unredacted error text (including any embedded address) -- the opt-in
+     * still has to mean something, on this path exactly as on phase 1's.
+     */
+    public function test_failed_row_carries_real_recipient_subject_and_error_when_log_emails_is_true(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg     = new EmailConfig(['provider' => 'smtp', 'log_emails' => true, 'store_body' => false]);
+        $handler = $this->make_handler('smtp', [
+            'ok'                => false,
+            'message_id'        => '',
+            'error'             => 'SMTP Error: The following recipients failed: to@example.com: 550 5.1.1 User unknown',
+            'provider_response' => '',
+        ]);
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger());
+        $router->register($handler);
+
+        $router->send($this->base_mail(), $cfg, true);
+
+        $this->assertCount(1, $fakeWpdb->rows);
+        $row = $fakeWpdb->rows[0];
+        $this->assertStringContainsString('to@example.com', $row['mail_to'], 'Opting in to log_emails must actually surface the real recipient.');
+        $this->assertSame('Test', $row['subject']);
+        $this->assertStringContainsString('to@example.com', $row['error'], 'Opting in to log_emails must not redact the error text either.');
+
+        unset($GLOBALS['wpdb']);
+    }
+
+    /**
+     * Ruling on the 'suppressed' status (security-reviewer finding B,
+     * open question): maybe_log()'s failure gate used to be
+     * `'sent' !== $status`, so a routine suppression-list hit was force-
+     * logged with the real recipient too, exactly like a genuine failure.
+     *
+     * A suppression hit is not an incident -- WPMgr already knows the
+     * address is bad; there is nothing new here for the control-plane
+     * alert to act on, unlike a freshly DETECTED SMTP/provider failure.
+     * So 'suppressed' now follows the ordinary log_emails gate, the same
+     * as 'sent': no forced write, and so nothing to redact. When log_emails
+     * is on, a suppressed send is still logged (unchanged; see
+     * ProviderRouterSuppressionTest::test_suppressed_send_writes_log_row_with_suppressed_status).
+     */
+    public function test_suppressed_send_is_not_logged_when_log_emails_is_false(): void
+    {
+        $fakeWpdb        = $this->fakeWpdb();
+        $GLOBALS['wpdb'] = $fakeWpdb;
+
+        $cfg = new EmailConfig(['provider' => 'smtp', 'log_emails' => false, 'store_body' => false]);
+
+        $cache = $this->createMock(SuppressionCheckerInterface::class);
+        $cache->method('is_suppressed')->willReturn(true);
+
+        $handler = $this->make_handler('smtp', [
+            'ok' => true, 'message_id' => 'unused', 'error' => '', 'provider_response' => '',
+        ]);
+        $handler->expects($this->never())->method('send');
+
+        $router = new ProviderRouter(new FakeKeystore(), new EmailLogger(), $cache);
+        $router->register($handler);
+
+        $result = $router->send($this->base_mail(), $cfg, true);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame('recipient suppressed', $result['detail']);
+        $this->assertCount(0, $fakeWpdb->rows, 'A routine suppression-list hit is not an incident and must not force a row when log_emails is off.');
+
         unset($GLOBALS['wpdb']);
     }
 }
