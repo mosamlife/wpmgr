@@ -42,12 +42,23 @@ export function buildMetadata({
     ? `${SITE_CONFIG.baseUrl}${canonical}`
     : SITE_CONFIG.baseUrl;
 
+  // `app/layout.tsx` brands the document <title> via `title.template`
+  // ("%s · WPMgr"), applied once by Next's metadata resolution. That template
+  // does NOT reach openGraph.title or twitter.title -- those are separate,
+  // explicit fields, so a page whose own `title` carries no brand shares to
+  // social with no brand at all. Callers that already build their own branded
+  // title (e.g. "... | WPMgr") are left untouched here so the brand does not
+  // appear twice.
+  const socialTitle = title.includes(SITE_CONFIG.name)
+    ? title
+    : `${title} · ${SITE_CONFIG.name}`;
+
   return {
     title,
     description,
     alternates: { canonical: url },
     openGraph: {
-      title,
+      title: socialTitle,
       description,
       url,
       siteName: SITE_CONFIG.name,
@@ -78,7 +89,7 @@ export function buildMetadata({
     },
     twitter: {
       card: "summary_large_image",
-      title,
+      title: socialTitle,
       description,
       images: ogImage ? [ogImage] : [`${SITE_CONFIG.baseUrl}/opengraph-image`],
     },
