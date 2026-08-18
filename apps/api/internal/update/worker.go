@@ -316,7 +316,17 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return w.deferForBusySite(ctx, task, "another update is running on this site")
 	}
 
-	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID)
+	// The claim. Everything above this line is a read; from here on this
+	// worker asserts it is the one talking to this site about this item, and
+	// the assertion is decided by the row itself under its own row lock, not
+	// by the GetTask above. siteWriterHoldMax is the same bound the per-site
+	// gate uses: a 'running' row older than that cannot have a live worker
+	// behind it, so this worker reclaims it rather than leaving it for the
+	// reaper 25 minutes later.
+	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID, siteWriterHoldMax)
+	if errors.Is(err, ErrTaskNotClaimed) {
+		return w.yieldContendedClaim(ctx, a, task)
+	}
 	if err != nil {
 		return err
 	}
@@ -474,6 +484,44 @@ func (w *Worker) deferForBusySite(ctx context.Context, task Task, why string) er
 	}
 	w.publish(deferred, RunRunning)
 	return river.JobSnooze(w.siteBusyBackoff(deferred))
+}
+
+// yieldContendedClaim handles the one outcome the claim CAS cannot explain
+// itself: zero rows matched, so this worker did NOT get the task and must not
+// dispatch. The statement does not say why, so re-read the row and decide.
+//
+// The two returns here are the whole point, and neither is the obvious one:
+//
+//   - nil, ONLY for a terminal row. Someone else already recorded the outcome;
+//     that outcome wins and there is nothing left to do. This is exactly what
+//     Work already does for a terminal read at its top.
+//   - river.JobSnooze otherwise. NOT an error: an error consumes a retry
+//     attempt, and enough of them dead-letter a task that never actually
+//     failed. NOT nil either: that drops the work silently while the row sits
+//     'pending' forever, holding its (tenant, site, target_type, target_slug)
+//     in-flight slot in m88's partial unique index and 409-ing every future
+//     attempt at that target. Snooze reschedules without spending an attempt,
+//     so the row stays reclaimable if the current holder dies.
+//
+// The snooze cannot loop forever: whoever holds the row either finishes it
+// (terminal => nil on the next pass) or dies, and once its 'running' row ages
+// past siteWriterHoldMax the CAS's own reclaim branch hands it to this job.
+func (w *Worker) yieldContendedClaim(ctx context.Context, a TaskArgs, task Task) error {
+	current, err := w.repo.GetTask(ctx, a.TenantID, a.TaskID)
+	if err != nil {
+		// Cannot tell terminal from contended. Snooze rather than error: the
+		// safe reading of an unknown row is "someone else may hold it", and a
+		// CP-side DB hiccup must not spend this task's retry budget.
+		w.logger.Warn("update: claim was refused and the row could not be re-read; snoozing",
+			slog.String("task_id", a.TaskID.String()), slog.Any("error", err))
+		return river.JobSnooze(w.siteBusyBackoff(task))
+	}
+	if terminal(current.Status) {
+		return nil
+	}
+	w.logger.Info("update: another worker holds this task; snoozing without consuming an attempt",
+		slog.String("task_id", a.TaskID.String()), slog.String("status", current.Status))
+	return river.JobSnooze(w.siteBusyBackoff(current))
 }
 
 // runDry asks the agent what WOULD change without mutating the site.

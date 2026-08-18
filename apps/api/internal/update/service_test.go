@@ -161,7 +161,7 @@ func (f *fakeCreateRepo) ListTasks(_ context.Context, tenantID, runID uuid.UUID)
 func (f *fakeCreateRepo) GetTask(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
 	panic("not used")
 }
-func (f *fakeCreateRepo) MarkTaskRunning(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
+func (f *fakeCreateRepo) MarkTaskRunning(context.Context, uuid.UUID, uuid.UUID, time.Duration) (Task, error) {
 	panic("not used")
 }
 func (f *fakeCreateRepo) FinishTask(context.Context, FinishTaskInput) (Task, error) {

@@ -2,17 +2,16 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
-	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 )
 
@@ -31,6 +30,12 @@ import (
 // sqlc inside pool.InTenantTx where the repo signature cannot yet carry the
 // staleness bound. Nothing opens its own connection, so the RLS policies are
 // live for every statement below rather than inert.
+// claimStaleAfter is the bound every production caller passes to
+// MarkTaskRunning (update.siteWriterHoldMax, unexported). Its value is
+// immaterial to the setup claims below, which all act on a fresh 'pending'
+// row; the subtests that actually depend on the bound pass their own.
+const claimStaleAfter = 20 * time.Minute
+
 func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	pool := startPostgres(t)
 	tenant := seedTenant(t, pool, "upd-cas")
@@ -55,35 +60,26 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		return tasks[0]
 	}
 
-	// claimWithBound issues the claim with an explicit staleness bound, which
-	// update.Repo.MarkTaskRunning cannot yet supply (that is the follow-up Go
-	// change). Still the production path in every way that matters to the
-	// policy: pool.InTenantTx as wpmgr_app, generated sqlc, no bespoke
-	// connection.
+	// claimWithBound issues the claim with an explicit staleness bound. Since
+	// the Go wiring landed, update.Repo.MarkTaskRunning carries that bound
+	// itself, so this is now EXACTLY the production path — the same repo
+	// method Worker.Work calls, over pool.InTenantTx as wpmgr_app, no bespoke
+	// connection. A refusal must surface as update.ErrTaskNotClaimed and must
+	// NOT be a domain error: reporting the losing claimant as NotFound sends
+	// an operator hunting for a row that is still there, held by the winner.
 	claimWithBound := func(t *testing.T, taskID uuid.UUID, staleAfter time.Duration) (update.Task, bool) {
 		t.Helper()
-		var got sqlc.UpdateTask
-		claimed := false
-		err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
-			row, err := sqlc.New(tx).MarkUpdateTaskRunning(ctx, sqlc.MarkUpdateTaskRunningParams{
-				ID:         taskID,
-				TenantID:   tenant,
-				StaleAfter: pgtype.Interval{Microseconds: staleAfter.Microseconds(), Valid: true},
-			})
-			if err != nil {
-				if err == pgx.ErrNoRows {
-					return nil // no claim; not an error for this helper
-				}
-				return err
-			}
-			got, claimed = row, true
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("claim with bound: %v", err)
+		got, err := repo.MarkTaskRunning(ctx, tenant, taskID, staleAfter)
+		if err == nil {
+			return got, true
 		}
-		_ = got
-		return update.Task{}, claimed
+		if !errors.Is(err, update.ErrTaskNotClaimed) {
+			t.Fatalf("a refused claim must report ErrTaskNotClaimed, got %v (%T)", err, err)
+		}
+		if de, ok := domain.AsDomain(err); ok {
+			t.Fatalf("a refused claim must not be a domain error, got %v", de)
+		}
+		return update.Task{}, false
 	}
 
 	// statusOf reads a row back through the same tenant-scoped path.
@@ -113,7 +109,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				_, err := repo.MarkTaskRunning(ctx, tenant, task.ID)
+				_, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter)
 				results[i] = err
 			}(i)
 		}
@@ -125,6 +121,16 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 			if err == nil {
 				winners++
 			} else {
+				// The loser's error is part of the contract, not just noise.
+				// It must say "you did not get the claim", never "no such
+				// task": the row is right there, held by the winner, and
+				// NotFound would send an operator hunting for a deleted row.
+				if !errors.Is(err, update.ErrTaskNotClaimed) {
+					t.Errorf("the losing claimant must be refused with ErrTaskNotClaimed, got %v (%T)", err, err)
+				}
+				if de, ok := domain.AsDomain(err); ok {
+					t.Errorf("the losing claimant must not get a domain error (it was reported as NotFound before this fix), got %v", de)
+				}
 				t.Logf("claimant %d was refused, as it must be: %v", i, err)
 			}
 		}
@@ -142,7 +148,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	t.Run("a normal single claim of a pending task still succeeds", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "plugin", "cas-normal")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("the ordinary claim of a pending task must succeed: %v", err)
 		}
 		if got := statusOf(t, task.ID); got != "running" {
@@ -153,7 +159,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	t.Run("a River retry of an ABANDONED in-flight task reclaims it", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "plugin", "cas-abandoned")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("initial claim: %v", err)
 		}
 		// The worker behind it died: its command went out longer ago than the
@@ -170,7 +176,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	t.Run("a retry does NOT steal a task another worker is actively dispatching", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "plugin", "cas-fresh")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("initial claim: %v", err)
 		}
 		// Not backdated: the holder claimed moments ago and is mid-dispatch.
@@ -186,7 +192,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		// ClaimAgentWaveTask reaches MarkUpdateTaskRunning only with the row
 		// still 'pending' (it returns ClaimAlreadyClaimed for anything else
 		// while holding the run's advisory lock). That claim must still work.
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("the agent self-update wave claim of a pending task must still succeed: %v", err)
 		}
 		if got := statusOf(t, task.ID); got != "running" {
@@ -197,7 +203,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	t.Run("an aged RUNNING agent task is never reclaimed", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "agent", "fleet-agent-site-manager")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("initial claim: %v", err)
 		}
 		// An agent task legitimately stays 'running' for its whole
@@ -215,7 +221,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	t.Run("a terminal task is never claimable", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "plugin", "cas-terminal")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 			t.Fatalf("initial claim: %v", err)
 		}
 		if _, err := repo.FinishTask(ctx, update.FinishTaskInput{

@@ -49,7 +49,7 @@ func TestSiteHasRunningUpdateTask_Gate(t *testing.T) {
 		site := newSite(t)
 		a := mkTaskOn(t, site, "plugin", "a")
 		b := mkTaskOn(t, site, "plugin", "b")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID, claimStaleAfter); err != nil {
 			t.Fatalf("mark running: %v", err)
 		}
 		busy, err := repo.SiteHasRunningTask(ctx, tenant, site, b.ID, 20*time.Minute)
@@ -64,7 +64,7 @@ func TestSiteHasRunningUpdateTask_Gate(t *testing.T) {
 	t.Run("a task never sees itself as busy", func(t *testing.T) {
 		site := newSite(t)
 		a := mkTaskOn(t, site, "plugin", "c")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID, claimStaleAfter); err != nil {
 			t.Fatalf("mark running: %v", err)
 		}
 		busy, err := repo.SiteHasRunningTask(ctx, tenant, site, a.ID, 20*time.Minute)
@@ -96,7 +96,7 @@ func TestSiteHasRunningUpdateTask_Gate(t *testing.T) {
 		site := newSite(t)
 		a := mkTaskOn(t, site, "plugin", "f")
 		b := mkTaskOn(t, site, "plugin", "g")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID, claimStaleAfter); err != nil {
 			t.Fatalf("mark running: %v", err)
 		}
 		backdateTaskTimestamps(t, pool, a.ID, 30*time.Minute)
@@ -112,7 +112,7 @@ func TestSiteHasRunningUpdateTask_Gate(t *testing.T) {
 		// The SAME row, well within holdMax, DOES gate: proves the staleness
 		// clause (not some other reason) was what ignored it above.
 		fresh := mkTaskOn(t, site, "plugin", "h")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, fresh.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, fresh.ID, claimStaleAfter); err != nil {
 			t.Fatalf("mark running: %v", err)
 		}
 		i := mkTaskOn(t, site, "plugin", "i")
@@ -129,7 +129,7 @@ func TestSiteHasRunningUpdateTask_Gate(t *testing.T) {
 		site := newSite(t)
 		a := mkTaskOn(t, site, "agent", update.AgentTargetSlug)
 		b := mkTaskOn(t, site, "plugin", "j")
-		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID); err != nil {
+		if _, err := repo.MarkTaskRunning(ctx, tenant, a.ID, claimStaleAfter); err != nil {
 			t.Fatalf("mark running: %v", err)
 		}
 		busy, err := repo.SiteHasRunningTask(ctx, tenant, site, b.ID, 20*time.Minute)
@@ -162,7 +162,7 @@ func TestDeferUpdateTaskToPending_Semantics(t *testing.T) {
 	}
 	task := tasks[0]
 
-	if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+	if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestBusyDeferredTask_ReapedOnlyWhenAbandoned(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	task := tasks[0]
-	if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+	if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
 	if _, err := repo.DeferTaskToPending(ctx, update.DeferTaskInput{TenantID: tenant, TaskID: task.ID, Detail: "waiting: busy"}); err != nil {
