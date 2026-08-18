@@ -8,6 +8,7 @@ import {
   PLUGIN_COST_CATEGORIES,
   PER_SITE_KEYS,
   SITE_PRESETS,
+  PURCHASE_LIKELIHOOD_GROUPS,
   annualCost,
   resolveTier,
   resolveWpmgrTier,
@@ -18,15 +19,17 @@ import {
  * The plugin-stack calculator.
  *
  * THE ILLUSTRATION IS THE ASYMMETRY. Two bills sit side by side, top-aligned,
- * against the same fleet size: one runs seven lines, the other runs one. No
+ * against the same fleet size: one runs many lines, the other runs one. No
  * drawing makes that argument faster than the two columns themselves, which is
  * why there is no drawing. It also cannot go stale, because both columns are
  * computed from the same figures the page already has to be honest about.
  *
  * EVERY LINE IS THE READER'S TO REMOVE. Categories toggle off, and the
- * performance line lets them pick which product represents it. An argument a
- * reader can disassemble is one they end up trusting; a fixed total that
- * assumes they buy all seven is one they dismiss, correctly, as a strawman.
+ * performance line lets them pick which product represents it. Rows added
+ * after the original seven default off, so first paint still totals the
+ * original seven and a reader opts into the rest. An argument a reader can
+ * disassemble is one they end up trusting; a fixed total that assumes they
+ * buy everything is one they dismiss, correctly, as a strawman.
  *
  * MOTION IS RESPONSE, NEVER ENTRANCE. The total tweens between values so a
  * change in fleet size is felt rather than just read, and a deselected line
@@ -133,6 +136,39 @@ function TweenedMoney({ value, className }: { value: number; className?: string 
   );
 }
 
+/**
+ * A checkbox with a third, indeterminate visual state. `indeterminate` has no
+ * HTML attribute, so it is set imperatively on the element via a ref rather
+ * than passed as a prop; `aria-label` is required by the caller because this
+ * control has no adjacent visible text of its own to name it.
+ */
+function TriStateCheckbox({
+  checked,
+  indeterminate,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={checked}
+      onChange={onChange}
+      aria-label={ariaLabel}
+      className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--primary)]"
+    />
+  );
+}
+
 type State = {
   sites: number;
   off: string[];
@@ -143,6 +179,7 @@ type State = {
 type Action =
   | { type: "sites"; value: number }
   | { type: "toggle"; key: string }
+  | { type: "toggleGroup"; keys: string[]; turnOn: boolean }
   | { type: "pick"; key: string; index: number };
 
 function reducer(state: State, action: Action): State {
@@ -156,12 +193,24 @@ function reducer(state: State, action: Action): State {
           ? state.off.filter((k) => k !== action.key)
           : [...state.off, action.key],
       };
+    case "toggleGroup":
+      return {
+        ...state,
+        off: action.turnOn
+          ? state.off.filter((k) => !action.keys.includes(k))
+          : [...new Set([...state.off, ...action.keys])],
+      };
     case "pick":
       return { ...state, pick: { ...state.pick, [action.key]: action.index } };
   }
 }
 
-const INITIAL: State = { sites: 25, off: [], pick: {} };
+// Categories the owner added after the page's original seven start
+// unchecked, so first paint still reads "7 of N selected" and a reader opts
+// into the longer bill rather than being defaulted into it.
+const DEFAULT_OFF = PLUGIN_COST_CATEGORIES.filter((c) => c.defaultOff).map((c) => c.key);
+
+const INITIAL: State = { sites: 25, off: DEFAULT_OFF, pick: {} };
 
 export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] }) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
@@ -183,6 +232,20 @@ export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] 
   const included = lines.filter((l) => l.enabled);
   const total = included.reduce((sum, l) => sum + (l.cost ?? 0), 0);
   const unpriced = included.filter((l) => l.cost === null);
+
+  // Rows grouped by purchase likelihood rather than by our own feature
+  // areas -- see PURCHASE_LIKELIHOOD_GROUPS in lib/content/plugin-costs.ts
+  // for why. A group with no matching category (none today) is dropped
+  // rather than rendered empty.
+  const groups = PURCHASE_LIKELIHOOD_GROUPS.map((g) => {
+    const groupLines = lines.filter((l) => l.category.group === g.key);
+    const enabledCount = groupLines.filter((l) => l.enabled).length;
+    const subtotal = groupLines.reduce(
+      (sum, l) => (l.enabled ? sum + (l.cost ?? 0) : sum),
+      0,
+    );
+    return { ...g, lines: groupLines, enabledCount, subtotal };
+  }).filter((g) => g.lines.length > 0);
 
   const wpmgrTier = resolveWpmgrTier(wpmgrTiers, sites);
   const wpmgrYear = wpmgrTier ? wpmgrTier.perMonth * 12 : null;
@@ -219,7 +282,7 @@ export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] 
           <input
             type="range"
             min={1}
-            max={500}
+            max={200}
             step={1}
             value={sites}
             onChange={(e) => dispatch({ type: "sites", value: Number(e.target.value) })}
@@ -248,94 +311,157 @@ export function PluginStackCalculator({ wpmgrTiers }: { wpmgrTiers: WpmgrTier[] 
             </span>
           </header>
 
-          <ul className="flex flex-col">
-            {lines.map((line) => (
-              <li
-                key={line.category.key}
-                className="border-b border-[var(--border)]/60 px-5 py-4 transition-opacity duration-[var(--duration-fast)] last:border-0 sm:px-6"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={line.enabled}
-                      onChange={() => dispatch({ type: "toggle", key: line.category.key })}
-                      className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-[var(--primary)]"
+          <div className="flex flex-col">
+            {groups.map((group) => (
+              <div key={group.key}>
+                {/* Group header: purchase-likelihood bucket, not a feature
+                    area. Never collapses -- the row count under it is the
+                    argument this page is making, and a closed section hides
+                    it. */}
+                <div className="flex items-center justify-between gap-3 border-b border-t border-[var(--border)] bg-[var(--muted)]/50 px-5 py-2 sm:px-6">
+                  <label className="flex cursor-pointer items-center gap-2.5">
+                    <TriStateCheckbox
+                      checked={group.enabledCount === group.lines.length}
+                      indeterminate={
+                        group.enabledCount > 0 && group.enabledCount < group.lines.length
+                      }
+                      onChange={() =>
+                        dispatch({
+                          type: "toggleGroup",
+                          keys: group.lines.map((l) => l.category.key),
+                          turnOn: group.enabledCount !== group.lines.length,
+                        })
+                      }
+                      ariaLabel={`Toggle all rows in ${group.label}`}
                     />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-2">
-                        <Icon
-                          name={line.category.icon}
-                          size={15}
-                          className="shrink-0 text-[var(--muted-foreground)]"
-                          aria-hidden
-                        />
-                        <span
-                          className={cn(
-                            "text-sm font-medium",
-                            line.enabled ? "text-foreground" : "text-[var(--muted-foreground)]",
-                          )}
-                        >
-                          {line.category.label}
-                        </span>
-                      </span>
-                      <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
-                        <a
-                          href={line.product.url}
-                          target="_blank"
-                          rel="noreferrer noopener nofollow"
-                          className="underline underline-offset-2 hover:text-foreground"
-                        >
-                          {line.product.name}
-                        </a>
-                        {line.tier ? <>, {line.tier.label}</> : null}
-                        {PER_SITE_KEYS.includes(line.category.key) && line.tier ? (
-                          <> at {money(line.tier.perYear)} per site</>
-                        ) : null}
+                    <span className="text-xs font-semibold text-foreground">
+                      {group.label}{" "}
+                      <span className="font-normal text-[var(--muted-foreground)]">
+                        ({group.enabledCount} of {group.lines.length})
                       </span>
                     </span>
                   </label>
-
-                  <span
-                    className={cn(
-                      "shrink-0 font-mono text-sm tabular-nums",
-                      line.enabled
-                        ? "text-foreground"
-                        : "text-[var(--muted-foreground)] line-through",
-                    )}
-                  >
-                    {line.cost === null ? "on request" : money(line.cost)}
+                  <span className="font-mono text-xs tabular-nums text-[var(--muted-foreground)]">
+                    {money(group.subtotal)}
                   </span>
                 </div>
 
-                {/* Only rendered where a category genuinely has a second
-                    non-overlapping option, rather than a control on every row
-                    for symmetry's sake. */}
-                {line.category.products.length > 1 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5 pl-7">
-                    {line.category.products.map((p, pi) => (
-                      <button
-                        key={p.name}
-                        type="button"
-                        onClick={() =>
-                          dispatch({ type: "pick", key: line.category.key, index: pi })
-                        }
-                        aria-pressed={line.index === pi}
-                        className={cn(
-                          "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-                          line.index === pi
-                            ? "border-[var(--primary)]/40 bg-[var(--primary-subtle)] text-[var(--primary-pressed)]"
-                            : "border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
-                        )}
-                      >
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </li>
+                <ul className="flex flex-col">
+                  {group.lines.map((line) => (
+                    <li
+                      key={line.category.key}
+                      className="border-b border-[var(--border)]/60 px-5 py-4 transition-opacity duration-[var(--duration-fast)] last:border-0 sm:px-6"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={line.enabled}
+                            onChange={() => dispatch({ type: "toggle", key: line.category.key })}
+                            className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-[var(--primary)]"
+                          />
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2">
+                              <Icon
+                                name={line.category.icon}
+                                size={15}
+                                className="shrink-0 text-[var(--muted-foreground)]"
+                                aria-hidden
+                              />
+                              <span
+                                className={cn(
+                                  "text-sm font-medium",
+                                  line.enabled
+                                    ? "text-foreground"
+                                    : "text-[var(--muted-foreground)]",
+                                )}
+                              >
+                                {line.category.label}
+                              </span>
+                            </span>
+                            <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
+                              <a
+                                href={line.product.url}
+                                target="_blank"
+                                rel="noreferrer noopener nofollow"
+                                className="underline underline-offset-2 hover:text-foreground"
+                              >
+                                {line.product.name}
+                              </a>
+                              {line.tier ? <>, {line.tier.label}</> : null}
+                              {PER_SITE_KEYS.includes(line.category.key) && line.tier ? (
+                                <> at {money(line.tier.perYear)} per site</>
+                              ) : null}
+                            </span>
+                            {/* Partial-replacement disclosure. Inline, static
+                                markup on purpose: a footnote goes unread, a
+                                tooltip is invisible to touch, to JS-off and to
+                                a crawler, and discounting the vendor's price
+                                for "the part we don't cover" would fabricate a
+                                figure no vendor published. */}
+                            {line.product.replaces === "partial" && line.product.residual && (
+                              <span className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-[var(--muted-foreground)]">
+                                <span className="inline-flex shrink-0 items-center rounded-full border border-[var(--border)] bg-[var(--muted)] px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                                  Partial
+                                </span>
+                                <span>Does not include {line.product.residual}.</span>
+                              </span>
+                            )}
+                          </span>
+                        </label>
+
+                        <span
+                          className={cn(
+                            "shrink-0 font-mono text-sm tabular-nums",
+                            line.enabled
+                              ? "text-foreground"
+                              : "text-[var(--muted-foreground)] line-through",
+                          )}
+                        >
+                          {line.cost === null ? "on request" : money(line.cost)}
+                        </span>
+                      </div>
+
+                      {/* Only rendered where a category genuinely has a second
+                          non-overlapping option, rather than a control on every row
+                          for symmetry's sake. */}
+                      {line.category.products.length > 1 && (
+                        <div className="mt-3 flex flex-wrap gap-1.5 pl-7">
+                          {line.category.products.map((p, pi) => (
+                            <button
+                              key={p.name}
+                              type="button"
+                              onClick={() =>
+                                dispatch({ type: "pick", key: line.category.key, index: pi })
+                              }
+                              aria-pressed={line.index === pi}
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors duration-[var(--duration-fast)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+                                line.index === pi
+                                  ? "border-[var(--primary)]/40 bg-[var(--primary-subtle)] text-[var(--primary-pressed)]"
+                                  : "border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
+                              )}
+                            >
+                              {/* The "(partial)" suffix renders for every
+                                  option regardless of which is picked, so a
+                                  partial-replacement alternate says so in raw
+                                  markup even before a reader (or a
+                                  JavaScript-off crawler) ever selects it. The
+                                  full residual clause above only reflects the
+                                  currently picked product, same as its price
+                                  and tier label already do. */}
+                              {p.name}
+                              {p.replaces === "partial" ? " (partial)" : ""}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
 
           <div className="border-t-2 border-foreground/80 px-5 py-5 sm:px-6">
             <div className="flex items-baseline justify-between gap-4">
