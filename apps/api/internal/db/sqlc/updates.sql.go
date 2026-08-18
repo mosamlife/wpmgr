@@ -901,16 +901,88 @@ const markUpdateTaskRunning = `-- name: MarkUpdateTaskRunning :one
 UPDATE update_tasks
 SET status = 'running', started_at = now(), updated_at = now()
 WHERE id = $1 AND tenant_id = $2
+  AND (
+    status = 'pending'
+    OR (
+      status = 'running'
+      AND target_type <> 'agent'
+      AND coalesce(started_at, updated_at) < now() - $3::interval
+    )
+  )
 RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
 `
 
 type MarkUpdateTaskRunningParams struct {
-	ID       uuid.UUID `json:"id"`
-	TenantID uuid.UUID `json:"tenant_id"`
+	ID         uuid.UUID       `json:"id"`
+	TenantID   uuid.UUID       `json:"tenant_id"`
+	StaleAfter pgtype.Interval `json:"stale_after"`
 }
 
+// Claims a task for dispatch: the compare-and-swap that makes "I am the one
+// worker talking to this site about this item" true, rather than merely
+// assumed. Tenant-scoped by id+tenant_id.
+//
+// WITHOUT the status precondition this was a bare write, and the read that
+// guards it is not in the same statement: Worker.Work loads the task, returns
+// early only for TERMINAL statuses, and claims some way further down
+// (GetTask -> ... -> MarkTaskRunning). Two River jobs for the same task both
+// observe a non-terminal row in that gap and both proceed, so one item is
+// applied to one site twice over. The precondition closes the gap the same way
+// FinishUpdateTask's does: the transition is decided by the row itself, under
+// its own row lock, not by what the caller read a moment earlier.
+//
+// TRANSITIONS FROM, deliberately, exactly two states:
+//
+//	'pending'  — the ordinary claim. Also the ONLY state the agent
+//	             self-update wave path can present (ClaimAgentWaveTask holds
+//	             the run's advisory lock and returns ClaimAlreadyClaimed for
+//	             anything not pending before it ever reaches this statement),
+//	             and the state deferForBusySite leaves a waiter in
+//	             (DeferUpdateTaskToPending writes 'pending' and NULLs
+//	             started_at). So a deferred task re-claims normally.
+//
+//	'running', but only if ABANDONED — its command went out longer ago than
+//	             @stale_after. 'running' is not terminal, so a River retry of
+//	             a job that already claimed re-enters Work and reaches here
+//	             with its own row 'running'; a strict = 'pending' would match
+//	             zero rows and drop that work on the floor, which is a worse
+//	             bug than the one being fixed. Bounding it by age is what
+//	             separates "my previous attempt died" from "another worker is
+//	             mid-dispatch right now": River cancels a job's context at its
+//	             own job timeout whether the site answers or not, so a row
+//	             older than that bound cannot have a live worker behind it.
+//	             Callers pass siteWriterHoldMax, the same constant and the
+//	             same reasoning as SiteHasRunningUpdateTask's @hold_max above
+//	             (worker.go asserts maxApply < siteWriterHoldMax <
+//	             staleTaskThreshold, so this window opens strictly after a
+//	             worker must be dead and strictly before the reaper claims the
+//	             row). coalesce(started_at, updated_at) mirrors that gate for
+//	             the same reason.
+//
+// target_type <> 'agent' on the reclaim branch is NOT an optimisation, and it
+// is the same exclusion SiteHasRunningUpdateTask carries: an agent
+// self-update task stays 'running' for its whole confirmation window (20m, or
+// 90m on external cron) with NO live worker behind it by design, because the
+// apply happens after the ARM response is released. Age is therefore not
+// evidence of abandonment for an agent row, and without this clause a wave
+// task would become re-claimable mid-confirmation. Agent rows may be claimed
+// from 'pending' only.
+//
+// A NULL @stale_after makes the reclaim branch match nothing (NULL comparison),
+// which fails CLOSED: strict pending-only claiming. Safe but conservative —
+// an abandoned row then waits for the reaper instead of a retry. Pass the
+// constant.
+//
+// ZERO ROWS MEANS: you did not get the claim, and you must NOT dispatch.
+// It does not distinguish why, so the caller re-reads the row and decides:
+// terminal => the outcome is recorded, stop (return nil, as Work already does
+// for a terminal read); still 'pending' or a FRESH 'running' => another worker
+// holds it, so give the row up WITHOUT consuming a retry (river.JobSnooze),
+// because that holder may still die and the row must stay reclaimable. Never
+// treat zero rows as an error to retry into, and never as permission to
+// proceed.
 func (q *Queries) MarkUpdateTaskRunning(ctx context.Context, arg MarkUpdateTaskRunningParams) (UpdateTask, error) {
-	row := q.db.QueryRow(ctx, markUpdateTaskRunning, arg.ID, arg.TenantID)
+	row := q.db.QueryRow(ctx, markUpdateTaskRunning, arg.ID, arg.TenantID, arg.StaleAfter)
 	var i UpdateTask
 	err := row.Scan(
 		&i.ID,
