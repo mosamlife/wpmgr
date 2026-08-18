@@ -11,7 +11,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 import type { SolutionPageData } from "@/lib/content/types";
 
 // ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ function SolutionHero({ data }: { data: SolutionPageData }) {
               variant="primary"
               size="lg"
               {...(hero.primaryCta.href.startsWith("http")
-                ? { target: "_blank", rel: "noreferrer noopener" }
+                ? { target: "_blank", rel: newTabRel(hero.primaryCta.href) }
                 : {})}
             >
               {hero.primaryCta.icon && !primaryTrailing ? (
@@ -97,7 +97,7 @@ function SolutionHero({ data }: { data: SolutionPageData }) {
                 variant="secondary"
                 size="lg"
                 {...(hero.secondaryCta.href.startsWith("http")
-                  ? { target: "_blank", rel: "noreferrer noopener" }
+                  ? { target: "_blank", rel: newTabRel(hero.secondaryCta.href) }
                   : {})}
               >
                 {hero.secondaryCta.icon && !secondaryTrailing ? (

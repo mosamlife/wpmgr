@@ -2,6 +2,7 @@ import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Container, Section } from "@/components/ui/primitives";
 import { Reveal } from "@/components/motion/reveal";
+import { newTabRel } from "@/lib/site";
 import type { Cta } from "@/lib/content/types";
 
 export function CTABand({
@@ -36,7 +37,7 @@ export function CTABand({
                     href={cta.href}
                     variant={cta.variant ?? "primary"}
                     size="lg"
-                    {...(cta.href.startsWith("http") ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+                    {...(cta.href.startsWith("http") ? { target: "_blank", rel: newTabRel(cta.href) } : {})}
                   >
                     {cta.icon && !trailing ? <Icon name={cta.icon} size={18} /> : null}
                     {cta.label}

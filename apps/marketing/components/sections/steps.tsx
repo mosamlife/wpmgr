@@ -4,6 +4,7 @@ import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { Reveal } from "@/components/motion/reveal";
 import type { Step, Cta } from "@/lib/content/types";
 import { Button } from "@/components/ui/button";
+import { newTabRel } from "@/lib/site";
 
 function StepCard({ n, icon, title, desc }: Step) {
   return (
@@ -60,7 +61,7 @@ export function Steps({
               href={cta.href}
               variant={cta.variant ?? "primary"}
               size="lg"
-              {...(cta.href.startsWith("http") ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+              {...(cta.href.startsWith("http") ? { target: "_blank", rel: newTabRel(cta.href) } : {})}
             >
               {cta.icon && !trailing ? <Icon name={cta.icon} size={18} /> : null}
               {cta.label}

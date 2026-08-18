@@ -6,9 +6,9 @@ import { SITE_CONFIG } from "@/lib/site";
 import { COMPANY, LEGAL_EFFECTIVE_DATE, LEGAL_CONTACT_HREF, PADDLE, STRIPE, RAZORPAY } from "@/lib/content/legal";
 
 export const metadata: Metadata = buildMetadata({
-  title: "Privacy Policy | WPMgr",
+  title: "Privacy Policy",
   description:
-    "How WPMgr collects, uses, and protects data for the hosted service at manage.wpmgr.app, including our sub-processors, Google Cloud Platform, Stripe, Razorpay, and Paddle.",
+    "How WPMgr collects, uses, and protects data for the hosted service at manage.wpmgr.app, hosted on Google Cloud, payments via Stripe, Razorpay, and Paddle.",
   canonical: "/privacy",
 });
 

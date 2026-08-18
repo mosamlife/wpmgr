@@ -6,9 +6,9 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const OBJECT_CACHE_PAGE: FeaturePageData = {
   slug: "object-cache",
   title: "Redis Object Cache for WordPress",
-  metaTitle: "Redis Object Cache WordPress: Per-Site Persistent Cache | WPMgr",
+  metaTitle: "Redis Object Cache WordPress: Per-Site Persistent Cache",
   metaDescription:
-    "Per-site Redis object cache for WordPress with TLS, ACL, hit-ratio metrics, and a debug header that verifies cache state per request. Self-hosted, open source, and free.",
+    "Per-site Redis object cache for WordPress with TLS, ACL, hit-ratio metrics, and a debug header that verifies cache state per request. Self-hosted.",
   hero: {
     eyebrow: "Redis Object Cache",
     heading: "Redis object cache for WordPress, managed per site from the dashboard",

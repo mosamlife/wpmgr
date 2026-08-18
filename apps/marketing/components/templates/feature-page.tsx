@@ -11,7 +11,7 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { Reveal } from "@/components/motion/reveal";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 import type { FeaturePageData } from "@/lib/content/types";
 
 // Visual leaf: resolved at render time based on slug.
@@ -113,7 +113,7 @@ function FeatureHero({ data }: { data: FeaturePageData }) {
               href={hero.primaryCta.href}
               variant="primary"
               size="lg"
-              {...(hero.primaryCta.href.startsWith("http") ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+              {...(hero.primaryCta.href.startsWith("http") ? { target: "_blank", rel: newTabRel(hero.primaryCta.href) } : {})}
             >
               {hero.primaryCta.icon && !primaryTrailing ? <Icon name={hero.primaryCta.icon} size={18} /> : null}
               {hero.primaryCta.label}
@@ -124,7 +124,7 @@ function FeatureHero({ data }: { data: FeaturePageData }) {
                 href={hero.secondaryCta.href}
                 variant="secondary"
                 size="lg"
-                {...(hero.secondaryCta.href.startsWith("http") ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+                {...(hero.secondaryCta.href.startsWith("http") ? { target: "_blank", rel: newTabRel(hero.secondaryCta.href) } : {})}
               >
                 {hero.secondaryCta.icon && !secondaryTrailing ? <Icon name={hero.secondaryCta.icon} size={18} /> : null}
                 {hero.secondaryCta.label}

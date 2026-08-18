@@ -14,15 +14,15 @@ import { FAQ } from "@/components/sections/faq";
 import { CTABand } from "@/components/sections/cta-band";
 import { buildMetadata, buildFAQPageLd, buildBreadcrumbLd, buildSoftwareApplicationLd } from "@/lib/seo";
 import { JsonLd } from "@/lib/json-ld";
-import { SITE_CONFIG, signupHref } from "@/lib/site";
+import { SITE_CONFIG, signupHref, newTabRel } from "@/lib/site";
 import { PRICING_TIERS, PRICING_NOTE, PRICING_FAQ, PRICING_CTAS, resolveTierPrices } from "@/lib/content/pricing";
 import { fetchLivePricing } from "@/lib/pricing-live";
 import { PricingTierCards } from "./pricing-tiers";
 
 export const metadata: Metadata = buildMetadata({
-  title: "Pricing | WPMgr",
+  title: "Pricing",
   description:
-    "WPMgr pricing: a permanent free tier for 3 sites, and hosted plans from $15/mo with managed backup storage and more frequent backups. Self-hosting stays free and unlimited forever.",
+    "WPMgr pricing: a permanent free tier for 3 sites, hosted plans from $15/mo with managed backup storage. Self-hosting stays free and unlimited forever.",
   canonical: "/pricing",
 });
 
@@ -103,7 +103,7 @@ export default async function PricingPage() {
               <Link
                 href={signupHref("pricing-free")}
                 target="_blank"
-                rel="noreferrer noopener"
+                rel={newTabRel(signupHref("pricing-free"))}
                 className="inline-flex items-center gap-2 rounded-[var(--radius)] bg-primary px-6 py-3 text-base font-medium text-[var(--primary-foreground)] shadow-sm transition-colors hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
               >
                 Get started for free

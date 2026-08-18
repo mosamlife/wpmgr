@@ -1,4 +1,4 @@
-import { signupHref } from "@/lib/site";
+import { signupHref, newTabRel } from "@/lib/site";
 import type { SignupSource } from "@/lib/analytics";
 import { Icon } from "@/components/ui/icon";
 
@@ -44,7 +44,7 @@ export function SignupCard({
       <a
         href={signupHref(source)}
         target="_blank"
-        rel="noreferrer noopener"
+        rel={newTabRel(signupHref(source))}
         className="mt-4 inline-flex h-10 items-center gap-2 rounded-[var(--radius)] bg-[var(--primary)] px-5 text-sm font-medium text-[var(--primary-foreground)] shadow-sm transition-colors duration-[var(--duration-fast)] hover:bg-[var(--primary-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
       >
         {cta}

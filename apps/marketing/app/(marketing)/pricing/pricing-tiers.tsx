@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/primitives";
 import { Stagger, StaggerItem } from "@/components/motion/stagger";
 import { cn } from "@/lib/utils";
+import { newTabRel } from "@/lib/site";
 import {
   PRICING_TIERS,
   ctaHrefWithCurrency,
@@ -65,6 +66,7 @@ export function PricingTierCards({
       <Stagger className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {PRICING_TIERS.map((tier) => {
           const trailing = tier.cta.icon === "ArrowRight";
+          const ctaHref = ctaHrefWithCurrency(tier.cta, currency);
           const tierPrice = prices[tier.id];
           const showInr = currency === "INR" && tierPrice.inr !== null;
           const priceLabel = showInr && tierPrice.inr ? tierPrice.inr.label : tierPrice.usd.label;
@@ -114,11 +116,11 @@ export function PricingTierCards({
                   ))}
                 </ul>
                 <Button
-                  href={ctaHrefWithCurrency(tier.cta, currency)}
+                  href={ctaHref}
                   variant={tier.cta.variant}
                   size="md"
                   target="_blank"
-                  rel="noreferrer noopener"
+                  rel={newTabRel(ctaHref)}
                   className="w-full"
                 >
                   {tier.cta.label}

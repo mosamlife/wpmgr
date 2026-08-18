@@ -12,9 +12,9 @@ import { SOLUTION_HUB_CARDS } from "@/lib/content/solutions";
 import { signupHref } from "@/lib/site";
 
 export const metadata: Metadata = buildMetadata({
-  title: "WordPress Management Solutions | WPMgr",
+  title: "WordPress Management Solutions",
   description:
-    "WPMgr covers every WordPress management use case: agencies, freelancers, hosting providers, WordPress security, backups, performance, and managing multiple sites. One open-source platform, no per-site fee.",
+    "WPMgr covers every WordPress management use case: agencies, freelancers, hosting providers, security, backups, and performance. One open-source platform.",
   canonical: "/solutions",
 });
 

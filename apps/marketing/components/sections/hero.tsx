@@ -2,6 +2,7 @@ import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Badge, Container } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import { newTabRel } from "@/lib/site";
 import type { Cta } from "@/lib/content/types";
 
 type HeroTrust = { icon: string; title: string; desc: string; href?: string };
@@ -66,7 +67,7 @@ export function Hero({ badge, heading, subhead, ctas, trust }: HeroProps) {
                   href={cta.href}
                   variant={cta.variant ?? "primary"}
                   size="lg"
-                  {...(external ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+                  {...(external ? { target: "_blank", rel: newTabRel(cta.href) } : {})}
                 >
                   {cta.icon && !trailing ? <Icon name={cta.icon} size={18} /> : null}
                   {cta.label}

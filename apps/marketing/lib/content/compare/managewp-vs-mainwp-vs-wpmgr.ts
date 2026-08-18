@@ -31,7 +31,7 @@ export const MANAGEWP_VS_MAINWP: ComparisonPageData = {
   title: "ManageWP vs MainWP vs WPMgr",
   metaTitle: "ManageWP vs MainWP vs WPMgr: One Dashboard, Compared",
   metaDescription:
-    "ManageWP, MainWP and WPMgr compared on where the dashboard runs, where your backups land, and what the bill does as the fleet grows. Every figure sourced and dated.",
+    "ManageWP, MainWP and WPMgr compared on where the dashboard runs, where backups land, and what the bill does as the fleet grows. Every figure sourced and dated.",
   targetQuery: "managewp vs mainwp",
   hero: {
     heading: "ManageWP vs MainWP vs WPMgr",

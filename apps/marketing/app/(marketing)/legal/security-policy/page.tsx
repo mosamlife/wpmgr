@@ -9,7 +9,7 @@ import { SITE_CONFIG } from "@/lib/site";
 export const metadata: Metadata = buildMetadata({
   title: "Security Policy: Responsible Disclosure",
   description:
-    "WPMgr responsible disclosure policy, security posture, and how to report a vulnerability. Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups.",
+    "WPMgr responsible disclosure policy and security posture: Ed25519-signed agent, redacted diagnostics, client-side-encrypted backups, and how to report a bug.",
   canonical: "/legal/security-policy",
 });
 

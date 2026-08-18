@@ -6,9 +6,9 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 export const TEAM_ACCESS_PAGE: FeaturePageData = {
   slug: "team-access",
   title: "WordPress Team Access Control and Audit Log",
-  metaTitle: "WordPress Team Access Control with Audit Log | WPMgr",
+  metaTitle: "WordPress Team Access Control with Audit Log",
   metaDescription:
-    "Four-role access control, per-site sharing, OIDC SSO, and a tamper-evident audit log for your WordPress fleet. Share one site without exposing the rest. Self-hosted and open source.",
+    "Four-role access control, per-site sharing, OIDC SSO, and a tamper-evident audit log for your WordPress fleet. Share one site without exposing the rest.",
   hero: {
     eyebrow: "Team and access",
     heading: "WordPress team access control with a tamper-evident audit log",
