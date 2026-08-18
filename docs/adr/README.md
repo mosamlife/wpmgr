@@ -17,7 +17,7 @@ each file (see "Status line formats" below — the tree is not normalized).
 
 | # | Title | Status | Date | File |
 |---|-------|--------|------|------|
-| 037 | WPMgr site-management roadmap | proposed | 2026-05-29 | [ADR-037-wpmgr-feature-parity-roadmap.md](./ADR-037-wpmgr-feature-parity-roadmap.md) |
+| 037 | WPMgr site-management roadmap | Superseded by ADR-060 | 2026-05-29 | [ADR-037-wpmgr-feature-parity-roadmap.md](./ADR-037-wpmgr-feature-parity-roadmap.md) |
 | 038 | SSE channel scoping + cross-instance fan-out | accepted | 2026-05-31 | [ADR-038-sse-channel-scoping.md](./ADR-038-sse-channel-scoping.md) |
 | 039 | Heartbeat cadence + connection-timeout thresholds | accepted | 2026-05-31 | [ADR-039-heartbeat-cadence-timeouts.md](./ADR-039-heartbeat-cadence-timeouts.md) |
 | 040 | Agent-side last-will (disconnect) mechanism | accepted | 2026-05-31 | [ADR-040-agent-last-will-disconnect.md](./ADR-040-agent-last-will-disconnect.md) |
@@ -38,6 +38,7 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 056 | Dashboard Two-Factor Authentication | Accepted | 2026-06-16 | [ADR-056-dashboard-2fa.md](./ADR-056-dashboard-2fa.md) |
 | 057 | Security Suite Foundation: Per-Site Policy Model | Accepted | 2026-06-20 | [ADR-057-security-suite-foundation.md](./ADR-057-security-suite-foundation.md) |
 | 059 | Site-User Authentication Policy (2FA + Password Policy) | Accepted — 2026-06-20 | 2026-06-20 | [ADR-059-site-user-auth-policy.md](./ADR-059-site-user-auth-policy.md) |
+| 060 | Phase order: safety and truth before capability | Accepted | 2026-08-18 | [ADR-060-phase-order-safety-before-capability.md](./ADR-060-phase-order-safety-before-capability.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
@@ -49,7 +50,8 @@ Three formats coexist in the files above, transcribed as-is rather than
 normalized:
 
 1. **Bold inline**, its own line near the top — `**Status:** <value>`, e.g.
-   ADR-037 through ADR-047 (except the ADR-045 appendices), ADR-055–057, ADR-059.
+   ADR-037 through ADR-047 (except the ADR-045 appendices), ADR-055–057,
+   ADR-059, ADR-060.
 2. **Plain inline**, no bold — `Status: <value> (<date>)`, e.g.
    ADR-051–054.
 3. **Bold bullet**, inside a metadata list — `- **Status:** <value> (<date>) —
@@ -65,7 +67,7 @@ Two files don't fit any of the three and are findings, not table artifacts:
 ## Numbering
 
 Numbers are allocated in this file and are never reused, including the ones
-below that have no file. **The next free number is 060.**
+below that have no file. **The next free number is 061.**
 
 | Number(s) | What happened |
 |---|---|
