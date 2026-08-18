@@ -21,10 +21,11 @@ invariant that has no user-facing surface at all.
 
 ## Decision
 
-The next phase of work is taken in this order. A later category does not
-start ahead of an earlier one:
+The next phase of work is taken in this order of precedence: when two
+phases compete for the same engineering time, the earlier one gets it and
+the later one yields.
 
-1. **Gate** — close any open trust or safety boundary.
+1. **Gate** — trust and safety boundary work.
 2. **Recovery assurance** — prove that what is claimed to be recoverable
    actually recovers.
 3. **Operator workflow** — make the operator-facing surface correct and
@@ -33,7 +34,10 @@ start ahead of an earlier one:
    within tight, explicit limits.
 5. **Differentiation** — capability that competes on features.
 
-Capability work does not overtake safety work.
+Capability work does not outbid safety work for the same engineering time.
+This precedence order is the whole of the ordering rule; it is not a gate,
+and nothing below is a second one. The freeze clause is this ADR's one
+absolute prohibition:
 
 ### Freeze clause
 
@@ -43,7 +47,8 @@ This is deliberately narrow. It does not freeze feature work in general —
 internal work, and work that adds no new externally-reachable surface, is
 unaffected. A broad freeze gets suspended informally and the lift is never
 recorded, which leaves the project worse off than no freeze at all; a narrow
-freeze is cheap enough to actually hold.
+freeze is cheap enough to actually hold. Precedence above decides what gets
+engineering time; this clause is the only thing that outright does not ship.
 
 ## Why an ADR, and not a ticket
 
@@ -77,9 +82,11 @@ they become eligible to start does.
 
 ## Consequences
 
-- A phase does not open until the phase before it is closed.
-- The freeze clause is a standing check on any change that adds a new
-  externally-reachable surface: confirm no auth-boundary item is open
-  before it ships.
+- When phases compete for the same engineering time, the earlier phase in
+  the order above gets it; this is a precedence rule, not a hard gate on
+  starting later work.
+- The freeze clause is the one hard prohibition, and it is a standing check
+  on any change that adds a new externally-reachable surface: confirm no
+  auth-boundary item is open before it ships.
 - Reordering this sequence again requires a superseding ADR — the same
   mechanism that reorders it here.
