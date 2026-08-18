@@ -2275,15 +2275,36 @@ type Querier interface {
 	//                zero rows and drop that work on the floor, which is a worse
 	//                bug than the one being fixed. Bounding it by age is what
 	//                separates "my previous attempt died" from "another worker is
-	//                mid-dispatch right now": River cancels a job's context at its
-	//                own job timeout whether the site answers or not, so a row
-	//                older than that bound cannot have a live worker behind it.
-	//                Callers pass siteWriterHoldMax, the same constant and the
-	//                same reasoning as SiteHasRunningUpdateTask's @hold_max above
-	//                (worker.go asserts maxApply < siteWriterHoldMax <
-	//                staleTaskThreshold, so this window opens strictly after a
-	//                worker must be dead and strictly before the reaper claims the
-	//                row). coalesce(started_at, updated_at) mirrors that gate for
+	//                mid-dispatch right now", but read the next two paragraphs for
+	//                what that separation is and is not worth.
+	//
+	//                WHAT THE BOUND GUARANTEES: past @stale_after, no CONTROL-PLANE
+	//                worker is still inside its apply call for this row. Callers do
+	//                not pass a constant; they derive the bound from THIS install's
+	//                apply budget — ClaimStaleAfter(applyJobTimeout) =
+	//                max(applyJobTimeout + claimStaleMargin, siteWriterHoldMax) in
+	//                update/worker.go — and main() refuses to boot on a
+	//                configuration where the budget could reach it
+	//                (ValidateClaimTimings, asserting applyJobTimeout <
+	//                ClaimStaleAfter < staleTaskThreshold). So the reclaim window
+	//                opens strictly after River has cancelled the previous job's
+	//                context and strictly before the periodic reaper terminalizes
+	//                the row.
+	//
+	//                WHAT IT DOES NOT GUARANTEE: that nothing is still applying ON
+	//                THE SITE. Cancelling a River job's context ends the control
+	//                plane's WAIT for the HTTP response; it does not reach into
+	//                WordPress and stop an apply the agent has already started. The
+	//                AGENT's own site-update lock is the authoritative bound on
+	//                that, exactly as it is for SiteHasRunningUpdateTask's
+	//                @hold_max below. If the bound is ever exceeded in practice the
+	//                residual is therefore a duplicate DISPATCH — a second command
+	//                for the same item and a second set of audit/event records for
+	//                it, which the agent's lock is what serialises — and not a
+	//                guaranteed double-apply. Still a real defect, and still worth
+	//                bounding; simply not a proof that no work is live.
+	//
+	//                coalesce(started_at, updated_at) mirrors the gate below for
 	//                the same reason.
 	//
 	// target_type <> 'agent' on the reclaim branch is NOT an optimisation, and it
