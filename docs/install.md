@@ -402,6 +402,107 @@ A dedicated `WPMGR_S3_PUBLIC_ENDPOINT` variable (so the internal API can reach
 SeaweedFS over a private path while the agent uses a separate public URL) is
 being considered to remove the single-value constraint described above.
 
+## Keeping the agent version current (self-host) {#agent-updates}
+
+Two version numbers show up throughout the dashboard: this control plane's own
+release, and the WordPress agent plugin's version
+(`WPMGR_AGENT_VERSION` in `apps/agent/wpmgr-agent.php`). **They move
+independently, on purpose** — the agent version only changes when the agent
+plugin itself changes, so most control-plane releases (dashboard, API,
+marketing, infra) leave it untouched. Concretely: release tags `v0.61.131`
+through `v0.61.138` all ship agent `0.61.131` unchanged, and only `v0.61.139`
+moved it to `0.61.139` — a self-hosted dashboard reporting "latest agent
+0.61.131" across that whole run of releases was reporting a true, current
+number, not a stale one. Looking at the last 20 release tags, only 4 of the
+19 release-to-release steps changed the agent version at all, so a long run
+of unchanged numbers is the common case, not the exception.
+
+### Why two self-hosted installs can disagree
+
+A self-hosted control plane reads its "latest agent" version from
+`agent-releases/latest.json` **in its own configured object storage**
+(`WPMGR_S3_*`) — it never calls out to wpmgr.app or GitHub on its own. That
+read path is `agentrelease.Reader` (`apps/api/internal/agentrelease/reader.go`),
+wired from `cfg.S3.*` in `apps/api/cmd/wpmgr/main.go`. Nothing this project
+publishes can move a self-hosted fleet unless that install's operator has
+turned on a path that reaches outside its own storage — see the mirror below.
+
+That much matches the mental model most people reach for. The part that is
+easy to miss, and that explains two self-hosted installs disagreeing even when
+**neither** has ever mirrored a release: **if `agent-releases/latest.json` has
+never been readable on an install, the "latest agent" figure it shows is not
+"unknown" — it silently falls back to the highest agent version any of that
+install's own enrolled sites already reports.** This is `referenceVersion` in
+`apps/api/internal/agentrelease/service.go:174-186`, backed by `fleetReference`
+at `service.go:225-234`: with no published manifest ever read, the reference
+becomes "the newest version already seen in this fleet", not "the newest
+version that exists". Two installs with different fleets — one of which
+happens to include a single site someone upgraded by hand, or a newer
+plugin-directory build — will show two different "latest agent" numbers with
+no mirroring, no outbound request, and nothing published anywhere: the number
+is just whatever their own sites already happen to be running.
+
+The API response says which case you're in: `GET /api/v1/fleet/agents` returns
+`reference_source` as `"published"` (a real, read manifest), `"fleet"` (the
+derived fallback above), or `"none"` (neither available, every site reads
+`unknown`) — see `apps/api/internal/agentrelease/handler.go:126-145`. Under
+`"fleet"`, `latest_version` is the newest version *seen here*, not the newest
+that exists, and should not be read as an upstream release number.
+
+### Getting a real published reference: the built-in mirror
+
+The control plane ships a mirror job (`apps/api/internal/agentupstream`) built
+for exactly this: it reads this project's public GitHub release, verifies it
+end to end, and publishes the same two objects the hosted release pipeline
+writes — `agent-releases/<version>/wpmgr-agent.zip` then
+`agent-releases/latest.json` (package before pointer, so the pointer never
+names an object that isn't there yet) — into **your own** configured object
+storage. From that moment every existing read path (the freshness dashboard
+above, the signed self-update manifest, the fleet task planner) is unchanged
+and unaware; it just starts seeing a real reference instead of the fleet
+fallback.
+
+It ships off. Turning it on means this control plane starts making outbound
+HTTPS requests to `api.github.com`/`github.com` and writing a downloaded
+binary into your storage — a self-hosted install shouldn't do either without
+an explicit decision, so nothing here runs until you set:
+
+| Env var | Default | What it does |
+|---|---|---|
+| `WPMGR_UPDATE_AGENT_MIRROR_ENABLED` | `false` | Turns the mirror on. Requires `WPMGR_S3_*` to be configured; runs every 6 hours (± jitter) once enabled. While `false` the job no-ops: nothing is fetched, nothing is written. |
+| `WPMGR_UPDATE_AGENT_MIRROR_OWNER` / `WPMGR_UPDATE_AGENT_MIRROR_REPO` | `mosamlife` / `wpmgr` | The GitHub repo to mirror releases from. Point a fork at its own repo to mirror its own releases instead. |
+| `WPMGR_UPDATE_AGENT_MIRROR_ALLOW_ROLLBACK` | `false` | The mirror normally only moves your published agent version **strictly forward** — an upstream release that is equal to, older than, or unorderable against what's already mirrored is refused, because that's what a yanked-and-restored upstream release would otherwise do: flap your published version back and forth. Set this only when you deliberately want to follow a genuine upstream rollback. |
+| `WPMGR_UPDATE_AGENT_PACKAGE_SERVE_ENABLED` | `false` | Serves the mirrored package **from this control plane** instead of a presigned URL pointing at your own storage host. This is what removes the need to set `WPMGR_AGENT_PACKAGE_HOST` in every site's `wp-config.php` (see [the self-update runbook](./runbook/agent-self-update.md#self-hosted-deployments-non-gcs-object-storage)). It ships off because of rollout order: only an agent new enough to trust its own control plane's host will accept a control-plane-hosted `package_url` — an older agent refuses it on its own host allowlist. Turn it on once your fleet is running an agent that includes this, or after upgrading them once by hand. Requires `WPMGR_S3_*` and `WPMGR_AGENT_SIGNING_PRIVATE_KEY`. |
+| `WPMGR_UPDATE_AGENT_PACKAGE_BASE_URL` | (empty) | Optional override for the public origin used to build that URL when package serving is on. Empty derives it from the control-plane URL the agent already used to fetch its manifest — no configuration needed unless you sit behind a proxy that rewrites `Host`. |
+
+The mirror will **never** overwrite a `latest.json` it did not itself
+publish — if you run your own release pipeline against this bucket
+(`scripts/release-agent.sh`), the mirror detects that and stands down rather
+than taking over your channel. Its remedy, logged when this happens, is to
+remove `agent-releases/latest.json` yourself if you want to hand the channel
+to the mirror.
+
+**This is a separate switch from actually pushing an update.** Mirroring (or
+publishing your own release) only makes a version *available* — it is what a
+site's own WP Admin → Plugins page or the freshness dashboard sees.
+`WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED` (default `false`) is the independent
+fleet-wide kill switch that lets this control plane *dispatch* the update to
+sites itself. See [docs/runbook/agent-self-update.md](./runbook/agent-self-update.md)
+for that mechanism, including why reverting `latest.json` cannot downgrade a
+site that already applied a build (the agent's own downgrade guard refuses
+it) — a genuine rollback is fix-forward, not a pointer revert.
+
+### Checking mirror status
+
+- `POST /api/v1/admin/agent-mirror/check` (superadmin) queues one immediate
+  mirror run — the same action as the **Check now** button on the dashboard's
+  Sites page. Outbound GitHub requests are throttled to at most once every 30
+  minutes regardless of how often this is called.
+- `GET /api/v1/fleet/agents` includes an `agent_mirror` object with `enabled`,
+  `status`, `can_check_now`, and the last attempt/success timestamps and
+  outcome, so you can confirm the mirror is actually succeeding without
+  reading server logs.
+
 ## Adding a WordPress site
 
 Once running, install the agent plugin on each managed site and pair it from the
