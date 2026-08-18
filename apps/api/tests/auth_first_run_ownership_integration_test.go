@@ -315,8 +315,19 @@ func TestFirstRunOwnership_SocialSignInStillWorksOnAClaimedInstall(t *testing.T)
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	// The same person signs in with Google against the address they already own
-	// and verified through the claim-bearing bootstrap.
+	// Precondition, arranged out of band: the owner has verified their address.
+	// Bootstrap does not verify it (CreateUser leaves email_verified_at NULL,
+	// which is unchanged by this PR), and the social linking policy refuses to
+	// attach an identity to an account this install never verified. That
+	// refusal is the account-takeover defence and is not what this test is
+	// about — it is about whether a claimed install still resolves a social
+	// sign-in to the org the person already owns.
+	if _, err := pool.Exec(ctx,
+		"UPDATE users SET email_verified_at = now() WHERE email = $1", "owner@example.com"); err != nil {
+		t.Fatalf("mark owner verified: %v", err)
+	}
+
+	// The same person signs in with Google against the address they already own.
 	res, err := svc.SignInWithSocial(ctx, auth.SocialIdentity{
 		Provider:      "google",
 		Subject:       "google-subject-owner",
