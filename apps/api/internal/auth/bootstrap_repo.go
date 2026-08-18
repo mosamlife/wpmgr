@@ -26,6 +26,42 @@ import (
 // to name, and it guards a different invariant to either of theirs.
 const InstallBootstrapLockKey = "install_bootstrap"
 
+// OwnershipEstablished reports whether ANY owner membership exists on this
+// install, across every tenant.
+//
+// IT REPLACES A USER COUNT, AND THAT SUBSTITUTION WAS THE DEFECT. "Has this
+// install been claimed?" is a question about ownership, and a user row is not
+// ownership. Any path that can create a user — a social sign-in creates one
+// from a provider handshake alone — would otherwise flip the install out of
+// "unclaimed" without anybody owning it, and every gate downstream then reads
+// the wrong answer: first-run ownership refuses the operator's correct claim
+// forever, and self-serve opens on an install that has no owner. Asking for the
+// property directly is the only version that cannot be flipped by creating
+// something that is not an owner.
+//
+// RLS: memberships is FORCE ROW LEVEL SECURITY and this read spans every
+// tenant, so it runs under InAgentTx and the memberships_agent policy — the
+// SELECT-only cross-tenant scope the schema already provides for exactly this
+// kind of backend-only question. No tenant scope could serve instead: at the
+// moment the question matters there may be no tenant at all.
+//
+// It has no "unknown" answer of its own, so each caller decides what an error
+// means for it. Both treat an unreadable answer as "claimed", which refuses
+// rather than grants.
+func (r *Repo) OwnershipEstablished(ctx context.Context) (bool, error) {
+	var exists bool
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM memberships WHERE role = $1)`,
+			string(authz.RoleOwner),
+		).Scan(&exists)
+	})
+	if err != nil {
+		return false, domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
+	}
+	return exists, nil
+}
+
 // BootstrapInstall creates the install's first tenant, its first user and the
 // owner membership binding them, as ONE transaction under
 // InstallBootstrapLockKey.
@@ -62,11 +98,30 @@ func (r *Repo) BootstrapInstall(
 	err := r.pool.InInstallLockTx(ctx, InstallBootstrapLockKey, func(tx pgx.Tx, scopeTenant func(uuid.UUID) error) error {
 		q := sqlc.New(tx)
 
-		count, err := q.CountUsers(ctx)
-		if err != nil {
-			return domain.Internal("user_count_failed", "failed to count users").WithCause(err)
+		// OWNERSHIP, NOT POPULATION. Read inside the locked transaction that
+		// will perform the writes, so the second caller does not read until the
+		// first has committed. It asks whether an owner membership exists —
+		// never whether a user row does — so nothing that merely creates an
+		// account can close this door on the person holding the claim.
+		//
+		// app.agent is set for this one statement rather than by InAgentTx,
+		// because the read has to happen in THIS transaction (the one holding
+		// the lock) and a second transaction would put the check back outside
+		// the critical section, which is the shape the lock exists to prevent.
+		// It is scoped to the transaction, so it lapses at COMMIT or ROLLBACK
+		// alongside the lock; the membership INSERT below still runs under
+		// app.tenant_id and its own tenant policy.
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', 'on', true)"); err != nil {
+			return domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
 		}
-		if count > 0 {
+		var owned bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM memberships WHERE role = $1)`,
+			string(authz.RoleOwner),
+		).Scan(&owned); err != nil {
+			return domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
+		}
+		if owned {
 			return errRegistrationClosed()
 		}
 

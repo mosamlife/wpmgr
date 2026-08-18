@@ -253,23 +253,42 @@ type RegisterInput struct {
 // returns errRegistrationClosed(), one indistinguishable answer. See its
 // comment for why three answers would be worse than one.
 //
-// The count and the writes are one transaction under one advisory lock, in
-// Repo.BootstrapInstall. Nothing is checked here that is acted on there.
+// The ownership check and the writes are one transaction under one advisory
+// lock, in Repo.BootstrapInstall. Nothing decided here is re-decided there.
+//
+// EVERY REFUSAL DOES THE SAME WORK, not just returns the same bytes. Argon2
+// dominates this request by two orders of magnitude, so an early return that
+// skips it answers "your claim was wrong" in nanoseconds while a correct claim
+// against an owned install answers identically after milliseconds — which makes
+// the duration a reliable oracle for claim-correctness, i.e. an offline guess
+// becomes an online one. So the hash is computed first, unconditionally, and
+// the ownership probe runs on every path before the answer is chosen.
 func (s *Service) Bootstrap(ctx context.Context, in RegisterInput, claim string) (LoginResult, error) {
-	// The claim is checked BEFORE the input is validated, so a caller without
-	// it cannot use validation feedback to probe this path at all.
-	if !s.bootstrapClaimAccepted(claim) {
+	in.Email = normalizeEmail(in.Email)
+
+	// Validated now, reported later: a caller without the claim must not be
+	// able to use validation feedback to probe this path, so verr is held until
+	// the claim has been judged.
+	verr := s.validator.Struct(in)
+
+	// Unconditional, and its error is held for the same reason. HashPassword
+	// only fails on a password outside argon2's accepted bounds, which
+	// validation has already rejected for any caller that will be told about
+	// it.
+	hash, herr := HashPassword(in.Password)
+
+	// Also unconditional: the claim decides the answer, not which work gets
+	// done. An unreadable answer counts as owned, refusing rather than granting.
+	owned, oerr := s.repo.OwnershipEstablished(ctx)
+
+	if !s.bootstrapClaimAccepted(claim) || oerr != nil || owned {
 		return LoginResult{}, errRegistrationClosed()
 	}
-
-	in.Email = normalizeEmail(in.Email)
-	if err := s.validator.Struct(in); err != nil {
-		return LoginResult{}, err
+	if verr != nil {
+		return LoginResult{}, verr
 	}
-
-	hash, err := HashPassword(in.Password)
-	if err != nil {
-		return LoginResult{}, domain.Internal("password_hash_failed", "failed to hash password").WithCause(err)
+	if herr != nil {
+		return LoginResult{}, domain.Internal("password_hash_failed", "failed to hash password").WithCause(herr)
 	}
 
 	tenantName := strings.TrimSpace(in.TenantName)

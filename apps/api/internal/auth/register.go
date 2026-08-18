@@ -38,23 +38,35 @@ func (s *Service) RegisterSelfServe(
 		return err
 	}
 
-	// SELF-SERVE DOES NOT OPEN UNTIL THE INSTALL HAS AN OWNER. On an install
-	// with zero users, creating one here would hand the first-account slot to
-	// whoever asked first — the caller becomes user number one, so the person
-	// holding the provisioning claim can never bootstrap afterwards, and the
-	// account they got is itself useless (pending, awaiting a verification mail
-	// that an unclaimed install has no SMTP to send). Denying an operator their
-	// own install is the same loss whether it is taken or merely blocked.
+	// THE PASSWORD HASH IS COMPUTED BEFORE ANY DECISION, ON PURPOSE. Argon2
+	// dominates the cost of this request by two orders of magnitude, so a
+	// branch that skips it finishes visibly sooner and the duration of the
+	// response becomes a readable answer to whatever the branch tested. Here
+	// that would be "does this install have an owner yet?" — the one fact this
+	// whole path exists to keep to itself. Doing the work unconditionally is
+	// what makes the two outcomes take the same time; a sleep would not, since
+	// its length is a constant an observer can subtract.
+	hash, err := HashPassword(in.Password)
+	if err != nil {
+		return domain.Internal("password_hash_failed", "failed to hash password").WithCause(err)
+	}
+
+	// SELF-SERVE DOES NOT OPEN UNTIL THE INSTALL HAS AN OWNER, and ownership
+	// means an owner membership exists — never that a user row does. Creating
+	// an account here on an ownerless install would hand it its first
+	// organisation and its first owner through a path that asks nobody's
+	// permission, and the account is useless anyway (pending, awaiting a
+	// verification mail an unclaimed install has no SMTP to send). Denying an
+	// operator their own install is the same loss whether it is taken or merely
+	// blocked.
 	//
 	// It returns nil, so the caller receives the identical generic response a
-	// real self-serve registration produces. An unauthenticated caller therefore
-	// cannot tell an unclaimed install from a claimed one by registering into
-	// it, which is the whole reason this refusal is silent rather than an error.
+	// real self-serve registration produces.
 	//
-	// Fails closed on a count it cannot read: unreadable is not zero, and it is
-	// not "many" either. Doing nothing costs a legitimate signup one retry; the
-	// alternative costs an operator their install.
-	if count, err := s.repo.CountUsers(ctx); err != nil || count == 0 {
+	// Fails closed on an answer it cannot read: unreadable is not "unowned".
+	// Doing nothing costs a legitimate signup one retry; the alternative costs
+	// an operator their install.
+	if owned, oerr := s.repo.OwnershipEstablished(ctx); oerr != nil || !owned {
 		return nil
 	}
 
@@ -69,10 +81,6 @@ func (s *Service) RegisterSelfServe(
 		return nil // unexpected error: stay generic, never leak
 	}
 
-	hash, err := HashPassword(in.Password)
-	if err != nil {
-		return domain.Internal("password_hash_failed", "failed to hash password").WithCause(err)
-	}
 	tenantName := strings.TrimSpace(in.TenantName)
 	if tenantName == "" {
 		tenantName = defaultTenantName(in.Email)

@@ -120,29 +120,32 @@ func TestSocialIdentity_DeclaredIssuerChangeKeepsTheSameAccount(t *testing.T) {
 	// migration, it is a silent relaxation. Read through a superuser connection
 	// because audit_log is tenant-scoped by RLS.
 	//
-	// BOTH SINKS, because which one takes the event is a property of the person
-	// and not of the move. recordSocialAuditWith writes to audit_log when the
-	// user has an org and to system_audit_log when they do not, and this user
-	// has none: an SSO sign-in does not create an organisation, so a corporate
-	// user is tenantless until somebody invites them. Counting the union is
-	// what the assertion always meant — exactly one audited move — and it holds
-	// whichever side of that the user happens to be on.
+	// THE SYSTEM SINK, NAMED, not "either sink". recordSocialAuditWith routes
+	// by whether the actor has an org: audit_log when they do, system_audit_log
+	// when they do not. This user has none — an SSO sign-in does not create an
+	// organisation, so a corporate user is tenantless until somebody invites
+	// them — so system_audit_log is the sink this event MUST reach, and a
+	// union would also pass if routing broke and sent it to the other one.
+	// audit_log is asserted empty for the same reason.
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
-	var moves int
+	const movePredicate = `metadata->>'event' = 'identity_issuer_migrated'
+		 AND metadata->>'from_issuer' = 'https://idp.acme.com'
+		 AND metadata->>'to_issuer' = 'https://login.acme.com'`
+	var systemMoves, tenantMoves int
 	if err := admin.QueryRow(ctx,
-		`SELECT (SELECT count(*) FROM audit_log
-		          WHERE metadata->>'event' = 'identity_issuer_migrated'
-		            AND metadata->>'from_issuer' = 'https://idp.acme.com'
-		            AND metadata->>'to_issuer' = 'https://login.acme.com')
-		      + (SELECT count(*) FROM system_audit_log
-		          WHERE metadata->>'event' = 'identity_issuer_migrated'
-		            AND metadata->>'from_issuer' = 'https://idp.acme.com'
-		            AND metadata->>'to_issuer' = 'https://login.acme.com')`).Scan(&moves); err != nil {
+		`SELECT count(*) FROM system_audit_log WHERE `+movePredicate).Scan(&systemMoves); err != nil {
+		t.Fatalf("read system audit log: %v", err)
+	}
+	if systemMoves != 1 {
+		t.Fatalf("expected exactly 1 audited issuer migration in system_audit_log, got %d", systemMoves)
+	}
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log WHERE `+movePredicate).Scan(&tenantMoves); err != nil {
 		t.Fatalf("read audit log: %v", err)
 	}
-	if moves != 1 {
-		t.Fatalf("expected exactly 1 audited issuer migration, got %d", moves)
+	if tenantMoves != 0 {
+		t.Fatalf("a tenantless actor's move reached the tenant-scoped sink %d time(s); routing is wrong", tenantMoves)
 	}
 
 	// With the row moved, the declaration is no longer load-bearing.

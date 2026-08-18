@@ -274,24 +274,93 @@ func TestFirstRunOwnership_SocialSignInNeverMints(t *testing.T) {
 	// A completely unclaimed install: zero users, zero tenants.
 	assertUserCount(t, pool, 0)
 
-	res, err := svc.SignInWithSocial(ctx, auth.SocialIdentity{
+	_, err := svc.SignInWithSocial(ctx, auth.SocialIdentity{
 		Provider:      "google",
 		Subject:       "google-subject-1",
 		Email:         "first@example.com",
 		EmailVerified: true,
 		Name:          "First",
 	}, makeCreateTenant(t, pool))
-	if err != nil {
-		t.Fatalf("social sign-in: %v", err)
-	}
-	if len(res.Memberships) != 0 {
-		t.Fatalf("social sign-in on an unclaimed install minted %d membership(s): %+v", len(res.Memberships), res.Memberships)
-	}
-	if res.ActiveTenant != uuid.Nil {
-		t.Fatalf("social sign-in on an unclaimed install set an active tenant: %s", res.ActiveTenant)
-	}
+	assertRegistrationClosed(t, err)
+
 	assertTenantCount(t, pool, 0)
 	assertOwnerMembershipCount(t, pool, 0)
+
+	// THE USER COUNT, NOT ONLY THE TENANT COUNT. Asserting zero tenants and
+	// zero owner memberships is not enough on its own: a social sign-in that
+	// mints nothing but still writes a user row leaves an artefact that any
+	// "is this install claimed?" test keyed on population would read as
+	// claimed. That is the substitution this design had to remove, so the
+	// absence of the row is asserted directly.
+	assertUserCount(t, pool, 0)
+
+	// AND THE CLAIM MUST STILL WORK AFTERWARDS. This is the assertion that
+	// makes the two above mean something: whatever an unauthenticated caller
+	// does before the operator arrives, the operator's correct claim still
+	// establishes ownership. A gate that could be flipped shut by an anonymous
+	// request would fail here even while every count above read zero.
+	res, err := svc.Bootstrap(ctx, auth.RegisterInput{
+		Email:    "owner@example.com",
+		Password: "a-very-strong-password",
+		Name:     "Owner",
+	}, testClaim)
+	if err != nil {
+		t.Fatalf("the correct claim must still establish ownership after an anonymous social sign-in: %v", err)
+	}
+	if len(res.Memberships) != 1 || res.Memberships[0].Role != "owner" {
+		t.Fatalf("want exactly one owner membership, got %+v", res.Memberships)
+	}
+	assertUserCount(t, pool, 1)
+	assertTenantCount(t, pool, 1)
+	assertOwnerMembershipCount(t, pool, 1)
+}
+
+// TestFirstRunOwnership_AnonymousRequestsCannotCloseTheDoor is the regression
+// test for the whole class: no unauthenticated request, on any path, may leave
+// the install in a state where the provisioning claim no longer works.
+//
+// The gates all used to read a user count, and a user row is not ownership — so
+// anything able to create one could close the door on the operator without ever
+// opening it for itself. This drives every unauthenticated entry point at an
+// unclaimed install and then requires the claim to still work.
+//
+// To watch it go red: change the ownership probe in Repo.BootstrapInstall back
+// to `q.CountUsers(ctx)` / `count > 0`, and remove the ownership check in the
+// socialCreate branch of SignInWithSocial (internal/auth/social.go) so the
+// sign-in creates its user row again.
+func TestFirstRunOwnership_AnonymousRequestsCannotCloseTheDoor(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	svc, _ := newAuthStack(pool)
+	svc.SetBootstrapClaimSecret(testClaim)
+
+	// Everything an unauthenticated caller can reach on an unclaimed install.
+	_, _ = svc.SignInWithSocial(ctx, auth.SocialIdentity{
+		Provider: "google", Subject: "s-1", Email: "a@example.com",
+		EmailVerified: true, Name: "A",
+	}, makeCreateTenant(t, pool))
+	_ = svc.RegisterSelfServe(ctx, auth.RegisterInput{
+		Email: "b@example.com", Password: "a-very-strong-password", Name: "B",
+	}, makeCreateTenant(t, pool))
+	for _, guess := range []string{"", "wrong", testClaim + "x"} {
+		_, _ = svc.Bootstrap(ctx, auth.RegisterInput{
+			Email: "c@example.com", Password: "a-very-strong-password", Name: "C",
+		}, guess)
+	}
+
+	// Nothing was written, and the door is still open.
+	assertUserCount(t, pool, 0)
+	assertTenantCount(t, pool, 0)
+	assertOwnerMembershipCount(t, pool, 0)
+
+	if _, err := svc.Bootstrap(ctx, auth.RegisterInput{
+		Email:    "owner@example.com",
+		Password: "a-very-strong-password",
+		Name:     "Owner",
+	}, testClaim); err != nil {
+		t.Fatalf("the correct claim must still establish ownership: %v", err)
+	}
+	assertOwnerMembershipCount(t, pool, 1)
 }
 
 // TestFirstRunOwnership_SocialSignInStillWorksOnAClaimedInstall is the

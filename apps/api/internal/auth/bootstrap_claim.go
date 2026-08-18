@@ -26,8 +26,17 @@ const BootstrapClaimEnvVar = "WPMGR_BOOTSTRAP_CLAIM_SECRET"
 // status, the same code and the same message. Three distinguishable answers
 // would let an unauthenticated caller sort installs into "already owned" and
 // "waiting to be owned", which is the one bit of state that decides whether the
-// endpoint is worth attacking at all. The operator gets the detail, in the log,
+// endpoint is worth probing at all. The operator gets the detail, in the log,
 // where the operator is the only reader.
+//
+// THE BYTES ARE ONLY HALF OF IT. A response that is identical in content and
+// different in duration is still two answers, and this path had two large
+// timing differences before they were measured: skipping argon2 on a wrong
+// claim, and skipping the whole self-serve body on an unclaimed install. Both
+// callers therefore do their expensive work unconditionally, before the outcome
+// is chosen — see Service.Bootstrap and Service.RegisterSelfServe. Any change
+// that adds an early return ahead of that work reopens the difference, so
+// measure before assuming this comment is still true.
 func errRegistrationClosed() error {
 	return domain.Forbidden("registration_closed", "open registration is closed; ask a tenant owner or admin for an invitation")
 }

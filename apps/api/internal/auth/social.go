@@ -403,7 +403,7 @@ func (s *Service) SignInWithSocial(
 		// provider's current address was never recorded. See touchIssuer for why
 		// this is not simply facts.storedIssuer.
 		s.repo.TouchIdentityLogin(ctx, in.Provider, in.Subject, facts.touchIssuer(in), in.Email, in.EmailVerified)
-		return s.finishSocialLogin(ctx, *identityUser, createTenant)
+		return s.finishSocialLogin(ctx, *identityUser)
 
 	case socialLinkExisting:
 		// THE LINK IS AUTHORIZED HERE AND WRITTEN SOMEWHERE ELSE, ON PURPOSE.
@@ -418,7 +418,7 @@ func (s *Service) SignInWithSocial(
 		//
 		// So the decision travels as data and the write happens once the login is
 		// genuinely complete. See CompleteSocialLink.
-		res, err := s.finishSocialLogin(ctx, *emailUser, createTenant)
+		res, err := s.finishSocialLogin(ctx, *emailUser)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -443,6 +443,28 @@ func (s *Service) SignInWithSocial(
 		// No notification either: the account IS the new method, so there is no
 		// prior holder to warn and the only address available is the one the
 		// provider just asserted.
+		// AN OWNERLESS INSTALL ACCEPTS NO NEW ACCOUNTS. This branch creates a
+		// user from a provider handshake alone, and on an install whose first
+		// organisation has not been claimed yet there is nobody who could grant
+		// that user anything: the account would sit with zero memberships, on an
+		// install with no owner, created by a caller nobody authorised. Worse,
+		// the row itself is consequential — it is exactly the sort of artefact a
+		// "has this install been claimed?" test can be fooled by, which is why
+		// that question now asks about owner memberships and this branch refuses
+		// outright rather than relying on it.
+		//
+		// The two sign-in paths therefore agree: neither can establish
+		// ownership, and neither creates an account while ownership is
+		// unestablished. Once the claim-bearing first-run call has run, this
+		// branch behaves exactly as it always has.
+		//
+		// Fails closed on an unreadable answer, like every other caller.
+		if owned, oerr := s.repo.OwnershipEstablished(ctx); oerr != nil || !owned {
+			return LoginResult{}, domain.Forbidden(
+				"registration_closed",
+				"open registration is closed; ask a tenant owner or admin for an invitation",
+			)
+		}
 		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, facts.legacyHolders))
 		if err != nil {
 			return LoginResult{}, err
@@ -450,7 +472,7 @@ func (s *Service) SignInWithSocial(
 		// Audited after the login is resolved, not before: finishSocialLogin is
 		// what settles which tenant this account belongs to, and recording first
 		// would file every new account's registration against no tenant at all.
-		res, err := s.finishSocialLogin(ctx, u, createTenant)
+		res, err := s.finishSocialLogin(ctx, u)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -922,11 +944,7 @@ func syntheticEmailDomain(in SocialIdentity) string {
 
 // finishSocialLogin resolves memberships and the active tenant, mirroring the
 // tail of the password login path.
-func (s *Service) finishSocialLogin(
-	ctx context.Context,
-	u User,
-	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
-) (LoginResult, error) {
+func (s *Service) finishSocialLogin(ctx context.Context, u User) (LoginResult, error) {
 	// NOTHING THAT GRANTS ACCESS BELONGS HERE. This runs before the second
 	// factor is even issued, so any grant it made would be a grant made on the
 	// strength of a provider handshake alone. An earlier version of this
