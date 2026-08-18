@@ -62,6 +62,47 @@ func (r *Repo) OwnershipEstablished(ctx context.Context) (bool, error) {
 	return exists, nil
 }
 
+// OwnershipEstablishedInTx answers the ownership question inside a transaction
+// the caller already holds, and hands back the scope it borrowed to do so.
+//
+// It exists because the answer has to be read in the SAME transaction that acts
+// on it — the one holding the install lock — and the cross-tenant read needs
+// app.agent, which InAgentTx would only set on a transaction of its own. A
+// second transaction would put the check back outside the critical section,
+// which is the shape the lock exists to prevent.
+//
+// THE GUC IS RESET BEFORE THIS FUNCTION RETURNS, and that reset is the point of
+// the function rather than a tidy-up. set_config(..., true) is TRANSACTION-local,
+// not statement-local: left on, it stays on for every later statement in the
+// caller's transaction, and app.agent is the widest scope in this schema —
+// dozens of policies grant cross-tenant write on `current_setting('app.agent',
+// true) = 'on'` alone. Borrowing it for one read and handing it back keeps the
+// writes that follow under the tenant scope they are supposed to be under, and
+// keeps the borrow auditable in one place instead of spread across a caller.
+//
+// The reset runs whether or not the read succeeded. Returning an error with the
+// scope still elevated would be the worst of both.
+func OwnershipEstablishedInTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', 'on', true)"); err != nil {
+		return false, domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
+	}
+
+	var owned bool
+	readErr := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM memberships WHERE role = $1)`,
+		string(authz.RoleOwner),
+	).Scan(&owned)
+
+	// Reset first, report second.
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', '', true)"); err != nil {
+		return false, domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
+	}
+	if readErr != nil {
+		return false, domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(readErr)
+	}
+	return owned, nil
+}
+
 // BootstrapInstall creates the install's first tenant, its first user and the
 // owner membership binding them, as ONE transaction under
 // InstallBootstrapLockKey.
@@ -104,22 +145,9 @@ func (r *Repo) BootstrapInstall(
 		// never whether a user row does — so nothing that merely creates an
 		// account can close this door on the person holding the claim.
 		//
-		// app.agent is set for this one statement rather than by InAgentTx,
-		// because the read has to happen in THIS transaction (the one holding
-		// the lock) and a second transaction would put the check back outside
-		// the critical section, which is the shape the lock exists to prevent.
-		// It is scoped to the transaction, so it lapses at COMMIT or ROLLBACK
-		// alongside the lock; the membership INSERT below still runs under
-		// app.tenant_id and its own tenant policy.
-		if _, err := tx.Exec(ctx, "SELECT set_config('app.agent', 'on', true)"); err != nil {
-			return domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
-		}
-		var owned bool
-		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM memberships WHERE role = $1)`,
-			string(authz.RoleOwner),
-		).Scan(&owned); err != nil {
-			return domain.Internal("ownership_probe_failed", "failed to determine install ownership").WithCause(err)
+		owned, err := OwnershipEstablishedInTx(ctx, tx)
+		if err != nil {
+			return err
 		}
 		if owned {
 			return errRegistrationClosed()
