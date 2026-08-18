@@ -68,6 +68,20 @@ func identityIssuer(t *testing.T, pool *db.Pool, userID uuid.UUID) string {
 	return issuer
 }
 
+// userCountForEmail counts user rows holding one address. It is the right
+// question where the test is asking "did this sign-in fork the account?", which
+// is about that person and not about how many rows the fixture happens to have
+// created for other reasons.
+func userCountForEmail(t *testing.T, pool *db.Pool, email string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM users WHERE email = $1`, email).Scan(&n); err != nil {
+		t.Fatalf("count users for %s: %v", email, err)
+	}
+	return n
+}
+
 func userCount(t *testing.T, pool *db.Pool) int {
 	t.Helper()
 	var n int
@@ -85,6 +99,11 @@ func TestSocialIdentity_DeclaredIssuerChangeKeepsTheSameAccount(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	first, err := svc.UpsertOIDCUser(ctx,
@@ -164,6 +183,11 @@ func TestSocialIdentity_CosmeticIssuerEditNeedsNoDeclaration(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	first, err := svc.UpsertOIDCUser(ctx,
@@ -179,8 +203,13 @@ func TestSocialIdentity_CosmeticIssuerEditNeedsNoDeclaration(t *testing.T) {
 	if second.User.ID != first.User.ID {
 		t.Fatalf("a trailing slash forked the account: %s then %s", first.User.ID, second.User.ID)
 	}
-	if n := userCount(t, pool); n != 1 {
-		t.Fatalf("expected 1 user, got %d", n)
+	// Counted for this ADDRESS, not for the install: the install also has the
+	// owner who claimed it, and what this test is about is whether the second
+	// sign-in forked sarah's account. An absolute count would have to be
+	// adjusted every time the fixture gains a row, which is how an assertion
+	// drifts away from the thing it was written to catch.
+	if n := userCountForEmail(t, pool, "sarah@acme.com"); n != 1 {
+		t.Fatalf("expected exactly 1 user row for the address, got %d", n)
 	}
 }
 
@@ -191,6 +220,11 @@ func TestSocialIdentity_SubjectCollisionAcrossIssuersIsNeverTheSameAccount(t *te
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	alice, err := svc.UpsertOIDCUser(ctx,
@@ -315,6 +349,11 @@ func TestSocialIdentity_RefusedSignInDoesNotMigrateTheIssuer(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	first, err := svc.UpsertOIDCUser(ctx,
@@ -342,6 +381,11 @@ func TestSocialIdentity_UndeclaredIssuerChangeDoesNotAdoptALegacyRow(t *testing.
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	legacyID := seedLegacyOIDCUser(t, pool, "corp-sub-1@oidc.local", "https://idp.acme.com", "corp-sub-1")
@@ -364,6 +408,11 @@ func TestSocialIdentity_ConsumerProviderNeverAdoptsALegacyRow(t *testing.T) {
 	ctx := context.Background()
 	repo := auth.NewRepo(pool)
 	svc, _ := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run
+	// slot stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	mk := noTenant(t, pool)
 
 	legacyID := seedLegacyOIDCUser(t, pool, "sarah@acme.com", "https://idp.acme.com", "collide-1")

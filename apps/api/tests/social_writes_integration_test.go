@@ -447,6 +447,11 @@ func TestSigningInSociallyDoesNotAcceptInvitations(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -485,6 +490,11 @@ func TestASocialAccountCanAcceptAnInvitationOnceSignedIn(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -528,6 +538,11 @@ func TestAcceptStillRefusesAPasswordlessAccountWithoutASession(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -572,6 +587,11 @@ func TestInvitationIsNotSpentWhenTheGrantFails(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -642,6 +662,11 @@ func TestTheSessionsOwnAddressCostsNoAttempt(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
