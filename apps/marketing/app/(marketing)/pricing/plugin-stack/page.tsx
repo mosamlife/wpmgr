@@ -47,7 +47,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "Does WPMgr really do everything on the list?",
-    a: `It does, and the free tier does not withhold any of it. What the paid tiers add is site count, managed backup storage and how often backups run. If you self-host, you get the same feature set on any number of sites for nothing, and the trade is that you run a Postgres database, a control plane and an encoder, and you keep them patched.`,
+    a: `Every job the calculator counts, yes, and the free tier does not withhold any of it. "The list" is the ${CATEGORY_COUNT} categories the calculator bills for, not every feature of every product sitting in a row: a few of those vendor products sell more than the job they're listed under, such as an application firewall bundled with malware scanning, or staging and sandbox updates bundled with fleet management. Those extras were never on the list to begin with, so WPMgr not shipping them isn't a gap in it, which is exactly what the "Partial" chip on those rows means. What the paid tiers add is site count, managed backup storage and how often backups run. If you self-host, you get the same feature set on any number of sites for nothing, and the trade is that you run a Postgres database, a control plane and an encoder, and you keep them patched.`,
   },
   {
     q: "What is not included in this total?",
