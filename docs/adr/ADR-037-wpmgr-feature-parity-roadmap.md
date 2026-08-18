@@ -143,13 +143,19 @@ Two feature tracks, one merged plan.
 - Storage health checks (HeadBucket roundtrip in heartbeat for misconfig detection)
 - File-download from snapshot UI
 
-### Sprint 6 — Staging environments (not sized — see note)
+### Sprint 6 — Staging environments, round-trip (3-5 weeks)
+- **Decided:** staging is round-trip. Push-back from staging to production is in scope, not just clone-inspect-discard.
 - Clone-to-target: run the existing restore pipeline (URL rewriter + storage-destination foundation, both P0/P1 shipped) against a new host or subpath instead of swapping into the live site
 - Reuses the shipped `URL_REWRITE` phase to rewrite the cloned site's URLs to the staging host in the same pass restores already use
 - Deny-by-default posture on the staging host by default (search-engine exclusion + HTTP auth gate), same posture already shipped for `LocalDestination`
-- `wpmgr_staging_sites` table (parent site, staging host, created-at, last-synced-at, expiry)
-- `/agent/v1/staging` CP endpoints (create / refresh / promote / destroy) + new `/sites/:id/staging` dashboard route
-- **Not sized.** Whether staging is one-way (clone, inspect, discard) or round-trip (push staging edits back to the live site) is a product decision this document doesn't make, and the two scopes differ by weeks, not days. Size it once that's decided.
+- `wpmgr_staging_sites` table (parent site, staging host, created-at, last-synced-at, expiry) plus a baseline snapshot reference captured at clone time, so a later push-back has something to diff against
+- Change tracking is scoped to content/config tables only — posts, postmeta, options, terms, users, theme mods. Transactional tables (orders, comments, form submissions, new signups) are never tracked for push-back and are never written to by one; this is what keeps live production data safe from a stale staging clone
+- Push-back reuses the shipped selective-restore primitive (mode + components + paths + tables) rather than an all-or-nothing swap — the operator chooses what moves back, the same way they already choose what to restore
+- Conflict detection: before a push-back commits, diff the current production state of the selected tables against the baseline captured at clone time. Where production has moved since — someone edited a page while staging was live — that's a conflict, not a silent overwrite. Default: production wins, the row is skipped and flagged. Forcing staging to win requires an explicit operator choice, gated behind the same typed-host destructive confirm modal already shipped for restore
+- Dry-run diff/preview of a push-back before it commits; optionally paired with Sprint 7's visual regression tool as a before/after check on the promotion itself
+- Push-back writes an audit receipt, reusing the shipped restore audit receipt / hash-chained audit log
+- `/agent/v1/staging` CP endpoints (create / refresh / **push-back** / promote / destroy) + new `/sites/:id/staging` dashboard route, including the diff/conflict review UI
+- **Sizing.** No single existing sprint is a clean comparable, so this is a range, not a point estimate. The clone-only base is shaped like Sprint 2/3 (new table + CP endpoints + dashboard route on top of already-shipped machinery, 1.5-2 weeks). Round-trip adds a change-tracking and conflict-detection layer that is the same *kind* of problem Sprint 10 solves at full scale (hook listeners + delta semantics, 4-6 weeks) but deliberately narrower — a fixed set of content/config tables, not ~150 hooks and not WooCommerce CDC — plus a diff/merge review UI and destructive-action safety that reuse already-shipped patterns (typed-host confirm, audit receipt) instead of inventing new ones. That puts the added scope well under Sprint 10's full bet but clearly above the original clone-only estimate: **3-5 weeks** total.
 
 ### Sprint 7 — Visual regression testing (~1 week)
 - Same shape as the form-testing harness below: a bounded, on-demand check the CP triggers and reports on, not an always-on watcher
