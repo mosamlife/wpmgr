@@ -91,5 +91,8 @@ generated code. See [api.md](./api.md).
 
 ## Architecture decisions
 
-Propose new dependencies via an ADR in [DECISIONS.md](../DECISIONS.md) before
-adding them. Background on the stack is in [architecture.md](./architecture.md).
+Propose new dependencies via an ADR — register it in
+[docs/adr/README.md](./adr/README.md), the live index, before adding them.
+ADR-001 through ADR-043 predate that index and are archived in
+[DECISIONS.md](../DECISIONS.md). Background on the stack is in
+[architecture.md](./architecture.md).
