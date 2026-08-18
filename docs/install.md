@@ -431,16 +431,27 @@ That much matches the mental model most people reach for. The part that is
 easy to miss, and that explains two self-hosted installs disagreeing even when
 **neither** has ever mirrored a release: **if `agent-releases/latest.json` has
 never been readable on an install, the "latest agent" figure it shows is not
-"unknown" — it silently falls back to the highest agent version any of that
-install's own enrolled sites already reports.** This is `referenceVersion` in
-`apps/api/internal/agentrelease/service.go:174-186`, backed by `fleetReference`
-at `service.go:225-234`: with no published manifest ever read, the reference
-becomes "the newest version already seen in this fleet", not "the newest
-version that exists". Two installs with different fleets — one of which
-happens to include a single site someone upgraded by hand, or a newer
-plugin-directory build — will show two different "latest agent" numbers with
-no mirroring, no outbound request, and nothing published anywhere: the number
-is just whatever their own sites already happen to be running.
+"unknown" — it silently falls back to the highest agent version any site
+already enrolled in that same organisation already reports.** This is
+`referenceVersion` in `apps/api/internal/agentrelease/service.go:174-186`,
+backed by `fleetReference` at `service.go:225-234`: with no published manifest
+ever read, the reference becomes "the newest version already seen in this
+fleet", not "the newest version that exists". Two installs with different
+fleets — one of which happens to include a single site someone upgraded by
+hand, or a newer plugin-directory build — will show two different "latest
+agent" numbers with no mirroring, no outbound request, and nothing published
+anywhere: the number is just whatever their own sites already happen to be
+running.
+
+This fallback is **tenant-scoped, not install-wide.** `fleetReference` is fed by
+`ListSiteAgentVersions`, which takes an explicit `tenantID` and reads only that
+organisation's sites, under RLS (`apps/api/internal/agentrelease/service.go:71`,
+`147-150`; `repo.go:76`). On an install with more than one organisation, each
+organisation gets its own fallback reference from its own fleet — a busy
+neighbour's newer site cannot move another organisation's number. On a
+single-organisation self-host the tenant and the install are the same set of
+sites, which is exactly how "tenant" and "install" read as interchangeable
+here and is precisely how this distinction goes unnoticed.
 
 The API response says which case you're in: `GET /api/v1/fleet/agents` returns
 `reference_source` as `"published"` (a real, read manifest), `"fleet"` (the
@@ -473,7 +484,7 @@ an explicit decision, so nothing here runs until you set:
 | `WPMGR_UPDATE_AGENT_MIRROR_OWNER` / `WPMGR_UPDATE_AGENT_MIRROR_REPO` | `mosamlife` / `wpmgr` | The GitHub repo to mirror releases from. Point a fork at its own repo to mirror its own releases instead. |
 | `WPMGR_UPDATE_AGENT_MIRROR_ALLOW_ROLLBACK` | `false` | The mirror normally only moves your published agent version **strictly forward** — an upstream release that is equal to, older than, or unorderable against what's already mirrored is refused, because that's what a yanked-and-restored upstream release would otherwise do: flap your published version back and forth. Set this only when you deliberately want to follow a genuine upstream rollback. |
 | `WPMGR_UPDATE_AGENT_PACKAGE_SERVE_ENABLED` | `false` | Serves the mirrored package **from this control plane** instead of a presigned URL pointing at your own storage host. This is what removes the need to set `WPMGR_AGENT_PACKAGE_HOST` in every site's `wp-config.php` (see [the self-update runbook](./runbook/agent-self-update.md#self-hosted-deployments-non-gcs-object-storage)). It ships off because of rollout order: only an agent new enough to trust its own control plane's host will accept a control-plane-hosted `package_url` — an older agent refuses it on its own host allowlist. Turn it on once your fleet is running an agent that includes this, or after upgrading them once by hand. Requires `WPMGR_S3_*` and `WPMGR_AGENT_SIGNING_PRIVATE_KEY`. |
-| `WPMGR_UPDATE_AGENT_PACKAGE_BASE_URL` | (empty) | Optional override for the public origin used to build that URL when package serving is on. Empty derives it from the control-plane URL the agent already used to fetch its manifest — no configuration needed unless you sit behind a proxy that rewrites `Host`. |
+| `WPMGR_UPDATE_AGENT_PACKAGE_BASE_URL` | (empty) | Optional override for the public origin used to build that URL when package serving is on. Empty does **not** go straight to deriving the origin from the agent's request: it falls back to `WPMGR_PUBLIC_BASE_URL` first (`apps/api/cmd/wpmgr/main.go:2535-2539`), and only derives it from the request `Host` if that is also unset — which on a working install it normally is not, since the product's own links (password reset, invitations, agent enrollment) already depend on it being set. If `WPMGR_PUBLIC_BASE_URL` differs from the host your agents actually reach this control plane on, set this variable explicitly: otherwise the manifest's `package_url` is built against the wrong host, and downloads fail — either nothing serves there, or the agent's own host-allowlist check on `package_url` rejects it. |
 
 The mirror will **never** overwrite a `latest.json` it did not itself
 publish — if you run your own release pipeline against this bucket
@@ -494,10 +505,18 @@ it) — a genuine rollback is fix-forward, not a pointer revert.
 
 ### Checking mirror status
 
-- `POST /api/v1/admin/agent-mirror/check` (superadmin) queues one immediate
+- `POST /api/v1/admin/agent-mirror/check` (superadmin, or — on an install with
+  exactly one organisation — that organisation's `owner`) queues one immediate
   mirror run — the same action as the **Check now** button on the dashboard's
-  Sites page. Outbound GitHub requests are throttled to at most once every 30
-  minutes regardless of how often this is called.
+  Sites page. The second path exists because a single-organisation self-host
+  otherwise has no superadmin at all: the role must be `owner` exactly
+  (`admin`, `operator`, `viewer` and an API-key principal are all refused),
+  the organisation count is re-checked on every call, and adding a second
+  organisation closes the path again on the next request
+  (`apps/api/internal/admingate/gate.go:171-191`,
+  `apps/api/internal/admin/gate.go:77-90`). Outbound GitHub requests are
+  throttled to at most once every 30 minutes regardless of how often this is
+  called.
 - `GET /api/v1/fleet/agents` includes an `agent_mirror` object with `enabled`,
   `status`, `can_check_now`, and the last attempt/success timestamps and
   outcome, so you can confirm the mirror is actually succeeding without
