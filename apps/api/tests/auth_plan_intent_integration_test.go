@@ -85,6 +85,23 @@ func makeCreateTenant(t *testing.T, pool *db.Pool) func(ctx context.Context, nam
 	}
 }
 
+// claimInstall gives the install its first owner, which is the precondition for
+// open self-serve registration: while an install is unclaimed, that path writes
+// nothing, so the first-account slot stays available to whoever holds the
+// provisioning claim. Every self-serve and verify-email test below is about
+// what happens on a NORMAL install, so each one claims first.
+func claimInstall(t *testing.T, svc *auth.Service) {
+	t.Helper()
+	svc.SetBootstrapClaimSecret(testClaim)
+	if _, err := svc.Bootstrap(context.Background(), auth.RegisterInput{
+		Email:    "install-owner@example.com",
+		Password: "a-very-strong-password",
+		Name:     "Install Owner",
+	}, testClaim); err != nil {
+		t.Fatalf("claim install: %v", err)
+	}
+}
+
 // TestRegisterSelfServe_PersistsDesiredPlanOnToken proves a validated paid-tier
 // hint lands on the verification-token row created by registration.
 func TestRegisterSelfServe_PersistsDesiredPlanOnToken(t *testing.T) {
@@ -93,6 +110,7 @@ func TestRegisterSelfServe_PersistsDesiredPlanOnToken(t *testing.T) {
 	svc := newAuthStackWithBilling(pool)
 	repo := auth.NewRepo(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	const email = "plan-agency-signup@example.com"
 	if err := svc.RegisterSelfServe(ctx, auth.RegisterInput{
@@ -130,6 +148,7 @@ func TestRegisterSelfServe_NonPaidPlanHintsAreIgnored(t *testing.T) {
 	svc := newAuthStackWithBilling(pool)
 	repo := auth.NewRepo(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	cases := []struct {
 		name  string
@@ -171,6 +190,7 @@ func TestRegisterSelfServe_NoPlanValidatorMeansNoIntent(t *testing.T) {
 	svc, _ := newAuthStack(pool) // no SetPlanValidator call — mirrors self-host boot
 	repo := auth.NewRepo(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	const email = "plan-selfhost-signup@example.com"
 	if err := svc.RegisterSelfServe(ctx, auth.RegisterInput{
@@ -198,6 +218,7 @@ func TestVerifyEmail_SurfacesAndConsumesDesiredPlan(t *testing.T) {
 	ctx := context.Background()
 	svc := newAuthStackWithBilling(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	mailer := &capturingMailer{}
 	svc.SetMailer(mailer, "https://manage.example.test", nil)
@@ -248,6 +269,7 @@ func TestVerifyEmail_NoIntentReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
 	svc := newAuthStackWithBilling(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	mailer := &capturingMailer{}
 	svc.SetMailer(mailer, "https://manage.example.test", nil)
@@ -280,6 +302,7 @@ func TestResendVerification_CarriesForwardDesiredPlan(t *testing.T) {
 	svc := newAuthStackWithBilling(pool)
 	repo := auth.NewRepo(pool)
 	createTenant := makeCreateTenant(t, pool)
+	claimInstall(t, svc)
 
 	mailer := &capturingMailer{}
 	svc.SetMailer(mailer, "https://manage.example.test", nil)

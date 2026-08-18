@@ -7,10 +7,11 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
-// BootstrapClaimHeader is the HTTP header an installer uses to present the
-// provisioning claim on POST /auth/register. The body field `claim_secret` is
-// the equivalent carrier for a form-driven first run; both reach the same
-// constant-time comparison.
+// BootstrapClaimHeader is the one way an installer presents the provisioning
+// claim on POST /auth/register. A header rather than a body field: the claim is
+// a credential, not user data, and this keeps it out of the request payload
+// that validation errors and request logs echo, and out of the OpenAPI request
+// schema so no generated client offers to fill it in.
 const BootstrapClaimHeader = "X-Wpmgr-Bootstrap-Claim"
 
 // BootstrapClaimEnvVar is the operator-facing name of the provisioning claim.

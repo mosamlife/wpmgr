@@ -236,24 +236,17 @@ type registerBody struct {
 	// RegisterInput.Plan's doc comment: any non-paid-tier value (including
 	// "free", empty, or unrecognized) is silently treated as no intent.
 	Plan string `json:"plan"`
-	// ClaimSecret carries the provisioning claim on a first-run request, for
-	// callers that cannot set a header. It is a credential: it is compared in
-	// constant time and never copied into RegisterInput, an audit record, a
-	// log line or a response. See BootstrapClaimHeader for the header carrier.
-	ClaimSecret string `json:"claim_secret"`
 }
 
 // bootstrapClaim reads the provisioning claim a first-run caller presented.
 //
-// The header wins so that an installer can keep the credential out of the
-// request body entirely; the body field exists because a browser form posting
-// JSON has no comfortable way to add a header. One claim, one comparison, two
-// carriers — never two mechanisms.
-func bootstrapClaim(c *gin.Context, body registerBody) string {
-	if v := strings.TrimSpace(c.GetHeader(BootstrapClaimHeader)); v != "" {
-		return v
-	}
-	return strings.TrimSpace(body.ClaimSecret)
+// A HEADER, NOT A BODY FIELD. The claim is a credential rather than user data,
+// and the register body is the one payload on this route that gets echoed into
+// validation errors and request logs. Keeping it in a header also keeps it out
+// of the OpenAPI request schema, so it is never something a generated client
+// offers to fill in: an installer sets it deliberately, once.
+func bootstrapClaim(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader(BootstrapClaimHeader))
 }
 
 // bootstrapLog returns the logger for first-run ownership, tagged so an
@@ -296,7 +289,7 @@ func (h *Handler) register(c *gin.Context) {
 	// Bootstrap creates a brand-new user who cannot yet have 2FA enrolled, so
 	// the 2FA gate here is defensive (makes the code correct uniformly) rather
 	// than protecting against a real threat today.
-	if claim := bootstrapClaim(c, body); claim != "" {
+	if claim := bootstrapClaim(c); claim != "" {
 		res, err := h.svc.Bootstrap(c.Request.Context(), in, claim)
 		if err != nil {
 			if !h.svc.BootstrapClaimConfigured() {
