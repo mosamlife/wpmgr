@@ -72,6 +72,7 @@ func (f *probeFakeRepo) GetTask(_ context.Context, tenantID, taskID uuid.UUID) (
 	}
 	return f.getTask(tenantID, taskID)
 }
+
 // MarkTaskRunning stays a panic by default — several tests (see
 // agent_self_update_test.go) assert a task is refused BEFORE the claim by
 // relying on this fake to blow up if the claim is ever reached. markRunning is

@@ -210,7 +210,12 @@ func (r *pgRepo) ClaimAgentWaveTask(ctx context.Context, tenantID, runID, taskID
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("update_task_not_found", "update task not found")
+				// Same statement, same condition, same answer as
+				// pgRepo.MarkTaskRunning: zero rows means the claim was not
+				// granted, NOT that the row is missing. Unreachable here (see
+				// above), but two callers of one statement must not disagree
+				// about what its zero-row case means.
+				return ErrTaskNotClaimed
 			}
 			return domain.Internal("update_task_run_failed", "failed to mark task running").WithCause(err)
 		}

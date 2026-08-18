@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/update"
 )
@@ -30,11 +29,11 @@ import (
 // sqlc inside pool.InTenantTx where the repo signature cannot yet carry the
 // staleness bound. Nothing opens its own connection, so the RLS policies are
 // live for every statement below rather than inert.
-// claimStaleAfter is the bound every production caller passes to
-// MarkTaskRunning (update.siteWriterHoldMax, unexported). Its value is
-// immaterial to the setup claims below, which all act on a fresh 'pending'
-// row; the subtests that actually depend on the bound pass their own.
-const claimStaleAfter = 20 * time.Minute
+// claimStaleAfter is READ FROM the production derivation, never re-declared.
+// A literal here would keep passing against a stale number after the real
+// bound was retuned, asserting nothing. Zero means "no derived apply budget",
+// which is what update.NewWorker is handed in a default-config install.
+var claimStaleAfter = update.ClaimStaleAfter(0)
 
 func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	pool := startPostgres(t)
@@ -218,6 +217,35 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		}
 	})
 
+	t.Run("another tenant can never claim this tenant's task", func(t *testing.T) {
+		site := newSite(t)
+		task := mkTask(t, site, "plugin", "cas-cross-tenant")
+
+		// A second tenant, claiming with the victim's real task id. The id is
+		// not a secret — it appears in URLs and audit rows — so the boundary
+		// has to be the tenant scoping itself, not the caller's ignorance of
+		// the id. MarkTaskRunning goes through InTenantTx as wpmgr_app, so
+		// RLS is live for this statement exactly as it is in production.
+		attacker := seedTenant(t, pool, "upd-cas-other")
+		_, err := repo.MarkTaskRunning(ctx, attacker, task.ID, claimStaleAfter)
+		if err == nil {
+			t.Fatal("a tenant claimed another tenant's update task: the claim must be refused")
+		}
+		if !errors.Is(err, update.ErrTaskNotClaimed) {
+			t.Fatalf("a cross-tenant claim must be refused as ErrTaskNotClaimed, got %v (%T)", err, err)
+		}
+
+		// The victim's row must be untouched: still claimable by its OWN
+		// tenant. A refusal that had already flipped the row to 'running'
+		// would be a denial of service even though no data leaked.
+		if got := statusOf(t, task.ID); got != "pending" {
+			t.Fatalf("the victim task status = %q, want \"pending\": a refused cross-tenant claim must not modify the row", got)
+		}
+		if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
+			t.Fatalf("the owning tenant must still be able to claim its own task: %v", err)
+		}
+	})
+
 	t.Run("a terminal task is never claimable", func(t *testing.T) {
 		site := newSite(t)
 		task := mkTask(t, site, "plugin", "cas-terminal")
@@ -236,5 +264,3 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		}
 	})
 }
-
-var _ = db.Pool{}

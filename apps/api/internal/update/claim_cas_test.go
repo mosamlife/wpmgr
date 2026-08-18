@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,9 +104,151 @@ func TestClaim_PassesRealStaleAfter(t *testing.T) {
 	if err := runClaimWork(t, w, task); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
-	if repo.markStaleAfter != siteWriterHoldMax {
-		t.Fatalf("the claim must pass the real staleness bound, got %v want %v (a zero duration is a NULL interval, which silently disables abandoned-task reclaim)",
-			repo.markStaleAfter, siteWriterHoldMax)
+	if repo.markStaleAfter != w.claimStaleAfter {
+		t.Fatalf("the claim must pass the worker's own derived staleness bound, got %v want %v (a zero duration is a NULL interval, which silently disables abandoned-task reclaim)",
+			repo.markStaleAfter, w.claimStaleAfter)
+	}
+	if repo.markStaleAfter <= 0 {
+		t.Fatal("the claim's staleness bound must be positive")
+	}
+}
+
+// TestClaimStaleAfter_TracksTheConfiguredApplyBudget is the F1 regression. The
+// bound the claim uses must EXCEED this install's worst-case apply budget, or
+// a second worker reclaims a row whose holder is still applying and both
+// dispatch. That budget is config-driven (DeriveApplyJobTimeout over
+// cfg.Update.ApplyHTTPTimeout and cfg.Update.HTTPTimeout, both env-settable),
+// so a fixed constant stops exceeding it once the timeout is raised. The
+// existing ordering test pins the DEFAULT configuration only; this one sweeps
+// configurations a real operator can set.
+//
+// RED: make ClaimStaleAfter return the constant siteWriterHoldMax again, and
+// every row from 10m upward fails.
+func TestClaimStaleAfter_TracksTheConfiguredApplyBudget(t *testing.T) {
+	// applyHTTPTimeout values an operator can set via
+	// WPMGR_UPDATE_APPLY_HTTP_TIMEOUT, spanning the default and well past the
+	// point the old constant stopped covering the budget.
+	for _, applyHTTP := range []time.Duration{
+		1 * time.Minute, 8 * time.Minute, 14 * time.Minute, 20 * time.Minute, 30 * time.Minute,
+	} {
+		budget := DeriveApplyJobTimeout(applyHTTP, 30*time.Second)
+		bound := ClaimStaleAfter(budget)
+		if bound <= budget {
+			t.Errorf("apply_http_timeout=%v: claim bound %v must exceed the apply budget %v, "+
+				"or a worker reclaims a task another worker is still applying", applyHTTP, bound, budget)
+		}
+	}
+}
+
+// TestValidateClaimTimings_FiresAndDoesNotOverFire covers the boot assertion
+// both ways: it must refuse a configuration that puts the claim bound at or
+// past the reaper threshold, and it must NOT refuse configurations an operator
+// can legitimately run. A boot check that reddens valid config gets deleted,
+// and then it guards nothing.
+//
+// RED: return nil unconditionally from ValidateClaimTimings and the invalid
+// rows fail; clamp the bound below staleTaskThreshold and the valid rows fail.
+func TestValidateClaimTimings_FiresAndDoesNotOverFire(t *testing.T) {
+	// Valid: the default, and everything up to the point the bound would
+	// reach the reaper threshold.
+	for _, applyHTTP := range []time.Duration{
+		0, 1 * time.Minute, 8 * time.Minute, 20 * time.Minute,
+	} {
+		budget := DeriveApplyJobTimeout(applyHTTP, 30*time.Second)
+		if err := ValidateClaimTimings(budget); err != nil {
+			t.Errorf("apply_http_timeout=%v is a legitimate configuration and must boot, got %v", applyHTTP, err)
+		}
+	}
+	// Invalid: the bound would land at or past staleTaskThreshold, so the
+	// reaper could terminalize a row the claim still treats as live.
+	for _, applyHTTP := range []time.Duration{40 * time.Minute, 90 * time.Minute} {
+		budget := DeriveApplyJobTimeout(applyHTTP, 30*time.Second)
+		err := ValidateClaimTimings(budget)
+		if err == nil {
+			t.Errorf("apply_http_timeout=%v pushes the claim bound to %v, at or past the reaper threshold %v: boot must fail",
+				applyHTTP, ClaimStaleAfter(budget), staleTaskThreshold)
+			continue
+		}
+		// The operator who raised the timeout has to be able to act on this.
+		if !strings.Contains(err.Error(), "apply_http_timeout") {
+			t.Errorf("the boot failure must name the knob to change, got %q", err)
+		}
+	}
+}
+
+// TestYieldContendedClaim_IsWallClockBounded is the F2 regression. Every other
+// waiting path in this worker is bounded by siteBusyMaxWait from CreatedAt and
+// terminalizes as TaskSkipped; before this, the contended-claim path was the
+// only one that could snooze forever, and its unreadable-row branch did so
+// with nothing but a Warn — no error, no attempt consumed, no terminal state.
+//
+// RED: drop the busyBoundExceeded check from yieldContendedClaim and both
+// subtests snooze instead of terminalizing.
+func TestYieldContendedClaim_IsWallClockBounded(t *testing.T) {
+	cases := map[string]func(*probeFakeRepo){
+		"row still held": func(r *probeFakeRepo) {
+			held := claimTestTask()
+			held.Status = TaskRunning
+			r.getTask = func(uuid.UUID, uuid.UUID) (Task, error) { return held, nil }
+		},
+		// The branch that was genuinely unbounded: the re-read itself fails,
+		// so the bound must not depend on it.
+		"row unreadable": func(r *probeFakeRepo) {
+			r.getTask = func(uuid.UUID, uuid.UUID) (Task, error) {
+				return Task{}, errors.New("connection reset")
+			}
+		},
+	}
+	for name, wire := range cases {
+		t.Run(name, func(t *testing.T) {
+			task := claimTestTask()
+			task.CreatedAt = time.Now().Add(-siteBusyMaxWait - time.Minute)
+			repo := claimRepo(task)
+			wire(repo)
+			w, cmd := claimTestWorker(repo, task)
+
+			err := w.yieldContendedClaim(context.Background(), TaskArgs{
+				TenantID: task.TenantID, RunID: task.RunID, TaskID: task.ID,
+			}, task)
+			if err != nil {
+				t.Fatalf("a task past its wall-clock bound must terminalize, not snooze; got %v", err)
+			}
+			if len(repo.finished) != 1 {
+				t.Fatalf("expected exactly one terminal write, got %+v", repo.finished)
+			}
+			if got := repo.finished[0].Status; got != TaskSkipped {
+				t.Fatalf("status = %q, want %q: this worker never got the claim, so nothing was sent to the site",
+					got, TaskSkipped)
+			}
+			if cmd.updateCalls != 0 {
+				t.Fatalf("a task that never won the claim must never dispatch, got %d", cmd.updateCalls)
+			}
+		})
+	}
+}
+
+// TestYieldContendedClaim_WithinBoundStillSnoozes is the does-not-over-fire
+// companion: the bound must not terminalize an ordinary contended task that
+// has only been waiting a moment.
+//
+// RED: drop the `bound != ""` condition so the check always terminalizes.
+func TestYieldContendedClaim_WithinBoundStillSnoozes(t *testing.T) {
+	task := claimTestTask()
+	task.CreatedAt = time.Now() // nowhere near siteBusyMaxWait
+	repo := claimRepo(task)
+	held := task
+	held.Status = TaskRunning
+	repo.getTask = func(uuid.UUID, uuid.UUID) (Task, error) { return held, nil }
+	w, _ := claimTestWorker(repo, task)
+
+	err := w.yieldContendedClaim(context.Background(), TaskArgs{
+		TenantID: task.TenantID, RunID: task.RunID, TaskID: task.ID,
+	}, task)
+	if _, ok := asSnooze(err); !ok {
+		t.Fatalf("a freshly contended task must still snooze, got %v (%T)", err, err)
+	}
+	if len(repo.finished) != 0 {
+		t.Fatalf("a task within its bound must not be terminalized, got %+v", repo.finished)
 	}
 }
 
