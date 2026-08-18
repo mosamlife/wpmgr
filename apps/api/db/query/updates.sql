@@ -1,5 +1,14 @@
--- M3 bulk-update queries. Every statement is tenant-scoped both explicitly
--- (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).
+-- M3 bulk-update queries. Every statement here is tenant-scoped both
+-- explicitly (tenant_id in the WHERE/VALUES) and by RLS
+-- (update_runs_tenant_isolation / update_tasks_tenant_isolation on
+-- app.tenant_id); update_tasks additionally carries the RESTRICTIVE
+-- update_tasks_site_scope policy the two portal reads depend on.
+--
+-- ONE statement is deliberately outside that, and it is the only one:
+-- ListStaleUpdateTasks sweeps every tenant for the periodic reaper, carries
+-- no tenant_id at all, and is admitted by the update_tasks_agent policy
+-- instead. It repeats that at its own definition. Any OTHER statement in
+-- db/query/updates.sql without a tenant_id is a bug, not a second exception.
 
 -- name: CreateUpdateRun :one
 -- tenant_id is supplied explicitly for defense-in-depth; RLS additionally
