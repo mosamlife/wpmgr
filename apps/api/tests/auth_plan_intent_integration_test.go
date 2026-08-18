@@ -333,14 +333,14 @@ func TestBootstrap_SurfacesDesiredPlanImmediately(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc := newAuthStackWithBilling(pool)
-	createTenant := makeCreateTenant(t, pool)
+	svc.SetBootstrapClaimSecret(testClaim)
 
 	res, err := svc.Bootstrap(ctx, auth.RegisterInput{
 		Email:    "first-admin@example.com",
 		Password: "a-very-strong-password",
 		Name:     "First Admin",
 		Plan:     string(billing.TierScale),
-	}, createTenant)
+	}, testClaim)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -359,14 +359,14 @@ func TestBootstrap_NonPaidPlanHintSurfacesEmpty(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc := newAuthStackWithBilling(pool)
-	createTenant := makeCreateTenant(t, pool)
+	svc.SetBootstrapClaimSecret(testClaim)
 
 	res, err := svc.Bootstrap(ctx, auth.RegisterInput{
 		Email:    "first-admin@example.com",
 		Password: "a-very-strong-password",
 		Name:     "First Admin",
 		Plan:     string(billing.TierFree),
-	}, createTenant)
+	}, testClaim)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}

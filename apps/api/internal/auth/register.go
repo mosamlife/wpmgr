@@ -38,6 +38,26 @@ func (s *Service) RegisterSelfServe(
 		return err
 	}
 
+	// SELF-SERVE DOES NOT OPEN UNTIL THE INSTALL HAS AN OWNER. On an install
+	// with zero users, creating one here would hand the first-account slot to
+	// whoever asked first — the caller becomes user number one, so the person
+	// holding the provisioning claim can never bootstrap afterwards, and the
+	// account they got is itself useless (pending, awaiting a verification mail
+	// that an unclaimed install has no SMTP to send). Denying an operator their
+	// own install is the same loss whether it is taken or merely blocked.
+	//
+	// It returns nil, so the caller receives the identical generic response a
+	// real self-serve registration produces. An unauthenticated caller therefore
+	// cannot tell an unclaimed install from a claimed one by registering into
+	// it, which is the whole reason this refusal is silent rather than an error.
+	//
+	// Fails closed on a count it cannot read: unreadable is not zero, and it is
+	// not "many" either. Doing nothing costs a legitimate signup one retry; the
+	// alternative costs an operator their install.
+	if count, err := s.repo.CountUsers(ctx); err != nil || count == 0 {
+		return nil
+	}
+
 	if existing, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
 		// Already registered: stay generic to the HTTP caller, but nudge the real
 		// owner by email so an existing user (e.g. a former collaborator) knows to

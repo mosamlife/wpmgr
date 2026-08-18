@@ -2677,6 +2677,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	waFactor := twofactor.NewWebAuthnFactor(waInstance)
 	authSvc.SetTwoFactorDeps(totpFactor, waFactor, siteDestAgeID)
 
+	// First-run ownership requires the provisioning claim the installer minted.
+	// Unset is a valid, deliberate state — every route still serves; the
+	// install simply has no route to a first owner until the operator sets the
+	// variable and restarts — so this is a warning at boot, not a fatal, and
+	// the operator hears about it once here rather than only on a refused
+	// request. The value itself is never logged.
+	authSvc.SetBootstrapClaimSecret(cfg.Auth.BootstrapClaimSecret)
+	if !authSvc.BootstrapClaimConfigured() {
+		logger.Warn("no provisioning claim configured: first-run ownership cannot be claimed on this install",
+			"remedy", "set "+auth.BootstrapClaimEnvVar+" to a random secret and restart")
+	}
+
 	authH := auth.NewHandler(authSvc, sessions, oidcProvider, newTenant)
 	authH.SetSocialProviders(socialProviders)
 	// Social sign-in is the one auth path whose outcome a third party decides,

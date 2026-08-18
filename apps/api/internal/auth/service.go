@@ -53,6 +53,10 @@ type Service struct {
 	// one, declared by the operator. Empty on every install that never moved.
 	// See SetPreviousOIDCIssuer.
 	previousOIDCIssuer string
+	// bootstrapClaim is the provisioning claim first-run ownership requires.
+	// Injected via SetBootstrapClaimSecret. Empty means no caller can claim
+	// this install — see bootstrapClaimAccepted.
+	bootstrapClaim string
 }
 
 // SetPreviousOIDCIssuer declares the generic-OIDC issuer this install used
@@ -236,26 +240,31 @@ type RegisterInput struct {
 	Plan string `validate:"omitempty,max=32"`
 }
 
-// Bootstrap creates the very first user together with their tenant and an owner
-// membership. It is only valid when there are zero users; otherwise it returns
-// a conflict directing the caller to the invitation flow. The tenant is created
-// via the supplied createTenant callback (the tenant domain owns that table).
-func (s *Service) Bootstrap(
-	ctx context.Context,
-	in RegisterInput,
-	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
-) (LoginResult, error) {
+// Bootstrap grants first-run ownership: the install's first organisation, its
+// first user, and the owner membership binding them.
+//
+// IT REQUIRES THE PROVISIONING CLAIM. claim must be the value the operator
+// configured as WPMGR_BOOTSTRAP_CLAIM_SECRET and handed to whoever is entitled
+// to own this install. Ownership of a control plane is not a race to be first
+// through the door: the installer decides who owns the install, and the claim
+// is how that decision travels from the installer to this function.
+//
+// Every refusal — no claim configured, wrong claim, install already owned —
+// returns errRegistrationClosed(), one indistinguishable answer. See its
+// comment for why three answers would be worse than one.
+//
+// The count and the writes are one transaction under one advisory lock, in
+// Repo.BootstrapInstall. Nothing is checked here that is acted on there.
+func (s *Service) Bootstrap(ctx context.Context, in RegisterInput, claim string) (LoginResult, error) {
+	// The claim is checked BEFORE the input is validated, so a caller without
+	// it cannot use validation feedback to probe this path at all.
+	if !s.bootstrapClaimAccepted(claim) {
+		return LoginResult{}, errRegistrationClosed()
+	}
+
 	in.Email = normalizeEmail(in.Email)
 	if err := s.validator.Struct(in); err != nil {
 		return LoginResult{}, err
-	}
-
-	count, err := s.repo.CountUsers(ctx)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	if count > 0 {
-		return LoginResult{}, domain.Forbidden("registration_closed", "open registration is closed; ask a tenant owner or admin for an invitation")
 	}
 
 	hash, err := HashPassword(in.Password)
@@ -271,16 +280,8 @@ func (s *Service) Bootstrap(
 	if tenantSlug == "" {
 		tenantSlug = "default"
 	}
-	tenantID, err := createTenant(ctx, tenantName, tenantSlug)
-	if err != nil {
-		return LoginResult{}, err
-	}
 
-	u, err := s.repo.CreateUser(ctx, in.Email, hash, in.Name, "", "")
-	if err != nil {
-		return LoginResult{}, err
-	}
-	m, err := s.repo.CreateMembership(ctx, u.ID, tenantID, authz.RoleOwner)
+	u, m, tenantID, err := s.repo.BootstrapInstall(ctx, in.Email, hash, in.Name, tenantName, tenantSlug)
 	if err != nil {
 		return LoginResult{}, err
 	}
