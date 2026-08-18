@@ -256,12 +256,23 @@ RETURNING *;
 -- no reason; the agent's own lock is what serialises the two channels in
 -- both directions.
 --
--- The staleness clause bounds a crashed worker: a row whose command went out
--- longer ago than @hold_max cannot have a live worker behind it (River
--- cancels the job's context at its own job timeout regardless of whether the
--- site answers). Ignoring such a row only makes the gate MORE permissive
--- (lets a sibling dispatch it would otherwise have deferred), never less,
--- which is safe — the agent's own lock is still the backstop either way.
+-- The staleness clause bounds a crashed WORKER, and only that: past @hold_max
+-- no River job for this row can still be waiting on the site, because River
+-- cancels the job's context at its own job timeout whether the site answers or
+-- not. It says nothing about the SITE — cancelling that context ends the
+-- control plane's wait for the HTTP response, it does not stop an apply the
+-- agent has already begun (the same correction MarkUpdateTaskRunning's reclaim
+-- arm carries above). Here that gap is harmless, and for a reason of its own:
+-- ignoring an over-age row only makes the gate MORE permissive (lets a sibling
+-- dispatch it would otherwise have deferred), never less, which is safe — the
+-- agent's own lock is still the backstop either way.
+--
+-- @hold_max is therefore the flat siteWriterHoldMax constant, passed straight
+-- through by worker.go, and NOT the config-derived ClaimStaleAfter the claim
+-- above is given. Neither call site is wrong: see ClaimStaleAfter's doc
+-- comment in update/worker.go, which sets out why over-permissive is safe for
+-- this gate and is precisely the defect for the claim.
+--
 -- coalesce(started_at, updated_at) covers a row observed between
 -- MarkUpdateTaskRunning (which sets both) and any later touch.
 --
