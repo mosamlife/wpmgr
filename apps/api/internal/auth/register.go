@@ -67,6 +67,13 @@ func (s *Service) RegisterSelfServe(
 	// Doing nothing costs a legitimate signup one retry; the alternative costs
 	// an operator their install.
 	if owned, oerr := s.repo.OwnershipEstablished(ctx); oerr != nil || !owned {
+		// The same address lookup the open path performs, discarded. Argon2
+		// above is the dominant cost and matching it closes most of the
+		// difference; this closes most of what remains, for one round trip and
+		// no behaviour. What cannot be matched without doing it is the write
+		// itself, so a residual difference stays — measured and reported rather
+		// than assumed away, in TestMeasureFirstRunRefusalTiming.
+		_, _ = s.repo.GetUserByEmail(ctx, in.Email)
 		return nil
 	}
 
