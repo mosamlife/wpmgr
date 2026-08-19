@@ -24,6 +24,14 @@ export const Route = createFileRoute("/_authed/updates/")({
 
 type RunStatus = UpdateRun["status"];
 
+// Defence in depth against version skew, mirroring
+// features/updates/update-status.tsx: `tsc` enforces that every RunStatus is
+// covered below, but a self-hosted control plane can still send a status
+// literal this bundle predates, so the dereferences below re-type the lookup
+// as partial rather than trusting the exhaustive type at runtime.
+const UNKNOWN_RUN_TONE: StatusTone = "muted";
+const UNKNOWN_RUN_LABEL = "Unknown";
+
 const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
@@ -31,6 +39,15 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
   // it for immediate attention among an otherwise calm list of runs.
   halted: "destructive",
+  // GH #463: waiting for scheduled_at, nothing has happened yet.
+  scheduled: "muted",
+  // GH #463: transient, the dispatcher is enqueueing this run's tasks right
+  // now — mirrors "Running".
+  dispatching: "info",
+  // GH #463: terminal, no site was contacted — a missed schedule, not a
+  // failed update, so this deliberately avoids "destructive" (see
+  // features/updates/update-status.tsx for the full reasoning).
+  expired: "warning",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
@@ -38,6 +55,9 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   running: "Running",
   completed: "Completed",
   halted: "Halted",
+  scheduled: "Scheduled",
+  dispatching: "Dispatching",
+  expired: "Expired",
 };
 
 function UpdatesPage() {
@@ -95,9 +115,22 @@ function UpdatesPage() {
                   </TableCell>
                   <TableCell>
                     <StatusChip
-                      tone={RUN_STATUS_TONE[run.status]}
-                      label={RUN_STATUS_LABEL[run.status]}
-                      pulse={run.status === "running"}
+                      tone={
+                        (
+                          RUN_STATUS_TONE as Partial<
+                            Record<RunStatus, StatusTone>
+                          >
+                        )[run.status] ?? UNKNOWN_RUN_TONE
+                      }
+                      label={
+                        (
+                          RUN_STATUS_LABEL as Partial<Record<RunStatus, string>>
+                        )[run.status] ?? UNKNOWN_RUN_LABEL
+                      }
+                      pulse={
+                        run.status === "running" ||
+                        run.status === "dispatching"
+                      }
                     />
                   </TableCell>
                   <TableCell>

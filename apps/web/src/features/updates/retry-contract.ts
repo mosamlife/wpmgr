@@ -167,8 +167,28 @@ export function notRetryableReason(task: RetryTask): string {
   if (task.status === "succeeded") {
     return "Cannot be retried: this update succeeded.";
   }
-  if (task.status === "pending" || task.status === "running") {
+  // GH #463: `scheduled` joins this bucket — it has not started either, it
+  // just has not reached its start time yet. Same reason a checkbox is
+  // absent as pending/running: there is nothing to retry, only something to
+  // wait for (or cancel).
+  if (
+    task.status === "pending" ||
+    task.status === "running" ||
+    task.status === "scheduled"
+  ) {
     return "Cannot be retried: this update has not finished yet.";
+  }
+  // GH #463: `expired` is its own case, not the generic terminal fallback
+  // below. Nothing was ever sent to the site (same as `cancelled`/
+  // `never_ran`), so this text must not read like a failed update. Today the
+  // server still classifies an expired task as `not_applicable` (see
+  // apps/api/internal/update/model.go retryClassify, which has no case for
+  // TaskExpired and falls through its default), so this row currently has no
+  // checkbox and this is the reason shown. This client never overrides that
+  // server verdict — see `isRetrySelectable` above — it only has to describe
+  // the true reason accurately.
+  if (task.status === "expired") {
+    return "Cannot be retried: this update expired before it could run.";
   }
   return "Cannot be retried: the control plane cannot run this update again.";
 }

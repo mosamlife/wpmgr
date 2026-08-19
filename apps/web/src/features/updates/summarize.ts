@@ -26,6 +26,13 @@ export function summarizeTasks(tasks: UpdateTask[]): {
     // one target) and `failed` (the site was contacted and did not come
     // back): nothing was ever sent here.
     cancelled: 0,
+    // GH #463: not yet eligible for dispatch (parent run hasn't reached its
+    // scheduled_at). Not terminal, so excluded from `done` below, matching
+    // the control plane's own `terminal()` predicate.
+    scheduled: 0,
+    // GH #463: the parent run expired without dispatching. Terminal, and
+    // counted into `done` below, same as `cancelled`.
+    expired: 0,
   };
   for (const task of tasks) counts[task.status] += 1;
   const done =
@@ -33,7 +40,8 @@ export function summarizeTasks(tasks: UpdateTask[]): {
     counts.failed +
     counts.rolled_back +
     counts.skipped +
-    counts.cancelled;
+    counts.cancelled +
+    counts.expired;
   return { total: tasks.length, done, counts };
 }
 
@@ -48,7 +56,12 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
     status === "failed" ||
     status === "rolled_back" ||
     status === "skipped" ||
-    status === "cancelled"
+    status === "cancelled" ||
+    // GH #463: the parent run expired without dispatching this task. Never
+    // attempted, and final — matches the control plane's own terminal()
+    // predicate (apps/api/internal/update/model.go), which includes
+    // TaskExpired but deliberately excludes TaskScheduled.
+    status === "expired"
   );
 }
 
@@ -62,7 +75,13 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
  * halted run reads as perpetually in progress.
  */
 export function isTerminalRunStatus(status: RunStatus | undefined): boolean {
-  return status === "completed" || status === "halted";
+  // GH #463: `expired` is terminal too — the run came due more than the
+  // grace window ago and was never dispatched, and nothing further happens
+  // to it. `scheduled` and `dispatching` are deliberately excluded: both
+  // still have somewhere to go (scheduled -> dispatching -> running/expired;
+  // dispatching -> running), so a surface gating "still going" must keep
+  // polling/streaming through them.
+  return status === "completed" || status === "halted" || status === "expired";
 }
 
 // GH #255 Phase 2: the agent self-update channel's own outcome vocabulary.
