@@ -6,6 +6,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.140] - 2026-08-19
+
+### Changed
+
+- The control plane now validates its update-timing configuration at startup and refuses to boot when `update.apply_http_timeout` (env `WPMGR_UPDATE_APPLY_HTTP_TIMEOUT`) is set high enough that the derived claim-staleness bound reaches the stale-task reaper's threshold, naming the variable to lower in the refusal message. Measured against the real loader: an `apply_http_timeout` of 33m7s boots, 33m8s refuses. The default (8m) has roughly 25 minutes of headroom, so no ordinary install is affected, but anyone who raised the timeout will find out at startup rather than at deploy time.
+- Self-hosted installs now require `WPMGR_BOOTSTRAP_CLAIM_SECRET` to establish first-run ownership. `scripts/init-env.sh` generates it, and both quickstart paths route through that script. An existing install that already has an owner is unaffected. An existing install that was stood up and never claimed needs the operator to re-run `scripts/init-env.sh` (idempotent, it fills only the missing key) or set the variable directly, then restart the `api` service; see "First-run notes" in `docs/install.md` for the claim command.
+- `DECISIONS.md` and the ADR index were repaired: a false boundary in the record was corrected and `docs/adr/README.md` was added as the index. This affects people reading WPMgr's own decision history and changes nothing about installing or running it.
+
+### Fixed
+
+- Claiming an update task could race: two workers could each observe the same non-terminal task row and both dispatch it, applying one item to a site twice. Claiming a task is now a compare-and-swap against the row's own status, so only one worker can win it.
+
 ## [0.61.139] - 2026-08-17
 
 ### Added
