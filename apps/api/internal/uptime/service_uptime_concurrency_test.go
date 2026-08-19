@@ -81,6 +81,9 @@ func (s *barrierStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uuid
 func (s *barrierStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
 	panic("not called")
 }
+func (s *barrierStore) QueryFleetDailySeries(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID][]metrics.Point, error) {
+	panic("not called")
+}
 
 func (s *barrierStore) QueryAggregate(_ context.Context, _, _ uuid.UUID, _ time.Duration) (metrics.Aggregate, error) {
 	if err := s.wait("QueryAggregate"); err != nil {

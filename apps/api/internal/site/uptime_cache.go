@@ -168,6 +168,17 @@ func (s *cachedMetricsStore) QueryFleetUptime(ctx context.Context, tenantID uuid
 	return result, nil
 }
 
+// QueryFleetDailySeries delegates unchanged, deliberately NOT cached. The
+// uptime cache above is keyed on (tenant, sites, window) and stores only
+// FleetUptimeRow; reusing it for a day series would need a second typed cache
+// for a page that is loaded far less often than the sites list this cache was
+// built for (m85). More importantly, this endpoint is the one an operator
+// exports into a client report, so a stale strip is a wrong number in
+// somebody else's document rather than a slightly old dashboard tile.
+func (s *cachedMetricsStore) QueryFleetDailySeries(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID][]metrics.Point, error) {
+	return s.inner.QueryFleetDailySeries(ctx, tenantID, siteIDs, window)
+}
+
 // QueryProbeWindow delegates unchanged (not cached — the incident-detail
 // endpoint is a low-traffic, single-incident lookup, not a repeated
 // dashboard-refresh path like QueryFleetUptime).

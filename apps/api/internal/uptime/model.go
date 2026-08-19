@@ -198,9 +198,21 @@ type FleetStatusItem struct {
 	// self-evident (currently only populated for FleetStatusDegraded, one of
 	// the FleetReason* constants). Empty for up/down/unknown.
 	StatusReason     string     `json:"status_reason,omitempty"`
-	Up               *bool      `json:"up"`
-	LastProbeAt      *time.Time `json:"last_probe_at"`
-	UptimePct7d      float64    `json:"uptime_pct_7d"`
+	Up          *bool      `json:"up"`
+	LastProbeAt *time.Time `json:"last_probe_at"`
+	// UptimePct7d is the 7-day uptime percentage, and is NIL when the site
+	// has no measurement in the window — never probed, monitoring never
+	// enabled, or its whole history has aged past probeRetention. It is a
+	// POINTER precisely so that case serialises as `null` rather than `0`:
+	// as a bare float64 it carried the Go zero value onto the wire, and the
+	// dashboard read 0 as "0% uptime" and painted a never-probed site as a
+	// solid 90-day outage strip (GH #460). The frontend contract has always
+	// declared this `number | null` (apps/web/src/features/fleet/fleet-types.ts);
+	// this is the API finally sending the shape it promised. Do not
+	// dereference-with-default it back into a float anywhere: "no data" and
+	// "0% available" are different facts about a site and an operator may
+	// be putting whichever one we send in front of their own client.
+	UptimePct7d      *float64   `json:"uptime_pct_7d"`
 	AvgLatencyMs     *float64   `json:"avg_latency_ms"`
 	TLSExpiry        *time.Time `json:"tls_expiry"`
 	LatencySparkline []float64  `json:"latency_sparkline"`
@@ -223,6 +235,66 @@ type FleetStatusItem struct {
 type FleetStatusResponse struct {
 	Summary FleetStatusCounts `json:"summary"`
 	Items   []FleetStatusItem `json:"items"`
+}
+
+// ---------------------------------------------------------------------------
+// Fleet uptime history (GET /api/v1/fleet/uptime-history, GH #460)
+// ---------------------------------------------------------------------------
+
+// FleetUptimeDay is one UTC day of measured availability for one site.
+//
+// UptimePct is NIL when that day has no stored measurement — the site did not
+// exist yet, monitoring was off, the probe worker did not run, or the day has
+// aged past probeRetention. It is NOT zero. A zero here means the site was
+// measured and was down for every probe of that day, which is a completely
+// different statement to put in front of an operator, or the client the
+// operator forwards it to. The whole of GH #460 is that these two were the
+// same value on the wire.
+type FleetUptimeDay struct {
+	// Date is the UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is
+	// keyed on UTC days, and re-bucketing per viewer timezone would split one
+	// stored day across two rendered cells.
+	Date string `json:"date"`
+	// UptimePct is up_checks/total_checks*100 for the day, or nil for no data.
+	UptimePct *float64 `json:"uptime_pct"`
+	// Checks is the number of probes recorded that day (0 when UptimePct is
+	// nil). Carried so a client can distinguish a confidently-measured day
+	// from one with a single probe, and so "no data" is falsifiable rather
+	// than something the client has to infer from a null alone.
+	Checks int64 `json:"checks"`
+	// AvgLatencyMs is the mean response time over SUCCESSFUL probes with a
+	// non-zero reading, nil when the day had none.
+	AvgLatencyMs *float64 `json:"avg_latency_ms"`
+}
+
+// FleetUptimeHistoryItem is one site's densified day strip.
+type FleetUptimeHistoryItem struct {
+	SiteID uuid.UUID `json:"site_id"`
+	Name   string    `json:"name"`
+	URL    string    `json:"url"`
+	// Days is ALWAYS exactly the requested number of days, oldest first, with
+	// no gaps: the service densifies the store's sparse output across every
+	// UTC day in the window. A client can therefore index it positionally
+	// without re-deriving dates, and every unmeasured day is explicitly
+	// present with a nil UptimePct rather than silently missing.
+	Days []FleetUptimeDay `json:"days"`
+	// MeasuredDays is how many entries in Days carry a measurement. A young
+	// site reads e.g. 28 of 90, which is the honest thing to show instead of
+	// implying 90 days of history.
+	MeasuredDays int `json:"measured_days"`
+}
+
+// FleetUptimeHistoryResponse is the response body for
+// GET /api/v1/fleet/uptime-history.
+type FleetUptimeHistoryResponse struct {
+	// Window echoes the requested window ("7d", "30d", "90d").
+	Window string `json:"window"`
+	// Days is the number of entries in every item's Days array.
+	Days int `json:"days"`
+	// StartDate and EndDate are the inclusive UTC bounds of that array.
+	StartDate string                   `json:"start_date"`
+	EndDate   string                   `json:"end_date"`
+	Items     []FleetUptimeHistoryItem `json:"items"`
 }
 
 // FleetSiteInfo is the Postgres-resident projection used by GetFleetSiteInfo.

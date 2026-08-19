@@ -47,6 +47,11 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// their AllowedSiteIDs (filtered inside the handler). No RequireOrgScope()
 	// because site-scoped collaborators get a filtered view, not an error.
 	r.GET("/fleet/status", authz.RequirePermission(authz.PermSiteRead), h.fleetStatus)
+	// Fleet daily availability strip (GH #460). Same gating as /fleet/status:
+	// no :siteId to hand RequireSiteAccess, so the site set is resolved by
+	// FleetSiteIDs, which applies the site-scoped principal's allowlist before
+	// any site id reaches the metrics store.
+	r.GET("/fleet/uptime-history", authz.RequirePermission(authz.PermSiteRead), h.fleetUptimeHistory)
 	r.GET("/fleet/incidents", authz.RequirePermission(authz.PermSiteRead), h.fleetIncidents)
 	// Incident detail: no :siteId param to gate via RequireSiteAccess, so a
 	// site-scoped principal's access is checked explicitly inside the handler
@@ -305,6 +310,42 @@ func (h *Handler) fleetStatus(c *gin.Context) {
 		return
 	}
 	resp, err := h.svc.GetFleetStatus(c.Request.Context(), tenantID, siteIDs)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// fleetUptimeHistory handles GET /api/v1/fleet/uptime-history?window=7d|30d|90d
+// (GH #460): the per-site daily availability strip, one entry per UTC day,
+// with uptime_pct null on any day that has no stored measurement.
+//
+// It replaces a strip the browser used to derive from a single 7-day scalar.
+// The contract that matters is that every non-null cell corresponds to stored
+// counters, so an operator exporting this into a client report is forwarding
+// measurements rather than an inference.
+//
+// Site-scoped principals see only their AllowedSiteIDs: FleetSiteIDs applies
+// the allowlist, exactly as /fleet/status does, so no site id outside the
+// principal's grant is ever passed to the metrics store.
+func (h *Handler) fleetUptimeHistory(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	window := c.Query("window")
+	if window == "" {
+		window = "90d"
+	}
+	p, _ := domain.PrincipalFromContext(c.Request.Context())
+	siteIDs, err := h.svc.FleetSiteIDs(c.Request.Context(), tenantID, p)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	resp, err := h.svc.GetFleetUptimeHistory(c.Request.Context(), tenantID, siteIDs, window)
 	if err != nil {
 		httpx.Error(c, err)
 		return
