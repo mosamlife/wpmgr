@@ -1,10 +1,13 @@
 # Architecture Decision Records — index
 
-This is the live index for every ADR from ADR-044 onward. Each decision is its
-own file in this directory, `ADR-<NNN>-<slug>.md`. ADR-001 through ADR-043
-predate this directory and are archived, unchanged, in
-[`DECISIONS.md`](../../DECISIONS.md) at the repo root; that file is historical
-and is not appended to any more.
+This is the live index for every ADR that has a file in this directory —
+ADR-037 onward. It is not a clean "044 and later" split: ADR-038 through
+ADR-043 have a file here **and** are also archived in
+[`DECISIONS.md`](../../DECISIONS.md) at the repo root — the same six
+decisions, recorded in both places. ADR-034 through ADR-036 have neither; see
+Numbering below for what is known about each. `DECISIONS.md` covers ADR-001
+through ADR-033 and ADR-038 through ADR-043; it is historical and is not
+appended to any more.
 
 **This file is the only place a new ADR gets registered.** To add one: take
 the next free number below, write `docs/adr/ADR-<NNN>-<slug>.md`, then add its
@@ -71,6 +74,10 @@ below that have no file. **The next free number is 061.**
 
 | Number(s) | What happened |
 |---|---|
+| 034 | Reserved, no `docs/adr/` file and no entry in `DECISIONS.md`. Subject: the M5.6 restore engine (staged-prefix DB restore, atomic file/directory swap, the restore state-machine driver and its watchdog). Cited from: `apps/api/internal/backup/service.go:797`, `apps/api/internal/agentcmd/backup_contract.go:347`, `apps/agent/includes/commands/class-restore-command.php:3`, `apps/agent/includes/backup/class-restore-runner.php:3`, and dozens more across `apps/agent/includes/backup/**`, `apps/api/internal/backup/**` and their tests — run `git grep -n 'ADR-034'` for the complete set. Reserved, never reused. |
+| 035 | Reserved — a gap with no file, no `DECISIONS.md` entry, and (like 058) no citation found anywhere: not in the tracked tree (`git grep -n "ADR-035"`), not in any commit message (`git log --all --grep="ADR-035"`), and not in any historical diff (`git log --all -S"ADR-035"`) — all three came back empty at the time this index was written. Reserved and never reused regardless. |
+| 036 | Reserved, no `docs/adr/` file and no entry in `DECISIONS.md`. Subject: the M7 storage-adapter / backup-destination foundation and the URL rewriter. Cited from: `apps/api/migrations/20260530000001_m7_site_destinations.sql:1`, `apps/api/migrations/20260530010000_m7_url_rewriter.sql:1`, `apps/agent/includes/backup/destinations/class-backup-destination.php:3`, `docs/adr/ADR-037-wpmgr-feature-parity-roadmap.md:5,17,98` (ADR-037 itself cites it as a separate doc), and dozens more across `apps/agent/includes/backup/**`, `apps/api/internal/backup/**`, `apps/api/internal/sitedestination/**` and generated OpenAPI code — run `git grep -n 'ADR-036'` for the complete set. Reserved, never reused. |
+| 038–043 | Not a gap — the opposite: each of these six numbers has both a file under `docs/adr/` and an entry in `DECISIONS.md`. Same six decisions, recorded twice. This file is the live index; the `DECISIONS.md` entries are historical and are not updated to match. |
 | 045 | Allocated three times: `ADR-045-email-auth-alerts.md`, `ADR-045-alert-channels-design.md`, `ADR-045-email-templates.md`. These are three distinct, related decisions that collided on one number. All three keep their existing filenames. 045 is closed — no fourth file is ever filed under it. |
 | 048 | Reserved, no file was ever written. Subject: the first incremental-backup engine (per-file content-addressed chunking), later superseded by ADR-051 (per ADR-051's own text, `docs/adr/ADR-051-archive-delta-incremental.md:4,8`). Cited from: `apps/api/migrations/20260611000000_m48_schedule_incremental.sql:1,9`, `CHANGELOG.md:1931`, `apps/api/internal/backup/enqueuer.go:32`, and dozens more sites across `apps/api/internal/backup/**`, `apps/api/internal/db/sqlc/**` and its tests — run `git grep -n 'ADR-048'` for the complete set. Reserved, never reused. |
 | 049 | Reserved, no file was ever written. Subject: chain / point-in-time restore (the read side of the incremental engine). Cited from: `apps/api/migrations/20260608000000_m45_incremental_restore.sql:1`, `CHANGELOG.md:1931,1933`, `apps/api/internal/backup/worker.go:513`, `apps/api/internal/agentcmd/backup_contract.go:399,415`, and more across `apps/api/internal/backup/**` and its tests — run `git grep -n 'ADR-049'` for the complete set. Reserved, never reused. |

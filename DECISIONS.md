@@ -1,12 +1,16 @@
-# WPMgr Architecture Decision Records — historical archive (ADR-001–043)
+# WPMgr Architecture Decision Records — historical archive
 
-ADR-044 and later live as individual files under `docs/adr/`, one file per
-decision. `docs/adr/README.md` is the live index of every ADR — numbering,
-status, and the next free number.
+This file holds ADR-001 through ADR-033 and ADR-038 through ADR-043, as
+originally recorded. ADR-034, ADR-035 and ADR-036 were never entered here;
+`docs/adr/README.md`'s Numbering section records what is known about each.
+ADR-037, and every ADR from ADR-044 onward, were never entered here either —
+each exists only as an individual file under `docs/adr/`. ADR-038 through
+ADR-043 exist in both places: here, and as individual files under
+`docs/adr/`.
 
-This file is the historical record for ADR-001 through ADR-043 and is not
-appended to any more. Register new decisions in `docs/adr/README.md` and
-write them as `docs/adr/ADR-NNN-slug.md`.
+`docs/adr/README.md` is the live index of every ADR that has a file. This
+file is not appended to any more. Register new decisions in
+`docs/adr/README.md` and write them as `docs/adr/ADR-NNN-slug.md`.
 
 ---
 
