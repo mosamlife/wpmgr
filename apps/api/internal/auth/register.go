@@ -74,6 +74,7 @@ func (s *Service) RegisterSelfServe(
 		// itself, so a residual difference stays — measured and reported rather
 		// than assumed away, in TestMeasureFirstRunRefusalTiming.
 		_, _ = s.repo.GetUserByEmail(ctx, in.Email)
+		//nolint:nilerr // returning nil while oerr is non-nil is the SAFE branch, not an oversight: an ownership answer this code could not read must leave self-serve shut, and every refusal on this path is silent by design (see the comment above). Surfacing oerr here would both open the path on a transient database error and hand the caller a distinguishable answer.
 		return nil
 	}
 
