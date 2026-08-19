@@ -40,6 +40,9 @@ func (s *countingStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uui
 func (s *countingStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
 	return nil, nil
 }
+func (s *countingStore) QueryFleetDailySeries(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID][]metrics.Point, error) {
+	return nil, nil
+}
 
 func TestUptimeCache_Hit(t *testing.T) {
 	inner := &countingStore{result: map[uuid.UUID]metrics.FleetUptimeRow{}}

@@ -764,9 +764,21 @@ const dailySeriesMinWindow = 24 * time.Hour
 // (which can only emit a bucket that has rows), hence the total_checks > 0
 // filter, which also drops the two edge parts when their bounded range is
 // empty (count(*) over an empty range still returns a row, with 0).
-const siteDailySeriesQuery = `
-SELECT bucket, total_checks, up_checks, sum_latency_ms, latency_samples
-FROM (
+//
+// dailySeriesParts is the decomposition ITSELF, shared verbatim by the
+// per-site query below and by the fleet-wide batch (fleetDailySeriesQuery).
+// %[1]s is the only thing that differs between the two: the site-id
+// expression, a bound parameter ($2) for one site and the unnest anchor's
+// column (s.id) for the fleet batch. Every OTHER bound parameter keeps the
+// same number in both, which is what lets one template serve both.
+//
+// This is a single copy on purpose. Two hand-maintained copies of "which days
+// are complete, and which two edges must be read raw" that can drift apart is
+// exactly the defect this decomposition exists to prevent, and it would
+// surface as the per-site strip and the fleet strip disagreeing about the
+// same site on the same screen. The window boundaries likewise come from
+// fleetUptimeParams for both.
+const dailySeriesParts = `
     -- 1. ROLLUP middle: one point per complete UTC day inside the window.
     SELECT
         (day::timestamp AT TIME ZONE 'UTC') AS bucket,
@@ -775,7 +787,7 @@ FROM (
         sum_latency_ms                      AS sum_latency_ms,
         latency_samples::bigint             AS latency_samples
     FROM site_uptime_daily
-    WHERE site_id = $2 AND tenant_id = $1
+    WHERE site_id = %[1]s AND tenant_id = $1
       AND day > $3::date AND day < $4::date
 
     UNION ALL
@@ -788,7 +800,7 @@ FROM (
         COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
         count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
     FROM site_uptime_probes
-    WHERE site_id = $2 AND tenant_id = $1
+    WHERE site_id = %[1]s AND tenant_id = $1
       AND probed_at >= $5::timestamptz AND probed_at < $6::timestamptz
 
     UNION ALL
@@ -801,11 +813,40 @@ FROM (
         COALESCE(sum(total_ms) FILTER (WHERE up AND total_ms <> 0), 0) AS sum_latency_ms,
         count(*) FILTER (WHERE up AND total_ms <> 0) AS latency_samples
     FROM site_uptime_probes
-    WHERE site_id = $2 AND tenant_id = $1
-      AND probed_at >= $7::timestamptz AND probed_at <= $8::timestamptz
+    WHERE site_id = %[1]s AND tenant_id = $1
+      AND probed_at >= $7::timestamptz AND probed_at <= $8::timestamptz`
+
+var siteDailySeriesQuery = fmt.Sprintf(`
+SELECT bucket, total_checks, up_checks, sum_latency_ms, latency_samples
+FROM (%s
 ) points
 WHERE total_checks > 0
-ORDER BY bucket ASC`
+ORDER BY bucket ASC`, fmt.Sprintf(dailySeriesParts, "$2"))
+
+// fleetDailySeriesQuery is the FLEET-WIDE batch of the same decomposition:
+// one row per (site, UTC day) for every site in $2, in ONE query.
+//
+// The batch is the whole point. m99 exists because the per-site window scan
+// cost 6-8s cold, and a fleet strip built by looping this query once per site
+// would reintroduce exactly that, multiplied by the fleet size — on the page
+// that is meant to be the honest answer to "what is my availability".
+//
+// unnest($2::uuid[]) is the anchor, matching fleetUptimeQuery. The join is a
+// plain (not LEFT) LATERAL: a site with no measurement in the window
+// contributes no rows and is simply absent from the result map, which is the
+// same "missing == no data" contract QueryFleetUptime has. The caller
+// densifies the window into one entry per UTC day and marks the absent ones
+// null — the API must never let a gap day read as 0% (GH #460).
+//
+// ORDER BY site_id then bucket lets the scan build the per-site slices in one
+// pass without sorting them afterwards.
+var fleetDailySeriesQuery = fmt.Sprintf(`
+SELECT s.id AS site_id, points.bucket, points.total_checks, points.up_checks,
+       points.sum_latency_ms, points.latency_samples
+FROM unnest($2::uuid[]) AS s(id)
+JOIN LATERAL (%s
+) points ON points.total_checks > 0
+ORDER BY s.id, points.bucket ASC`, fmt.Sprintf(dailySeriesParts, "s.id"))
 
 // QuerySeries returns a downsampled per-bucket series for one site over the
 // window.
@@ -866,6 +907,68 @@ func (s *pgStore) querySeriesDaily(ctx context.Context, tenantID, siteID uuid.UU
 		return rows.Err()
 	})
 	return out, err
+}
+
+// QueryFleetDailySeries returns one Point per (site, UTC day) for a batch of
+// sites in ONE query — the fleet-wide daily strip behind
+// GET /api/v1/fleet/uptime-history (GH #460).
+//
+// It is the batched form of querySeriesDaily and shares its SQL body verbatim
+// (dailySeriesParts) and its window boundaries (fleetUptimeParams), so a day
+// can never be "complete" for the fleet strip and "partial" for the per-site
+// one. Runs under InAgentTx with an explicit tenant_id predicate, the same
+// convention as every other pgStore read.
+//
+// A site with no probes in the window is ABSENT from the map, never present
+// with a zero-filled slice: "we did not measure" and "we measured zero" are
+// different facts, and this is the layer where conflating them starts.
+// Callers densify the window and render the gaps as no-data.
+func (s *pgStore) QueryFleetDailySeries(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID][]Point, error) {
+	out := make(map[uuid.UUID][]Point, len(siteIDs))
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+	boundaryDay, today, tailLower, tailUpper, _, todayLower, now := fleetUptimeParams(time.Now(), window)
+
+	err := s.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, fleetDailySeriesQuery,
+			tenantID, siteIDs, boundaryDay, today, tailLower, tailUpper, todayLower, now,
+			// $9/$10: the boundary day and today again as timestamptz bucket
+			// labels — the SAME instants as $3/$4, so a label can never drift
+			// from the predicate that selected the rows it labels.
+			boundaryDay, today)
+		if err != nil {
+			return fmt.Errorf("postgres fleet daily series query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				siteID                           uuid.UUID
+				bucket                           time.Time
+				checks, upChecks, latencySamples int64
+				sumLatencyMs                     float64
+			)
+			if err := rows.Scan(&siteID, &bucket, &checks, &upChecks, &sumLatencyMs, &latencySamples); err != nil {
+				return fmt.Errorf("postgres fleet daily series scan: %w", err)
+			}
+			p := Point{
+				Bucket:   bucket.UTC(),
+				Checks:   uint64(checks),
+				UpChecks: uint64(upChecks),
+			}
+			// sum_latency_ms / NULLIF(latency_samples, 0): same derivation as
+			// QueryAggregate, QueryFleetUptime and querySeriesDaily.
+			if latencySamples > 0 {
+				p.AvgLatencyMs = sumLatencyMs / float64(latencySamples)
+			}
+			out[siteID] = append(out[siteID], p)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // querySeriesRaw is the original sub-day path, unchanged: buckets are

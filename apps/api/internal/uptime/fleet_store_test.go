@@ -87,7 +87,8 @@ func (r *stubRepo) CountRecentIncidents(_ context.Context, _, _ uuid.UUID) (int6
 // stubStore is a metrics.Store that returns a fixed map from QueryFleetUptime
 // and panics on any other method — the fleet-status path must not call them.
 type stubStore struct {
-	uptimeMap map[uuid.UUID]metrics.FleetUptimeRow
+	uptimeMap   map[uuid.UUID]metrics.FleetUptimeRow
+	dailySeries map[uuid.UUID][]metrics.Point
 }
 
 func (s *stubStore) Enabled() bool { return true }
@@ -109,6 +110,13 @@ func (s *stubStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uuid.UU
 }
 func (s *stubStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
 	panic("not called")
+}
+
+// dailySeries is returned by QueryFleetDailySeries. Nil is a valid value and
+// means "no site has any measurement", which is what the fleet-status tests
+// (which never call it) leave it as.
+func (s *stubStore) QueryFleetDailySeries(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID][]metrics.Point, error) {
+	return s.dailySeries, nil
 }
 
 // ---------------------------------------------------------------------------
