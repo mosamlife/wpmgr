@@ -1,0 +1,288 @@
+// gh463_update_runs_agent_rls_integration_test.go — GH #463 Phase 0.
+//
+// These tests are the entire justification for shipping m118 alone and before
+// any dispatcher code exists. They assert, against a real Postgres, that the
+// cross-tenant deferred-dispatch scan can both SEE and CLAIM a due run.
+//
+// WITHOUT m118 THEY FAIL BY RETURNING ZERO ROWS AND NO ERROR. That is the
+// failure mode worth the whole phase: update_runs carried only
+// update_runs_tenant_isolation (m3), so under FORCE ROW LEVEL SECURITY a
+// transaction with app.agent='on' and app.tenant_id UNSET satisfied no policy
+// at all, and Postgres answered "no rows" rather than raising. A dispatcher
+// built against that database would log "0 due runs" on every tick forever and
+// look like it worked. The same defect shipped twice before, as m84/#96
+// (backup_schedules) and m89/#131 (update_tasks — this table's sibling).
+//
+// Every assertion reaches the database on the pool startPostgres hands back,
+// which connects as the NON-superuser, NOBYPASSRLS wpmgr_app role — the role
+// every real install runs as — and every transaction goes through the real
+// db.Pool wrappers (InAgentTx / InTenantTx) that production uses, so the
+// policies under test are live rather than inert. A test that opened its own
+// connection, or that connected as the container superuser, would pass against
+// the broken schema and prove nothing.
+package tests
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+)
+
+// seedScheduledRun inserts a due 'scheduled' run for one tenant through the
+// REAL tenant wrapper, so update_runs_tenant_isolation's WITH CHECK applies to
+// the insert exactly as it would for an operator-created run. There is no repo
+// method for a deferred run yet — creating one is Phase 1's Go work, which by
+// design does not exist while this migration ships.
+func seedScheduledRun(t *testing.T, pool *db.Pool, tenantID uuid.UUID, scheduledAt time.Time) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var id uuid.UUID
+	if err := pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			INSERT INTO update_runs (tenant_id, status, dry_run, scheduled_at)
+			VALUES ($1, 'scheduled', false, $2)
+			RETURNING id`, tenantID, scheduledAt).Scan(&id)
+	}); err != nil {
+		t.Fatalf("seed scheduled run: %v", err)
+	}
+	return id
+}
+
+// TestGH463_Phase0_AgentTxSeesAndClaimsDueRunCrossTenant is the core proof.
+//
+// It walks the three database operations the #463 dispatcher will perform, in
+// order, all under InAgentTx with NO tenant GUC set — the plain read, the
+// locking read, and the claim. Each is a separate assertion because each fails
+// differently without the policy, and the second and third are the ones a
+// FOR SELECT policy would still break.
+func TestGH463_Phase0_AgentTxSeesAndClaimsDueRunCrossTenant(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, pool, "gh463-tenant-a")
+	tenantB := seedTenant(t, pool, "gh463-tenant-b")
+
+	due := time.Now().Add(-time.Minute)
+	runA := seedScheduledRun(t, pool, tenantA, due)
+	runB := seedScheduledRun(t, pool, tenantB, due)
+
+	// A run that is not yet due, to prove the scan is selective and not simply
+	// returning everything once the policy admits rows.
+	notYet := seedScheduledRun(t, pool, tenantA, time.Now().Add(time.Hour))
+
+	// (1) THE PLAIN CROSS-TENANT READ. No tenant_id in the WHERE and no
+	// app.tenant_id in the session: this is admitted only by update_runs_agent.
+	var seen []uuid.UUID
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM update_runs
+			WHERE status = 'scheduled' AND scheduled_at <= now()
+			ORDER BY scheduled_at`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			seen = append(seen, id)
+		}
+		return rows.Err()
+	}); err != nil {
+		t.Fatalf("cross-tenant due scan: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("cross-tenant due scan returned %d rows, want 2 (runs %s and %s, "+
+			"one per tenant). Zero rows with no error is the m84/#96 + m89/#131 "+
+			"failure: update_runs has no app.agent policy, so FORCE ROW LEVEL "+
+			"SECURITY silently admits nothing. Got: %v",
+			len(seen), runA, runB, seen)
+	}
+	for _, id := range seen {
+		if id == notYet {
+			t.Fatalf("due scan returned the not-yet-due run %s", notYet)
+		}
+	}
+
+	// (2) THE LOCKING READ. This is the shape every claim in this codebase
+	// uses, and it is the half that surprises people: PostgreSQL applies the
+	// UPDATE policy to SELECT ... FOR UPDATE as well as the SELECT policy,
+	// because taking a row lock declares intent to write. A FOR SELECT-only
+	// agent policy would make THIS return zero rows while step (1) above still
+	// passed — precisely how Issue #96 stopped every backup schedule from
+	// advancing while the same query worked by hand in psql.
+	var locked []uuid.UUID
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM update_runs
+			WHERE status = 'scheduled' AND scheduled_at <= now()
+			ORDER BY scheduled_at
+			FOR UPDATE SKIP LOCKED`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			locked = append(locked, id)
+		}
+		return rows.Err()
+	}); err != nil {
+		t.Fatalf("cross-tenant locking scan: %v", err)
+	}
+	if len(locked) != 2 {
+		t.Fatalf("SELECT ... FOR UPDATE returned %d rows, want 2. If the plain "+
+			"read above passed and this did not, the agent policy is FOR SELECT "+
+			"where it must be FOR ALL (Issue #96)", len(locked))
+	}
+
+	// (3) THE CLAIM. 'scheduled' -> 'dispatching', cross-tenant. This needs the
+	// UPDATE policy's USING to admit the old row AND the WITH CHECK to admit
+	// the new one. Without m118 this reports 0 rows affected and raises
+	// nothing, leaving every run at 'scheduled' forever.
+	var claimed int64
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE update_runs
+			   SET status = 'dispatching', updated_at = now()
+			 WHERE status = 'scheduled' AND scheduled_at <= now()`)
+		if err != nil {
+			return err
+		}
+		claimed = tag.RowsAffected()
+		return nil
+	}); err != nil {
+		t.Fatalf("cross-tenant claim: %v", err)
+	}
+	if claimed != 2 {
+		t.Fatalf("claim affected %d rows, want 2. Zero-rows-affected with no "+
+			"error is the silent failure this phase exists to prevent", claimed)
+	}
+
+	// The claim must have COMMITTED, and must be visible to the owning tenant.
+	// Reading it back through InTenantTx also proves the agent path did not
+	// somehow write a row the tenant path can no longer see.
+	for _, tc := range []struct {
+		tenantID uuid.UUID
+		runID    uuid.UUID
+	}{{tenantA, runA}, {tenantB, runB}} {
+		var status string
+		if err := pool.InTenantTx(ctx, tc.tenantID, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx,
+				`SELECT status FROM update_runs WHERE id = $1`, tc.runID).Scan(&status)
+		}); err != nil {
+			t.Fatalf("read back run %s: %v", tc.runID, err)
+		}
+		if status != "dispatching" {
+			t.Fatalf("run %s status = %q, want \"dispatching\"", tc.runID, status)
+		}
+	}
+}
+
+// TestGH463_Phase0_AgentPolicyDoesNotWidenTenantIsolation is the over-fire
+// guard. update_runs_agent is PERMISSIVE, and permissive policies are OR'd, so
+// a policy written even slightly wrong here would admit every tenant's runs to
+// every operator request. It must admit nothing outside InAgentTx.
+//
+// The load-bearing detail is that the GUC is compared against the literal 'on'
+// and that current_setting('app.agent', true) returns NULL — not 'off', not
+// '' — when the GUC was never set, so the comparison is NULL and the row is
+// not admitted.
+func TestGH463_Phase0_AgentPolicyDoesNotWidenTenantIsolation(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, pool, "gh463-widen-a")
+	tenantB := seedTenant(t, pool, "gh463-widen-b")
+	runA := seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+
+	// Tenant B, on the ordinary operator path, must not see tenant A's run —
+	// neither by unfiltered enumeration nor by direct id.
+	var n int
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM update_runs`).Scan(&n)
+	}); err != nil {
+		t.Fatalf("tenant B enumerate: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("tenant B saw %d update_runs rows, want 0: the agent policy has "+
+			"widened the operator path", n)
+	}
+
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM update_runs WHERE id = $1`, runA).Scan(&n)
+	}); err != nil {
+		t.Fatalf("tenant B fetch by id: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("tenant B fetched tenant A's run %s by id", runA)
+	}
+
+	// And tenant B must not be able to CLAIM tenant A's run either — the
+	// WITH CHECK half. This must affect zero rows.
+	var affected int64
+	if err := pool.InTenantTx(ctx, tenantB, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE update_runs SET status = 'dispatching' WHERE id = $1`, runA)
+		if err != nil {
+			return err
+		}
+		affected = tag.RowsAffected()
+		return nil
+	}); err != nil {
+		t.Fatalf("tenant B claim attempt: %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("tenant B claimed %d of tenant A's runs, want 0", affected)
+	}
+
+	// Tenant A still sees its own run, untouched. A guard that blocked the
+	// legitimate path too would be switched off, and then it would guard
+	// nothing.
+	var status string
+	if err := pool.InTenantTx(ctx, tenantA, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT status FROM update_runs WHERE id = $1`, runA).Scan(&status)
+	}); err != nil {
+		t.Fatalf("tenant A read own run: %v", err)
+	}
+	if status != "scheduled" {
+		t.Fatalf("tenant A's run status = %q, want \"scheduled\"", status)
+	}
+}
+
+// TestGH463_Phase0_DueIndexExistsWithExpectedPredicate asserts the partial
+// index m118 creates is present and partial on the status the dispatcher
+// filters by. Presence is worth asserting on its own: the index is created
+// while 'scheduled' matches zero rows, so nothing else in the suite would
+// notice if it silently failed to be created, and the dispatcher would ship
+// against a sequential scan of the entire run history on every tick.
+func TestGH463_Phase0_DueIndexExistsWithExpectedPredicate(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+
+	var indexdef string
+	err := pool.QueryRow(ctx, `
+		SELECT indexdef FROM pg_indexes
+		 WHERE schemaname = 'public'
+		   AND tablename  = 'update_runs'
+		   AND indexname  = 'update_runs_due_idx'`).Scan(&indexdef)
+	if err != nil {
+		t.Fatalf("update_runs_due_idx not found (m118 did not apply?): %v", err)
+	}
+	for _, want := range []string{"scheduled_at", "status", "'scheduled'"} {
+		if !strings.Contains(indexdef, want) {
+			t.Fatalf("update_runs_due_idx definition %q does not mention %q", indexdef, want)
+		}
+	}
+}
