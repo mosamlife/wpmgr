@@ -1050,6 +1050,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Phase 3: agent log ingest handler + retention GC worker.
 	emailAgentH := email.NewAgentHandler(emailSvc)
 	emailLogGCWorker := email.NewEmailLogGCWorker(emailSvc, logger)
+	// GH #461 — webhook dedup GC worker (was fully implemented but never
+	// registered with River; email_webhook_events grew without bound).
+	emailWebhookDedupGCWorker := email.NewWebhookDedupGCWorker(emailSvc, logger)
 	// m61: webhook handler — now safe to mount (cross-tenant forgery fixed).
 	// Uses the same svc and publicBase; no instance-wide signing keys.
 	emailWebhookH := email.NewWebhookHandler(emailSvc, emailPublicBase, logger)
@@ -1670,9 +1673,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 
-	// M56 — Real User Monitoring (RUM).
-	// The Postgres store is always wired; ClickHouse is a Phase 2+ opt-in
-	// (mirroring the internal/metrics dual-backend pattern).
+	// M56 — Real User Monitoring (RUM). RUM is unconditionally Postgres-backed;
+	// WPMGR_CLICKHOUSE_ADDR selects the internal/metrics uptime backend and has
+	// no effect here.
 	rumStore := rum.NewStorePostgres(pool)
 	rumBeaconRepo := rum.NewBeaconKeyRepo(pool)
 	rumRetention := rum.DefaultRetention(cfg)
@@ -1940,6 +1943,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		rumBeaconReconcileWorker: rumBeaconReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
+		// GH #461 — webhook dedup GC (always wired; 7-day retention).
+		emailWebhookDedupGCWorker: emailWebhookDedupGCWorker,
 		// m62 — org-config propagation + hourly digest workers (always wired).
 		emailOrgPropagateWorker: email.NewOrgConfigPropagateWorker(emailSvc, logger),
 		emailDigestWorker:       email.NewDigestWorker(emailSvc, logger),
@@ -3288,6 +3293,8 @@ type riverDeps struct {
 	rumBeaconReconcileWorker *perf.RumBeaconReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
+	// GH #461 — webhook dedup GC (always wired; 7-day retention).
+	emailWebhookDedupGCWorker *email.WebhookDedupGCWorker
 	// m62 — org-config propagation worker + hourly digest worker (always wired).
 	emailOrgPropagateWorker *email.OrgConfigPropagateWorker
 	emailDigestWorker       *email.DigestWorker
@@ -3721,8 +3728,10 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			&river.PeriodicJobOpts{RunOnStart: false},
 		))
 	}
-	// M56 — RUM rollup worker (always wired): folds raw events into hourly/daily
-	// rollup tables. Jobs are enqueued by the ingest handler (one per site per hour).
+	// M56 — RUM rollup worker (always wired): a no-op (see rum.RumRollupWorker's
+	// doc comment). Rollups are populated in real-time by StorePostgres.WriteEvent
+	// on every beacon; this worker stays registered so the "rum_rollup" River job
+	// kind is known and any previously enqueued jobs drain cleanly.
 	if d.rumRollupWorker != nil {
 		river.AddWorker(workers, d.rumRollupWorker)
 	}
@@ -3738,13 +3747,18 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// m59 Phase 3 — email log retention GC: sweeps site_email_log rows older
 	// than the per-site retention_days (default 14) once per hour.
 	// RunOnStart: false — avoids a GC sweep on every deploy/restart.
-	if d.emailLogGCWorker != nil {
-		river.AddWorker(workers, d.emailLogGCWorker)
-		periodics = append(periodics, river.NewPeriodicJob(
-			river.PeriodicInterval(1*time.Hour),
-			func() (river.JobArgs, *river.InsertOpts) { return email.EmailLogGCArgs{}, nil },
-			&river.PeriodicJobOpts{RunOnStart: false},
-		))
+	var gcRegisterErr error
+	periodics, gcRegisterErr = registerEmailLogGCWorker(workers, periodics, d.emailLogGCWorker)
+	if gcRegisterErr != nil {
+		return nil, gcRegisterErr
+	}
+
+	// GH #461 — webhook dedup GC: sweeps email_webhook_events rows older than
+	// the 7-day retention window (webhookDedupRetention) once per hour.
+	// RunOnStart: false — avoids a GC sweep on every deploy/restart.
+	periodics, gcRegisterErr = registerEmailWebhookDedupGCWorker(workers, periodics, d.emailWebhookDedupGCWorker)
+	if gcRegisterErr != nil {
+		return nil, gcRegisterErr
 	}
 
 	// m62 — org-config propagation worker (on-demand, enqueued by UpsertOrgConfig).
@@ -4009,6 +4023,48 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		slog.Int("update_per_tenant_parallelism", perTenantParallelism),
 		slog.Bool("backups_enabled", backupsEnabled))
 	return client, nil
+}
+
+// registerEmailWebhookDedupGCWorker registers the GH #461 webhook dedup GC
+// worker with River and appends its hourly periodic sweep. Split out from
+// startRiver so the registration itself — not just the fact that startRiver
+// builds a client — can be asserted in a test.
+//
+// w is unconditionally constructed in run() (no feature flag gates it), so a
+// nil w here is never an intentionally-disabled feature — it means startup
+// wiring is broken. PR #488 bot review, GH #461: silently skipping
+// registration on nil let River start clean while email_webhook_events grew
+// unbounded with no signal at all, the exact failure GC exists to prevent.
+// Error instead of no-op so startRiver fails closed.
+func registerEmailWebhookDedupGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.WebhookDedupGCWorker) ([]*river.PeriodicJob, error) {
+	if w == nil {
+		return nil, fmt.Errorf("email webhook dedup GC worker is nil: email_webhook_events retention sweep would never run")
+	}
+	river.AddWorker(workers, w)
+	return append(periodics, river.NewPeriodicJob(
+		river.PeriodicInterval(1*time.Hour),
+		func() (river.JobArgs, *river.InsertOpts) { return email.WebhookDedupGCArgs{}, nil },
+		&river.PeriodicJobOpts{RunOnStart: false},
+	)), nil
+}
+
+// registerEmailLogGCWorker registers the m59 Phase 3 email log retention GC
+// worker with River and appends its hourly periodic sweep. Same shape as
+// registerEmailWebhookDedupGCWorker, and for the same reason: w is
+// unconditionally constructed in run(), so a nil w here means startup wiring
+// is broken, not an intentionally-disabled feature. PR #488 bot review, GH
+// #461: error instead of silently no-op'ing so startRiver fails closed
+// rather than letting site_email_log grow unbounded with no signal.
+func registerEmailLogGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.EmailLogGCWorker) ([]*river.PeriodicJob, error) {
+	if w == nil {
+		return nil, fmt.Errorf("email log GC worker is nil: site_email_log retention sweep would never run")
+	}
+	river.AddWorker(workers, w)
+	return append(periodics, river.NewPeriodicJob(
+		river.PeriodicInterval(1*time.Hour),
+		func() (river.JobArgs, *river.InsertOpts) { return email.EmailLogGCArgs{}, nil },
+		&river.PeriodicJobOpts{RunOnStart: false},
+	)), nil
 }
 
 // disabledBackupCommander refuses to send backup/restore commands when no CP

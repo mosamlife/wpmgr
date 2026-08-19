@@ -1,8 +1,7 @@
 // Package rum is the Real User Monitoring (RUM) control-plane domain (M56).
 // It provides:
 //
-//   - RumStore: a dual-backend store interface (Postgres histogram rollups
-//     default; ClickHouse stub selectable by WPMGR_CLICKHOUSE_ADDR) for
+//   - RumStore: the Postgres-backed store interface (StorePostgres) for
 //     ingest-write, rollup reads, and dashboard p75 queries.
 //   - Beacon-key lifecycle: 128-bit random key generation, sha256 storage, and
 //     grace-window rotation (SetBeaconKeyHash / ClearBeaconKeyHashPrev).
@@ -124,13 +123,16 @@ type P75Result struct {
 	SampleCount int64
 }
 
-// Store is the RUM data backend interface. Two implementations exist:
-//   - StorePostgres: the default, backed by the sqlc-generated histogram rollups.
-//   - StoreClickHouse: a future opt-in stub (WPMGR_CLICKHOUSE_ADDR).
+// Store is the RUM data backend interface. StorePostgres is the sole
+// implementation, backed by the sqlc-generated histogram rollups.
 //
-// The interface is intentionally narrow: the ingest handler and rollup worker
-// only need WriteEvent + FoldHourly/FoldDaily; the dashboard handler needs
-// GetHourlyRollups / GetDailyRollups + ComputeP75.
+// The interface is intentionally narrow: the ingest handler needs WriteEvent;
+// the dashboard handler needs GetHourlyRollups / GetDailyRollups + ComputeP75.
+//
+// The three Prune* methods below survived the FoldHourly/FoldDaily removal
+// in this same PR because RumGCWorker.Work (worker.go) actually calls all
+// three on every periodic sweep registered in cmd/wpmgr/main.go, whereas
+// FoldHourly/FoldDaily had zero callers anywhere in the tree.
 type Store interface {
 	// WriteEvent appends one validated event and additively upserts the
 	// corresponding hourly and daily rollup rows, all within a single
@@ -139,15 +141,6 @@ type Store interface {
 	// accumulates sum/min/max. This is the per-beacon rollup path (V1 mechanism);
 	// the RumRollupWorker is reserved for a future batch-fold optimisation.
 	WriteEvent(ctx context.Context, p IngestParams) error
-
-	// FoldHourly aggregates raw events from the given time window into the hourly
-	// rollup table using the additive ON CONFLICT upsert. Called by the rollup
-	// worker. Runs under InRumIngestTx (the rollup upsert shares the ingest GUC).
-	FoldHourly(ctx context.Context, siteID, tenantID uuid.UUID, bucketHour time.Time) error
-
-	// FoldDaily aggregates raw events from the given date into the daily rollup
-	// table. Called by the rollup worker after FoldHourly succeeds.
-	FoldDaily(ctx context.Context, siteID, tenantID uuid.UUID, bucketDay time.Time) error
 
 	// GetHourlyRollups returns hourly rollup rows for the site since the given
 	// timestamp. Runs under InTenantTx (dashboard read path).

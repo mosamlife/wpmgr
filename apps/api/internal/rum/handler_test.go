@@ -576,12 +576,6 @@ func (s *captureStore) WriteEvent(_ context.Context, p IngestParams) error {
 	s.events = append(s.events, p)
 	return nil
 }
-func (s *captureStore) FoldHourly(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
-func (s *captureStore) FoldDaily(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
 func (s *captureStore) GetHourlyRollups(_ context.Context, _, _ uuid.UUID, _ time.Time) ([]HourlyRollup, error) {
 	return nil, nil
 }
@@ -603,12 +597,6 @@ func (s *captureStore) PruneDailyRollups(_ context.Context, _ time.Time) (int64,
 type noopStore struct{}
 
 func (s *noopStore) WriteEvent(_ context.Context, _ IngestParams) error { return nil }
-func (s *noopStore) FoldHourly(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
-func (s *noopStore) FoldDaily(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
 func (s *noopStore) GetHourlyRollups(_ context.Context, _, _ uuid.UUID, _ time.Time) ([]HourlyRollup, error) {
 	return nil, nil
 }
@@ -904,12 +892,6 @@ type failingStore struct {
 }
 
 func (s *failingStore) WriteEvent(_ context.Context, _ IngestParams) error { return s.err }
-func (s *failingStore) FoldHourly(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
-func (s *failingStore) FoldDaily(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
 func (s *failingStore) GetHourlyRollups(_ context.Context, _, _ uuid.UUID, _ time.Time) ([]HourlyRollup, error) {
 	return nil, nil
 }
