@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import {
   formatAbsolute,
   scheduleBounds,
   validateSchedule,
+  type ScheduleProblem,
 } from "@/features/updates/schedule";
 import type { Site, UpdateItem, UpdateRunCreate } from "@wpmgr/api";
 
@@ -205,6 +206,12 @@ function WizardForm({
   const [manualSlugs, setManualSlugs] = useState("");
   const [dryRun, setDryRun] = useState(true);
   const [scheduleAt, setScheduleAt] = useState("");
+  // GH #463: a refusal decided at SUBMIT time, which the live verdict below
+  // cannot have rendered yet. Cleared the moment the operator edits the
+  // field, so a stale refusal never outlives the value it judged.
+  const [scheduleRefusal, setScheduleRefusal] =
+    useState<ScheduleProblem | null>(null);
+  const scheduleInputRef = useRef<HTMLInputElement>(null);
   // When true, only items with a reported update are shown.
   const [filterToUpdates, setFilterToUpdates] = useState(true);
 
@@ -264,7 +271,9 @@ function WizardForm({
   // through to a 422.
   const scheduleZone = browserTimeZone();
   const scheduleBoundsValue = scheduleBounds();
-  const scheduleProblem = validateSchedule(scheduleAt);
+  // The submit-time refusal wins when present: it is the more recent verdict,
+  // and it is the only one that exists in the stale-value case.
+  const scheduleProblem = scheduleRefusal ?? validateSchedule(scheduleAt);
 
   const targetDescribed =
     target.kind === "sites"
@@ -283,7 +292,21 @@ function WizardForm({
     // GH #463: re-validate against the clock AT SUBMIT, not against the
     // verdict rendered earlier. The form is `noValidate`, so `min`/`max` on
     // the input are a picker hint only and never a gate.
-    if (validateSchedule(scheduleAt)) return;
+    //
+    // A refusal here MUST be visible. The rendered verdict is computed from
+    // the clock at render time, so the case that reaches this line is
+    // precisely the one where nothing on screen says no yet: a time that was
+    // valid when the operator typed it and went stale while they picked
+    // plugins. Returning silently would leave an enabled button that does
+    // nothing when clicked, which an operator reads as a broken product, not
+    // as a refusal. So the verdict is committed to state (which renders it
+    // in the field's `role="alert"`) and focus moves to the field.
+    const problem = validateSchedule(scheduleAt);
+    if (problem) {
+      setScheduleRefusal(problem);
+      scheduleInputRef.current?.focus();
+      return;
+    }
 
     const scheduleIso = scheduleAt
       ? new Date(scheduleAt).toISOString()
@@ -476,9 +499,13 @@ function WizardForm({
               </Label>
               <Input
                 id="schedule-at"
+                ref={scheduleInputRef}
                 type="datetime-local"
                 value={scheduleAt}
-                onChange={(e) => setScheduleAt(e.target.value)}
+                onChange={(e) => {
+                  setScheduleAt(e.target.value);
+                  setScheduleRefusal(null);
+                }}
                 className="w-60"
                 min={scheduleBoundsValue.min}
                 max={scheduleBoundsValue.max}

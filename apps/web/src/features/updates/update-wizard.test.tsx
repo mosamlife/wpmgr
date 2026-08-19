@@ -250,3 +250,68 @@ describe("UpdateWizard — GH #217 zero-updates tab badge", () => {
     expect(within(jetpackRow!).getByText("up to date")).toBeInTheDocument();
   });
 });
+
+// GH #463 — the wizard used to `return` out of onSubmit when the schedule was
+// invalid, saying nothing. The rendered verdict is computed from the clock at
+// RENDER time, so the case that reached that line was exactly the one where
+// nothing on screen said no yet: a time that was valid when it was typed and
+// went stale while the operator picked plugins. An enabled button that does
+// nothing when clicked reads as a broken product, not as a refusal.
+describe("UpdateWizard — GH #463 a refused schedule is never silent", () => {
+  function openWizard() {
+    renderWithProviders(
+      <UpdateWizard
+        open
+        onClose={() => {}}
+        target={TARGET}
+        sites={[
+          buildSite({
+            components: {
+              plugins: [
+                {
+                  slug: "akismet",
+                  name: "Akismet",
+                  version: "5.0",
+                  available_update: { new_version: "5.1" },
+                },
+              ],
+              themes: [],
+            },
+          }),
+        ]}
+      />,
+    );
+  }
+
+  it("names the reason instead of discarding the submit", () => {
+    openWizard();
+
+    const field = screen.getByLabelText(/schedule/i);
+    // Comfortably outside the 2-minute skew grace: typed, not skewed.
+    fireEvent.change(field, { target: { value: "2020-01-01T02:00" } });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/already passed/i);
+    // The field points assistive tech at the reason rather than just going red.
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAttribute("aria-describedby", "schedule-at-error");
+  });
+
+  it("clears the refusal as soon as the operator edits the time", () => {
+    openWizard();
+
+    const field = screen.getByLabelText(/schedule/i);
+    fireEvent.change(field, { target: { value: "2020-01-01T02:00" } });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    // A valid future time: the refusal must not outlive the value it judged.
+    const future = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const local =
+      `${future.getFullYear()}-${pad(future.getMonth() + 1)}-` +
+      `${pad(future.getDate())}T${pad(future.getHours())}:${pad(future.getMinutes())}`;
+    fireEvent.change(field, { target: { value: local } });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).not.toHaveAttribute("aria-invalid");
+  });
+});

@@ -94,6 +94,28 @@ describe("validateSchedule", () => {
     expect(validateSchedule(toLocalInputValue(justBehind), NOW)).toBeNull();
   });
 
+  // Asserting only at the boundary value would hold for ANY grace: widen it to
+  // an hour or narrow it to a second and the test above still passes, because
+  // it never probes the other side. These two pin the transition itself, so a
+  // change to SCHEDULE_SKEW_GRACE_MS that stops matching the server's
+  // scheduleSkewGrace (service.go:289) reddens one of them.
+  //
+  // The `datetime-local` control has minute resolution, so the probes step a
+  // whole minute either side rather than a second: a sub-minute offset would
+  // be erased by toLocalInputValue and both cases would collapse onto the
+  // same instant, which is the shape that made the original assertion vacuous.
+  it("accepts a time a minute INSIDE the skew grace", () => {
+    const inside = new Date(NOW - SCHEDULE_SKEW_GRACE_MS + 60_000);
+    expect(validateSchedule(toLocalInputValue(inside), NOW)).toBeNull();
+  });
+
+  it("refuses a time a minute OUTSIDE the skew grace", () => {
+    const outside = new Date(NOW - SCHEDULE_SKEW_GRACE_MS - 60_000);
+    expect(validateSchedule(toLocalInputValue(outside), NOW)?.code).toBe(
+      "schedule_in_past",
+    );
+  });
+
   // Mirrors service.go:322, domain.Validation("schedule_too_far", ...).
   it("refuses beyond the 30-day cap with the server's own code", () => {
     const tooFar = new Date(NOW + (SCHEDULE_MAX_LEAD_DAYS + 1) * 86400_000);

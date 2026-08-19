@@ -60,18 +60,38 @@ export function ScheduleCountdown({
         className,
       )}
     >
-      <span className="font-medium text-[var(--color-foreground)]">
-        {countdown ? `Starts in ${countdown}` : "Due now"}
+      {/* GH #463 a11y: this subtree re-renders every second, and
+          `ScheduledRunNotice` below wraps it in a `role="status"` element,
+          whose implicit `aria-live="polite"` would make a screen reader
+          re-announce the notice once a second. Announcements are computed
+          over the ACCESSIBILITY TREE, so `aria-hidden` on the ticking region
+          removes it from consideration entirely, and does so at the node that
+          actually changes — the fix therefore holds wherever this mounts,
+          instead of depending on every future parent remembering not to be a
+          live region. */}
+      <span aria-hidden="true" className="contents">
+        <span className="font-medium text-[var(--color-foreground)]">
+          {countdown ? `Starts in ${countdown}` : "Due now"}
+        </span>
+        <span className="text-[var(--color-muted-foreground)]">·</span>
+        <time
+          dateTime={scheduledAt}
+          className="text-[var(--color-muted-foreground)]"
+        >
+          {absolute}
+        </time>
       </span>
-      <span aria-hidden="true" className="text-[var(--color-muted-foreground)]">
-        ·
-      </span>
-      <time
-        dateTime={scheduledAt}
-        className="text-[var(--color-muted-foreground)]"
-      >
-        {absolute}
-      </time>
+      {/* The screen-reader equivalent, and the answer to "does a screen-reader
+          user get the schedule at all". It carries the fact that actually
+          matters to someone who cannot watch a number tick down: the absolute
+          start time WITH its timezone.
+
+          Its text is deliberately derived from `scheduledAt` ALONE and never
+          from `countdown`. Putting the remaining time in here would recreate
+          the very defect above one level down: a string that changes every
+          second inside a live region is announced every second, whether it is
+          visible or not. This one is announced once, on mount. */}
+      <span className="sr-only">Scheduled to start {absolute}</span>
     </span>
   );
 }
