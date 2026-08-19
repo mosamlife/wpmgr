@@ -189,17 +189,27 @@ func TestValidateClaimTimings_FiresAndDoesNotOverFire(t *testing.T) {
 	}
 }
 
-// TestYieldContendedClaim_IsWallClockBounded is the F2 regression. Every other
-// waiting path in this worker is bounded by siteBusyMaxWait from CreatedAt and
-// terminalizes as TaskSkipped; before this, the contended-claim path was the
-// only one that could snooze forever, and its unreadable-row branch did so
-// with nothing but a Warn — no error, no attempt consumed, no terminal state.
+// TestYieldContendedClaim_PastBound_IsLoudAndNeverWrites pins BOTH halves of
+// the contended path's wall-clock bound.
 //
-// RED: drop the busyBoundExceeded check from yieldContendedClaim and both
-// subtests snooze instead of terminalizing.
-func TestYieldContendedClaim_IsWallClockBounded(t *testing.T) {
+// It must be bounded: before the bound existed, a contended claim could snooze
+// forever with no error, no attempt consumed and no terminal state, and the
+// unreadable-row branch could do it on nothing but a Warn.
+//
+// It must ALSO never write. The first attempt at the bound terminalized the
+// task as TaskSkipped from the pre-claim snapshot. FinishUpdateTask accepts
+// 'pending' and 'running' alike, so that skip lands on the row the WINNER is
+// actively dispatching, the winner's real result is then rejected as
+// ErrTaskNotOpen, and the permanent record says "nothing was sent to the site"
+// about a site that was updated. A worker that never got the claim has no
+// outcome to record.
+//
+// RED: restore the terminalizing form (w.finish(..., TaskSkipped, ...) ahead of
+// the re-read) and both subtests fail on the write assertions.
+func TestYieldContendedClaim_PastBound_IsLoudAndNeverWrites(t *testing.T) {
 	cases := map[string]func(*probeFakeRepo){
-		"row still held": func(r *probeFakeRepo) {
+		// The winner holds the row and is mid-dispatch right now.
+		"row held by the winner": func(r *probeFakeRepo) {
 			held := claimTestTask()
 			held.Status = TaskRunning
 			r.getTask = func(uuid.UUID, uuid.UUID) (Task, error) { return held, nil }
@@ -223,20 +233,89 @@ func TestYieldContendedClaim_IsWallClockBounded(t *testing.T) {
 			err := w.yieldContendedClaim(context.Background(), TaskArgs{
 				TenantID: task.TenantID, RunID: task.RunID, TaskID: task.ID,
 			}, task)
-			if err != nil {
-				t.Fatalf("a task past its wall-clock bound must terminalize, not snooze; got %v", err)
+
+			// Loud: an error, which consumes an attempt and eventually
+			// dead-letters. Not nil (silently dropped) and not a snooze
+			// (invisible forever).
+			if err == nil {
+				t.Fatal("a task past its wall-clock bound must fail loudly, got nil")
 			}
-			if len(repo.finished) != 1 {
-				t.Fatalf("expected exactly one terminal write, got %+v", repo.finished)
+			if _, ok := asSnooze(err); ok {
+				t.Fatalf("past the bound this must stop snoozing, got %v", err)
 			}
-			if got := repo.finished[0].Status; got != TaskSkipped {
-				t.Fatalf("status = %q, want %q: this worker never got the claim, so nothing was sent to the site",
-					got, TaskSkipped)
+			// And never a write of any kind.
+			if len(repo.finished) != 0 {
+				t.Fatalf("a worker that never got the claim must never record an outcome; "+
+					"this would overwrite the winner's live row and report the update as not attempted, got %+v",
+					repo.finished)
 			}
 			if cmd.updateCalls != 0 {
 				t.Fatalf("a task that never won the claim must never dispatch, got %d", cmd.updateCalls)
 			}
 		})
+	}
+}
+
+// TestContendedClaim_LoserNeverOverwritesTheWinnersOutcome is the race stated
+// end to end, on one shared row, past siteBusyMaxWait: a winner that claims and
+// finishes, and a loser that is refused. What must be recorded is the WINNER's
+// result. The loser writing its own verdict is the defect, and it is worse than
+// a lost update: the site IS changed and the record says it was not.
+//
+// RED: restore the terminalizing form and the recorded status is "skipped".
+func TestContendedClaim_LoserNeverOverwritesTheWinnersOutcome(t *testing.T) {
+	task := claimTestTask()
+	task.CreatedAt = time.Now().Add(-siteBusyMaxWait - time.Minute) // past the bound
+	repo := claimRepo(task)
+
+	// One shared row both workers act on.
+	row := task
+	var claimed bool
+	repo.getTask = func(uuid.UUID, uuid.UUID) (Task, error) { return row, nil }
+	repo.markRunning = func(_, _ uuid.UUID, _ time.Duration) (Task, error) {
+		if claimed {
+			return Task{}, ErrTaskNotClaimed // the loser
+		}
+		claimed = true
+		row.Status = TaskRunning // the winner now holds it
+		return row, nil
+	}
+	// FinishTask on this fake mirrors FinishUpdateTask's precondition: it
+	// writes while the row is OPEN (pending|running) and refuses afterwards.
+	// That precondition is exactly why the loser must not call it at all.
+	repo.finishTask = func(in FinishTaskInput) (Task, error) {
+		if terminal(row.Status) {
+			return row, ErrTaskNotOpen
+		}
+		row.Status = in.Status
+		row.Detail = in.Detail
+		return row, nil
+	}
+
+	w, _ := claimTestWorker(repo, task)
+	args := TaskArgs{TenantID: task.TenantID, RunID: task.RunID, TaskID: task.ID}
+
+	// The winner claims.
+	if _, err := repo.MarkTaskRunning(context.Background(), task.TenantID, task.ID, w.claimStaleAfter); err != nil {
+		t.Fatalf("the winner must get the claim: %v", err)
+	}
+	// The loser is refused and yields.
+	loserErr := w.yieldContendedClaim(context.Background(), args, task)
+	// The winner then records its real outcome.
+	winnerErr := w.finish(context.Background(), row, TaskSucceeded, "1.9.9", "2.0.0", "updated", "")
+
+	if winnerErr != nil {
+		t.Fatalf("the winner's outcome must be recordable after the loser yields, got %v", winnerErr)
+	}
+	if row.Status != TaskSucceeded {
+		t.Fatalf("recorded status = %q, want %q: the loser overwrote the winner's live row, "+
+			"so the site was updated while the record says it was not", row.Status, TaskSucceeded)
+	}
+	if strings.Contains(row.Detail, "Nothing was sent to the site") {
+		t.Fatalf("the record claims nothing was sent to the site, but the winner updated it: %q", row.Detail)
+	}
+	if loserErr == nil {
+		t.Fatal("past the bound the loser must still fail loudly rather than return nil")
 	}
 }
 

@@ -40,6 +40,9 @@ type probeFakeRepo struct {
 	// getTaskCalls counts GetTask calls, so a test can tell Work's opening
 	// read apart from yieldContendedClaim's re-read.
 	getTaskCalls int
+	// finishTask, when set, implements FinishTask instead of the default
+	// always-succeeds stub (see FinishTask below).
+	finishTask func(in FinishTaskInput) (Task, error)
 	// countRunning / getRun are the remaining opt-in hooks a test needs to
 	// drive Work all the way to the claim. Both panic unless set, for the
 	// same reason every other stub here does.
@@ -89,6 +92,12 @@ func (f *probeFakeRepo) MarkTaskRunning(_ context.Context, tenantID, taskID uuid
 
 func (f *probeFakeRepo) FinishTask(_ context.Context, in FinishTaskInput) (Task, error) {
 	f.finished = append(f.finished, in)
+	// finishTask, when set, models FinishUpdateTask's real precondition (it
+	// writes only while the row is pending|running) against a row the test
+	// owns. Unset keeps the original always-succeeds behaviour.
+	if f.finishTask != nil {
+		return f.finishTask(in)
+	}
 	return Task{
 		ID:          in.TaskID,
 		TenantID:    in.TenantID,

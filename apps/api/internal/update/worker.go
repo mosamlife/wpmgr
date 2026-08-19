@@ -587,42 +587,58 @@ func (w *Worker) deferForBusySite(ctx context.Context, task Task, why string) er
 // Termination does NOT rest on the CAS reclaim arm. That arm is bounded by age
 // alone, is disabled entirely for target_type = 'agent', and depends on a
 // config-derived bound; leaning on it would make this path's termination a
-// property of somebody else's tuning. The authoritative bound is the same
-// wall-clock one every other waiting path here uses (siteBusyMaxWait, measured
-// from the task's own CreatedAt), applied below before anything else.
+// property of somebody else's tuning.
+//
+// This function NEVER writes a terminal state, and that is the point. A worker
+// that did not get the claim has no outcome to record: it sent nothing to the
+// site and learned nothing about what the holder did. Terminalizing from here
+// writes the LOSER's verdict onto the WINNER's live row — FinishUpdateTask
+// accepts 'pending' and 'running' alike, so a skip recorded here lands on the
+// row the winner is actively dispatching, and the winner's real result is then
+// rejected as ErrTaskNotOpen. The operator would read "nothing was sent to the
+// site" about a site that was in fact updated, and re-run it. Unlike
+// deferForBusySite, which owns its task and may terminalize it, this path owns
+// nothing.
+//
+// So the wall-clock bound (siteBusyMaxWait, from CreatedAt) chooses between
+// snoozing quietly and failing loudly, never between waiting and writing.
+// Terminalizing a genuinely stuck row belongs to the periodic reaper, whose own
+// threshold (staleTaskThreshold, 45m) sits far inside this bound.
 func (w *Worker) yieldContendedClaim(ctx context.Context, a TaskArgs, task Task) error {
-	// The wall-clock bound comes FIRST, before the re-read, so it holds on
-	// every path out of this function including the one where the re-read
-	// itself fails. Every other waiting path in this worker is bounded this
-	// way (see deferForBusySite and siteBusyMaxWait's own comment); without it
-	// this is the only place that can snooze indefinitely, and an
-	// indefinitely-snoozing job is invisible: no error, no attempt consumed,
-	// no terminal state, nothing to alert on.
-	//
-	// TaskSkipped, never TaskFailed: this worker never got the claim, so it
-	// sent nothing to the site and changed nothing on it. If the holder is in
-	// fact still alive and finishes later, FinishTask refuses to overwrite a
-	// terminal row (ErrTaskNotOpen), so the recorded outcome still wins.
-	if bound := busyBoundExceeded(task); bound != "" {
-		return w.finish(ctx, task, TaskSkipped, task.FromVersion, "",
-			fmt.Sprintf("not attempted: another worker held this task continuously %s. "+
-				"Nothing was sent to the site for this item and nothing on the site was changed. "+
-				"Re-run this update.", bound), "")
-	}
+	// Read from the PRE-CLAIM snapshot, so the bound holds even when the
+	// re-read below is itself what is failing. It selects loud-versus-quiet
+	// ONLY; it never authorises a write.
+	bound := busyBoundExceeded(task)
 
 	current, err := w.repo.GetTask(ctx, a.TenantID, a.TaskID)
 	if err != nil {
+		if bound != "" {
+			// Past the bound AND blind. Snoozing on would be invisible (no
+			// error, no attempt consumed, no terminal state), and writing
+			// would be guessing at a row nobody here can see. Return the
+			// error: it consumes an attempt, backs off, and eventually
+			// dead-letters, which is loud. The row is the reaper's to
+			// terminalize.
+			return fmt.Errorf("update: claim refused and task %s unreadable after waiting %s: %w",
+				a.TaskID, bound, err)
+		}
 		// Cannot tell terminal from contended. Snooze rather than error: the
 		// safe reading of an unknown row is "someone else may hold it", and a
-		// CP-side DB hiccup must not spend this task's retry budget. Bounded
-		// by the busyBoundExceeded check above, which is exactly why that
-		// check does not depend on this read succeeding.
+		// CP-side DB hiccup must not spend this task's retry budget.
 		w.logger.Warn("update: claim was refused and the row could not be re-read; snoozing",
 			slog.String("task_id", a.TaskID.String()), slog.Any("error", err))
 		return river.JobSnooze(w.siteBusyBackoff(task))
 	}
 	if terminal(current.Status) {
 		return nil
+	}
+	if bound != "" {
+		// Still non-terminal past siteBusyMaxWait (6h). Something upstream is
+		// broken: staleTaskThreshold is 45m, so the reaper has had eight
+		// chances at this row. Be loud and let this job dead-letter rather
+		// than snooze on forever or write a verdict that is not ours.
+		return fmt.Errorf("update: claim refused for task %s after waiting %s; row is still %q",
+			a.TaskID, bound, current.Status)
 	}
 	w.logger.Info("update: another worker holds this task; snoozing without consuming an attempt",
 		slog.String("task_id", a.TaskID.String()), slog.String("status", current.Status))
