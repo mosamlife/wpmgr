@@ -21,6 +21,7 @@ import type { StatusTone } from "@/components/status/status-dot";
 import {
   useUpdateRun,
   useRunEventStream,
+  useCancelUpdateRun,
   NotFoundError,
   type RunStreamState,
 } from "@/features/updates/use-updates";
@@ -203,6 +204,9 @@ function RunDetail({
     canManageAgents: canManage(me),
   });
 
+  // ── GH #463 cancel ──────────────────────────────────────────────────────
+  const cancelRun = useCancelUpdateRun(run.id);
+
   const selectedTarget = sharedTargetType(selection.selectedTasks);
   const retryLabel = retryActionLabel({
     count: selection.count,
@@ -275,11 +279,15 @@ function RunDetail({
 
       {/* GH #463: waiting. Says plainly that no site has been contacted, which
           is what an operator opening a scheduled run is checking. `onCancel`
-          is deliberately omitted: the control plane has the
-          CancelScheduledUpdateRun query but no HTTP route yet, and a Cancel
-          button that cannot cancel is worse than none. */}
+          is gated on role only, same as retry — no confirmation step, because
+          cancelling a scheduled run is the SAFE direction (see
+          ScheduledRunNotice's own doc comment). */}
       {run.status === "scheduled" && run.scheduled_at ? (
-        <ScheduledRunNotice scheduledAt={run.scheduled_at} />
+        <ScheduledRunNotice
+          scheduledAt={run.scheduled_at}
+          onCancel={canOperate(me) ? () => cancelRun.mutate() : undefined}
+          cancelPending={cancelRun.isPending}
+        />
       ) : null}
 
       {/* GH #463: the expired state. Warning, never destructive — a missed

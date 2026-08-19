@@ -187,10 +187,21 @@ export function ExpiredRunNotice({
 export function ScheduledRunNotice({
   scheduledAt,
   onCancel,
+  cancelPending,
 }: {
   scheduledAt: string;
-  /** Omitted entirely while no cancel endpoint exists; see the route file. */
+  /**
+   * Omitted when the operator's role doesn't permit cancelling (GH #463:
+   * requires operator+, same gate as retry). No confirmation step: cancelling
+   * a scheduled run is the SAFE direction — it stops work that has not
+   * started and contacts no site. The dangerous action was scheduling a
+   * fleet-wide update in the first place; a confirm here would just train
+   * operators to click through confirms, which is what makes the dangerous
+   * ones ineffective.
+   */
   onCancel?: () => void;
+  /** Disable the button while the cancel request is in flight. */
+  cancelPending?: boolean;
 }) {
   return (
     <div
@@ -218,7 +229,13 @@ export function ScheduledRunNotice({
           </div>
         </div>
         {onCancel ? (
-          <Button type="button" size="sm" variant="outline" onClick={onCancel}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            disabled={cancelPending}
+          >
             Cancel
           </Button>
         ) : null}
