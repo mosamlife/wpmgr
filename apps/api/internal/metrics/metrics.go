@@ -776,7 +776,7 @@ SELECT site_id,
        sumIf(total_ms, up = 1 AND total_ms != 0)   AS sum_latency_ms,
        countIf(up = 1 AND total_ms != 0)           AS latency_samples
 FROM %s.uptime_checks
-WHERE tenant_id = ? AND site_id IN (?) AND checked_at >= ?
+WHERE tenant_id = ? AND site_id IN ? AND checked_at >= ?
 GROUP BY site_id, bucket
 ORDER BY site_id, bucket ASC`, s.db), tenantID, siteIDs, chTime(since))
 	if err != nil {
