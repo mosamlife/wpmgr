@@ -35,6 +35,12 @@ import (
 // which is what update.NewWorker is handed in a default-config install.
 var claimStaleAfter = update.ClaimStaleAfter(0)
 
+// abandonedAge backdates a row far enough past claimStaleAfter to sit
+// unambiguously inside the reclaim arm. Derived from the production bound for
+// the same reason claimStaleAfter is: a literal here would keep passing
+// against a stale number after the real bound moved.
+var abandonedAge = claimStaleAfter + 10*time.Minute
+
 func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 	pool := startPostgres(t)
 	tenant := seedTenant(t, pool, "upd-cas")
@@ -163,9 +169,9 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		}
 		// The worker behind it died: its command went out longer ago than the
 		// bound, so River has already cancelled that job's context.
-		backdateTaskTimestamps(t, pool, task.ID, 30*time.Minute)
+		backdateTaskTimestamps(t, pool, task.ID, abandonedAge)
 
-		if _, ok := claimWithBound(t, task.ID, 20*time.Minute); !ok {
+		if _, ok := claimWithBound(t, task.ID, claimStaleAfter); !ok {
 			t.Fatal("a 'running' task older than the staleness bound MUST be reclaimable. " +
 				"Refusing it turns a duplicate-work bug into a dropped-work bug: no live worker " +
 				"is behind this row and nothing else will re-dispatch it before the reaper.")
@@ -179,7 +185,7 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 			t.Fatalf("initial claim: %v", err)
 		}
 		// Not backdated: the holder claimed moments ago and is mid-dispatch.
-		if _, ok := claimWithBound(t, task.ID, 20*time.Minute); ok {
+		if _, ok := claimWithBound(t, task.ID, claimStaleAfter); ok {
 			t.Fatal("a FRESH 'running' task must not be re-claimable: the worker holding it is " +
 				"still within its own job timeout and is talking to the site right now")
 		}
@@ -209,9 +215,9 @@ func TestMarkUpdateTaskRunning_CompareAndSwap(t *testing.T) {
 		// confirmation window (20m, or 90m on external cron) with no live
 		// worker behind it: the apply happens after the ARM response is
 		// released. Age is therefore NOT evidence of abandonment here.
-		backdateTaskTimestamps(t, pool, task.ID, 30*time.Minute)
+		backdateTaskTimestamps(t, pool, task.ID, abandonedAge)
 
-		if _, ok := claimWithBound(t, task.ID, 20*time.Minute); ok {
+		if _, ok := claimWithBound(t, task.ID, claimStaleAfter); ok {
 			t.Fatal("an agent-target 'running' row must NEVER be reclaimed on age alone: " +
 				"it is mid-confirmation by design, and re-dispatching would upgrade the agent twice")
 		}

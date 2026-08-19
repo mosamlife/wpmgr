@@ -172,6 +172,26 @@ func TestValidateClaimTimings_FiresAndDoesNotOverFire(t *testing.T) {
 			t.Errorf("apply_http_timeout=%v is a legitimate configuration and must boot, got %v", applyHTTP, err)
 		}
 	}
+	// The TRANSITION itself, derived from the constants rather than guessed.
+	// The loops above bracket it at 20m valid and 40m invalid, and the real
+	// boundary sits between them; a change to claimStaleMargin,
+	// probeRetryDelays or agentVerifyTimeout moves it anywhere inside that gap
+	// with both loops still green. Pin the edge instead: the largest budget
+	// that still boots, and the smallest that must not.
+	//
+	// RED: change claimStaleMargin without re-deriving, and these two fail
+	// while every fixed-value row above keeps passing.
+	lastValid := staleTaskThreshold - claimStaleMargin - time.Second
+	if err := ValidateClaimTimings(lastValid); err != nil {
+		t.Errorf("an apply budget of %v leaves the bound just under the reaper threshold %v and must boot, got %v",
+			lastValid, staleTaskThreshold, err)
+	}
+	firstInvalid := staleTaskThreshold - claimStaleMargin
+	if err := ValidateClaimTimings(firstInvalid); err == nil {
+		t.Errorf("an apply budget of %v puts the bound exactly at the reaper threshold %v and must be refused",
+			firstInvalid, staleTaskThreshold)
+	}
+
 	// Invalid: the bound would land at or past staleTaskThreshold, so the
 	// reaper could terminalize a row the claim still treats as live.
 	for _, applyHTTP := range []time.Duration{40 * time.Minute, 90 * time.Minute} {
