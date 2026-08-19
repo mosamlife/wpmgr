@@ -599,6 +599,64 @@ func indexPending(site SiteInfo) map[string]string {
 	return m
 }
 
+// CancelRunResult is what a successful cancellation reports back.
+type CancelRunResult struct {
+	Run Run
+	// CancelledTasks is how many tasks were terminalized alongside the run.
+	// Zero is legitimate: a run whose tasks had already left 'scheduled'
+	// cancels with none.
+	CancelledTasks int
+}
+
+// CancelScheduledRun calls back a deferred run before it fires.
+//
+// The 409 on a non-scheduled run is the WHOLE FEATURE, not an edge case. A
+// cancel that "succeeded" on a run whose commands were already out would tell
+// an operator their fleet was safe while it was being updated, which is worse
+// than refusing outright. The repo's CAS is what decides, and a false from it
+// becomes a typed conflict here so httpx renders 409 and the client can
+// distinguish "too late" from a server fault.
+//
+// The NotFound check runs first and separately so the two answers stay
+// distinct: a run that never existed is a 404, and a run that exists but has
+// already fired is a 409 with a status the operator can act on.
+func (s *Service) CancelScheduledRun(ctx context.Context, tenantID, runID uuid.UUID) (CancelRunResult, error) {
+	if tenantID == uuid.Nil {
+		return CancelRunResult{}, domain.Forbidden("tenant_required", "a tenant context is required")
+	}
+	if runID == uuid.Nil {
+		return CancelRunResult{}, domain.Validation("invalid_run_id", "a run id is required")
+	}
+
+	// Read first, so a genuinely missing run is a 404 rather than being folded
+	// into the conflict below. This read is NOT the authority for whether the
+	// cancel may proceed — the CAS is, and the row can change underneath us
+	// between the two. That is intentional and safe: losing that race produces
+	// the same 409 as being late, which is the correct answer either way.
+	if _, err := s.repo.GetRun(ctx, tenantID, runID); err != nil {
+		return CancelRunResult{}, err
+	}
+
+	run, tasks, cancelled, err := s.repo.CancelScheduledRun(ctx, tenantID, runID,
+		"cancelled by an operator before the scheduled run started; nothing was sent to this site")
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+	if !cancelled {
+		// Too late. Re-read so the message names the state the operator is
+		// actually looking at, rather than a generic refusal they cannot act
+		// on. A failure to re-read must not mask the conflict, so the fallback
+		// still returns one.
+		status := "no longer scheduled"
+		if current, rerr := s.repo.GetRun(ctx, tenantID, runID); rerr == nil {
+			status = current.Status
+		}
+		return CancelRunResult{}, domain.Conflict("run_not_cancellable",
+			"this run has already left the scheduled state (now "+status+") and cannot be cancelled; use halt if it is running")
+	}
+	return CancelRunResult{Run: run, CancelledTasks: tasks}, nil
+}
+
 // GetRun returns a run with its tasks.
 func (s *Service) GetRun(ctx context.Context, tenantID, runID uuid.UUID) (Run, []Task, error) {
 	run, err := s.repo.GetRun(ctx, tenantID, runID)

@@ -3295,6 +3295,24 @@ export const UpdateRunRetryExclusionSchema = {
   },
 } as const;
 
+export const UpdateRunCancelResultSchema = {
+  type: "object",
+  required: ["run", "cancelled_tasks"],
+  description:
+    "The outcome of cancelling a scheduled run (#463). Reaching this response\nat all means the run was `scheduled` and is now terminal, and that\nnothing was ever sent to any site.\n",
+  properties: {
+    run: {
+      $ref: "#/components/schemas/UpdateRun",
+    },
+    cancelled_tasks: {
+      type: "integer",
+      format: "int64",
+      description:
+        'How many tasks were terminalized as `cancelled` alongside the run,\nin the same transaction. Zero is legitimate and is not an error: a\nrun whose tasks had already left `scheduled` cancels with none, and\nthe count is reported so a client can say "3 site updates called\nback" rather than guessing.\n',
+    },
+  },
+} as const;
+
 export const UpdateRunRetryResultSchema = {
   type: "object",
   required: ["requested", "created", "excluded"],

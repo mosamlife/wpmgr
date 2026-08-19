@@ -131,3 +131,35 @@ func (f *fakeTxEnqueuer) EnqueueTaskTx(context.Context, pgx.Tx, uuid.UUID, uuid.
 type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
+
+// --- CancelScheduledRun (#463 cancel endpoint) -----------------------------
+
+// cancelScheduledRun on fakeCreateRepo is REAL, driven by the fields below, so
+// the service-level cancel tests exercise the same branch production takes:
+// cancellable => a run and a task count, not cancellable => the "too late"
+// false that becomes a 409.
+func (f *fakeCreateRepo) CancelScheduledRun(_ context.Context, tenantID, runID uuid.UUID, _ string) (Run, int, bool, error) {
+	f.cancelCalls++
+	if f.cancelErr != nil {
+		return Run{}, 0, false, f.cancelErr
+	}
+	if !f.cancellable {
+		return Run{}, 0, false, nil
+	}
+	// One cancel wins; a second finds the run already gone, exactly as the
+	// status precondition does.
+	f.cancellable = false
+	return Run{ID: runID, TenantID: tenantID, Status: RunHalted}, f.cancelTasks, true, nil
+}
+
+func (f *probeFakeRepo) CancelScheduledRun(context.Context, uuid.UUID, uuid.UUID, string) (Run, int, bool, error) {
+	panic("not implemented")
+}
+
+func (f *fakeRepo) CancelScheduledRun(context.Context, uuid.UUID, uuid.UUID, string) (Run, int, bool, error) {
+	panic("not used")
+}
+
+func (f *dispatchFakeRepo) CancelScheduledRun(context.Context, uuid.UUID, uuid.UUID, string) (Run, int, bool, error) {
+	panic("not used")
+}

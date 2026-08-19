@@ -12170,6 +12170,14 @@ func (s *CancelMediaOK) SetCancelledCount(val OptInt) {
 	s.CancelledCount = val
 }
 
+type CancelScheduledUpdateRunConflict Error
+
+func (*CancelScheduledUpdateRunConflict) cancelScheduledUpdateRunRes() {}
+
+type CancelScheduledUpdateRunNotFound Error
+
+func (*CancelScheduledUpdateRunNotFound) cancelScheduledUpdateRunRes() {}
+
 // Write-only CDN credentials. Accepted on PUT /perf/config and NEVER
 // returned by GET (the control plane decrypts server-side only).
 // Ref: #/components/schemas/CdnCredentials
@@ -50360,6 +50368,42 @@ func (s *UpdateRun) SetTasks(val []UpdateTask) {
 
 func (*UpdateRun) createUpdateRunRes() {}
 func (*UpdateRun) getUpdateRunRes()    {}
+
+// The outcome of cancelling a scheduled run (#463). Reaching this response
+// at all means the run was `scheduled` and is now terminal, and that
+// nothing was ever sent to any site.
+// Ref: #/components/schemas/UpdateRunCancelResult
+type UpdateRunCancelResult struct {
+	Run UpdateRun `json:"run"`
+	// How many tasks were terminalized as `cancelled` alongside the run,
+	// in the same transaction. Zero is legitimate and is not an error: a
+	// run whose tasks had already left `scheduled` cancels with none, and
+	// the count is reported so a client can say "3 site updates called
+	// back" rather than guessing.
+	CancelledTasks int64 `json:"cancelled_tasks"`
+}
+
+// GetRun returns the value of Run.
+func (s *UpdateRunCancelResult) GetRun() UpdateRun {
+	return s.Run
+}
+
+// GetCancelledTasks returns the value of CancelledTasks.
+func (s *UpdateRunCancelResult) GetCancelledTasks() int64 {
+	return s.CancelledTasks
+}
+
+// SetRun sets the value of Run.
+func (s *UpdateRunCancelResult) SetRun(val UpdateRun) {
+	s.Run = val
+}
+
+// SetCancelledTasks sets the value of CancelledTasks.
+func (s *UpdateRunCancelResult) SetCancelledTasks(val int64) {
+	s.CancelledTasks = val
+}
+
+func (*UpdateRunCancelResult) cancelScheduledUpdateRunRes() {}
 
 // Request to start a bulk update run. Provide EITHER site_ids OR tag to
 // select target sites (not both).

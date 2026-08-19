@@ -48,6 +48,14 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// /updates/:runId/retry because :runId is a GET-tree parameter here and a
 	// sibling static segment on the same tree would be ambiguous.
 	r.POST("/updates/runs/:id/retry", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.retry)
+	// GH #463 — call back a scheduled run before it fires. Carries exactly the
+	// authorization creating one does (org-scoped + PermSiteWrite): the same
+	// principal who could schedule a fleet-wide update is the one who must be
+	// able to stop it. There is no separate halt ENDPOINT to match — halting is
+	// internal to the agent wave machine — so this follows the sibling mutation
+	// on this tree rather than inventing a permission. It shares /updates/runs/
+	// with retry for the same routing reason given above.
+	r.POST("/updates/runs/:id/cancel", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.cancel)
 	r.GET("/updates/:runId/events", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.events)
 }
 
@@ -145,6 +153,78 @@ func (h *Handler) get(c *gin.Context) {
 	}
 	out := toAPIRun(run, tasks)
 	c.JSON(http.StatusOK, &out)
+}
+
+// cancel calls back a scheduled run before it fires (GH #463).
+func (h *Handler) cancel(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_run_id", "the run id is not a valid UUID"))
+		return
+	}
+
+	res, err := h.svc.CancelScheduledRun(c.Request.Context(), tenantID, runID)
+	if err != nil {
+		// Every failure here is a clean refusal, and unlike create/retry there
+		// is no partial-success case to disentangle: the repo's CAS either
+		// cancelled the run and its tasks in one transaction or changed
+		// nothing at all. httpx maps the typed conflict to 409, which is what
+		// lets the client tell "too late" from a server fault.
+		httpx.Error(c, err)
+		return
+	}
+
+	h.recordRunCancelled(c, tenantID, res)
+	out := gen.UpdateRunCancelResult{
+		// nil tasks: the cancel response is about the RUN. A client that
+		// wants the cancelled task rows re-reads the run detail.
+		Run:            toAPIRun(res.Run, nil),
+		CancelledTasks: int64(res.CancelledTasks),
+	}
+	c.JSON(http.StatusOK, &out)
+}
+
+// recordRunCancelled writes the audit entry for an operator cancellation.
+//
+// Best-effort against the RESPONSE, deliberately: the run and its tasks are
+// already committed terminal, so failing the request here would tell the
+// operator their cancel did not happen when it did — and they would press it
+// again, get a 409, and have no idea which of the two answers was true. The
+// write is still not allowed to be silent, so a failure logs at Error, matching
+// the dispatch and expiry records.
+func (h *Handler) recordRunCancelled(c *gin.Context, tenantID uuid.UUID, res CancelRunResult) {
+	if h.audit == nil {
+		return
+	}
+	ev := audit.Event{
+		TenantID:   tenantID,
+		ActorType:  audit.ActorUser,
+		Action:     ActionRunCancelled,
+		TargetType: "update_run",
+		TargetID:   res.Run.ID.String(),
+		Metadata: map[string]any{
+			"cancelled_tasks": res.CancelledTasks,
+			"run_status":      res.Run.Status,
+			"sites_contacted": 0,
+		},
+	}
+	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
+		ev.ActorID = p.UserID.String()
+	}
+	if res.Run.ScheduledAt != nil {
+		ev.Metadata["scheduled_at"] = res.Run.ScheduledAt.UTC().Format(time.RFC3339)
+	}
+	if _, err := h.audit.Record(c.Request.Context(), ev); err != nil {
+		slog.Error("update: failed to record the scheduled-run cancellation audit entry",
+			slog.String("run_id", res.Run.ID.String()),
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", err))
+	}
 }
 
 // retry creates a NEW run repeating the selected tasks of an existing one (GH

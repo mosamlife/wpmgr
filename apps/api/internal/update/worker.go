@@ -23,7 +23,11 @@ const (
 	// ActionRunRetried records a retry (GH #336) against the SOURCE run, so the
 	// run that failed carries the evidence that someone acted on it. The new run
 	// it produced is in the metadata, alongside the requested/created counts.
-	ActionRunRetried     = "update.run.retried"
+	ActionRunRetried = "update.run.retried"
+	// ActionRunCancelled records an operator calling back a SCHEDULED run
+	// before it fired (#463). Distinct from a halt: nothing had been sent to
+	// any site, which is why its metadata asserts sites_contacted = 0.
+	ActionRunCancelled   = "update.run.cancelled"
 	ActionTaskSucceeded  = "update.task.succeeded"
 	ActionTaskFailed     = "update.task.failed"
 	ActionTaskRolledBack = "update.task.rolled_back"

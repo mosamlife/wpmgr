@@ -1835,6 +1835,25 @@ export type UpdateRunRetryExclusion = {
 };
 
 /**
+ * The outcome of cancelling a scheduled run (#463). Reaching this response
+ * at all means the run was `scheduled` and is now terminal, and that
+ * nothing was ever sent to any site.
+ *
+ */
+export type UpdateRunCancelResult = {
+  run: UpdateRun;
+  /**
+   * How many tasks were terminalized as `cancelled` alongside the run,
+   * in the same transaction. Zero is legitimate and is not an error: a
+   * run whose tasks had already left `scheduled` cancels with none, and
+   * the count is reported so a client can say "3 site updates called
+   * back" rather than guessing.
+   *
+   */
+  cancelled_tasks: number;
+};
+
+/**
  * Accounts for every requested task: `created` + `len(excluded)` always
  * equals `requested`. If `created` is lower than `requested`, the
  * difference is fully itemised in `excluded` and MUST be surfaced to the
@@ -14170,6 +14189,54 @@ export type RetryUpdateRunResponses = {
 
 export type RetryUpdateRunResponse =
   RetryUpdateRunResponses[keyof RetryUpdateRunResponses];
+
+export type CancelScheduledUpdateRunData = {
+  body?: never;
+  path: {
+    /**
+     * The scheduled run to cancel.
+     */
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/updates/runs/{id}/cancel";
+};
+
+export type CancelScheduledUpdateRunErrors = {
+  /**
+   * Update run not found
+   */
+  404: Error;
+  /**
+   * `run_not_cancellable` — the run has left `scheduled`, so there was
+   * nothing to call back. Either it already fired (it is now
+   * `dispatching`, `running`, `completed` or `expired`) or another
+   * operator cancelled it first.
+   *
+   * This is a distinct outcome from a server error and clients MUST
+   * render it as such: the correct action is to re-read the run and show
+   * its real state, never to retry the cancel. For a run that has
+   * already started, the halt path is the operation the operator wants.
+   *
+   */
+  409: Error;
+};
+
+export type CancelScheduledUpdateRunError =
+  CancelScheduledUpdateRunErrors[keyof CancelScheduledUpdateRunErrors];
+
+export type CancelScheduledUpdateRunResponses = {
+  /**
+   * The run was cancelled. The returned run carries its new terminal
+   * status, and `cancelled_tasks` says how many tasks were terminalized
+   * with it.
+   *
+   */
+  200: UpdateRunCancelResult;
+};
+
+export type CancelScheduledUpdateRunResponse =
+  CancelScheduledUpdateRunResponses[keyof CancelScheduledUpdateRunResponses];
 
 export type StreamUpdateRunEventsData = {
   body?: never;

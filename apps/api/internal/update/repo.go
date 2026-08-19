@@ -67,6 +67,12 @@ type Repo interface {
 	// undispatched tasks (as 'expired'), in ONE transaction. Reports whether
 	// the run was expirable and how many tasks it terminalized.
 	ExpireDueRun(ctx context.Context, tenantID, runID uuid.UUID, expireBefore time.Time, detail string) (bool, int, error)
+	// CancelScheduledRun is the operator's call-back of a run that has not yet
+	// fired: run and every still-scheduled task go terminal in ONE
+	// transaction, tasks as 'cancelled'. Valid from 'scheduled' ONLY, so it can
+	// never race a dispatch into a half-cancelled state. The bool reports
+	// whether the run was cancellable; false means "too late", not an error.
+	CancelScheduledRun(ctx context.Context, tenantID, runID uuid.UUID, detail string) (Run, int, bool, error)
 	GetRun(ctx context.Context, tenantID, runID uuid.UUID) (Run, error)
 	ListRuns(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Run, error)
 	// ListRunSummaries returns runs with pre-computed task aggregate counts

@@ -6415,6 +6415,73 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/updates/runs/{id}/cancel:
+    post:
+      operationId: cancelScheduledUpdateRun
+      summary: Cancel a scheduled update run before it fires
+      description: |
+        Calls back a deferred run (#463) that has not yet started. The run
+        becomes `halted` and every one of its tasks becomes `cancelled`, in one
+        transaction.
+
+        **Valid ONLY from `scheduled`.** That is the safety property, not a
+        convenience: it guarantees the cancel can never race a dispatch into a
+        half-cancelled state. Once the dispatcher has claimed the run
+        (`dispatching`) or the work is out (`running`), this returns 409 and the
+        operator must use the halt path instead — a different operation with
+        different consequences, because halting a running run leaves commands
+        already in flight on real sites. Cancelling a scheduled run promises
+        that **nothing was ever sent to any site**, and the precondition is what
+        makes that promise true.
+
+        Tasks become `cancelled` rather than `expired`. Both mean the task was
+        never attempted, and the distinction is which one to tell the operator:
+        `cancelled` records a decision somebody made, `expired` records that the
+        dispatch window closed while the control plane was unavailable.
+
+        Idempotent in the way that matters: a second cancel of an
+        already-cancelled run returns 409 `run_not_cancellable`, never a
+        spurious success. Requires operator+.
+      tags: [updates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The scheduled run to cancel.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: |
+            The run was cancelled. The returned run carries its new terminal
+            status, and `cancelled_tasks` says how many tasks were terminalized
+            with it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRunCancelResult"
+        "404":
+          description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            `run_not_cancellable` — the run has left `scheduled`, so there was
+            nothing to call back. Either it already fired (it is now
+            `dispatching`, `running`, `completed` or `expired`) or another
+            operator cancelled it first.
+
+            This is a distinct outcome from a server error and clients MUST
+            render it as such: the correct action is to re-read the run and show
+            its real state, never to retry the cancel. For a run that has
+            already started, the halt path is the operation the operator wants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/updates/{runId}/events:
     get:
       operationId: streamUpdateRunEvents
@@ -15356,6 +15423,25 @@ components:
             The server-authored sentence for this exclusion, including the
             specifics (which versions, which status). Rendered as-is; a client
             does not need its own copy table to explain an exclusion.
+    UpdateRunCancelResult:
+      type: object
+      required: [run, cancelled_tasks]
+      description: |
+        The outcome of cancelling a scheduled run (#463). Reaching this response
+        at all means the run was `scheduled` and is now terminal, and that
+        nothing was ever sent to any site.
+      properties:
+        run:
+          $ref: "#/components/schemas/UpdateRun"
+        cancelled_tasks:
+          type: integer
+          format: int64
+          description: |
+            How many tasks were terminalized as `cancelled` alongside the run,
+            in the same transaction. Zero is legitimate and is not an error: a
+            run whose tasks had already left `scheduled` cancels with none, and
+            the count is reported so a client can say "3 site updates called
+            back" rather than guessing.
     UpdateRunRetryResult:
       type: object
       required: [requested, created, excluded]
