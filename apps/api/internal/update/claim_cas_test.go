@@ -29,7 +29,18 @@ func claimTestWorker(repo *probeFakeRepo, task Task) (*Worker, *recordingCommand
 	sites := &fakeSiteLookup{sites: map[uuid.UUID]SiteInfo{
 		task.SiteID: {ID: task.SiteID, URL: "https://example.test", Name: "example", Enrolled: true},
 	}}
-	w := NewWorker(repo, sites, cmd, &scriptedProber{script: []probeStep{healthyStep()}}, nil /* hub */, nil /* audit */, nil, 5, 0)
+	// A NON-DEFAULT job timeout, deliberately. Constructing with 0 puts
+	// claimStaleAfter on its siteWriterHoldMax floor, and then asserting that
+	// the call site passes w.claimStaleAfter cannot tell the derived bound
+	// apart from the flat constant — the F1 defect could be reintroduced at
+	// the call site with nothing going red. This value makes the two differ
+	// (apply budget 25m52s -> bound 31m52s, against a 20m floor), so the
+	// assertion binds the seam and not just the arithmetic.
+	jobTimeout := DeriveApplyJobTimeout(20*time.Minute, 30*time.Second)
+	w := NewWorker(repo, sites, cmd, &scriptedProber{script: []probeStep{healthyStep()}}, nil /* hub */, nil /* audit */, nil, 5, jobTimeout)
+	if w.claimStaleAfter == siteWriterHoldMax {
+		panic("claim test fixture must construct a worker whose derived bound differs from the gate constant")
+	}
 	// Deterministic snooze: the jittered production backoff would make the
 	// assertions below flaky about the duration.
 	w.busyBackoff = func(Task) time.Duration { return 7 * time.Second }
@@ -290,20 +301,30 @@ func TestClaim_Reclaimed_AbandonedTaskDispatches(t *testing.T) {
 	// A row whose command went out well past the point a live worker could
 	// still be behind it: River has long since cancelled that job's context.
 	task.Status = TaskRunning
-	age := siteWriterHoldMax + 5*time.Minute
 
 	repo := claimRepo(task)
+	w, cmd := claimTestWorker(repo, task)
+	// Age the row relative to the worker's OWN derived bound, not a constant,
+	// so this test keeps meaning what it says under any configuration.
+	age := w.claimStaleAfter + 5*time.Minute
 	repo.markRunning = func(_, _ uuid.UUID, staleAfter time.Duration) (Task, error) {
-		// Mirrors the CAS: the 'running' arm matches only when the row is
-		// older than staleAfter. A NULL/zero interval matches nothing.
-		if staleAfter <= 0 || age <= staleAfter {
+		// Mirrors the real statement's 'running' arm:
+		// coalesce(started_at, updated_at) < now() - staleAfter.
+		//
+		// Note what a NON-POSITIVE bound does here — it matches EVERYTHING,
+		// because durationToInterval yields interval '0' and never NULL. That
+		// is the fail-OPEN direction. An earlier version of this fake encoded
+		// `staleAfter <= 0` as "matches nothing", which modelled the opposite
+		// of the real statement in the direction that hides the danger.
+		// pgRepo.MarkTaskRunning refuses a non-positive bound outright, so
+		// production cannot reach this, but the double must not lie about it.
+		if age <= staleAfter {
 			return Task{}, ErrTaskNotClaimed
 		}
 		running := task
 		running.Status = TaskRunning
 		return running, nil
 	}
-	w, cmd := claimTestWorker(repo, task)
 
 	if err := runClaimWork(t, w, task); err != nil {
 		t.Fatalf("an abandoned task must be reclaimed and dispatched, got %v", err)
