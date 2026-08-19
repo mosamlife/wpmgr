@@ -76,7 +76,10 @@ func (a vulnDigestSourceAdapter) GetVulnDigestSummary(ctx context.Context, tenan
 		return email.VulnDigestSummary{}, false, nil
 	}
 
-	fleet, _, err := a.vuln.GetFleetSummary(ctx, tenantID, maxDigestVulnFindings)
+	// GH #493 — the digest is a push to the customer, so it neither counts nor
+	// names a paused site. GetFleetSummary (unfiltered) is the dashboard's;
+	// calling it here is the defect this variant exists to prevent.
+	fleet, _, err := a.vuln.GetFleetSummaryForDigest(ctx, tenantID, maxDigestVulnFindings)
 	if err != nil {
 		return email.VulnDigestSummary{}, false, err
 	}

@@ -109,6 +109,16 @@ func (r *fakeRepo) UpdateNextDBCleanAt(_ context.Context, _ uuid.UUID, _ time.Ti
 	return nil
 }
 
+// GH #493 pause stubs. The default is "nothing is paused", so every existing
+// test keeps its previous behaviour; monitoring_pause_test.go overrides them.
+func (r *fakeRepo) PausedSiteIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return map[uuid.UUID]bool{}, nil
+}
+
+func (r *fakeRepo) IsMonitoringPaused(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 // M39 watchdog + db_scan stubs — no-op for unit tests.
 func (r *fakeRepo) SetActiveDBCleanJob(_ context.Context, _ uuid.UUID, _ string, _ time.Time) error {
 	return nil
