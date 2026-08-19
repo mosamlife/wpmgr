@@ -224,7 +224,7 @@ func TestGH463_PausedSiteIsSkippedAndTheUnpausedSiteStillDispatches(t *testing.T
 	healthy := seedSite(t, pool, tenant, "")
 
 	// STEP 1 — schedule, while BOTH sites are active.
-	run, tasks := seedRunAcrossSites(t, repo, tenant, time.Now().Add(-time.Minute), map[string]uuid.UUID{
+	run, tasks := seedRunAcrossSites(t, repo, tenant, dbNow(t, pool).Add(-time.Minute), map[string]uuid.UUID{
 		"akismet": frozen,
 		"jetpack": healthy,
 	})
@@ -305,7 +305,7 @@ func TestGH463_ResumingBeforeTheRunFiresDispatchesNormally(t *testing.T) {
 	tenant := seedTenant(t, pool, "gh463-resume-fires")
 	siteID := seedSite(t, pool, tenant, "")
 
-	run, tasks := seedRunAcrossSites(t, repo, tenant, time.Now().Add(-time.Minute), map[string]uuid.UUID{
+	run, tasks := seedRunAcrossSites(t, repo, tenant, dbNow(t, pool).Add(-time.Minute), map[string]uuid.UUID{
 		"akismet": siteID,
 	})
 
@@ -358,7 +358,7 @@ func TestGH463_ARunWhoseSitesAreAllPausedCompletesWithoutContactingAnySite(t *te
 	siteA := seedSite(t, pool, tenant, "")
 	siteB := seedSite(t, pool, tenant, "")
 
-	run, tasks := seedRunAcrossSites(t, repo, tenant, time.Now().Add(-time.Minute), map[string]uuid.UUID{
+	run, tasks := seedRunAcrossSites(t, repo, tenant, dbNow(t, pool).Add(-time.Minute), map[string]uuid.UUID{
 		"akismet": siteA,
 		"jetpack": siteB,
 	})
