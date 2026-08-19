@@ -566,6 +566,10 @@ function priority(status: UpdateTask["status"]): number {
       return 0;
     case "pending":
       return 1;
+    // GH #463: waiting on its own start time, not yet actionable — same
+    // tier as an ordinary queued task.
+    case "scheduled":
+      return 1;
     case "failed":
       return 2;
     case "rolled_back":
@@ -577,6 +581,10 @@ function priority(status: UpdateTask["status"]): number {
     // GH #255 Phase 2: never dispatched because its run halted first.
     case "cancelled":
       return 6;
+    // GH #463: never dispatched because its run expired first. Same tier as
+    // `cancelled` — nothing was sent, distinct cause.
+    case "expired":
+      return 6;
     default:
       return 7;
   }
@@ -586,6 +594,10 @@ function priority(status: UpdateTask["status"]): number {
 function rollupStatus(tasks: UpdateTask[]): UpdateTask["status"] {
   if (tasks.some((t) => t.status === "running")) return "running";
   if (tasks.some((t) => t.status === "pending")) return "pending";
+  // GH #463: any task still waiting on its schedule means this row is not
+  // done either — must be checked before the terminal-state rollups below,
+  // or a row of entirely `scheduled` tasks falls through to "succeeded".
+  if (tasks.some((t) => t.status === "scheduled")) return "scheduled";
   if (tasks.some((t) => t.status === "failed")) return "failed";
   if (tasks.some((t) => t.status === "rolled_back")) return "rolled_back";
   if (tasks.every((t) => t.status === "skipped")) return "skipped";
@@ -593,6 +605,10 @@ function rollupStatus(tasks: UpdateTask[]): UpdateTask["status"] {
   // must never fall through to the "succeeded" default below, which would
   // show an untouched site as done.
   if (tasks.every((t) => t.status === "cancelled")) return "cancelled";
+  // GH #463: an expired run never dispatched any of its tasks either — same
+  // reasoning as `cancelled` immediately above, different cause. Must also
+  // never fall through to "succeeded".
+  if (tasks.every((t) => t.status === "expired")) return "expired";
   return "succeeded";
 }
 
@@ -608,6 +624,13 @@ function toneFor(status: UpdateTask["status"]): StatusTone {
       return "destructive";
     case "skipped":
     case "cancelled":
+      return "muted";
+    // GH #463: neither reads as an error — see features/updates/update-
+    // status.tsx for the full reasoning on why `scheduled`/`expired` stay
+    // out of "destructive".
+    case "scheduled":
+      return "muted";
+    case "expired":
       return "muted";
     default:
       return "muted";
@@ -630,6 +653,12 @@ function statusLabel(status: UpdateTask["status"]): string {
       return "Skipped";
     case "cancelled":
       return "Cancelled";
+    // GH #463: distinct label from "Cancelled" — one is an operator's
+    // choice, the other is a missed schedule window.
+    case "scheduled":
+      return "Scheduled";
+    case "expired":
+      return "Expired";
     default:
       return "Unknown";
   }

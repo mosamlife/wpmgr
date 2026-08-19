@@ -701,6 +701,33 @@ func (UnimplementedHandler) CancelMedia(ctx context.Context, params CancelMediaP
 	return r, ht.ErrNotImplemented
 }
 
+// CancelScheduledUpdateRun implements cancelScheduledUpdateRun operation.
+//
+// Calls back a deferred run (#463) that has not yet started. The run
+// becomes `halted` and every one of its tasks becomes `cancelled`, in one
+// transaction.
+// **Valid ONLY from `scheduled`.** That is the safety property, not a
+// convenience: it guarantees the cancel can never race a dispatch into a
+// half-cancelled state. Once the dispatcher has claimed the run
+// (`dispatching`) or the work is out (`running`), this returns 409 and the
+// operator must use the halt path instead — a different operation with
+// different consequences, because halting a running run leaves commands
+// already in flight on real sites. Cancelling a scheduled run promises
+// that **nothing was ever sent to any site**, and the precondition is what
+// makes that promise true.
+// Tasks become `cancelled` rather than `expired`. Both mean the task was
+// never attempted, and the distinction is which one to tell the operator:
+// `cancelled` records a decision somebody made, `expired` records that the
+// dispatch window closed while the control plane was unavailable.
+// Idempotent in the way that matters: a second cancel of an
+// already-cancelled run returns 409 `run_not_cancellable`, never a
+// spurious success. Requires operator+.
+//
+// POST /api/v1/updates/runs/{id}/cancel
+func (UnimplementedHandler) CancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (r CancelScheduledUpdateRunRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // ChangeMyPassword implements changeMyPassword operation.
 //
 // Verifies `current_password`, then sets `new_password`. This session

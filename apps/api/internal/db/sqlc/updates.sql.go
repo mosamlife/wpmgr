@@ -73,6 +73,128 @@ func (q *Queries) CancelPendingUpdateTask(ctx context.Context, arg CancelPending
 	return i, err
 }
 
+const cancelScheduledUpdateRun = `-- name: CancelScheduledUpdateRun :one
+UPDATE update_runs
+SET status = $1, updated_at = now()
+WHERE id = $2 AND tenant_id = $3
+  AND status = 'scheduled'
+RETURNING id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at
+`
+
+type CancelScheduledUpdateRunParams struct {
+	Status   string    `json:"status"`
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Operator-initiated cancellation of a run that has NOT yet fired.
+//
+// FROM 'scheduled' ONLY, and that is the safety property rather than a
+// convenience. It guarantees the cancel can never race a dispatch into a
+// half-cancelled state: once the dispatcher has claimed the run
+// ('dispatching') or the work is out ('running'), this matches zero rows and
+// the operator is told to use the existing HALT path instead — which is a
+// different operation with different consequences, because halting a running
+// run leaves already-dispatched commands in flight on real sites. Cancelling a
+// scheduled run promises that nothing was ever sent, and this precondition is
+// what makes that promise true.
+//
+// @status is supplied rather than hardcoded because THE RUN VOCABULARY HAS NO
+// 'cancelled'. The run statuses Go writes are defined in update/model.go — that
+// file is the list, and it is not restated here precisely because a copied list
+// goes stale silently. The intended argument is RunHalted, so an operator's
+// cancellation lands the run on 'halted' while its tasks go to 'cancelled'
+// (TerminalizeScheduledTasksForRun sets out why that pair is asymmetric).
+//
+// Parameterised rather than inlined so this file cannot mint a run status by
+// literal: there is no CHECK constraint, so an invented value would store
+// cleanly and then fail to render, gen.UpdateRunStatus being a closed enum.
+//
+// STILL OPEN, and verified against this tree rather than remembered: 'halted'
+// appears in no migration and is absent from db/schema.sql's run-status list,
+// yet m118's COMMENT ON COLUMN calls itself the contract. The contract is
+// therefore incomplete for a value the code has written since long before #463.
+// Correcting it is a NEW ordinal, never an edit to m118.
+//
+// ZERO ROWS MEANS: too late, or already gone. The run has left 'scheduled', so
+// the caller must re-read it and return a conflict to the operator rather than
+// reporting a cancellation that did not happen. Do NOT fall back to
+// SetUpdateRunStatus to force it.
+//
+// Tasks are not touched here; call TerminalizeScheduledTasksForRun with
+// 'cancelled' in the same transaction.
+func (q *Queries) CancelScheduledUpdateRun(ctx context.Context, arg CancelScheduledUpdateRunParams) (UpdateRun, error) {
+	row := q.db.QueryRow(ctx, cancelScheduledUpdateRun, arg.Status, arg.ID, arg.TenantID)
+	var i UpdateRun
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CreatedBy,
+		&i.Status,
+		&i.DryRun,
+		&i.ScheduledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const claimUpdateRunForDispatch = `-- name: ClaimUpdateRunForDispatch :one
+UPDATE update_runs
+SET status = 'dispatching', updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+  AND status = 'scheduled'
+RETURNING id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at
+`
+
+type ClaimUpdateRunForDispatchParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// The claim: 'scheduled' -> 'dispatching', for ONE run the scan returned.
+// Tenant-scoped by id+tenant_id even though the caller runs under InAgentTx,
+// because the scan already handed us the tenant and naming it costs nothing.
+//
+// ZERO ROWS MEANS: SOMEONE ELSE OWNS THIS RUN. DO NOT DISPATCH IT. Skip to the
+// next row of the scan and do not treat it as an error, do not retry it, and do
+// not log it as a failure — on a two-replica install this is the normal outcome
+// for roughly half of every contested tick. It is the entire cross-replica
+// idempotency guarantee of this feature: the row's status, under its own lock,
+// decides who dispatches, so exactly one caller can ever observe a returned row
+// for a given transition.
+//
+// It does not say WHY, and the caller does not need to know: every losing
+// interpretation has the same correct action (leave it alone). The three that
+// occur are another replica claiming it first ('dispatching'), an operator
+// cancelling it in the gap between the scan and the claim ('halted'), and this
+// pass's own expiry arm having taken it ('expired'). A caller that wants the
+// reason for a log line may re-read with GetUpdateRun; it must not vary its
+// behaviour on the answer.
+//
+// ONE ROW MEANS: you own this run for this tick, and you are now responsible for
+// moving it out of 'dispatching'. 'dispatching' is transient by contract
+// (m118), and it is NOT self-healing: it is absent from update_runs_due_idx, so
+// a run left there is never scanned again. Enqueue the work and call
+// FinishUpdateRunDispatch in the SAME transaction, so a crash rolls the claim
+// back and the next tick finds the run still 'scheduled'. Committing the claim
+// separately from the enqueue is what strands a run permanently.
+func (q *Queries) ClaimUpdateRunForDispatch(ctx context.Context, arg ClaimUpdateRunForDispatchParams) (UpdateRun, error) {
+	row := q.db.QueryRow(ctx, claimUpdateRunForDispatch, arg.ID, arg.TenantID)
+	var i UpdateRun
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CreatedBy,
+		&i.Status,
+		&i.DryRun,
+		&i.ScheduledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countRunningTasksForTenant = `-- name: CountRunningTasksForTenant :one
 SELECT count(*) FROM update_tasks
 WHERE tenant_id = $1 AND status = 'running'
@@ -90,7 +212,7 @@ func (q *Queries) CountRunningTasksForTenant(ctx context.Context, tenantID uuid.
 const countUnfinishedTasksForRun = `-- name: CountUnfinishedTasksForRun :one
 SELECT count(*) FROM update_tasks
 WHERE run_id = $1 AND tenant_id = $2
-  AND status IN ('pending', 'running')
+  AND status IN ('pending', 'running', 'scheduled')
 `
 
 type CountUnfinishedTasksForRunParams struct {
@@ -99,11 +221,136 @@ type CountUnfinishedTasksForRunParams struct {
 }
 
 // Counts tasks not yet in a terminal state, used to decide when a run completes.
+//
+// THIS PREDICATE IS A DELIBERATE SUPERSET OF THE IN-FLIGHT SET, NOT A COPY OF
+// IT. It answers "is any outcome still owed for this task?", which is a
+// different question from the one the other two predicates in this file ask,
+// and it is only by coincidence that they shared a spelling:
+//
+//	update_tasks_inflight_target_idx  "does this target hold the dedup slot?"
+//	ListStaleUpdateTasks              "could this row be stuck?"
+//
+// Both of those are exactly {pending, running}. 'scheduled' is deliberately
+// absent from both (m118: a task waiting for a clock must neither reserve its
+// target nor be reaped as stuck) and is emphatically present here, because a
+// task waiting for a clock is the least finished a task can be. Keeping this
+// predicate in sync with those two by reflex is the mistake; the sets are
+// supposed to differ, and by exactly this one status.
+//
+// WITHOUT IT THIS QUERY REPORTS A RUN COMPLETE WHILE IT STILL HAS UNDISPATCHED
+// WORK. Dispatch moves tasks 'scheduled' -> 'pending' ONE AT A TIME
+// (MarkScheduledUpdateTaskPending), so a partially dispatched run legitimately
+// holds both statuses at once. If the tasks moved first finish before the rest
+// are moved, the old predicate counts zero, the caller concludes the run is
+// done and marks it 'completed', and the still-'scheduled' remainder is
+// stranded: not terminal, so no outcome was recorded; not in the reaper's set,
+// so nothing ever un-sticks it; not in the due index, because the RUN is no
+// longer 'scheduled'. The operator sees a completed run that updated a subset
+// of the fleet it named.
+//
+// THE SUPERSET RELATIONSHIP IS ENFORCED, NOT MERELY ASSERTED HERE. This query
+// is registered in notFinishedSupersets (update/inflight_status_guard_test.go),
+// which reads this predicate out of this file and pins it from three
+// directions, so neither half of the distinction above can rot:
+//
+//   - dropping an in-flight status ('pending', 'running') fails — every
+//     in-flight task is by definition unfinished, and losing one marks a run
+//     complete while dispatched work is outstanding;
+//   - adding a TERMINAL status ('skipped', 'cancelled', 'expired') fails —
+//     a superset may only add a non-terminal status that holds no dedup slot,
+//     and folding in a terminal one leaves the run permanently incomplete;
+//   - equalling the in-flight set exactly fails — a predicate that is a plain
+//     copy does not belong on that list, and a stale entry there would exempt
+//     a genuine copy from the drift check that is the guard's whole point.
+//
+// So the invariant to preserve is the RELATIONSHIP, not the literal list: this
+// predicate is InFlightTaskStatuses plus nonTerminalNotInFlight, and changing
+// either side is a decision made in that guard, not silently here.
 func (q *Queries) CountUnfinishedTasksForRun(ctx context.Context, arg CountUnfinishedTasksForRunParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countUnfinishedTasksForRun, arg.RunID, arg.TenantID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createScheduledUpdateTask = `-- name: CreateScheduledUpdateTask :one
+INSERT INTO update_tasks (
+    run_id, tenant_id, site_id, target_type, target_slug, desired_version,
+    from_version, status
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
+ON CONFLICT (tenant_id, site_id, target_type, target_slug)
+    WHERE status IN ('pending', 'running')
+    DO NOTHING
+RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
+`
+
+type CreateScheduledUpdateTaskParams struct {
+	RunID          uuid.UUID `json:"run_id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	SiteID         uuid.UUID `json:"site_id"`
+	TargetType     string    `json:"target_type"`
+	TargetSlug     string    `json:"target_slug"`
+	DesiredVersion string    `json:"desired_version"`
+	FromVersion    string    `json:"from_version"`
+}
+
+// Plans one task for a DEFERRED run. Identical to CreateUpdateTask except that
+// the row is born 'scheduled', and that difference changes what the ON CONFLICT
+// clause means — read this before assuming the two are interchangeable.
+//
+// CreateUpdateTask's zero-row result means "this (site, target) is already in
+// flight from another run, skip it". HERE IT CANNOT MEAN THAT AND MUST NOT BE
+// READ THAT WAY. update_tasks_inflight_target_idx is partial on status IN
+// ('pending','running'); a row inserted as 'scheduled' does not satisfy that
+// predicate, so it never enters the index and can never conflict with anything.
+// The ON CONFLICT clause is retained only so the statement is well-formed
+// against the same arbiter, and it is unreachable: this insert always returns
+// its row.
+//
+// THAT IS THE DESIGN, NOT AN OVERSIGHT (#463): a run waiting until 02:00 must
+// not hold the (tenant, site, plugin) slot all day, because doing so would
+// reject the operator's urgent 10:00 update of that same plugin with
+// 409 targets_in_flight. The reservation is deliberately deferred to
+// MarkScheduledUpdateTaskPending, which is where the collision is detected and
+// resolved. DO NOT "fix" this by widening the index: that is a separate
+// migration with a data-dedup step, and it reintroduces the bug this phase
+// exists to avoid.
+//
+// The consequence the caller must carry: planning a scheduled run CANNOT
+// pre-verify that its targets will be free when it fires. Some tasks will be
+// skipped at dispatch time. That is expected, and it is why
+// MarkScheduledUpdateTaskPending has a skip path at all.
+func (q *Queries) CreateScheduledUpdateTask(ctx context.Context, arg CreateScheduledUpdateTaskParams) (UpdateTask, error) {
+	row := q.db.QueryRow(ctx, createScheduledUpdateTask,
+		arg.RunID,
+		arg.TenantID,
+		arg.SiteID,
+		arg.TargetType,
+		arg.TargetSlug,
+		arg.DesiredVersion,
+		arg.FromVersion,
+	)
+	var i UpdateTask
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.TargetType,
+		&i.TargetSlug,
+		&i.DesiredVersion,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.Status,
+		&i.Detail,
+		&i.Error,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const createUpdateRun = `-- name: CreateUpdateRun :one
@@ -127,11 +374,22 @@ type CreateUpdateRunParams struct {
 // app.tenant_id); update_tasks additionally carries the RESTRICTIVE
 // update_tasks_site_scope policy the two portal reads depend on.
 //
-// ONE statement is deliberately outside that, and it is the only one:
-// ListStaleUpdateTasks sweeps every tenant for the periodic reaper, carries
-// no tenant_id at all, and is admitted by the update_tasks_agent policy
-// instead. It repeats that at its own definition. Any OTHER statement in
-// db/query/updates.sql without a tenant_id is a bug, not a second exception.
+// TWO statements are deliberately outside that, and they are the only two.
+// Both are cross-tenant periodic sweeps admitted by an _agent policy rather
+// than by tenant isolation, and each repeats the fact at its own definition:
+//
+//	ListStaleUpdateTasks  the stale-task reaper (m89 update_tasks_agent).
+//	ListDueUpdateRuns     the #463 deferred-dispatch due-scan
+//	                      (m118 update_runs_agent).
+//
+// Any OTHER statement here without a tenant_id is a bug, not a third
+// exception. In particular, every statement the #463 dispatcher issues AFTER
+// the scan — the run claim, the task transitions, the expiry — carries
+// tenant_id explicitly, because the scan already returned the row and
+// therefore already knows it. Running under InAgentTx makes cross-tenant
+// access POSSIBLE; it is not a reason to stop naming the tenant. The scan is
+// the only statement that genuinely cannot, because finding the tenant is
+// what it is for.
 // tenant_id is supplied explicitly for defense-in-depth; RLS additionally
 // enforces it matches the current app.tenant_id setting.
 func (q *Queries) CreateUpdateRun(ctx context.Context, arg CreateUpdateRunParams) (UpdateRun, error) {
@@ -275,6 +533,228 @@ func (q *Queries) DeferUpdateTaskToPending(ctx context.Context, arg DeferUpdateT
 		&i.Error,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const expireDueUpdateRun = `-- name: ExpireDueUpdateRun :one
+UPDATE update_runs
+SET status = 'expired', updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+  AND status = 'scheduled'
+  AND scheduled_at < $3
+RETURNING id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at
+`
+
+type ExpireDueUpdateRunParams struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	ExpireBefore pgtype.Timestamptz `json:"expire_before"`
+}
+
+// The grace window, applied at fire time: 'scheduled' -> 'expired' for a run
+// that came due so long ago that running it now is no longer what the operator
+// asked for. Terminal, never retried (m118).
+//
+// @expire_before IS AN INSTANT, NOT AN INTERVAL, AND THAT IS THE WHOLE POINT OF
+// ITS TYPE. The caller passes now()-grace as a timestamptz; it does NOT pass the
+// grace duration. Written the natural way —
+//
+//	AND scheduled_at < now() - @grace::interval
+//
+// — this statement would be the fail-open inversion this codebase has already
+// paid for four times. durationToInterval (update/repo.go) hardcodes
+// Valid: true, so an unset or zero Go duration cannot arrive as SQL NULL; it
+// arrives as interval '0'. "scheduled_at < now() - '0'" is TRUE for every run
+// that is due, so a zero grace window would EXPIRE EVERY DUE RUN AT THE MOMENT
+// IT BECAME DUE — the fleet's entire scheduled backlog terminalized, silently,
+// by a config value nobody set. The failure would look like the feature working:
+// runs move to a terminal state on schedule, and no site is ever contacted.
+//
+// AS A TIMESTAMPTZ, BOTH DEGENERATE VALUES FAIL CLOSED, and unlike the interval
+// case neither of them is reachable by accident into the destructive direction.
+// sqlc generates this parameter as pgtype.Timestamptz (NOT time.Time — the
+// timestamptz override in sqlc.yaml does not apply here, because the comparison
+// is against the nullable scheduled_at, so the parameter is inferred nullable;
+// verified in the generated ExpireDueUpdateRunParams). Its zero value is
+// {Valid: false}, which is a genuine SQL NULL, and "scheduled_at < NULL" is
+// NULL, so an unset cutoff matches NOTHING. A Valid-but-zero Time is year 1 and
+// matches nothing either. An unconfigured grace window therefore expires no run
+// at all: the run stays due and is dispatched or re-scanned — visible,
+// recoverable, and wrong in the direction that does not destroy the operator's
+// work.
+//
+// That is the whole argument for the type. Choose the parameter type so the
+// unset value is the safe one, rather than documenting an unsafe one and
+// relying on every future caller to have read the documentation.
+//
+// The status precondition still does the mutual exclusion: a run this pass
+// expires cannot also be claimed, because ClaimUpdateRunForDispatch requires the
+// same 'scheduled' and only one of the two CAS statements can match. The time
+// bound is therefore defence-in-depth against a caller that mis-computes the
+// cutoff — and it is defence in the direction that matters, since expiry is the
+// destructive arm and a wrongly expired run is a bulk update that silently never
+// happened.
+//
+// ZERO ROWS MEANS: this run was not expirable — either it is no longer
+// 'scheduled' (claimed, or cancelled, in the gap since the scan) or it is not
+// actually past the cutoff. Both are benign; skip it. Never retry expiry, and
+// never fall back to an unconditioned write.
+//
+// THE RUN'S TASKS ARE NOT TOUCHED HERE. Call
+// TerminalizeScheduledTasksForRun in the SAME transaction; a run that is
+// 'expired' with tasks still 'scheduled' is exactly the stranded shape
+// CountUnfinishedTasksForRun's comment describes.
+func (q *Queries) ExpireDueUpdateRun(ctx context.Context, arg ExpireDueUpdateRunParams) (UpdateRun, error) {
+	row := q.db.QueryRow(ctx, expireDueUpdateRun, arg.ID, arg.TenantID, arg.ExpireBefore)
+	var i UpdateRun
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CreatedBy,
+		&i.Status,
+		&i.DryRun,
+		&i.ScheduledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const finishScheduledUpdateTask = `-- name: FinishScheduledUpdateTask :one
+UPDATE update_tasks
+SET status      = $1,
+    detail      = $2,
+    finished_at = now(),
+    updated_at  = now()
+WHERE id = $3 AND tenant_id = $4
+  AND status = 'scheduled'
+RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
+`
+
+type FinishScheduledUpdateTaskParams struct {
+	Status   string    `json:"status"`
+	Detail   string    `json:"detail"`
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Terminalizes ONE task that never left 'scheduled'. The counterpart to
+// FinishUpdateTask, which cannot be used here: its precondition is
+// status IN ('pending','running'), so a scheduled task is not "open" by its
+// definition and matches zero rows there. That is correct — FinishUpdateTask
+// records the outcome of an ATTEMPT, and nothing was ever attempted here.
+//
+// @status is the terminal state, and exactly three values are admissible.
+// All three mean "nothing was ever sent to this site"; they differ in WHY, and
+// that difference is the whole point of recording them separately:
+//
+//	'skipped'    (update.TaskSkipped) Its (site, target) was in flight from
+//	             another run when the dispatcher reached it
+//	             (MarkScheduledUpdateTaskPending's zero-row-still-scheduled
+//	             case). Consistent with 'skipped' elsewhere in this file: not
+//	             attempted, by decision of the control plane.
+//	'cancelled'  (update.TaskCancelled) A human stopped the run before it
+//	             fired. Consistent with CancelPendingUpdateTask: nothing was
+//	             ever sent to this site, and nothing on it changed.
+//	'expired'    (update.TaskExpired) The parent run expired without
+//	             dispatching, so this task was never attempted. Terminal.
+//	             (m118's COMMENT ON COLUMN and db/schema.sql carry this same
+//	             sentence; the three are meant to agree word for word.)
+//
+// 'cancelled' AND 'expired' ARE NOT SPELLINGS OF EACH OTHER. 'cancelled'
+// records a decision a human made; 'expired' records that the window closed
+// while the control plane was not up in time to start the run. Collapsing them
+// tells an operator that somebody stopped their scheduled update when in fact
+// nobody did — which is the single distinction this feature exists to make, and
+// the erasure m118's column comment was written to prevent.
+//
+// There is NO CHECK CONSTRAINT on this column, so a typo stores cleanly and the
+// row leaves every predicate in this file at once — invisible to the reaper,
+// to the dedup index and to CountUnfinishedTasksForRun. Pass a named constant.
+//
+// error is deliberately not written: none of these outcomes is a failure, and
+// putting text in error is what makes an operator's run render as failed. The
+// reason goes in detail.
+//
+// ZERO ROWS MEANS: the task was not 'scheduled' — it was dispatched, cancelled
+// or terminalized in the gap. The recorded outcome wins; leave it alone (the
+// same rule as FinishUpdateTask's ErrTaskNotOpen path). Never widen the
+// precondition to force the write through.
+func (q *Queries) FinishScheduledUpdateTask(ctx context.Context, arg FinishScheduledUpdateTaskParams) (UpdateTask, error) {
+	row := q.db.QueryRow(ctx, finishScheduledUpdateTask,
+		arg.Status,
+		arg.Detail,
+		arg.ID,
+		arg.TenantID,
+	)
+	var i UpdateTask
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.TargetType,
+		&i.TargetSlug,
+		&i.DesiredVersion,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.Status,
+		&i.Detail,
+		&i.Error,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const finishUpdateRunDispatch = `-- name: FinishUpdateRunDispatch :one
+UPDATE update_runs
+SET status = $1, updated_at = now()
+WHERE id = $2 AND tenant_id = $3
+  AND status = 'dispatching'
+RETURNING id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at
+`
+
+type FinishUpdateRunDispatchParams struct {
+	Status   string    `json:"status"`
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Closes the transient 'dispatching' window: 'dispatching' -> @status, where
+// @status is the state the run enters now that its tasks are enqueued
+// ('running' when any task was dispatched, 'completed' when every task was
+// skipped and there is nothing to wait for).
+//
+// This exists so the scheduled lifecycle never has to touch SetUpdateRunStatus,
+// which has NO precondition at all: it writes whatever it is given to whatever
+// the row currently holds. That was harmless while runs only ever moved
+// forwards under one worker, and it stops being harmless the moment a second
+// writer (this dispatcher) can be mid-transition on the same row — an
+// unconditioned write lands on top of a claim, or resurrects an 'expired' run
+// into 'running'. See the note handed to backend-architect: SetUpdateRunStatus
+// keeps its existing callers and must not acquire new ones on this path.
+//
+// ZERO ROWS MEANS: the run was not in 'dispatching', so this caller did not own
+// the claim it thinks it owns. Treat it as a bug in the calling sequence and
+// surface it — unlike the claim above, losing here is not a normal race. The
+// only writer that can move a row out of 'dispatching' is the one that put it
+// there.
+func (q *Queries) FinishUpdateRunDispatch(ctx context.Context, arg FinishUpdateRunDispatchParams) (UpdateRun, error) {
+	row := q.db.QueryRow(ctx, finishUpdateRunDispatch, arg.Status, arg.ID, arg.TenantID)
+	var i UpdateRun
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.CreatedBy,
+		&i.Status,
+		&i.DryRun,
+		&i.ScheduledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -516,6 +996,116 @@ func (q *Queries) ListAppliedTasksForSites(ctx context.Context, arg ListAppliedT
 			&i.FromVersion,
 			&i.ToVersion,
 			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDueUpdateRuns = `-- name: ListDueUpdateRuns :many
+
+SELECT id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at FROM update_runs
+WHERE status = 'scheduled'
+  AND scheduled_at <= now()
+ORDER BY scheduled_at ASC, id ASC
+LIMIT $1
+`
+
+// ===========================================================================
+// GH #463 Phase 1 — deferred dispatch of scheduled update runs.
+//
+// Every statement below is a COMPARE-AND-SWAP with a status precondition, and
+// the precondition is never a formality. Two control-plane replicas tick at the
+// same time; the transition is decided by the row, under its own row lock, and
+// not by what the caller read a moment earlier. That is the whole idempotency
+// guarantee of this feature, and it is the lesson of MarkUpdateTaskRunning,
+// which shipped without one.
+//
+// ZERO ROWS IS A RESULT, NOT AN ERROR, in every one of them. Each says what it
+// means at its own definition, because that is the contract the Go layer codes
+// against.
+//
+// ONE of them (ListDueUpdateRuns) is cross-tenant; see the file header. Every
+// other statement carries tenant_id, taken from the row the scan returned.
+// ===========================================================================
+// The dispatcher's tick: which runs, belonging to ANY tenant, have come due?
+// Cross-tenant, under InAgentTx, admitted by update_runs_agent (m118) — the
+// second and last tenant_id-less statement in this file (see the header).
+//
+// "status = 'scheduled'" IS RESTATED VERBATIM AND IS NOT REDUNDANT. It is the
+// exact predicate of update_runs_due_idx, and PostgreSQL will only use a
+// partial index when it can prove the index predicate from the query's own
+// WHERE clauses. Written any other way — status <> 'pending', status IN
+// ('scheduled'), a join against a status table — the proof fails, the index is
+// discarded, and this becomes a sequential scan over every run the install has
+// ever created, on every tick, forever. It would still return the right rows,
+// which is why nothing would ever fail; it would simply get slower for the life
+// of the installation. m118 DECISION 2 chose the predicate to be a clause this
+// query already states for its own reasons, precisely so it can be restated
+// without inventing anything.
+//
+// NO INTERVAL PARAMETER, DELIBERATELY, and this is the grace window's doing.
+// The obvious shape takes the grace window here and returns only runs still
+// inside it. That is wrong in the unrecoverable direction: a run that fell PAST
+// the window would then never be returned by any query, so nothing would ever
+// observe it, and it would sit at 'scheduled' with its tasks 'scheduled'
+// forever — invisible to the reaper (which excludes both by construction) and
+// to CountUnfinishedTasksForRun. The scan therefore returns EVERY due run and
+// the caller splits them: inside the window -> ClaimUpdateRunForDispatch,
+// outside it -> ExpireDueUpdateRun. The window is applied at fire time, once,
+// on a row that has already been found.
+//
+// Avoiding the parameter also keeps this statement clear of the
+// durationToInterval trap (update/repo.go builds pgtype.Interval with
+// Valid: true unconditionally, so an unset Go duration arrives as interval '0',
+// not NULL). Had the window been an interval here, a zero value would make
+// "now() - '0'" match every scheduled run and the scan would report the whole
+// backlog as expired. See ExpireDueUpdateRun for how the one statement that
+// genuinely needs the window takes it, and why it takes an instant instead.
+//
+// now() IS THE DATABASE CLOCK, on purpose: due-ness is compared against the
+// same clock for every replica, so two control planes with drifting wall clocks
+// cannot disagree about whether a run has arrived.
+//
+// scheduled_at IS NULL rows can never match (NULL <= now() is NULL). A
+// 'scheduled' run with no scheduled_at is a should-not-exist row that this scan
+// will not surface; m118 DECISION 2 keeps it inside the index so it is at least
+// findable. It is not this statement's job to invent a policy for it.
+//
+// @row_limit bounds one pass, mirroring ListStaleUpdateTasks — pass
+// staleTaskReapLimit's sibling constant, never an unbounded value. Any
+// remainder is picked up by the next tick, which is why the ordering is by
+// scheduled_at ASC: the run that has waited longest goes first, so a backlog
+// drains in the order the operators asked for rather than at random.
+//
+// ZERO ROWS MEANS: nothing is due. That is the overwhelmingly common case and
+// it is not an error — but it is also EXACTLY what a missing RLS policy looks
+// like (m84/#96, m89/#131, and the reason m118 exists at all). The caller must
+// not distinguish them by guessing; it distinguishes them by the Phase 0 test
+// that proves this statement returns rows under InAgentTx.
+func (q *Queries) ListDueUpdateRuns(ctx context.Context, rowLimit int32) ([]UpdateRun, error) {
+	rows, err := q.db.Query(ctx, listDueUpdateRuns, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UpdateRun
+	for rows.Next() {
+		var i UpdateRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CreatedBy,
+			&i.Status,
+			&i.DryRun,
+			&i.ScheduledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -906,6 +1496,99 @@ func (q *Queries) ListUpdateTasksForRunWithSiteName(ctx context.Context, arg Lis
 	return items, nil
 }
 
+const markScheduledUpdateTaskPending = `-- name: MarkScheduledUpdateTaskPending :one
+UPDATE update_tasks t
+SET status = 'pending', updated_at = now()
+WHERE t.id = $1 AND t.tenant_id = $2
+  AND t.status = 'scheduled'
+  AND NOT EXISTS (
+      SELECT 1 FROM update_tasks x
+      WHERE x.tenant_id   = t.tenant_id
+        AND x.site_id     = t.site_id
+        AND x.target_type = t.target_type
+        AND x.target_slug = t.target_slug
+        AND x.id <> t.id
+        AND x.status IN ('pending', 'running')
+  )
+RETURNING t.id, t.run_id, t.tenant_id, t.site_id, t.target_type, t.target_slug, t.desired_version, t.from_version, t.to_version, t.status, t.detail, t.error, t.started_at, t.finished_at, t.created_at, t.updated_at
+`
+
+type MarkScheduledUpdateTaskPendingParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Dispatch, per task: 'scheduled' -> 'pending', which is the moment the task
+// becomes real work — it enters update_tasks_inflight_target_idx, becomes
+// claimable by MarkUpdateTaskRunning, and becomes visible to the stale-task
+// reaper. Nothing before this point is eligible for any of the three.
+//
+// THE NOT EXISTS ARM IS THE IN-FLIGHT COLLISION, and it is a legitimate outcome
+// rather than a failure. Because a scheduled task deliberately does not reserve
+// its (tenant, site, target) slot (see CreateScheduledUpdateTask), the slot may
+// have been taken by an urgent immediate update while this run waited. Moving
+// the row to 'pending' would then violate update_tasks_inflight_target_idx and
+// raise 23505 — which, inside the dispatcher's transaction, aborts the whole
+// transaction and takes every OTHER task of the run down with it. One operator
+// updating one plugin by hand would fail the entire scheduled run. The guard
+// turns that into an ordinary zero-row result on the common path.
+//
+// IT IS A GUARD, NOT A LOCK, AND THE RESIDUAL RACE REMAINS. A concurrent
+// transaction can insert the conflicting 'pending' row between this predicate's
+// evaluation and this statement's commit, and then the unique index raises
+// 23505 exactly as before. The caller must therefore STILL be able to survive
+// 23505 on this statement — issue it under a SAVEPOINT, or one task per
+// transaction — and treat that error as the same outcome as zero-rows-with-the-
+// row-still-scheduled. The guard makes the common case cheap; it does not make
+// the rare case impossible, and a caller written as though it did will lose a
+// whole run to a race it could have absorbed.
+//
+// ZERO ROWS IS AMBIGUOUS BY CONSTRUCTION AND THE CALLER DISAMBIGUATES BY
+// RE-READING THE ROW (GetUpdateTask, same transaction). This mirrors
+// MarkUpdateTaskRunning's documented contract, and the two answers need
+// opposite handling:
+//
+//	status <> 'scheduled'  Someone else already moved it — a concurrent
+//	                       dispatcher pass, or an operator cancelling the run
+//	                       under us. NOT this caller's task. Leave the recorded
+//	                       state alone and move on; do not re-dispatch.
+//
+//	status  = 'scheduled'  The target is in flight from another run. This is
+//	                       the SKIPPED case the design names: the task is not
+//	                       attempted, the RUN IS NOT FAILED, and the remaining
+//	                       tasks of the run proceed normally. Record it with
+//	                       FinishScheduledUpdateTask('skipped', detail) so the
+//	                       row reaches a terminal state and the operator can
+//	                       see why that one site was left alone. A skip left
+//	                       unrecorded is a task stuck at 'scheduled' forever.
+//
+// Distinguishing them by the zero-row result alone is impossible, which is why
+// the re-read is part of the contract and not an optimisation the caller may
+// skip. Never treat zero rows here as an error to retry into.
+func (q *Queries) MarkScheduledUpdateTaskPending(ctx context.Context, arg MarkScheduledUpdateTaskPendingParams) (UpdateTask, error) {
+	row := q.db.QueryRow(ctx, markScheduledUpdateTaskPending, arg.ID, arg.TenantID)
+	var i UpdateTask
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TenantID,
+		&i.SiteID,
+		&i.TargetType,
+		&i.TargetSlug,
+		&i.DesiredVersion,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.Status,
+		&i.Detail,
+		&i.Error,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const markUpdateTaskRunning = `-- name: MarkUpdateTaskRunning :one
 UPDATE update_tasks
 SET status = 'running', started_at = now(), updated_at = now()
@@ -1154,4 +1837,106 @@ func (q *Queries) SiteHasRunningUpdateTask(ctx context.Context, arg SiteHasRunni
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const terminalizeScheduledTasksForRun = `-- name: TerminalizeScheduledTasksForRun :many
+UPDATE update_tasks
+SET status      = $1,
+    detail      = $2,
+    finished_at = now(),
+    updated_at  = now()
+WHERE run_id = $3 AND tenant_id = $4
+  AND status = 'scheduled'
+RETURNING id, run_id, tenant_id, site_id, target_type, target_slug, desired_version, from_version, to_version, status, detail, error, started_at, finished_at, created_at, updated_at
+`
+
+type TerminalizeScheduledTasksForRunParams struct {
+	Status   string    `json:"status"`
+	Detail   string    `json:"detail"`
+	RunID    uuid.UUID `json:"run_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Terminalizes EVERY still-scheduled task of one run, in one statement. Used by
+// both run-level endings — expiry (ExpireDueUpdateRun) and operator
+// cancellation (CancelScheduledUpdateRun) — which differ only in @status and
+// @detail, so they share the statement rather than duplicating a predicate that
+// must not drift between them.
+//
+// MUST BE ISSUED IN THE SAME TRANSACTION AS THE RUN TRANSITION. A run that
+// reaches a terminal state while its tasks are still 'scheduled' strands them
+// permanently: 'scheduled' is not terminal, so no outcome is recorded; it is
+// excluded from ListStaleUpdateTasks by construction, so the reaper will never
+// un-stick them; and the run has left update_runs_due_idx, so no future tick
+// will ever look at it again. There is no janitor anywhere in this system that
+// would find them. Splitting these two writes across transactions is the single
+// way to leak rows in this feature.
+//
+// @status takes the same admissible values as FinishScheduledUpdateTask, and
+// THE TWO RUN-LEVEL ENDINGS PASS DIFFERENT ONES. They agree that nothing was
+// ever sent to the site; they disagree about why, and the row is the only place
+// that survives to say so:
+//
+//	expiry  ExpireDueUpdateRun    -> run 'expired', tasks 'expired'
+//	                                (dispatch_repo.go, TaskExpired)
+//	cancel  CancelScheduledUpdateRun -> run 'halted', tasks 'cancelled'
+//	                                (cancel_repo.go, TaskCancelled)
+//
+// The run vocabulary has no 'cancelled', so operator cancellation lands the RUN
+// on 'halted' while its TASKS go to 'cancelled'. That asymmetry is deliberate:
+// minting a 'cancelled' run status would create a value no existing reader can
+// render (gen.UpdateRunStatus is a closed enum). Do not "tidy" the pair into
+// matching by inventing one.
+//
+// ONLY 'scheduled' ROWS ARE TOUCHED, which is what makes this safe to run
+// against a partially dispatched run: a task already moved to 'pending' or
+// beyond has real work behind it and its outcome belongs to the worker, not to
+// this statement. Cancelling those is CancelPendingUpdateTask's job and carries
+// its own reasoning about what 'cancelled' may claim.
+//
+// ZERO ROWS MEANS: the run had no still-scheduled tasks. Benign and common —
+// an already-dispatched run, or a re-run of the same ending. It is NOT
+// confirmation that the run had no tasks, and must not be logged as one.
+// RETURNING the rows so the caller can emit one audit record per affected task
+// without a second read.
+func (q *Queries) TerminalizeScheduledTasksForRun(ctx context.Context, arg TerminalizeScheduledTasksForRunParams) ([]UpdateTask, error) {
+	rows, err := q.db.Query(ctx, terminalizeScheduledTasksForRun,
+		arg.Status,
+		arg.Detail,
+		arg.RunID,
+		arg.TenantID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UpdateTask
+	for rows.Next() {
+		var i UpdateTask
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.TenantID,
+			&i.SiteID,
+			&i.TargetType,
+			&i.TargetSlug,
+			&i.DesiredVersion,
+			&i.FromVersion,
+			&i.ToVersion,
+			&i.Status,
+			&i.Detail,
+			&i.Error,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

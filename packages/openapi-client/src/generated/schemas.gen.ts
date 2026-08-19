@@ -3104,9 +3104,11 @@ export const UpdateTaskSchema = {
         "rolled_back",
         "skipped",
         "cancelled",
+        "scheduled",
+        "expired",
       ],
       description:
-        "`cancelled` means the task was never dispatched because its run was\nhalted first; nothing was sent to the site. Only agent self-update\nruns can halt.\n",
+        "`cancelled` means the task was never dispatched because its run was\nhalted first, or because an operator cancelled the scheduled run\nbefore it fired; nothing was sent to the site. Only agent\nself-update runs can halt.\n\nThe last two belong to the deferred-dispatch lifecycle (#463):\n\n- `scheduled` — the parent run has not reached its `scheduled_at`.\n  Not yet eligible for dispatch, and deliberately outside the\n  in-flight set, so it neither reserves its (site, target) slot\n  against an immediate update nor is swept by the stale-task reaper.\n- `expired` — terminal. The parent run expired without dispatching,\n  so this task was never attempted. Distinct from `cancelled`, which\n  records a decision somebody made, and from `skipped`, which\n  records that the target was busy at dispatch time.\n\nA task may also reach `skipped` from `scheduled`: its (site, target)\nwas in flight from another run at the moment the schedule fired. The\nrun is not failed by this; the other tasks proceed.\n",
     },
     retryable: {
       type: "boolean",
@@ -3117,7 +3119,7 @@ export const UpdateTaskSchema = {
       type: "string",
       enum: ["never_ran", "failed", "reverted", "skipped", "not_applicable"],
       description:
-        'What happened to this task, on the axis a retry decision turns on.\nThe server computes it; the client renders it.\n\n* `never_ran` - terminal, but nothing was ever sent to the site\n  (today: `cancelled`, collateral of a halted run). Nothing on the\n  site changed, so this is the lowest-risk task to retry.\n* `failed` - the site was contacted and the update did not succeed.\n* `reverted` - the update applied and was then rolled back, so a\n  retry walks the identical path and may reproduce the identical\n  break.\n* `skipped` - the control plane declined this target (already up to\n  date, site busy, agent build not upgradeable by this channel).\n  Usually correct, but a stale WordPress transient can report\n  "already current" wrongly, so it stays selectable.\n* `not_applicable` - `succeeded` (retrying re-touches a working\n  site for nothing) or not finished yet (`pending`/`running`).\n\nThe intended client default selection is `failed` + `never_ran`:\nboth mean "this never succeeded", and `never_ran` additionally means\n"and nothing was attempted". `reverted` and `skipped` are\nselectable but never default-on. `not_applicable` is never\nselectable.\n',
+        'What happened to this task, on the axis a retry decision turns on.\nThe server computes it; the client renders it.\n\n* `never_ran` - terminal, but nothing was ever sent to the site.\n  Two statuses reach it, differing only in why nothing was sent:\n  `cancelled` (a decision — its run halted, or an operator stopped\n  it) and `expired` (a missed window — the run came due while the\n  control plane was unavailable and stayed due past the grace\n  window). Nothing on the site changed in either case, so this is\n  the lowest-risk task to retry.\n* `failed` - the site was contacted and the update did not succeed.\n* `reverted` - the update applied and was then rolled back, so a\n  retry walks the identical path and may reproduce the identical\n  break.\n* `skipped` - the control plane declined this target (already up to\n  date, site busy, agent build not upgradeable by this channel).\n  Usually correct, but a stale WordPress transient can report\n  "already current" wrongly, so it stays selectable.\n* `not_applicable` - `succeeded` (retrying re-touches a working\n  site for nothing) or not finished yet\n  (`pending`/`running`/`scheduled`).\n\nThe intended client default selection is `failed` + `never_ran`:\nboth mean "this never succeeded", and `never_ran` additionally means\n"and nothing was attempted". `reverted` and `skipped` are\nselectable but never default-on. `not_applicable` is never\nselectable.\n',
     },
     detail: {
       type: "string",
@@ -3169,9 +3171,17 @@ export const UpdateRunSchema = {
     },
     status: {
       type: "string",
-      enum: ["pending", "running", "completed", "halted"],
+      enum: [
+        "pending",
+        "running",
+        "completed",
+        "halted",
+        "scheduled",
+        "dispatching",
+        "expired",
+      ],
       description:
-        "`halted` is terminal and specific to an agent self-update run: a\nstaged-rollout wave failed to prove itself, so every task the run\nhad not already dispatched was cancelled. It is distinct from\n`completed`, which would hide the fact that the run was stopped.\n",
+        "`halted` is terminal and specific to an agent self-update run: a\nstaged-rollout wave failed to prove itself, so every task the run\nhad not already dispatched was cancelled. It is distinct from\n`completed`, which would hide the fact that the run was stopped.\n\nThe last three belong to the deferred-dispatch lifecycle (#463), and\na run only ever enters them when it was created with a future\n`scheduled_at`:\n\n- `scheduled` — waiting for `scheduled_at`. **No site has been\n  contacted.** The run's tasks are `scheduled` too, which\n  deliberately keeps them out of the in-flight dedup index, so the\n  same plugin on the same site can still be updated immediately in\n  the meantime. Cancellable.\n- `dispatching` — transient, held only for the moment the dispatcher\n  is enqueueing the run's tasks. A client that sees it should\n  re-read; it is not a state a run rests in.\n- `expired` — terminal. The run came due while the control plane was\n  unavailable and stayed due past the grace window, so running it\n  now is no longer what the operator asked for. **No site was\n  contacted**, and its tasks are `expired` too. Distinct from\n  `halted` (an agent rollout that stopped itself mid-flight) and\n  from `completed`.\n",
     },
     dry_run: {
       type: "boolean",
@@ -3281,6 +3291,24 @@ export const UpdateRunRetryExclusionSchema = {
       type: "string",
       description:
         "The server-authored sentence for this exclusion, including the\nspecifics (which versions, which status). Rendered as-is; a client\ndoes not need its own copy table to explain an exclusion.\n",
+    },
+  },
+} as const;
+
+export const UpdateRunCancelResultSchema = {
+  type: "object",
+  required: ["run", "cancelled_tasks"],
+  description:
+    "The outcome of cancelling a scheduled run (#463). Reaching this response\nat all means the run was `scheduled` and is now terminal, and that\nnothing was ever sent to any site.\n",
+  properties: {
+    run: {
+      $ref: "#/components/schemas/UpdateRun",
+    },
+    cancelled_tasks: {
+      type: "integer",
+      format: "int64",
+      description:
+        'How many tasks were terminalized as `cancelled` alongside the run,\nin the same transaction. Zero is legitimate and is not an error: a\nrun whose tasks had already left `scheduled` cancels with none, and\nthe count is reported so a client can say "3 site updates called\nback" rather than guessing.\n',
     },
   },
 } as const;

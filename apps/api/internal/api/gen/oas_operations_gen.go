@@ -58,6 +58,7 @@ const (
 	CancelBillingSubscriptionOperation         OperationName = "CancelBillingSubscription"
 	CancelEnrollmentOperation                  OperationName = "CancelEnrollment"
 	CancelMediaOperation                       OperationName = "CancelMedia"
+	CancelScheduledUpdateRunOperation          OperationName = "CancelScheduledUpdateRun"
 	ChangeMyPasswordOperation                  OperationName = "ChangeMyPassword"
 	CheckAgentMirrorNowOperation               OperationName = "CheckAgentMirrorNow"
 	ChmodSiteFileOperation                     OperationName = "ChmodSiteFile"

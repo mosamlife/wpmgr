@@ -11,12 +11,15 @@ import {
   createUpdateRun,
   listUpdateRuns,
   getUpdateRun,
+  cancelScheduledUpdateRun,
   type UpdateRun,
   type UpdateRunCreate,
   type UpdateTask,
   type UpdateEvent,
   type ApiError,
 } from "@wpmgr/api";
+
+import { toast } from "@/components/toast";
 
 import { isTerminalRunStatus, isTerminalTaskStatus } from "./summarize";
 
@@ -128,6 +131,78 @@ export function useCreateUpdateRun(): UseMutationResult<
     onSuccess: (run) => {
       queryClient.setQueryData(updatesKeys.detail(run.id), run);
       void queryClient.invalidateQueries({ queryKey: updatesKeys.lists() });
+    },
+  });
+}
+
+/**
+ * GH #463 — the outcome of POST /updates/runs/{id}/cancel.
+ *
+ * `too_late` is deliberately not a thrown Error: the server returns 409
+ * `run_not_cancellable` for the ordinary case where the run left `scheduled`
+ * between the operator opening the page and clicking Cancel (it fired, or
+ * someone else already cancelled it). That is not a failure of the request;
+ * it is the request truthfully reporting it was a moment too slow. Treating
+ * it as an outcome rather than an exception keeps the call site from
+ * apologising for something that worked as designed.
+ */
+export type CancelUpdateRunOutcome =
+  | { kind: "cancelled"; run: UpdateRun; cancelledTasks: number }
+  | { kind: "too_late"; message: string };
+
+/**
+ * Cancel a scheduled run before it fires (operator+). Valid only while the
+ * run is `scheduled`; see cancelScheduledUpdateRun in openapi.yaml for the
+ * full state-machine reasoning.
+ *
+ * Both outcomes invalidate the detail query rather than trusting the local
+ * cache: a `cancelled` result is seeded optimistically from the response for
+ * an instant repaint, but is followed by a re-read so a live SSE frame that
+ * landed in the gap isn't clobbered; a `too_late` result carries no fresh run
+ * at all (the response is an Error body), so the re-read is the ONLY way the
+ * operator sees the real state instead of the stale countdown they clicked
+ * through.
+ */
+export function useCancelUpdateRun(
+  runId: string,
+): UseMutationResult<CancelUpdateRunOutcome, Error, void> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<CancelUpdateRunOutcome> => {
+      const { data, error, response } = await cancelScheduledUpdateRun({
+        path: { id: runId },
+      });
+      if (response?.status === 409) {
+        return {
+          kind: "too_late",
+          // Server-authored: names the status the run is actually in now
+          // (already fired, or cancelled by someone else). Rendered as-is,
+          // never replaced with a generic "something went wrong".
+          message: error?.message ?? "This run can no longer be cancelled.",
+        };
+      }
+      if (error) throw toError(error);
+      if (!data) throw new Error("Empty response");
+      return { kind: "cancelled", run: data.run, cancelledTasks: data.cancelled_tasks };
+    },
+    onSuccess: (outcome) => {
+      if (outcome.kind === "cancelled") {
+        queryClient.setQueryData(updatesKeys.detail(runId), outcome.run);
+        const n = outcome.cancelledTasks;
+        toast.success("Run cancelled", {
+          description:
+            n === 0
+              ? "Nothing was sent to any site."
+              : `${n} update${n === 1 ? "" : "s"} called back. Nothing was sent to any site.`,
+        });
+      } else {
+        toast.warning("Too late to cancel", { description: outcome.message });
+      }
+      void queryClient.invalidateQueries({ queryKey: updatesKeys.detail(runId) });
+      void queryClient.invalidateQueries({ queryKey: updatesKeys.lists() });
+    },
+    onError: (err) => {
+      toast.error("Could not cancel the run", { description: err.message });
     },
   });
 }

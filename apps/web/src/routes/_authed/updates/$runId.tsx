@@ -21,6 +21,7 @@ import type { StatusTone } from "@/components/status/status-dot";
 import {
   useUpdateRun,
   useRunEventStream,
+  useCancelUpdateRun,
   NotFoundError,
   type RunStreamState,
 } from "@/features/updates/use-updates";
@@ -38,6 +39,11 @@ import {
   type RetryTask,
 } from "@/features/updates/retry-contract";
 import { useRetrySelection } from "@/features/updates/use-retry-selection";
+import { formatAbsolute } from "@/features/updates/schedule";
+import {
+  ExpiredRunNotice,
+  ScheduledRunNotice,
+} from "@/features/updates/schedule-notices";
 import { RetryActionBar } from "@/features/updates/retry-action-bar";
 import { RetryRunDialog } from "@/features/updates/retry-dialog";
 import { useSites } from "@/features/sites/use-sites";
@@ -123,6 +129,14 @@ function RunDetailPage() {
 
 type RunStatus = UpdateRun["status"];
 
+// Defence in depth against version skew, mirroring
+// features/updates/update-status.tsx: `tsc` enforces that every RunStatus is
+// covered below, but a self-hosted control plane can still send a status
+// literal this bundle predates, so the dereferences below re-type the lookup
+// as partial rather than trusting the exhaustive type at runtime.
+const UNKNOWN_RUN_TONE: StatusTone = "muted";
+const UNKNOWN_RUN_LABEL = "Unknown";
+
 const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
@@ -130,6 +144,15 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
   // it for immediate attention, matching the prominent banner below.
   halted: "destructive",
+  // GH #463: waiting for scheduled_at, nothing has happened yet.
+  scheduled: "muted",
+  // GH #463: transient, the dispatcher is enqueueing this run's tasks right
+  // now — mirrors "Running".
+  dispatching: "info",
+  // GH #463: terminal, no site was contacted — a missed schedule, not a
+  // failed update, so this deliberately avoids "destructive" (see
+  // features/updates/update-status.tsx for the full reasoning).
+  expired: "warning",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
@@ -137,6 +160,9 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   running: "Running",
   completed: "Completed",
   halted: "Halted",
+  scheduled: "Scheduled",
+  dispatching: "Dispatching",
+  expired: "Expired",
 };
 
 function RunDetail({
@@ -178,6 +204,9 @@ function RunDetail({
     canManageAgents: canManage(me),
   });
 
+  // ── GH #463 cancel ──────────────────────────────────────────────────────
+  const cancelRun = useCancelUpdateRun(run.id);
+
   const selectedTarget = sharedTargetType(selection.selectedTasks);
   const retryLabel = retryActionLabel({
     count: selection.count,
@@ -199,9 +228,17 @@ function RunDetail({
         badges={
           <>
             <StatusChip
-              tone={RUN_STATUS_TONE[run.status]}
-              label={RUN_STATUS_LABEL[run.status]}
-              pulse={run.status === "running"}
+              tone={
+                (RUN_STATUS_TONE as Partial<Record<RunStatus, StatusTone>>)[
+                  run.status
+                ] ?? UNKNOWN_RUN_TONE
+              }
+              label={
+                (RUN_STATUS_LABEL as Partial<Record<RunStatus, string>>)[
+                  run.status
+                ] ?? UNKNOWN_RUN_LABEL
+              }
+              pulse={run.status === "running" || run.status === "dispatching"}
             />
             {run.dry_run ? (
               <Badge variant="outline">Dry run</Badge>
@@ -216,8 +253,12 @@ function RunDetail({
         subline={
           <>
             Created {created ?? run.created_at}
+            {/* GH #463: this printed `run.scheduled_at` raw — an ISO-8601 UTC
+                string, in a UI whose whole job here is telling an operator
+                WHEN their fleet gets touched. formatAbsolute always names the
+                zone the time is expressed in. */}
             {run.scheduled_at
-              ? ` · Scheduled for ${run.scheduled_at}`
+              ? ` · Scheduled for ${formatAbsolute(run.scheduled_at)}`
               : ""}
           </>
         }
@@ -235,6 +276,42 @@ function RunDetail({
           ) : undefined
         }
       />
+
+      {/* GH #463: waiting. Says plainly that no site has been contacted, which
+          is what an operator opening a scheduled run is checking. `onCancel`
+          is gated on role only, same as retry — no confirmation step, because
+          cancelling a scheduled run is the SAFE direction (see
+          ScheduledRunNotice's own doc comment). */}
+      {run.status === "scheduled" && run.scheduled_at ? (
+        <ScheduledRunNotice
+          scheduledAt={run.scheduled_at}
+          onCancel={canOperate(me) ? () => cancelRun.mutate() : undefined}
+          cancelPending={cancelRun.isPending}
+        />
+      ) : null}
+
+      {/* GH #463: the expired state. Warning, never destructive — a missed
+          schedule is not a broken site, and red here would tell an agency
+          that a client's sites failed when nothing was ever sent. "Run now"
+          reuses the retry path, which is genuinely available: the control
+          plane classifies an expired task as retryable/`never_ran`
+          (apps/api/internal/update/model.go:405). */}
+      {run.status === "expired" ? (
+        <ExpiredRunNotice
+          run={run}
+          onRunNow={
+            retryAvailable && selection.selectableTasks.length > 0
+              ? () => {
+                  // Every task of an expired run is `never_ran`, so "Run now"
+                  // means all of them, not whatever the default selection
+                  // happened to be.
+                  selection.setAllSelectable(true);
+                  setRetryOpen(true);
+                }
+              : undefined
+          }
+        />
+      ) : null}
 
       {halted ? (
         // GH #255 Phase 2: a halt means a bad agent build was caught before
@@ -272,6 +349,7 @@ function RunDetail({
               { label: "Rolled back", value: summary.counts.rolled_back, tabular: true },
               { label: "Running", value: summary.counts.running, tabular: true },
               { label: "Pending", value: summary.counts.pending, tabular: true },
+              { label: "Scheduled", value: summary.counts.scheduled, tabular: true },
               { label: "Skipped", value: summary.counts.skipped, tabular: true },
               // GH #336: nobody cancelled these. The run stopped and the
               // control plane withheld them, so nothing was ever sent to
@@ -279,6 +357,15 @@ function RunDetail({
               {
                 label: "Not attempted",
                 value: summary.counts.cancelled,
+                tabular: true,
+              },
+              // GH #463: the parent run expired without dispatching this
+              // task. Never attempted, same as above, but kept as its own
+              // row rather than folded into "Not attempted" — one is an
+              // operator's choice, the other is a missed schedule window.
+              {
+                label: "Expired",
+                value: summary.counts.expired,
                 tabular: true,
               },
             ]}

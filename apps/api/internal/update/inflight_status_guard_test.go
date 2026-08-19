@@ -133,6 +133,90 @@ func intersectsInFlight(set []string) bool {
 
 func inFlightWant() []string { return InFlightTaskStatuses[:] }
 
+// notFinishedSupersets names the update_tasks status predicates that are
+// deliberately a STRICT SUPERSET of InFlightTaskStatuses, with the reason each
+// one is.
+//
+// The distinction this encodes is the whole point, and it is not a weakening.
+// "Is this task in flight?" and "is this task finished?" are different
+// questions that happen to share two of their answers:
+//
+//	in flight   does this task hold its (tenant, site, target) dedup slot, and
+//	            could it be stuck? -> exactly {pending, running}.
+//	unfinished  is there any outcome still owed for this task? -> everything
+//	            non-terminal, which is a strictly larger set.
+//
+// A task waiting for a clock is emphatically NOT in flight — it must reserve no
+// slot and must not be reaped — while being the least finished a task can be.
+// Treating the second predicate as a copy of the first is what forced this
+// carve-out; treating it as exempt would be the weakening. Membership here buys
+// no freedom: checkNotFinishedSuperset below still pins the predicate on both
+// sides.
+var notFinishedSupersets = map[string]string{
+	"CountUnfinishedTasksForRun": "the run-completion test (#463): dispatch moves tasks 'scheduled' -> 'pending' one at a time, so a partially dispatched run legitimately holds both statuses. Without 'scheduled' counted, the tasks moved first finish, this counts zero, the run is marked 'completed', and the still-'scheduled' remainder is stranded outside the reaper, the dedup index and the due scan alike",
+}
+
+// nonTerminalNotInFlight is the exact set of statuses a superset predicate may
+// add to InFlightTaskStatuses: non-terminal, but deliberately holding no dedup
+// slot. Anything else appearing in a superset predicate is drift, and adding a
+// TERMINAL status here would silently make a finished task count as unfinished
+// forever.
+var nonTerminalNotInFlight = []string{TaskScheduled}
+
+// checkNotFinishedSuperset pins a superset predicate from both directions, so
+// the carve-out cannot become a hole:
+//
+//   - it must contain EVERY in-flight status. Dropping 'pending' from the
+//     run-completion test would mark a run complete while real work is
+//     dispatched and outstanding.
+//   - every EXTRA status must be in nonTerminalNotInFlight. This is what stops
+//     a terminal status ('skipped', 'cancelled', 'expired') being folded in,
+//     which would leave a run permanently incomplete.
+//   - it must actually BE a superset. A predicate that equals the in-flight set
+//     does not belong on this list, and leaving a stale entry here would exempt
+//     a genuine copy from the real check.
+func checkNotFinishedSuperset(t *testing.T, name string, lits []string, reason string) {
+	t.Helper()
+
+	have := map[string]bool{}
+	for _, l := range lits {
+		have[l] = true
+	}
+	for _, want := range inFlightWant() {
+		if !have[want] {
+			t.Errorf("%s: status IN %v is registered as a not-finished SUPERSET (%s) but is missing the in-flight status %q.\n"+
+				"Every in-flight task is by definition unfinished, so dropping one marks a run complete while real work is still outstanding.",
+				name, lits, reason, want)
+		}
+	}
+
+	allowedExtra := map[string]bool{}
+	for _, e := range nonTerminalNotInFlight {
+		allowedExtra[e] = true
+	}
+	inFlight := map[string]bool{}
+	for _, f := range inFlightWant() {
+		inFlight[f] = true
+	}
+	extras := 0
+	for _, l := range lits {
+		if inFlight[l] {
+			continue
+		}
+		extras++
+		if !allowedExtra[l] {
+			t.Errorf("%s: status IN %v adds %q, which is neither an in-flight status nor in nonTerminalNotInFlight %v.\n"+
+				"A superset predicate may only add a NON-TERMINAL status that holds no dedup slot. Adding a terminal one leaves the run permanently incomplete.",
+				name, lits, l, nonTerminalNotInFlight)
+		}
+	}
+	if extras == 0 {
+		t.Errorf("%s: status IN %v equals the in-flight set exactly, so it is a plain COPY and must not be registered in notFinishedSupersets.\n"+
+			"A stale entry here exempts a real copy from the drift check that is the point of this guard.",
+			name, lits)
+	}
+}
+
 // namedQuery returns the body of one sqlc query: from its `-- name:` header to
 // the next header, or to EOF.
 func namedQuery(t *testing.T, sql, name string) string {
@@ -368,6 +452,13 @@ func TestEveryUpdateTasksInFlightPredicateMatchesInFlightStatuses(t *testing.T) 
 			}
 			checked++
 			attributed[name] = true
+			if reason, isSuperset := notFinishedSupersets[name]; isSuperset {
+				// Not a copy of the invariant but a documented superset of it.
+				// Still fully checked, on both sides — see
+				// checkNotFinishedSuperset.
+				checkNotFinishedSuperset(t, name, lits, reason)
+				continue
+			}
 			if !sameSet(lits, inFlightWant()) {
 				t.Errorf("%s: status IN %v on update_tasks, want exactly %v (update.InFlightTaskStatuses).\n"+
 					"This predicate names an in-flight status, so it is a copy of that set and must be the whole set.",

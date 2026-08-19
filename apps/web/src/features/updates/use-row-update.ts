@@ -40,7 +40,17 @@ export type RowUpdateState =
   | "succeeded"
   | "failed"
   | "rolled_back"
-  | "skipped";
+  | "skipped"
+  // GH #463: the parent run has not reached its scheduled_at yet — nothing
+  // has happened, distinct from "pending" (queued now) so the row doesn't
+  // read as imminent.
+  | "scheduled"
+  // GH #463: the parent run expired before dispatching this task. Terminal,
+  // nothing was ever sent.
+  | "expired"
+  // GH #255 Phase 2: never dispatched because its run halted first. Terminal,
+  // nothing was ever sent.
+  | "cancelled";
 
 export interface RowUpdate {
   state: RowUpdateState;
@@ -98,7 +108,36 @@ function projectStatus(
       return "rolled_back";
     case "skipped":
       return "skipped";
+    // GH #463: `scheduled` used to reach this switch through the `default`
+    // arm and come out "pending", so a row whose update was deferred read as
+    // though it were queued and about to go — for hours. It has not been
+    // sent and will not be until its start time, which is a different thing
+    // to tell an operator. `RowUpdateState` gains a real `"scheduled"`
+    // member for this rather than folding into an existing one: only two
+    // files consume `RowUpdateState` (`use-row-update.ts` itself and
+    // `available-updates-card.tsx`, confirmed with
+    // `grep -rl "RowUpdateState" apps/web/src`), so widening it was checked
+    // and is safe, not the "every consumer" risk it might look like.
+    case "scheduled":
+      return "scheduled";
+    // GH #463: `expired` likewise fell through to "pending", leaving a row
+    // spinning forever on work that will never be attempted. Nothing was
+    // sent to the site — that's a different story from `skipped`, which here
+    // means the control plane looked at this one target and declined it.
+    // Folding `expired` into `skipped` would conflate "nothing was ever
+    // sent" with "this target was declined", so it gets its own member.
+    case "expired":
+      return "expired";
+    // GH #255: never dispatched because its run halted first. Same "nothing
+    // was ever sent" story as `expired` above, different cause, same reason
+    // it is not `skipped`.
+    case "cancelled":
+      return "cancelled";
     default:
+      // A status literal outside the current TaskStatus union entirely (a
+      // self-hosted control plane ahead of this bundle's generated types).
+      // "still going, poll will resolve it" matches how isTerminalTaskStatus
+      // treats an unmatched status as non-terminal.
       return "pending";
   }
 }
@@ -255,23 +294,7 @@ export function useCoreRowUpdate(
   useRunEventStream(runId ?? "", { enabled: Boolean(runId) });
 
   const task = run?.tasks?.find((t) => t.target_type === "core");
-  const state: RowUpdateState = !runId
-    ? create.isPending
-      ? "starting"
-      : "idle"
-    : !task
-      ? "pending"
-      : task.status === "pending"
-        ? "pending"
-        : task.status === "running"
-          ? "running"
-          : task.status === "succeeded"
-            ? "succeeded"
-            : task.status === "failed"
-              ? "failed"
-              : task.status === "rolled_back"
-                ? "rolled_back"
-                : "skipped";
+  const state = projectStatus(task, runId, create.isPending);
 
   const trigger = useCallback(async () => {
     setRunId(null);

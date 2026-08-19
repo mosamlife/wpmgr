@@ -12170,6 +12170,14 @@ func (s *CancelMediaOK) SetCancelledCount(val OptInt) {
 	s.CancelledCount = val
 }
 
+type CancelScheduledUpdateRunConflict Error
+
+func (*CancelScheduledUpdateRunConflict) cancelScheduledUpdateRunRes() {}
+
+type CancelScheduledUpdateRunNotFound Error
+
+func (*CancelScheduledUpdateRunNotFound) cancelScheduledUpdateRunRes() {}
+
 // Write-only CDN credentials. Accepted on PUT /perf/config and NEVER
 // returned by GET (the control plane decrypts server-side only).
 // Ref: #/components/schemas/CdnCredentials
@@ -50194,6 +50202,23 @@ type UpdateRun struct {
 	// staged-rollout wave failed to prove itself, so every task the run
 	// had not already dispatched was cancelled. It is distinct from
 	// `completed`, which would hide the fact that the run was stopped.
+	// The last three belong to the deferred-dispatch lifecycle (#463), and
+	// a run only ever enters them when it was created with a future
+	// `scheduled_at`:
+	// - `scheduled` — waiting for `scheduled_at`. **No site has been
+	// contacted.** The run's tasks are `scheduled` too, which
+	// deliberately keeps them out of the in-flight dedup index, so the
+	// same plugin on the same site can still be updated immediately in
+	// the meantime. Cancellable.
+	// - `dispatching` — transient, held only for the moment the dispatcher
+	// is enqueueing the run's tasks. A client that sees it should
+	// re-read; it is not a state a run rests in.
+	// - `expired` — terminal. The run came due while the control plane was
+	// unavailable and stayed due past the grace window, so running it
+	// now is no longer what the operator asked for. **No site was
+	// contacted**, and its tasks are `expired` too. Distinct from
+	// `halted` (an agent rollout that stopped itself mid-flight) and
+	// from `completed`.
 	Status      UpdateRunStatus `json:"status"`
 	DryRun      bool            `json:"dry_run"`
 	ScheduledAt OptDateTime     `json:"scheduled_at"`
@@ -50343,6 +50368,42 @@ func (s *UpdateRun) SetTasks(val []UpdateTask) {
 
 func (*UpdateRun) createUpdateRunRes() {}
 func (*UpdateRun) getUpdateRunRes()    {}
+
+// The outcome of cancelling a scheduled run (#463). Reaching this response
+// at all means the run was `scheduled` and is now terminal, and that
+// nothing was ever sent to any site.
+// Ref: #/components/schemas/UpdateRunCancelResult
+type UpdateRunCancelResult struct {
+	Run UpdateRun `json:"run"`
+	// How many tasks were terminalized as `cancelled` alongside the run,
+	// in the same transaction. Zero is legitimate and is not an error: a
+	// run whose tasks had already left `scheduled` cancels with none, and
+	// the count is reported so a client can say "3 site updates called
+	// back" rather than guessing.
+	CancelledTasks int64 `json:"cancelled_tasks"`
+}
+
+// GetRun returns the value of Run.
+func (s *UpdateRunCancelResult) GetRun() UpdateRun {
+	return s.Run
+}
+
+// GetCancelledTasks returns the value of CancelledTasks.
+func (s *UpdateRunCancelResult) GetCancelledTasks() int64 {
+	return s.CancelledTasks
+}
+
+// SetRun sets the value of Run.
+func (s *UpdateRunCancelResult) SetRun(val UpdateRun) {
+	s.Run = val
+}
+
+// SetCancelledTasks sets the value of CancelledTasks.
+func (s *UpdateRunCancelResult) SetCancelledTasks(val int64) {
+	s.CancelledTasks = val
+}
+
+func (*UpdateRunCancelResult) cancelScheduledUpdateRunRes() {}
 
 // Request to start a bulk update run. Provide EITHER site_ids OR tag to
 // select target sites (not both).
@@ -50690,13 +50751,33 @@ func (*UpdateRunRetryResult) retryUpdateRunRes() {}
 // staged-rollout wave failed to prove itself, so every task the run
 // had not already dispatched was cancelled. It is distinct from
 // `completed`, which would hide the fact that the run was stopped.
+// The last three belong to the deferred-dispatch lifecycle (#463), and
+// a run only ever enters them when it was created with a future
+// `scheduled_at`:
+// - `scheduled` — waiting for `scheduled_at`. **No site has been
+// contacted.** The run's tasks are `scheduled` too, which
+// deliberately keeps them out of the in-flight dedup index, so the
+// same plugin on the same site can still be updated immediately in
+// the meantime. Cancellable.
+// - `dispatching` — transient, held only for the moment the dispatcher
+// is enqueueing the run's tasks. A client that sees it should
+// re-read; it is not a state a run rests in.
+// - `expired` — terminal. The run came due while the control plane was
+// unavailable and stayed due past the grace window, so running it
+// now is no longer what the operator asked for. **No site was
+// contacted**, and its tasks are `expired` too. Distinct from
+// `halted` (an agent rollout that stopped itself mid-flight) and
+// from `completed`.
 type UpdateRunStatus string
 
 const (
-	UpdateRunStatusPending   UpdateRunStatus = "pending"
-	UpdateRunStatusRunning   UpdateRunStatus = "running"
-	UpdateRunStatusCompleted UpdateRunStatus = "completed"
-	UpdateRunStatusHalted    UpdateRunStatus = "halted"
+	UpdateRunStatusPending     UpdateRunStatus = "pending"
+	UpdateRunStatusRunning     UpdateRunStatus = "running"
+	UpdateRunStatusCompleted   UpdateRunStatus = "completed"
+	UpdateRunStatusHalted      UpdateRunStatus = "halted"
+	UpdateRunStatusScheduled   UpdateRunStatus = "scheduled"
+	UpdateRunStatusDispatching UpdateRunStatus = "dispatching"
+	UpdateRunStatusExpired     UpdateRunStatus = "expired"
 )
 
 // AllValues returns all UpdateRunStatus values.
@@ -50706,6 +50787,9 @@ func (UpdateRunStatus) AllValues() []UpdateRunStatus {
 		UpdateRunStatusRunning,
 		UpdateRunStatusCompleted,
 		UpdateRunStatusHalted,
+		UpdateRunStatusScheduled,
+		UpdateRunStatusDispatching,
+		UpdateRunStatusExpired,
 	}
 }
 
@@ -50719,6 +50803,12 @@ func (s UpdateRunStatus) MarshalText() ([]byte, error) {
 	case UpdateRunStatusCompleted:
 		return []byte(s), nil
 	case UpdateRunStatusHalted:
+		return []byte(s), nil
+	case UpdateRunStatusScheduled:
+		return []byte(s), nil
+	case UpdateRunStatusDispatching:
+		return []byte(s), nil
+	case UpdateRunStatusExpired:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -50739,6 +50829,15 @@ func (s *UpdateRunStatus) UnmarshalText(data []byte) error {
 		return nil
 	case UpdateRunStatusHalted:
 		*s = UpdateRunStatusHalted
+		return nil
+	case UpdateRunStatusScheduled:
+		*s = UpdateRunStatusScheduled
+		return nil
+	case UpdateRunStatusDispatching:
+		*s = UpdateRunStatusDispatching
+		return nil
+	case UpdateRunStatusExpired:
+		*s = UpdateRunStatusExpired
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -50813,8 +50912,21 @@ type UpdateTask struct {
 	FromVersion    OptString            `json:"from_version"`
 	ToVersion      OptString            `json:"to_version"`
 	// `cancelled` means the task was never dispatched because its run was
-	// halted first; nothing was sent to the site. Only agent self-update
-	// runs can halt.
+	// halted first, or because an operator cancelled the scheduled run
+	// before it fired; nothing was sent to the site. Only agent
+	// self-update runs can halt.
+	// The last two belong to the deferred-dispatch lifecycle (#463):
+	// - `scheduled` — the parent run has not reached its `scheduled_at`.
+	// Not yet eligible for dispatch, and deliberately outside the
+	// in-flight set, so it neither reserves its (site, target) slot
+	// against an immediate update nor is swept by the stale-task reaper.
+	// - `expired` — terminal. The parent run expired without dispatching,
+	// so this task was never attempted. Distinct from `cancelled`, which
+	// records a decision somebody made, and from `skipped`, which
+	// records that the target was busy at dispatch time.
+	// A task may also reach `skipped` from `scheduled`: its (site, target)
+	// was in flight from another run at the moment the schedule fired. The
+	// run is not failed by this; the other tasks proceed.
 	Status UpdateTaskStatus `json:"status"`
 	// Whether this task may be named in a retry request
 	// (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
@@ -50825,9 +50937,13 @@ type UpdateTask struct {
 	Retryable bool `json:"retryable"`
 	// What happened to this task, on the axis a retry decision turns on.
 	// The server computes it; the client renders it.
-	// * `never_ran` - terminal, but nothing was ever sent to the site
-	// (today: `cancelled`, collateral of a halted run). Nothing on the
-	// site changed, so this is the lowest-risk task to retry.
+	// * `never_ran` - terminal, but nothing was ever sent to the site.
+	// Two statuses reach it, differing only in why nothing was sent:
+	// `cancelled` (a decision — its run halted, or an operator stopped
+	// it) and `expired` (a missed window — the run came due while the
+	// control plane was unavailable and stayed due past the grace
+	// window). Nothing on the site changed in either case, so this is
+	// the lowest-risk task to retry.
 	// * `failed` - the site was contacted and the update did not succeed.
 	// * `reverted` - the update applied and was then rolled back, so a
 	// retry walks the identical path and may reproduce the identical
@@ -50837,7 +50953,8 @@ type UpdateTask struct {
 	// Usually correct, but a stale WordPress transient can report
 	// "already current" wrongly, so it stays selectable.
 	// * `not_applicable` - `succeeded` (retrying re-touches a working
-	// site for nothing) or not finished yet (`pending`/`running`).
+	// site for nothing) or not finished yet
+	// (`pending`/`running`/`scheduled`).
 	// The intended client default selection is `failed` + `never_ran`:
 	// both mean "this never succeeded", and `never_ran` additionally means
 	// "and nothing was attempted". `reverted` and `skipped` are
@@ -51044,9 +51161,13 @@ func (s *UpdateTask) SetUpdatedAt(val time.Time) {
 
 // What happened to this task, on the axis a retry decision turns on.
 // The server computes it; the client renders it.
-// * `never_ran` - terminal, but nothing was ever sent to the site
-// (today: `cancelled`, collateral of a halted run). Nothing on the
-// site changed, so this is the lowest-risk task to retry.
+// * `never_ran` - terminal, but nothing was ever sent to the site.
+// Two statuses reach it, differing only in why nothing was sent:
+// `cancelled` (a decision — its run halted, or an operator stopped
+// it) and `expired` (a missed window — the run came due while the
+// control plane was unavailable and stayed due past the grace
+// window). Nothing on the site changed in either case, so this is
+// the lowest-risk task to retry.
 // * `failed` - the site was contacted and the update did not succeed.
 // * `reverted` - the update applied and was then rolled back, so a
 // retry walks the identical path and may reproduce the identical
@@ -51056,7 +51177,8 @@ func (s *UpdateTask) SetUpdatedAt(val time.Time) {
 // Usually correct, but a stale WordPress transient can report
 // "already current" wrongly, so it stays selectable.
 // * `not_applicable` - `succeeded` (retrying re-touches a working
-// site for nothing) or not finished yet (`pending`/`running`).
+// site for nothing) or not finished yet
+// (`pending`/`running`/`scheduled`).
 // The intended client default selection is `failed` + `never_ran`:
 // both mean "this never succeeded", and `never_ran` additionally means
 // "and nothing was attempted". `reverted` and `skipped` are
@@ -51125,8 +51247,21 @@ func (s *UpdateTaskRetryClass) UnmarshalText(data []byte) error {
 }
 
 // `cancelled` means the task was never dispatched because its run was
-// halted first; nothing was sent to the site. Only agent self-update
-// runs can halt.
+// halted first, or because an operator cancelled the scheduled run
+// before it fired; nothing was sent to the site. Only agent
+// self-update runs can halt.
+// The last two belong to the deferred-dispatch lifecycle (#463):
+// - `scheduled` — the parent run has not reached its `scheduled_at`.
+// Not yet eligible for dispatch, and deliberately outside the
+// in-flight set, so it neither reserves its (site, target) slot
+// against an immediate update nor is swept by the stale-task reaper.
+// - `expired` — terminal. The parent run expired without dispatching,
+// so this task was never attempted. Distinct from `cancelled`, which
+// records a decision somebody made, and from `skipped`, which
+// records that the target was busy at dispatch time.
+// A task may also reach `skipped` from `scheduled`: its (site, target)
+// was in flight from another run at the moment the schedule fired. The
+// run is not failed by this; the other tasks proceed.
 type UpdateTaskStatus string
 
 const (
@@ -51137,6 +51272,8 @@ const (
 	UpdateTaskStatusRolledBack UpdateTaskStatus = "rolled_back"
 	UpdateTaskStatusSkipped    UpdateTaskStatus = "skipped"
 	UpdateTaskStatusCancelled  UpdateTaskStatus = "cancelled"
+	UpdateTaskStatusScheduled  UpdateTaskStatus = "scheduled"
+	UpdateTaskStatusExpired    UpdateTaskStatus = "expired"
 )
 
 // AllValues returns all UpdateTaskStatus values.
@@ -51149,6 +51286,8 @@ func (UpdateTaskStatus) AllValues() []UpdateTaskStatus {
 		UpdateTaskStatusRolledBack,
 		UpdateTaskStatusSkipped,
 		UpdateTaskStatusCancelled,
+		UpdateTaskStatusScheduled,
+		UpdateTaskStatusExpired,
 	}
 }
 
@@ -51168,6 +51307,10 @@ func (s UpdateTaskStatus) MarshalText() ([]byte, error) {
 	case UpdateTaskStatusSkipped:
 		return []byte(s), nil
 	case UpdateTaskStatusCancelled:
+		return []byte(s), nil
+	case UpdateTaskStatusScheduled:
+		return []byte(s), nil
+	case UpdateTaskStatusExpired:
 		return []byte(s), nil
 	default:
 		return nil, errors.Errorf("invalid value: %q", s)
@@ -51197,6 +51340,12 @@ func (s *UpdateTaskStatus) UnmarshalText(data []byte) error {
 		return nil
 	case UpdateTaskStatusCancelled:
 		*s = UpdateTaskStatusCancelled
+		return nil
+	case UpdateTaskStatusScheduled:
+		*s = UpdateTaskStatusScheduled
+		return nil
+	case UpdateTaskStatusExpired:
+		*s = UpdateTaskStatusExpired
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)

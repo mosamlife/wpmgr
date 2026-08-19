@@ -1623,8 +1623,24 @@ export type UpdateTask = {
   to_version?: string;
   /**
    * `cancelled` means the task was never dispatched because its run was
-   * halted first; nothing was sent to the site. Only agent self-update
-   * runs can halt.
+   * halted first, or because an operator cancelled the scheduled run
+   * before it fired; nothing was sent to the site. Only agent
+   * self-update runs can halt.
+   *
+   * The last two belong to the deferred-dispatch lifecycle (#463):
+   *
+   * - `scheduled` — the parent run has not reached its `scheduled_at`.
+   * Not yet eligible for dispatch, and deliberately outside the
+   * in-flight set, so it neither reserves its (site, target) slot
+   * against an immediate update nor is swept by the stale-task reaper.
+   * - `expired` — terminal. The parent run expired without dispatching,
+   * so this task was never attempted. Distinct from `cancelled`, which
+   * records a decision somebody made, and from `skipped`, which
+   * records that the target was busy at dispatch time.
+   *
+   * A task may also reach `skipped` from `scheduled`: its (site, target)
+   * was in flight from another run at the moment the schedule fired. The
+   * run is not failed by this; the other tasks proceed.
    *
    */
   status:
@@ -1634,7 +1650,9 @@ export type UpdateTask = {
     | "failed"
     | "rolled_back"
     | "skipped"
-    | "cancelled";
+    | "cancelled"
+    | "scheduled"
+    | "expired";
   /**
    * Whether this task may be named in a retry request
    * (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
@@ -1649,9 +1667,13 @@ export type UpdateTask = {
    * What happened to this task, on the axis a retry decision turns on.
    * The server computes it; the client renders it.
    *
-   * * `never_ran` - terminal, but nothing was ever sent to the site
-   * (today: `cancelled`, collateral of a halted run). Nothing on the
-   * site changed, so this is the lowest-risk task to retry.
+   * * `never_ran` - terminal, but nothing was ever sent to the site.
+   * Two statuses reach it, differing only in why nothing was sent:
+   * `cancelled` (a decision — its run halted, or an operator stopped
+   * it) and `expired` (a missed window — the run came due while the
+   * control plane was unavailable and stayed due past the grace
+   * window). Nothing on the site changed in either case, so this is
+   * the lowest-risk task to retry.
    * * `failed` - the site was contacted and the update did not succeed.
    * * `reverted` - the update applied and was then rolled back, so a
    * retry walks the identical path and may reproduce the identical
@@ -1661,7 +1683,8 @@ export type UpdateTask = {
    * Usually correct, but a stale WordPress transient can report
    * "already current" wrongly, so it stays selectable.
    * * `not_applicable` - `succeeded` (retrying re-touches a working
-   * site for nothing) or not finished yet (`pending`/`running`).
+   * site for nothing) or not finished yet
+   * (`pending`/`running`/`scheduled`).
    *
    * The intended client default selection is `failed` + `never_ran`:
    * both mean "this never succeeded", and `never_ran` additionally means
@@ -1694,8 +1717,34 @@ export type UpdateRun = {
    * had not already dispatched was cancelled. It is distinct from
    * `completed`, which would hide the fact that the run was stopped.
    *
+   * The last three belong to the deferred-dispatch lifecycle (#463), and
+   * a run only ever enters them when it was created with a future
+   * `scheduled_at`:
+   *
+   * - `scheduled` — waiting for `scheduled_at`. **No site has been
+   * contacted.** The run's tasks are `scheduled` too, which
+   * deliberately keeps them out of the in-flight dedup index, so the
+   * same plugin on the same site can still be updated immediately in
+   * the meantime. Cancellable.
+   * - `dispatching` — transient, held only for the moment the dispatcher
+   * is enqueueing the run's tasks. A client that sees it should
+   * re-read; it is not a state a run rests in.
+   * - `expired` — terminal. The run came due while the control plane was
+   * unavailable and stayed due past the grace window, so running it
+   * now is no longer what the operator asked for. **No site was
+   * contacted**, and its tasks are `expired` too. Distinct from
+   * `halted` (an agent rollout that stopped itself mid-flight) and
+   * from `completed`.
+   *
    */
-  status: "pending" | "running" | "completed" | "halted";
+  status:
+    | "pending"
+    | "running"
+    | "completed"
+    | "halted"
+    | "scheduled"
+    | "dispatching"
+    | "expired";
   dry_run: boolean;
   scheduled_at?: string;
   created_at: string;
@@ -1783,6 +1832,25 @@ export type UpdateRunRetryExclusion = {
    *
    */
   message: string;
+};
+
+/**
+ * The outcome of cancelling a scheduled run (#463). Reaching this response
+ * at all means the run was `scheduled` and is now terminal, and that
+ * nothing was ever sent to any site.
+ *
+ */
+export type UpdateRunCancelResult = {
+  run: UpdateRun;
+  /**
+   * How many tasks were terminalized as `cancelled` alongside the run,
+   * in the same transaction. Zero is legitimate and is not an error: a
+   * run whose tasks had already left `scheduled` cancels with none, and
+   * the count is reported so a client can say "3 site updates called
+   * back" rather than guessing.
+   *
+   */
+  cancelled_tasks: number;
 };
 
 /**
@@ -14121,6 +14189,54 @@ export type RetryUpdateRunResponses = {
 
 export type RetryUpdateRunResponse =
   RetryUpdateRunResponses[keyof RetryUpdateRunResponses];
+
+export type CancelScheduledUpdateRunData = {
+  body?: never;
+  path: {
+    /**
+     * The scheduled run to cancel.
+     */
+    id: string;
+  };
+  query?: never;
+  url: "/api/v1/updates/runs/{id}/cancel";
+};
+
+export type CancelScheduledUpdateRunErrors = {
+  /**
+   * Update run not found
+   */
+  404: Error;
+  /**
+   * `run_not_cancellable` — the run has left `scheduled`, so there was
+   * nothing to call back. Either it already fired (it is now
+   * `dispatching`, `running`, `completed` or `expired`) or another
+   * operator cancelled it first.
+   *
+   * This is a distinct outcome from a server error and clients MUST
+   * render it as such: the correct action is to re-read the run and show
+   * its real state, never to retry the cancel. For a run that has
+   * already started, the halt path is the operation the operator wants.
+   *
+   */
+  409: Error;
+};
+
+export type CancelScheduledUpdateRunError =
+  CancelScheduledUpdateRunErrors[keyof CancelScheduledUpdateRunErrors];
+
+export type CancelScheduledUpdateRunResponses = {
+  /**
+   * The run was cancelled. The returned run carries its new terminal
+   * status, and `cancelled_tasks` says how many tasks were terminalized
+   * with it.
+   *
+   */
+  200: UpdateRunCancelResult;
+};
+
+export type CancelScheduledUpdateRunResponse =
+  CancelScheduledUpdateRunResponses[keyof CancelScheduledUpdateRunResponses];
 
 export type StreamUpdateRunEventsData = {
   body?: never;
