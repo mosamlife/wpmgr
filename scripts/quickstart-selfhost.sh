@@ -220,15 +220,22 @@ if [ -n "${claim_secret}" ]; then
 Claim ownership (do this once, after the stack is up):
   This install has no owner yet, and the Sign Up form in the dashboard cannot
   create the first one — the claim below travels only as a request header,
-  deliberately absent from the API schema every generated client uses.
+  deliberately absent from the API schema every generated client uses. The
+  block below writes the claim into a private, 600-permission temp file
+  instead of the command line, so it never shows up in \`ps\` output, and
+  removes that file when curl exits, on success or failure:
 
-  curl -X POST http://localhost:${api_port}/auth/register \\
-    -H "Content-Type: application/json" \\
-    -H "X-Wpmgr-Bootstrap-Claim: ${claim_secret}" \\
-    -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+  ( claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
+    trap 'rm -f "\${claim_cfg}"' EXIT && \\
+    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' '${claim_secret}' >"\${claim_cfg}" && \\
+    curl -X POST http://localhost:${api_port}/auth/register \\
+      -H "Content-Type: application/json" \\
+      -K "\${claim_cfg}" \\
+      -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
 
-  WPMGR_BOOTSTRAP_CLAIM_SECRET is saved in .env (the value above is that exact
-  secret). Re-running this script will NOT change it once it is set.
+  WPMGR_BOOTSTRAP_CLAIM_SECRET is saved in .env — the value written into the
+  temp file above is that exact secret. Re-running this script will NOT
+  change it once it is set.
 CLAIMEOF
 )"
 else

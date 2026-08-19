@@ -192,16 +192,23 @@ print_next_steps() {
      Sign Up form in the dashboard for the FIRST account — the provisioning
      claim only travels as a request header, deliberately kept out of the
      OpenAPI schema every generated client (including the dashboard) uses.
-     Run this once, after the stack is up, to create the first owner account:
+     Run this once, after the stack is up, to create the first owner account.
+     The block below writes the claim into a private, 600-permission temp
+     file instead of the command line, so it never shows up in \`ps\` output,
+     and removes that file when curl exits, on success or failure:
 
-       curl -X POST http://localhost:${api_port}/auth/register \\
-         -H "Content-Type: application/json" \\
-         -H "X-Wpmgr-Bootstrap-Claim: ${claim_secret}" \\
-         -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+       ( claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
+         trap 'rm -f "\${claim_cfg}"' EXIT && \\
+         printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' '${claim_secret}' >"\${claim_cfg}" && \\
+         curl -X POST http://localhost:${api_port}/auth/register \\
+           -H "Content-Type: application/json" \\
+           -K "\${claim_cfg}" \\
+           -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
 
-     ${BOOTSTRAP_CLAIM_KEY} is saved in .env — the value above is that exact
-     secret. It is not re-generated on a later re-run of this script once a
-     value is present, so it stays valid until you rotate it yourself.
+     ${BOOTSTRAP_CLAIM_KEY} is saved in .env — the value written into the temp
+     file above is that exact secret. It is not re-generated on a later
+     re-run of this script once a value is present, so it stays valid until
+     you rotate it yourself.
 CLAIMEOF
 )"
   else
