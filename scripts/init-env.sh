@@ -84,7 +84,15 @@ log()  { printf '==> %s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-cleanup() { [ -n "${GEN_FILE}" ] && rm -f "${GEN_FILE}"; }
+# GH #467: on the idempotent fast path (every managed secret already set),
+# GEN_FILE stays "". `[ -n "" ]` is false, and under `set -e` a trap function's
+# own exit status is the exit status of its last command — so that false test,
+# not this script's own `exit 0`, became the process's exit code. The explicit
+# `return 0` makes cleanup's job (best-effort temp-file removal) unable to ever
+# set the script's exit status, on this path or any other: a genuine failure
+# earlier in the script still exits non-zero, because that status is already
+# set by the time this trap runs and nothing here touches it.
+cleanup() { [ -n "${GEN_FILE}" ] && rm -f "${GEN_FILE}"; return 0; }
 trap cleanup EXIT
 
 # current_value: prints the current value of KEY in .env (empty if absent/blank).
