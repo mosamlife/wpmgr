@@ -53,7 +53,7 @@ func (f *fakeRepo) GetTask(context.Context, uuid.UUID, uuid.UUID) (Task, error) 
 	panic("not used")
 }
 
-func (f *fakeRepo) MarkTaskRunning(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
+func (f *fakeRepo) MarkTaskRunning(context.Context, uuid.UUID, uuid.UUID, time.Duration) (Task, error) {
 	panic("not used")
 }
 

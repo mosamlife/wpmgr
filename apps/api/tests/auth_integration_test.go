@@ -27,15 +27,13 @@ func TestBootstrapAndLogin(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newAuthStack(pool)
 
-	createTenant := func(ctx context.Context, name, slug string) (uuid.UUID, error) {
-		return seedTenant(t, pool, slug), nil
-	}
+	svc.SetBootstrapClaimSecret(testClaim)
 
 	res, err := svc.Bootstrap(ctx, auth.RegisterInput{
 		Email:    "owner@example.com",
 		Password: "a-very-strong-password",
 		Name:     "Owner",
-	}, createTenant)
+	}, testClaim)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -47,7 +45,7 @@ func TestBootstrapAndLogin(t *testing.T) {
 	}
 
 	// Second bootstrap must be refused (registration closed).
-	if _, err := svc.Bootstrap(ctx, auth.RegisterInput{Email: "second@example.com", Password: "another-strong-pass"}, createTenant); err == nil {
+	if _, err := svc.Bootstrap(ctx, auth.RegisterInput{Email: "second@example.com", Password: "another-strong-pass"}, testClaim); err == nil {
 		t.Fatal("second bootstrap should be refused")
 	} else if de, ok := domain.AsDomain(err); !ok || de.Kind != domain.KindForbidden {
 		t.Fatalf("want forbidden, got %v", err)

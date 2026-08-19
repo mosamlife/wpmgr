@@ -184,6 +184,11 @@ func TestSocialAccountCreationSendsNoLinkNotice(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, mail, createTenant := newSocialStack(t, pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 
 	if _, err := svc.SignInWithSocial(ctx, auth.SocialIdentity{
 		Provider: "github", Subject: "gh-1",

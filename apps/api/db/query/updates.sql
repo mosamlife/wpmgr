@@ -1,5 +1,14 @@
--- M3 bulk-update queries. Every statement is tenant-scoped both explicitly
--- (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).
+-- M3 bulk-update queries. Every statement here is tenant-scoped both
+-- explicitly (tenant_id in the WHERE/VALUES) and by RLS
+-- (update_runs_tenant_isolation / update_tasks_tenant_isolation on
+-- app.tenant_id); update_tasks additionally carries the RESTRICTIVE
+-- update_tasks_site_scope policy the two portal reads depend on.
+--
+-- ONE statement is deliberately outside that, and it is the only one:
+-- ListStaleUpdateTasks sweeps every tenant for the periodic reaper, carries
+-- no tenant_id at all, and is admitted by the update_tasks_agent policy
+-- instead. It repeats that at its own definition. Any OTHER statement in
+-- db/query/updates.sql without a tenant_id is a bug, not a second exception.
 
 -- name: CreateUpdateRun :one
 -- tenant_id is supplied explicitly for defense-in-depth; RLS additionally
@@ -108,9 +117,112 @@ SELECT * FROM update_tasks
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: MarkUpdateTaskRunning :one
+-- Claims a task for dispatch: the compare-and-swap that makes "I am the one
+-- worker talking to this site about this item" true, rather than merely
+-- assumed. Tenant-scoped by id+tenant_id.
+--
+-- WITHOUT the status precondition this was a bare write, and the read that
+-- guards it is not in the same statement: Worker.Work loads the task, returns
+-- early only for TERMINAL statuses, and claims some way further down
+-- (GetTask -> ... -> MarkTaskRunning). Two River jobs for the same task both
+-- observe a non-terminal row in that gap and both proceed, so one item is
+-- applied to one site twice over. The precondition closes the gap the same way
+-- FinishUpdateTask's does: the transition is decided by the row itself, under
+-- its own row lock, not by what the caller read a moment earlier.
+--
+-- TRANSITIONS FROM, deliberately, exactly two states:
+--
+--   'pending'  — the ordinary claim. Also the ONLY state the agent
+--                self-update wave path can present (ClaimAgentWaveTask holds
+--                the run's advisory lock and returns ClaimAlreadyClaimed for
+--                anything not pending before it ever reaches this statement),
+--                and the state deferForBusySite leaves a waiter in
+--                (DeferUpdateTaskToPending writes 'pending' and NULLs
+--                started_at). So a deferred task re-claims normally.
+--
+--   'running', but only if ABANDONED — its command went out longer ago than
+--                @stale_after. 'running' is not terminal, so a River retry of
+--                a job that already claimed re-enters Work and reaches here
+--                with its own row 'running'; a strict = 'pending' would match
+--                zero rows and drop that work on the floor, which is a worse
+--                bug than the one being fixed. Bounding it by age is what
+--                separates "my previous attempt died" from "another worker is
+--                mid-dispatch right now", but read the next two paragraphs for
+--                what that separation is and is not worth.
+--
+--                WHAT THE BOUND GUARANTEES: past @stale_after, no CONTROL-PLANE
+--                worker is still inside its apply call for this row. Callers do
+--                not pass a constant; they derive the bound from THIS install's
+--                apply budget — ClaimStaleAfter(applyJobTimeout) =
+--                max(applyJobTimeout + claimStaleMargin, siteWriterHoldMax) in
+--                update/worker.go — and main() refuses to boot on a
+--                configuration where the budget could reach it
+--                (ValidateClaimTimings, asserting applyJobTimeout <
+--                ClaimStaleAfter < staleTaskThreshold). So the reclaim window
+--                opens strictly after River has cancelled the previous job's
+--                context and strictly before the periodic reaper terminalizes
+--                the row.
+--
+--                WHAT IT DOES NOT GUARANTEE: that nothing is still applying ON
+--                THE SITE. Cancelling a River job's context ends the control
+--                plane's WAIT for the HTTP response; it does not reach into
+--                WordPress and stop an apply the agent has already started. The
+--                AGENT's own site-update lock is the authoritative bound on
+--                that, exactly as it is for SiteHasRunningUpdateTask's
+--                @hold_max below. If the bound is ever exceeded in practice the
+--                residual is therefore a duplicate DISPATCH — a second command
+--                for the same item and a second set of audit/event records for
+--                it, which the agent's lock is what serialises — and not a
+--                guaranteed double-apply. Still a real defect, and still worth
+--                bounding; simply not a proof that no work is live.
+--
+--                coalesce(started_at, updated_at) mirrors the gate below for
+--                the same reason.
+--
+-- target_type <> 'agent' on the reclaim branch is NOT an optimisation, and it
+-- is the same exclusion SiteHasRunningUpdateTask carries: an agent
+-- self-update task stays 'running' for its whole confirmation window (20m, or
+-- 90m on external cron) with NO live worker behind it by design, because the
+-- apply happens after the ARM response is released. Age is therefore not
+-- evidence of abandonment for an agent row, and without this clause a wave
+-- task would become re-claimable mid-confirmation. Agent rows may be claimed
+-- from 'pending' only.
+--
+-- @stale_after HAS TWO DEGENERATE VALUES, AND THEY FAIL IN OPPOSITE
+-- DIRECTIONS. A genuine SQL NULL makes the reclaim branch match nothing (NULL
+-- comparison) and fails CLOSED: strict pending-only claiming, safe but
+-- conservative — an abandoned row then waits for the reaper instead of a
+-- retry. A ZERO interval fails OPEN: coalesce(started_at, updated_at) <
+-- now() - '0'::interval is true for every non-agent 'running' row the moment
+-- it is written, so the reclaim branch matches rows a live worker is
+-- mid-dispatch on — the double dispatch this precondition exists to prevent.
+--
+-- ONLY THE SECOND IS REACHABLE FROM GO. durationToInterval (update/repo.go)
+-- builds pgtype.Interval with Valid: true unconditionally, so no caller on
+-- this path can produce a SQL NULL: a zero time.Duration arrives as
+-- interval '0'. Do NOT read the NULL case as what an unset bound gives you —
+-- an unset bound gives you the OPEN one. Pass the derived value
+-- (Worker.claimStaleAfter, from ClaimStaleAfter), never the zero value.
+--
+-- ZERO ROWS MEANS: you did not get the claim, and you must NOT dispatch.
+-- It does not distinguish why, so the caller re-reads the row and decides:
+-- terminal => the outcome is recorded, stop (return nil, as Work already does
+-- for a terminal read); still 'pending' or a FRESH 'running' => another worker
+-- holds it, so give the row up WITHOUT consuming a retry (river.JobSnooze),
+-- because that holder may still die and the row must stay reclaimable. Never
+-- treat zero rows as an error to retry into, and never as permission to
+-- proceed.
 UPDATE update_tasks
 SET status = 'running', started_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
+WHERE id = @id AND tenant_id = @tenant_id
+  AND (
+    status = 'pending'
+    OR (
+      status = 'running'
+      AND target_type <> 'agent'
+      AND coalesce(started_at, updated_at) < now() - @stale_after::interval
+    )
+  )
 RETURNING *;
 
 -- name: FinishUpdateTask :one
@@ -164,12 +276,23 @@ RETURNING *;
 -- no reason; the agent's own lock is what serialises the two channels in
 -- both directions.
 --
--- The staleness clause bounds a crashed worker: a row whose command went out
--- longer ago than @hold_max cannot have a live worker behind it (River
--- cancels the job's context at its own job timeout regardless of whether the
--- site answers). Ignoring such a row only makes the gate MORE permissive
--- (lets a sibling dispatch it would otherwise have deferred), never less,
--- which is safe — the agent's own lock is still the backstop either way.
+-- The staleness clause bounds a crashed WORKER, and only that: past @hold_max
+-- no River job for this row can still be waiting on the site, because River
+-- cancels the job's context at its own job timeout whether the site answers or
+-- not. It says nothing about the SITE — cancelling that context ends the
+-- control plane's wait for the HTTP response, it does not stop an apply the
+-- agent has already begun (the same correction MarkUpdateTaskRunning's reclaim
+-- arm carries above). Here that gap is harmless, and for a reason of its own:
+-- ignoring an over-age row only makes the gate MORE permissive (lets a sibling
+-- dispatch it would otherwise have deferred), never less, which is safe — the
+-- agent's own lock is still the backstop either way.
+--
+-- @hold_max is therefore the flat siteWriterHoldMax constant, passed straight
+-- through by worker.go, and NOT the config-derived ClaimStaleAfter the claim
+-- above is given. Neither call site is wrong: see ClaimStaleAfter's doc
+-- comment in update/worker.go, which sets out why over-permissive is safe for
+-- this gate and is precisely the defect for the claim.
+--
 -- coalesce(started_at, updated_at) covers a row observed between
 -- MarkUpdateTaskRunning (which sets both) and any later touch.
 --

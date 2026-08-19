@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
-	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -404,7 +403,7 @@ func (s *Service) SignInWithSocial(
 		// provider's current address was never recorded. See touchIssuer for why
 		// this is not simply facts.storedIssuer.
 		s.repo.TouchIdentityLogin(ctx, in.Provider, in.Subject, facts.touchIssuer(in), in.Email, in.EmailVerified)
-		return s.finishSocialLogin(ctx, *identityUser, createTenant)
+		return s.finishSocialLogin(ctx, *identityUser)
 
 	case socialLinkExisting:
 		// THE LINK IS AUTHORIZED HERE AND WRITTEN SOMEWHERE ELSE, ON PURPOSE.
@@ -419,7 +418,7 @@ func (s *Service) SignInWithSocial(
 		//
 		// So the decision travels as data and the write happens once the login is
 		// genuinely complete. See CompleteSocialLink.
-		res, err := s.finishSocialLogin(ctx, *emailUser, createTenant)
+		res, err := s.finishSocialLogin(ctx, *emailUser)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -444,6 +443,28 @@ func (s *Service) SignInWithSocial(
 		// No notification either: the account IS the new method, so there is no
 		// prior holder to warn and the only address available is the one the
 		// provider just asserted.
+		// AN OWNERLESS INSTALL ACCEPTS NO NEW ACCOUNTS. This branch creates a
+		// user from a provider handshake alone, and on an install whose first
+		// organisation has not been claimed yet there is nobody who could grant
+		// that user anything: the account would sit with zero memberships, on an
+		// install with no owner, created by a caller nobody authorised. Worse,
+		// the row itself is consequential — it is exactly the sort of artefact a
+		// "has this install been claimed?" test can be fooled by, which is why
+		// that question now asks about owner memberships and this branch refuses
+		// outright rather than relying on it.
+		//
+		// The two sign-in paths therefore agree: neither can establish
+		// ownership, and neither creates an account while ownership is
+		// unestablished. Once the claim-bearing first-run call has run, this
+		// branch behaves exactly as it always has.
+		//
+		// Fails closed on an unreadable answer, like every other caller.
+		if owned, oerr := s.repo.OwnershipEstablished(ctx); oerr != nil || !owned {
+			return LoginResult{}, domain.Forbidden(
+				"registration_closed",
+				"open registration is closed; ask a tenant owner or admin for an invitation",
+			)
+		}
 		u, err := s.createSocialUser(ctx, in, legacySlotTaken(in, facts.legacyHolders))
 		if err != nil {
 			return LoginResult{}, err
@@ -451,7 +472,7 @@ func (s *Service) SignInWithSocial(
 		// Audited after the login is resolved, not before: finishSocialLogin is
 		// what settles which tenant this account belongs to, and recording first
 		// would file every new account's registration against no tenant at all.
-		res, err := s.finishSocialLogin(ctx, u, createTenant)
+		res, err := s.finishSocialLogin(ctx, u)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -923,11 +944,7 @@ func syntheticEmailDomain(in SocialIdentity) string {
 
 // finishSocialLogin resolves memberships and the active tenant, mirroring the
 // tail of the password login path.
-func (s *Service) finishSocialLogin(
-	ctx context.Context,
-	u User,
-	createTenant func(ctx context.Context, name, slug string) (uuid.UUID, error),
-) (LoginResult, error) {
+func (s *Service) finishSocialLogin(ctx context.Context, u User) (LoginResult, error) {
 	// NOTHING THAT GRANTS ACCESS BELONGS HERE. This runs before the second
 	// factor is even issued, so any grant it made would be a grant made on the
 	// strength of a provider handshake alone. An earlier version of this
@@ -937,15 +954,25 @@ func (s *Service) finishSocialLogin(
 	// invitation is now accepted only by the affirmative act of opening the link
 	// and submitting it, on an authenticated session; see
 	// invitation.Service.Accept.
+	//
+	// NOR DOES FIRST-RUN OWNERSHIP BELONG HERE. Granting the install's first
+	// organisation is an act of provisioning, and provisioning is authorised by
+	// the claim the installer minted (Service.Bootstrap). A social sign-in has
+	// nowhere to carry that claim: the request is a redirect the identity
+	// provider decided the shape of, so a claim can be neither attached to it
+	// nor demanded of it. There is therefore no version of this path that could
+	// check the claim, which makes "never mint here" the only answer that keeps
+	// the two paths agreeing about who may own an install.
+	//
+	// Nothing is lost. The person who holds the claim runs the claim-bearing
+	// register call once, and every social sign-in afterwards resolves normally
+	// against the memberships that exist. Someone who signs in socially before
+	// that has happened lands with zero memberships — exactly what the password
+	// path already gives an unattached account, and exactly what a site
+	// collaborator, a client-portal user and a grace-window owner already get
+	// here (see the git history of this function for what minting an org for
+	// them cost).
 	memberships, _ := s.repo.ListMembershipsForUser(ctx, u.ID)
-	if len(memberships) == 0 && s.isFirstRunBootstrap(ctx, u) {
-		tenantID, terr := createTenant(ctx, defaultTenantName(u.Email), uniqueTenantSlug(u.Email))
-		if terr == nil {
-			if m, merr := s.repo.CreateMembership(ctx, u.ID, tenantID, authz.RoleOwner); merr == nil {
-				memberships = []Membership{m}
-			}
-		}
-	}
 
 	_ = s.repo.TouchLogin(ctx, u.ID)
 	s.recordLogin(ctx, memberships, u.ID, audit.ActionLoginSuccess)
@@ -955,44 +982,13 @@ func (s *Service) finishSocialLogin(
 	return res, nil
 }
 
-// isFirstRunBootstrap reports whether this login should mint the install's
-// first organisation.
-//
-// ZERO VISIBLE MEMBERSHIPS IS A NORMAL STATE, NOT A FAULT TO REPAIR. It is what
-// a site collaborator has (an active site_share and nothing else), what a
-// client-portal user has (a client_member row and nothing else), and what
-// anyone whose only organisation is inside its soft-delete grace window has.
-// Creating a tenant for all of them would hand a portal user org-level
-// capabilities the product deliberately withholds, activate that new empty org
-// instead of their portal tenant (resolveActiveTenant takes memberships[0]
-// first) and, on a hosted install, mint an unbilled organisation on demand.
-//
-// The user count alone is not enough to tell first run from the grace window.
-// An install with one user whose only org has just been deleted still counts
-// one user, and its owner signing in with Google was handed a fresh empty
-// organisation while the very same person signing in with their password got
-// nothing. Two sign-in paths disagreeing about what an account is a member of
-// is the bug, and undoing a deletion nobody asked to undo is the damage.
-//
-// So it asks the question it actually means: is this user new, or merely
-// currently unattached? CountAllMembershipsForUser counts soft-deleted orgs
-// too, so a grace-window user answers "not new" and gets the same nothing the
-// password path gives them. Restoring the org is the org owner's decision, made
-// on the restore route, not a side effect of signing in.
-func (s *Service) isFirstRunBootstrap(ctx context.Context, u User) bool {
-	count, err := s.repo.CountUsers(ctx)
-	if err != nil || count > 1 {
-		return false
-	}
-	ever, err := s.repo.CountAllMembershipsForUser(ctx, u.ID)
-	if err != nil {
-		// Unreadable is not the same as zero. Refusing to bootstrap on an error
-		// costs a first user one visit to the org page; guessing costs a
-		// grace-window user a resurrected organisation.
-		return false
-	}
-	return ever == 0
-}
+// isFirstRunBootstrap is gone deliberately, and this note stands in its place
+// so it is not reintroduced. It answered "should this social sign-in mint the
+// install's first organisation?" from a user count, which is a question about
+// the install's state and not about the caller's authority. First-run ownership
+// is now granted only against the provisioning claim
+// (WPMGR_BOOTSTRAP_CLAIM_SECRET), on the one path that can carry it — see
+// Service.Bootstrap and finishSocialLogin's comment above.
 
 // sendVerificationForSocialLink mails the link that unblocks a refused social
 // link. Best effort and deliberately silent: whether an address received mail

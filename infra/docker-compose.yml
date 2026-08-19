@@ -178,6 +178,13 @@ services:
       # nginx proxies /auth/* to the api. So the redirect URL uses port 8088, not
       # the container-internal :8080 or the direct api host port (WPMGR_API_PORT).
       WPMGR_OIDC_REDIRECT_URL: ${WPMGR_OIDC_REDIRECT_URL:-http://localhost:8088/auth/oidc/callback}
+      # --- First-run ownership --------------------------------------------------
+      # The provisioning claim POST /auth/register must present (header
+      # X-Wpmgr-Bootstrap-Claim) to establish this install's first owner. No
+      # default here — an unset value means the install boots but nobody can
+      # claim it yet, which is the deliberate fail-closed direction. quickstart
+      # (scripts/init-env.sh) generates and persists this into .env on first run.
+      WPMGR_BOOTSTRAP_CLAIM_SECRET: ${WPMGR_BOOTSTRAP_CLAIM_SECRET:-}
       WPMGR_REDIS_ADDR: redis:6379
       # M5.6/ADR-033: presigned URLs the agent receives MUST be reachable from
       # OUTSIDE this Docker network — `seaweedfs:8333` (Docker service name)

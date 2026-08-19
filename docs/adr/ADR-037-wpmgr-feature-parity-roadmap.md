@@ -15,9 +15,9 @@ This ADR is **deferred until restore is stable**. See _restore-must-work-first_ 
 Two feature tracks, one merged plan.
 
 - **Backup track** (ADR-036): the backup-restore gap (URL rewriter, storage destinations, mu-plugin trap, audit receipt, etc.).
-- **Site-management track** (this doc): the broader site-management gap (diagnostics, error monitoring, activity log, security suite, multi-account, dynamic sync, form testing, whitelabel).
+- **Site-management track** (this doc): the broader site-management gap (diagnostics, error monitoring, activity log, security suite, multi-account, dynamic sync, form testing, whitelabel, staging environments, visual regression testing).
 - Where WPMgr already leads across the board (Ed25519 + canonical message + JTI replay + age E2E encryption + 60s autologin + hash-chained audit log + Schema::ensureCurrent + chunk dedup) — no work needed.
-- The 10 sprints below are prioritized so the most operator-visible value lands first.
+- The 12 sprints below are prioritized so the most operator-visible value lands first.
 
 ---
 
@@ -107,7 +107,7 @@ Two feature tracks, one merged plan.
 
 ---
 
-## The 10 sprints (prioritized)
+## The 12 sprints (prioritized)
 
 ### Sprint 1 — Quick wins (3-5 days, P1)
 - Multisite Settings two-tier resolution fix (`get_site_option → get_option` fallback)
@@ -143,31 +143,54 @@ Two feature tracks, one merged plan.
 - Storage health checks (HeadBucket roundtrip in heartbeat for misconfig detection)
 - File-download from snapshot UI
 
-### Sprint 6 — Streaming chunked protocol (1-1.5 weeks)
+### Sprint 6 — Staging environments, round-trip (3-5 weeks)
+- **Decided:** staging is round-trip. Push-back from staging to production is in scope, not just clone-inspect-discard.
+- Clone-to-target: run the existing restore pipeline (URL rewriter + storage-destination foundation, both P0/P1 shipped) against a new host or subpath instead of swapping into the live site
+- Reuses the shipped `URL_REWRITE` phase to rewrite the cloned site's URLs to the staging host in the same pass restores already use
+- Deny-by-default posture on the staging host by default (search-engine exclusion + HTTP auth gate), same posture already shipped for `LocalDestination`
+- `wpmgr_staging_sites` table (parent site, staging host, created-at, last-synced-at, expiry) plus a baseline snapshot reference captured at clone time, so a later push-back has something to diff against
+- Change tracking is scoped to content/config tables only — posts, postmeta, options, terms, theme mods. `users` is excluded by default, for a stronger version of the same reason transactional tables are excluded below: a stale staging row can carry a password hash production has since rotated past, a role change production reverted or never had, or an account that only ever existed in staging, and a push-back can silently clobber a production account created during the staging window. Staging is also typically held to a lower security bar than production, so round-tripping `users` turns a staging compromise into a path to production identity. A narrow, explicitly-scoped user push-back could be added later with its own field allowlist, a scrubbing rule, and an explicit statement about credentials and roles, but the default here is exclusion. Transactional tables (orders, comments, form submissions, new signups) are never tracked for push-back and are never written to by one either; this is what keeps live production data safe from a stale staging clone
+- Push-back reuses the shipped selective-restore primitive (mode + components + paths + tables) rather than an all-or-nothing swap — the operator chooses what moves back, the same way they already choose what to restore
+- Conflict detection: before a push-back commits, diff the current production state of the selected tables against the baseline captured at clone time. Where production has moved since — someone edited a page while staging was live — that's a conflict, not a silent overwrite. Default: production wins, the row is skipped and flagged. Forcing staging to win requires an explicit operator choice, gated behind the same typed-host destructive confirm modal already shipped for restore
+- Dry-run diff/preview of a push-back before it commits; optionally paired with Sprint 7's visual regression tool as a before/after check on the promotion itself
+- Push-back writes an audit receipt, reusing the hash-chained audit log (shipped, Sprint 3). The restore audit receipt itself is still pending per the D1-D4 gaps above (ADR-036) — this sprint depends on it landing first
+- `/agent/v1/staging` CP endpoints (create / refresh / **push-back** / promote / destroy) + new `/sites/:id/staging` dashboard route, including the diff/conflict review UI
+- **Sizing.** No single existing sprint is a clean comparable, so this is a range, not a point estimate. The clone-only base is shaped like Sprint 2/3 (new table + CP endpoints + dashboard route on top of already-shipped machinery, 1.5-2 weeks). Round-trip adds a change-tracking and conflict-detection layer that is the same *kind* of problem Sprint 10 solves at full scale (hook listeners + delta semantics, 4-6 weeks) but deliberately narrower — a fixed set of content/config tables, not ~150 hooks and not WooCommerce CDC — plus a diff/merge review UI and destructive-action safety that reuse the already-shipped typed-host confirm pattern instead of inventing a new one. That puts the added scope well under Sprint 10's full bet but clearly above the original clone-only estimate: **3-5 weeks** total. That estimate assumes the restore audit receipt (D1-D4 above, still pending) has landed by the time this sprint starts; it is a dependency of this sprint, not part of its own 3-5 weeks.
+
+### Sprint 7 — Visual regression testing (~1 week)
+- Same shape as the form-testing harness below: a bounded, on-demand check the CP triggers and reports on, not an always-on watcher
+- Headless render + screenshot capture of a fixed URL set (home, a sample post, a sample page) before/after a restore, an update, or a staging promotion
+- Pixel-diff against the stored baseline; percentage-changed + diff image returned to the CP
+- `class-visual-regression.php` + `/agent/v1/visual-diff` endpoint, mirroring the form-testing harness's request/response shape
+- Baseline images stored through the existing storage-destination adapters (Local + S3-compat) rather than a new blob path
+- Usable standalone against a single site, and as the before/after check on a staging promotion (Sprint 6)
+- Sized the same as the form-testing harness (below): single bounded capture-and-compare tool, no new protocol or storage layer
+
+### Sprint 8 — Streaming chunked protocol (1-1.5 weeks)
 - Streaming design with our JWT signing
 - CRC32/MD5 chunk prefixes + multipart boundary
 - `X-WPMgr-Stream-Hash` trailer for integrity over streamed payload
 - Enables better backup pipeline + future file-scan / DB-introspection wings
 
-### Sprint 7 — Form testing + login whitelabel + recovery polish (1 week)
+### Sprint 9 — Form testing + login whitelabel + recovery polish (1 week)
 - Form-testing harness for 6 form plugins (CF7, WPForms, Ninja, Gravity, Forminator, Formidable) — bypass CAPTCHA + abort email
 - Login screen whitelabel (data-URI-only logo + banner via `login_message` filter — no remote URLs)
 - Tightened recovery channel (15-min QR vs 24h weak random in HTML)
 
-### Sprint 8 — Dynamic sync + incremental backup (4-6 weeks, the BIG bet)
+### Sprint 10 — Dynamic sync + incremental backup (4-6 weeks, the BIG bet)
 - ~150 WP+WC hook listeners → `wpmgr_dynamic_sync` table
 - Incremental backup pipeline (delta semantics on top of existing chunk dedup)
 - WooCommerce CDC (HPOS `wc_orders*` + items + payment tokens + shipping zones)
 - The biggest engineering bet — only justified if you commit to "incremental backup" as a product story
 - Unlocks the WooCommerce real-time backup story
 
-### Sprint 9 — Multi-account refactor (4-8 weeks, ONLY if MSP demand validated)
+### Sprint 11 — Multi-account refactor (4-8 weeks, ONLY if MSP demand validated)
 - Architectural lift; redesign Keystore to be pubkey-keyed
 - Per-account `WPMgr\Agent\Account` value object
 - Rewrite `Router::authorize` to look up CP public key by token `iss`/key-id
 - Bet-the-product — **strongly recommend validating with a real customer before starting**
 
-### Sprint 10 — WAF / Firewall (defer to last) (6-9 weeks)
+### Sprint 12 — WAF / Firewall (defer to last) (6-9 weeks)
 - Strategy 1 (hardcoded SQLi/XSS/path-traversal rules, no rule engine) — 4-6 weeks
 - Strategy 2 (data-driven JSON-AST rule engine) — 6-9 weeks
 - Defer until everything else lands; this is the heaviest piece

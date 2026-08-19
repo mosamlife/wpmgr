@@ -95,6 +95,11 @@ type Worker struct {
 	hub    *Hub
 	audit  *audit.Recorder
 	logger *slog.Logger
+	// claimStaleAfter is the staleness bound handed to the claim CAS,
+	// derived from this worker's own configured job timeout at construction
+	// (see ClaimStaleAfter). A field, not a constant, because the budget it
+	// must exceed is config-driven.
+	claimStaleAfter time.Duration
 	// perTenantLimit bounds concurrent running tasks per tenant as a
 	// belt-and-suspenders guard alongside the per-tenant queue sharding. When the
 	// limit is reached the job snoozes and retries shortly.
@@ -163,7 +168,7 @@ func NewWorker(repo Repo, sites SiteLookup, cmd Commander, prober HealthProber, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{repo: repo, sites: sites, cmd: cmd, prober: prober, hub: hub, audit: rec, logger: logger, perTenantLimit: perTenantLimit, jobTimeout: jobTimeout}
+	return &Worker{repo: repo, sites: sites, cmd: cmd, prober: prober, hub: hub, audit: rec, logger: logger, perTenantLimit: perTenantLimit, jobTimeout: jobTimeout, claimStaleAfter: ClaimStaleAfter(jobTimeout)}
 }
 
 // Timeout overrides River's default per-job context deadline (60s) for the
@@ -316,7 +321,17 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 		return w.deferForBusySite(ctx, task, "another update is running on this site")
 	}
 
-	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID)
+	// The claim. Everything above this line is a read; from here on this
+	// worker asserts it is the one talking to this site about this item, and
+	// the assertion is decided by the row itself under its own row lock, not
+	// by the GetTask above. The bound is derived from this worker's own
+	// configured apply budget (see ClaimStaleAfter), NOT shared with the
+	// per-site gate above: for the gate an over-age row is safe to ignore,
+	// for the claim an over-short bound is exactly the double-dispatch defect.
+	running, err := w.repo.MarkTaskRunning(ctx, a.TenantID, a.TaskID, w.claimStaleAfter)
+	if errors.Is(err, ErrTaskNotClaimed) {
+		return w.yieldContendedClaim(ctx, a, task)
+	}
 	if err != nil {
 		return err
 	}
@@ -377,6 +392,82 @@ func (w *Worker) refuseAgentSelfUpdate(ctx context.Context, task Task) error {
 // which is safe: the agent's own site-update lock is the authoritative bound
 // in every case, this gate is only a round-trip optimisation.
 const siteWriterHoldMax = 20 * time.Minute
+
+// claimStaleMargin is the headroom the CLAIM's staleness bound keeps over the
+// worst-case apply job budget, covering scheduling delay and clock skew
+// between the control plane and Postgres.
+const claimStaleMargin = 6 * time.Minute
+
+// ClaimStaleAfter is the staleness bound the update-task claim
+// (MarkUpdateTaskRunning's reclaim arm) is given, derived from THIS install's
+// configured apply job budget rather than fixed.
+//
+// It is deliberately NOT siteWriterHoldMax, even though the two are equal on
+// default configuration. They are different judgements that happen to agree
+// today, and the reasoning does not transfer between them:
+//
+//   - For the per-site GATE (SiteHasRunningUpdateTask), being over-permissive
+//     is SAFE. Ignoring an over-age row only lets a sibling send a command the
+//     gate would otherwise have deferred, and the agent's own site-update lock
+//     is the authoritative bound. See siteWriterHoldMax's own comment.
+//   - For the CLAIM, being over-permissive is THE DEFECT. A bound shorter than
+//     the time a worker can legitimately still be applying lets a second
+//     worker claim a row whose holder is alive, and both dispatch. The claim
+//     therefore has to track the apply budget; a constant cannot.
+//
+// The apply budget is config-driven (DeriveApplyJobTimeout over
+// cfg.Update.ApplyHTTPTimeout and cfg.Update.HTTPTimeout, both env-settable),
+// so a constant 20m silently stops exceeding it once ApplyHTTPTimeout is
+// raised past ~14m. Deriving from the same number that produced the job
+// timeout keeps the relationship true at any configuration.
+//
+// The siteWriterHoldMax floor keeps the historical value on default
+// configuration (13m52s + 6m = 19m52s rounds up to 20m) so this is not also a
+// silent retune of production behaviour, and makes the bound monotone in the
+// apply budget.
+//
+// applyJobTimeout of 0 means "no derived budget; River's own default applies"
+// (see DeriveApplyJobTimeout), which the floor covers.
+//
+// ValidateClaimTimings must hold for the result; call it at boot.
+func ClaimStaleAfter(applyJobTimeout time.Duration) time.Duration {
+	if bound := applyJobTimeout + claimStaleMargin; bound > siteWriterHoldMax {
+		return bound
+	}
+	return siteWriterHoldMax
+}
+
+// ValidateClaimTimings reports whether the claim's staleness bound still sits
+// in the window it must occupy for this install's configuration:
+//
+//	applyJobTimeout  <  ClaimStaleAfter(applyJobTimeout)  <  staleTaskThreshold
+//
+// The left inequality is what stops a second worker reclaiming a row whose
+// holder is still legitimately applying. The right one keeps the periodic
+// reaper from terminalizing a row the claim would still treat as live, which
+// would let the reaper and a retrying worker act on one task at once.
+//
+// Both are config-dependent, and neither is checked by the compiler or by any
+// test that runs on default configuration, so this is asserted AT BOOT and the
+// process refuses to start when it fails. That is the intended severity: a
+// configuration that re-opens a double-dispatch window must not run. The
+// remedy is in the message, because the operator who raised the timeout is the
+// one who has to read it.
+func ValidateClaimTimings(applyJobTimeout time.Duration) error {
+	bound := ClaimStaleAfter(applyJobTimeout)
+	if applyJobTimeout >= bound {
+		return fmt.Errorf("update: claim staleness bound (%v) must exceed the apply job budget (%v); "+
+			"a worker could reclaim a task another worker is still applying", bound, applyJobTimeout)
+	}
+	if bound >= staleTaskThreshold {
+		return fmt.Errorf("update: claim staleness bound (%v) must stay under the stale-task reaper threshold (%v), "+
+			"but the configured apply budget (%v) pushes it past: lower update.apply_http_timeout "+
+			"(WPMGR_UPDATE_APPLY_HTTP_TIMEOUT) or update.http_timeout (WPMGR_UPDATE_HTTP_TIMEOUT). "+
+			"The reaper threshold is a compile-time constant and cannot be raised by configuration",
+			bound, staleTaskThreshold, applyJobTimeout)
+	}
+	return nil
+}
 
 const (
 	// siteBusyBackoffMin/Max bound the jittered snooze between busy-site
@@ -474,6 +565,84 @@ func (w *Worker) deferForBusySite(ctx context.Context, task Task, why string) er
 	}
 	w.publish(deferred, RunRunning)
 	return river.JobSnooze(w.siteBusyBackoff(deferred))
+}
+
+// yieldContendedClaim handles the one outcome the claim CAS cannot explain
+// itself: zero rows matched, so this worker did NOT get the task and must not
+// dispatch. The statement does not say why, so re-read the row and decide.
+//
+// The two returns here are the whole point, and neither is the obvious one:
+//
+//   - nil, ONLY for a terminal row. Someone else already recorded the outcome;
+//     that outcome wins and there is nothing left to do. This is exactly what
+//     Work already does for a terminal read at its top.
+//   - river.JobSnooze otherwise. NOT an error: an error consumes a retry
+//     attempt, and enough of them dead-letter a task that never actually
+//     failed. NOT nil either: that drops the work silently while the row sits
+//     'pending' forever, holding its (tenant, site, target_type, target_slug)
+//     in-flight slot in m88's partial unique index and 409-ing every future
+//     attempt at that target. Snooze reschedules without spending an attempt,
+//     so the row stays reclaimable if the current holder dies.
+//
+// Termination does NOT rest on the CAS reclaim arm. That arm is bounded by age
+// alone, is disabled entirely for target_type = 'agent', and depends on a
+// config-derived bound; leaning on it would make this path's termination a
+// property of somebody else's tuning.
+//
+// This function NEVER writes a terminal state, and that is the point. A worker
+// that did not get the claim has no outcome to record: it sent nothing to the
+// site and learned nothing about what the holder did. Terminalizing from here
+// writes the LOSER's verdict onto the WINNER's live row — FinishUpdateTask
+// accepts 'pending' and 'running' alike, so a skip recorded here lands on the
+// row the winner is actively dispatching, and the winner's real result is then
+// rejected as ErrTaskNotOpen. The operator would read "nothing was sent to the
+// site" about a site that was in fact updated, and re-run it. Unlike
+// deferForBusySite, which owns its task and may terminalize it, this path owns
+// nothing.
+//
+// So the wall-clock bound (siteBusyMaxWait, from CreatedAt) chooses between
+// snoozing quietly and failing loudly, never between waiting and writing.
+// Terminalizing a genuinely stuck row belongs to the periodic reaper, whose own
+// threshold (staleTaskThreshold, 45m) sits far inside this bound.
+func (w *Worker) yieldContendedClaim(ctx context.Context, a TaskArgs, task Task) error {
+	// Read from the PRE-CLAIM snapshot, so the bound holds even when the
+	// re-read below is itself what is failing. It selects loud-versus-quiet
+	// ONLY; it never authorises a write.
+	bound := busyBoundExceeded(task)
+
+	current, err := w.repo.GetTask(ctx, a.TenantID, a.TaskID)
+	if err != nil {
+		if bound != "" {
+			// Past the bound AND blind. Snoozing on would be invisible (no
+			// error, no attempt consumed, no terminal state), and writing
+			// would be guessing at a row nobody here can see. Return the
+			// error: it consumes an attempt, backs off, and eventually
+			// dead-letters, which is loud. The row is the reaper's to
+			// terminalize.
+			return fmt.Errorf("update: claim refused and task %s unreadable after waiting %s: %w",
+				a.TaskID, bound, err)
+		}
+		// Cannot tell terminal from contended. Snooze rather than error: the
+		// safe reading of an unknown row is "someone else may hold it", and a
+		// CP-side DB hiccup must not spend this task's retry budget.
+		w.logger.Warn("update: claim was refused and the row could not be re-read; snoozing",
+			slog.String("task_id", a.TaskID.String()), slog.Any("error", err))
+		return river.JobSnooze(w.siteBusyBackoff(task))
+	}
+	if terminal(current.Status) {
+		return nil
+	}
+	if bound != "" {
+		// Still non-terminal past siteBusyMaxWait (6h). Something upstream is
+		// broken: staleTaskThreshold is 45m, so the reaper has had eight
+		// chances at this row. Be loud and let this job dead-letter rather
+		// than snooze on forever or write a verdict that is not ours.
+		return fmt.Errorf("update: claim refused for task %s after waiting %s; row is still %q",
+			a.TaskID, bound, current.Status)
+	}
+	w.logger.Info("update: another worker holds this task; snoozing without consuming an attempt",
+		slog.String("task_id", a.TaskID.String()), slog.String("status", current.Status))
+	return river.JobSnooze(w.siteBusyBackoff(current))
 }
 
 // runDry asks the agent what WOULD change without mutating the site.

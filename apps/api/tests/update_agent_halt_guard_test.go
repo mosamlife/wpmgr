@@ -77,7 +77,7 @@ func TestAgentHaltCancelsOnlyPendingTasks(t *testing.T) {
 
 	// Task 0 has been dispatched: its command is delivered and (in production)
 	// a cron event is spawned on the site. Tasks 1..3 were never sent anything.
-	if _, err := repo.MarkTaskRunning(ctx, tenant, tasks[0].ID); err != nil {
+	if _, err := repo.MarkTaskRunning(ctx, tenant, tasks[0].ID, claimStaleAfter); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestCancelPendingUpdateTaskRefusesEveryNonPendingRow(t *testing.T) {
 			name: "running",
 			setup: func(t *testing.T, task update.Task) string {
 				t.Helper()
-				if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID); err != nil {
+				if _, err := repo.MarkTaskRunning(ctx, tenant, task.ID, claimStaleAfter); err != nil {
 					t.Fatalf("mark running: %v", err)
 				}
 				return ""
@@ -309,7 +309,7 @@ func TestFinishUpdateTaskCannotOverwriteATerminalTask(t *testing.T) {
 	// A second, untouched run: the control that proves the guard below is a
 	// precondition and not a blanket refusal.
 	_, openTasks := seedAgentRun(t, pool, tenant, repo, 1)
-	if _, err := repo.MarkTaskRunning(ctx, tenant, openTasks[0].ID); err != nil {
+	if _, err := repo.MarkTaskRunning(ctx, tenant, openTasks[0].ID, claimStaleAfter); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
 

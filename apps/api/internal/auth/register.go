@@ -38,6 +38,46 @@ func (s *Service) RegisterSelfServe(
 		return err
 	}
 
+	// THE PASSWORD HASH IS COMPUTED BEFORE ANY DECISION, ON PURPOSE. Argon2
+	// dominates the cost of this request by two orders of magnitude, so a
+	// branch that skips it finishes visibly sooner and the duration of the
+	// response becomes a readable answer to whatever the branch tested. Here
+	// that would be "does this install have an owner yet?" — the one fact this
+	// whole path exists to keep to itself. Doing the work unconditionally is
+	// what makes the two outcomes take the same time; a sleep would not, since
+	// its length is a constant an observer can subtract.
+	hash, err := HashPassword(in.Password)
+	if err != nil {
+		return domain.Internal("password_hash_failed", "failed to hash password").WithCause(err)
+	}
+
+	// SELF-SERVE DOES NOT OPEN UNTIL THE INSTALL HAS AN OWNER, and ownership
+	// means an owner membership exists — never that a user row does. Creating
+	// an account here on an ownerless install would hand it its first
+	// organisation and its first owner through a path that asks nobody's
+	// permission, and the account is useless anyway (pending, awaiting a
+	// verification mail an unclaimed install has no SMTP to send). Denying an
+	// operator their own install is the same loss whether it is taken or merely
+	// blocked.
+	//
+	// It returns nil, so the caller receives the identical generic response a
+	// real self-serve registration produces.
+	//
+	// Fails closed on an answer it cannot read: unreadable is not "unowned".
+	// Doing nothing costs a legitimate signup one retry; the alternative costs
+	// an operator their install.
+	if owned, oerr := s.repo.OwnershipEstablished(ctx); oerr != nil || !owned {
+		// The same address lookup the open path performs, discarded. Argon2
+		// above is the dominant cost and matching it closes most of the
+		// difference; this closes most of what remains, for one round trip and
+		// no behaviour. What cannot be matched without doing it is the write
+		// itself, so a residual difference stays — measured and reported rather
+		// than assumed away, in TestMeasureFirstRunRefusalTiming.
+		_, _ = s.repo.GetUserByEmail(ctx, in.Email)
+		//nolint:nilerr // returning nil while oerr is non-nil is the SAFE branch, not an oversight: an ownership answer this code could not read must leave self-serve shut, and every refusal on this path is silent by design (see the comment above). Surfacing oerr here would both open the path on a transient database error and hand the caller a distinguishable answer.
+		return nil
+	}
+
 	if existing, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
 		// Already registered: stay generic to the HTTP caller, but nudge the real
 		// owner by email so an existing user (e.g. a former collaborator) knows to
@@ -49,10 +89,6 @@ func (s *Service) RegisterSelfServe(
 		return nil // unexpected error: stay generic, never leak
 	}
 
-	hash, err := HashPassword(in.Password)
-	if err != nil {
-		return domain.Internal("password_hash_failed", "failed to hash password").WithCause(err)
-	}
 	tenantName := strings.TrimSpace(in.TenantName)
 	if tenantName == "" {
 		tenantName = defaultTenantName(in.Email)

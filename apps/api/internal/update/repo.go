@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,21 @@ import (
 // stands and the job is done. See Worker.finish.
 var ErrTaskNotOpen = errors.New("update task is not open")
 
+// ErrTaskNotClaimed reports that MarkTaskRunning's compare-and-swap matched no
+// row: the caller did NOT get the claim and must not dispatch. It is
+// deliberately distinct from domain.NotFound, which this path used to return
+// for the same condition — the row is virtually always still there, held by
+// another worker, and reporting "update task not found" sends an operator
+// hunting for a deleted row that exists. It is also distinct from
+// ErrTaskNotOpen: that one means a TERMINAL outcome is already recorded and
+// the job is done, whereas this one carries no verdict at all. Zero rows does
+// not say why (see MarkUpdateTaskRunning in db/query/updates.sql), so the
+// caller re-reads the row and decides: terminal => stop; otherwise another
+// worker holds it => give the row up WITHOUT consuming a retry attempt
+// (river.JobSnooze), because that holder may still die and the row must stay
+// reclaimable. See Worker.yieldContendedClaim.
+var ErrTaskNotClaimed = errors.New("update task was not claimed")
+
 // Repo is the tenant-scoped persistence interface for update runs/tasks. Every
 // method runs inside a tenant-scoped transaction so RLS enforces isolation even
 // if a query omitted its tenant filter.
@@ -39,7 +55,21 @@ type Repo interface {
 	ListTasks(ctx context.Context, tenantID, runID uuid.UUID) ([]Task, error)
 	GetTask(ctx context.Context, tenantID, taskID uuid.UUID) (Task, error)
 
-	MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID) (Task, error)
+	// MarkTaskRunning is the claim: a compare-and-swap that transitions a task
+	// to 'running' only from 'pending', or from an ABANDONED 'running' (a
+	// non-agent row whose command went out longer ago than staleAfter). It
+	// returns ErrTaskNotClaimed, never domain.NotFound, when it matches no row.
+	//
+	// staleAfter must be POSITIVE and is refused otherwise. It is NOT the
+	// per-site gate's siteWriterHoldMax: the gate and the claim hold
+	// deliberately separate values with opposite safe directions (see
+	// ClaimStaleAfter). Production callers pass the worker's own derived
+	// Worker.claimStaleAfter.
+	//
+	// A zero duration is NOT a NULL interval and does NOT fail closed. It is
+	// interval '0', which makes every non-agent 'running' row instantly
+	// reclaimable — the fail-OPEN direction. Hence the refusal.
+	MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID, staleAfter time.Duration) (Task, error)
 	// FinishTask records a terminal state for a task that is still OPEN
 	// (pending|running). A task that already reached a terminal state is
 	// returned unchanged alongside ErrTaskNotOpen: its recorded outcome wins.
@@ -319,13 +349,36 @@ func (r *pgRepo) GetTask(ctx context.Context, tenantID, taskID uuid.UUID) (Task,
 	return out, err
 }
 
-func (r *pgRepo) MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID) (Task, error) {
+func (r *pgRepo) MarkTaskRunning(ctx context.Context, tenantID, taskID uuid.UUID, staleAfter time.Duration) (Task, error) {
+	// A non-positive bound is refused HERE, before the statement runs, which
+	// is the only place that makes the failure unreachable by construction
+	// rather than by convention.
+	//
+	// durationToInterval always sets Valid: true, so a zero Duration is not a
+	// SQL NULL — it is interval '0', and
+	// `coalesce(started_at, updated_at) < now() - '0'::interval` is true for
+	// every non-agent 'running' row the instant it is written. That reopens
+	// the double-dispatch race this whole path exists to close: it fails OPEN,
+	// not closed. Refusing beats documenting, because the next caller reads
+	// the signature, not this comment.
+	if staleAfter <= 0 {
+		return Task{}, domain.Internal("update_task_claim_bound_invalid",
+			"failed to mark task running").WithCause(
+			fmt.Errorf("claim staleness bound must be positive, got %v: a non-positive bound "+
+				"makes every running row instantly reclaimable", staleAfter))
+	}
 	var out Task
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).MarkUpdateTaskRunning(ctx, sqlc.MarkUpdateTaskRunningParams{ID: taskID, TenantID: tenantID})
+		row, err := sqlc.New(tx).MarkUpdateTaskRunning(ctx, sqlc.MarkUpdateTaskRunningParams{
+			ID:         taskID,
+			TenantID:   tenantID,
+			StaleAfter: durationToInterval(staleAfter),
+		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("update_task_not_found", "update task not found")
+				// The CAS matched nothing. NOT NotFound: the row is almost
+				// certainly present and held by someone else.
+				return ErrTaskNotClaimed
 			}
 			return domain.Internal("update_task_run_failed", "failed to mark task running").WithCause(err)
 		}
@@ -515,6 +568,12 @@ func (r *pgRepo) DeferTaskToPending(ctx context.Context, in DeferTaskInput) (Tas
 // durationToInterval converts a time.Duration to a pgtype.Interval suitable
 // for an @threshold::interval parameter (pgtype.Interval stores microseconds
 // in the Microseconds field).
+//
+// Valid is ALWAYS true, so this never produces SQL NULL. A zero Duration
+// becomes interval '0', not NULL — which for a `now() - $bound` staleness
+// comparison means "everything is stale" rather than "nothing matches".
+// Callers whose bound must be positive check it themselves before calling;
+// see pgRepo.MarkTaskRunning.
 func durationToInterval(d time.Duration) pgtype.Interval {
 	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }

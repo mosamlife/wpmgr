@@ -211,6 +211,51 @@ web_port="$(grep '^WPMGR_WEB_PORT=' .env | head -n1 | cut -d= -f2-)"
 api_port="${api_port:-8081}"
 web_port="${web_port:-8088}"
 ver_tag="${WPMGR_VERSION:-latest}"
+# init-env.sh (run in step 3 above) generates and persists this unless it was
+# already set. This is only a presence check now — the printed block below
+# reads the value itself, at the operator's run time, so the literal secret
+# never has to appear here.
+claim_secret="$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' .env | head -n1 | cut -d= -f2-)"
+# Absolute path to .env: we are already inside WORK_DIR (step 1 cd'd here),
+# but the claim block below is meant to be pasted and run later, possibly
+# from a different directory, so it needs a path that does not depend on cwd.
+env_file_abs="$(pwd)/.env"
+if [ -n "${claim_secret}" ]; then
+  claim_block="$(cat <<CLAIMEOF
+Claim ownership (do this once, after the stack is up):
+  This install has no owner yet, and the Sign Up form in the dashboard cannot
+  create the first one — the claim below travels only as a request header,
+  deliberately absent from the API schema every generated client uses. The
+  block below reads the claim straight out of .env and writes it into a
+  private, 600-permission temp curl config file — the secret never appears
+  on the command line or in this printed text, so it cannot land in shell
+  history either, and the temp file is removed when curl exits, on success
+  or failure:
+
+  ( env_file="${env_file_abs}" && \\
+    claim_val="\$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' "\${env_file}" | head -n1 | sed -E "s/^[^=]*=//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/")" && \\
+    claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
+    trap 'rm -f "\${claim_cfg}"' EXIT && \\
+    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' "\${claim_val}" >"\${claim_cfg}" && \\
+    curl -X POST http://localhost:${api_port}/auth/register \\
+      -H "Content-Type: application/json" \\
+      -K "\${claim_cfg}" \\
+      -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
+
+  WPMGR_BOOTSTRAP_CLAIM_SECRET lives in .env at ${env_file_abs} — the command
+  above reads it from there each time you run it, so it keeps working even if
+  you rotate the value later. Re-running this script will NOT change it once
+  it is set.
+CLAIMEOF
+)"
+else
+  # init-env.sh (step 3, above) generates this unconditionally and now exits
+  # non-zero itself when generation does not persist, so reaching here with
+  # it still absent should not happen. Kept as a second check in case that
+  # invariant ever changes: fail loudly below rather than let this printed
+  # summary claim success over an install nobody can ever own.
+  claim_block=""
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Final instructions.
@@ -235,6 +280,8 @@ Verify:
 Open the dashboard at:
   http://localhost:${web_port}
 
+${claim_block}
+
 IMPORTANT:
   - WPMGR_S3_ENDPOINT in .env must be a URL reachable by your WordPress hosts.
     The default (http://seaweedfs:8333) only resolves inside Docker. For remote
@@ -242,3 +289,19 @@ IMPORTANT:
   - Review docs/install.md for the full self-host guide.
 
 EOF
+
+# See the matching check in scripts/init-env.sh (step 3 above) for why this
+# is a hard failure rather than a warning folded into the summary above.
+if [ -z "${claim_secret}" ]; then
+  {
+    printf '\n'
+    printf 'ERROR: WPMGR_BOOTSTRAP_CLAIM_SECRET is not set in .env.\n'
+    printf 'init-env.sh generates it unconditionally and should have failed\n'
+    printf 'before reaching here if generation did not persist. This install\n'
+    printf 'cannot be claimed by anyone until WPMGR_BOOTSTRAP_CLAIM_SECRET has\n'
+    printf 'a value: set one in .env yourself, then bring the stack up (or\n'
+    printf 'restart the api service if it is already running) before treating\n'
+    printf 'setup as complete.\n'
+  } >&2
+  exit 1
+fi
