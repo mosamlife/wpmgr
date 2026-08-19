@@ -360,24 +360,28 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
     -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
   ```
 
-  Without the header, `POST /auth/register` still returns `200` and creates a
-  pending, self-serve account — not the owner. Once an install has an owner,
-  the header is refused the same way it is when it's wrong or missing, so this
-  step only ever applies once, on a fresh install.
+  **If you already signed up through the dashboard on a brand-new install and
+  are waiting for a verification email: stop waiting, and send the claim
+  request above instead.** A request without the header gets the same
+  `200 {"ok":true,"pending":true}` response whether or not the install has an
+  owner — that response is deliberately identical either way, so the endpoint
+  never reveals ownership state — but on an install with no owner yet,
+  nothing is written and no mail goes out. Once an install has an owner, that
+  same no-header request is ordinary self-serve sign-up: a pending account is
+  created and a real verification email is sent.
 
-  **Symptom: registration is closed on a brand-new install.** If
-  `POST /auth/register` (or the dashboard Sign Up form) returns
-  `403 registration_closed` even though nobody has claimed the install yet,
-  the `api` service has no `WPMGR_BOOTSTRAP_CLAIM_SECRET` configured — an
-  unset value refuses every claim attempt rather than accepting any header.
-  **Upgrade note:** this is the expected state for an install that was stood
-  up before this variable existed, and a plain `docker compose pull && up -d`
-  does not fix it — nothing regenerates `.env` from restarting a container on
-  a new image. Re-run `scripts/init-env.sh` (safe and idempotent — it fills
-  only the missing key), or set `WPMGR_BOOTSTRAP_CLAIM_SECRET` yourself, then
-  restart the `api` service. For an install that already has an owner, the
-  missing variable produces one boot warning and nothing else — there is
-  nothing left to claim.
+  **Symptom: the claim request itself returns `403 registration_closed`.**
+  That response is the same whether `WPMGR_BOOTSTRAP_CLAIM_SECRET` doesn't
+  match (or isn't set on the server) or the install already has an owner — by
+  the same non-revealing design as above. **Upgrade note:** on a fresh
+  install that has never been claimed, a plain `docker compose pull && up -d`
+  does not add this variable to an already-written `.env` — nothing
+  regenerates it from restarting a container on a new image. Re-run
+  `scripts/init-env.sh` (safe and idempotent — it fills only the missing
+  key), or set `WPMGR_BOOTSTRAP_CLAIM_SECRET` yourself, then restart the
+  `api` service. If the install already has an owner, the missing variable
+  produces one boot warning and nothing else — there is nothing left to
+  claim.
 
 For local development with hot-reload overrides, use `make dev` (runs
 `docker-compose.yml` + `docker-compose.dev.yml`) — see
