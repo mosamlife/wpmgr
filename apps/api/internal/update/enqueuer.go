@@ -67,12 +67,54 @@ func (e *RiverEnqueuer) EnqueueTaskTx(ctx context.Context, tx pgx.Tx, tenantID, 
 // due-scannable, so the sweeper finds it. Until that lands, this insert is the
 // only thing that fires a run.
 func (e *RiverEnqueuer) EnqueueDispatch(ctx context.Context, tenantID, runID uuid.UUID, at time.Time) error {
-	args := DispatchRunArgs{TenantID: tenantID, RunID: runID}
-	opts := &river.InsertOpts{Queue: QueueForTenant(tenantID), ScheduledAt: at}
-	if _, err := e.client.Insert(ctx, args, opts); err != nil {
+	if _, err := e.client.Insert(ctx, dispatchArgs(tenantID, runID), dispatchInsertOpts(tenantID, at)); err != nil {
 		return fmt.Errorf("enqueue scheduled update run dispatch: %w", err)
 	}
 	return nil
+}
+
+// EnqueueDispatchIfAbsent inserts a dispatch job only if the run does not
+// already have a live one, reporting whether it inserted. Satisfies
+// SweepEnqueuer.
+//
+// THE IDEMPOTENCY IS RIVER'S, NOT A PRE-CHECK OF OURS. dispatchInsertOpts sets
+// UniqueOpts{ByArgs: true} and DispatchRunArgs is exactly (tenant_id, run_id),
+// so River refuses a second job for a run that already has one pending,
+// scheduled, available, running or retryable — atomically, against every
+// replica at once. A read-then-insert here would have a window between the two
+// wide enough for a second sweeper to drive through.
+//
+// The false return is the HEALTHY steady state (the run's original job is still
+// sitting there waiting for its time) and the caller must stay quiet about it.
+// A true return means the safety net actually caught something.
+func (e *RiverEnqueuer) EnqueueDispatchIfAbsent(ctx context.Context, tenantID, runID uuid.UUID, at time.Time) (bool, error) {
+	res, err := e.client.Insert(ctx, dispatchArgs(tenantID, runID), dispatchInsertOpts(tenantID, at))
+	if err != nil {
+		return false, fmt.Errorf("sweep-enqueue update run dispatch: %w", err)
+	}
+	return !res.UniqueSkippedAsDuplicate, nil
+}
+
+func dispatchArgs(tenantID, runID uuid.UUID) DispatchRunArgs {
+	return DispatchRunArgs{TenantID: tenantID, RunID: runID}
+}
+
+// dispatchInsertOpts is shared by the create-time enqueue and the sweeper so
+// the two cannot disagree about the unique key. They MUST agree: the whole
+// reason a sweeper insert is safe is that it collides with the create-time job
+// for the same run, and a difference in these options anywhere would let both
+// exist and double-dispatch the run.
+func dispatchInsertOpts(tenantID uuid.UUID, at time.Time) *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:       QueueForTenant(tenantID),
+		ScheduledAt: at,
+		// ByArgs alone, deliberately — NOT ByPeriod. The unique key is the run
+		// itself, and a run's identity does not expire on a schedule: a job for
+		// this run is either live or it is not. Adding a period would let a
+		// second job for the same run exist once the window rolled over, which
+		// is the double-dispatch this is here to prevent.
+		UniqueOpts: river.UniqueOpts{ByArgs: true},
+	}
 }
 
 // EnqueueRefresh inserts one refresh-inventory job. The job's InsertOpts pin it

@@ -794,6 +794,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Its task enqueuer is set below rather than here: it needs the River
 	// client, and the River client needs this worker.
 	updateDispatchWorker := update.NewDispatchWorker(updateRepo, nil, auditRec, logger)
+	// GH #463 Phase 2 — the safety net. DispatchWorker fires a run from its own
+	// job; this covers a job LOST BEFORE IT EVER RAN (an enqueue that committed
+	// but never materialised, a queue wiped, a job dead-lettered and purged),
+	// where the run row is untouched and nothing would ever look at it again.
+	// Its enqueuer is set below for the same client/worker cycle reason.
+	updateSweepWorker := update.NewSweepWorker(updateRepo, nil, pool.Pool, logger)
 	// Beat 3 of the agent self-update protocol: the poll that waits for the
 	// upgraded agent to report its new version. Always registered (it shares
 	// updateWorker's repo/hub/audit/logger and needs nothing of its own), but
@@ -1889,6 +1895,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		updateWorker:             updateWorker,
 		updateReaperWorker:       updateReaperWorker,
 		updateDispatchWorker:     updateDispatchWorker,
+		updateSweepWorker:        updateSweepWorker,
 		updateAgentConfirmWorker: updateAgentConfirmWorker,
 		refreshWorker:            refreshWorker,
 		perTenantParallelism:     cfg.Update.PerTenantParallelism,
@@ -1989,6 +1996,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// loudly rather than claiming runs it cannot enqueue.
 	updateSvc.SetDispatchEnqueuer(updateEnqueuer)
 	updateDispatchWorker.SetTxEnqueuer(updateEnqueuer)
+	updateSweepWorker.SetEnqueuer(updateEnqueuer)
 	siteH := site.NewHandler(siteSvc, auditRec, cpPublicKey)
 	siteH.SetRefreshEnqueuer(newSiteRefreshAdapter(updateEnqueuer), cfg.Agent.StaleAfter)
 	// M21: enable the site-first create + revoke/archive/restore/re-enroll routes.
@@ -3226,6 +3234,9 @@ type riverDeps struct {
 	// GH #463 — fires a deferred update run at its scheduled_at, or expires it
 	// past the grace window (always wired).
 	updateDispatchWorker *update.DispatchWorker
+	// GH #463 Phase 2 — periodic safety-net sweeper for due runs whose dispatch
+	// job was lost before it ran (always wired).
+	updateSweepWorker *update.SweepWorker
 	// Beat 3 of the agent self-update protocol (always registered; no job of
 	// this kind is inserted while the channel's kill switch is off).
 	updateAgentConfirmWorker *update.AgentConfirmWorker
@@ -3345,6 +3356,9 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	if d.updateDispatchWorker != nil {
 		river.AddWorker(workers, d.updateDispatchWorker)
 	}
+	if d.updateSweepWorker != nil {
+		river.AddWorker(workers, d.updateSweepWorker)
+	}
 	if d.updateAgentConfirmWorker != nil {
 		river.AddWorker(workers, d.updateAgentConfirmWorker)
 	}
@@ -3441,6 +3455,36 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		periodics = append(periodics, river.NewPeriodicJob(
 			river.PeriodicInterval(10*time.Minute),
 			func() (river.JobArgs, *river.InsertOpts) { return update.ReapStaleTasksArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
+	// GH #463 Phase 2 — the deferred-dispatch safety net. One minute, because
+	// this is what bounds how late a run can fire when its own job was lost, and
+	// a minute is inside the noise of a schedule an operator chose by hand.
+	//
+	// RunOnStart: true is the important half. The failure this catches is a job
+	// that no longer exists, and a DEPLOY is the most likely moment to have
+	// created one; waiting a full tick after boot would leave exactly the window
+	// that produced the miss unswept.
+	//
+	// UniqueOpts guards that same RunOnStart against itself: on a rolling deploy
+	// several instances boot within seconds and each fires its own start job.
+	// ByArgs keys on the empty SweepDueRunsArgs {}, ByPeriod caps one per
+	// interval window, so the fleet performs one pass rather than one per
+	// replica. The advisory lock inside Work is the second line of that same
+	// defence.
+	if d.updateSweepWorker != nil {
+		periodics = append(periodics, river.NewPeriodicJob(
+			river.PeriodicInterval(update.SweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return update.SweepDueRunsArgs{}, &river.InsertOpts{
+					UniqueOpts: river.UniqueOpts{
+						ByArgs:   true,
+						ByPeriod: update.SweepInterval,
+					},
+				}
+			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
