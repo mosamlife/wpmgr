@@ -330,9 +330,19 @@ func (s *Service) resolveSchedule(at *time.Time) (bool, error) {
 }
 
 // now reads the service's clock, falling back to the wall clock when none was
-// wired. Only the SCHEDULE VALIDATION uses it. Due-ness itself is never decided
-// here: ListDueUpdateRuns compares against the DATABASE clock, so two replicas
-// with drifting wall clocks cannot disagree about whether a run has arrived.
+// wired.
+//
+// ONLY THE SCHEDULE VALIDATION uses it — the past/too-far bounds and the
+// minimum lead, all decided at create time against an instant the operator just
+// supplied. Nothing about when a run FIRES is decided here, and a skewed clock
+// on this replica can therefore only reject a schedule at the boundary, never
+// dispatch one early.
+//
+// An earlier version of this comment credited ListDueUpdateRuns' now() with
+// deciding due-ness. That was true of the scan, but the dispatcher no longer
+// reaches its run through the scan; what actually gates firing is River's own
+// availability check, which is DB-clocked, with DispatchWorker's early-fire
+// snooze behind it.
 func (s *Service) now() time.Time {
 	if s.clock != nil {
 		return s.clock.Now()

@@ -117,9 +117,19 @@ func NewDispatchWorker(repo Repo, enq TxEnqueuer, rec *audit.Recorder, logger *s
 func (w *DispatchWorker) SetTxEnqueuer(enq TxEnqueuer) { w.enq = enq }
 
 // SetClock overrides the worker's notion of now. Tests only; production leaves
-// it nil and reads the wall clock. Due-ness itself is never decided here —
-// ListDueUpdateRuns compares against the DATABASE clock — so this only moves
-// the grace-window boundary.
+// it nil and reads the wall clock.
+//
+// What this clock decides is the DISPATCH/EXPIRE SPLIT and the early-fire
+// snooze, both compared against scheduled_at. That has always been a wall-clock
+// comparison — an earlier version of this comment credited ListDueUpdateRuns'
+// now() with deciding due-ness, which was true of the scan but was never true
+// of the split, and Work no longer calls that scan at all.
+//
+// The DB clock still gates the path, one step earlier and outside this type:
+// River decides when the job becomes available, from the database. This clock
+// therefore chooses between dispatching and expiring a run that River has
+// already judged due, and the early-fire snooze is the backstop for the two
+// disagreeing.
 func (w *DispatchWorker) SetClock(fn func() time.Time) { w.clock = fn }
 
 func (w *DispatchWorker) now() time.Time {
@@ -208,13 +218,27 @@ func (w *DispatchWorker) Work(ctx context.Context, job *river.Job[DispatchRunArg
 // ever match a given row.
 func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 	if run.ScheduledAt == nil {
-		// A 'scheduled' run with no scheduled_at cannot have been returned by
-		// the due scan (NULL <= now() is NULL), so this is unreachable. Log
-		// rather than dispatch: firing a run whose start time is unknown is
-		// guessing at what the operator asked for.
-		w.logger.Warn("update dispatch: due run has no scheduled_at; refusing to fire",
-			slog.String("run_id", run.ID.String()))
-		return nil
+		// A 'scheduled' run with no scheduled_at is a should-not-exist row:
+		// CreateScheduledRunWithTasks refuses to create one, precisely because
+		// it could never become due.
+		//
+		// THIS BRANCH IS NOW REACHABLE, and it did not used to be. While Work
+		// found its run by filtering the due scan, such a row could never
+		// arrive here at all (NULL <= now() is NULL, so the scan never returned
+		// it). Reading the run by id removed that filter, so a fire-time job for
+		// one of these rows now lands squarely on this line.
+		//
+		// So it returns an ERROR rather than nil. The row is stranded either
+		// way — nothing here can invent a start time the operator never gave —
+		// but the two differ entirely in whether anyone finds out. Returning nil
+		// completes the job and leaves no trace at all, which is the exact
+		// silent-stranding shape this feature has now produced in three separate
+		// places. An error retries harmlessly and then dead-letters, which puts
+		// the run in front of somebody who can look at it.
+		w.logger.Error("update dispatch: a scheduled run has no scheduled_at; it can never become due",
+			slog.String("run_id", run.ID.String()),
+			slog.String("tenant_id", run.TenantID.String()))
+		return fmt.Errorf("update dispatch: run %s is 'scheduled' with no scheduled_at, so it can never become due", run.ID)
 	}
 
 	now := w.now()

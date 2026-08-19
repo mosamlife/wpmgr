@@ -342,9 +342,20 @@ func TestDispatchWorkerHandlesAMissingOrUnreadableRun(t *testing.T) {
 }
 
 // TestDispatchWorkerRefusesARunWithNoScheduledAt covers the should-not-exist
-// row. A 'scheduled' run with a NULL scheduled_at can never be due (NULL <=
-// now() is NULL), and firing one would be guessing at what the operator asked
-// for.
+// row: a 'scheduled' run with a NULL scheduled_at, which
+// CreateScheduledRunWithTasks refuses to create precisely because it could
+// never become due.
+//
+// It asserts an ERROR, not nil, and that is the point of the test rather than
+// an incidental detail. Reading the run by id made this branch reachable — while
+// Work filtered the due scan, such a row could never arrive here at all. The row
+// is stranded either way, since nothing can invent a start time the operator
+// never gave, so the only thing left to choose is whether anyone finds out.
+// Returning nil completes the job silently and leaves no trace; an error retries
+// harmlessly and then dead-letters, which puts it in front of someone.
+//
+// Firing it is of course still forbidden: any action would guess at an intent
+// that was never recorded.
 func TestDispatchWorkerRefusesARunWithNoScheduledAt(t *testing.T) {
 	now := time.Now()
 	tenant := uuid.New()
@@ -352,8 +363,9 @@ func TestDispatchWorkerRefusesARunWithNoScheduledAt(t *testing.T) {
 	repo := &dispatchFakeRepo{run: run}
 	w, enq := newDispatchWorkerForTest(repo, now)
 
-	if err := w.Work(context.Background(), dispatchJob(tenant, run.ID)); err != nil {
-		t.Fatalf("Work: %v", err)
+	err := w.Work(context.Background(), dispatchJob(tenant, run.ID))
+	if err == nil {
+		t.Error("Work returned nil for a run that can never become due; the job completes and the row is stranded with no trace at all")
 	}
 	if repo.dispatchCalls != 0 || repo.expireCalls != 0 || enq.n != 0 {
 		t.Error("a run with no scheduled_at was fired; its start time is unknown, so any action guesses at the operator's intent")
