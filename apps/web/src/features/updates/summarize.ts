@@ -34,7 +34,23 @@ export function summarizeTasks(tasks: UpdateTask[]): {
     // counted into `done` below, same as `cancelled`.
     expired: 0,
   };
-  for (const task of tasks) counts[task.status] += 1;
+  for (const task of tasks) {
+    // Defence in depth against version skew (see TASK_TONE in
+    // update-status.tsx): `tsc` enforces every TaskStatus is a key of
+    // `counts` above, but a self-hosted control plane can still send a
+    // status literal this bundle predates, and `task.status` at that point
+    // is a value `tsc` never checked. Unguarded, `counts[task.status] += 1`
+    // on a key `counts` never declared is `undefined += 1` (NaN), written
+    // onto a brand-new stray property — `counts` silently stops matching its
+    // own `Record<TaskStatus, number>` type. The guard below keeps `counts`
+    // to exactly its declared keys and deliberately counts the unrecognized
+    // status nowhere (not `done`, not any bucket): that undercounts `done`
+    // rather than lying that the run is finished, which is the safe
+    // direction — see GH #463 PR body for the full reasoning.
+    if (task.status in counts) {
+      counts[task.status] += 1;
+    }
+  }
   const done =
     counts.succeeded +
     counts.failed +

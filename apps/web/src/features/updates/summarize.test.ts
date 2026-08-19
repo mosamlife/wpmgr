@@ -1,14 +1,95 @@
 import { describe, it, expect } from "vitest";
 import type { UpdateTask } from "@wpmgr/api";
 
-import { serverRetryFields } from "@/test/update-task-fixtures";
+import { makeUpdateTask, serverRetryFields } from "@/test/update-task-fixtures";
 
 import {
   isSiteDownRecovery,
   isTerminalRunStatus,
   isAgentNotEligible,
   haltReason,
+  summarizeTasks,
 } from "./summarize";
+
+// GH #463: regression coverage for a self-hosted control plane sending a
+// task status literal outside this bundle's generated TaskStatus union
+// (`tsc` never checked the wire value). Before the fix,
+// `counts[task.status] += 1` on a status the `counts` initializer never
+// declared was `undefined += 1` — NaN — written onto a brand-new stray
+// property keyed by that unrecognized string (verified directly: the
+// pre-fix `counts` object comes back with an extra `"<unknown-status>": NaN`
+// entry alongside its 9 declared keys). `done`/`total`/the progress
+// percentage at $runId.tsx:292 happen to stay finite regardless in the
+// current shape of this function, because `done` sums six explicitly named,
+// already-initialized keys rather than reducing over the whole `counts`
+// object — but `summary.counts` no longer matches its own declared type
+// (`Record<TaskStatus, number>`), which is exactly the kind of drift that
+// breaks the next piece of code that DOES iterate `counts` wholesale (a
+// stacked bar, an `Object.values` reduction). The fix's `key in counts`
+// guard keeps `counts` to exactly its declared keys, and keeps `done`
+// undercounting (never crediting an unrecognized status as complete) as an
+// explicit invariant rather than an accident of the current arithmetic.
+describe("summarizeTasks", () => {
+  it("does not add a stray NaN-valued property for a status outside the TaskStatus union", () => {
+    const tasks = [makeUpdateTask({ status: "reconciling" as UpdateTask["status"] })];
+    const { counts } = summarizeTasks(tasks);
+    expect(Object.prototype.hasOwnProperty.call(counts, "reconciling")).toBe(false);
+    expect(Object.keys(counts).sort()).toEqual(
+      [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "rolled_back",
+        "skipped",
+        "cancelled",
+        "scheduled",
+        "expired",
+      ].sort(),
+    );
+  });
+
+  it("does not produce NaN for a single task whose status is outside the TaskStatus union", () => {
+    const tasks = [makeUpdateTask({ status: "reconciling" as UpdateTask["status"] })];
+    const { done, total } = summarizeTasks(tasks);
+    expect(Number.isFinite(done)).toBe(true);
+    expect(done).toBe(0);
+    expect(total).toBe(1);
+  });
+
+  it("excludes an unknown-status task from done in a mix of known and unknown statuses", () => {
+    const tasks = [
+      makeUpdateTask({ id: "44444444-4444-4444-4444-444444444441", status: "succeeded" }),
+      makeUpdateTask({ id: "44444444-4444-4444-4444-444444444442", status: "failed" }),
+      makeUpdateTask({
+        id: "44444444-4444-4444-4444-444444444443",
+        status: "reconciling" as UpdateTask["status"],
+      }),
+    ];
+    const { done, total, counts } = summarizeTasks(tasks);
+    expect(Number.isFinite(done)).toBe(true);
+    // Only the succeeded + failed tasks count; the unknown-status task is not
+    // folded into any bucket, so it must not appear in `done`.
+    expect(done).toBe(2);
+    expect(total).toBe(3);
+    expect(counts.succeeded).toBe(1);
+    expect(counts.failed).toBe(1);
+    expect(Object.prototype.hasOwnProperty.call(counts, "reconciling")).toBe(false);
+  });
+
+  it("keeps the $runId.tsx:292 progress percentage finite for an unknown status", () => {
+    const tasks = [
+      makeUpdateTask({ id: "44444444-4444-4444-4444-444444444441", status: "succeeded" }),
+      makeUpdateTask({
+        id: "44444444-4444-4444-4444-444444444442",
+        status: "reconciling" as UpdateTask["status"],
+      }),
+    ];
+    const { done, total } = summarizeTasks(tasks);
+    const pct = Math.round((done / total) * 100);
+    expect(Number.isFinite(pct)).toBe(true);
+  });
+});
 
 // GH #210: pure-logic coverage for the site-down-recovery detector: the
 // worst-case rollback failure (site-wide PHP fatal, undeliverable rollback,
