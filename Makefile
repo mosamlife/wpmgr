@@ -139,8 +139,14 @@ test: test-api test-web ## Run all tests
 # package alone and 601s under the parallel load of `go test ./...`, which
 # panicked with "test timed out after 10m0s". The tests were fine; the limit
 # was not. Without this flag the full run flakes on a busy machine.
-test-api: ## Run Go tests (unit plus integration; needs Docker for the integration package)
-	cd apps/api && go test -timeout 45m ./...
+#
+# -count=1 (GH #464): this target's own help text calls it "unit plus
+# integration", i.e. the thing you run to know whether apps/api is actually
+# green, not a fast iteration loop. Go caches a successful `go test` result
+# keyed on inputs, so without -count=1 a second run after an unrelated change
+# elsewhere in the repo prints "ok ... (cached)" and executes nothing.
+test-api: ## Run Go tests (unit plus integration; needs Docker for the integration package; never cached, see -count=1)
+	cd apps/api && go test -count=1 -timeout 45m ./...
 
 .PHONY: test-integration
 # The integration package on its own, which is where the security proofs live:
@@ -153,8 +159,16 @@ test-api: ## Run Go tests (unit plus integration; needs Docker for the integrati
 # yet. So this command is the only thing standing in front of a regression in
 # it. Run it before merging anything that touches RLS, the email domain or
 # tenant scoping. Needs a working Docker daemon (testcontainers).
-test-integration: ## Run the Go integration tests (Docker required, about 9 minutes)
-	cd apps/api && go test -timeout 45m ./tests/...
+#
+# -count=1 (GH #464): without it, Go caches a pass and a re-run after an
+# unrelated change reports "ok ... (cached)" having executed nothing — for the
+# one target CI deliberately never runs, that is a silent pass over the RLS
+# proofs above. This target is a gate, not an iteration loop, so it is never
+# cached. (test-api, above, has the same flag for the same reason; the other
+# test targets in this file — test-web, check-versions-test — do not invoke
+# `go test` at all, so Go's result cache does not apply to them.)
+test-integration: ## Run the Go integration tests (Docker required, about 9 minutes; never cached, see -count=1)
+	cd apps/api && go test -count=1 -timeout 45m ./tests/...
 
 .PHONY: test-web
 test-web: ## Run frontend tests
