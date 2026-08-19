@@ -111,22 +111,45 @@ func (w *SweepWorker) Work(ctx context.Context, _ *river.Job[SweepDueRunsArgs]) 
 		w.logger.Warn("update dispatch sweeper: pass failed", slog.Any("error", err))
 		return nil
 	}
-	if stats.Skipped {
-		return nil
-	}
+	w.report(stats)
+	return nil
+}
 
-	// SIGNAL (b), the heartbeat. Emitted on EVERY completed pass, including the
-	// overwhelmingly common one that finds nothing, because THE ABSENCE OF THIS
-	// LINE IS THE POINT. A dispatcher that has stopped entirely produces no
-	// error and no alert; it produces silence, and silence is only detectable
-	// against a line you expected to see. Mirrors backup_scheduler's
-	// "due candidates found".
+// report emits one pass's signals. Split from Work so the LOGGING DECISION —
+// which is the reviewed behaviour, and the thing an operator's alerting keys on
+// — can be tested for a given SweepStats without standing up a pool and losing
+// an advisory-lock race on purpose. Work has nothing else in it, so nothing is
+// hidden from the test by the split.
+func (w *SweepWorker) report(stats SweepStats) {
+	// SIGNAL (b), the heartbeat. Emitted on EVERY pass — the overwhelmingly
+	// common one that finds nothing, AND the one that skipped because a peer
+	// held the lock — because THE ABSENCE OF THIS LINE IS THE POINT. A
+	// dispatcher that has stopped entirely produces no error and no alert; it
+	// produces silence, and silence is only detectable against a line you
+	// expected to see. Mirrors backup_scheduler's "due candidates found".
+	//
+	// A SKIPPED PASS STILL EMITS IT, deliberately. The process ticked, took its
+	// turn and yielded: that is a living sweeper, and staying silent would make
+	// a healthy multi-replica install indistinguishable from a dead one — which
+	// is exactly the state F1's un-released advisory lock produces, where every
+	// pass skips forever and the detector goes quiet with it. One line shape
+	// covers both cases so "no line at all" stays unambiguous.
 	w.logger.Info("update dispatch sweeper: pass complete",
 		slog.Int("due", stats.Due),
 		slog.Int("enqueued", stats.Enqueued),
 		slog.Int("already_live", stats.AlreadyLive),
 		slog.Int("overdue", stats.Overdue),
-		slog.Bool("capped", stats.Capped))
+		slog.Bool("capped", stats.Capped),
+		slog.Bool("skipped", stats.Skipped))
+
+	// The other three signals are MEASUREMENTS and a skipped pass measured
+	// nothing. Its zeroes are "did not look", not "looked and found none", and
+	// letting them reach the conditions below would be reading an absent
+	// observation as a healthy one — the same mistake as inferring run
+	// completion from a partial view. Stop here.
+	if stats.Skipped {
+		return
+	}
 
 	// SIGNAL (a), and it is the one worth the most. Due work found, and not one
 	// job enqueued and not one already live — meaning the sweeper saw runs that
@@ -169,7 +192,6 @@ func (w *SweepWorker) Work(ctx context.Context, _ *river.Job[SweepDueRunsArgs]) 
 			slog.Int("limit", dueRunScanLimit),
 			slog.String("note", "the remainder is picked up by the next pass, oldest first"))
 	}
-	return nil
 }
 
 // sweep is Work without the logging, so tests can assert on the outcome
@@ -217,7 +239,27 @@ func (w *SweepWorker) sweep(ctx context.Context) (SweepStats, error) {
 			return stats, nil
 		} else {
 			defer func() {
-				_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, sweepLockKey)
+				// context.WithoutCancel, and it is NOT belt-and-braces. If ctx
+				// is already cancelled when this defer runs — a graceful
+				// shutdown mid-pass, or a River job timeout — pgx returns
+				// immediately WITHOUT SENDING THE UNLOCK, and the connection
+				// goes back to the pool healthy while still holding a
+				// session-scoped lock.
+				//
+				// Every later pass then takes a different connection, gets
+				// false, logs "another replica holds the lock" and returns. The
+				// safety net is inert, and it is inert in the worst possible
+				// way: the heartbeat whose ABSENCE is documented as the entire
+				// detector stops printing, so the thing designed to reveal a
+				// dead sweeper is switched off by the sweeper being dead.
+				//
+				// Bounded rather than permanent — db.MaxConnLifetime (30m)
+				// eventually closes the connection and drops the lock — but
+				// half an hour of a silently skipped safety net is exactly the
+				// window this feature keeps being bitten in. Same form as
+				// backup/tenant_reclaim_worker.go's reclaim-lock release.
+				_, _ = conn.Exec(context.WithoutCancel(ctx),
+					`SELECT pg_advisory_unlock(hashtext($1))`, sweepLockKey)
 			}()
 		}
 	}
