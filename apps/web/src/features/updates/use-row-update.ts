@@ -98,6 +98,24 @@ function projectStatus(
       return "rolled_back";
     case "skipped":
       return "skipped";
+    // GH #463: `scheduled` reached this switch through the `default` arm and
+    // came out "pending", so a row whose update was deferred read as though
+    // it were queued and about to go — for hours. It has not been sent and
+    // will not be until its start time, which is a different thing to tell
+    // an operator. RowUpdateState has no deferred member and widening it
+    // would change every consumer of this hook, so this maps to `idle`: the
+    // row is not mid-flight, and the run's own page carries the countdown.
+    case "scheduled":
+      return "idle";
+    // GH #463: `expired` likewise fell through to "pending", leaving a row
+    // spinning forever on work that will never be attempted. Nothing was
+    // sent to the site, which is `skipped`'s meaning here, not `failed`'s.
+    case "expired":
+      return "skipped";
+    // GH #255: never dispatched because its run halted first. Same shape as
+    // `expired` above, and it had the same `default` bug.
+    case "cancelled":
+      return "skipped";
     default:
       return "pending";
   }

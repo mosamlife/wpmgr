@@ -180,13 +180,18 @@ export function notRetryableReason(task: RetryTask): string {
   }
   // GH #463: `expired` is its own case, not the generic terminal fallback
   // below. Nothing was ever sent to the site (same as `cancelled`/
-  // `never_ran`), so this text must not read like a failed update. Today the
-  // server still classifies an expired task as `not_applicable` (see
-  // apps/api/internal/update/model.go retryClassify, which has no case for
-  // TaskExpired and falls through its default), so this row currently has no
-  // checkbox and this is the reason shown. This client never overrides that
-  // server verdict — see `isRetrySelectable` above — it only has to describe
-  // the true reason accurately.
+  // `never_ran`), so this text must not read like a failed update.
+  //
+  // The control plane classifies an expired task as retryable/`never_ran`
+  // (apps/api/internal/update/model.go:405, `case TaskCancelled, TaskExpired:
+  // return true, RetryClassNeverRan`), so in practice an expired row DOES get
+  // a checkbox and this string is unreachable for it. It stays because this
+  // function is keyed on `status` while selectability is keyed on the
+  // server's `retry_class`, and a control plane that withheld the class would
+  // otherwise fall through to the generic "cannot run this update again"
+  // below, which is the wrong story. This client never overrides the server
+  // verdict — see `isRetrySelectable` above — it only has to describe
+  // whatever reason applies accurately.
   if (task.status === "expired") {
     return "Cannot be retried: this update expired before it could run.";
   }
