@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -100,6 +101,14 @@ func NewDispatchWorker(repo Repo, enq TxEnqueuer, rec *audit.Recorder, logger *s
 	return &DispatchWorker{repo: repo, enq: enq, audit: rec, logger: logger}
 }
 
+// SetTxEnqueuer wires the transactional job inserter. It is a setter rather
+// than a constructor argument because of a genuine cycle in main: the enqueuer
+// needs the River client, and the River client needs the worker set this worker
+// belongs to. Same shape as Worker.SetRefreshEnqueuer, and it must be called at
+// boot — Work refuses loudly without it (see below) rather than dispatching a
+// run whose tasks would then have no jobs.
+func (w *DispatchWorker) SetTxEnqueuer(enq TxEnqueuer) { w.enq = enq }
+
 // SetClock overrides the worker's notion of now. Tests only; production leaves
 // it nil and reads the wall clock. Due-ness itself is never decided here —
 // ListDueUpdateRuns compares against the DATABASE clock — so this only moves
@@ -129,6 +138,15 @@ func (w *DispatchWorker) now() time.Time {
 // first.
 func (w *DispatchWorker) Work(ctx context.Context, job *river.Job[DispatchRunArgs]) error {
 	a := job.Args
+
+	if w.enq == nil {
+		// A boot that never called SetTxEnqueuer. Returning an error is the
+		// point: River retries and eventually dead-letters, which is loud.
+		// Returning nil would mark every scheduled run's dispatch job complete
+		// while the runs sat at 'scheduled' forever, and the feature would look
+		// like it was simply never triggered.
+		return fmt.Errorf("update dispatch: no task enqueuer is wired; refusing to dispatch run %s", a.RunID)
+	}
 
 	due, err := w.repo.ListDueRuns(ctx, dueRunScanLimit)
 	if err != nil {
