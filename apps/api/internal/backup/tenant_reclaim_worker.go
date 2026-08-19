@@ -662,10 +662,11 @@ func NewTenantReclaimStore(pool *db.Pool) TenantReclaimStore {
 //     There is no "the session closes anyway" fallback here, because the
 //     connection is POOLED: Release hands the session back alive, still holding
 //     whatever it was holding. An unlock that does not reach the wire therefore
-//     strands org.LifecycleLockKey for this tenant on an idle pooled connection
-//     and blocks DELETE /orgs/{orgId}, POST /orgs/{orgId}/restore and the Lane B
-//     purge until db.MaxConnLifetime (30m) recycles it. See GH #483 and the
-//     comment on the returned closure.
+//     strands org.LifecycleLockKey for this tenant on an idle pooled connection:
+//     the Lane B purge and the next drain read false and skip, DELETE
+//     /orgs/{orgId} and POST /orgs/{orgId}/restore block on it, and none of that
+//     clears until db.MaxConnLifetime (30m) recycles the connection. See GH #483
+//     and the comment on the returned closure.
 func (s *pgTenantReclaimStore) LockTenantLifecycle(ctx context.Context, tenantID uuid.UUID) (func(), bool, error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
@@ -694,9 +695,11 @@ func (s *pgTenantReclaimStore) LockTenantLifecycle(ctx context.Context, tenantID
 		// rolling deploy, River job timeout — leaves ctx dead by the time this
 		// runs, and on a dead ctx pgx returns BEFORE the statement reaches the
 		// wire. That does not break the connection, so the pool takes it back
-		// healthy and locked, and every later reclaim, DELETE /orgs/{orgId},
-		// POST /orgs/{orgId}/restore and Lane B purge for this tenant reads false
-		// from pg_try_advisory_lock until db.MaxConnLifetime (30m) recycles it.
+		// healthy and locked. Every later drain and Lane B purge for this tenant
+		// then reads false from pg_try_advisory_lock and skips, while DELETE
+		// /orgs/{orgId} and POST /orgs/{orgId}/restore — same key, taken with the
+		// BLOCKING pg_advisory_xact_lock — wait on it instead, until
+		// db.MaxConnLifetime (30m) recycles the connection.
 		// WithoutCancel is what puts the statement on the wire;
 		// db.SessionCleanupTimeout is what stops an uncancellable Exec in a defer
 		// from hanging a graceful drain on a wedged socket. The bound cannot
