@@ -11,6 +11,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // GH #463 Phase 1 — the deferred-dispatch job and its worker.
@@ -49,6 +50,12 @@ const dispatchGraceWindow = 2 * time.Hour
 // a backlog drains in the order the operators asked for. Mirrors
 // staleTaskReapLimit's role for the reaper.
 const dueRunScanLimit = 200
+
+// dispatchEarlyFireTolerance is how far ahead of scheduled_at a job may fire and
+// still count as due. It absorbs ordinary skew between River's timer and this
+// process's wall clock; a job arriving earlier than this snoozes until the real
+// instant rather than dispatching early.
+const dispatchEarlyFireTolerance = 5 * time.Second
 
 // TxEnqueuer enqueues a task job INSIDE an existing transaction (River's
 // InsertTx). The deferred-dispatch path needs this and cannot use the ordinary
@@ -148,29 +155,51 @@ func (w *DispatchWorker) Work(ctx context.Context, job *river.Job[DispatchRunArg
 		return fmt.Errorf("update dispatch: no task enqueuer is wired; refusing to dispatch run %s", a.RunID)
 	}
 
-	due, err := w.repo.ListDueRuns(ctx, dueRunScanLimit)
+	// READ THIS RUN BY ID. The job carries both ids, so it needs nothing else,
+	// and that self-sufficiency is a correctness property rather than a tidy-up.
+	//
+	// This used to find its run by filtering the cross-tenant due scan, which is
+	// bounded at dueRunScanLimit. A run outside the oldest N due runs — an
+	// outage spanning many scheduled times, or a fleet with many runs on one
+	// slot — never appeared in ITS OWN job's scan. The worker returned nil,
+	// River marked the job completed, and nothing found the run again: still
+	// 'scheduled' so still in the due index, but the only reader of that index
+	// is a dispatch job and this run's job was consumed. Its tasks stayed
+	// 'scheduled', outside the dedup index and outside the reaper, and the run
+	// could not even expire, because expiry is reached through the same consumed
+	// job. Recovery was manual DB surgery. A per-run read has no page to fall
+	// out of.
+	//
+	// It is also LESS privileged: GetRun is tenant-scoped (InTenantTx), so the
+	// dispatch path no longer reads cross-tenant at all. ListDueRuns stays on
+	// the Repo for the Phase 2 sweeper, which genuinely needs to enumerate.
+	run, err := w.repo.GetRun(ctx, a.TenantID, a.RunID)
 	if err != nil {
+		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
+			// The run was deleted. Nothing to dispatch and nothing to record.
+			w.logger.Info("update dispatch: run no longer exists",
+				slog.String("run_id", a.RunID.String()),
+				slog.String("tenant_id", a.TenantID.String()))
+			return nil
+		}
+		// An infrastructure error must NOT complete the job: that is the
+		// stranding shape above reached by a different door. Return it so River
+		// retries.
 		return err
 	}
-	for _, run := range due {
-		if run.ID != a.RunID {
-			// This job fires ONE run. The scan is how the run's authoritative
-			// current state is read (there is no tenant context here to read
-			// it any other way), not a licence to dispatch the whole backlog:
-			// each run has its own job, and draining them from here would run
-			// runs whose own jobs are about to run them too.
-			continue
-		}
-		return w.fire(ctx, run)
-	}
 
-	// Not due, not 'scheduled', or gone. Every one of those is benign and
-	// none is retryable: cancelled by an operator, already dispatched by a
-	// duplicate job, or expired by an earlier pass.
-	w.logger.Info("update dispatch: run is no longer due; nothing to do",
-		slog.String("run_id", a.RunID.String()),
-		slog.String("tenant_id", a.TenantID.String()))
-	return nil
+	if run.Status != RunScheduled {
+		// Cancelled by an operator, already dispatched by a duplicate job, or
+		// expired by an earlier pass. All benign, none retryable — and all
+		// concluded from the row itself, which is exactly what the scan could
+		// not distinguish from "not in my page of results".
+		w.logger.Info("update dispatch: run is no longer scheduled; nothing to do",
+			slog.String("run_id", run.ID.String()),
+			slog.String("tenant_id", run.TenantID.String()),
+			slog.String("status", run.Status))
+		return nil
+	}
+	return w.fire(ctx, run)
 }
 
 // fire applies the grace window to one due run and then either dispatches it or
@@ -188,7 +217,23 @@ func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 		return nil
 	}
 
-	cutoff := w.now().Add(-dispatchGraceWindow)
+	now := w.now()
+
+	// NOT YET DUE => SNOOZE, NEVER COMPLETE. River fires the job at
+	// scheduled_at, so arriving early means a clock disagreement rather than a
+	// run that should go now. Snoozing reschedules without consuming an attempt
+	// and, critically, without completing the job — completing it here would
+	// consume the run's only trigger before its time and strand it exactly the
+	// way the scan-page miss did.
+	if now.Before(run.ScheduledAt.Add(-dispatchEarlyFireTolerance)) {
+		wait := run.ScheduledAt.Sub(now)
+		w.logger.Info("update dispatch: job fired before its run was due; snoozing until the scheduled time",
+			slog.String("run_id", run.ID.String()),
+			slog.Duration("wait", wait))
+		return river.JobSnooze(wait)
+	}
+
+	cutoff := now.Add(-dispatchGraceWindow)
 	if run.ScheduledAt.Before(cutoff) {
 		return w.expire(ctx, run, cutoff)
 	}
@@ -221,7 +266,7 @@ func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 		slog.String("run_status", out.Status))
 
 	if w.audit != nil {
-		_, _ = w.audit.Record(ctx, audit.Event{
+		if _, aerr := w.audit.Record(ctx, audit.Event{
 			TenantID:   run.TenantID,
 			ActorType:  audit.ActorSystem,
 			Action:     ActionRunDispatched,
@@ -233,7 +278,15 @@ func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 				"skipped":      out.Skipped,
 				"run_status":   out.Status,
 			},
-		})
+		}); aerr != nil {
+			// Not fatal: the work IS dispatched, and failing the job here would
+			// re-run a dispatch that already happened. But it must not be
+			// silent — this record is the only durable trace of how much of the
+			// run actually went out versus was skipped.
+			w.logger.Error("update dispatch: failed to record the dispatch audit entry",
+				slog.String("run_id", run.ID.String()),
+				slog.Any("error", aerr))
+		}
 	}
 	return nil
 }
@@ -268,7 +321,7 @@ func (w *DispatchWorker) expire(ctx context.Context, run Run, cutoff time.Time) 
 		slog.Int("tasks_expired", tasks))
 
 	if w.audit != nil {
-		_, _ = w.audit.Record(ctx, audit.Event{
+		if _, aerr := w.audit.Record(ctx, audit.Event{
 			TenantID:   run.TenantID,
 			ActorType:  audit.ActorSystem,
 			Action:     ActionRunExpired,
@@ -281,7 +334,16 @@ func (w *DispatchWorker) expire(ctx context.Context, run Run, cutoff time.Time) 
 				"tasks_expired":   tasks,
 				"sites_contacted": 0,
 			},
-		})
+		}); aerr != nil {
+			// Louder than its dispatch counterpart, deliberately. An expired run
+			// is a bulk update that silently never happened and this record is
+			// its ONLY durable trace; losing it leaves exactly the state the
+			// comment above warns about, where the operator's first evidence is
+			// an unpatched fleet.
+			w.logger.Error("update dispatch: failed to record the EXPIRY audit entry; an expired run may now have no durable trace",
+				slog.String("run_id", run.ID.String()),
+				slog.Any("error", aerr))
+		}
 	}
 	return nil
 }
