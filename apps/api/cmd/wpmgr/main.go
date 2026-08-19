@@ -763,6 +763,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// instead of relying on the 60s default. See DeriveApplyJobTimeout's doc
 	// comment for the full arithmetic.
 	updateJobTimeout := update.DeriveApplyJobTimeout(cfg.Update.ApplyHTTPTimeout, cfg.Update.HTTPTimeout)
+	// The update-task claim reclaims a task whose worker died, decided purely
+	// by how old the row is. That bound has to stay above this install's
+	// worst-case apply budget (or a second worker claims a task the first is
+	// still applying) and below the reaper's threshold (or the reaper
+	// terminalizes a row the claim still treats as live). Both ends move with
+	// env-settable timeouts, so neither the compiler nor a default-config test
+	// can catch a bad combination — assert it here and refuse to start.
+	if err := update.ValidateClaimTimings(updateJobTimeout); err != nil {
+		return fmt.Errorf("invalid update timing configuration: %w", err)
+	}
 	updateWorker := update.NewWorker(updateRepo, sitesLookup, updateApplyCmd, prober, updateHub, auditRec, logger, cfg.Update.PerTenantParallelism, updateJobTimeout)
 	// #131 follow-up — periodic reaper for update_tasks stuck in pending/running
 	// past staleTaskThreshold (a worker crash mid-task, or a failed enqueue that

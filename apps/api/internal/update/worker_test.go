@@ -31,13 +31,33 @@ type probeFakeRepo struct {
 	// deferErr, when set, makes DeferTaskToPending return it instead of
 	// recording the defer (used to test deferForBusySite's error branch).
 	deferErr error
+	// markRunning, when set, implements MarkTaskRunning instead of panicking;
+	// markStaleAfter records the staleness bound the caller passed.
+	markRunning    func(tenantID, taskID uuid.UUID, staleAfter time.Duration) (Task, error)
+	markStaleAfter time.Duration
+	// getTask, when set, implements GetTask instead of panicking.
+	getTask func(tenantID, taskID uuid.UUID) (Task, error)
+	// getTaskCalls counts GetTask calls, so a test can tell Work's opening
+	// read apart from yieldContendedClaim's re-read.
+	getTaskCalls int
+	// finishTask, when set, implements FinishTask instead of the default
+	// always-succeeds stub (see FinishTask below).
+	finishTask func(in FinishTaskInput) (Task, error)
+	// countRunning / getRun are the remaining opt-in hooks a test needs to
+	// drive Work all the way to the claim. Both panic unless set, for the
+	// same reason every other stub here does.
+	countRunning func(tenantID uuid.UUID) (int64, error)
+	getRun       func(tenantID, runID uuid.UUID) (Run, error)
 }
 
 func (f *probeFakeRepo) CreateRunWithTasks(context.Context, CreateRunInput, []NewTask) (Run, []Task, error) {
 	panic("not implemented")
 }
-func (f *probeFakeRepo) GetRun(context.Context, uuid.UUID, uuid.UUID) (Run, error) {
-	panic("not implemented")
+func (f *probeFakeRepo) GetRun(_ context.Context, tenantID, runID uuid.UUID) (Run, error) {
+	if f.getRun == nil {
+		panic("not implemented")
+	}
+	return f.getRun(tenantID, runID)
 }
 func (f *probeFakeRepo) ListRuns(context.Context, uuid.UUID, int32, int32) ([]Run, error) {
 	panic("not implemented")
@@ -48,15 +68,36 @@ func (f *probeFakeRepo) ListRunSummaries(context.Context, uuid.UUID, int32, int3
 func (f *probeFakeRepo) ListTasks(context.Context, uuid.UUID, uuid.UUID) ([]Task, error) {
 	panic("not implemented")
 }
-func (f *probeFakeRepo) GetTask(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
-	panic("not implemented")
+func (f *probeFakeRepo) GetTask(_ context.Context, tenantID, taskID uuid.UUID) (Task, error) {
+	f.getTaskCalls++
+	if f.getTask == nil {
+		panic("not implemented")
+	}
+	return f.getTask(tenantID, taskID)
 }
-func (f *probeFakeRepo) MarkTaskRunning(context.Context, uuid.UUID, uuid.UUID) (Task, error) {
-	panic("not implemented")
+
+// MarkTaskRunning stays a panic by default — several tests (see
+// agent_self_update_test.go) assert a task is refused BEFORE the claim by
+// relying on this fake to blow up if the claim is ever reached. markRunning is
+// the opt-in override for the tests that do exercise the claim; it also
+// records the staleAfter it was handed, which is the argument this whole
+// change exists to make non-zero.
+func (f *probeFakeRepo) MarkTaskRunning(_ context.Context, tenantID, taskID uuid.UUID, staleAfter time.Duration) (Task, error) {
+	f.markStaleAfter = staleAfter
+	if f.markRunning == nil {
+		panic("not implemented")
+	}
+	return f.markRunning(tenantID, taskID, staleAfter)
 }
 
 func (f *probeFakeRepo) FinishTask(_ context.Context, in FinishTaskInput) (Task, error) {
 	f.finished = append(f.finished, in)
+	// finishTask, when set, models FinishUpdateTask's real precondition (it
+	// writes only while the row is pending|running) against a row the test
+	// owns. Unset keeps the original always-succeeds behaviour.
+	if f.finishTask != nil {
+		return f.finishTask(in)
+	}
 	return Task{
 		ID:          in.TaskID,
 		TenantID:    in.TenantID,
@@ -78,8 +119,11 @@ func (f *probeFakeRepo) CountUnfinishedTasks(context.Context, uuid.UUID, uuid.UU
 	return 0, nil
 }
 
-func (f *probeFakeRepo) CountRunningTasksForTenant(context.Context, uuid.UUID) (int64, error) {
-	panic("not implemented")
+func (f *probeFakeRepo) CountRunningTasksForTenant(_ context.Context, tenantID uuid.UUID) (int64, error) {
+	if f.countRunning == nil {
+		panic("not implemented")
+	}
+	return f.countRunning(tenantID)
 }
 
 func (f *probeFakeRepo) ListInFlightTargets(context.Context, uuid.UUID, []uuid.UUID) (map[InFlightKey]struct{}, error) {

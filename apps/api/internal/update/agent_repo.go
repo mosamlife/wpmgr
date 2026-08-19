@@ -195,10 +195,27 @@ func (r *pgRepo) ClaimAgentWaveTask(ctx context.Context, tenantID, runID, taskID
 			return nil
 		}
 
-		row, err := q.MarkUpdateTaskRunning(ctx, sqlc.MarkUpdateTaskRunningParams{ID: taskID, TenantID: tenantID})
+		// staleAfter is passed for uniformity with the plugin/theme/core claim
+		// (worker.go), but the reclaim branch it enables is UNREACHABLE from
+		// here, twice over: the CAS excludes target_type = 'agent' outright,
+		// and the me.Status != TaskPending check above has already returned
+		// ClaimAlreadyClaimed for anything not pending, while holding the
+		// run's advisory lock. So this statement can only ever match on the
+		// 'pending' arm, exactly as it did before the precondition existed,
+		// and the ErrNoRows branch below stays unreachable in practice.
+		row, err := q.MarkUpdateTaskRunning(ctx, sqlc.MarkUpdateTaskRunningParams{
+			ID:         taskID,
+			TenantID:   tenantID,
+			StaleAfter: durationToInterval(siteWriterHoldMax),
+		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("update_task_not_found", "update task not found")
+				// Same statement, same condition, same answer as
+				// pgRepo.MarkTaskRunning: zero rows means the claim was not
+				// granted, NOT that the row is missing. Unreachable here (see
+				// above), but two callers of one statement must not disagree
+				// about what its zero-row case means.
+				return ErrTaskNotClaimed
 			}
 			return domain.Internal("update_task_run_failed", "failed to mark task running").WithCause(err)
 		}
