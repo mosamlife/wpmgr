@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -237,6 +238,27 @@ type registerBody struct {
 	Plan string `json:"plan"`
 }
 
+// bootstrapClaim reads the provisioning claim a first-run caller presented.
+//
+// A HEADER, NOT A BODY FIELD. The claim is a credential rather than user data,
+// and the register body is the one payload on this route that gets echoed into
+// validation errors and request logs. Keeping it in a header also keeps it out
+// of the OpenAPI request schema, so it is never something a generated client
+// offers to fill in: an installer sets it deliberately, once.
+func bootstrapClaim(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader(BootstrapClaimHeader))
+}
+
+// bootstrapLog returns the logger for first-run ownership, tagged so an
+// operator can select these lines out of a busy request log. Mirrors socialLog.
+func (h *Handler) bootstrapLog() *slog.Logger {
+	l := h.logger
+	if l == nil {
+		l = slog.Default()
+	}
+	return l.With(slog.String("component", "auth.bootstrap"))
+}
+
 func (h *Handler) register(c *gin.Context) {
 	var body registerBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -252,17 +274,32 @@ func (h *Handler) register(c *gin.Context) {
 		Plan:       body.Plan,
 	}
 
-	// First account on a fresh install bootstraps frictionlessly (no SMTP exists
-	// yet): it is created verified + active and gets an immediate session. Every
-	// later signup is OPEN self-serve, returns a generic pending response, and
-	// must verify by email before logging in (ADR-045 Phase 3).
+	// FIRST-RUN OWNERSHIP IS DECIDED BY THE CLAIM, NOT BY THE USER COUNT. A
+	// caller presenting the provisioning claim is asking to own this install,
+	// and Service.Bootstrap alone decides whether it may: it verifies the claim
+	// in constant time and then takes the install lock, so the "is this install
+	// unowned?" question is asked once, inside the transaction that acts on the
+	// answer. This handler's job is to route the request, not to pre-judge it —
+	// a count read here would be a second, unlockable opinion on the same
+	// question, which is what a count read here used to be.
+	//
+	// Everything else is OPEN self-serve: a generic pending response, verify by
+	// email before logging in (ADR-045 Phase 3).
 	//
 	// Bootstrap creates a brand-new user who cannot yet have 2FA enrolled, so
 	// the 2FA gate here is defensive (makes the code correct uniformly) rather
 	// than protecting against a real threat today.
-	if count, _ := h.svc.CountUsers(c.Request.Context()); count == 0 {
-		res, err := h.svc.Bootstrap(c.Request.Context(), in, h.newTenant)
+	if claim := bootstrapClaim(c); claim != "" {
+		res, err := h.svc.Bootstrap(c.Request.Context(), in, claim)
 		if err != nil {
+			if !h.svc.BootstrapClaimConfigured() {
+				// Operator-facing only. The response stays the generic refusal;
+				// the reason a correctly-provisioned installer is being turned
+				// away belongs in the log, where the operator is the only
+				// reader. The claim itself is never logged.
+				h.bootstrapLog().Warn("first-run ownership refused: no provisioning claim is configured on this install",
+					"remedy", "set "+BootstrapClaimEnvVar+" to a random secret and restart the control plane")
+			}
 			httpx.Error(c, err)
 			return
 		}

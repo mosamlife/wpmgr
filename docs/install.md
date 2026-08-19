@@ -44,6 +44,12 @@ at boot, so the app accepts them on the first try — are:
 > the server's own boot parsers before printing it, so a generated line is
 > guaranteed to load.
 
+`scripts/init-env.sh` also generates `WPMGR_BOOTSTRAP_CLAIM_SECRET`, a fifth
+value with a different job: it is the provisioning claim that lets you take
+ownership of a fresh install (see [First-run notes](#first-run-notes) below).
+It follows the same idempotence rule as the four secrets above — a value
+already present in `.env` is never rotated by a re-run.
+
 ### Pin your secrets
 
 Stored secrets (operator two-factor enrollments, SMTP passwords, backup-destination
@@ -338,6 +344,59 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
 - Put a TLS-terminating reverse proxy (the bundled `infra/nginx/` config, or
   your own) in front of the published API port (`WPMGR_API_PORT`, default
   `:8081`) for production.
+- **First-run ownership requires the provisioning claim.** The dashboard Sign
+  Up form cannot create the first account. `POST /auth/register` only grants
+  ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set
+  to the value of `WPMGR_BOOTSTRAP_CLAIM_SECRET` — it is a header, never a
+  body field, and is deliberately absent from `openapi.yaml`, so no generated
+  client (including the dashboard) can send it. That value lives in `.env`
+  under that key, generated once by `scripts/init-env.sh` and never rotated
+  by a re-run.
+
+  You never need to look up or paste that value yourself. `scripts/init-env.sh`
+  (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim
+  command as its final next step, with your `.env` path and API port already
+  filled in — run the printed command as-is. The command itself reads the
+  secret out of `.env` at the moment you run it, writes it into a private,
+  600-permission temp curl config file, hands that to curl with `-K`, and
+  deletes the file on exit whether the request succeeds or fails; the value
+  never appears in the printed text, on the command line, or in shell
+  history. Its shape, with a placeholder in place of your real `.env` path:
+
+  ```bash
+  ( env_file="<path to your .env>" && \
+    claim_val="$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' "${env_file}" | head -n1 | sed -E "s/^[^=]*=//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/")" && \
+    claim_cfg="$(mktemp)" && chmod 600 "${claim_cfg}" && \
+    trap 'rm -f "${claim_cfg}"' EXIT && \
+    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' "${claim_val}" >"${claim_cfg}" && \
+    curl -X POST http://localhost:8081/auth/register \
+      -H "Content-Type: application/json" \
+      -K "${claim_cfg}" \
+      -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
+  ```
+
+  **If you already signed up through the dashboard on a brand-new install and
+  are waiting for a verification email: stop waiting, and send the claim
+  request above instead.** A request without the header gets the same
+  `200 {"ok":true,"pending":true}` response whether or not the install has an
+  owner — that response is deliberately identical either way, so the endpoint
+  never reveals ownership state — but on an install with no owner yet,
+  nothing is written and no mail goes out. Once an install has an owner, that
+  same no-header request is ordinary self-serve sign-up: a pending account is
+  created and a real verification email is sent.
+
+  **Symptom: the claim request itself returns `403 registration_closed`.**
+  That response is the same whether `WPMGR_BOOTSTRAP_CLAIM_SECRET` doesn't
+  match (or isn't set on the server) or the install already has an owner — by
+  the same non-revealing design as above. **Upgrade note:** on a fresh
+  install that has never been claimed, a plain `docker compose pull && up -d`
+  does not add this variable to an already-written `.env` — nothing
+  regenerates it from restarting a container on a new image. Re-run
+  `scripts/init-env.sh` (safe and idempotent — it fills only the missing
+  key), or set `WPMGR_BOOTSTRAP_CLAIM_SECRET` yourself, then restart the
+  `api` service. If the install already has an owner, the missing variable
+  produces one boot warning and nothing else — there is nothing left to
+  claim.
 
 For local development with hot-reload overrides, use `make dev` (runs
 `docker-compose.yml` + `docker-compose.dev.yml`) — see

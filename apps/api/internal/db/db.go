@@ -259,6 +259,48 @@ func setTenant(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
 	return nil
 }
 
+// InInstallLockTx runs fn inside a single transaction that holds an
+// install-wide advisory lock, taken as the transaction's FIRST statement.
+//
+// It exists for the one decision that is scoped to the whole install rather
+// than to a tenant: whether this install has an owner yet. That question is
+// read-then-write across three tables, and answering it in one transaction
+// under one lock is what makes "exactly one first organisation" true rather
+// than merely likely. pg_advisory_xact_lock is released by COMMIT or ROLLBACK,
+// so the lock cannot leak however fn ends.
+//
+// The lock is keyed on (key, key) rather than (key, tenant) — the sibling
+// per-tenant locks such as auth.MemberRolesLockKey and org.LifecycleLockKey
+// cannot apply, because no tenant exists yet at the moment the decision is
+// taken. There is exactly one such lock per install.
+//
+// fn is handed a scopeTenant callback because the tenant this transaction is
+// deciding about does not exist when the transaction opens: fn creates it, then
+// calls scopeTenant to bring app.tenant_id into scope for the RLS-protected
+// writes that follow, all still inside this one transaction. GUC-setting stays
+// in this file; no repo sets app.tenant_id itself.
+func (p *Pool) InInstallLockTx(ctx context.Context, key string, fn func(tx pgx.Tx, scopeTenant func(uuid.UUID) error) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($1))`, key); err != nil {
+		return fmt.Errorf("install advisory lock %q: %w", key, err)
+	}
+
+	scopeTenant := func(tenantID uuid.UUID) error { return setTenant(ctx, tx, tenantID) }
+	if err := fn(tx, scopeTenant); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
 // InTenantTxAsUser runs fn inside a transaction with BOTH app.tenant_id and
 // app.user_id set. The user GUC enables the memberships_self_read policy in
 // addition to the per-tenant isolation policy — used where a tenant-scoped

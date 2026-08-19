@@ -277,15 +277,35 @@ func TestSocialSignInDoesNotMintAnOrgDuringTheDeleteGraceWindow(t *testing.T) {
 	created := 0
 	newTenant := tenantCreator(t, pool, &created)
 
-	// The install's only user, signed in socially once, with an org.
-	first, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), newTenant)
+	// The install's only user, WITH an org. She gets it the way anyone gets
+	// one: the claim-bearing first-run call, which is the only path that mints
+	// an organisation. A social sign-in never does, so it cannot be used to
+	// arrange this precondition — that is the whole subject of
+	// TestFirstRunOwnership_SocialSignInNeverMints.
+	svc.SetBootstrapClaimSecret(testClaim)
+	first, err := svc.Bootstrap(ctx, auth.RegisterInput{
+		Email:    "sarah@acme.com",
+		Password: "a-very-strong-password",
+		Name:     "Sarah",
+	}, testClaim)
 	if err != nil {
-		t.Fatalf("first social sign-in: %v", err)
+		t.Fatalf("claim the install: %v", err)
 	}
 	if len(first.Memberships) != 1 {
-		t.Fatalf("first run must bootstrap exactly one organisation, got %d", len(first.Memberships))
+		t.Fatalf("first run must create exactly one organisation, got %d", len(first.Memberships))
 	}
 	orgID := first.Memberships[0].TenantID
+
+	// The social linking policy refuses to attach a provider identity to an
+	// address this install never verified (the account-takeover defence, not
+	// what this test is about), so verify it out of band first.
+	if _, err := pool.Exec(ctx,
+		"UPDATE users SET email_verified_at = now() WHERE email = $1", "sarah@acme.com"); err != nil {
+		t.Fatalf("mark the owner verified: %v", err)
+	}
+	if _, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), newTenant); err != nil {
+		t.Fatalf("link the provider: %v", err)
+	}
 
 	// The owner deletes it. Soft delete: the row survives the grace window.
 	if _, err := pool.Exec(ctx, "UPDATE tenants SET deleted_at = now() WHERE id = $1", orgID); err != nil {
@@ -304,35 +324,42 @@ func TestSocialSignInDoesNotMintAnOrgDuringTheDeleteGraceWindow(t *testing.T) {
 		t.Fatalf("got %d visible memberships, want 0: a soft-deleted org must stay deleted until its owner restores it", len(second.Memberships))
 	}
 
-	// And the same login through the password path agrees.
-	if _, lerr := svc.Login(ctx, "sarah@acme.com", "irrelevant"); lerr == nil {
-		t.Fatal("precondition: a social account has no password")
+	// And the same login through the password path agrees. She has a password
+	// now (the first-run call set one), so this is the stronger form of the
+	// original check: the two paths are compared on the same account, and both
+	// must report zero visible memberships rather than one merely failing.
+	pw, lerr := svc.Login(ctx, "sarah@acme.com", "a-very-strong-password")
+	if lerr != nil {
+		t.Fatalf("password login: %v", lerr)
+	}
+	if len(pw.Memberships) != 0 {
+		t.Fatalf("the password path reports %d visible membership(s); the social path reports 0", len(pw.Memberships))
 	}
 	if created != createdBefore {
 		t.Fatal("the password path created an organisation")
 	}
 }
 
-// TestSocialSignInStillBootstrapsTheFirstInstall guards the correction from
-// overshooting: a genuinely new install must still get its first organisation
-// from its first social sign-in, or the first user lands with nowhere to work.
-func TestSocialSignInStillBootstrapsTheFirstInstall(t *testing.T) {
-	pool := startPostgres(t)
-	ctx := context.Background()
-	svc, _ := newAuthStack(pool)
-
-	created := 0
-	res, err := svc.SignInWithSocial(ctx, googleIdentity("sarah@acme.com"), tenantCreator(t, pool, &created))
-	if err != nil {
-		t.Fatalf("first social sign-in: %v", err)
-	}
-	if created != 1 || len(res.Memberships) != 1 || res.Memberships[0].Role != authz.RoleOwner {
-		t.Fatalf("first run must create one org and one owner membership: created=%d memberships=%+v", created, res.Memberships)
-	}
-	if res.ActiveTenant == uuid.Nil {
-		t.Fatal("first run left the session with no active tenant")
-	}
-}
+// TestSocialSignInStillBootstrapsTheFirstInstall IS GONE, AND ITS ABSENCE IS
+// THE POINT. It asserted that a first social sign-in mints the install's first
+// organisation. That is no longer true and is no longer wanted: minting the
+// first organisation is an act of provisioning, authorised by the provisioning
+// claim, and a social sign-in is a redirect shaped by the identity provider
+// with nowhere to carry one. A path that cannot check the claim must not make
+// the grant.
+//
+// The property that replaced it is asserted in
+// auth_first_run_ownership_integration_test.go:
+//   - TestFirstRunOwnership_SocialSignInNeverMints — an unclaimed install is
+//     left with zero tenants and zero owner memberships.
+//   - TestFirstRunOwnership_SocialSignInStillWorksOnAClaimedInstall — the
+//     does-not-over-fire half: once the install has an owner, a social sign-in
+//     resolves to the org that person already owns.
+//
+// The concern this test carried — that the first user must not land with
+// nowhere to work — is met by the claim-bearing first-run call, which creates
+// the org and issues the session in one request
+// (TestFirstRunOwnership_CorrectClaimStillWorks).
 
 // ---------------------------------------------------------------------------
 // CompleteSocialLink re-checks the policy against fresh state
@@ -420,6 +447,11 @@ func TestSigningInSociallyDoesNotAcceptInvitations(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -458,6 +490,11 @@ func TestASocialAccountCanAcceptAnInvitationOnceSignedIn(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -501,6 +538,11 @@ func TestAcceptStillRefusesAPasswordlessAccountWithoutASession(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -545,6 +587,11 @@ func TestInvitationIsNotSpentWhenTheGrantFails(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
@@ -615,6 +662,11 @@ func TestTheSessionsOwnAddressCostsNoAttempt(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 	svc, auditRec := newAuthStack(pool)
+	// A social account is created below, and creating one is a property of a
+	// NORMAL install: while no owner membership exists anywhere, this install
+	// accepts no new accounts on any unauthenticated path, so the first-run slot
+	// stays with whoever holds the provisioning claim. Claim it first.
+	claimInstall(t, svc)
 	inviteSvc := invitation.NewService(pool, auth.NewRepo(pool), auditRec, noopSessions{}, nil, "")
 
 	tenantID := seedTenant(t, pool, "acme")
