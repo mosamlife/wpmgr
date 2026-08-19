@@ -277,9 +277,11 @@ func (s *Service) GetFleetStatus(ctx context.Context, tenantID uuid.UUID, siteID
 			item.Up = um.Up
 			item.LastProbeAt = um.LastProbeAt
 			item.TLSExpiry = um.TLSExpiry
-			if um.UptimePct7d != nil {
-				item.UptimePct7d = *um.UptimePct7d
-			}
+			// GH #460: carry the store's nil through verbatim. The nil check
+			// that used to guard this assignment discarded "no measurement"
+			// and left the field at its zero value, which the wire cannot
+			// distinguish from a measured 0%.
+			item.UptimePct7d = um.UptimePct7d
 			item.AvgLatencyMs = um.AvgLatencyMs
 			// GH #291 Phase 2: surface the app-health verdict alongside the
 			// (unchanged) reachability fields above.

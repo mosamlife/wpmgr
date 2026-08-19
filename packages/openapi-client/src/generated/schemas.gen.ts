@@ -4819,6 +4819,9 @@ export const FleetUptimeStatusItemSchema = {
     uptime_pct_7d: {
       type: "number",
       format: "double",
+      nullable: true,
+      description:
+        '7-day uptime percentage, or null when the site has NO measurement\nin the window — never probed, monitoring never enabled, or its\nwhole history aged past the 90-day probe retention. Null is not\nzero: 0 means "measured, and down for the whole window", and a\nclient that renders null as 0 paints a never-probed site as a\ntotal outage (GH #460). Treat null as "no data" and say so.\n',
     },
     avg_latency_ms_7d: {
       type: "number",

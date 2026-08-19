@@ -198,9 +198,21 @@ type FleetStatusItem struct {
 	// self-evident (currently only populated for FleetStatusDegraded, one of
 	// the FleetReason* constants). Empty for up/down/unknown.
 	StatusReason     string     `json:"status_reason,omitempty"`
-	Up               *bool      `json:"up"`
-	LastProbeAt      *time.Time `json:"last_probe_at"`
-	UptimePct7d      float64    `json:"uptime_pct_7d"`
+	Up          *bool      `json:"up"`
+	LastProbeAt *time.Time `json:"last_probe_at"`
+	// UptimePct7d is the 7-day uptime percentage, and is NIL when the site
+	// has no measurement in the window — never probed, monitoring never
+	// enabled, or its whole history has aged past probeRetention. It is a
+	// POINTER precisely so that case serialises as `null` rather than `0`:
+	// as a bare float64 it carried the Go zero value onto the wire, and the
+	// dashboard read 0 as "0% uptime" and painted a never-probed site as a
+	// solid 90-day outage strip (GH #460). The frontend contract has always
+	// declared this `number | null` (apps/web/src/features/fleet/fleet-types.ts);
+	// this is the API finally sending the shape it promised. Do not
+	// dereference-with-default it back into a float anywhere: "no data" and
+	// "0% available" are different facts about a site and an operator may
+	// be putting whichever one we send in front of their own client.
+	UptimePct7d      *float64   `json:"uptime_pct_7d"`
 	AvgLatencyMs     *float64   `json:"avg_latency_ms"`
 	TLSExpiry        *time.Time `json:"tls_expiry"`
 	LatencySparkline []float64  `json:"latency_sparkline"`

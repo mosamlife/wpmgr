@@ -172,7 +172,7 @@ func TestGetFleetStatus_StoreDataWhenPostgresEmpty(t *testing.T) {
 		t.Errorf("Up = false, want true")
 	}
 	// uptime_pct_7d must reflect store value.
-	if it.UptimePct7d != 99.5 {
+	if it.UptimePct7d == nil || *it.UptimePct7d != 99.5 {
 		t.Errorf("UptimePct7d = %v, want 99.5", it.UptimePct7d)
 	}
 	// avg_latency_ms must be non-nil and match.
@@ -313,7 +313,7 @@ func TestGetFleetStatus_PostgresModeParity(t *testing.T) {
 	if it.Up == nil || !*it.Up {
 		t.Errorf("Up mismatch: got %v", it.Up)
 	}
-	if it.UptimePct7d != pct {
+	if it.UptimePct7d == nil || *it.UptimePct7d != pct {
 		t.Errorf("UptimePct7d = %v, want %v", it.UptimePct7d, pct)
 	}
 	if it.AvgLatencyMs == nil || *it.AvgLatencyMs != latency {
@@ -429,7 +429,8 @@ func TestGetFleetStatus_DisconnectedCachedUpStaysUpDisplayOnlyChanges(t *testing
 	if healthy.Up == nil || *healthy.Up != *broken.Up {
 		t.Fatalf("Up mismatch: healthy=%v broken=%v, want identical", healthy.Up, broken.Up)
 	}
-	if broken.UptimePct7d != pct || healthy.UptimePct7d != broken.UptimePct7d {
+	if broken.UptimePct7d == nil || *broken.UptimePct7d != pct ||
+		healthy.UptimePct7d == nil || *healthy.UptimePct7d != *broken.UptimePct7d {
 		t.Fatalf("UptimePct7d mismatch: healthy=%v broken=%v, want both %v", healthy.UptimePct7d, broken.UptimePct7d, pct)
 	}
 	if broken.AvgLatencyMs == nil || *broken.AvgLatencyMs != latency {

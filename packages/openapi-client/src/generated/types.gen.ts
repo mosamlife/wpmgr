@@ -2678,6 +2678,15 @@ export type FleetUptimeStatusItem = {
    *
    */
   status_reason?: string;
+  /**
+   * 7-day uptime percentage, or null when the site has NO measurement
+   * in the window — never probed, monitoring never enabled, or its
+   * whole history aged past the 90-day probe retention. Null is not
+   * zero: 0 means "measured, and down for the whole window", and a
+   * client that renders null as 0 paints a never-probed site as a
+   * total outage (GH #460). Treat null as "no data" and say so.
+   *
+   */
   uptime_pct_7d: number;
   avg_latency_ms_7d: number;
   latest_total_ms?: number;

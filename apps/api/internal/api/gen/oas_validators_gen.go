@@ -6849,8 +6849,15 @@ func (s *FleetUptimeStatusItem) Validate() error {
 		})
 	}
 	if err := func() error {
-		if err := (validate.Float{}).Validate(float64(s.UptimePct7d)); err != nil {
-			return errors.Wrap(err, "float")
+		if value, ok := s.UptimePct7d.Get(); ok {
+			if err := func() error {
+				if err := (validate.Float{}).Validate(float64(value)); err != nil {
+					return errors.Wrap(err, "float")
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}(); err != nil {

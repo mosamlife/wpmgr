@@ -56536,7 +56536,7 @@ func (s *FleetUptimeStatusItem) encodeFields(e *jx.Encoder) {
 	}
 	{
 		e.FieldStart("uptime_pct_7d")
-		e.Float64(s.UptimePct7d)
+		s.UptimePct7d.Encode(e)
 	}
 	{
 		e.FieldStart("avg_latency_ms_7d")
@@ -56672,9 +56672,7 @@ func (s *FleetUptimeStatusItem) Decode(d *jx.Decoder) error {
 		case "uptime_pct_7d":
 			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
-				v, err := d.Float64()
-				s.UptimePct7d = float64(v)
-				if err != nil {
+				if err := s.UptimePct7d.Decode(d); err != nil {
 					return err
 				}
 				return nil
@@ -73134,6 +73132,52 @@ func (s NilDbCleanStatusLastResult) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *NilDbCleanStatusLastResult) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes float64 as json.
+func (o NilFloat64) Encode(e *jx.Encoder) {
+	if o.Null {
+		e.Null()
+		return
+	}
+	e.Float64(float64(o.Value))
+}
+
+// Decode decodes float64 from json.
+func (o *NilFloat64) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode NilFloat64 to nil")
+	}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v float64
+		o.Value = v
+		o.Null = true
+		return nil
+	}
+	o.Null = false
+	v, err := d.Float64()
+	if err != nil {
+		return err
+	}
+	o.Value = float64(v)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s NilFloat64) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *NilFloat64) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
