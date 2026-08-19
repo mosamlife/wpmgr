@@ -1,6 +1,6 @@
 # ADR-037 — WPMgr site-management roadmap
 
-**Status:** proposed
+**Status:** Superseded by ADR-060
 **Date:** 2026-05-29
 **Sources:** ADR-036 (backup-restore gap, separate doc) + 8 parallel research reports
 - D1 storage adapters · D2 backup engine · D3 restore engine · D4 UI/UX (backup)

@@ -1,84 +1,1032 @@
-RESTORE-REQUIRED: This file was accidentally overwritten by an earlier research
-agent run. The committed copy on `main` is intact and ends at ADR-043 (ADRs
-044-053 live as docs/adr/ADR-0NN-*.md and are referenced from migrations/code
-but were never appended here). DO NOT trust the lines below as the real file.
+# WPMgr Architecture Decision Records — historical archive
 
-Recover the real file, then append the new ADR:
+This file holds ADR-001 through ADR-033 and ADR-038 through ADR-043, as
+originally recorded. ADR-034, ADR-035 and ADR-036 were never entered here;
+`docs/adr/README.md`'s Numbering section records what is known about each.
+ADR-037, and every ADR from ADR-044 onward, were never entered here either —
+each exists only as an individual file under `docs/adr/`. ADR-038 through
+ADR-043 exist in both places: here, and as individual files under
+`docs/adr/`.
 
-    git checkout -- DECISIONS.md
+`docs/adr/README.md` is the live index of every ADR that has a file. This
+file is not appended to any more. Register new decisions in
+`docs/adr/README.md` and write them as `docs/adr/ADR-NNN-slug.md`.
 
-Then append the ADR-054 draft below (next-free number: ADR-050..ADR-053 are
-already taken by docs/adr/ADR-050..053 — incremental backup, archive-delta,
-WOFF2 transcoding, font subsetting). Confirm the highest number in the restored
-file before committing.
+---
 
-------------------------------------------------------------------------------
-APPEND THIS AFTER ADR-043 IN THE RESTORED FILE:
-------------------------------------------------------------------------------
+## Template
 
-## ADR-054: Real User Monitoring (RUM) storage & scale — Postgres rollups, not raw beacons
+```markdown
+## ADR-NNN: <Title>
+- **Status:** Proposed | Accepted | Superseded
+- **Date:** YYYY-MM-DD
+- **Context:** why this decision is needed
+- **Options considered:** table with scores
+- **Decision:** chosen option + reasoning
+- **Consequences:** tradeoffs accepted
+```
+
+---
+
+## Locked stack summary (Phase 3 outcome)
+
+| Area | Choice | ADR |
+|------|--------|-----|
+| ORM / query layer | sqlc (+ pgx/v5) | ADR-001 |
+| Migrations | Atlas Community Edition (Apache-2.0 only) | ADR-002 |
+| Job queue | River (Postgres-native) | ADR-003 |
+| OpenAPI codegen (Go) | ogen | ADR-004 |
+| Validation (Go) | go-playground/validator v10 | ADR-005 |
+| Logging (Go) | log/slog | ADR-006 |
+| Config (Go) | koanf | ADR-007 |
+| WebSocket (Go) | coder/websocket | ADR-008 |
+| HTTP client (Go) | net/http + SSRF-hardened transport | ADR-009 |
+| S3 client (Go) | aws-sdk-go-v2 | ADR-010 |
+| Observability | OTel SDK + otelgin → Collector → Tempo + Prometheus + Grafana | ADR-011 |
+| Frontend router | TanStack Router | ADR-012 |
+| Data fetching | TanStack Query v5 | ADR-013 |
+| Component lib | shadcn/ui + Radix + TanStack Table | ADR-014 |
+| Forms | react-hook-form | ADR-015 |
+| Validation (TS) | Zod 4 | ADR-016 |
+| Client state | Zustand | ADR-017 |
+| Charts | Tremor (on Recharts) | ADR-018 |
+| i18n | Lingui v5 | ADR-019 |
+| E2E | Playwright | ADR-020 |
+| PHP testing | PHPUnit (+ Brain Monkey, PHPUnit Polyfills) | ADR-021 |
+| PHP static analysis | PHPStan (+ WordPress stubs) | ADR-022 |
+| OIDC client (Go) | coreos/go-oidc v3 + golang.org/x/oauth2 | ADR-023 |
+| Sessions | alexedwards/scs (Redis store, pgx fallback) | ADR-024 |
+| Password hashing | alexedwards/argon2id (Argon2id, OWASP) | ADR-025 |
+| Self-host IdP | Dex | ADR-026 |
+| ClickHouse driver (metrics) | clickhouse-go v2 | ADR-028 |
+| Email/SMTP | wneessen/go-mail | ADR-029 |
+| Auto-login nonce store | Postgres + Redis (redigo) | ADR-030 |
+| Auto-login token format | Ed25519 JWT (reuse agentcmd) | ADR-031 |
+| Backup engine (agent) | phpbu library, detached subprocess, custom age Crypter + presigned-S3 Sync | ADR-032 (superseded by ADR-033) |
+| Backup engine (agent, V0 final) | Pure-PHP `ifsnop/mysqldump-php` + `ZipArchive`; `fastcgi_finish_request` + `wp_schedule_single_event` watchdog; checkpointed task state | ADR-033 |
+
+## Phase 3 risk register
+
+Cross-cutting findings surfaced during research that need a decision or follow-up
+before/within Phase 4:
+
+1. **MinIO server is no longer maintained (HIGH) — RESOLVED 2026-05-27.** The MinIO
+   server community edition went maintenance-only in late 2025 and the repo was marked
+   no-longer-maintained / archived ~2026-02-12
+   ([minio/minio#21714](https://github.com/minio/minio/issues/21714)). The *client* SDK
+   choice (aws-sdk-go-v2, ADR-010) is vendor-neutral and unaffected.
+   **Decision: replace MinIO with [SeaweedFS](https://github.com/seaweedfs/seaweedfs)
+   (Apache-2.0, Go, actively maintained) as the self-host S3-compatible object store.**
+   Phase 4 docker-compose ships SeaweedFS in S3-gateway mode; the `blobstore` interface
+   keeps Garage/RustFS/AWS S3 as drop-in alternatives.
+2. **Atlas is open-core (MEDIUM).** We restrict ourselves to the Apache-2.0 Community
+   Edition and must avoid Pro/EULA-gated features to stay fully OSS. Fallback: goose
+   (plain portable SQL migrations). See ADR-002.
+3. **ogen is not Gin-native (MEDIUM).** ogen generates its own router; Gin (locked)
+   stays the outer HTTP layer (middleware/auth/static) while ogen owns the typed API
+   route group. If integration friction is high, oapi-codegen (native Gin generator)
+   is the documented fallback — same `openapi.yaml`. See ADR-004.
+4. **openapi-react-query → maintenance mode (LOW).** Prefer Hey API's
+   `@hey-api/openapi-ts` TanStack Query plugin for client generation; isolate behind one
+   adapter. See ADR-013.
+5. **WordPress PHPStan stubs bus-factor (LOW).** `php-stubs/wordpress-stubs` +
+   `szepeviktor/phpstan-wordpress` depend on a single maintainer who signaled possible
+   discontinuation without funding; mitigate via sponsorship or be ready to vendor/fork.
+   See ADR-022.
+6. **shadcn/ui WCAG 2.2 AA gaps (LOW).** ~34/48 components pass out of the box; budget a
+   remediation audit (the Data Table example needs a `<caption>`, etc.). See ADR-014.
+
+---
+
+## ADR-001: Go ORM / Query Layer — sqlc
 
 - **Status:** Proposed
-- **Date:** 2026-06-09
-- **Context:** The Performance Suite (Phase 6) ships an MIT tracker (`apps/tracker`,
-  web-vitals) that beacons Core Web Vitals from every visitor of every managed site.
-  RUM is high-cardinality / high-volume (potentially every pageview). We run Postgres,
-  NOT ClickHouse (ADR-028's ClickHouse is uptime-metrics-only and we have since chosen
-  Postgres for time-series history — see m52 cache-hit-ratio-history). The same schema
-  must serve multi-tenant SaaS AND a 1 GB single-box self-host without OOM, keep
-  per-site cost ≈ $0, and stay inside the ~$470/mo infra floor. Web-Vitals reporting is
-  p75/p95 (a percentile, not a mean) so we must preserve a *distribution*, not an average.
-
+- **Date:** 2026-05-27
+- **Context:** WPMgr is a Go 1.26 + Gin modular monolith on Postgres, AGPLv3, intended to be self-hostable and to age well across many years and contributors. We need a data-access layer that is type-safe, predictable in production (no query surprises), license-clean for redistribution, and that composes cleanly with our migration tool and OpenAPI codegen. We prioritize boring/proven, thin and swappable, and good DX. Candidates: [sqlc](https://github.com/sqlc-dev/sqlc) (compile SQL → type-safe Go), [Bun](https://github.com/uptrace/bun) (SQL-first query builder/ORM), [Ent](https://github.com/ent/ent) (graph/schema-as-code ORM with codegen), [GORM](https://github.com/go-gorm/gorm) (full reflective ORM).
 - **Options considered:**
 
-  Storage model:
+| Tool | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|------|:-:|:-:|:-:|:-:|:-:|-------|
+| **sqlc** | 5 | 5 | 4 | 5 | 5 | v1.31.1 Apr 2026, 17.8k★, MIT. Generates `database/sql`/pgx code from raw SQL — zero runtime reflection, native pgx perf. |
+| Bun | 4 | 4 | 4 | 4 | 5 | Latest Feb 2026, ~4.8k★, BSD-2-Clause. SQL-first query builder, lighter than a full ORM but uses runtime reflection. |
+| Ent | 4 | 4 | 3 | 4 | 5 | v0.14.x, 17.1k★, Apache-2.0, maintained by the Atlas team. Powerful but opinionated schema-as-code; heavier mental model + generated graph API. |
+| GORM | 5 | 2 | 3 | 5 | 5 | v1.x (Nov 2025), ~39k★, MIT. Most popular but reflection-heavy, runtime query surprises, weaker type safety. |
 
-  | Model | Maint | Perf | DX | Fit | Cost | Notes |
-  |---|---|---|---|---|---|---|
-  | **Histogram-bucket rollups (CHOSEN)** | 5 | 5 | 4 | 5 | 5 | per-(site,url,metric,device,country,bucket) counts; raw kept ≤48 h for drill-down only. Mirrors GoatCounter (aggregate-by-default) + CrUX histograms. Pure SQL, no extension. |
-  | Raw events forever + percentile_cont | 5 | 1 | 4 | 2 | 1 | exact p75 but full scan/sort per query; OOM risk on self-host; Plausible needed ClickHouse for exactly this. |
-  | t-digest aggregate (tvondra/tdigest) | 3 | 5 | 3 | 2 | 4 | best percentile accuracy & mergeable, but a C extension — unavailable on managed PG / a default self-host box. DISQUALIFIED on portability. |
-  | Reservoir-sample raw + percentile_cont | 4 | 3 | 3 | 3 | 4 | bounded storage but lossy at the tail and still needs sort-per-query. |
+  Sources: [sqlc releases](https://github.com/sqlc-dev/sqlc/releases), [sqlc repo/license](https://github.com/sqlc-dev/sqlc), [Bun repo/license](https://github.com/uptrace/bun), [Bun changelog](https://github.com/uptrace/bun/blob/master/CHANGELOG.md), [Ent repo/license](https://github.com/ent/ent), [Ent on entgo.io](https://entgo.io/), [GORM releases](https://github.com/go-gorm/gorm/releases), [GORM stars/ossinsight](https://ossinsight.io/collections/golang-orm), [Go ORM comparison 2026 (Encore)](https://encore.cloud/resources/go-orms).
 
-  Sources: GoatCounter aggregate-by-default (https://github.com/arp242/goatcounter),
-  Plausible chose ClickHouse for raw (https://github.com/plausible/analytics),
-  CrUX histogram thresholds (https://web.dev/articles/defining-core-web-vitals-thresholds),
-  tdigest extension portability (https://github.com/tvondra/tdigest),
-  Postgres width_bucket (https://pgpedia.info/w/width_bucket.html),
-  PG tuple overhead ~28 B/row (https://rjuju.github.io/postgresql/2016/09/16/minimizing-tuple-overhead.html).
+- **Decision:** **sqlc**, because it gives compile-time type safety over hand-written, reviewable SQL with no runtime reflection or query-builder magic — the "boring, predictable" property we want for a long-lived self-hosted product on Postgres. It pairs with `pgx` for top-tier performance, and crucially it composes with our chosen migration tool: sqlc reads the same SQL schema files Atlas manages, so schema is a single source of truth (see ADR-002). Tie-break vs. Bun went to sqlc on ecosystem fit (raw SQL is maximally swappable; the generated layer is a thin interface you can replace) and DX for a SQL-centric team. We avoid GORM (reflection/perf/predictability) and Ent (heavier graph abstraction than a Gin monolith needs).
+- **Consequences:** All queries live in `.sql` files reviewed like code; developers must know SQL (acceptable, arguably a feature). No dynamic query building from sqlc itself — for the rare dynamic-filter endpoint we add a thin hand-written `pgx` query or a small builder (e.g. `squirrel`) behind the same repository interface, keeping the layer swappable. We standardize on the `pgx/v5` driver. Schema `.sql` files are shared with Atlas, enforcing one source of truth.
 
-- **Decision:** Store **fixed-boundary histogram-bucket rollups** in Postgres, not raw beacons.
-  - Ingest path: tracker (MIT) → CP `POST /perf/rum` (NOT the agent; the agent never
-    sees visitor traffic) → short-retention `rum_events_raw` (48 h, drill-down + late
-    re-aggregation only) → River rollup worker folds into `rum_rollup_hourly` →
-    daily worker folds hourly → `rum_rollup_daily`.
-  - Each rollup row is per `(site_id,url_pattern,metric,device,country,bucket_start)`
-    and carries: `sample_count`, `bucket_counts` (int[] over CrUX-derived boundaries),
-    `sum_value`, `min/max`. p75/p95 is computed at read time by linear interpolation
-    across the cumulative histogram (no extension, no per-query sort).
-  - Histogram boundaries are metric-specific and fixed (LCP/INP in ms, CLS ×1000):
-    aligned to CrUX good/needs-improvement/poor thresholds (LCP 2500/4000, INP 200/500,
-    CLS 100/250) with ~16-32 sub-buckets so interpolated p75 error is < ~5 %.
-  - Cardinality control at ingest: URL normalization (strip query, template-ize numeric/
-    UUID/slug path segments), `device` bucketed to {mobile,tablet,desktop}, `country` to
-    ISO-2, a per-site `max_distinct_urls` cap (overflow → `__other__`), and a per-site
-    `sample_rate` (1.0 self-host default; SaaS scales down for high-traffic sites).
-  - RLS mirrors m55/m42 EXACTLY: `tenant_id` denormalized, FORCE ROW LEVEL SECURITY,
-    `*_tenant_isolation` (USING+WITH CHECK on app.tenant_id) + `*_agent` (cross-tenant,
-    for the River rollup/GC workers under InAgentTx). Time-range partition the raw table
-    BRIN-or-native by day; rollups stay un-partitioned (small).
-  - Retention: raw 48 h (SaaS) / 24 h (self-host); hourly 14 d / 7 d; daily 13 mo / 90 d.
-    Self-host caps: `sample_rate` honored, `max_distinct_urls` lower, raw drill-down
-    optional (GoatCounter "individual pageviews" opt-in pattern).
+## ADR-002: Migration Tool — Atlas (Community Edition)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** We need schema migrations for Postgres that (a) keep a single source-of-truth schema that sqlc can also consume, (b) support versioned migrations for safe self-hosted upgrades, (c) are license-clean for AGPLv3 redistribution, and (d) have a CLI usable in CI and in the self-host upgrade path. Candidates: [goose](https://github.com/pressly/goose), [golang-migrate](https://github.com/golang-migrate/migrate), [Atlas](https://github.com/ariga/atlas).
+- **Options considered:**
+
+| Tool | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|------|:-:|:-:|:-:|:-:|:-:|-------|
+| **Atlas (CE)** | 5 | 5 | 5 | 5 | 4 | Releases through 2026, very active, broad DB support. Declarative + versioned, diffs schema automatically, **first-class sqlc integration**. Open-core: CE binary is Apache-2.0; some advanced features are EULA/Pro-only. |
+| goose | 5 | 5 | 4 | 4 | 5 | v3, latest Apr 2026, ~10.4k★. Simple SQL/Go migrations, library + CLI, embeddable. No declarative diffing; you write migrations by hand. |
+| golang-migrate | 3 | 5 | 3 | 4 | 5 | v4.19.1 Nov 2025. Stable and widely used but lower release cadence; up/down SQL only, no schema diffing; recent Docker-image CVE backlog. |
+
+  Sources: [Atlas repo](https://github.com/ariga/atlas), [Atlas Community Edition (Apache-2.0)](https://atlasgo.io/community-edition), [Atlas + sqlc versioned guide](https://atlasgo.io/guides/frameworks/sqlc-versioned), [Atlas + sqlc declarative guide](https://atlasgo.io/guides/frameworks/sqlc-declarative), [goose repo](https://github.com/pressly/goose), [goose releases](https://github.com/pressly/goose/releases), [golang-migrate releases](https://github.com/golang-migrate/migrate/releases), [golang-migrate CVE issue #1357](https://github.com/golang-migrate/migrate/issues/1357).
+
+- **Decision:** **Atlas Community Edition**, because it is the only candidate with first-class sqlc integration: the same `schema.sql` is the desired state for both tools, and `atlas migrate diff` auto-generates versioned migrations from schema changes, eliminating the hand-written-migration drift that plagues goose/golang-migrate. This directly realizes the "single source of truth" decided in ADR-001 and wins the tie on DX + ecosystem fit. The CE binary we ship/use is Apache-2.0 — fully compatible with AGPLv3 redistribution.
+- **Consequences:** We use **only the Apache-2.0 Community Edition** and the open Apache-2.0 versioned-migration workflow; we must avoid depending on Atlas Pro/EULA-gated features so the self-hosted product stays fully OSS (this is the reason for the 4/5 license score — flagged in the risk register). Migrations are committed as SQL under `migrations/` and applied via `atlas migrate apply` in CI and on self-host upgrades; a `dev-url` Postgres (Docker) is required at authoring time for diffing. Fallback: if Atlas's open features ever regress behind the paywall, goose is the drop-in plan B — migrations are plain SQL and portable, keeping this layer swappable.
+
+## ADR-003: Job Queue — River
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr runs backups, updates, and scans as background jobs. These are durable, retryable, sometimes long-running tasks. Self-hosters want minimal infra; the stack already ships Postgres and Redis. Candidates: River (Postgres-native), Asynq (Redis-native), Temporal (durable workflow engine), and raw Postgres LISTEN/NOTIFY. Raw LISTEN/NOTIFY is not durable on its own — notifications live in an in-memory queue and are lost if a listener is disconnected; there is no replay, no dead-letter, no consumer groups, and an ~8KB payload cap ([postgresql.org NOTIFY docs](https://www.postgresql.org/docs/current/sql-notify.html), [thinhdanggroup.github.io](https://thinhdanggroup.github.io/postgres-as-a-message-bus/)). It can be a wake-up "doorbell" over a durable table but is not a queue by itself. Temporal is a different class: self-hosting requires Postgres/MySQL plus Cassandra or Elasticsearch and multiple services, with high operational cost — overkill for cron-like task fan-out ([docs.temporal.io self-hosted guide](https://docs.temporal.io/self-hosted-guide)). That leaves River vs Asynq as realistic fits.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **River** (Postgres) | 5 — v0.31.0 Feb 2026, ~5.2k★ ([releases](https://github.com/riverqueue/river/releases)) | 4 — Postgres-backed; ample for backups/scans | 5 — transactional enqueue, typed jobs, web UI ([riverqueue.com](https://riverqueue.com/)) | 5 — uses existing Postgres + pgx; zero new infra | 5 — MPL-2.0, AGPLv3-compatible | Postgres-only |
+| Asynq (Redis) | 3 — v0.26.0 Feb 2026, 13.3k★, pre-1.0 ([repo](https://github.com/hibiken/asynq)) | 5 — Redis-backed, very fast | 4 — clean API, asynqmon UI | 4 — Redis present, but no transactional enqueue with Postgres data | 5 — MIT | Redis required |
+| Temporal | 5 ([sdk-go](https://github.com/temporalio/sdk-go)) | 4 | 2 — workflow paradigm, steep | 1 — needs Cassandra/ES + multi-service cluster | 4 | Heavy infra |
+| Postgres LISTEN/NOTIFY (raw) | 5 — core Postgres | 3 | 2 — hand-build retries/DLQ/visibility | 3 — no new infra but not a real queue | 5 | Not durable alone |
+
+- **Decision:** **River**, because it gives a durable, retryable, production queue with a web UI while adding zero infrastructure beyond the Postgres + pgx layer already locked in. Transactional enqueue means a "schedule backup" job is guaranteed consistent with the row that triggered it — a real correctness win for a management SaaS. Its Postgres-only model is exactly what minimal-footprint self-hosters want. Asynq is faster and more starred but is pre-1.0, requires Redis as a durable store, and can't transactionally couple jobs to Postgres state. Temporal and raw LISTEN/NOTIFY are eliminated on infra weight and lack of durability respectively.
+- **Consequences:** Queue load lands on Postgres — size connection pool and monitor table bloat/autovacuum on the jobs table; River's retention settings mitigate this. Throughput ceiling is Postgres, acceptable for backup/update/scan cadence. Redis stays available for caching/rate-limiting, not the queue. MPL-2.0 is file-level copyleft and compatible with the AGPLv3 project. Keep the enqueue/worker surface behind a thin internal interface so Asynq remains a swap-in if Redis-scale throughput is ever needed.
+
+## ADR-004: OpenAPI Codegen (Go) — ogen
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr's frontend is React 19 + Vite and the PHP 8 agent also talks to the API, so a single OpenAPI 3 contract is the integration backbone. We want spec-first codegen producing type-safe Go server stubs (and ideally a typed client), strong validation, good performance, and a permissive license. We must reconcile this with Gin as the locked HTTP layer. Candidates: [oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) (spec → Go, Gin/echo/chi/stdlib stubs), [ogen](https://github.com/ogen-go/ogen) (spec → full typed server+client+validation, own router), [huma](https://github.com/danielgtaylor/huma) (code-first framework that emits OpenAPI 3.1).
+- **Options considered:**
+
+| Tool | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **ogen** | 5 | 5 | 4 | 4 | 5 | v1.20.x, latest Apr 2026, ~2.1k★, Apache-2.0. Spec-first; generated JSON (jx) + validation + zero-alloc radix router. Routing benchmarks far ahead of chi/echo. |
+| oapi-codegen | 4 | 4 | 5 | 5 | 5 | v2.6.0 May 2026, MIT. **Native Gin server generator**, mature. Maintainers note reduced bandwidth; relies on a runtime validator. |
+| huma | 4 | 4 | 4 | 4 | 5 | v2.38.0 May 2026, ~4.1k★, MIT. Code-first (reflection) emitting OpenAPI 3.1 — inverts our spec-first requirement and brings its own framework. |
+
+  Sources: [ogen repo/license](https://github.com/ogen-go/ogen), [ogen intro + routing benchmarks](https://ogen.dev/blog/ogen-intro/), [ogen releases](https://github.com/ogen-go/ogen/releases), [oapi-codegen repo](https://github.com/oapi-codegen/oapi-codegen), [oapi-codegen v2.6.0 release](https://github.com/oapi-codegen/oapi-codegen/releases/tag/v2.6.0), [oapi-codegen maintainer note (jvt.me)](https://www.jvt.me/posts/2026/02/17/oapi-codegen-github-secure/), [huma repo/license](https://github.com/danielgtaylor/huma), [huma releases](https://github.com/danielgtaylor/huma/releases).
+
+- **Decision:** **ogen**, because it is spec-first (matching our contract-first need to serve React + the PHP agent from one source), generates the full stack — typed models, request/response validation, and a typed client — with code-generated (not reflective) marshaling and validation for the best performance and predictability, and ships under clean Apache-2.0. huma is eliminated for being code-first/reflection-based. The real tie-break was ogen vs. oapi-codegen: oapi-codegen scores higher on DX + ecosystem fit because of its native Gin generator, but its maintainers have publicly flagged reduced bandwidth, and its runtime-validator model is less robust than ogen's generated validation. We choose ogen for its long-term performance/correctness profile and active maintenance.
+- **Consequences:** ogen brings its own generated HTTP server/router rather than emitting Gin handlers. We isolate the ogen-generated API surface in its own package and mount it on a route group; Gin remains the app's outer HTTP layer (middleware, auth, static serving) while ogen owns the typed API endpoints. If that integration friction proves costly, oapi-codegen with its Gin server generator is the documented fallback — both consume the same `openapi.yaml`, so the spec stays the swappable interface. The OpenAPI spec is the single contract checked into the repo and used to regenerate Go stubs and the TypeScript client.
+
+## ADR-005: Validation (Go) — go-playground/validator
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs request/DTO validation for the Gin API and domain-object validation in the service layer. Candidates: go-playground/validator (struct-tag, integrates with Gin's binding), ozzo-validation (programmatic rules), and Cue (external schema language).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **go-playground/validator** | 5 — v10.30.1, Mar 2026, ~19.8k★ ([releases](https://github.com/go-playground/validator/releases)) | 4 — reflection/tag-based | 4 — declarative tags; cryptic for complex rules | 5 — **Gin's default binding validator** | 5 — MIT | |
+| ozzo-validation | 2 — original unmaintained 2+ yrs; fork at invopop/validation ([issue #181](https://github.com/go-ozzo/ozzo-validation/issues/181)) | 4 — programmatic | 5 — code-defined rules, great for conditional logic | 3 — not wired into Gin binding | 5 — MIT | Prefer invopop fork |
+| Cue | 5 — actively maintained ([repo](https://github.com/cue-lang/cue)) | 3 — external evaluation, heavier | 2 — separate language; overkill for HTTP DTOs | 2 — best for config/policy, not per-request structs | 4 — Apache-2.0 | Wrong tool here |
+
+- **Decision:** **go-playground/validator (v10)**, because it is the validator Gin uses for request binding out of the box, so it adds nothing to the dependency surface and keeps request validation idiomatic and declarative. It is well-maintained and the de-facto standard. ozzo's programmatic style is nicer for complex conditional rules, but the canonical repo is effectively unmaintained and not Gin-integrated. Cue is a schema/config language — the right tool for validating config/policy, not HTTP DTOs.
+- **Consequences:** Tag-based rules become awkward for cross-field conditional logic; for those few cases, write plain Go validation methods in the service layer (or selectively adopt invopop/validation) rather than overloading struct tags. Register custom validators (WordPress site URL, version constraints) via the custom-func API. Keep a small `Validate(any) error` wrapper so the service layer doesn't depend directly on the tag engine.
+
+## ADR-006: Logging (Go) — log/slog
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs structured, leveled logging across the Gin API and background workers, ideally JSON in production. Candidates: stdlib log/slog, zerolog, zap. The Go ecosystem has largely aligned behind slog as the standard logging interface ([dash0 2026](https://www.dash0.com/guides/golang-logging-libraries), [betterstack](https://betterstack.com/community/guides/logging/best-golang-logging-libraries/)).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **log/slog** (stdlib) | 5 — Go standard library | 4 — ~40 B/op; efficient allocs | 5 — no dep, standard API, swappable Handler | 5 — the interface everything now targets | 5 — BSD (Go) | Default for new projects |
+| zerolog | 5 — Apr 2026, ~12.3k★, MIT | 5 — fastest, ~25 ns, ~0 alloc | 4 — chainable, JSON-first | 4 — own API, not slog-native | 5 — MIT | Fastest |
+| zap | 5 — active, zapslog handler | 4 — ~51 ns, 168 B/op | 3 — sugared/typed split, more ceremony | 4 — widely used | 4 — MIT/BSD | Most knobs |
+
+  Sources: [betterstack benchmarks](https://betterstack-community.github.io/go-logging-benchmarks/), [zerolog releases](https://github.com/rs/zerolog/releases), [zapslog](https://pkg.go.dev/go.uber.org/zap/exp/zapslog).
+
+- **Decision:** **log/slog**, because the ecosystem has standardized on its `Handler` interface and it ships in the standard library — no dependency, no version risk, portable code. Performance (~40 B/op) is more than adequate for an API + worker SaaS where logging is not the hot path. slog's pluggable backend means we can drop in a zerolog or zap handler later if a bottleneck appears, without touching call sites. zerolog wins raw benchmarks but locks call sites into a non-standard API; zap is the heaviest on allocations and most verbose.
+- **Consequences:** Standardize on slog's `Logger`/`Handler` everywhere; `slog.JSONHandler` in production, text handler in dev. If profiling later shows logging cost matters, swap in a zerolog-backed `slog.Handler` (e.g. samber/slog-zerolog) with no call-site changes. Establish structured key conventions (request_id, tenant_id, site_id, job_id) early so logs are queryable.
+
+## ADR-007: Config (Go) — koanf
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Self-hosted WPMgr must read config from env vars (12-factor / container deploys) and likely a config file (YAML/TOML) for self-hosters. Candidates: koanf, Viper, envconfig.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **koanf** | 5 — v2.3.4 Mar 2026, ~4k★, MIT | 5 — lightweight, modular providers | 4 — explicit providers/parsers | 5 — env + file + flags, clean merge | 5 — MIT | Lean Viper alternative |
+| Viper | 4 — heavy; ~313% bigger binary, lowercases keys | 3 — large dep tree | 4 — batteries-included magic | 4 — broad formats, limited multi-file merge | 5 — MIT | Heavyweight |
+| envconfig | 3 — stable/simple, env-only | 5 — trivial | 4 — struct tags, defaults | 2 — **no file support** | 5 — MIT | Env-only |
+
+  Sources: [koanf repo](https://github.com/knadh/koanf), [koanf vs viper wiki](https://github.com/knadh/koanf/wiki/Comparison-with-spf13-viper), [envconfig repo](https://github.com/kelseyhightower/envconfig).
+
+- **Decision:** **koanf**, because self-hosters need both env vars and a config file with predictable merge semantics, and koanf does this with a small dependency footprint and modular providers. It avoids Viper's known issues (large binary, key lowercasing that breaks YAML/TOML spec) while covering the same env+file+flag sources — exactly the layered "file then env override" pattern a self-hostable product needs. envconfig is env-only; Viper is heavier with spec-correctness footguns.
+- **Consequences:** Slightly more explicit setup than Viper's autoload. Define a typed `Config` struct and `Unmarshal` once at startup with clear precedence (defaults < file < env). Install only the `env`, `file`, and a YAML/TOML parser provider. Keep loading behind a single `LoadConfig()` so the source library is swappable.
+
+## ADR-008: WebSocket Library (Go) — coder/websocket
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs WebSocket transport for terminal/log streaming and a bidirectional agent command hub. Requirements: idiomatic `context.Context` cancellation/timeouts, safe concurrent writes (multiplexing log + control frames), `net.Conn` wrapping for piping PTY/log byte streams, and a healthy maintenance pulse. Candidates: [coder/websocket](https://github.com/coder/websocket) (maintained successor to nhooyr.io/websocket), [gorilla/websocket](https://github.com/gorilla/websocket), [gobwas/ws](https://github.com/gobwas/ws).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **coder/websocket** | 5 — v1.8.x (Sep 2025), ~5.2k★, ISC | 4 — zero-alloc r/w, 1.75x faster masking than gorilla | 5 — context-native, safe concurrent writes, net.Conn wrapper | 5 | 5 — ISC | Modern + maintained |
+| gorilla/websocket | 2 — stuck at v1.5.0, seeking maintainers | 4 — comparable throughput | 3 — no context; manual deadlines + writer mutex | 4 | 5 — BSD-2 | Maintenance limbo |
+| gobwas/ws | 3 — MIT, low-level epoll API | 5 — fastest point-to-point | 2 — verbose, assemble framing yourself | 3 | 5 — MIT | Overkill for our scale |
+
+  Sources: [coder/websocket repo](https://github.com/coder/websocket), [pkg.go.dev](https://pkg.go.dev/github.com/coder/websocket), [gorilla maintainer issue](https://github.com/argoproj/argo-workflows/issues/7403).
+
+- **Decision:** **coder/websocket**, because its `context.Context`-native API maps directly onto our per-session lifecycle (cancel a terminal/log stream when the JWT expires or the tab closes), concurrent-write safety lets us multiplex log + control frames without hand-rolling a writer mutex, and the `net.Conn` wrapper makes PTY/log byte-piping trivial. It is the only candidate both modern and actively maintained; performance is within noise of gorilla at our scale. gorilla is in maintenance-seeking limbo; gobwas trades DX for throughput we don't need.
+- **Consequences:** Adopt ISC-licensed `github.com/coder/websocket` (AGPLv3-compatible). Standardize on context-scoped read/write helpers and a single read-loop-per-conn pattern. If we ever need raw epoll fan-out (>100k idle agent connections), revisit gobwas behind our thin transport interface — keep the dependency isolated so a swap stays local.
+
+## ADR-009: HTTP Client (Go) — net/http + SSRF-hardened transport
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr makes outbound HTTP calls to (a) self-hosted agents, (b) third-party threat-intel APIs (Wordfence, Patchstack), and (c) user-configured webhooks. Webhook and agent URLs are partly user-controlled, so **SSRF defense is the dominant requirement**: resolve-then-pin destination IPs and block private/link-local/loopback ranges at dial time to defeat DNS-rebinding (TOCTTOU) ([agwa](https://www.agwa.name/blog/post/preventing_server_side_request_forgery_in_golang)). Other needs: retries/backoff for flaky agents, timeouts, tracing. Candidates: `net/http` (stdlib), [go-resty/resty](https://github.com/go-resty/resty), [imroc/req](https://github.com/imroc/req).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **net/http** | 5 — stdlib, BSD | 5 | 3 — no built-in retries | 5 — full control of `Transport.DialContext` (only place SSRF pinning is correct) | 5 | Pairs with MIT [`code.dny.dev/ssrf`](https://github.com/daenney/ssrf) |
+| resty | 4 — ~11.6k★, MIT, v2.17.x | 4 | 5 — chainable, retries, SSE | 4 — wraps http.Client; convenience tempts SSRF bypass | 5 — MIT | v3 in beta |
+| imroc/req | 4 — ~4.7k★, MIT, very active | 4 | 4 — "black magic" auto-detection | 3 — auto behaviors unwanted on SSRF paths | 5 — MIT | Smaller footprint |
+
+- **Decision:** **net/http with a custom SSRF-hardened `http.Transport`**, because the security requirement is non-negotiable and only owning the `DialContext`/`net.Dialer.Control` path lets us pin the resolved IP and reject private ranges atomically before connect. We wrap stdlib in a thin internal `httpclient` package exposing one safe client (webhooks/agents) and one plain client (fixed-host vendor APIs), layering `otelhttp` for tracing and `cenkalti/backoff` for retries. This centralizes the SSRF guarantee rather than relying on developers remembering to route a wrapper library through a safe transport.
+- **Consequences:** Slightly more boilerplate than resty (retry/SSE helpers written once). Use `code.dny.dev/ssrf` (MIT) for IANA-synced deny ranges via `net.Dialer.Control`, plus an allow-list for known vendor hosts. All outbound calls go through the internal package — enforce with a lint/import rule. If DX friction grows, resty can be adopted *inside* the wrapper later (it accepts a custom transport) without changing call sites.
+
+## ADR-010: S3 Client (Go) — aws-sdk-go-v2
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr stores backups/artifacts in S3-compatible storage that must work against both **AWS S3** (managed tier) and a **self-hosted S3-compatible endpoint** (custom endpoint URL + path-style + V4 signing). Candidates: [aws/aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) and [minio/minio-go v7](https://github.com/minio/minio-go). **Critical context:** the MinIO *server* community edition went maintenance-only in late 2025 and was marked no-longer-maintained ~2026-02-12 ([minio/minio#21714](https://github.com/minio/minio/issues/21714)). The *client* SDK `minio-go` remains actively maintained (v7.2.0, May 2026).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **aws-sdk-go-v2** | 5 — Apache-2.0, continuous releases | 4 | 3 — verbose config, modular | 5 — vendor-neutral; `BaseEndpoint` + `UsePathStyle` targets any S3-compatible server | 5 — Apache-2.0 | First-class presign/multipart/OTel |
+| minio-go v7 | 4 — Apache-2.0, active (v7.2.0 May 2026) | 5 | 5 — leaner, ergonomic | 4 — works against AWS + any endpoint, but governed by the vendor whose server is now unmaintained | 5 — Apache-2.0 | Governance risk |
+
+- **Decision:** **aws-sdk-go-v2**, because it is the most strategically durable choice: vendor-neutral, Apache-2.0, AWS-funded continuous maintenance, and fully capable of targeting a self-hosted endpoint via `BaseEndpoint` + path-style addressing — so the same code path serves AWS S3 and the self-host backend. Given MinIO's server abandonment, tying our client to a MinIO-governed SDK adds avoidable correlated risk, even though `minio-go`'s DX is nicer. We isolate all S3 calls behind a thin internal `blobstore` interface (Put/Get/Delete/Presign/List).
+- **Consequences:** Accept heavier configuration ergonomics; encapsulate endpoint/region/path-style/credentials setup once in `blobstore`. **The locked stack names "MinIO for self-host," but MinIO server is no longer maintained — see risk register item 1**; candidates: SeaweedFS (Apache-2.0, Go), Garage (AGPLv3), RustFS. All speak the S3 API, so aws-sdk-go-v2 + the `blobstore` interface keeps us decoupled from that server decision.
+
+## ADR-011: Observability Stack — OTel SDK + otelgin → Collector → Tempo + Prometheus + Grafana
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr (Go 1.26 + Gin) needs traces and metrics that are self-hostable and AWS-friendly. We want one instrumentation API, an out-of-process collection layer so the app stays vendor-agnostic, and OSS backends. We must pick a concrete SDK, Gin middleware, collector, and trace+metric backends. (ClickHouse for product metrics is a separate analytics path, not the ops-observability backend chosen here.)
+- **Options considered:**
+
+| Component | Choice | Maint | Perf | DX | Fit | License | Notes |
+|---|---|---|---|---|---|---|---|
+| SDK | [go.opentelemetry.io/otel](https://opentelemetry.io/docs/languages/go/getting-started/) | 5 | 5 | 4 | 5 | 5 | Official; traces+metrics stable, Apache-2.0 |
+| Gin middleware | [otelgin](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin) | 5 | 5 | 5 | 5 | 5 | Official contrib; auto spans + `http.server.*` metrics |
+| Collector | [OTel Collector](https://grafana.com/docs/opentelemetry/collector/opentelemetry-collector/) | 5 | 5 | 4 | 5 | 5 | OTLP in, fan-out to any exporter, Apache-2.0 |
+| Traces | [Grafana Tempo](https://grafana.com/blog/an-opentelemetry-backend-in-a-docker-image-introducing-grafana-otel-lgtm/) | 5 | 5 | 4 | 5 | 5 | Object-storage-backed (reuses S3), no ES/Cassandra |
+| Metrics | Prometheus (+ Grafana viz) | 5 | 5 | 4 | 5 | 5 | De-facto standard |
+
+- **Decision:** **OTel Go SDK + otelgin → OTLP → OTel Collector → Tempo (traces) + Prometheus (metrics), visualized in Grafana** — the Grafana LGTM-family stack minus Loki/Mimir for v1. A single vendor-neutral instrumentation API in the app; an out-of-process Collector so we can re-target backends without code changes; Tempo because it stores traces in our existing S3-compatible storage (no extra indexing DB) and auto-derives RED metrics; Prometheus + Grafana as the boring proven metrics path. The `grafana/otel-lgtm` image makes the self-host story a single container for evaluators. We prefer Tempo over Jaeger to avoid a separate trace-index datastore.
+- **Consequences:** Instrument Gin with `otelgin`, wrap the SSRF `http.Client` (ADR-009) with `otelhttp`, export OTLP/gRPC to the Collector. Self-host docs ship a compose profile with `otel-lgtm`; managed tier points the same Collector at hosted backends with zero app changes. Add Loki/Mimir later if needed — the Collector makes that additive. Keep exporter config in env/Collector, never in app code.
+
+## ADR-012: Frontend Router — TanStack Router
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr is a React 19 + TypeScript (strict) Vite SPA — explicitly not Next.js, no SSR. We want file-based routing, end-to-end type-safe params/loaders, and tight integration with the data layer (ADR-013). React Router 7 only delivers file-based routing in its "framework mode" (a Vite-plugin full-stack framework), and its `ssr:false`/SPA path still has known rough edges ([discussion 12360](https://github.com/remix-run/react-router/discussions/12360)). TanStack Router is client-first and supports file-based routing in a plain Vite SPA via `@tanstack/router-plugin/vite` with no SSR dependency ([docs](https://tanstack.com/router/latest/docs/installation/with-vite)).
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **TanStack Router** | 5 — MIT, ~14.5k★, released 2026-05-26 | 5 — client-first, autoCodeSplitting | 5 — fully type-safe routes/params/loaders, file-based via plugin, no SSR | 5 — same vendor as TanStack Query (ADR-013) | 5 — MIT | Built for this SPA shape |
+| React Router 7 | 5 — MIT, ~56.4k★, v7.15.1 | 4 — framework mode adds layers | 3 — file-based only in framework mode; SPA `ssr:false` has known bugs | 4 — huge ecosystem, but loaders compete with ADR-013 | 5 — MIT | Better for SSR, which we don't want |
+
+- **Decision:** **TanStack Router**, because it delivers file-based, fully type-safe routing in a pure Vite SPA without a full-stack framework or SSR caveats, and composes natively with TanStack Query (ADR-013) from the same maintainers.
+- **Consequences:** Smaller community than React Router (fewer SO answers); team learns TanStack's typed-route idioms and treats `routeTree.gen.ts` as generated (lint/format-ignored). Route loaders integrate cleanly with the Query cache. We deliberately forgo React Router's SSR option, consistent with the locked SPA constraint.
+
+## ADR-013: Data Fetching — TanStack Query v5
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs server-state caching for a dashboard backed by an OpenAPI-generated client, with mutations, background refetch, pagination, and SSE-driven cache invalidation. Maintenance signal: `openapi-fetch`/`openapi-react-query` are moving to maintenance-mode, while Hey API's `@hey-api/openapi-ts` (used by Vercel/PayPal) is the actively-developed codegen and can emit TanStack Query hooks ([discussion 2559](https://github.com/openapi-ts/openapi-typescript/discussions/2559)).
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **TanStack Query v5** | 5 — MIT, ~49.5k★, released 2026-05-23 | 4 — ~13KB; tracked queries re-render only on accessed fields | 5 — DevTools, mutations, optimistic updates | 5 — pairs with OpenAPI codegen; same vendor as Router | 5 — MIT | Default for REST + heavy cache/mutation |
+| SWR | 4 — MIT, by Vercel | 5 — ~4KB | 3 — minimal mutation/invalidation primitives | 3 — fewer first-class OpenAPI+hooks paths | 5 — MIT | Under-powered for our dashboard |
+
+- **Decision:** **TanStack Query v5**, because the dashboard's mutation management, background refetch, pagination, and explicit SSE-triggered cache invalidation map directly onto Query's lifecycle and `queryClient.invalidateQueries`, which SWR only partially covers. It also pairs with the same vendor's Router (ADR-012).
+- **Consequences:** ~13KB vs SWR's ~4KB — acceptable for a dashboard. Keep a thin swappable seam: generate types/hooks and wrap them behind our own `api/` module. Given `openapi-react-query` is entering maintenance mode, prefer Hey API's `@hey-api/openapi-ts` TanStack Query plugin for generation (fallback: `openapi-typescript` + `openapi-react-query`), isolating whichever we pick behind one adapter.
+
+## ADR-014: Component Library — shadcn/ui + Radix + TanStack Table
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** We need Tailwind-compatible components with built-in dark mode, WCAG 2.2 AA, and strong support for heavy data tables in a Vite SPA. Candidates: shadcn/ui (copy-in components over Radix + Tailwind), Park UI (Ark UI + Panda CSS), Mantine (own CSS engine), Radix-only (unstyled primitives). Tailwind is a hard requirement: Park UI uses Panda CSS and Mantine uses CSS-modules theming — both poor fits. shadcn/ui is Tailwind-native with built-in dark mode; heavy tables are met by pairing it with headless TanStack Table.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **shadcn/ui (+ Radix + TanStack Table)** | 5 — MIT; Radix MIT (WorkOS) | 5 — copy-in, no runtime lock-in | 5 — Tailwind-native, code-owned, dark mode | 5 — composes with Router/Query/Table | 5 — MIT, code in our repo | 34/48 components pass WCAG 2.2 AA OOTB |
+| Mantine | 5 — MIT | 4 — ~130–160KB | 4 — 100+ components, batteries-included table | 2 — own CSS engine, not Tailwind | 5 — MIT | Violates Tailwind requirement |
+| Park UI (Ark UI + Panda) | 4 — Ark UI active | 4 — headless | 3 — requires Panda CSS | 2 — conflicts with Tailwind | 5 — MIT | Wrong styling engine |
+| Radix-only | 4 — MIT, velocity slowed | 5 — unstyled | 2 — build/style everything | 4 — Tailwind-compatible | 5 — MIT | Too much hand-rolling |
+
+  Sources: [shadcn radix changelog](https://ui.shadcn.com/docs/changelog/2026-02-radix-ui), [shadcn data-table](https://ui.shadcn.com/docs/components/base/data-table), [TanStack Table](https://tanstack.com/table/latest), [shadcn a11y audit](https://thefrontkit.com/blogs/shadcn-ui-accessibility-audit-2026).
+
+- **Decision:** **shadcn/ui (Radix primitives + Tailwind) with headless TanStack Table**, because it is the only candidate Tailwind-native with built-in dark mode while inheriting Radix's WAI-ARIA accessibility, and TanStack Table gives full control over heavy sortable/filterable/paginated tables that compose with our Query layer. Mantine and Park UI lose on the Tailwind requirement; Radix-only is too much hand-rolling.
+- **Consequences:** Run a WCAG 2.2 AA audit and remediate components with known gaps (34/48 pass OOTB; the Data Table example needs a `<caption>`). Data tables require wiring TanStack Table ourselves — a one-time cost we accept for Tailwind ownership. Radix velocity has slowed for complex combobox/multi-select; budget extra time there. Components live in-repo (MIT) — full ownership, no runtime lock.
+
+## ADR-015: Forms — react-hook-form
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr forms are mostly standard config/CRUD inputs in a Tailwind SPA, validated against schemas derived from OpenAPI types, integrated with TanStack Query mutations and shadcn/ui inputs. Both candidates are stable, MIT, React 19-ready. react-hook-form is ~12KB, uncontrolled/ref-based; TanStack Form v1 is ~20KB, signal-based, excels at deeply nested dynamic forms.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **react-hook-form** | 5 — MIT, ~45k★, v7.76.x | 5 — ~12KB, uncontrolled, scales to hundreds of inputs | 5 — battle-tested, shadcn `<Form>` built on it, Zod resolver | 5 — shadcn wraps RHF natively | 5 — MIT | Default for standard forms |
+| TanStack Form v1 | 5 — MIT, v1 stable | 4 — ~20KB, signal-based | 4 — strong types, standard-schema | 3 — newer; shadcn integration not first-party | 5 — MIT | Wins for deeply nested dynamic forms |
+
+- **Decision:** **react-hook-form**, because our forms are predominantly standard CRUD/config, RHF is smaller and battle-tested, and shadcn/ui's `<Form>` (ADR-014) is built directly on RHF — zero-friction integration with our UI library and Zod schema validation.
+- **Consequences:** If we later hit genuinely complex nested/dynamic forms, TanStack Form v1 is the documented escape hatch; keeping form logic behind small wrapper components and a shared resolver makes that swap localized. Validation schemas derive from the OpenAPI-generated types (ADR-013/016) so form and API contracts stay in sync. RHF pairs with `@hookform/resolvers` + Zod.
+
+## ADR-016: Validation (TypeScript) — Zod 4
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs runtime validation for forms (react-hook-form) and for parsing API responses against OpenAPI-derived types. Key requirement: clean resolver integration with react-hook-form and the ability to derive/align with OpenAPI types, while keeping the SPA bundle lean. All three candidates co-authored the [Standard Schema](https://standardschema.dev/schema) spec, and react-hook-form ships a `standardSchemaResolver` — so the form-library integration is a non-differentiator and lock-in risk is low.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Zod 4** | 5 | 3 | 5 | 5 | 5 | Largest bundle (~17.7KB; Zod Mini ~6.88KB), ~180ms/100k; deepest OpenAPI tooling (openapi-zod-client, zod-openapi, Hey API, Orval). MIT |
+| Valibot | 5 | 3 | 4 | 4 | 5 | Smallest (~1.37KB login schema), modular; thinner OpenAPI codegen story. MIT |
+| ArkType | 5 | 5 | 3 | 3 | 5 | Fastest (~12ms/100k, JIT); higher learning curve; weakest OpenAPI ecosystem. MIT |
+
+  Sources: [PkgPulse valibot-vs-zod](https://www.pkgpulse.com/guides/valibot-vs-zod-v4-typescript-validator-2026), [type-system teardown](https://dev.to/gabrielanhaia/zod-4-vs-valibot-vs-arktype-a-type-system-teardown-4lha), [Hey API zod plugin](https://heyapi.dev/openapi-ts/plugins/zod).
+
+- **Decision:** **Zod 4**, because the load-bearing requirement is OpenAPI-type derivation and DX, not raw validation throughput. Zod has by far the deepest OpenAPI codegen ecosystem, the most familiar API, and the richest tooling. Validation cost in a management dashboard (hundreds of validations, not millions) is negligible, so ArkType's speed edge doesn't pay rent. Because all three are Standard Schema-compliant, we keep a thin swappable seam.
+- **Consequences:** Accept the largest validation bundle; mitigate with Zod Mini's standalone-function imports for tree-shaking where it matters. Import schemas through the Standard Schema resolver (not the Zod-specific one) so a future swap stays cheap. Verify `zod-openapi` v4 feature support at adoption time and pin the codegen tool accordingly.
+
+## ADR-017: Client/UI State (TypeScript) — Zustand
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Server state lives in TanStack Query; this ADR covers only client/UI state (modals, sidebar, selected-site context, multi-step wizard, theme, optimistic toggles). The store must stay small, be easy for an OSS contributor base to reason about, and not duplicate server-cache responsibility. Redux Toolkit's headline RTK Query overlaps with TanStack Query and would be dead weight.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Zustand** | 5 | 5 | 5 | 5 | 5 | ~1.16KB, no Provider, minimal boilerplate; fastest single update. MIT |
+| Jotai | 5 | 4 | 4 | 4 | 5 | Atomic model; more concepts than coarse UI state needs. MIT |
+| Redux Toolkit | 5 | 3 | 3 | 5 | 5 | ~13.8KB, heavy boilerplate; RTK Query duplicates TanStack Query. MIT |
+
+  Sources: [Better Stack state mgmt](https://betterstack.com/community/guides/scaling-nodejs/zustand-vs-redux-toolkit-vs-jotai/), [DEV 2026 state mgmt](https://dev.to/jsgurujobs/state-management-in-2026-zustand-vs-jotai-vs-redux-toolkit-vs-signals-2gge).
+
+- **Decision:** **Zustand**, because for client/UI-only state it is the consensus best balance of simplicity and power: smallest, fastest on the measured update path, no Provider, lowest cognitive cost for an OSS contributor pool. Redux Toolkit's strengths are unnecessary at this scale or redundant with TanStack Query; Jotai's atomic granularity is power we don't yet need for coarse UI state.
+- **Consequences:** Keep stores small and slice-by-feature; explicitly forbid putting server/cache data in Zustand (that boundary stays with TanStack Query). We forgo built-in time-travel debugging (Zustand has a Redux DevTools middleware if needed). If a future feature demands heavy derived/computed graphs, Jotai can be introduced locally.
+
+## ADR-018: Charts — Tremor (on Recharts)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Metrics to render: uptime %, latency time-series, Core Web Vitals, backup sizes — standard dashboard line/area/bar/gauge charts over modest datasets (hundreds to a few thousand points). Priorities: React-first declarative API, polished SaaS look, MIT license, low integration cost.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Tremor** | 5 | 3 | 5 | 5 | 5 | Pre-styled dashboard charts on Recharts, shadcn aesthetic; MIT, backed by Vercel. Inherits SVG perf ceiling |
+| Recharts v3 | 5 | 3 | 5 | 5 | 5 | 2.4M weekly dl, composable SVG (~150KB). MIT |
+| visx | 4 | 4 | 3 | 4 | 5 | Low-level D3+React primitives; build charts yourself. MIT |
+| ECharts | 5 | 5 | 3 | 4 | 5 | Canvas, 100k–millions of points, imperative-options API. Apache-2.0 |
+
+  Sources: [PkgPulse recharts-vs-tremor](https://www.pkgpulse.com/guides/recharts-v3-vs-tremor-vs-nivo-react-charting-2026), [Vercel acquires Tremor](https://vercel.com/blog/vercel-acquires-tremor).
+
+- **Decision:** **Tremor** (built on Recharts), because the use case is exactly its sweet spot — a SaaS metrics dashboard with conventional charts and a polished look matching shadcn/ui. It minimizes chart-building effort (vs visx) and avoids ECharts' imperative-options friction, while staying MIT under Vercel's stewardship. ECharts' million-point capability is irrelevant for these datasets. Tremor clearly wins on DX over plain Recharts for this app.
+- **Consequences:** We sit on the SVG performance ceiling (Recharts under the hood) — fine for stated datasets; if we later add high-frequency real-time streams with tens of thousands of points, budget a targeted swap to ECharts/Canvas for that one view. Because Tremor *is* Recharts, dropping to raw Recharts for a custom chart is friction-free. Tailwind (already in the stack) is assumed for Tremor styling.
+
+## ADR-019: Internationalization — Lingui v5
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr is a self-hostable OSS dashboard that will likely need multiple UI locales contributed by the community. We want type-safe messages, small runtime/bundle impact, a healthy translation-tooling ecosystem (so non-dev contributors can translate), and a permissive license.
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Lingui** | 5 — MIT, v5.5.x active | 5 — compile-time extraction, ~2–3KB runtime, ICU | 5 — mature CLI/extractor, type-safe | 4 — broad TMS support | 5 — MIT | Best balance |
+| react-i18next | 5 — MIT, largest ecosystem | 3 — ~25KB runtime | 4 — plugin-rich | 5 — every TMS integrates it | 5 — MIT | Heavier runtime |
+| Paraglide | 5 — MIT | 5 — tree-shakable per-message fns, constant bundle | 4 — newer | 3 — younger ecosystem, tied to inlang SDK | 5 — MIT | Best raw bundle, higher risk |
+
+  Sources: [Lingui releases](https://github.com/lingui/js-lingui/releases), [Lingui vs i18next](https://lingui.dev/misc/i18next), [Paraglide benchmark](https://inlang.com/m/gerre34r/library-inlang-paraglideJs/benchmark).
+
+- **Decision:** **Lingui (v5)**, because it is the strongest balance of the project's competing needs: near-best-in-class bundle/runtime efficiency (compile-time extraction, ~2–3KB runtime, ICU) *and* a mature, contributor-friendly tooling ecosystem (CLI extractor, catalogs, broad TMS support). react-i18next is the boring pick with the biggest ecosystem but ships a heavier runtime and lacks Lingui's compile-time type safety. Paraglide has the best raw bundle story but a younger, in-flux ecosystem — higher-risk for an OSS project depending on community translators.
+- **Consequences:** Adopt Lingui's build-step (macro/extractor) into the Vite pipeline; contributors run `lingui extract`. ICU MessageFormat covers pluralization/gender. Migration risk if a wanted TMS only targets i18next — mitigated by keeping message access behind a thin `t()` wrapper. Catalogs are compiled, so translation changes require a rebuild.
+
+## ADR-020: End-to-End Testing — Playwright
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs E2E coverage of critical flows (login, connect WordPress site, run backup, view metrics) for an OSS project where CI cost and parallelization matter and contributors run tests locally across browsers. Cross-browser (incl. WebKit/Safari) coverage is desirable.
+- **Options considered:**
+
+| Framework | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Playwright** | 5 — 75k★+, 33M weekly npm | 5 — ~290ms/action, native Chromium/Firefox/WebKit, free `--shard` | 5 — trace viewer, UI mode | 5 — 5x adoption momentum | 5 — Apache-2.0 | |
+| Cypress | 5 | 3 — ~420ms/action, no WebKit, parallelization needs paid Cloud | 5 — best-in-class time-travel debugger | 4 | 5 — MIT | |
+
+  Sources: [tech-insider cypress-vs-playwright](https://tech-insider.org/cypress-vs-playwright-2026/), [Autonoma comparison](https://getautonoma.com/blog/playwright-vs-cypress).
+
+- **Decision:** **Playwright**, because for a new 2026 project it wins on nearly every axis here: native cross-browser coverage including WebKit/Safari, lower per-action latency and RAM, and — critically for an OSS budget — free built-in parallel sharding, whereas Cypress gates real parallelization behind paid Cypress Cloud. It also has 5x the adoption momentum. Cypress's main edge (time-travel debugger) no longer outweighs these; Playwright's trace viewer narrows that gap.
+- **Consequences:** Contributors install browser binaries via `npx playwright install`; CI uses `--shard` for free fan-out. We give up Cypress's interactive-runner ergonomics, mitigated by Playwright's trace viewer and UI mode. Apache-2.0 is AGPLv3-compatible. Standardize on Playwright's test runner so fixtures/sharding come for free.
+
+## ADR-021: PHP Testing Framework — PHPUnit
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr's agent plugin is MIT PHP 8.0–8.5 code under `WPMgr\Agent\`, using libsodium, AES-256-GCM, and the WP REST API. It must run on real WordPress hosts, so testing needs (a) pure-PHP unit tests of crypto/serialization without a WP bootstrap, (b) WP-aware unit tests that mock the hook/filter API (Brain Monkey / WP_Mock), and (c) optional integration tests against the WordPress core PHPUnit test suite. The WP ecosystem (core, Yoast wp-test-utils, Brain Monkey, WP_Mock) is built on PHPUnit; Pest runs on top of PHPUnit (Pest v4 on PHPUnit 12).
+- **Options considered:**
+
+| Criterion | PHPUnit 13.x | Pest 4.x |
+|---|---|---|
+| Maintenance | 5 — v13.1.x (May 2026), de-facto standard | 5 — v4.7.x (May 2026), very active |
+| Performance | 4 — baseline | 4 — wraps PHPUnit; equivalent + parallel |
+| DX | 3 — verbose class-based xUnit | 5 — concise functional DSL, type-coverage |
+| Ecosystem fit (WP) | 5 — WP core suite, Yoast Polyfills, Brain Monkey, WP_Mock all target PHPUnit | 3 — runs on PHPUnit but WP tooling/docs assume PHPUnit; Pest strengths are Laravel-centric |
+| License fit | 5 — BSD-3-Clause | 5 — MIT |
+
+  Sources: [phpunit.de versions](https://phpunit.de/supported-versions.html), [Pest v4](https://pestphp.com/docs/pest-v4-is-here-now-with-browser-testing), [Yoast wp-test-utils](https://github.com/Yoast/wp-test-utils), [Brain Monkey](https://github.com/Brain-WP/BrainMonkey).
+
+- **Decision:** **PHPUnit**, because the entire WordPress testing ecosystem WPMgr depends on targets PHPUnit directly, and matching the version constraints those tools document (via PHPUnit Polyfills) is critical when the plugin must run on PHP 8.0–8.5 across many hosts. Pest's DX edge is real but mostly realized in Laravel; in a WP plugin it adds a DSL layer and PHPUnit version-coupling without removing WP-specific friction. Use PHPUnit + Brain Monkey for fast unit tests, Yoast's Polyfills for cross-version compatibility, and the WP core suite for integration.
+- **Consequences:** Tests are class-based and more verbose; pin PHPUnit through `phpunit/phpunit-polyfills` so the suite runs across the PHP 8.0–8.5 / WP version matrix in CI. Brain Monkey covers hook/filter mocking without a WP install; reserve a WP-core-suite job for true integration. Pest can be layered on later without abandoning this foundation.
+
+## ADR-022: PHP Static Analysis — PHPStan
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** WPMgr needs strict static analysis over security-sensitive code (Ed25519 signing, AES-256-GCM, REST handling) on PHP 8.0–8.5. The key dependency is high-quality, current WordPress stubs plus a WP extension that understands hooks/filters and core return types. Two WP stub ecosystems exist: `php-stubs/wordpress-stubs` + `szepeviktor/phpstan-wordpress` (PHPStan) and `psalm/plugin-wordpress` (Psalm). Maintenance health of analyzers and stubs is decisive.
+- **Options considered:**
+
+| Criterion | PHPStan 2.x | Psalm 6.x |
+|---|---|---|
+| Maintenance | 5 — v2.1.x (May 2026), near-weekly, large team | 3 — v6.16.x (Mar 2026), effectively single-maintainer |
+| Performance | 5 — 25–40% faster since 2.1.34 | 4 — fast, multi-threaded |
+| DX | 4 — levels 0–10, huge extension catalog | 4 — strong taint analysis for security code |
+| Ecosystem fit (WP) | 5 — `php-stubs/wordpress-stubs` (12M+ installs, WP 6.9.1) + `szepeviktor/phpstan-wordpress` | 3 — `psalm/plugin-wordpress` slower cadence, smaller WP base |
+| License fit | 5 — MIT | 5 — MIT |
+
+  Sources: [PHPStan repo](https://github.com/phpstan/phpstan), [php-stubs/wordpress-stubs](https://github.com/php-stubs/wordpress-stubs), [szepeviktor/phpstan-wordpress](https://github.com/szepeviktor/phpstan-wordpress), [Psalm repo](https://github.com/vimeo/psalm).
+
+- **Decision:** **PHPStan**, because its WordPress integration is the ecosystem standard and is materially better resourced: `php-stubs/wordpress-stubs` plus `szepeviktor/phpstan-wordpress` give hook/filter docblock validation and dynamic return types that Psalm's slower-cadence plugin doesn't match. PHPStan ships near-weekly with a large team and full PHP 8.5 support, vs Psalm's single-maintainer model. Both MIT and within the freshness rule, but PHPStan wins decisively on WP ecosystem fit and maintenance depth. Adopt at level 8+, raising toward max on crypto/REST modules.
+- **Consequences:** Add `phpstan/phpstan`, `php-stubs/wordpress-stubs`, `szepeviktor/phpstan-wordpress` as dev deps; configure stubs in `phpstan.neon`. **Bus-factor risk** (risk register item 5): the WP stubs/extension maintainer signaled possible discontinuation without funding — budget sponsorship or be ready to vendor/fork. PHPStan lacks Psalm's built-in taint analysis, so security review of crypto/REST paths shouldn't rely on static analysis alone.
+
+## ADR-023: Go OIDC / OAuth2 Relying-Party (client) — coreos/go-oidc v3 + golang.org/x/oauth2
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** M1 needs a relying-party (client) to run the OIDC authorization-code flow against a bundled IdP (self-host) and managed social/enterprise providers (hosted), and to validate ID tokens (signature, issuer, audience, nonce, expiry) with JWKS rotation. We do not need to *be* an IdP. Candidates: coreos/go-oidc (+ x/oauth2), zitadel/oidc, Ory (fosite/hydra are OP-side, wrong fit).
+- **Options considered:**
+
+| Library | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **coreos/go-oidc v3 (+ x/oauth2)** | 5 | 5 | 5 | 5 | 5 | ~2.4k★, Apache-2.0, releases through Apr 2026; de-facto Go RP, thin wrapper over x/oauth2 |
+| zitadel/oidc v3 | 4 | 5 | 4 | 4 | 5 | OIDF-certified RP, Apache-2.0 (library distinct from the AGPL server), but bundles an OP we don't need |
+| Ory fosite/hydra | 4 | 4 | 2 | 2 | 3 | OP/authorization-server frameworks, not a drop-in RP |
+
+  Sources: [coreos/go-oidc](https://github.com/coreos/go-oidc), [x/oauth2](https://pkg.go.dev/golang.org/x/oauth2), [zitadel/oidc](https://github.com/zitadel/oidc).
+
+- **Decision:** **coreos/go-oidc v3 + golang.org/x/oauth2**, the boring, proven, minimal RP: token verification + JWKS handling, delegating the OAuth2 dance to the standard x/oauth2 (thin, swappable), Apache-2.0, actively released into 2026. zitadel/oidc is a fine OIDF-certified alternative but bundles a full OP as dead weight.
+- **Consequences:** We own a little glue (state/nonce/PKCE, cookie handling) that zitadel/oidc would provide. Provider discovery via `oidc.NewProvider` supports per-tenant issuers cheaply. Swapping to zitadel/oidc later is low-cost (both standard OIDC).
+
+## ADR-024: Session Management — alexedwards/scs (Redis store, pgx fallback)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Sessions must survive across horizontally-scaled API instances, support immediate logout/revocation (hard requirement for an audited admin SaaS), and reuse Redis + Postgres already in the stack. Stateless signed-JWT cookies can't be revoked before expiry without a server-side denylist (which reintroduces shared state), so they fail the revocation requirement. Candidates: alexedwards/scs, gorilla/sessions, stateless JWT cookies.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **alexedwards/scs v2 (+ redisstore/pgxstore)** | 5 | 5 | 5 | 5 | 5 | Stable, stores released Oct 2025; opaque cookie + server-side state = instant revocation; MIT |
+| gorilla/sessions | 3 | 4 | 3 | 3 | 5 | BSD-3; revocation only via client cookie MaxAge; weaker multi-instance story |
+| Stateless JWT cookies | n/a | 5 | 3 | 2 | 5 | No shared state but no real revocation without a denylist — fails requirement |
+
+  Sources: [alexedwards/scs](https://github.com/alexedwards/scs), [scs redisstore](https://github.com/alexedwards/scs/tree/master/redisstore).
+
+- **Decision:** **alexedwards/scs v2 with a Redis store (primary), pgxstore as fallback** — opaque session ID in the cookie, all state server-side → true cross-instance sessions and O(1) revocation/logout, reusing Redis (TTL-native) and Postgres. Stable, MIT.
+- **Consequences:** Redis joins the auth hot path; self-hosters without Redis switch the store to pgxstore via SCS's pluggable interface (one line). Revocation = delete the server-side record. Cookie flags (Secure/HttpOnly/SameSite) and idle/absolute timeouts centralized in the SessionManager.
+
+## ADR-025: Password Hashing — alexedwards/argon2id (Argon2id)
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Email+password is a fallback path. OWASP's current Password Storage Cheat Sheet names Argon2id first-choice (min 19 MiB, t=2, p=1), scrypt secondary, bcrypt legacy-only (and 72-byte input limit). Candidates: alexedwards/argon2id (wraps x/crypto/argon2), raw x/crypto/argon2, x/crypto/bcrypt, x/crypto/scrypt.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **alexedwards/argon2id** | 5 | 5 | 5 | 5 | 5 | MIT; enforces Argon2id + CSPRNG salt, params encoded in hash, bcrypt-style Compare API |
+| x/crypto/argon2 (raw) | 5 | 5 | 3 | 5 | 5 | BSD-3, Go team; OWASP top choice but hand-roll salt/encode/verify |
+| x/crypto/bcrypt | 5 | 4 | 5 | 5 | 5 | BSD-3; OWASP legacy-only; 72-byte limit |
+| x/crypto/scrypt | 5 | 4 | 3 | 4 | 5 | BSD-3; acceptable fallback, raw API |
+
+  Sources: [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [alexedwards/argon2id](https://github.com/alexedwards/argon2id).
+
+- **Decision:** **alexedwards/argon2id** (thin MIT wrapper over the Go team's x/crypto/argon2): OWASP-recommended Argon2id with footgun-proof ergonomics — secure salts, self-describing params (enables transparent re-hash/upgrade), bcrypt-style API. Security surface is the standard implementation underneath.
+- **Consequences:** Set params ≥ OWASP 19 MiB / t=2 / p=1 and benchmark on target hardware. Params embedded in the hash enable raising cost over time and re-hashing on next login. bcrypt explicitly rejected for new accounts.
+
+## ADR-026: Self-Host Bundled IdP — Dex
+
+- **Status:** Proposed
+- **Date:** 2026-05-27
+- **Context:** Self-hosters need an IdP in our docker-compose: lightweight, OSS-license-compatible, supporting upstream social/enterprise connectors (Google/GitHub/OIDC/SAML/LDAP), speaking standard OIDC so our RP (ADR-023) works unchanged against it and identically against managed providers on hosted. Candidates: Dex, Keycloak, Authentik, Zitadel.
+- **Options considered:**
+
+| Option | Maintenance | Performance | DX | Ecosystem fit | License fit | Notes |
+|---|---|---|---|---|---|---|
+| **Dex** | 5 | 5 | 4 | 5 | 5 | Apache-2.0, Go, CNCF; lightweight stateless broker, pluggable connectors; released through May 2026 |
+| Authentik | 5 | 3 | 4 | 4 | 4 | MIT core + enterprise split; Python+TS multi-service; breaking upgrades reported |
+| Zitadel | 5 | 4 | 4 | 4 | 5 | Go single-binary; relicensed to AGPLv3 (2025-03-31); heavier, needs HTTP/2 proxy |
+| Keycloak | 5 | 2 | 3 | 5 | 5 | Apache-2.0, full-featured; JVM, resource-intensive |
+
+  Sources: [Dex](https://github.com/dexidp/dex), [dexidp.io](https://dexidp.io/).
+
+- **Decision:** **Dex** — purpose-built lightweight Apache-2.0 OIDC shim, trivially bundled in docker-compose, federating to upstream providers while presenting one standard OIDC interface. The same coreos/go-oidc RP works against Dex (self-host) and managed Google/Okta/Entra (hosted) with only issuer/client config changes. Keycloak too heavy; Authentik multi-service with risky upgrades + license split; Zitadel heavier with AGPL-server questions.
+- **Consequences:** Dex's local password store is minimal, so WPMgr owns the email+password DB and credential UX (ADR-025), using Dex as the OIDC broker/federation layer. Dex needs a persistent backend (our Postgres). Operators can point the RP at their own Keycloak/Authentik/Zitadel with no code change. Richer self-service flows can layer on or swap IdP later without touching the RP contract.
+
+## ADR-027: Backup crypto/storage libraries (M4)
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M4 needs client-side backup encryption + content-addressed chunking. The
+  algorithms were already locked in the project's crypto list (blake3, age) and S3
+  client in ADR-010 (aws-sdk-go-v2); this records the concrete library choices.
+- **Decision:**
+  - **age:** `filippo.io/age` (Go, control plane never imports it — the CP holds only
+    the public recipient). On the WordPress agent, age v1 (X25519) is implemented over
+    `ext-sodium` in pure PHP (verified byte-for-byte interop with the canonical `age`
+    binary), so hosts need only ext-sodium — no `age` binary/extension required.
+  - **blake3:** `lukechampine.com/blake3` (Go, agent-side hashing; the CP only stores/
+    validates hex digests). Agent side uses a pure-PHP BLAKE3-256 verified against the
+    official test vectors.
+  - **S3 (ADR-010):** `github.com/aws/aws-sdk-go-v2` + `service/s3` (path-style + custom
+    endpoint for SeaweedFS; presigned PUT/GET).
+- **Consequences:** Encryption is client-side; the control plane and S3 store only
+  ciphertext + the per-site age **public** recipient, so the CP cannot decrypt backups
+  by default (confirmed structurally — neither blake3 nor age is in the CP go.mod).
+  Chunk ids are blake3 of the ciphertext, tenant-namespaced in S3 (`chunks/<tenant>/…`)
+  for dedup + isolation. Operator-escrowed identity (CP-assisted decrypt with explicit
+  consent) is deferred beyond V0.
+
+## ADR-028: ClickHouse Go driver (metrics) — ClickHouse/clickhouse-go v2
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M5 (Uptime Monitoring) writes per-site probe results to ClickHouse (the
+  metrics store, separate from Postgres) at ~60s cadence and queries uptime % over
+  7/30/90-day windows. Need good batch-insert ergonomics + windowed-aggregation query
+  DX, active maintenance, AGPLv3-compatible license.
+- **Options considered:**
+
+| Driver | Maint | Perf | DX | Fit | License | Notes |
+|---|---|---|---|---|---|---|
+| **clickhouse-go v2** | 5 (v2.46, May 2026) | 4 | 5 | 5 | 5 Apache-2.0 | official; native batch + database/sql; built on ch-go |
+| ch-go | 5 | 5 | 2 | 3 | 5 | low-level, no pool/reconnect, not goroutine-safe — overkill |
+| uptrace/go-clickhouse | 1 (Feb 2023, stale) | 4 | 4 | 2 | 5 | DISQUALIFIED (>12mo stale) |
+
+  Sources: [clickhouse-go releases](https://github.com/ClickHouse/clickhouse-go/releases), [ch-go](https://github.com/ClickHouse/ch-go), [uptrace/go-clickhouse](https://github.com/uptrace/go-clickhouse).
+
+- **Decision:** **clickhouse-go v2** — official, active, Apache-2.0; native `PrepareBatch` for the probe write stream + `database/sql`-compatible queries for uptime aggregations. ch-go's raw perf isn't needed at 60s cadence (clickhouse-go already wraps ch-go for encoding).
+- **Consequences:** ClickHouse is metrics-only; Postgres remains system of record. A thin hand-written ClickHouse repo (no sqlc), tested against a ClickHouse container. Can drop to ch-go for the insert hot path later without protocol/license change.
+
+## ADR-029: Email/SMTP sending library — wneessen/go-mail
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** Self-hosters configure their own SMTP (host/port/user/pass, STARTTLS/implicit
+  TLS, from). M5 sends downtime alerts; M7 sends scheduled HTML/PDF reports — so HTML +
+  attachments + modern TLS/auth matter. Need an SMTP SENDING client (not a SaaS SDK),
+  AGPLv3-compatible.
+- **Options considered:**
+
+| Library | Maint | Perf | DX | Fit | License | Notes |
+|---|---|---|---|---|---|---|
+| **wneessen/go-mail** | 5 (v0.7.3, May 2026) | 4 | 5 | 5 | 5 MIT | HTML/templates, attachments (FS/io.Reader/embed), STARTTLS+TLS, PLAIN/LOGIN/CRAM-MD5/XOAUTH2/SCRAM |
+| xhit/go-simple-mail | 3 (Aug 2023) | 4 | 4 | 4 | 5 MIT | viable fallback; lags cadence, no XOAUTH2/SCRAM |
+| stdlib net/smtp | 2 (frozen) | 4 | 2 | 2 | 5 | no MIME/HTML helpers, STARTTLS bugs |
+| jordan-wright/email | 1 (2020, stale) | 4 | 3 | 2 | 5 | DISQUALIFIED (>12mo stale) |
+
+  Sources: [wneessen/go-mail](https://github.com/wneessen/go-mail), [net/smtp (frozen)](https://pkg.go.dev/net/smtp), [xhit/go-simple-mail](https://github.com/xhit/go-simple-mail).
+
+- **Decision:** **wneessen/go-mail** — only candidate both actively maintained and purpose-built: HTML/templates + attachments (for M7), explicit STARTTLS/implicit-TLS policy for self-hoster SMTP, broadest modern auth, MIT, near-stdlib footprint.
+- **Consequences:** Map self-host SMTP config onto a configured `*mail.Client`; `html/template` bodies for alerts now, same client + attachments for M7 reports. Test against a local SMTP sink (Mailpit). Single-maintainer risk mitigated by go-simple-mail as a drop-in fallback.
+
+## ADR-030: Auto-login nonce store — Postgres source of truth + Redis hot-path consume
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** Phase 5.5 mints single-use, 60-second auto-login tokens (per-site, per-
+  initiator) and consumes them atomically when the agent calls back. We need:
+  (1) durable storage with RLS for cross-tenant safety + audit-friendly history (the
+  audit log links to the token row), (2) sub-millisecond atomic consume so the
+  user's `/wp-admin/` redirect lands within ~1 RTT, (3) survival of API restarts and
+  Redis flushes, (4) NO new dependencies (already at +6 deps this phase).
+- **Options considered:**
+
+| Option | Durability | Atomic-consume perf | Audit linkage | Failure mode | New deps |
+|---|---|---|---|---|---|
+| Redis only (e.g. `GETDEL`) | ❌ (Redis flush = all tokens lost) | ✅ fastest | ⚠️ separate audit-only write | Redis down → feature down | none |
+| Postgres only (`SELECT … FOR UPDATE`) | ✅ | ⚠️ row-lock overhead at scale | ✅ FK-able | tx contention possible | none |
+| **Postgres source of truth + Redis hot-path** | ✅ | ✅ Redis `SET NX EX` + `GETDEL` on consume; PG row written on mint, marked consumed on success | ✅ FK-able | Redis down → fall back to PG `UPDATE … WHERE consumed_at IS NULL RETURNING …` (still atomic) | none |
+
+  Existing wiring: Redis is already in the stack via `gomodule/redigo` (M1 SCS sessions, ADR-024). Postgres + RLS already enforced on tenant-scoped tables.
+
+- **Decision:** **Both — Postgres source of truth + Redis hot-path consume cache.**
+  Mint writes the row to `autologin_tokens` (RLS, tenant-scoped, audit-FK-able) AND
+  sets `autologin:<jti>` in Redis with `EX 60`. Consume tries `GETDEL` on Redis
+  first (sub-ms); on Redis miss/error, falls back to a single atomic
+  `UPDATE autologin_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL RETURNING …`
+  (lock-free, single round-trip). The atomicity is enforced by Postgres
+  regardless of Redis availability; Redis is purely a latency win + replay shield.
+- **Consequences:** Two writes per mint (negligible at our scale); the two stores
+  can drift if Redis is wiped mid-window — that's fine because Postgres remains
+  authoritative and consume re-checks `consumed_at IS NULL`. A `consumed_at IS NULL`
+  partial index keeps the cleanup fast. Reuses `redigo` (no new deps).
+
+## ADR-031: Auto-login token format — Ed25519 JWT via existing agentcmd
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** The auto-login redirect carries a token in the URL that the WordPress
+  agent must verify before issuing a `wp_set_auth_cookie`. We need: cryptographic
+  authenticity (the agent must reject anything not signed by the control plane),
+  short expiry (≤60s), per-site/per-command binding (so a captured token can't be
+  replayed at another tenant's site, M3's HIGH-finding fix), and ideally ZERO new
+  dependencies (cookie issuance is the most sensitive surface we have).
+- **Options considered:**
+
+| Format | Crypto | Compactness | Agent verify cost | Library | Existing wiring |
+|---|---|---|---|---|---|
+| Paseto v4 | Ed25519 (PASERK) | similar | new PHP lib needed | paragonie/paseto | NONE |
+| Macaroons | HMAC + chained caveats | bigger | new lib both sides | libmacaroons | NONE |
+| **Ed25519 JWT via existing `agentcmd`** | Ed25519 over `header.payload` | ~250 bytes | already implemented + tested | reuses Go `crypto/ed25519` + `libsodium` agent-side | M3 — `aud`+`cmd`+`jti`+`exp`≤60s, agent `Connector::verifyCommand` enforces all of it |
+
+  The M3 agent-bound JWT exists EXACTLY for this threat shape (single global CP
+  signing key, cross-site replay defense). For auto-login it just needs `cmd="autologin"`.
+
+- **Decision:** **Reuse the existing M3 `internal/agentcmd` Ed25519 JWT** with
+  these claims for auto-login: `cmd="autologin"`, `aud=<target site UUID>`,
+  `jti=<32-byte CSPRNG nonce, base64url>`, `exp=now+60s`, plus a new claim
+  `tgt=<target WP user login>` (sub-claim is also acceptable; named `tgt` to avoid
+  collision with OIDC `sub`). The agent's `Connector::verifyCommand($token, "autologin")`
+  already validates signature → exp → jti-uniqueness-locally → aud (site_id match)
+  → cmd. The PHP autologin endpoint additionally calls the CP `consume` endpoint
+  for the cross-instance atomic single-use guarantee (Redis/PG, ADR-030).
+- **Consequences:** Zero new crypto/format dependencies. The autologin token is
+  structurally identical to update/rollback/backup command tokens — same verifier,
+  same anti-replay, same single-key rotation story. Adds one new `cmd` value
+  ("autologin") and one new claim (`tgt`). Defense-in-depth: the agent re-verifies
+  the cookie issue eligibility against its own policy (allowed roles) AFTER the
+  consume succeeds, so even a fully-valid token can't issue a cookie for a
+  disallowed role.
+
+## ADR-032: Backup engine (agent) — phpbu library, detached subprocess, custom age Crypter + presigned-S3 Sync
+
+- **Status:** Accepted
+- **Date:** 2026-05-28
+- **Context:** M4 shipped the agent's backup pipeline as PHP code running inline
+  in the WP REST request handler: walk `wp-content` → split → age-encrypt each
+  chunk → POST presign → PUT to S3 → POST manifest. The CP held the HTTP
+  connection open the whole time. On real sites this exceeds `php.max_execution_time`,
+  pegs PHP-FPM memory (the encrypt path materializes the chunk in memory), and
+  hits the CP's per-attempt HTTP timeout long before the work completes. The
+  immediate firefight (bumped CP `WPMGR_BACKUP_HTTP_TIMEOUT` 30s → 10m, bumped
+  River per-job timeout 60s → 12m, agent `set_time_limit(0)` + `ignore_user_abort(true)`)
+  buys time but doesn't solve the underlying coupling: backup work has no
+  business living inside a synchronous WP request.
+- **Options considered:**
+
+| Engine | Process model | Real-time progress | S3 model | Custom code | Risk |
+|---|---|---|---|---|---|
+| Keep custom PHP pipeline + `fastcgi_finish_request` | In-FPM, detach response | DIY hooks | presigned-PUT (existing) | All of it (we own every bug) | Same OOM surface; FPM idle timeout still kills it |
+| Action Scheduler / wp-background-processing | WP cron + multi-table queue | Polling its own tables | DIY | Lots — queue + worker loop | Heavy, opinionated WP-specific layer; conflicts with admin context |
+| **phpbu (library, hybrid)** | **Detached `proc_open` PHP CLI subprocess** | **Native event dispatcher** | **Custom `PresignedS3` Sync reuses existing `BackupTransport`** | AgeCrypter + PresignedS3 Sync + ProgressSubscriber (~400 LoC each) | First runtime composer dep on the agent — needs vendor build pipeline |
+| restic / borg / duplicity (binary) | Shell out | Binary stdout only | Bring your own creds | Wrapper + parser | Heavy non-PHP runtime deps; per-host install burden; no presigned-PUT |
+
+  phpbu (6.0.31, Feb 2025, PHP ≥ 8.1) is a mature CLI tool with library-grade
+  internals: `Factory + Runner + Configuration\Loader` are directly instantiable
+  from a long-running PHP process. Its pipeline order is locked **Source → Check
+  → Crypt → Sync → Cleanup**, so an `age` Crypter encrypts in place and the Sync
+  step uploads the ciphertext — exactly our trust model. Its
+  `phpbu\App\Event\Dispatcher` fires per-stage `*_start/_end/_failed` events that
+  a custom subscriber can stream to the CP. Production deps are lean
+  (`sebastianfeldmann/cli`, `symfony/process`); the AWS SDK is `require-dev` only
+  and we avoid it entirely by writing our own Sync.
+
+- **Decision:**
+  1. **Adopt phpbu 6.x as a library** inside a **detached `proc_open` PHP CLI
+     subprocess** spawned from the agent's `backup` command handler. The WP
+     request validates the Ed25519 JWT, persists a `wpmgr_backup_runs` row
+     (`snapshot_id, pid, started_at` — dedup window 5 min to defeat lost-ACK
+     retry storms), writes `wp-content/wpmgr-agent/runs/{run_id}/phpbu.xml`,
+     spawns the runner, and **ACKs the CP immediately**.
+  2. **phpbu `<crypt>` stage SKIPPED** in the config. M4's restore protocol
+     requires per-chunk age envelopes (the agent decrypts each chunk
+     independently as it downloads, never holding the whole archive in
+     memory). A phpbu Crypter step would emit ONE whole-file age envelope and
+     force restore to re-engineer for whole-file decrypt — out of scope for V0.
+     **age happens INSIDE the custom Sync** (one age envelope per 4 MiB
+     chunk), preserving M4 restore as-is. (The research dossier's proposed
+     `AgeCrypter` is therefore deferred — it is the right shape if/when we
+     migrate restore to phpbu's inverse pipeline in a follow-up ADR.)
+  3. **Custom `PresignedS3` Sync** owns chunking + per-chunk age encryption +
+     upload + manifest in one pass. Preserves the CP-as-upload-broker security
+     posture: it stream-reads the plaintext artifact, splits into 4 MiB
+     chunks, age-encrypts each, computes BLAKE3 over the CIPHERTEXT, calls the
+     existing CP endpoints (`POST /agent/v1/backups/{id}/presign` + per-chunk
+     PUT to the returned URL + `POST /agent/v1/backups/{id}/manifest`) —
+     **zero changes to those CP endpoints**. The agent never sees SeaweedFS
+     credentials.
+  4. **Custom `WpmgrProgressSubscriber`** subscribes to every phpbu event and
+     POSTs phase progress to a new **`POST /agent/v1/backups/{id}/progress`**
+     endpoint (Ed25519-signed via the existing agent `Signer`). Per-chunk
+     progress is emitted from the custom Sync (phpbu has no intra-stage events).
+     CP stores latest phase in a new `backup_snapshots.progress JSONB` column;
+     a 60s no-progress watchdog (extension of `health.sweep`) marks stalled
+     runs `failed`.
+  5. **Bump agent PHP requirement** from 8.0 to 8.1 (phpbu minimum; 8.0 is EOL
+     since Nov 2023 anyway). Bump `composer.json` `php` and plugin header
+     `Requires PHP`. Add CI `composer install --no-dev --classmap-authoritative`
+     step; ship `vendor/` (stripped of tests/docs) in the release zip — this is
+     the **first runtime composer dep the agent ships**, so the precedent matters.
+  6. **Frontend (V0)**: TanStack Query polls `GET /api/v1/backups/{id}` at
+     1.5 s while `status='running'`, renders the `progress.phase` +
+     `progress.phase_detail`. V1 reuses the M3 SSE channel pattern.
+  7. **Async pattern fallback**: hosts that disable `proc_open` (rare; some
+     shared-hosting `disable_functions`) fall back to WP-CLI scheduled
+     subprocess driven by a system cron line installed at agent enrollment.
+     Detect at install time; surface as an agent health warning.
 
 - **Consequences:**
-  - Aggregation collapses storage to roughly the low-teens-% of raw (per-row overhead
-    dominates narrow rows; aggregated rowset is bounded by distinct dimension tuples,
-    not pageviews). 100 sites × 10k pv/day fits in well under ~1 GB/yr of daily rollups
-    and a few hundred MB of rolling raw — inside the existing $470/mo floor, no new line item.
-  - p75/p95 is approximate (histogram interpolation), not exact. Acceptable: Google itself
-    reports field CWV as p75 over distributions, and our bucket error is < ~5 %.
-  - No new dependency and no ClickHouse: pure SQL + River workers we already run for
-    db-size/cache-hit-ratio GC. Self-host portability preserved (no `tdigest` C extension).
-  - Re-aggregation window is bounded by raw retention; a rollup bug is only fixable for
-    the last 48 h. Mitigation: rollups are additive and idempotent (UPSERT add).
+  - **Net win:** backup memory + execution-time pressure leaves the WP request
+    entirely. Backup work runs in its own CLI PHP process with its own memory
+    budget. FPM worker recycling can't kill it.
+  - **Real-time UI:** users see actual phase + chunk progress instead of staring
+    at "running" for 5 minutes.
+  - **Vendor weight:** plugin zip grows ~6–8 MB (phpbu + symfony/process +
+    sebastianfeldmann/cli, stripped of tests/docs). Acceptable for an
+    admin-installed plugin.
+  - **CP contract:** the existing `presign` and `manifest` endpoints are reused
+    unchanged — only one **new** endpoint (`/progress`) and one **new** column
+    (`backup_snapshots.progress`).
+  - **Custom code surface:** ~400 LoC for `AgeCrypter` + `PresignedS3 Sync` +
+    `WpmgrProgressSubscriber` + runner shim + dedup table — small and contained
+    in `apps/agent/includes/phpbu/`.
+  - **Restore stays in agent PHP for V0** (download + decrypt + write is much
+    smaller surface than backup); a follow-up ADR can move restore into phpbu's
+    inverse pipeline if needed.
+  - **Risk R8 (phpbu in maintenance mode, no 6.1 yet):** our value-add is the
+    custom Crypter + Sync + Subscriber, which are 100% ours. If phpbu is ever
+    abandoned we can fork or migrate off without losing orchestration logic.
+  - **Risk R9 (lost-ACK retry storms re-spawning runners):** mitigated by the
+    plugin-side `wpmgr_backup_runs` dedup window AND the existing per-request
+    JWT-replay cache (`class-connector.php`).
+- **Supersedes:** the M4 inline backup pipeline in agent code paths (the
+  `class-backup-command.php` chunk-encrypt-upload loop). The CP-side
+  `presignChunks` / `submitManifest` contracts remain. Implementation lands as
+  **M4.5** (see PLAN.md).
+- **Research dossier:** `docs/research/phpbu-integration-research.md` (commissioned
+  2026-05-28).
+
+## ADR-033: Backup engine (agent, V0 final) — pure-PHP `ifsnop/mysqldump-php` + `ZipArchive` with `fastcgi_finish_request` + `wp_schedule_single_event` resume
+
+- **Status:** Accepted (supersedes ADR-032 for agent code paths; CP-side
+  contracts from ADR-032 are unchanged)
+- **Date:** 2026-05-28
+- **Context:** ADR-032's phpbu integration reached working code (the agent
+  spawned a detached PHP CLI runner via `proc_open` and phpbu's pipeline
+  loaded, registered our custom Sync + Logger, parsed the per-run XML, and
+  executed end-to-end) but **failed at the very first source step**: phpbu's
+  `Mysqldump` source shells out to the `mysqldump` binary, which is not
+  installed on the customer's 1panel-hosted WP container (and is absent on
+  most managed WP hosts — the binary lives in the separate `mysql` container).
+  Replacing phpbu's source with a pure-PHP equivalent surfaces a deeper
+  problem: phpbu also requires `tar`, `proc_open`, and a synchronous
+  long-running PHP process — none of which are universally available on
+  shared/managed WP hosting.
+- **Research:** three parallel agents dissected the de-facto reference
+  architecture for production WP backup (mature plugins with tens of millions of
+  installs). Consolidated finding: **no mature WP backup plugin assumes binaries
+  are present.** They all use `ifsnop/mysqldump-php` (or a vendored variant) +
+  `ZipArchive` (with PclZip fallback) + checkpointed task state +
+  `wp_schedule_single_event` for stall recovery. The "PHP can't handle large
+  files" concern that motivated ADR-032's phpbu choice is solved by *streaming
+  implementation*, not by switching languages — `ifsnop` pages `LIMIT 5000
+  OFFSET …` straight to `gzwrite`, `ZipArchive` streams files into rotated
+  `.partNNN.zip` archives.
+- **Options considered (post-research):**
+
+| Option | Binary deps | Resume across requests | LoC throwaway | Production WP coverage |
+|---|---|---|---|---|
+| Keep ADR-032 phpbu, document host requirements | mysqldump + tar + proc_open | None | 0 | Excludes ~70 % of managed WP hosting |
+| Hybrid: phpbu pipeline + pure-PHP Sources | None new | None (phpbu pipeline is single-shot) | ~200 | Survives binary absence; still dies on FPM/openresty timeout (we already saw the 504) |
+| **Pivot to pure-PHP pattern (V0 final)** | None | **`wp_schedule_single_event` + persisted checkpoint** | ~400 (the phpbu integration) | Works on every WP host that runs FPM (the universal denominator) |
+
+- **Decision:** **Adopt the pure-PHP backup architectural pattern for the
+  agent backup engine.** Concretely:
+  1. **Composer:** drop `phpbu/phpbu`; add `ifsnop/mysqldump-php` (~600 KB,
+     MIT, pure-PHP). No other new runtime deps.
+  2. **DB dump:** wrap `ifsnop` in a thin `WPMgr\Agent\Backup\DbDumper`.
+     Streams `LIMIT 5000` row pages → `gzwrite` to the per-run scratch dir.
+     `--single-transaction` REPEATABLE READ snapshot. BLOB → HEX. No
+     `LOCK TABLES` (we don't need full backup consistency for V0; the
+     transaction snapshot is sufficient).
+  3. **File archive:** `WPMgr\Agent\Backup\FilesArchiver` uses
+     `ZipArchive` (with PclZip fallback detection for hosts missing the zip
+     extension). Walks `wp-content` via streaming `opendir`/`readdir` with
+     paths written to an on-disk cache file (NOT an in-memory array — OOM
+     defense). Rotates archive parts at the configured
+     `chunk_bytes` cap (default 200 MB). Excludes `wpmgr-snapshots`,
+     `wpmgr-agent`, `cache`, `upgrade`, `upgrade-temp-backup`, and symlinks.
+  4. **Async pattern:** the `backup` REST handler validates the JWT,
+     dedups against the `wpmgr_backup_runs` table (unchanged from
+     ADR-032), claims the slot, writes the task row, then calls
+     `fastcgi_finish_request()` (FPM) → ACKs the CP with `{ok: true,
+     detail: "accepted"}` **in well under a second**. The same PHP
+     request then proceeds under `ignore_user_abort(true)` to do the work.
+     This "fire, flush, self-resume" pattern works on every FPM host without
+     `proc_open` permissions.
+  5. **Checkpointed state machine:** a new `wpmgr_backup_tasks` plugin-side
+     table replaces the throwaway `wpmgr_backup_runs` dedup with richer
+     state: `{snapshot_id, kind, phase, sub_state JSONB, started_at,
+     last_progress_at, resume_count}`. `phase` is a closed set
+     (`queued / dumping_db / archiving_files / encrypting_uploading /
+     submitting_manifest / completed / failed`). `sub_state` carries
+     per-phase resume cursors (e.g. `{db_table: "...", db_offset: N}` or
+     `{archive_part: N, file_index: M}`). Updated atomically before every
+     `flush()` and after every per-chunk upload.
+  6. **Stall recovery:** on entering the backup, the handler schedules a
+     `wp_schedule_single_event(time()+120, 'wpmgr_backup_watchdog',
+     [snapshot_id])`. The watchdog handler reads the task row; if
+     `last_progress_at` is older than 180 s AND `phase` is not terminal,
+     it increments `resume_count` (cap 6) and re-enters the backup state
+     machine, which dispatches to the right phase from `sub_state`.
+     Across 6 retries this gives an effective ~30-minute recovery window
+     for transient failures without the CP needing to know anything new.
+  7. **Encrypt + upload reuse:** the chunk-encrypt-upload step is mostly
+     **the existing M4 code that ADR-032 was trying to refactor away**.
+     We keep using `WPMgr\Agent\Support\AgeCrypto::encrypt` per 4 MiB
+     chunk + `Blake3::hashHex` over the ciphertext + the existing
+     `BackupTransport::presignChunks` / `putChunk` / `submitManifest`.
+     What changes: the chunks now come from FILES (the dump.sql.gz and
+     files.partNN.zip artifacts) instead of in-memory blobs, so memory
+     stays bounded regardless of total backup size.
+  8. **Progress reporting:** unchanged from ADR-032 — agent posts to
+     `POST /agent/v1/backups/{id}/progress` (Ed25519-signed) at every
+     phase transition and per-chunk during the encrypting_uploading
+     phase. CP stores in `backup_snapshots.progress` JSONB. Frontend
+     polling and watchdog already shipped.
+- **What carries over from ADR-032 (no rework):**
+  - CP `backup_snapshots.progress` JSONB column + watchdog index
+  - CP `POST /agent/v1/backups/:id/progress` endpoint (Ed25519-verified,
+    4 KiB body cap, closed-set phase validation)
+  - CP `ProgressWatchdogWorker` (River periodic, 120 s stall threshold)
+  - CP `BackupRequest.ProgressEndpoint` field + worker plumbing
+  - CP `Backup.HTTPTimeout` config + River per-job timeout override
+  - Frontend `SnapshotProgressCard` + 1.5 s polling
+  - Agent build pipeline (`make agent-vendor` / `agent-zip`)
+  - Agent `wpmgr_backup_runs` dedup table (small extension to richer task table)
+  - Agent `ProgressClient` (signed `/progress` POSTs)
+- **What gets replaced from ADR-032:**
+  - composer dep `phpbu/phpbu` → `ifsnop/mysqldump-php`
+  - `apps/agent/includes/phpbu/PresignedS3.php` (phpbu Sync impl) → replaced
+    by phase-driven uploader in the state machine
+  - `apps/agent/includes/phpbu/WpmgrProgressSubscriber.php` (phpbu
+    Listener+Logger) → deleted; progress posts happen inline
+  - `apps/agent/bin/wpmgr-backup-runner.php` (CLI shim spawned by
+    `proc_open`) → deleted; work runs in the same FPM request via
+    `fastcgi_finish_request`
+  - `apps/agent/includes/commands/class-backup-command.php` spawn flow →
+    replaced by state-machine entry + `fastcgi_finish_request` flush
+- **Consequences:**
+  - **Universal hosting compatibility.** Works on every WP host running
+    FPM (the dominant deployment). No binary requirements, no
+    `proc_open` permission, no CLI PHP path resolution. Where FPM is
+    absent (mod_php on Apache shared hosting), the same code runs
+    synchronously without the early flush — the CP keeps its HTTP
+    connection open and behaves like M4 did, with the same 10 min
+    backup HTTPTimeout we already configured. Acceptable degradation.
+  - **Checkpointed resume is a real safety property** — a backup that
+    crashes at part 3 of 7 resumes from part 3, not from scratch. We
+    couldn't have built this in phpbu.
+  - **Restore stays out of scope for V0.** The current M4 restore path
+    still works (downloads chunks, decrypts in-agent, reassembles).
+    A follow-up ADR will adapt restore to the new artifact shape
+    (one tar+gz + N file parts vs N small chunks per file) — straight
+    file-write, no real change to restore safety.
+  - **~400 LoC of M5.6 agent code is thrown away** (PresignedS3 Sync,
+    WpmgrProgressSubscriber, runner shim, BackupCommand spawn flow,
+    phpbu.xml generator). **~600 LoC replaces it** (DbDumper,
+    FilesArchiver, BackupTaskRunner state machine, watchdog handler).
+    Net agent diff is +200 LoC. CP side is +0.
+  - **The original phpbu motivation ("don't rely on PHP memory
+    management") is preserved** — pure-PHP streaming (`ifsnop`'s
+    `LIMIT 5000` → `gzwrite`, `ZipArchive`'s file-streaming, our
+    chunk-by-chunk age encryption) holds memory to one chunk's worth
+    at any instant. Memory bound is independent of total backup size.
+- **Supersedes:** ADR-032 (for the agent-side backup implementation).
+  CP-side contracts ADR-032 added (progress endpoint, watchdog,
+  progress JSONB) are RETAINED — they are engine-agnostic.
+- **Research dossiers:** (internal research files; not in public repo)
+
+## ADR-038: SSE channel scoping + cross-instance fan-out (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-038-sse-channel-scoping.md`
+- **Recon:** `analysis/live-enrollment-recon.md`
+- **Decision:** The existing SSE bus is in-process per-resource Hubs (no
+  cross-instance fan-out, no replay) — broken for multi-instance Cloud Run.
+  Add a shared bus over **Postgres LISTEN/NOTIFY** (`NOTIFY` carries
+  `<tenant>:<event_id>` only; bodies live in a new `site_events` table). Clients
+  open ONE **tenant-scoped** stream `GET /api/v1/sites/events` and filter by
+  `site_id` client-side (the enroll modal subscribes before a site_id exists).
+  ULID event ids + `?since=` give a ~5-min replay window; reconcile-on-connect
+  (list invalidate) is the backstop. **Postgres over Redis** because Memorystore
+  is currently disabled (see follow-up #79) and the volume is tiny.
+
+## ADR-039: Heartbeat cadence + connection-timeout thresholds (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-039-heartbeat-cadence-timeouts.md`
+- **Decision:** Heartbeat already exists (5-min wp-cron) → extend, don't rebuild.
+  Shorten the agent beat to **60s**; CP River sweeper (15s tick) marks
+  `degraded` at **180s** missed (3×) and `disconnected` at **360s** (6×). The
+  generous multiples avoid false-flagging low-traffic wp-cron sites (the spec's
+  30/90/180 would false-positive). Agent fires **one immediate beat on enroll**
+  so the dashboard shows `connected` in ~1s. Recovery only via heartbeat;
+  degraded/disconnected only via the sweeper.
+
+## ADR-040: Agent-side last-will (disconnect) mechanism (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-040-agent-last-will-disconnect.md`
+- **Decision:** `register_deactivation_hook` / `register_uninstall_hook` POST a
+  **signed** (Ed25519 — anti-spoof) `/agent/v1/disconnect` with a 3s best-effort
+  timeout, then clear cron / wipe keystore. The endpoint requires the agent's
+  signature, so a `site_id` alone can't disconnect a site. Hard delete / dead
+  host falls back to the ADR-039 timeout sweeper (≤360s). Last-will is a latency
+  optimisation, never the sole path.
+
+## ADR-041: Re-enrollment identity + connection-state model (Phase 5.7)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-041-reenrollment-identity-connection-state.md`
+- **Decision:** Add `connection_state` (TEXT + CHECK enum: pending_enrollment /
+  connected / degraded / disconnected / revoked / archived) as the **new single
+  source of truth**, plus `connection_generation`, `disconnected_at/reason`,
+  `archived_at` — **additive migration, no rewrite of the free-text
+  `status`/`health_status`** (kept written for compat; UI reads only
+  connection_state). Re-enroll **reuses `site_id`**, `connection_generation += 1`,
+  history threads back. Revoke → queue agent revoke-instruction + null
+  `agent_public_key` (avoids unique-index collision on re-enroll); archive =
+  terminal soft-delete; restore = un-archive. Every transition writes
+  `site_connection_history` + a hash-chained audit action, enforced in a single
+  Go service (`internal/site/service/connection.go`).
+
+## ADR-042: CP-driven WordPress agent self-update (Phase: self-update)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-042-cp-agent-self-update.md`
+- **Decision:** The agent appears in the WP dashboard with a normal "Update
+  available" + one-click update. `GET /agent/v1/update/manifest` reads
+  `agent-releases/latest.json` from object storage, mints a short-lived presigned
+  package URL, and returns an **Ed25519-signed** manifest (key-pinned to the exact
+  version object). The agent verifies signature → aud/cmd/slug → exp/iat/jti →
+  monotonic-iat → downgrade guard (normalised semver, read on-disk) → https +
+  configurable host allowlist → size → streaming sha256 before WP installs.
+  Releases decoupled via `make agent-release` (no API redeploy). NB: read
+  `latest.json` via a **presigned GET** — a live SDK `GetObject` 403s on GCS
+  S3-compat.
+
+## ADR-043: Media Optimizer — architecture, encode topology & transport (Phase 5.8)
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Full doc:** `docs/adr/ADR-043-media-optimizer-architecture.md`
+- **Decision:** Cloud-encode JPEG/PNG → WebP/AVIF using **Discord `lilliput`
+  v1.5.0 (MIT)**, run in a **SEPARATE, OPTIONAL `media-encoder` container**
+  (CGO + glibc base) so the lean `CGO_ENABLED=0`/`distroless/static` API is
+  untouched and self-hosters opt in via a `docker compose --profile media`
+  service (on our SaaS it's a 2nd Cloud Run service — nothing GCP-specific).
+  Transport = **presigned object storage** (agent↔storage↔encoder), **no image
+  bytes through the CP and none persisted on the CP**; thumbnails load from the
+  site's own URLs. ≤10 variants/job; AVIF q50/s6 · WebP q80 · mozjpeg q82 · PNG
+  lossless (lossless mode per-request); magic-byte source detection; 50 MB/100 MP
+  guards; per-variant 2× retry. RBAC: `PermSiteWrite` for sync/optimize/restore,
+  new `PermMediaDeleteOriginals` (admin+) for the irreversible delete-originals.
+  Orchestration patterns (postmeta blob, `.wpmgr-original.*` rename,
+  Accept-header `.htaccess` fallback, serialized-safe URL rewriter, media-modal
+  injection) implemented under WPMgr naming — **no third-party plugin code copied**.
+  **Fallback:** govips/libvips (LGPL) swaps into the same encoder image.

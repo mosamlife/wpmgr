@@ -54,5 +54,8 @@ clone and fork. The rule applies going forward.
 
 ## Architecture decisions
 
-Material technical choices are recorded in [DECISIONS.md](./DECISIONS.md) as
-ADRs. Propose new dependencies via an ADR before adding them.
+Material technical choices are recorded as ADRs. Early decisions are archived
+in [DECISIONS.md](./DECISIONS.md); [docs/adr/README.md](./docs/adr/README.md)
+is the live index of every ADR, including the numbering, and is where a new
+one gets registered. Propose new dependencies via an ADR there before adding
+them.
