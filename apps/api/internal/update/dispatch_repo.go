@@ -43,13 +43,34 @@ type DispatchOutcome struct {
 	// Dispatched is how many tasks moved 'scheduled' -> 'pending' and had a
 	// job enqueued.
 	Dispatched int
-	// Skipped is how many tasks could not move because their (site, target)
-	// was in flight from another run, and were terminalized 'skipped'. This
-	// does NOT fail the run.
+	// Skipped is how many tasks this pass did not dispatch: their (site,
+	// target) was in flight from another run, or their site's monitoring was
+	// paused, and they were terminalized 'skipped'. This does NOT fail the run.
 	Skipped int
+	// PausedSkipped is how many of Skipped were declined specifically because
+	// the site's monitoring was paused at fire time.
+	//
+	// It is a SUBSET of Skipped and not a sibling of it, so the two must never
+	// be summed. Skipped stays the answer to "how many tasks did this pass not
+	// dispatch"; this one exists because the two causes are different stories
+	// to put in front of an operator — "another run was already updating this
+	// target" is transient and self-correcting, while "you paused this site" is
+	// a state the operator themselves created and is the only one of the two
+	// they can act on. A run reporting "8 of 10 applied" with no separation
+	// between them reads as broken.
+	PausedSkipped int
 	// Status is the run status this pass left behind.
 	Status string
 }
+
+// pausedSiteSkipDetail is recorded on a task the dispatcher declined because
+// its site's monitoring was paused when the schedule fired.
+//
+// It names the pause explicitly. This string is the ONLY per-task trace of why
+// the task did not run — it reaches the operator through update_tasks.detail,
+// which the task DTO carries to the dashboard — so "skipped" alone would leave
+// them with a run that updated fewer sites than it named and no reason why.
+const pausedSiteSkipDetail = "not attempted: monitoring is paused for this site"
 
 // CreateScheduledRunWithTasks creates a DEFERRED run: the run row is born
 // 'scheduled' and every task is born 'scheduled' too, in one transaction.
@@ -269,12 +290,65 @@ func (r *pgRepo) DispatchDueRun(ctx context.Context, enq TxEnqueuer, run Run) (D
 			return domain.Internal("update_tasks_list_failed", "failed to list tasks for dispatch").WithCause(err)
 		}
 
+		// READ THE PAUSE STATE HERE, AT FIRE TIME, AND NOT WHEN THE RUN WAS
+		// CREATED. That placement is the entire point of the check.
+		//
+		// The scenario this exists for is a site paused AFTER its update was
+		// scheduled: an operator defers a fleet update to 02:00, something goes
+		// wrong on one site at 23:00, they pause it, and at 02:00 the run fires.
+		// Reading pause at create time would miss exactly that case and let the
+		// update land on the site somebody deliberately froze mid-incident,
+		// which is the outcome nobody can undo.
+		//
+		// One set-based read rather than a per-task one: a run can span the
+		// whole fleet, and an N+1 inside the dispatch transaction would hold it
+		// open across hundreds of round trips.
+		siteIDs := make([]uuid.UUID, 0, len(tasks))
+		for _, row := range tasks {
+			if row.Status == TaskScheduled {
+				siteIDs = append(siteIDs, row.SiteID)
+			}
+		}
+		paused, err := pausedSiteIDs(ctx, tx, run.TenantID, siteIDs)
+		if err != nil {
+			// FAIL CLOSED. Returning the error rolls the claim back with it, so
+			// the run returns to 'scheduled' and a later tick retries. The
+			// alternative — treating an unreadable pause state as "not paused"
+			// — dispatches into sites whose pause we simply failed to read,
+			// which is the one outcome this whole check exists to prevent.
+			return err
+		}
+
 		for _, row := range tasks {
 			if row.Status != TaskScheduled {
 				// Already dispatched by an earlier partial pass, or
 				// terminalized. Not this pass's to move.
 				continue
 			}
+
+			// PER TASK, NOT PER RUN. A run spanning ten sites with two paused
+			// dispatches to eight and skips two; one frozen site must not take
+			// the other nine down with it. Hence `continue` on this one row
+			// rather than any early return out of the loop.
+			if _, isPaused := paused[row.SiteID]; isPaused {
+				// Declined BEFORE MarkScheduledUpdateTaskPending and before any
+				// enqueue, which is what makes "no command reaches this site"
+				// true rather than merely likely: the task never enters
+				// update_tasks_inflight_target_idx and no TaskArgs job is
+				// inserted, and update.Worker.Work — the only thing that can
+				// sign a command for a site — is reachable only through such a
+				// job.
+				recorded, serr := skipPausedTask(ctx, tx, toTask(row))
+				if serr != nil {
+					return serr
+				}
+				if recorded {
+					out.PausedSkipped++
+				}
+				out.Skipped++
+				continue
+			}
+
 			dispatched, derr := dispatchOneTask(ctx, tx, enq, run, toTask(row))
 			if derr != nil {
 				return derr
@@ -327,6 +401,30 @@ func (r *pgRepo) DispatchDueRun(ctx context.Context, enq TxEnqueuer, run Run) (D
 		// every target was busy and each task was terminalized 'skipped'.
 		// Anything still outstanding stays 'running' and is finished by the
 		// worker that owns it.
+		//
+		// A RUN WHOSE SITES WERE ALL PAUSED THEREFORE LANDS 'completed', and
+		// that is a deliberate choice rather than a fallthrough.
+		//
+		// 'completed' is defined in schema.sql as "All tasks reached a terminal
+		// state" — it has never meant "all work succeeded", and every task here
+		// did reach one. It is not 'failed': nothing was attempted and nothing
+		// is broken. It is not 'expired', which means the control plane missed
+		// the window and is about the control plane's own health. It is not
+		// 'halted', which is reserved for an agent self-update wave whose gate
+		// refused mid-rollout, with commands already out on real sites.
+		//
+		// The decisive argument is that an all-paused run is the SAME SHAPE as
+		// the all-targets-busy run directly above, which has always landed
+		// 'completed'. Giving one of two identical situations a different
+		// status would make the run list report the same fact two ways.
+		//
+		// What stops 'completed' from overstating the outcome is not the run
+		// status but the per-task record: every task carries
+		// pausedSiteSkipDetail, and out.PausedSkipped reaches the dispatch
+		// audit entry and the dispatch log line. Introducing a new run status
+		// instead would be a wire-contract change across schema.sql, the
+		// OpenAPI enum and the dashboard, to say something the task rows
+		// already say precisely.
 		out.Status = RunRunning
 		if unfinished == 0 {
 			out.Status = RunCompleted
@@ -446,6 +544,93 @@ func dispatchOneTask(ctx context.Context, tx pgx.Tx, enq TxEnqueuer, run Run, ta
 		return false, domain.Internal("dispatch_task_skip_failed", "failed to record a skipped scheduled task").WithCause(ferr)
 	}
 	return false, nil
+}
+
+// pausedSiteIDs returns the subset of siteIDs whose monitoring is currently
+// paused, read on the CALLER'S transaction so it is a fire-time fact about the
+// same snapshot the dispatch is deciding from.
+//
+// This is m117's monitoring pause (GH #414) applied to the deferred dispatcher.
+// The predicate is `monitoring_paused_at IS NOT NULL`, the same one
+// vuln.Repo.IsMonitoringPaused and screenshot's DBSiteIDLister.IsMonitoringPaused
+// already ask per site; this is the set-based form of that question, because a
+// dispatcher asking it one row at a time inside its own transaction would hold
+// that transaction open across the whole fleet. It reuses the existing column
+// contract rather than introducing a second notion of "paused".
+//
+// A SITE WITH NO ROW IS REPORTED NOT PAUSED, by construction — it simply does
+// not appear in the result. That matches both existing implementations and is
+// the right reading: a missing row means the site was deleted between
+// scheduling and firing, and its dispatch then finds no site and does nothing.
+// Inventing a pause for a deleted site would be the worse failure.
+//
+// tenant_id IS IN THE PREDICATE AND IS LOAD-BEARING HERE, not merely the usual
+// defence in depth. This runs under InAgentTx, whose whole purpose is to let
+// the dispatcher work across tenants, so RLS is not the boundary it is on a
+// tenant-scoped path. The explicit tenant_id is what stops a task row somehow
+// naming another tenant's site from reading that site's pause state, and it
+// keeps the (tenant_id, ...) index in play.
+func pausedSiteIDs(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, siteIDs []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	out := make(map[uuid.UUID]struct{})
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id
+		  FROM sites
+		 WHERE tenant_id = $1
+		   AND id = ANY($2::uuid[])
+		   AND monitoring_paused_at IS NOT NULL`, tenantID, siteIDs)
+	if err != nil {
+		return nil, domain.Internal("dispatch_pause_read_failed",
+			"failed to read monitoring pause state before dispatch").WithCause(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, domain.Internal("dispatch_pause_scan_failed",
+				"failed to scan monitoring pause state before dispatch").WithCause(err)
+		}
+		out[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.Internal("dispatch_pause_read_failed",
+			"failed to read monitoring pause state before dispatch").WithCause(err)
+	}
+	return out, nil
+}
+
+// skipPausedTask terminalizes ONE task 'scheduled' -> 'skipped' because its
+// site's monitoring is paused. Reports whether this call is the one that
+// recorded it.
+//
+// No savepoint, unlike dispatchOneTask, and the asymmetry is the point rather
+// than an omission. dispatchOneTask needs one because
+// MarkScheduledUpdateTaskPending can raise 23505 off
+// update_tasks_inflight_target_idx and abort the whole dispatch transaction.
+// This path never inserts into that index — declining is precisely NOT taking
+// the in-flight slot — so the only statement it runs is an UPDATE guarded by a
+// status precondition, which cannot raise it.
+//
+// A zero-row result means the row left 'scheduled' between the task list and
+// this write: a concurrent cancel, or a competing dispatcher. The recorded
+// outcome wins and false comes back, exactly as on the busy-target skip path.
+func skipPausedTask(ctx context.Context, tx pgx.Tx, task Task) (bool, error) {
+	q := sqlc.New(tx)
+	if _, err := q.FinishScheduledUpdateTask(ctx, sqlc.FinishScheduledUpdateTaskParams{
+		Status:   TaskSkipped,
+		Detail:   pausedSiteSkipDetail,
+		ID:       task.ID,
+		TenantID: task.TenantID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, domain.Internal("dispatch_paused_skip_failed",
+			"failed to record a task skipped for a paused site").WithCause(err)
+	}
+	return true, nil
 }
 
 // isUniqueViolation reports whether err is Postgres' 23505.

@@ -19,8 +19,10 @@ import (
 // Audit actions for the deferred-dispatch lifecycle.
 const (
 	// ActionRunDispatched records that a scheduled run fired. It carries the
-	// dispatched and skipped counts, so "the run updated fewer sites than it
-	// named" has an answer that does not depend on reading every task row.
+	// dispatched and skipped counts — and, within skipped, how many were
+	// declined because the operator had paused the site — so "the run updated
+	// fewer sites than it named" has an answer that does not depend on reading
+	// every task row.
 	ActionRunDispatched = "update.run.dispatched"
 	// ActionRunExpired records that a scheduled run passed its grace window
 	// undispatched and no site was contacted. This is the record the #463
@@ -299,6 +301,11 @@ func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 		slog.String("tenant_id", run.TenantID.String()),
 		slog.Int("dispatched", out.Dispatched),
 		slog.Int("skipped", out.Skipped),
+		// paused_skipped is a SUBSET of skipped, never an addend to it. It is
+		// logged separately because it is the one arm of a zero-dispatch pass
+		// that is fully explained and needs no investigation: the operator
+		// paused those sites themselves.
+		slog.Int("paused_skipped", out.PausedSkipped),
 		slog.String("run_status", out.Status))
 
 	if w.audit != nil {
@@ -312,7 +319,12 @@ func (w *DispatchWorker) fire(ctx context.Context, run Run) error {
 				"scheduled_at": run.ScheduledAt.UTC().Format(time.RFC3339),
 				"dispatched":   out.Dispatched,
 				"skipped":      out.Skipped,
-				"run_status":   out.Status,
+				// A SUBSET of "skipped". This is the durable answer to "why did
+				// my scheduled run update 8 of 10 sites?" — without it, the only
+				// record of a pause-driven skip is a per-task detail string on
+				// rows an operator has to go and find.
+				"paused_skipped": out.PausedSkipped,
+				"run_status":     out.Status,
 			},
 		}); aerr != nil {
 			// Not fatal: the work IS dispatched, and failing the job here would
