@@ -20625,6 +20625,242 @@ func (s *FleetUptimeCounts) SetUnknown(val int) {
 	s.Unknown = val
 }
 
+// One UTC day of measured availability for one site.
+// Ref: #/components/schemas/FleetUptimeDay
+type FleetUptimeDay struct {
+	// The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed
+	// on UTC days, so re-bucketing per viewer timezone would split one
+	// stored day across two rendered cells.
+	Date time.Time `json:"date"`
+	// Up_checks/total_checks*100 for the day, or null when the day has
+	// NO stored measurement. Null is not zero — see the endpoint
+	// description. Never interpolated from a neighbouring day.
+	UptimePct NilFloat64 `json:"uptime_pct"`
+	// Probes recorded that day; 0 exactly when uptime_pct is null.
+	// Carried so a confidently-measured day is distinguishable from one
+	// with a single probe, and so "no data" is falsifiable rather than
+	// something the client infers from a null alone.
+	Checks int64 `json:"checks"`
+	// Mean response time over SUCCESSFUL probes with a non-zero reading,
+	// null when the day had none.
+	AvgLatencyMs NilFloat64 `json:"avg_latency_ms"`
+}
+
+// GetDate returns the value of Date.
+func (s *FleetUptimeDay) GetDate() time.Time {
+	return s.Date
+}
+
+// GetUptimePct returns the value of UptimePct.
+func (s *FleetUptimeDay) GetUptimePct() NilFloat64 {
+	return s.UptimePct
+}
+
+// GetChecks returns the value of Checks.
+func (s *FleetUptimeDay) GetChecks() int64 {
+	return s.Checks
+}
+
+// GetAvgLatencyMs returns the value of AvgLatencyMs.
+func (s *FleetUptimeDay) GetAvgLatencyMs() NilFloat64 {
+	return s.AvgLatencyMs
+}
+
+// SetDate sets the value of Date.
+func (s *FleetUptimeDay) SetDate(val time.Time) {
+	s.Date = val
+}
+
+// SetUptimePct sets the value of UptimePct.
+func (s *FleetUptimeDay) SetUptimePct(val NilFloat64) {
+	s.UptimePct = val
+}
+
+// SetChecks sets the value of Checks.
+func (s *FleetUptimeDay) SetChecks(val int64) {
+	s.Checks = val
+}
+
+// SetAvgLatencyMs sets the value of AvgLatencyMs.
+func (s *FleetUptimeDay) SetAvgLatencyMs(val NilFloat64) {
+	s.AvgLatencyMs = val
+}
+
+// Ref: #/components/schemas/FleetUptimeHistory
+type FleetUptimeHistory struct {
+	Window FleetUptimeHistoryWindow `json:"window"`
+	// Number of entries in every item's days array.
+	Days      int                      `json:"days"`
+	StartDate time.Time                `json:"start_date"`
+	EndDate   time.Time                `json:"end_date"`
+	Items     []FleetUptimeHistoryItem `json:"items"`
+}
+
+// GetWindow returns the value of Window.
+func (s *FleetUptimeHistory) GetWindow() FleetUptimeHistoryWindow {
+	return s.Window
+}
+
+// GetDays returns the value of Days.
+func (s *FleetUptimeHistory) GetDays() int {
+	return s.Days
+}
+
+// GetStartDate returns the value of StartDate.
+func (s *FleetUptimeHistory) GetStartDate() time.Time {
+	return s.StartDate
+}
+
+// GetEndDate returns the value of EndDate.
+func (s *FleetUptimeHistory) GetEndDate() time.Time {
+	return s.EndDate
+}
+
+// GetItems returns the value of Items.
+func (s *FleetUptimeHistory) GetItems() []FleetUptimeHistoryItem {
+	return s.Items
+}
+
+// SetWindow sets the value of Window.
+func (s *FleetUptimeHistory) SetWindow(val FleetUptimeHistoryWindow) {
+	s.Window = val
+}
+
+// SetDays sets the value of Days.
+func (s *FleetUptimeHistory) SetDays(val int) {
+	s.Days = val
+}
+
+// SetStartDate sets the value of StartDate.
+func (s *FleetUptimeHistory) SetStartDate(val time.Time) {
+	s.StartDate = val
+}
+
+// SetEndDate sets the value of EndDate.
+func (s *FleetUptimeHistory) SetEndDate(val time.Time) {
+	s.EndDate = val
+}
+
+// SetItems sets the value of Items.
+func (s *FleetUptimeHistory) SetItems(val []FleetUptimeHistoryItem) {
+	s.Items = val
+}
+
+func (*FleetUptimeHistory) getFleetUptimeHistoryRes() {}
+
+// Ref: #/components/schemas/FleetUptimeHistoryItem
+type FleetUptimeHistoryItem struct {
+	SiteID uuid.UUID `json:"site_id"`
+	Name   string    `json:"name"`
+	URL    string    `json:"url"`
+	// Always exactly the window's day count, oldest first, with no gaps:
+	// the server densifies across every UTC day in the window, so a
+	// client can index positionally without re-deriving dates and every
+	// unmeasured day is explicitly present with a null uptime_pct
+	// rather than silently missing.
+	Days []FleetUptimeDay `json:"days"`
+	// How many entries in days carry a measurement.
+	MeasuredDays int `json:"measured_days"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *FleetUptimeHistoryItem) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetName returns the value of Name.
+func (s *FleetUptimeHistoryItem) GetName() string {
+	return s.Name
+}
+
+// GetURL returns the value of URL.
+func (s *FleetUptimeHistoryItem) GetURL() string {
+	return s.URL
+}
+
+// GetDays returns the value of Days.
+func (s *FleetUptimeHistoryItem) GetDays() []FleetUptimeDay {
+	return s.Days
+}
+
+// GetMeasuredDays returns the value of MeasuredDays.
+func (s *FleetUptimeHistoryItem) GetMeasuredDays() int {
+	return s.MeasuredDays
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *FleetUptimeHistoryItem) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetName sets the value of Name.
+func (s *FleetUptimeHistoryItem) SetName(val string) {
+	s.Name = val
+}
+
+// SetURL sets the value of URL.
+func (s *FleetUptimeHistoryItem) SetURL(val string) {
+	s.URL = val
+}
+
+// SetDays sets the value of Days.
+func (s *FleetUptimeHistoryItem) SetDays(val []FleetUptimeDay) {
+	s.Days = val
+}
+
+// SetMeasuredDays sets the value of MeasuredDays.
+func (s *FleetUptimeHistoryItem) SetMeasuredDays(val int) {
+	s.MeasuredDays = val
+}
+
+type FleetUptimeHistoryWindow string
+
+const (
+	FleetUptimeHistoryWindow7d  FleetUptimeHistoryWindow = "7d"
+	FleetUptimeHistoryWindow30d FleetUptimeHistoryWindow = "30d"
+	FleetUptimeHistoryWindow90d FleetUptimeHistoryWindow = "90d"
+)
+
+// AllValues returns all FleetUptimeHistoryWindow values.
+func (FleetUptimeHistoryWindow) AllValues() []FleetUptimeHistoryWindow {
+	return []FleetUptimeHistoryWindow{
+		FleetUptimeHistoryWindow7d,
+		FleetUptimeHistoryWindow30d,
+		FleetUptimeHistoryWindow90d,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s FleetUptimeHistoryWindow) MarshalText() ([]byte, error) {
+	switch s {
+	case FleetUptimeHistoryWindow7d:
+		return []byte(s), nil
+	case FleetUptimeHistoryWindow30d:
+		return []byte(s), nil
+	case FleetUptimeHistoryWindow90d:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *FleetUptimeHistoryWindow) UnmarshalText(data []byte) error {
+	switch FleetUptimeHistoryWindow(data) {
+	case FleetUptimeHistoryWindow7d:
+		*s = FleetUptimeHistoryWindow7d
+		return nil
+	case FleetUptimeHistoryWindow30d:
+		*s = FleetUptimeHistoryWindow30d
+		return nil
+	case FleetUptimeHistoryWindow90d:
+		*s = FleetUptimeHistoryWindow90d
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/FleetUptimeStatus
 type FleetUptimeStatus struct {
 	Summary FleetUptimeCounts       `json:"summary"`
@@ -22052,6 +22288,66 @@ func (s *GetFleetRumAggregateDevice) UnmarshalText(data []byte) error {
 		return nil
 	case GetFleetRumAggregateDeviceAll:
 		*s = GetFleetRumAggregateDeviceAll
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type GetFleetUptimeHistoryBadRequest Error
+
+func (*GetFleetUptimeHistoryBadRequest) getFleetUptimeHistoryRes() {}
+
+type GetFleetUptimeHistoryForbidden Error
+
+func (*GetFleetUptimeHistoryForbidden) getFleetUptimeHistoryRes() {}
+
+type GetFleetUptimeHistoryUnauthorized Error
+
+func (*GetFleetUptimeHistoryUnauthorized) getFleetUptimeHistoryRes() {}
+
+type GetFleetUptimeHistoryWindow string
+
+const (
+	GetFleetUptimeHistoryWindow7d  GetFleetUptimeHistoryWindow = "7d"
+	GetFleetUptimeHistoryWindow30d GetFleetUptimeHistoryWindow = "30d"
+	GetFleetUptimeHistoryWindow90d GetFleetUptimeHistoryWindow = "90d"
+)
+
+// AllValues returns all GetFleetUptimeHistoryWindow values.
+func (GetFleetUptimeHistoryWindow) AllValues() []GetFleetUptimeHistoryWindow {
+	return []GetFleetUptimeHistoryWindow{
+		GetFleetUptimeHistoryWindow7d,
+		GetFleetUptimeHistoryWindow30d,
+		GetFleetUptimeHistoryWindow90d,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GetFleetUptimeHistoryWindow) MarshalText() ([]byte, error) {
+	switch s {
+	case GetFleetUptimeHistoryWindow7d:
+		return []byte(s), nil
+	case GetFleetUptimeHistoryWindow30d:
+		return []byte(s), nil
+	case GetFleetUptimeHistoryWindow90d:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GetFleetUptimeHistoryWindow) UnmarshalText(data []byte) error {
+	switch GetFleetUptimeHistoryWindow(data) {
+	case GetFleetUptimeHistoryWindow7d:
+		*s = GetFleetUptimeHistoryWindow7d
+		return nil
+	case GetFleetUptimeHistoryWindow30d:
+		*s = GetFleetUptimeHistoryWindow30d
+		return nil
+	case GetFleetUptimeHistoryWindow90d:
+		*s = GetFleetUptimeHistoryWindow90d
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -29870,6 +30166,52 @@ func (o OptGetFleetRumAggregateDevice) Get() (v GetFleetRumAggregateDevice, ok b
 
 // Or returns value if set, or given parameter if does not.
 func (o OptGetFleetRumAggregateDevice) Or(d GetFleetRumAggregateDevice) GetFleetRumAggregateDevice {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptGetFleetUptimeHistoryWindow returns new OptGetFleetUptimeHistoryWindow with value set to v.
+func NewOptGetFleetUptimeHistoryWindow(v GetFleetUptimeHistoryWindow) OptGetFleetUptimeHistoryWindow {
+	return OptGetFleetUptimeHistoryWindow{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGetFleetUptimeHistoryWindow is optional GetFleetUptimeHistoryWindow.
+type OptGetFleetUptimeHistoryWindow struct {
+	Value GetFleetUptimeHistoryWindow
+	Set   bool
+}
+
+// IsSet returns true if OptGetFleetUptimeHistoryWindow was set.
+func (o OptGetFleetUptimeHistoryWindow) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGetFleetUptimeHistoryWindow) Reset() {
+	var v GetFleetUptimeHistoryWindow
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGetFleetUptimeHistoryWindow) SetTo(v GetFleetUptimeHistoryWindow) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGetFleetUptimeHistoryWindow) Get() (v GetFleetUptimeHistoryWindow, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGetFleetUptimeHistoryWindow) Or(d GetFleetUptimeHistoryWindow) GetFleetUptimeHistoryWindow {
 	if v, ok := o.Get(); ok {
 		return v
 	}

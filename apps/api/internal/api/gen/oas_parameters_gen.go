@@ -7624,6 +7624,94 @@ func decodeGetFleetRumAggregateParams(args [0]string, argsEscaped bool, r *http.
 	return params, nil
 }
 
+// GetFleetUptimeHistoryParams is parameters of getFleetUptimeHistory operation.
+type GetFleetUptimeHistoryParams struct {
+	// The window is an enum, not a free duration: the day count is also
+	// the length of every returned array, so an arbitrary window would
+	// be an arbitrary response size. An unrecognised value is a 400,
+	// never a silently substituted default.
+	Window OptGetFleetUptimeHistoryWindow `json:",omitempty,omitzero"`
+}
+
+func unpackGetFleetUptimeHistoryParams(packed middleware.Parameters) (params GetFleetUptimeHistoryParams) {
+	{
+		key := middleware.ParameterKey{
+			Name: "window",
+			In:   "query",
+		}
+		if v, ok := packed[key]; ok {
+			params.Window = v.(OptGetFleetUptimeHistoryWindow)
+		}
+	}
+	return params
+}
+
+func decodeGetFleetUptimeHistoryParams(args [0]string, argsEscaped bool, r *http.Request) (params GetFleetUptimeHistoryParams, _ error) {
+	q := uri.NewQueryDecoder(r.URL.Query())
+	// Set default value for query: window.
+	{
+		val := GetFleetUptimeHistoryWindow("90d")
+		params.Window.SetTo(val)
+	}
+	// Decode query: window.
+	if err := func() error {
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    "window",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+				var paramsDotWindowVal GetFleetUptimeHistoryWindow
+				if err := func() error {
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+
+					c, err := conv.ToString(val)
+					if err != nil {
+						return err
+					}
+
+					paramsDotWindowVal = GetFleetUptimeHistoryWindow(c)
+					return nil
+				}(); err != nil {
+					return err
+				}
+				params.Window.SetTo(paramsDotWindowVal)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := func() error {
+				if value, ok := params.Window.Get(); ok {
+					if err := func() error {
+						if err := value.Validate(); err != nil {
+							return err
+						}
+						return nil
+					}(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: "window",
+			In:   "query",
+			Err:  err,
+		}
+	}
+	return params, nil
+}
+
 // GetFleetVulnerabilitiesParams is parameters of getFleetVulnerabilities operation.
 type GetFleetVulnerabilitiesParams struct {
 	Limit OptInt32 `json:",omitempty,omitzero"`

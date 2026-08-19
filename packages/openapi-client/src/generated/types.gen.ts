@@ -2658,6 +2658,72 @@ export type UptimeSummary = {
   items: Array<UptimeSummaryItem>;
 };
 
+/**
+ * One UTC day of measured availability for one site.
+ *
+ */
+export type FleetUptimeDay = {
+  /**
+   * The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed
+   * on UTC days, so re-bucketing per viewer timezone would split one
+   * stored day across two rendered cells.
+   *
+   */
+  date: string;
+  /**
+   * up_checks/total_checks*100 for the day, or null when the day has
+   * NO stored measurement. Null is not zero — see the endpoint
+   * description. Never interpolated from a neighbouring day.
+   *
+   */
+  uptime_pct: number;
+  /**
+   * Probes recorded that day; 0 exactly when uptime_pct is null.
+   * Carried so a confidently-measured day is distinguishable from one
+   * with a single probe, and so "no data" is falsifiable rather than
+   * something the client infers from a null alone.
+   *
+   */
+  checks: number;
+  /**
+   * Mean response time over SUCCESSFUL probes with a non-zero reading,
+   * null when the day had none.
+   *
+   */
+  avg_latency_ms: number;
+};
+
+export type FleetUptimeHistoryItem = {
+  site_id: string;
+  name: string;
+  url: string;
+  /**
+   * Always exactly the window's day count, oldest first, with no gaps:
+   * the server densifies across every UTC day in the window, so a
+   * client can index positionally without re-deriving dates and every
+   * unmeasured day is explicitly present with a null uptime_pct
+   * rather than silently missing.
+   *
+   */
+  days: Array<FleetUptimeDay>;
+  /**
+   * How many entries in days carry a measurement.
+   *
+   */
+  measured_days: number;
+};
+
+export type FleetUptimeHistory = {
+  window: "7d" | "30d" | "90d";
+  /**
+   * Number of entries in every item's days array.
+   */
+  days: number;
+  start_date: string;
+  end_date: string;
+  items: Array<FleetUptimeHistoryItem>;
+};
+
 export type FleetUptimeCounts = {
   up: number;
   degraded: number;
@@ -15125,6 +15191,50 @@ export type GetFleetUptimeStatusResponses = {
 
 export type GetFleetUptimeStatusResponse =
   GetFleetUptimeStatusResponses[keyof GetFleetUptimeStatusResponses];
+
+export type GetFleetUptimeHistoryData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * The window is an enum, not a free duration: the day count is also
+     * the length of every returned array, so an arbitrary window would
+     * be an arbitrary response size. An unrecognised value is a 400,
+     * never a silently substituted default.
+     *
+     */
+    window?: "7d" | "30d" | "90d";
+  };
+  url: "/api/v1/fleet/uptime-history";
+};
+
+export type GetFleetUptimeHistoryErrors = {
+  /**
+   * Validation error
+   */
+  400: Error;
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+};
+
+export type GetFleetUptimeHistoryError =
+  GetFleetUptimeHistoryErrors[keyof GetFleetUptimeHistoryErrors];
+
+export type GetFleetUptimeHistoryResponses = {
+  /**
+   * Per-site daily availability
+   */
+  200: FleetUptimeHistory;
+};
+
+export type GetFleetUptimeHistoryResponse =
+  GetFleetUptimeHistoryResponses[keyof GetFleetUptimeHistoryResponses];
 
 export type GetFleetIncidentsData = {
   body?: never;

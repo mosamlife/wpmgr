@@ -24364,6 +24364,163 @@ func (s *Server) handleGetFleetRumAggregateRequest(args [0]string, argsEscaped b
 	}
 }
 
+// handleGetFleetUptimeHistoryRequest handles getFleetUptimeHistory operation.
+//
+// Returns, for every site the principal can see, one entry per UTC day
+// across the requested window — oldest first, densified, with no gaps in
+// the date sequence.
+// Every entry is either a stored measurement or an explicit null. There
+// is no interpolation, no carry-forward and no default: `uptime_pct` is
+// null on any day with no recorded probes (the site did not exist yet,
+// monitoring was off, the probe worker did not run, or the day has aged
+// past the 90-day probe retention). Null is NOT zero — zero means the
+// site was measured and was down for every probe of that day. Rendering
+// null as 0% tells an operator their site was down when we simply never
+// looked (GH #460).
+// `measured_days` is how many of the entries carry a measurement, so a
+// young site can be shown as "28 of 90 days measured" rather than
+// implying 90 days of history.
+// Site-scoped principals see only their granted sites. Requires viewer+.
+//
+// GET /api/v1/fleet/uptime-history
+func (s *Server) handleGetFleetUptimeHistoryRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getFleetUptimeHistory"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.HTTPRouteKey.String("/api/v1/fleet/uptime-history"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), GetFleetUptimeHistoryOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: GetFleetUptimeHistoryOperation,
+			ID:   "getFleetUptimeHistory",
+		}
+	)
+	params, err := decodeGetFleetUptimeHistoryParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+
+	var response GetFleetUptimeHistoryRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    GetFleetUptimeHistoryOperation,
+			OperationSummary: "Per-site daily availability strip over 7, 30 or 90 UTC days",
+			OperationID:      "getFleetUptimeHistory",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "window",
+					In:   "query",
+				}: params.Window,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = GetFleetUptimeHistoryParams
+			Response = GetFleetUptimeHistoryRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackGetFleetUptimeHistoryParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.GetFleetUptimeHistory(ctx, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.GetFleetUptimeHistory(ctx, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeGetFleetUptimeHistoryResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleGetFleetUptimeStatusRequest handles getFleetUptimeStatus operation.
 //
 // Returns summary counts {up, degraded, down, unknown} and a per-site list

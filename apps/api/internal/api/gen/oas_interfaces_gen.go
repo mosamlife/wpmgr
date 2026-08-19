@@ -537,6 +537,10 @@ type GetFleetIncidentDetailRes interface {
 	getFleetIncidentDetailRes()
 }
 
+type GetFleetUptimeHistoryRes interface {
+	getFleetUptimeHistoryRes()
+}
+
 type GetFleetVulnerabilitiesRes interface {
 	getFleetVulnerabilitiesRes()
 }
