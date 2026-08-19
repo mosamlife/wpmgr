@@ -162,6 +162,7 @@ const (
 	GetFleetIncidentDetailOperation            OperationName = "GetFleetIncidentDetail"
 	GetFleetIncidentsOperation                 OperationName = "GetFleetIncidents"
 	GetFleetRumAggregateOperation              OperationName = "GetFleetRumAggregate"
+	GetFleetUptimeHistoryOperation             OperationName = "GetFleetUptimeHistory"
 	GetFleetUptimeStatusOperation              OperationName = "GetFleetUptimeStatus"
 	GetFleetVulnerabilitiesOperation           OperationName = "GetFleetVulnerabilities"
 	GetHealthzOperation                        OperationName = "GetHealthz"

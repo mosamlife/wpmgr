@@ -4792,6 +4792,98 @@ export const UptimeSummarySchema = {
   },
 } as const;
 
+export const FleetUptimeDaySchema = {
+  type: "object",
+  required: ["date", "uptime_pct", "checks", "avg_latency_ms"],
+  description: "One UTC day of measured availability for one site.\n",
+  properties: {
+    date: {
+      type: "string",
+      format: "date",
+      description:
+        "The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed\non UTC days, so re-bucketing per viewer timezone would split one\nstored day across two rendered cells.\n",
+    },
+    uptime_pct: {
+      type: "number",
+      format: "double",
+      nullable: true,
+      description:
+        "up_checks/total_checks*100 for the day, or null when the day has\nNO stored measurement. Null is not zero — see the endpoint\ndescription. Never interpolated from a neighbouring day.\n",
+    },
+    checks: {
+      type: "integer",
+      format: "int64",
+      description:
+        'Probes recorded that day; 0 exactly when uptime_pct is null.\nCarried so a confidently-measured day is distinguishable from one\nwith a single probe, and so "no data" is falsifiable rather than\nsomething the client infers from a null alone.\n',
+    },
+    avg_latency_ms: {
+      type: "number",
+      format: "double",
+      nullable: true,
+      description:
+        "Mean response time over SUCCESSFUL probes with a non-zero reading,\nnull when the day had none.\n",
+    },
+  },
+} as const;
+
+export const FleetUptimeHistoryItemSchema = {
+  type: "object",
+  required: ["site_id", "name", "url", "days", "measured_days"],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    name: {
+      type: "string",
+    },
+    url: {
+      type: "string",
+    },
+    days: {
+      type: "array",
+      description:
+        "Always exactly the window's day count, oldest first, with no gaps:\nthe server densifies across every UTC day in the window, so a\nclient can index positionally without re-deriving dates and every\nunmeasured day is explicitly present with a null uptime_pct\nrather than silently missing.\n",
+      items: {
+        $ref: "#/components/schemas/FleetUptimeDay",
+      },
+    },
+    measured_days: {
+      type: "integer",
+      description: "How many entries in days carry a measurement.\n",
+    },
+  },
+} as const;
+
+export const FleetUptimeHistorySchema = {
+  type: "object",
+  required: ["window", "days", "start_date", "end_date", "items"],
+  properties: {
+    window: {
+      type: "string",
+      enum: ["7d", "30d", "90d"],
+    },
+    days: {
+      type: "integer",
+      description: "Number of entries in every item's days array.",
+    },
+    start_date: {
+      type: "string",
+      format: "date",
+    },
+    end_date: {
+      type: "string",
+      format: "date",
+    },
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/FleetUptimeHistoryItem",
+      },
+    },
+  },
+} as const;
+
 export const FleetUptimeCountsSchema = {
   type: "object",
   required: ["up", "degraded", "down", "unknown"],
@@ -4847,6 +4939,9 @@ export const FleetUptimeStatusItemSchema = {
     uptime_pct_7d: {
       type: "number",
       format: "double",
+      nullable: true,
+      description:
+        '7-day uptime percentage, or null when the site has NO measurement\nin the window — never probed, monitoring never enabled, or its\nwhole history aged past the 90-day probe retention. Null is not\nzero: 0 means "measured, and down for the whole window", and a\nclient that renders null as 0 paints a never-probed site as a\ntotal outage (GH #460). Treat null as "no data" and say so.\n',
     },
     avg_latency_ms_7d: {
       type: "number",
