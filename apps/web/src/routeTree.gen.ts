@@ -27,7 +27,6 @@ import { Route as AuthedVulnerabilitiesRouteImport } from './routes/_authed/vuln
 import { Route as AuthedUptimeRouteImport } from './routes/_authed/uptime'
 import { Route as AuthedSharedWithMeRouteImport } from './routes/_authed/shared-with-me'
 import { Route as AuthedPerformanceRouteImport } from './routes/_authed/performance'
-import { Route as AuthedMigrationsRouteImport } from './routes/_authed/migrations'
 import { Route as AuthedDestinationsRouteImport } from './routes/_authed/destinations'
 import { Route as AuthedBillingRouteImport } from './routes/_authed/billing'
 import { Route as AuthedAuditRouteImport } from './routes/_authed/audit'
@@ -170,11 +169,6 @@ const AuthedSharedWithMeRoute = AuthedSharedWithMeRouteImport.update({
 const AuthedPerformanceRoute = AuthedPerformanceRouteImport.update({
   id: '/performance',
   path: '/performance',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedMigrationsRoute = AuthedMigrationsRouteImport.update({
-  id: '/migrations',
-  path: '/migrations',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedDestinationsRoute = AuthedDestinationsRouteImport.update({
@@ -482,7 +476,6 @@ export interface FileRoutesByFullPath {
   '/audit': typeof AuthedAuditRoute
   '/billing': typeof AuthedBillingRoute
   '/destinations': typeof AuthedDestinationsRoute
-  '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
   '/shared-with-me': typeof AuthedSharedWithMeRoute
   '/uptime': typeof AuthedUptimeRoute
@@ -553,7 +546,6 @@ export interface FileRoutesByTo {
   '/audit': typeof AuthedAuditRoute
   '/billing': typeof AuthedBillingRoute
   '/destinations': typeof AuthedDestinationsRoute
-  '/migrations': typeof AuthedMigrationsRoute
   '/performance': typeof AuthedPerformanceRoute
   '/shared-with-me': typeof AuthedSharedWithMeRoute
   '/uptime': typeof AuthedUptimeRoute
@@ -626,7 +618,6 @@ export interface FileRoutesById {
   '/_authed/audit': typeof AuthedAuditRoute
   '/_authed/billing': typeof AuthedBillingRoute
   '/_authed/destinations': typeof AuthedDestinationsRoute
-  '/_authed/migrations': typeof AuthedMigrationsRoute
   '/_authed/performance': typeof AuthedPerformanceRoute
   '/_authed/shared-with-me': typeof AuthedSharedWithMeRoute
   '/_authed/uptime': typeof AuthedUptimeRoute
@@ -702,7 +693,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/billing'
     | '/destinations'
-    | '/migrations'
     | '/performance'
     | '/shared-with-me'
     | '/uptime'
@@ -773,7 +763,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/billing'
     | '/destinations'
-    | '/migrations'
     | '/performance'
     | '/shared-with-me'
     | '/uptime'
@@ -845,7 +834,6 @@ export interface FileRouteTypes {
     | '/_authed/audit'
     | '/_authed/billing'
     | '/_authed/destinations'
-    | '/_authed/migrations'
     | '/_authed/performance'
     | '/_authed/shared-with-me'
     | '/_authed/uptime'
@@ -1043,13 +1031,6 @@ declare module '@tanstack/react-router' {
       path: '/performance'
       fullPath: '/performance'
       preLoaderRoute: typeof AuthedPerformanceRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/migrations': {
-      id: '/_authed/migrations'
-      path: '/migrations'
-      fullPath: '/migrations'
-      preLoaderRoute: typeof AuthedMigrationsRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/destinations': {
@@ -1579,7 +1560,6 @@ interface AuthedRouteChildren {
   AuthedAuditRoute: typeof AuthedAuditRoute
   AuthedBillingRoute: typeof AuthedBillingRoute
   AuthedDestinationsRoute: typeof AuthedDestinationsRoute
-  AuthedMigrationsRoute: typeof AuthedMigrationsRoute
   AuthedPerformanceRoute: typeof AuthedPerformanceRoute
   AuthedSharedWithMeRoute: typeof AuthedSharedWithMeRoute
   AuthedUptimeRoute: typeof AuthedUptimeRoute
@@ -1604,7 +1584,6 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedAuditRoute: AuthedAuditRoute,
   AuthedBillingRoute: AuthedBillingRoute,
   AuthedDestinationsRoute: AuthedDestinationsRoute,
-  AuthedMigrationsRoute: AuthedMigrationsRoute,
   AuthedPerformanceRoute: AuthedPerformanceRoute,
   AuthedSharedWithMeRoute: AuthedSharedWithMeRoute,
   AuthedUptimeRoute: AuthedUptimeRoute,
