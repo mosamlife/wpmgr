@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, fireEvent, within } from "@testing-library/react";
 import type { Site } from "@wpmgr/api";
 
@@ -258,60 +258,120 @@ describe("UpdateWizard — GH #217 zero-updates tab badge", () => {
 // went stale while the operator picked plugins. An enabled button that does
 // nothing when clicked reads as a broken product, not as a refusal.
 describe("UpdateWizard — GH #463 a refused schedule is never silent", () => {
+  // Targeting core rather than plugins on purpose: `updateKind: "core"` seeds
+  // one item synchronously, so the submit button is enabled on first paint
+  // without waiting for the async component list. These tests are about the
+  // schedule field, and a disabled button would short-circuit onSubmit before
+  // it ever reached the validation under test.
   function openWizard() {
     renderWithProviders(
       <UpdateWizard
         open
         onClose={() => {}}
-        target={TARGET}
-        sites={[
-          buildSite({
-            components: {
-              plugins: [
-                {
-                  slug: "akismet",
-                  name: "Akismet",
-                  version: "5.0",
-                  available_update: { new_version: "5.1" },
-                },
-              ],
-              themes: [],
-            },
-          }),
-        ]}
+        target={{ kind: "sites", siteIds: ["site-1"], updateKind: "core" }}
+        sites={[buildSite()]}
       />,
     );
   }
 
-  it("names the reason instead of discarding the submit", () => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const localValue = (at: Date) =>
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
+    `T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // THE case the fix exists for, and the only one that can distinguish it from
+  // the pre-existing render-time validation: a schedule that is valid when
+  // typed and stale by the time it is submitted. An earlier version of this
+  // test typed an obviously-past time and asserted the alert appeared, which
+  // passed with the silent `return` still in place, because the alert it saw
+  // came from the render-time verdict and not from the submit path at all.
+  it("names the reason when the time goes stale between typing and submitting", () => {
+    const base = new Date("2026-08-19T06:00:00Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(base);
+
     openWizard();
 
+    // 90 minutes out: valid right now, so nothing on screen refuses it and
+    // the submit button is enabled.
     const field = screen.getByLabelText(/schedule/i);
-    // Comfortably outside the 2-minute skew grace: typed, not skewed.
-    fireEvent.change(field, { target: { value: "2020-01-01T02:00" } });
+    fireEvent.change(field, {
+      target: { value: localValue(new Date(base.getTime() + 90 * 60_000)) },
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
+    const submit = screen.getByRole("button", { name: /preview|apply/i });
+    expect(submit).toBeEnabled();
+
+    // The operator spends three hours choosing plugins. Nothing re-renders,
+    // so the stale "valid" verdict is still what is on screen.
+    vi.setSystemTime(new Date(base.getTime() + 3 * 60 * 60_000));
+    fireEvent.click(submit);
+
+    // Before the fix this discarded the submit and rendered nothing.
     expect(screen.getByRole("alert")).toHaveTextContent(/already passed/i);
-    // The field points assistive tech at the reason rather than just going red.
     expect(field).toHaveAttribute("aria-invalid", "true");
     expect(field).toHaveAttribute("aria-describedby", "schedule-at-error");
   });
 
   it("clears the refusal as soon as the operator edits the time", () => {
+    const base = new Date("2026-08-19T06:00:00Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(base);
+
     openWizard();
 
     const field = screen.getByLabelText(/schedule/i);
-    fireEvent.change(field, { target: { value: "2020-01-01T02:00" } });
+    fireEvent.change(field, {
+      target: { value: localValue(new Date(base.getTime() + 90 * 60_000)) },
+    });
+    vi.setSystemTime(new Date(base.getTime() + 3 * 60 * 60_000));
+    fireEvent.click(screen.getByRole("button", { name: /preview|apply/i }));
     expect(screen.getByRole("alert")).toBeInTheDocument();
 
-    // A valid future time: the refusal must not outlive the value it judged.
-    const future = new Date(Date.now() + 3 * 60 * 60 * 1000);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const local =
-      `${future.getFullYear()}-${pad(future.getMonth() + 1)}-` +
-      `${pad(future.getDate())}T${pad(future.getHours())}:${pad(future.getMinutes())}`;
-    fireEvent.change(field, { target: { value: local } });
+    // A fresh future time: the refusal must not outlive the value it judged.
+    fireEvent.change(field, {
+      target: {
+        value: localValue(new Date(base.getTime() + 6 * 60 * 60_000)),
+      },
+    });
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(field).not.toHaveAttribute("aria-invalid");
+  });
+
+  // The honest case the guard must NOT block. A guard that reddens correct
+  // work gets switched off, and then it guards nothing.
+  //
+  // This deliberately stops short of clicking submit. Both refusal paths
+  // manifest BEFORE the request: the live verdict disables the button and
+  // renders the alert, and the submit-time verdict renders the same alert
+  // synchronously. Asserting the button is enabled and no alert is present is
+  // therefore the whole of "not refused", and it avoids driving the real
+  // generated client at a relative URL under jsdom, which rejects unhandled
+  // and fails the suite while every test still reports green.
+  it("does not refuse a valid future schedule", () => {
+    const base = new Date("2026-08-19T06:00:00Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(base);
+
+    openWizard();
+
+    fireEvent.change(screen.getByLabelText(/schedule/i), {
+      target: {
+        value: localValue(new Date(base.getTime() + 8 * 60 * 60_000)),
+      },
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/schedule/i)).not.toHaveAttribute(
+      "aria-invalid",
+    );
+    expect(screen.getByRole("button", { name: /preview|apply/i })).toBeEnabled();
   });
 });
