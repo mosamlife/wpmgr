@@ -46,6 +46,37 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// InFlightTaskStatuses is the ONE definition of "in flight": the task statuses
+// for which the control plane considers an update to be actively occupying its
+// (tenant_id, site_id, target_type, target_slug) slot. Two guards key on
+// exactly this set, in SQL, in two files, and neither can import this
+// declaration:
+//
+//   - update_tasks_inflight_target_idx (db/schema.sql, m88), the partial unique
+//     index that is the authoritative cross-run dedup guard. Its predicate is
+//     also CreateUpdateTask's ON CONFLICT arbiter, so Postgres itself requires
+//     the two to agree or the insert cannot resolve an arbiter at all.
+//   - ListStaleUpdateTasks (db/query/updates.sql), the reaper's sweep, which
+//     terminalizes anything in this set that has not moved in
+//     staleTaskThreshold. RunOnStart means a deploy runs it fleet-wide within
+//     seconds of boot.
+//
+// Membership is therefore load-bearing in BOTH directions and silently so.
+// Widening it strands legitimate immediate work behind the dedup index;
+// widening the reaper's copy destroys work that was never stuck. A status that
+// merely has not finished — one that is planned, deferred or waiting for a
+// clock — is NOT in flight and must stay out of this set.
+//
+// It is deliberately NOT defined as the complement of terminal(). Today the two
+// happen to partition every status, but that is a coincidence of the current
+// status list, not a property worth encoding: a future status can be neither
+// terminal nor in flight, and defining one from the other would silently sweep
+// it into both guards.
+//
+// An array rather than a slice so the package's own definition cannot be
+// appended to through the exported name.
+var InFlightTaskStatuses = [...]string{TaskPending, TaskRunning}
+
 // Target types. plugin/theme/core mirror agentcmd.TargetPlugin/Theme/Core.
 const (
 	TargetPlugin = "plugin"
