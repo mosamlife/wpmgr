@@ -922,8 +922,23 @@ CREATE TABLE update_runs (
     -- created_by is the acting user (NULL for an API-key principal); SET NULL on
     -- user deletion so the run history survives.
     created_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
-    -- status: pending (created, tasks enqueued), running (>=1 task running),
-    -- completed (all tasks reached a terminal state). The worker advances it.
+    -- status. NO CHECK CONSTRAINT EXISTS on this column, so this comment (and
+    -- the matching COMMENT ON COLUMN installed by m118, which is what \d+ shows
+    -- in a live database) is the ONLY contract. A typo'd value stores fine and
+    -- silently never dispatches.
+    --   pending      Created, tasks enqueued for immediate execution (the m3
+    --                default). The worker advances it.
+    --   scheduled    (m118/#463) Created with a future scheduled_at, not yet
+    --                handed to the worker. The dispatcher's due-scan selects
+    --                exactly these; update_runs_due_idx is partial on it.
+    --   dispatching  (m118/#463) Claimed by the dispatcher for this tick. The
+    --                row has left update_runs_due_idx, so a concurrent tick, a
+    --                second replica or a restart cannot claim it twice.
+    --   running      >=1 task running.
+    --   completed    All tasks reached a terminal state.
+    --   expired      (m118/#463) Passed its dispatch window undispatched.
+    --                Terminal and never retried: a deferred bulk update that
+    --                fires days late is a surprise, not a service.
     status       text        NOT NULL DEFAULT 'pending',
     dry_run      boolean     NOT NULL DEFAULT false,
     -- scheduled_at is when the run should execute; NULL/now() means immediately.
@@ -934,11 +949,39 @@ CREATE TABLE update_runs (
 
 CREATE INDEX update_runs_tenant_id_created_at_idx ON update_runs (tenant_id, created_at DESC);
 
+-- update_runs_due_idx (m118) serves the #463 dispatcher's cross-tenant tick,
+-- "WHERE status = 'scheduled' AND scheduled_at <= now()". The only other index
+-- here leads on tenant_id, which that query does not filter on at all, so
+-- without this the tick is a sequential scan over every run ever created. A run
+-- leaves the index the instant it is claimed ('scheduled' -> 'dispatching'), so
+-- it stays proportional to the pending queue, not to the run history. Mirrors
+-- backup_schedules_due_idx. The predicate is only the status, because that
+-- clause appears verbatim in the consumer's WHERE and so needs no redundant
+-- clause repeated by the caller to keep the index usable.
+CREATE INDEX update_runs_due_idx ON update_runs (scheduled_at) WHERE status = 'scheduled';
+
 ALTER TABLE update_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE update_runs FORCE ROW LEVEL SECURITY;
 CREATE POLICY update_runs_tenant_isolation ON update_runs
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+-- update_runs_agent (m118) lets the #463 deferred-dispatch scan read AND CLAIM
+-- across all tenants under InAgentTx. m3 shipped only the tenant_isolation
+-- policy, so under FORCE ROW LEVEL SECURITY a cross-tenant tick satisfied no
+-- policy and returned zero rows with no error — the third occurrence of the
+-- m84/#96 (backup_schedules) and m89/#131 (update_tasks, this table's sibling)
+-- bug class.
+--
+-- FOR ALL, NOT FOR SELECT, and that is the whole point. The dispatcher claims
+-- rows ('scheduled' -> 'dispatching'); a FOR SELECT policy admits the read and
+-- admits nothing to the UPDATE, so the claim matches zero rows silently. And
+-- PostgreSQL applies the UPDATE policy to SELECT … FOR UPDATE too, so with a
+-- read-only policy even the locking SELECT returns nothing. That is exactly how
+-- Issue #96 stopped every backup schedule from advancing.
+CREATE POLICY update_runs_agent ON update_runs
+    FOR ALL
+    USING (current_setting('app.agent', true) = 'on')
+    WITH CHECK (current_setting('app.agent', true) = 'on');
 
 -- ---------------------------------------------------------------------------
 -- update_tasks  (M3)
@@ -961,6 +1004,17 @@ CREATE TABLE update_tasks (
     from_version text        NOT NULL DEFAULT '',
     to_version   text        NOT NULL DEFAULT '',
     -- status: pending | running | succeeded | failed | rolled_back | skipped.
+    -- NO CHECK CONSTRAINT EXISTS; this comment and m118's COMMENT ON COLUMN are
+    -- the contract. m118/#463 adds two more:
+    --   scheduled  Belongs to a run that is still 'scheduled', not yet
+    --              eligible. WARNING: 'scheduled' is NOT in
+    --              update_tasks_inflight_target_idx's predicate below
+    --              (status IN ('pending','running')), so a scheduled task does
+    --              NOT reserve its (tenant, site, target) pair against a
+    --              concurrent immediate run. Widening that unique index is a
+    --              separate migration with a data-dedup step.
+    --   expired    The parent run expired without dispatching, so this task was
+    --              never attempted. Terminal.
     status       text        NOT NULL DEFAULT 'pending',
     detail       text        NOT NULL DEFAULT '',
     error        text        NOT NULL DEFAULT '',
