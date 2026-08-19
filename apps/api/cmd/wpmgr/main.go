@@ -1670,9 +1670,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	ocH := objectcache.NewHandler(ocSvc, auditRec)
 	ocGCWorker := objectcache.NewObjectCacheStatsHistoryGCWorker(ocRepo, logger)
 
-	// M56 — Real User Monitoring (RUM).
-	// The Postgres store is always wired; ClickHouse is a Phase 2+ opt-in
-	// (mirroring the internal/metrics dual-backend pattern).
+	// M56 — Real User Monitoring (RUM). RUM is unconditionally Postgres-backed;
+	// WPMGR_CLICKHOUSE_ADDR selects the internal/metrics uptime backend and has
+	// no effect here.
 	rumStore := rum.NewStorePostgres(pool)
 	rumBeaconRepo := rum.NewBeaconKeyRepo(pool)
 	rumRetention := rum.DefaultRetention(cfg)
@@ -3721,8 +3721,10 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 			&river.PeriodicJobOpts{RunOnStart: false},
 		))
 	}
-	// M56 — RUM rollup worker (always wired): folds raw events into hourly/daily
-	// rollup tables. Jobs are enqueued by the ingest handler (one per site per hour).
+	// M56 — RUM rollup worker (always wired): a no-op (see rum.RumRollupWorker's
+	// doc comment). Rollups are populated in real-time by StorePostgres.WriteEvent
+	// on every beacon; this worker stays registered so the "rum_rollup" River job
+	// kind is known and any previously enqueued jobs drain cleanly.
 	if d.rumRollupWorker != nil {
 		river.AddWorker(workers, d.rumRollupWorker)
 	}

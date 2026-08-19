@@ -497,12 +497,6 @@ func (s *rollupCapturingStore) GetDailyRollups(_ context.Context, siteID, _ uuid
 func (s *rollupCapturingStore) ComputeP75(rollups []HourlyRollup, minSampleCount int) []P75Result {
 	return computeP75(rollups, minSampleCount)
 }
-func (s *rollupCapturingStore) FoldHourly(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
-func (s *rollupCapturingStore) FoldDaily(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
-	return nil
-}
 func (s *rollupCapturingStore) PruneRawEvents(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }

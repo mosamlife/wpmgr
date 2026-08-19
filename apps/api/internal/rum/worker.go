@@ -122,15 +122,13 @@ type RumRollupArgs struct {
 // Kind implements river.JobArgs.
 func (RumRollupArgs) Kind() string { return "rum_rollup" }
 
-// RumRollupWorker folds a single (site, hour) window of raw events into the
-// hourly rollup table, then triggers a daily rollup fold. It is enqueued by
-// the ingest handler after a successful write (one job per site per hour,
-// deduplicated by River's unique key on (kind, site_id, bucket_hour)).
+// RumRollupWorker is a no-op retained so the "rum_rollup" River job kind stays
+// known and any previously enqueued jobs drain cleanly.
 //
-// Phase 1 design: the worker reads raw events via SQL queries and builds the
-// histogram in Go, then calls UpsertRollupHourly. This is correct for
-// moderate ingest volumes; a future optimisation (Phase 2) can push the
-// aggregation to SQL or ClickHouse.
+// V1 mechanism: StorePostgres.WriteEvent writes the raw event AND additively
+// upserts the hourly and daily rollup rows in the same InRumIngestTx on every
+// beacon, so rollups are populated in real-time without any worker involved.
+// See Work below for the accurate description of what this worker does.
 type RumRollupWorker struct {
 	river.WorkerDefaults[RumRollupArgs]
 	store  *StorePostgres
@@ -139,7 +137,7 @@ type RumRollupWorker struct {
 
 // NewRumRollupWorker constructs a RumRollupWorker. store must be the concrete
 // *StorePostgres because it exposes UpsertRollupHourly/UpsertRollupDaily
-// directly (the Store interface exposes the FoldHourly/FoldDaily stubs).
+// directly; the Store interface does not expose them.
 func NewRumRollupWorker(store *StorePostgres, logger *slog.Logger) *RumRollupWorker {
 	return &RumRollupWorker{store: store, logger: logger}
 }
