@@ -1667,9 +1667,13 @@ export type UpdateTask = {
    * What happened to this task, on the axis a retry decision turns on.
    * The server computes it; the client renders it.
    *
-   * * `never_ran` - terminal, but nothing was ever sent to the site
-   * (today: `cancelled`, collateral of a halted run). Nothing on the
-   * site changed, so this is the lowest-risk task to retry.
+   * * `never_ran` - terminal, but nothing was ever sent to the site.
+   * Two statuses reach it, differing only in why nothing was sent:
+   * `cancelled` (a decision — its run halted, or an operator stopped
+   * it) and `expired` (a missed window — the run came due while the
+   * control plane was unavailable and stayed due past the grace
+   * window). Nothing on the site changed in either case, so this is
+   * the lowest-risk task to retry.
    * * `failed` - the site was contacted and the update did not succeed.
    * * `reverted` - the update applied and was then rolled back, so a
    * retry walks the identical path and may reproduce the identical
@@ -1679,7 +1683,8 @@ export type UpdateTask = {
    * Usually correct, but a stale WordPress transient can report
    * "already current" wrongly, so it stays selectable.
    * * `not_applicable` - `succeeded` (retrying re-touches a working
-   * site for nothing) or not finished yet (`pending`/`running`).
+   * site for nothing) or not finished yet
+   * (`pending`/`running`/`scheduled`).
    *
    * The intended client default selection is `failed` + `never_ran`:
    * both mean "this never succeeded", and `never_ran` additionally means

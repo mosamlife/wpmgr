@@ -187,6 +187,18 @@ func (w *DispatchWorker) Work(ctx context.Context, job *river.Job[DispatchRunArg
 	if err != nil {
 		if de, ok := domain.AsDomain(err); ok && de.Kind == domain.KindNotFound {
 			// The run was deleted. Nothing to dispatch and nothing to record.
+			//
+			// nil IS DELIBERATE HERE and has been reviewed twice. An automated
+			// review proposed erroring; the security review and the coordinator
+			// both disagreed, and this comment exists so the next reader does
+			// not re-open it. A deleted run has no work to trigger and no state
+			// to repair, so the job is genuinely finished — erroring would
+			// dead-letter a job whose work is gone, turning a clean outcome into
+			// a permanent alert nobody can action.
+			//
+			// This is NOT the same as the NULL-scheduled_at case below, which
+			// DOES error: there the row still exists, still says 'scheduled',
+			// and is stranded in a state somebody must look at.
 			w.logger.Info("update dispatch: run no longer exists",
 				slog.String("run_id", a.RunID.String()),
 				slog.String("tenant_id", a.TenantID.String()))
