@@ -46,6 +46,18 @@ import (
 // red instead of the strip going quietly wrong.
 const probeRetention = 90 * 24 * time.Hour
 
+// ProbeRetention is the exported view of probeRetention, for the packages
+// whose own constants must be checked against it.
+//
+// It exists so the retention invariant can be asserted from internal/uptime,
+// where the endpoint's longest accepted window (historyWindowDays) actually
+// lives. The first version of that guard restated the window as a literal in
+// this package instead, which meant widening the endpoint to 120d would have
+// left it green while the invariant it guards silently broke — a guard that
+// cannot detect the drift it was written for. Read this constant; never copy
+// its value.
+const ProbeRetention = probeRetention
+
 // probeGCBatchSize caps the number of rows deleted per GC pass to keep the
 // DELETE transaction short and avoid long lock contention on a large table.
 // At ≤100 sites × 1 probe/min the table grows ~52 M rows/year; a daily

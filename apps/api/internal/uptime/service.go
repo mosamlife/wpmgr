@@ -365,9 +365,20 @@ func (s *Service) GetFleetUptimeHistory(ctx context.Context, tenantID uuid.UUID,
 		return FleetUptimeHistoryResponse{}, domain.Validation("invalid_window", "window must be one of 7d, 30d, 90d")
 	}
 
-	// today is UTC midnight, the same anchor metrics.fleetUptimeParams uses,
-	// so the dates labelled here are the dates the store bucketed on.
-	today := time.Now().UTC().Truncate(24 * time.Hour)
+	// ONE wall-clock sample for the whole request. Both the day labels below
+	// and the store window derived from them are computed from this single
+	// instant, so they cannot disagree.
+	//
+	// The store takes its own sample inside metrics.fleetUptimeParams, which
+	// is unavoidable across a package boundary, but that one is downstream:
+	// it can only ever be later than `now`, which widens the window slightly
+	// rather than shifting the labels. Two samples HERE would be the harmful
+	// pair — a request crossing UTC midnight between them would label the
+	// strip against one day and size the window against the next, silently
+	// shifting every cell by a day. Do not reintroduce a second time.Now()
+	// in this function.
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
 	start := today.AddDate(0, 0, -(days - 1))
 
 	dates := make([]string, days)
@@ -398,7 +409,7 @@ func (s *Service) GetFleetUptimeHistory(ctx context.Context, tenantID uuid.UUID,
 	// of the oldest day we intend to label, not merely `days` back from this
 	// instant — otherwise the oldest cell would summarise only the part of
 	// that day after the current clock time.
-	storeWindow := time.Now().UTC().Sub(start)
+	storeWindow := now.Sub(start)
 	series, err := s.store.QueryFleetDailySeries(ctx, tenantID, siteIDs, storeWindow)
 	if err != nil {
 		return FleetUptimeHistoryResponse{}, domain.Internal("fleet_uptime_history_failed", "failed to query fleet uptime history").WithCause(err)
