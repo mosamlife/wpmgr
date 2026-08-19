@@ -1050,6 +1050,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// Phase 3: agent log ingest handler + retention GC worker.
 	emailAgentH := email.NewAgentHandler(emailSvc)
 	emailLogGCWorker := email.NewEmailLogGCWorker(emailSvc, logger)
+	// GH #461 — webhook dedup GC worker (was fully implemented but never
+	// registered with River; email_webhook_events grew without bound).
+	emailWebhookDedupGCWorker := email.NewWebhookDedupGCWorker(emailSvc, logger)
 	// m61: webhook handler — now safe to mount (cross-tenant forgery fixed).
 	// Uses the same svc and publicBase; no instance-wide signing keys.
 	emailWebhookH := email.NewWebhookHandler(emailSvc, emailPublicBase, logger)
@@ -1940,6 +1943,8 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		rumBeaconReconcileWorker: rumBeaconReconcileWorker,
 		// m59 Phase 3 — email log retention GC (always wired).
 		emailLogGCWorker: emailLogGCWorker,
+		// GH #461 — webhook dedup GC (always wired; 7-day retention).
+		emailWebhookDedupGCWorker: emailWebhookDedupGCWorker,
 		// m62 — org-config propagation + hourly digest workers (always wired).
 		emailOrgPropagateWorker: email.NewOrgConfigPropagateWorker(emailSvc, logger),
 		emailDigestWorker:       email.NewDigestWorker(emailSvc, logger),
@@ -3288,6 +3293,8 @@ type riverDeps struct {
 	rumBeaconReconcileWorker *perf.RumBeaconReconcileWorker
 	// m59 Phase 3 — email log retention GC (always wired).
 	emailLogGCWorker *email.EmailLogGCWorker
+	// GH #461 — webhook dedup GC (always wired; 7-day retention).
+	emailWebhookDedupGCWorker *email.WebhookDedupGCWorker
 	// m62 — org-config propagation worker + hourly digest worker (always wired).
 	emailOrgPropagateWorker *email.OrgConfigPropagateWorker
 	emailDigestWorker       *email.DigestWorker
@@ -3749,6 +3756,11 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		))
 	}
 
+	// GH #461 — webhook dedup GC: sweeps email_webhook_events rows older than
+	// the 7-day retention window (webhookDedupRetention) once per hour.
+	// RunOnStart: false — avoids a GC sweep on every deploy/restart.
+	periodics = registerEmailWebhookDedupGCWorker(workers, periodics, d.emailWebhookDedupGCWorker)
+
 	// m62 — org-config propagation worker (on-demand, enqueued by UpsertOrgConfig).
 	if d.emailOrgPropagateWorker != nil {
 		river.AddWorker(workers, d.emailOrgPropagateWorker)
@@ -4011,6 +4023,22 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 		slog.Int("update_per_tenant_parallelism", perTenantParallelism),
 		slog.Bool("backups_enabled", backupsEnabled))
 	return client, nil
+}
+
+// registerEmailWebhookDedupGCWorker registers the GH #461 webhook dedup GC
+// worker with River and appends its hourly periodic sweep. Split out from
+// startRiver so the registration itself — not just the fact that startRiver
+// builds a client — can be asserted in a test.
+func registerEmailWebhookDedupGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.WebhookDedupGCWorker) []*river.PeriodicJob {
+	if w == nil {
+		return periodics
+	}
+	river.AddWorker(workers, w)
+	return append(periodics, river.NewPeriodicJob(
+		river.PeriodicInterval(1*time.Hour),
+		func() (river.JobArgs, *river.InsertOpts) { return email.WebhookDedupGCArgs{}, nil },
+		&river.PeriodicJobOpts{RunOnStart: false},
+	))
 }
 
 // disabledBackupCommander refuses to send backup/restore commands when no CP
