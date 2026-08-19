@@ -66,6 +66,39 @@ func (e *countingTxEnqueuer) count() int {
 	return e.n
 }
 
+// dbNow returns now() as the DATABASE sees it, read through the same pool and
+// the same InAgentTx wrapper the due scan itself runs under.
+//
+// EVERY DEFERRED-DISPATCH ASSERTION IN THIS FILE AND ITS SIBLINGS TURNS ON ONE
+// PREDICATE: ListDueUpdateRuns' "scheduled_at <= now()", where now() is the
+// DATABASE clock. updates.sql chose that clock deliberately, so two control
+// planes with drifting wall clocks cannot disagree about whether a run has
+// arrived. Seeding scheduled_at from the Go host clock therefore compares two
+// DIFFERENT clocks: this process's, and the one inside the Postgres container.
+//
+// They are not the same clock. The container inherits the Docker VM's clock,
+// which lags the host across a host sleep until Docker's time-sync corrects it,
+// and a seed one minute in the HOST's past lands in the DATABASE's FUTURE for
+// as long as that lag exceeds a minute. The run is then absent from the due
+// scan and the test fails on an assertion that says nothing about clocks —
+// reproducibly under the full suite, which runs long enough to straddle a sleep,
+// and never in isolation, which does not.
+//
+// Anchoring every seed here removes the second clock: the margins below are then
+// margins against the clock that actually decides, not a bet on how far two
+// clocks have drifted apart. This is not a tolerance and not a retry; the scan
+// is still asserted exactly once, on its first call.
+func dbNow(t *testing.T, pool *db.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.InAgentTx(context.Background(), func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), "SELECT now()").Scan(&now)
+	}); err != nil {
+		t.Fatalf("read the database clock: %v", err)
+	}
+	return now
+}
+
 // seedScheduledRunWithTask creates a deferred run through the REAL repo method,
 // so the row is born exactly as Service.CreateRun would create it.
 func seedScheduledRunWithTask(t *testing.T, repo update.Repo, tenant, siteID uuid.UUID, at time.Time, slugs ...string) (update.Run, []update.Task) {
@@ -143,7 +176,7 @@ func TestGH463_Phase1_ScheduledRunContactsNoSiteUntilItsTime(t *testing.T) {
 	tenant := seedTenant(t, pool, "gh463-p1-e2e")
 	siteID := seedSite(t, pool, tenant, "")
 
-	future := time.Now().Add(10 * time.Minute)
+	future := dbNow(t, pool).Add(10 * time.Minute)
 	run, tasks := seedScheduledRunWithTask(t, repo, tenant, siteID, future, "akismet")
 	if run.Status != update.RunScheduled {
 		t.Fatalf("run born %q, want %q", run.Status, update.RunScheduled)
@@ -235,7 +268,7 @@ func TestGH463_Phase1_ScheduledTaskDoesNotBlockAnImmediateUpdate(t *testing.T) {
 	siteID := seedSite(t, pool, tenant, "")
 
 	// Tomorrow's scheduled update of akismet.
-	_, _ = seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(20*time.Hour), "akismet")
+	_, _ = seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(20*time.Hour), "akismet")
 
 	// The dedup pre-check must not see it.
 	inFlight, err := repo.ListInFlightTargets(ctx, tenant, []uuid.UUID{siteID})
@@ -279,7 +312,7 @@ func TestGH463_Phase1_ReaperLeavesScheduledTasksAlone(t *testing.T) {
 	tenant := seedTenant(t, pool, "gh463-p1-reaper")
 	siteID := seedSite(t, pool, tenant, "")
 
-	_, tasks := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(6*time.Hour), "akismet")
+	_, tasks := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(6*time.Hour), "akismet")
 	taskID := tasks[0].ID
 
 	// Age it three hours — four times staleTaskThreshold (45m).
@@ -343,7 +376,7 @@ func TestGH463_Phase1_ConcurrentClaimsExactlyOneWins(t *testing.T) {
 
 	tenant := seedTenant(t, pool, "gh463-p1-claim")
 	siteID := seedSite(t, pool, tenant, "")
-	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(-time.Minute), "akismet")
+	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(-time.Minute), "akismet")
 
 	due, err := repo.ListDueRuns(ctx, 100)
 	if err != nil || len(due) == 0 {
@@ -410,7 +443,7 @@ func TestGH463_Phase1_DispatchIsAllOrNothing(t *testing.T) {
 
 	tenant := seedTenant(t, pool, "gh463-p1-atomic")
 	siteID := seedSite(t, pool, tenant, "")
-	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(-time.Minute), "akismet", "jetpack")
+	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(-time.Minute), "akismet", "jetpack")
 
 	due, _ := repo.ListDueRuns(ctx, 100)
 	var target update.Run
@@ -487,7 +520,7 @@ func TestGH463_Phase1_ABusyTargetIsSkippedAndTheRunSurvives(t *testing.T) {
 
 	tenant := seedTenant(t, pool, "gh463-p1-skip")
 	siteID := seedSite(t, pool, tenant, "")
-	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(-time.Minute), "akismet", "jetpack")
+	run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(-time.Minute), "akismet", "jetpack")
 
 	// The operator's urgent update of akismet, created while the run waited.
 	if _, _, err := repo.CreateRunWithTasks(ctx, update.CreateRunInput{TenantID: tenant}, []update.NewTask{{
@@ -559,7 +592,7 @@ func TestGH463_Phase1_ARunWithLiveWorkIsNotMarkedCompleted(t *testing.T) {
 	tenant := seedTenant(t, pool, "gh463-p1-livework")
 	siteID := seedSite(t, pool, tenant, "")
 	run, tasks := seedScheduledRunWithTask(t, repo, tenant, siteID,
-		time.Now().Add(-time.Minute), "akismet", "jetpack")
+		dbNow(t, pool).Add(-time.Minute), "akismet", "jetpack")
 
 	// An earlier partial pass: move ONE task to 'pending' by hand, exactly as a
 	// previous dispatch would have left it. Its command is notionally out on
@@ -667,11 +700,11 @@ func TestGH463_Phase1_ExpiryPastTheGraceWindow(t *testing.T) {
 	siteID := seedSite(t, pool, tenant, "")
 
 	// Came due three hours ago; the grace window is two.
-	stale, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(-3*time.Hour), "akismet")
+	stale, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(-3*time.Hour), "akismet")
 	// Came due one minute ago; comfortably inside it.
-	fresh, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, time.Now().Add(-time.Minute), "jetpack")
+	fresh, _ := seedScheduledRunWithTask(t, repo, tenant, siteID, dbNow(t, pool).Add(-time.Minute), "jetpack")
 
-	cutoff := time.Now().Add(-2 * time.Hour)
+	cutoff := dbNow(t, pool).Add(-2 * time.Hour)
 
 	expired, nTasks, err := repo.ExpireDueRun(ctx, tenant, stale.ID, cutoff,
 		"not attempted: the run passed its dispatch window")
@@ -761,7 +794,7 @@ func TestGH463_Phase1_CancelScheduledRun(t *testing.T) {
 
 	t.Run("a scheduled run cancels and contacts no site", func(t *testing.T) {
 		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
-			time.Now().Add(2*time.Hour), "akismet", "jetpack")
+			dbNow(t, pool).Add(2*time.Hour), "akismet", "jetpack")
 
 		cancelled, tasks, ok, err := repo.CancelScheduledRun(ctx, tenant, run.ID, "cancelled by an operator")
 		if err != nil {
@@ -815,7 +848,7 @@ func TestGH463_Phase1_CancelScheduledRun(t *testing.T) {
 
 	t.Run("a run that already fired is refused", func(t *testing.T) {
 		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
-			time.Now().Add(-time.Minute), "wordfence")
+			dbNow(t, pool).Add(-time.Minute), "wordfence")
 
 		// Fire it, so it is 'running' with a live task.
 		due, _ := repo.ListDueRuns(ctx, 200)
@@ -851,7 +884,7 @@ func TestGH463_Phase1_CancelScheduledRun(t *testing.T) {
 
 	t.Run("two concurrent cancels give exactly one winner", func(t *testing.T) {
 		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
-			time.Now().Add(3*time.Hour), "yoast")
+			dbNow(t, pool).Add(3*time.Hour), "yoast")
 
 		const operators = 4
 		wins := make([]bool, operators)
@@ -916,7 +949,7 @@ func TestGH463_Phase1_DueScanUsesTheDueIndex(t *testing.T) {
 	siteID := seedSite(t, pool, tenant, "")
 	for i := 0; i < 25; i++ {
 		seedScheduledRunWithTask(t, repo, tenant, siteID,
-			time.Now().Add(time.Duration(i-30)*time.Minute), fmt.Sprintf("p%d", i))
+			dbNow(t, pool).Add(time.Duration(i-30)*time.Minute), fmt.Sprintf("p%d", i))
 	}
 
 	var plan strings.Builder
