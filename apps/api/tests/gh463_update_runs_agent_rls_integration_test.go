@@ -190,6 +190,162 @@ func TestGH463_Phase0_AgentTxSeesAndClaimsDueRunCrossTenant(t *testing.T) {
 	}
 }
 
+// TestGH463_Phase0_WithoutAgentPolicyTheScanIsSilentlyEmpty plants the real
+// failure and watches it go red, then restores the policy and watches it go
+// green — in one test, against one container, through the same code path.
+//
+// Dropping update_runs_agent returns the table to EXACTLY its pre-m118 state:
+// FORCE ROW LEVEL SECURITY with update_runs_tenant_isolation as its only
+// policy, which is what m3 shipped and what origin/main carried until this
+// commit. So the first half of this test is a measurement of the bug, not a
+// simulation of it.
+//
+// The assertion that matters is NOT that the scan fails. It is that it does
+// NOT fail: err is nil, no SQLSTATE, no log line, and the answer is simply
+// "no rows" and "0 rows affected". A dispatcher cannot tell that apart from a
+// quiet fleet, which is why this defect has now shipped three times here.
+func TestGH463_Phase0_WithoutAgentPolicyTheScanIsSilentlyEmpty(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, pool, "gh463-red-a")
+	runA := seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+
+	// --- RED: reproduce the pre-m118 schema -------------------------------
+	if _, err := admin.Exec(ctx, `DROP POLICY update_runs_agent ON update_runs`); err != nil {
+		t.Fatalf("drop agent policy (is m118 applied?): %v", err)
+	}
+
+	rows, claimed, err := agentDueScanAndClaim(ctx, pool)
+	if err != nil {
+		t.Fatalf("pre-m118 scan returned an ERROR (%v). The documented failure is "+
+			"a silent empty result, not an error; if Postgres now raises here, "+
+			"this test's premise has changed and the migration's rationale needs "+
+			"re-reading", err)
+	}
+	if rows != 0 || claimed != 0 {
+		t.Fatalf("pre-m118 scan saw %d rows and claimed %d, want 0 and 0. The "+
+			"table should be unreadable under app.agent with only "+
+			"update_runs_tenant_isolation present", rows, claimed)
+	}
+	t.Logf("RED confirmed: with only update_runs_tenant_isolation, the "+
+		"cross-tenant scan returned %d rows and claimed %d, err=%v — run %s is "+
+		"invisible and unclaimable, silently", rows, claimed, err, runA)
+
+	// --- GREEN: restore exactly what m118 creates -------------------------
+	if _, err := admin.Exec(ctx, `
+		CREATE POLICY update_runs_agent ON update_runs
+			FOR ALL
+			USING (current_setting('app.agent', true) = 'on')
+			WITH CHECK (current_setting('app.agent', true) = 'on')`); err != nil {
+		t.Fatalf("recreate agent policy: %v", err)
+	}
+
+	rows, claimed, err = agentDueScanAndClaim(ctx, pool)
+	if err != nil {
+		t.Fatalf("post-m118 scan: %v", err)
+	}
+	if rows != 1 || claimed != 1 {
+		t.Fatalf("post-m118 scan saw %d rows and claimed %d, want 1 and 1", rows, claimed)
+	}
+	t.Logf("GREEN confirmed: with update_runs_agent present, the same scan saw "+
+		"%d row and claimed %d", rows, claimed)
+}
+
+// TestGH463_Phase0_ForSelectPolicyStillBreaksTheClaim is the second half of the
+// FOR ALL decision, proved rather than argued. It installs the policy a
+// reasonable person would write — FOR SELECT, because "the dispatcher scans" —
+// and shows the read succeeding while the claim silently matches nothing.
+//
+// This is Issue #96 reproduced on this table. Without this test, "FOR ALL not
+// FOR SELECT" is a claim in a migration comment that nobody has ever seen fail.
+func TestGH463_Phase0_ForSelectPolicyStillBreaksTheClaim(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+
+	tenantA := seedTenant(t, pool, "gh463-forselect-a")
+	seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+
+	if _, err := admin.Exec(ctx, `DROP POLICY update_runs_agent ON update_runs`); err != nil {
+		t.Fatalf("drop agent policy: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `
+		CREATE POLICY update_runs_agent ON update_runs
+			FOR SELECT
+			USING (current_setting('app.agent', true) = 'on')`); err != nil {
+		t.Fatalf("create FOR SELECT policy: %v", err)
+	}
+
+	rows, claimed, err := agentDueScanAndClaim(ctx, pool)
+	if err != nil {
+		t.Fatalf("FOR SELECT scan: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("FOR SELECT plain read saw %d rows, want 1 — the read half "+
+			"should work, that is what makes this bug so hard to spot", rows)
+	}
+	if claimed != 0 {
+		t.Fatalf("FOR SELECT policy claimed %d rows, want 0. If a read-only "+
+			"policy can now claim, PostgreSQL's behaviour has changed and the "+
+			"FOR ALL rationale in m118 must be revisited", claimed)
+	}
+	t.Logf("Issue #96 reproduced on update_runs: a FOR SELECT agent policy read "+
+		"%d row but claimed %d, with err=%v. The read works, the write silently "+
+		"matches nothing. This is why m118's policy is FOR ALL", rows, claimed, err)
+
+	// And the locking read — the shape the real claim uses — returns nothing at
+	// all under the same FOR SELECT policy, even though the plain read above
+	// returned a row.
+	var lockedCount int
+	if err := pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM (
+				SELECT id FROM update_runs
+				 WHERE status = 'scheduled' AND scheduled_at <= now()
+				 FOR UPDATE SKIP LOCKED
+			) s`).Scan(&lockedCount)
+	}); err != nil {
+		t.Fatalf("FOR SELECT locking read: %v", err)
+	}
+	if lockedCount != 0 {
+		t.Fatalf("SELECT ... FOR UPDATE under a FOR SELECT policy returned %d "+
+			"rows, want 0", lockedCount)
+	}
+	t.Logf("and SELECT ... FOR UPDATE returned %d rows under the same policy "+
+		"that let the plain SELECT through — the counter-intuitive half of #96",
+		lockedCount)
+}
+
+// agentDueScanAndClaim performs the two operations the #463 dispatcher will
+// perform, in one InAgentTx, and reports what each saw. It returns an error
+// only if Postgres actually raised one — the whole point is to distinguish
+// "refused" from "returned nothing".
+func agentDueScanAndClaim(ctx context.Context, pool *db.Pool) (seen int, claimed int64, err error) {
+	err = pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		if e := tx.QueryRow(ctx, `
+			SELECT count(*) FROM update_runs
+			 WHERE status = 'scheduled' AND scheduled_at <= now()`).Scan(&seen); e != nil {
+			return e
+		}
+		tag, e := tx.Exec(ctx, `
+			UPDATE update_runs
+			   SET status = 'dispatching', updated_at = now()
+			 WHERE status = 'scheduled' AND scheduled_at <= now()`)
+		if e != nil {
+			return e
+		}
+		claimed = tag.RowsAffected()
+		return nil
+	})
+	return seen, claimed, err
+}
+
 // TestGH463_Phase0_AgentPolicyDoesNotWidenTenantIsolation is the over-fire
 // guard. update_runs_agent is PERMISSIVE, and permissive policies are OR'd, so
 // a policy written even slightly wrong here would admit every tenant's runs to
