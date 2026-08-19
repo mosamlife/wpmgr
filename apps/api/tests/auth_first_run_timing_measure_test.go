@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/auth"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 )
 
 // TestMeasureFirstRunRefusalTiming reports the two durations a refusal on this
@@ -62,24 +63,32 @@ func TestMeasureFirstRunRefusalTiming(t *testing.T) {
 
 	t.Logf("ORACLE A (claim-correctness, owned install) MEDIAN over %d: wrong-length=%v same-length-wrong=%v CORRECT-claim(spent)=%v",
 		samples, wrongLen, sameLen, correct)
+	assertRatioUnder(t, "oracle A (claim-correctness)", wrongLen, correct)
+	assertRatioUnder(t, "oracle A (claim-correctness)", sameLen, correct)
 
 	// --- Oracle B: install state on the no-header register path -------------
 	unclaimedPool := startPostgres(t)
 	unclaimedSvc, _ := newAuthStack(unclaimedPool)
 	unclaimedSvc.SetBootstrapClaimSecret(testClaim)
 
-	selfServe := func(svc *auth.Service, pool interface{}) func() {
-		i := 0
+	// The error is checked rather than discarded: RegisterSelfServe returns nil
+	// on every intended outcome here, so a non-nil one means the call did not do
+	// the work being timed and the sample measures nothing. A median over
+	// samples that all failed early would look exactly like a fast path.
+	selfServe := func(svc *auth.Service, pool *db.Pool, base int) func() {
+		i := base
 		return func() {
 			i++
-			_ = svc.RegisterSelfServe(ctx, auth.RegisterInput{
+			if err := svc.RegisterSelfServe(ctx, auth.RegisterInput{
 				Email:    uniqueEmail(i),
 				Password: "a-very-strong-password",
 				Name:     "Probe",
-			}, makeCreateTenant(t, unclaimedPool))
+			}, makeCreateTenant(t, pool)); err != nil {
+				t.Fatalf("self-serve sample: %v", err)
+			}
 		}
 	}
-	unclaimed := timeN(selfServe(unclaimedSvc, unclaimedPool))
+	unclaimed := timeN(selfServe(unclaimedSvc, unclaimedPool, 0))
 
 	claimedPool := startPostgres(t)
 	claimedSvc, _ := newAuthStack(claimedPool)
@@ -89,18 +98,49 @@ func TestMeasureFirstRunRefusalTiming(t *testing.T) {
 	}, testClaim); err != nil {
 		t.Fatalf("claim the install: %v", err)
 	}
-	j := 0
-	claimed := timeN(func() {
-		j++
-		_ = claimedSvc.RegisterSelfServe(ctx, auth.RegisterInput{
-			Email:    uniqueEmail(1000 + j),
-			Password: "a-very-strong-password",
-			Name:     "Probe",
-		}, makeCreateTenant(t, claimedPool))
-	})
+	claimed := timeN(selfServe(claimedSvc, claimedPool, 1000))
 
 	t.Logf("ORACLE B (install state, self-serve register, no claim header) MEDIAN over %d: UNCLAIMED=%v CLAIMED=%v",
 		samples, unclaimed, claimed)
+	assertRatioUnder(t, "oracle B (install state)", unclaimed, claimed)
+}
+
+// maxRefusalRatio is the ceiling this test holds the two paths to.
+//
+// WHY 4x, WHICH IS NOWHERE NEAR TIGHT. The property being defended is that
+// neither pair is separated by ORDERS of magnitude: before the equalising work
+// these ratios were about 112000x and 100x, and afterwards they measure about
+// 1.04x and 1.13x. Anything that reintroduces a skipped argon2 hash — the whole
+// mechanism, and the only way back to a usable difference — lands far above 4x,
+// so the ceiling catches the regression it exists to catch.
+//
+// It cannot flake, and that is deliberate rather than hopeful. The gap between
+// the measured 1.13x and the 4x ceiling is not a safety margin, it is roughly
+// three times the whole measurement. For a green run to go red on noise alone,
+// one median of fifteen would have to move by more than 3x — on a path whose
+// cost is dominated by a fixed argon2 computation that runs identically on both
+// sides. A tight bound (say 1.5x) would have been the flaky one; this project
+// switches off tests that redden correct work, and then they guard nothing.
+//
+// If this fires, do not raise the number. Read the medians in the log line
+// above it: something stopped doing equal work on both paths.
+const maxRefusalRatio = 4.0
+
+func assertRatioUnder(t *testing.T, label string, a, b time.Duration) {
+	t.Helper()
+	lo, hi := a, b
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if lo <= 0 {
+		t.Fatalf("%s: a median of %v is not a usable measurement", label, lo)
+	}
+	ratio := float64(hi) / float64(lo)
+	if ratio > maxRefusalRatio {
+		t.Fatalf("%s: the two paths differ by %.1fx (%v vs %v), ceiling is %.1fx — one of them stopped doing the work the other does",
+			label, ratio, a, b, maxRefusalRatio)
+	}
+	t.Logf("%s: %.2fx separation (ceiling %.1fx)", label, ratio, maxRefusalRatio)
 }
 
 func uniqueEmail(i int) string {
