@@ -66,7 +66,7 @@ export const UPTIME_MONITORING_PAGE: FeaturePageData = {
     {
       icon: "LayoutGrid",
       title: "Incident history",
-      desc: "Every down and recovery event is recorded with a timestamp and duration so you can produce accurate uptime statistics for client reports.",
+      desc: "Every down and recovery event is recorded with a timestamp and duration, giving you a durable log to draw on for client reports.",
     },
     {
       icon: "Network",
