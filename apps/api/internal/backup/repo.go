@@ -1432,11 +1432,21 @@ func (r *pgRepo) SweepTenantChunks(ctx context.Context, tenantID uuid.UUID, floo
 	}
 	*acquired = true
 	// Always release the session lock on the SAME conn, on every path (incl.
-	// error), BEFORE Release returns the conn to the pool. Best-effort: a failed
-	// unlock is harmless — the lock is session-scoped and also drops when the
-	// session closes.
+	// error), BEFORE Release returns the conn to the pool.
+	//
+	// GH #483: on db.CleanupContext, never on ctx, and NOT best-effort in the
+	// sense this comment used to claim. "A failed unlock is harmless, the lock
+	// drops when the session closes" is false for a POOLED connection: the
+	// session does not close, it goes back to the pool. Worse, the unlock on a
+	// cancelled ctx never reaches the wire at all — pgx returns early — so the
+	// connection returns healthy and still holding this tenant's GC lock, and
+	// every later sweep for the tenant takes a different connection, fails
+	// pg_try_advisory_lock and returns with *acquired false. GC for that tenant
+	// silently stops until MaxConnLifetime (30 min) closes the connection.
 	defer func() {
-		_, _ = conn.Exec(ctx,
+		cctx, ccancel := db.CleanupContext(ctx)
+		defer ccancel()
+		_, _ = conn.Exec(cctx,
 			`SELECT pg_advisory_unlock(hashtext('backup_gc'), hashtext($1))`,
 			tenantID.String(),
 		)
