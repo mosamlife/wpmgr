@@ -277,9 +277,11 @@ func (s *Service) GetFleetStatus(ctx context.Context, tenantID uuid.UUID, siteID
 			item.Up = um.Up
 			item.LastProbeAt = um.LastProbeAt
 			item.TLSExpiry = um.TLSExpiry
-			if um.UptimePct7d != nil {
-				item.UptimePct7d = *um.UptimePct7d
-			}
+			// GH #460: carry the store's nil through verbatim. The nil check
+			// that used to guard this assignment discarded "no measurement"
+			// and left the field at its zero value, which the wire cannot
+			// distinguish from a measured 0%.
+			item.UptimePct7d = um.UptimePct7d
 			item.AvgLatencyMs = um.AvgLatencyMs
 			// GH #291 Phase 2: surface the app-health verdict alongside the
 			// (unchanged) reachability fields above.
@@ -312,6 +314,145 @@ func (s *Service) GetFleetStatus(ctx context.Context, tenantID uuid.UUID, siteID
 		default:
 			resp.Summary.Unknown++
 		}
+	}
+	return resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Fleet uptime history (GH #460)
+// ---------------------------------------------------------------------------
+
+// dateLayout is the UTC calendar-day format used by every date string this
+// endpoint emits.
+const dateLayout = "2006-01-02"
+
+// historyWindowDays maps the accepted window strings to a day count. The
+// endpoint takes an enum rather than an arbitrary duration deliberately: the
+// day count is also the length of every returned array, so an unbounded
+// window would be an unbounded response.
+var historyWindowDays = map[string]int{"7d": 7, "30d": 30, "90d": 90}
+
+// GetFleetUptimeHistory returns the per-site daily availability strip behind
+// GET /api/v1/fleet/uptime-history (GH #460).
+//
+// This exists because the 90-day strip on the uptime page was previously
+// SYNTHESISED in the browser from the single 7-day scalar: 89 of its 90 cells
+// were inferred, not measured. Everything below is in service of one property
+// — every cell we return corresponds to a stored measurement, and every cell
+// that does not is explicitly null.
+//
+// Shape of the work:
+//
+//  1. ONE batched store call for the whole fleet (QueryFleetDailySeries). Not
+//     a loop: m99 exists because the per-site window scan cost 6-8s cold, and
+//     a per-site loop here would pay that once per site.
+//  2. DENSIFY server-side. The store emits nothing for a day with no probes,
+//     so mapping its output positionally would shift a young site's strip
+//     into the wrong dates. Every site gets exactly days entries, oldest
+//     first, keyed by UTC date, with the unmeasured ones carrying a nil
+//     UptimePct.
+//
+// The window is the `days` most recent COMPLETE-or-current UTC days, i.e.
+// today-(days-1) .. today inclusive. The store's decomposition also touches
+// the day before that (the in-window sliver of today-days), and any point it
+// returns for that day is DROPPED here rather than rendered: a cell labelled
+// with a date must summarise that whole date, and a partial-day sliver
+// labelled as a full day is the same class of overstatement this endpoint
+// exists to remove.
+func (s *Service) GetFleetUptimeHistory(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window string) (FleetUptimeHistoryResponse, error) {
+	days, ok := historyWindowDays[window]
+	if !ok {
+		return FleetUptimeHistoryResponse{}, domain.Validation("invalid_window", "window must be one of 7d, 30d, 90d")
+	}
+
+	// ONE wall-clock sample for the whole request. Both the day labels below
+	// and the store window derived from them are computed from this single
+	// instant, so they cannot disagree.
+	//
+	// The store takes its own sample inside metrics.fleetUptimeParams, which
+	// is unavoidable across a package boundary, but that one is downstream:
+	// it can only ever be later than `now`, which widens the window slightly
+	// rather than shifting the labels. Two samples HERE would be the harmful
+	// pair — a request crossing UTC midnight between them would label the
+	// strip against one day and size the window against the next, silently
+	// shifting every cell by a day. Do not reintroduce a second time.Now()
+	// in this function.
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+	start := today.AddDate(0, 0, -(days - 1))
+
+	dates := make([]string, days)
+	index := make(map[string]int, days)
+	for i := 0; i < days; i++ {
+		d := start.AddDate(0, 0, i).Format(dateLayout)
+		dates[i] = d
+		index[d] = i
+	}
+
+	resp := FleetUptimeHistoryResponse{
+		Window:    window,
+		Days:      days,
+		StartDate: dates[0],
+		EndDate:   dates[days-1],
+		Items:     []FleetUptimeHistoryItem{},
+	}
+	if len(siteIDs) == 0 {
+		return resp, nil
+	}
+
+	infos, err := s.repo.GetFleetSiteInfo(ctx, tenantID, siteIDs)
+	if err != nil {
+		return FleetUptimeHistoryResponse{}, err
+	}
+
+	// The store window is measured back from now, so it must reach the START
+	// of the oldest day we intend to label, not merely `days` back from this
+	// instant — otherwise the oldest cell would summarise only the part of
+	// that day after the current clock time.
+	storeWindow := now.Sub(start)
+	series, err := s.store.QueryFleetDailySeries(ctx, tenantID, siteIDs, storeWindow)
+	if err != nil {
+		return FleetUptimeHistoryResponse{}, domain.Internal("fleet_uptime_history_failed", "failed to query fleet uptime history").WithCause(err)
+	}
+
+	resp.Items = make([]FleetUptimeHistoryItem, 0, len(infos))
+	for _, info := range infos {
+		item := FleetUptimeHistoryItem{
+			SiteID: info.SiteID,
+			Name:   info.Name,
+			URL:    info.URL,
+			Days:   make([]FleetUptimeDay, days),
+		}
+		// Pre-fill every day as "no data". A day only ever leaves this state
+		// by a stored measurement landing on it below — there is no default,
+		// no carry-forward and no interpolation anywhere in this loop.
+		for i := range item.Days {
+			item.Days[i] = FleetUptimeDay{Date: dates[i]}
+		}
+		for _, p := range series[info.SiteID] {
+			pos, in := index[p.Bucket.UTC().Format(dateLayout)]
+			if !in {
+				// The decomposition's oldest sliver day, outside the labelled
+				// window. Dropped on purpose — see the doc comment.
+				continue
+			}
+			if p.Checks == 0 {
+				continue
+			}
+			pct := float64(p.UpChecks) / float64(p.Checks) * 100
+			day := FleetUptimeDay{
+				Date:      dates[pos],
+				UptimePct: &pct,
+				Checks:    int64(p.Checks),
+			}
+			if p.AvgLatencyMs > 0 {
+				lat := p.AvgLatencyMs
+				day.AvgLatencyMs = &lat
+			}
+			item.Days[pos] = day
+			item.MeasuredDays++
+		}
+		resp.Items = append(resp.Items, item)
 	}
 	return resp, nil
 }

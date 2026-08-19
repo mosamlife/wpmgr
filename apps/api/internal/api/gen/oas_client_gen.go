@@ -1541,6 +1541,26 @@ type Invoker interface {
 	//
 	// GET /api/v1/perf/rum/fleet
 	GetFleetRumAggregate(ctx context.Context, params GetFleetRumAggregateParams) (*FleetRumAggregate, error)
+	// GetFleetUptimeHistory invokes getFleetUptimeHistory operation.
+	//
+	// Returns, for every site the principal can see, one entry per UTC day
+	// across the requested window — oldest first, densified, with no gaps in
+	// the date sequence.
+	// Every entry is either a stored measurement or an explicit null. There
+	// is no interpolation, no carry-forward and no default: `uptime_pct` is
+	// null on any day with no recorded probes (the site did not exist yet,
+	// monitoring was off, the probe worker did not run, or the day has aged
+	// past the 90-day probe retention). Null is NOT zero — zero means the
+	// site was measured and was down for every probe of that day. Rendering
+	// null as 0% tells an operator their site was down when we simply never
+	// looked (GH #460).
+	// `measured_days` is how many of the entries carry a measurement, so a
+	// young site can be shown as "28 of 90 days measured" rather than
+	// implying 90 days of history.
+	// Site-scoped principals see only their granted sites. Requires viewer+.
+	//
+	// GET /api/v1/fleet/uptime-history
+	GetFleetUptimeHistory(ctx context.Context, params GetFleetUptimeHistoryParams) (GetFleetUptimeHistoryRes, error)
 	// GetFleetUptimeStatus invokes getFleetUptimeStatus operation.
 	//
 	// Returns summary counts {up, degraded, down, unknown} and a per-site list
@@ -19155,6 +19175,115 @@ func (c *Client) sendGetFleetRumAggregate(ctx context.Context, params GetFleetRu
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetRumAggregateResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetFleetUptimeHistory invokes getFleetUptimeHistory operation.
+//
+// Returns, for every site the principal can see, one entry per UTC day
+// across the requested window — oldest first, densified, with no gaps in
+// the date sequence.
+// Every entry is either a stored measurement or an explicit null. There
+// is no interpolation, no carry-forward and no default: `uptime_pct` is
+// null on any day with no recorded probes (the site did not exist yet,
+// monitoring was off, the probe worker did not run, or the day has aged
+// past the 90-day probe retention). Null is NOT zero — zero means the
+// site was measured and was down for every probe of that day. Rendering
+// null as 0% tells an operator their site was down when we simply never
+// looked (GH #460).
+// `measured_days` is how many of the entries carry a measurement, so a
+// young site can be shown as "28 of 90 days measured" rather than
+// implying 90 days of history.
+// Site-scoped principals see only their granted sites. Requires viewer+.
+//
+// GET /api/v1/fleet/uptime-history
+func (c *Client) GetFleetUptimeHistory(ctx context.Context, params GetFleetUptimeHistoryParams) (GetFleetUptimeHistoryRes, error) {
+	res, err := c.sendGetFleetUptimeHistory(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetFleetUptimeHistory(ctx context.Context, params GetFleetUptimeHistoryParams) (res GetFleetUptimeHistoryRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getFleetUptimeHistory"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/fleet/uptime-history"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetFleetUptimeHistoryOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [1]string
+	pathParts[0] = "/api/v1/fleet/uptime-history"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "window" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "window",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Window.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetFleetUptimeHistoryResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

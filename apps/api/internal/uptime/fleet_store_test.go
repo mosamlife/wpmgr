@@ -87,7 +87,8 @@ func (r *stubRepo) CountRecentIncidents(_ context.Context, _, _ uuid.UUID) (int6
 // stubStore is a metrics.Store that returns a fixed map from QueryFleetUptime
 // and panics on any other method — the fleet-status path must not call them.
 type stubStore struct {
-	uptimeMap map[uuid.UUID]metrics.FleetUptimeRow
+	uptimeMap   map[uuid.UUID]metrics.FleetUptimeRow
+	dailySeries map[uuid.UUID][]metrics.Point
 }
 
 func (s *stubStore) Enabled() bool { return true }
@@ -109,6 +110,13 @@ func (s *stubStore) QueryFleetUptime(_ context.Context, _ uuid.UUID, _ []uuid.UU
 }
 func (s *stubStore) QueryProbeWindow(_ context.Context, _, _ uuid.UUID, _, _ time.Time, _ int) ([]metrics.ProbeSample, error) {
 	panic("not called")
+}
+
+// dailySeries is returned by QueryFleetDailySeries. Nil is a valid value and
+// means "no site has any measurement", which is what the fleet-status tests
+// (which never call it) leave it as.
+func (s *stubStore) QueryFleetDailySeries(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ time.Duration) (map[uuid.UUID][]metrics.Point, error) {
+	return s.dailySeries, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +180,7 @@ func TestGetFleetStatus_StoreDataWhenPostgresEmpty(t *testing.T) {
 		t.Errorf("Up = false, want true")
 	}
 	// uptime_pct_7d must reflect store value.
-	if it.UptimePct7d != 99.5 {
+	if it.UptimePct7d == nil || *it.UptimePct7d != 99.5 {
 		t.Errorf("UptimePct7d = %v, want 99.5", it.UptimePct7d)
 	}
 	// avg_latency_ms must be non-nil and match.
@@ -313,7 +321,7 @@ func TestGetFleetStatus_PostgresModeParity(t *testing.T) {
 	if it.Up == nil || !*it.Up {
 		t.Errorf("Up mismatch: got %v", it.Up)
 	}
-	if it.UptimePct7d != pct {
+	if it.UptimePct7d == nil || *it.UptimePct7d != pct {
 		t.Errorf("UptimePct7d = %v, want %v", it.UptimePct7d, pct)
 	}
 	if it.AvgLatencyMs == nil || *it.AvgLatencyMs != latency {
@@ -429,7 +437,8 @@ func TestGetFleetStatus_DisconnectedCachedUpStaysUpDisplayOnlyChanges(t *testing
 	if healthy.Up == nil || *healthy.Up != *broken.Up {
 		t.Fatalf("Up mismatch: healthy=%v broken=%v, want identical", healthy.Up, broken.Up)
 	}
-	if broken.UptimePct7d != pct || healthy.UptimePct7d != broken.UptimePct7d {
+	if broken.UptimePct7d == nil || *broken.UptimePct7d != pct ||
+		healthy.UptimePct7d == nil || *healthy.UptimePct7d != *broken.UptimePct7d {
 		t.Fatalf("UptimePct7d mismatch: healthy=%v broken=%v, want both %v", healthy.UptimePct7d, broken.UptimePct7d, pct)
 	}
 	if broken.AvgLatencyMs == nil || *broken.AvgLatencyMs != latency {
