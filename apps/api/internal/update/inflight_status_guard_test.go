@@ -30,11 +30,11 @@ package update
 // apps/api/tests/contract/gh402_site_delete_reclaim_structure_test.go.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 	"testing"
 )
 
@@ -225,25 +225,112 @@ func TestInflightDedupIndexMatchesInFlightStatuses(t *testing.T) {
 // Sweep: every OTHER in-flight predicate on update_tasks.
 // ---------------------------------------------------------------------------
 
+// tableRefRe matches the table reference that gives a SQL scope its subject.
+var tableRefRe = regexp.MustCompile(`(?is)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO)\s+(update_tasks|update_runs)\b`)
+
+// parenScopes returns every balanced parenthesised range in sql as [open,
+// close] index pairs. Parens inside single-quoted literals are ignored so a
+// status value containing one cannot desynchronise the stack.
+func parenScopes(sql string) [][2]int {
+	var stack []int
+	var out [][2]int
+	inStr := false
+	for i := 0; i < len(sql); i++ {
+		switch sql[i] {
+		case '\'':
+			inStr = !inStr
+		case '(':
+			if !inStr {
+				stack = append(stack, i)
+			}
+		case ')':
+			if !inStr && len(stack) > 0 {
+				open := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				out = append(out, [2]int{open, i})
+			}
+		}
+	}
+	return out
+}
+
+// attributeTable answers the only question that matters for the sweep: which
+// table does THIS predicate constrain?
+//
+// Judging by which tables the whole statement mentions is too coarse — a task
+// predicate inside a statement that also selects from update_runs escapes
+// inspection entirely, and mixed statements already exist in this file.
+// Judging by the nearest preceding table reference is wrong for a different
+// reason: in ListUpdateRunsWithCounts the LATERAL's `FROM update_tasks t` sits
+// BELOW the `count(*) FILTER (WHERE status IN ...)` it governs, so "nearest
+// preceding" attributes that predicate to update_runs.
+//
+// Scope nesting is what actually decides it. Walk outward from the predicate
+// through the parenthesised scopes that strictly contain it, innermost first,
+// and stop at the first scope that names a table: that scope is the predicate's
+// query, and its table is the predicate's subject. A FILTER(...) with no table
+// of its own inherits the LATERAL subquery around it; a top-level WHERE
+// inherits the statement.
+//
+// A scope naming BOTH tables cannot be resolved by static reading, so this
+// returns an error and the caller fails loudly. Defaulting to skip there is
+// exactly the hole this replaced: a predicate the guard cannot classify is the
+// one most worth a human's attention, not the one to wave through.
+func attributeTable(stmt string, predStart, predEnd int) (string, error) {
+	type scope struct{ lo, hi int }
+	var cands []scope
+	for _, p := range parenScopes(stmt) {
+		if p[0] < predStart && p[1] >= predEnd {
+			cands = append(cands, scope{p[0], p[1]})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		return (cands[i].hi - cands[i].lo) < (cands[j].hi - cands[j].lo)
+	})
+	// The statement itself is the outermost scope: a top-level WHERE sits in no
+	// parens at all.
+	cands = append(cands, scope{0, len(stmt)})
+
+	for _, c := range cands {
+		refs := map[string]bool{}
+		for _, m := range tableRefRe.FindAllStringSubmatch(stmt[c.lo:c.hi], -1) {
+			refs[m[1]] = true
+		}
+		switch len(refs) {
+		case 0:
+			continue // no subject at this level; widen
+		case 1:
+			for tbl := range refs {
+				return tbl, nil
+			}
+		default:
+			return "", fmt.Errorf("innermost enclosing scope with a table reference names both update_tasks and update_runs, so the predicate's subject cannot be read statically")
+		}
+	}
+	return "", fmt.Errorf("no FROM/JOIN/UPDATE/INSERT INTO reference in any enclosing scope")
+}
+
 // TestEveryUpdateTasksInFlightPredicateMatchesInFlightStatuses is the reason a
 // third copy cannot appear unnoticed. The two guards above are the dangerous
 // ones, but db/query/updates.sql repeats the same set in several more queries,
 // and each repeat is another way for the invariant to drift.
 //
-// Scope is deliberately narrow in two ways, because a guard that reddens
-// correct work gets deleted:
+// Scope is narrow in two ways, because a guard that reddens correct work gets
+// deleted:
 //
-//   - Only queries that touch update_tasks and NOT update_runs are swept. Run
+//   - Only predicates attributed to update_tasks are checked, and attribution
+//     is per PREDICATE, by scope (see attributeTable), not per statement. Run
 //     statuses are a different axis that happens to reuse the spellings
-//     'pending' and 'running'; a legitimate change to a run-status predicate
-//     must not be reported as task drift.
+//     'pending' and 'running', so a legitimate change to a run-status predicate
+//     must not be reported as task drift — but a task predicate must not escape
+//     merely by sharing a statement with update_runs.
 //   - Only predicates that INTERSECT InFlightTaskStatuses are checked. A
 //     predicate over a disjoint set — ('failed','rolled_back') in
 //     ListUpdateRunsWithCounts today, or a future status filtered on its own —
 //     is not a copy of this invariant and is left alone.
 //
 // What survives both filters is exactly "a predicate that claims to be the
-// in-flight set", and that must be the in-flight set.
+// in-flight set for update_tasks", and that must be the in-flight set.
 func TestEveryUpdateTasksInFlightPredicateMatchesInFlightStatuses(t *testing.T) {
 	raw := readSQL(t, updatesQueryPath)
 	locs := queryHeaderRe.FindAllStringSubmatchIndex(raw, -1)
@@ -252,44 +339,56 @@ func TestEveryUpdateTasksInFlightPredicateMatchesInFlightStatuses(t *testing.T) 
 	}
 
 	checked := 0
-	swept := map[string]bool{}
+	attributed := map[string]bool{}
 	for i, loc := range locs {
 		name := raw[loc[2]:loc[3]]
 		end := len(raw)
 		if i+1 < len(locs) {
 			end = locs[i+1][0]
 		}
-		body := stripSQLComments(raw[loc[0]:end])
-		if !strings.Contains(body, "update_tasks") || strings.Contains(body, "update_runs") {
-			continue
-		}
-		swept[name] = true
-		for _, got := range statusSets(body) {
-			if !intersectsInFlight(got) {
+		stmt := stripSQLComments(raw[loc[0]:end])
+
+		for _, m := range statusInRe.FindAllStringSubmatchIndex(stmt, -1) {
+			var lits []string
+			for _, lm := range sqlStringRe.FindAllStringSubmatch(stmt[m[2]:m[3]], -1) {
+				lits = append(lits, lm[1])
+			}
+			if !intersectsInFlight(lits) {
+				continue
+			}
+			tbl, err := attributeTable(stmt, m[0], m[1])
+			if err != nil {
+				t.Errorf("%s: cannot attribute `status IN %v` to a table: %v.\n"+
+					"This predicate names an in-flight status, so it may be a copy of update.InFlightTaskStatuses, and the guard will not wave through what it cannot classify. Split the scope or qualify the column so its subject is readable.",
+					name, lits, err)
+				continue
+			}
+			if tbl != "update_tasks" {
 				continue
 			}
 			checked++
-			if !sameSet(got, inFlightWant()) {
-				t.Errorf("%s: status IN %v, want exactly %v (update.InFlightTaskStatuses).\n"+
+			attributed[name] = true
+			if !sameSet(lits, inFlightWant()) {
+				t.Errorf("%s: status IN %v on update_tasks, want exactly %v (update.InFlightTaskStatuses).\n"+
 					"This predicate names an in-flight status, so it is a copy of that set and must be the whole set.",
-					name, got, inFlightWant())
+					name, lits, inFlightWant())
 			}
 		}
 	}
 
 	// A guard that finds nothing must go red. If the regexes, the query-header
-	// format or the update_tasks/update_runs filter ever stop matching, the
-	// loop above becomes a no-op that reports success.
+	// format or scope attribution ever stop matching, the loop above becomes a
+	// no-op that reports success.
 	if checked == 0 {
-		t.Fatalf("swept %d update_tasks queries in %s and found no in-flight status predicate at all — the sweep matched nothing and would have passed vacuously", len(swept), updatesQueryPath)
+		t.Fatalf("found no update_tasks in-flight status predicate anywhere in %s — the sweep matched nothing and would have passed vacuously", updatesQueryPath)
 	}
-	// The two named guards must be inside the sweep's scope. This is what
-	// catches the filter silently narrowing to nothing useful while still
+	// The two named guards must be inside the sweep's reach. This is what
+	// catches attribution silently narrowing to nothing useful while still
 	// finding something somewhere.
-	if !swept[staleTasksQueryName] {
-		t.Errorf("%s was excluded from the sweep; the scope filter no longer covers the reaper", staleTasksQueryName)
+	if !attributed[staleTasksQueryName] {
+		t.Errorf("%s contributed no update_tasks in-flight predicate to the sweep; attribution no longer reaches the reaper", staleTasksQueryName)
 	}
-	if !swept["CreateUpdateTask"] {
-		t.Errorf("CreateUpdateTask was excluded from the sweep; the scope filter no longer covers the ON CONFLICT arbiter that must match %s", inflightIndexName)
+	if !attributed["CreateUpdateTask"] {
+		t.Errorf("CreateUpdateTask contributed no update_tasks in-flight predicate to the sweep; attribution no longer reaches the ON CONFLICT arbiter that must match %s", inflightIndexName)
 	}
 }
