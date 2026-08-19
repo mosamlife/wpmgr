@@ -347,17 +347,32 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
 - **First-run ownership requires the provisioning claim.** The dashboard Sign
   Up form cannot create the first account. `POST /auth/register` only grants
   ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set
-  to the value of `WPMGR_BOOTSTRAP_CLAIM_SECRET` from `.env` — it is a header,
-  never a body field, and is deliberately absent from `openapi.yaml`, so no
-  generated client (including the dashboard) can send it. `scripts/init-env.sh`
-  prints the exact command with your generated secret filled in as its final
-  next step; the same command, with a placeholder in place of the real value:
+  to the value of `WPMGR_BOOTSTRAP_CLAIM_SECRET` — it is a header, never a
+  body field, and is deliberately absent from `openapi.yaml`, so no generated
+  client (including the dashboard) can send it. That value lives in `.env`
+  under that key, generated once by `scripts/init-env.sh` and never rotated
+  by a re-run.
+
+  You never need to look up or paste that value yourself. `scripts/init-env.sh`
+  (and the quickstart-selfhost.sh curl-pipe path) prints the exact claim
+  command as its final next step, with your `.env` path and API port already
+  filled in — run the printed command as-is. The command itself reads the
+  secret out of `.env` at the moment you run it, writes it into a private,
+  600-permission temp curl config file, hands that to curl with `-K`, and
+  deletes the file on exit whether the request succeeds or fails; the value
+  never appears in the printed text, on the command line, or in shell
+  history. Its shape, with a placeholder in place of your real `.env` path:
 
   ```bash
-  curl -X POST http://localhost:8081/auth/register \
-    -H "Content-Type: application/json" \
-    -H "X-Wpmgr-Bootstrap-Claim: <value of WPMGR_BOOTSTRAP_CLAIM_SECRET in .env>" \
-    -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+  ( env_file="<path to your .env>" && \
+    claim_val="$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' "${env_file}" | head -n1 | sed -E "s/^[^=]*=//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/")" && \
+    claim_cfg="$(mktemp)" && chmod 600 "${claim_cfg}" && \
+    trap 'rm -f "${claim_cfg}"' EXIT && \
+    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' "${claim_val}" >"${claim_cfg}" && \
+    curl -X POST http://localhost:8081/auth/register \
+      -H "Content-Type: application/json" \
+      -K "${claim_cfg}" \
+      -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
   ```
 
   **If you already signed up through the dashboard on a brand-new install and

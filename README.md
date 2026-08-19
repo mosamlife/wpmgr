@@ -284,7 +284,7 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -
 curl localhost:8081/healthz   # {"status":"ok"}
 ```
 
-The script also generates a provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) and prints the exact command to claim ownership of the install — the dashboard Sign Up form cannot create the first account by itself, since the claim only travels as a request header. Run the printed command once, then open `http://localhost:8088` in your browser and log in. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
+The script also generates a provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) and prints the exact command to claim ownership of the install — the dashboard Sign Up form cannot create the first account by itself, since the claim only travels as a request header. That command reads the secret out of `.env` itself, so you never look it up or paste it; run the printed command once, then open `http://localhost:8088` in your browser and log in. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
 
 `WPMGR_S3_ENDPOINT` in the generated `.env` must be reachable by your WordPress hosts, not just the control plane. The default (`http://seaweedfs:8333`) only resolves inside Docker; for remote WordPress sites, point it at a tunnel or public URL.
 
@@ -300,7 +300,7 @@ docker compose -f infra/docker-compose.yml up -d
 curl localhost:8081/healthz   # {"status":"ok"}   (default WPMGR_API_PORT=8081)
 ```
 
-The script prints the exact command to claim ownership of the install, using the provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) it generated — run that once; the dashboard Sign Up form cannot create the first account by itself. Then open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`) and log in. Once the install has an owner, anyone can self-register and gains access only after verifying their email. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
+The script prints the exact command to claim ownership of the install, reading the provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) it generated straight out of `.env` — you never look it up or paste it. Run that command once; the dashboard Sign Up form cannot create the first account by itself. Then open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`) and log in. Once the install has an owner, anyone can self-register and gains access only after verifying their email. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
 
 The media encoder runs headless Chromium for screenshots, so it adds some RAM/CPU over the api/web images. On a constrained host you can skip it without editing the compose file:
 
