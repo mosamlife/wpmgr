@@ -123,6 +123,14 @@ function RunDetailPage() {
 
 type RunStatus = UpdateRun["status"];
 
+// Defence in depth against version skew, mirroring
+// features/updates/update-status.tsx: `tsc` enforces that every RunStatus is
+// covered below, but a self-hosted control plane can still send a status
+// literal this bundle predates, so the dereferences below re-type the lookup
+// as partial rather than trusting the exhaustive type at runtime.
+const UNKNOWN_RUN_TONE: StatusTone = "muted";
+const UNKNOWN_RUN_LABEL = "Unknown";
+
 const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
@@ -130,6 +138,15 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
   // it for immediate attention, matching the prominent banner below.
   halted: "destructive",
+  // GH #463: waiting for scheduled_at, nothing has happened yet.
+  scheduled: "muted",
+  // GH #463: transient, the dispatcher is enqueueing this run's tasks right
+  // now — mirrors "Running".
+  dispatching: "info",
+  // GH #463: terminal, no site was contacted — a missed schedule, not a
+  // failed update, so this deliberately avoids "destructive" (see
+  // features/updates/update-status.tsx for the full reasoning).
+  expired: "warning",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
@@ -137,6 +154,9 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   running: "Running",
   completed: "Completed",
   halted: "Halted",
+  scheduled: "Scheduled",
+  dispatching: "Dispatching",
+  expired: "Expired",
 };
 
 function RunDetail({
@@ -199,9 +219,17 @@ function RunDetail({
         badges={
           <>
             <StatusChip
-              tone={RUN_STATUS_TONE[run.status]}
-              label={RUN_STATUS_LABEL[run.status]}
-              pulse={run.status === "running"}
+              tone={
+                (RUN_STATUS_TONE as Partial<Record<RunStatus, StatusTone>>)[
+                  run.status
+                ] ?? UNKNOWN_RUN_TONE
+              }
+              label={
+                (RUN_STATUS_LABEL as Partial<Record<RunStatus, string>>)[
+                  run.status
+                ] ?? UNKNOWN_RUN_LABEL
+              }
+              pulse={run.status === "running" || run.status === "dispatching"}
             />
             {run.dry_run ? (
               <Badge variant="outline">Dry run</Badge>
@@ -272,6 +300,7 @@ function RunDetail({
               { label: "Rolled back", value: summary.counts.rolled_back, tabular: true },
               { label: "Running", value: summary.counts.running, tabular: true },
               { label: "Pending", value: summary.counts.pending, tabular: true },
+              { label: "Scheduled", value: summary.counts.scheduled, tabular: true },
               { label: "Skipped", value: summary.counts.skipped, tabular: true },
               // GH #336: nobody cancelled these. The run stopped and the
               // control plane withheld them, so nothing was ever sent to
@@ -279,6 +308,15 @@ function RunDetail({
               {
                 label: "Not attempted",
                 value: summary.counts.cancelled,
+                tabular: true,
+              },
+              // GH #463: the parent run expired without dispatching this
+              // task. Never attempted, same as above, but kept as its own
+              // row rather than folded into "Not attempted" — one is an
+              // operator's choice, the other is a missed schedule window.
+              {
+                label: "Expired",
+                value: summary.counts.expired,
                 tabular: true,
               },
             ]}
