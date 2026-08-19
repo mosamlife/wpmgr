@@ -235,7 +235,7 @@ The script downloads every file the stack needs, generates all secrets, and prin
 - **Four-role RBAC**: `owner > admin > operator > viewer` with a discrete permission matrix. Privilege ceiling prevents granting a role higher than your own.
 - **Per-site collaborator sharing**: Outside users (no org membership) scoped to one site, enforced by both Gin middleware and RESTRICTIVE RLS. Blocked from all org-level actions.
 - **Tokenized invitations**: Single-use, 7-day-expiry SHA-256-hashed tokens bound to the invited email. Existing accounts must re-authenticate; a leaked link alone cannot log anyone in.
-- **Email/password auth with first-run bootstrap**: argon2id hashing; the first signup bootstraps the owner account as verified and active. After that, anyone can self-register, but new accounts are created pending and gain access only after clicking the emailed verification link. Login responses never reveal whether an email exists.
+- **Email/password auth with a provisioning claim on first run**: argon2id hashing; claiming the first, owner account requires the self-host provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`), presented as a request header — the dashboard Sign Up form alone cannot create it. Once the install has an owner, anyone can self-register, but new accounts are created pending and gain access only after clicking the emailed verification link. Login responses never reveal whether an email exists. See [Quickstart](#quickstart-self-host) for claiming a fresh install.
 - **Self-serve password reset**: Public forgot-password + reset endpoints issue a 30-minute single-use SHA-256-hashed token. Both endpoints are enumeration-safe (always-200, timing-equalized).
 - **Change-password with session invalidation**: Verifies the current password then stamps `password_changed_at`, which logs out all other active sessions on their next request while keeping the acting session alive.
 - **UI-configured per-instance SMTP**: Owners configure the instance SMTP relay (host/port/TLS/credentials/From) in Settings. The password is age-encrypted at rest, masked on read. A test-send button confirms delivery before saving.
@@ -284,7 +284,7 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -
 curl localhost:8081/healthz   # {"status":"ok"}
 ```
 
-Open `http://localhost:8088` in your browser; the first signup creates the owner account.
+The script also generates a provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) and prints the exact command to claim ownership of the install — the dashboard Sign Up form cannot create the first account by itself, since the claim only travels as a request header. Run the printed command once, then open `http://localhost:8088` in your browser and log in. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
 
 `WPMGR_S3_ENDPOINT` in the generated `.env` must be reachable by your WordPress hosts, not just the control plane. The default (`http://seaweedfs:8333`) only resolves inside Docker; for remote WordPress sites, point it at a tunnel or public URL.
 
@@ -295,13 +295,12 @@ See [docs/requirements.md](./docs/requirements.md) for CPU, RAM, and disk sizing
 If you have cloned the repo, the bundled compose brings up the full stack (control plane, dashboard, Postgres, Redis, object storage, and the media encoder for screenshots and the Media Optimizer), building all three images from source:
 
 ```bash
-cp .env.example .env
-# Edit .env: at minimum set WPMGR_SESSION_SECRET, WPMGR_DB_PASSWORD, WPMGR_S3_SECRET_KEY
+./scripts/init-env.sh   # or: make quickstart — writes .env and generates every required secret
 docker compose -f infra/docker-compose.yml up -d
 curl localhost:8081/healthz   # {"status":"ok"}   (default WPMGR_API_PORT=8081)
 ```
 
-Open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`); the first signup creates the owner account. After that, anyone can self-register and gains access only after verifying their email.
+The script prints the exact command to claim ownership of the install, using the provisioning secret (`WPMGR_BOOTSTRAP_CLAIM_SECRET`) it generated — run that once; the dashboard Sign Up form cannot create the first account by itself. Then open `http://localhost:8088` in your browser (the default `WPMGR_WEB_PORT`) and log in. Once the install has an owner, anyone can self-register and gains access only after verifying their email. Full detail, including the upgrade case: [docs/install.md](./docs/install.md#first-run-notes).
 
 The media encoder runs headless Chromium for screenshots, so it adds some RAM/CPU over the api/web images. On a constrained host you can skip it without editing the compose file:
 

@@ -44,6 +44,12 @@ at boot, so the app accepts them on the first try — are:
 > the server's own boot parsers before printing it, so a generated line is
 > guaranteed to load.
 
+`scripts/init-env.sh` also generates `WPMGR_BOOTSTRAP_CLAIM_SECRET`, a fifth
+value with a different job: it is the provisioning claim that lets you take
+ownership of a fresh install (see [First-run notes](#first-run-notes) below).
+It follows the same idempotence rule as the four secrets above — a value
+already present in `.env` is never rotated by a re-run.
+
 ### Pin your secrets
 
 Stored secrets (operator two-factor enrollments, SMTP passwords, backup-destination
@@ -338,6 +344,40 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
 - Put a TLS-terminating reverse proxy (the bundled `infra/nginx/` config, or
   your own) in front of the published API port (`WPMGR_API_PORT`, default
   `:8081`) for production.
+- **First-run ownership requires the provisioning claim.** The dashboard Sign
+  Up form cannot create the first account. `POST /auth/register` only grants
+  ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set
+  to the value of `WPMGR_BOOTSTRAP_CLAIM_SECRET` from `.env` — it is a header,
+  never a body field, and is deliberately absent from `openapi.yaml`, so no
+  generated client (including the dashboard) can send it. `scripts/init-env.sh`
+  prints the exact command with your generated secret filled in as its final
+  next step; the same command, with a placeholder in place of the real value:
+
+  ```bash
+  curl -X POST http://localhost:8081/auth/register \
+    -H "Content-Type: application/json" \
+    -H "X-Wpmgr-Bootstrap-Claim: <value of WPMGR_BOOTSTRAP_CLAIM_SECRET in .env>" \
+    -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+  ```
+
+  Without the header, `POST /auth/register` still returns `200` and creates a
+  pending, self-serve account — not the owner. Once an install has an owner,
+  the header is refused the same way it is when it's wrong or missing, so this
+  step only ever applies once, on a fresh install.
+
+  **Symptom: registration is closed on a brand-new install.** If
+  `POST /auth/register` (or the dashboard Sign Up form) returns
+  `403 registration_closed` even though nobody has claimed the install yet,
+  the `api` service has no `WPMGR_BOOTSTRAP_CLAIM_SECRET` configured — an
+  unset value refuses every claim attempt rather than accepting any header.
+  **Upgrade note:** this is the expected state for an install that was stood
+  up before this variable existed, and a plain `docker compose pull && up -d`
+  does not fix it — nothing regenerates `.env` from restarting a container on
+  a new image. Re-run `scripts/init-env.sh` (safe and idempotent — it fills
+  only the missing key), or set `WPMGR_BOOTSTRAP_CLAIM_SECRET` yourself, then
+  restart the `api` service. For an install that already has an owner, the
+  missing variable produces one boot warning and nothing else — there is
+  nothing left to claim.
 
 For local development with hot-reload overrides, use `make dev` (runs
 `docker-compose.yml` + `docker-compose.dev.yml`) — see
