@@ -51,27 +51,36 @@ type fakeWorkerRepo struct {
 	workerManifests   map[uuid.UUID][]ManifestEntry
 }
 
-func (r *fakeWorkerRepo) MarkSnapshotRunning(_ context.Context, _, snapshotID uuid.UUID) (Snapshot, error) {
+func (r *fakeWorkerRepo) MarkSnapshotRunning(_ context.Context, _, snapshotID uuid.UUID) (Snapshot, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.markRunningCalled = true
 	s, ok := r.snapshots[snapshotID]
-	if !ok {
-		return Snapshot{}, domain.NotFound("backup_snapshot_not_found", "not found")
+	// GH #458: mirror MarkBackupSnapshotRunning's claim guard
+	// ("AND status='pending'") exactly. A fake that claims any status would
+	// hide the very defect the guard exists to catch.
+	if !ok || s.Status != StatusPending {
+		return Snapshot{}, false, nil
 	}
 	s.Status = StatusRunning
 	r.snapshots[snapshotID] = s
-	return s, nil
+	return s, true, nil
 }
 
-func (r *fakeWorkerRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (Snapshot, error) {
+func (r *fakeWorkerRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (Snapshot, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := r.snapshots[snapshotID]
+	s, ok := r.snapshots[snapshotID]
+	// GH #458: mirror the real query's guard exactly. A fake that always
+	// reports a transition would hide the very defect the guard exists to
+	// catch.
+	if !ok || (s.Status != StatusPending && s.Status != StatusRunning) {
+		return Snapshot{}, false, nil
+	}
 	s.Status = StatusFailed
 	s.Error = msg
 	r.snapshots[snapshotID] = s
-	return s, nil
+	return s, true, nil
 }
 
 // manifests lets a worker test register a parent snapshot's manifest entries so
@@ -411,12 +420,12 @@ func TestBackupWorker_SelectiveComponents_IncludeDB(t *testing.T) {
 			snapshotID := uuid.New()
 
 			snap := Snapshot{
-				ID:           snapshotID,
-				TenantID:     tenantID,
-				SiteID:       uuid.New(),
-				Kind:         KindFull,
-				Status:       StatusPending,
-				AgeRecipient: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+				ID:            snapshotID,
+				TenantID:      tenantID,
+				SiteID:        uuid.New(),
+				Kind:          KindFull,
+				Status:        StatusPending,
+				AgeRecipient:  "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
 				IsIncremental: false,
 			}
 			inner.setSnapshot(snap)

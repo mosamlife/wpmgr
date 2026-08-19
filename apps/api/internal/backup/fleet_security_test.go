@@ -61,13 +61,13 @@ func (r *secFleetRepo) GetSnapshotScoped(_ context.Context, _ db.ScopedPrincipal
 func (r *secFleetRepo) ListSnapshotsForSite(_ context.Context, _, _ uuid.UUID, _, _ int32) ([]Snapshot, error) {
 	panic("secFleetRepo.ListSnapshotsForSite not implemented")
 }
-func (r *secFleetRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
+func (r *secFleetRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, bool, error) {
 	panic("secFleetRepo.MarkSnapshotRunning not implemented")
 }
-func (r *secFleetRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, error) {
+func (r *secFleetRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, bool, error) {
 	panic("secFleetRepo.CompleteSnapshot not implemented")
 }
-func (r *secFleetRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
+func (r *secFleetRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, bool, error) {
 	panic("secFleetRepo.FailSnapshot not implemented")
 }
 func (r *secFleetRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {

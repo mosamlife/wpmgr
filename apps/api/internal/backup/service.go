@@ -2009,12 +2009,26 @@ func (s *Service) getSnapshotForPresign(ctx context.Context, tenantID, snapshotI
 	return s.repo.GetSnapshotScoped(ctx, p, tenantID, snapshotID)
 }
 
-// MarkRunning transitions a snapshot to running (called by the backup worker).
-// Reconciliation: also transitions any linked schedule run to 'running'.
-func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
-	snap, err := s.repo.MarkSnapshotRunning(ctx, tenantID, snapshotID)
+// MarkRunning claims a PENDING snapshot for a run (called by the backup
+// worker). Reconciliation: also transitions any linked schedule run to
+// 'running'.
+//
+// GH #458: the claim is guarded ("AND status='pending'"), so claimed reports
+// whether THIS caller won it. When claimed is false the row was not pending —
+// a duplicate/retried job got there first, or the snapshot was cancelled or
+// watchdog-failed while it sat in the queue — and none of the side effects
+// below may fire: publishing 'started' or reconciling the schedule run for a
+// row that never moved reports a state change that did not happen, and would
+// drag a terminal snapshot's UI back to "running". claimed=false is not an
+// error; the caller decides (the worker treats it exactly like the terminal
+// short-circuit at the top of Work: nothing to do, job done).
+func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (snap Snapshot, claimed bool, err error) {
+	snap, claimed, err = s.repo.MarkSnapshotRunning(ctx, tenantID, snapshotID)
 	if err != nil {
-		return snap, err
+		return snap, false, err
+	}
+	if !claimed {
+		return Snapshot{}, false, nil
 	}
 	s.publish(BackupEvent{
 		SnapshotID:  snapshotID,
@@ -2031,16 +2045,30 @@ func (s *Service) MarkRunning(ctx context.Context, tenantID, snapshotID uuid.UUI
 			SetStarted: true,
 		})
 	}
-	return snap, nil
+	return snap, true, nil
 }
 
-// FailSnapshot marks a snapshot failed (called by the backup worker on error or
-// by the progress watchdog). Reconciliation: also transitions any linked
-// schedule run to 'failed' so history never sticks on 'running'.
-func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (Snapshot, error) {
-	snap, err := s.repo.FailSnapshot(ctx, tenantID, snapshotID, msg)
+// FailSnapshot marks a PENDING or RUNNING snapshot failed (called by the backup
+// worker on error, by RecordProgress on an agent-reported failure, and by
+// CancelSnapshot for an operator cancel). Reconciliation: also transitions any
+// linked schedule run to 'failed' so history never sticks on 'running'.
+//
+// GH #458: the UPDATE is guarded ("AND status IN ('pending','running')"), so
+// transitioned reports whether a real state change happened. 'pending' is in
+// that guard deliberately — CancelSnapshot fails a still-queued snapshot
+// through here — so transitioned is false only when the row had ALREADY moved
+// on (completed, cancelled, agent-failed or watchdog-failed), in which case its
+// own terminal transition already published its own event. Firing the 'failed'
+// SSE event, the failure email or the schedule-run reconciliation for that row
+// would double-report an outcome and, worse, announce a failure for a backup
+// that actually completed. Gated exactly like FailStalledSnapshot below.
+func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (snap Snapshot, transitioned bool, err error) {
+	snap, transitioned, err = s.repo.FailSnapshot(ctx, tenantID, snapshotID, msg)
 	if err != nil {
-		return snap, err
+		return snap, false, err
+	}
+	if !transitioned {
+		return Snapshot{}, false, nil
 	}
 	s.publish(BackupEvent{
 		SnapshotID:  snapshotID,
@@ -2062,18 +2090,19 @@ func (s *Service) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UU
 	// Operator-cancels notify too — an alert that a backup did not complete is
 	// honest, and the recipient can ignore one they triggered themselves.
 	s.sendBackupEmail(ctx, snap, "backup_failed")
-	return snap, nil
+	return snap, true, nil
 }
 
 // FailStalledSnapshot is the TOCTOU-safe hard-fail path the progress watchdog
-// (GH #279 must-fix) uses instead of FailSnapshot. FailSnapshot's UPDATE has
-// no status guard — CancelSnapshot relies on that to fail a still-'pending'
-// row — so it can flip ANY snapshot to 'failed' regardless of what happened
-// to the row between ListStalledRunningSnapshots' commit and the watchdog's
-// own separate per-row transaction (it may have completed, been
-// operator-cancelled, been agent-failed, or resumed). This method's
-// repo.FailStalledSnapshot call adds "AND status='running'" to close that
-// window: transitioned reports whether a real state change happened, and the
+// (GH #279 must-fix) uses instead of FailSnapshot. Since GH #458 both are
+// guarded, but this one's guard is NARROWER: status='running' here versus
+// status IN ('pending','running') in FailSnapshot, which must keep admitting
+// 'pending' because operator cancel of a QUEUED backup goes through it. The
+// watchdog may only ever hard-fail a run it actually observed running, and the
+// row it listed may have completed, been operator-cancelled, been agent-failed,
+// or resumed between ListStalledRunningSnapshots' commit and the watchdog's own
+// separate per-row transaction. This method's repo.FailStalledSnapshot call
+// closes that window: transitioned reports whether a real state change happened, and the
 // caller (the watchdog) must only publish the 'failed' SSE event / trigger
 // the failure notification when it is true. When false the row already moved
 // on and its own terminal transition already published its own event — this
@@ -2136,6 +2165,21 @@ const stallTimeoutMsg = "stopped responding; no progress within the allowed time
 //
 // A snapshot that is already in a terminal state (completed/failed) is rejected
 // with a Conflict so the caller can surface "nothing to cancel".
+//
+// GH #458 closed a TOCTOU here. The GetSnapshot status check below is a
+// read-then-write with a real window: the run could complete, be agent-failed
+// or be watchdog-failed between the read and the UPDATE, and the old blind
+// UPDATE then overwrote that genuine outcome with "cancelled by operator" and
+// reported success. FailSnapshot's guard now decides atomically, so the
+// authoritative rejection is transitioned==false. The pre-flight check is kept
+// because it gives the common case a Conflict without a pointless write; the
+// post-check is the one that is actually load-bearing, and both surface the
+// SAME snapshot_not_cancelable code — a lost race is indistinguishable to the
+// operator from a snapshot that was already terminal when they clicked, which
+// is exactly what it is.
+//
+// Cancel of a PENDING snapshot must keep working: that is why FailSnapshot's
+// guard is IN ('pending','running') and not just 'running'.
 func (s *Service) CancelSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
 	if tenantID == uuid.Nil {
 		return Snapshot{}, domain.Forbidden("tenant_required", "a tenant context is required")
@@ -2148,7 +2192,15 @@ func (s *Service) CancelSnapshot(ctx context.Context, tenantID, snapshotID uuid.
 		return Snapshot{}, domain.Conflict("snapshot_not_cancelable",
 			"only a running or pending backup can be cancelled")
 	}
-	return s.FailSnapshot(ctx, tenantID, snapshotID, cancelByOperatorMsg)
+	cancelled, transitioned, err := s.FailSnapshot(ctx, tenantID, snapshotID, cancelByOperatorMsg)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !transitioned {
+		return Snapshot{}, domain.Conflict("snapshot_not_cancelable",
+			"only a running or pending backup can be cancelled")
+	}
+	return cancelled, nil
 }
 
 // SetSnapshotLocked sets or clears the per-snapshot lock flag (Track C, m49).
@@ -2710,14 +2762,28 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 			// s.publish below does not emit a second event with the stale
 			// pre-failure status (which would regress the SSE stream from
 			// "failed" back to "running"/"pending").
-			if failedSnap, ferr := s.FailSnapshot(ctx, tenantID, snapshotID, reason); ferr != nil {
+			//
+			// GH #458: the status check above is a read of a row fetched
+			// earlier, so it can be stale; FailSnapshot's guard is what
+			// decides. transitioned==false means the row went terminal in
+			// that window, so its own transition already published — fall
+			// through WITHOUT returning early so the trailing publish still
+			// reports the current phase, but do not treat this as a failure
+			// we persisted.
+			failedSnap, transitioned, ferr := s.FailSnapshot(ctx, tenantID, snapshotID, reason)
+			switch {
+			case ferr != nil:
 				slog.Warn("RecordProgress: agent-reported failure could not be persisted",
 					slog.String("snapshot_id", snapshotID.String()),
 					slog.String("tenant_id", tenantID.String()),
 					slog.Any("error", ferr))
-			} else {
+			case transitioned:
 				_ = failedSnap
 				return raw, nil
+			default:
+				slog.Info("RecordProgress: agent-reported failure skipped; snapshot already terminal",
+					slog.String("snapshot_id", snapshotID.String()),
+					slog.String("tenant_id", tenantID.String()))
 			}
 		}
 	}
@@ -3524,12 +3590,12 @@ func (s *Service) PutBackupNotifications(ctx context.Context, in PutBackupNotifi
 	// Load existing content settings to preserve them during this notification-only update.
 	existing, _ := s.GetBackupSettings(ctx, in.TenantID, in.SiteID)
 	merged := SiteBackupSettings{
-		SiteID:            in.SiteID,
-		BackupComponents:  existing.BackupComponents,
-		IncludeCore:       existing.IncludeCore,
-		ExcludePaths:      existing.ExcludePaths,
-		ExcludeExtensions: existing.ExcludeExtensions,
-		ExcludeFileSizeMB: existing.ExcludeFileSizeMB,
+		SiteID:             in.SiteID,
+		BackupComponents:   existing.BackupComponents,
+		IncludeCore:        existing.IncludeCore,
+		ExcludePaths:       existing.ExcludePaths,
+		ExcludeExtensions:  existing.ExcludeExtensions,
+		ExcludeFileSizeMB:  existing.ExcludeFileSizeMB,
 		NotifyOnCompletion: notifyOnCompletion,
 		NotifyRecipients:   in.NotifyRecipients,
 	}

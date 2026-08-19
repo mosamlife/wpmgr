@@ -160,9 +160,23 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		return w.fail(ctx, snap, "no age recipient on snapshot")
 	}
 
-	running, err := w.svc.MarkRunning(ctx, a.TenantID, a.SnapshotID)
+	running, claimed, err := w.svc.MarkRunning(ctx, a.TenantID, a.SnapshotID)
 	if err != nil {
 		return err
+	}
+	if !claimed {
+		// GH #458: the claim is atomic ("AND status='pending'"), and it lost.
+		// The terminal check at the top of Work read the row in a separate
+		// transaction, so between there and here the snapshot was cancelled,
+		// watchdog-failed, or claimed by a duplicate/retried job. Same outcome
+		// as that check: this job is not the run's owner, so it dispatches
+		// nothing, records no 'started' audit entry, and succeeds rather than
+		// returning an error that would have River retry a snapshot that is
+		// never going to be pending again.
+		w.logger.Info("backup claim lost; snapshot no longer pending",
+			slog.String("snapshot_id", a.SnapshotID.String()),
+			slog.String("tenant_id", a.TenantID.String()))
+		return nil
 	}
 	w.recordAudit(ctx, running, ActionBackupStarted, nil)
 
@@ -306,9 +320,20 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 }
 
 func (w *BackupWorker) fail(ctx context.Context, snap Snapshot, msg string) error {
-	failed, err := w.svc.FailSnapshot(ctx, snap.TenantID, snap.ID, msg)
+	failed, transitioned, err := w.svc.FailSnapshot(ctx, snap.TenantID, snap.ID, msg)
 	if err != nil {
 		return err
+	}
+	if !transitioned {
+		// GH #458: the row had already moved on (operator cancel, watchdog
+		// hard-fail, or a completion that raced this error path). Its own
+		// terminal transition already published its event and recorded its own
+		// audit entry; writing ActionBackupFailed here would record a failure
+		// that never happened against a snapshot that may have completed.
+		w.logger.Info("backup fail skipped; snapshot already terminal",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("tenant_id", snap.TenantID.String()))
+		return nil
 	}
 	w.recordAudit(ctx, failed, ActionBackupFailed, map[string]any{"error": msg})
 	return nil // terminal failure recorded; the River job succeeds.
