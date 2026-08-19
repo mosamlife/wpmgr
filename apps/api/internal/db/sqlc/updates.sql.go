@@ -998,10 +998,21 @@ type MarkUpdateTaskRunningParams struct {
 // task would become re-claimable mid-confirmation. Agent rows may be claimed
 // from 'pending' only.
 //
-// A NULL @stale_after makes the reclaim branch match nothing (NULL comparison),
-// which fails CLOSED: strict pending-only claiming. Safe but conservative —
-// an abandoned row then waits for the reaper instead of a retry. Pass the
-// constant.
+// @stale_after HAS TWO DEGENERATE VALUES, AND THEY FAIL IN OPPOSITE
+// DIRECTIONS. A genuine SQL NULL makes the reclaim branch match nothing (NULL
+// comparison) and fails CLOSED: strict pending-only claiming, safe but
+// conservative — an abandoned row then waits for the reaper instead of a
+// retry. A ZERO interval fails OPEN: coalesce(started_at, updated_at) <
+// now() - '0'::interval is true for every non-agent 'running' row the moment
+// it is written, so the reclaim branch matches rows a live worker is
+// mid-dispatch on — the double dispatch this precondition exists to prevent.
+//
+// ONLY THE SECOND IS REACHABLE FROM GO. durationToInterval (update/repo.go)
+// builds pgtype.Interval with Valid: true unconditionally, so no caller on
+// this path can produce a SQL NULL: a zero time.Duration arrives as
+// interval '0'. Do NOT read the NULL case as what an unset bound gives you —
+// an unset bound gives you the OPEN one. Pass the derived value
+// (Worker.claimStaleAfter, from ClaimStaleAfter), never the zero value.
 //
 // ZERO ROWS MEANS: you did not get the claim, and you must NOT dispatch.
 // It does not distinguish why, so the caller re-reads the row and decides:
