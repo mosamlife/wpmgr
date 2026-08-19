@@ -570,6 +570,14 @@ func TestGH463_Phase1_ARunWithLiveWorkIsNotMarkedCompleted(t *testing.T) {
 			live = tk
 		}
 	}
+	// FATAL, not a silent zero value. Without this the UPDATE below would run
+	// against uuid.Nil, match no rows, return no error, and every assertion
+	// after it would pass having set up nothing at all - the test would report
+	// the run correctly 'running' while the scenario it exists to create
+	// (a live task from an earlier pass) had never been built.
+	if live.ID == uuid.Nil {
+		t.Fatalf("seeded run has no 'jetpack' task; the scenario was never set up and the assertions below would pass vacuously (got %d tasks)", len(tasks))
+	}
 	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE update_tasks SET status = 'pending' WHERE id = $1`, live.ID)
