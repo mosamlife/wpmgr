@@ -68,13 +68,13 @@ func TestGH463_Phase0_AgentTxSeesAndClaimsDueRunCrossTenant(t *testing.T) {
 	tenantA := seedTenant(t, pool, "gh463-tenant-a")
 	tenantB := seedTenant(t, pool, "gh463-tenant-b")
 
-	due := time.Now().Add(-time.Minute)
+	due := dbNow(t, pool).Add(-time.Minute)
 	runA := seedScheduledRun(t, pool, tenantA, due)
 	runB := seedScheduledRun(t, pool, tenantB, due)
 
 	// A run that is not yet due, to prove the scan is selective and not simply
 	// returning everything once the policy admits rows.
-	notYet := seedScheduledRun(t, pool, tenantA, time.Now().Add(time.Hour))
+	notYet := seedScheduledRun(t, pool, tenantA, dbNow(t, pool).Add(time.Hour))
 
 	// (1) THE PLAIN CROSS-TENANT READ. No tenant_id in the WHERE and no
 	// app.tenant_id in the session: this is admitted only by update_runs_agent.
@@ -209,7 +209,7 @@ func TestGH463_Phase0_WithoutAgentPolicyTheScanIsSilentlyEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	tenantA := seedTenant(t, pool, "gh463-red-a")
-	runA := seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+	runA := seedScheduledRun(t, pool, tenantA, dbNow(t, pool).Add(-time.Minute))
 
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
@@ -267,7 +267,7 @@ func TestGH463_Phase0_ForSelectPolicyStillBreaksTheClaim(t *testing.T) {
 	ctx := context.Background()
 
 	tenantA := seedTenant(t, pool, "gh463-forselect-a")
-	seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+	seedScheduledRun(t, pool, tenantA, dbNow(t, pool).Add(-time.Minute))
 
 	admin := connectAdmin(t, pool)
 	defer admin.Close()
@@ -361,7 +361,7 @@ func TestGH463_Phase0_AgentPolicyDoesNotWidenTenantIsolation(t *testing.T) {
 
 	tenantA := seedTenant(t, pool, "gh463-widen-a")
 	tenantB := seedTenant(t, pool, "gh463-widen-b")
-	runA := seedScheduledRun(t, pool, tenantA, time.Now().Add(-time.Minute))
+	runA := seedScheduledRun(t, pool, tenantA, dbNow(t, pool).Add(-time.Minute))
 
 	// Tenant B, on the ordinary operator path, must not see tenant A's run —
 	// neither by unfiltered enumeration nor by direct id.
