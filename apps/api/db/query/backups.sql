@@ -23,40 +23,73 @@ WHERE tenant_id = $1 AND site_id = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4;
 
--- name: MarkBackupSnapshotRunning :one
+-- name: MarkBackupSnapshotRunning :execrows
+-- Claim precondition (GH #458): 'pending' is the only status a claim may
+-- transition out of. Without it the UPDATE was blind, so a duplicate/retried
+-- worker job, or a job whose snapshot was cancelled or watchdog-failed while
+-- it sat in the queue, dragged a terminal row back to 'running' and cleared
+-- the run's real outcome. Rows-affected is the contract: 1 = this caller won
+-- the claim and owns the run; 0 = the row was not 'pending' (already claimed,
+-- already terminal, or gone), and the caller must NOT proceed as the owner and
+-- must NOT publish the 'started' SSE event or the schedule-run reconciliation
+-- for it. :execrows (not :exec) because a precondition whose failure is
+-- invisible is worse than no precondition -- same reasoning as
+-- FailStalledBackupSnapshot below.
 UPDATE backup_snapshots
 SET status = 'running', started_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2
-RETURNING *;
+WHERE id = $1 AND tenant_id = $2 AND status = 'pending';
 
--- name: CompleteBackupSnapshot :one
+-- name: CompleteBackupSnapshot :execrows
+-- Terminal-transition precondition (GH #458): only a 'pending' or 'running'
+-- snapshot may complete. 'pending' stays allowed because the files-only and
+-- carry-forward completion paths can land without an intervening MarkRunning.
+-- What the guard blocks is resurrection: a late agent manifest submit arriving
+-- after the operator cancelled (CancelSnapshot stamps 'failed') or after the
+-- watchdog hard-failed the run must not flip the row to 'completed' and must
+-- not overwrite the recorded error and finished_at. Rows-affected is the
+-- contract: 1 = a real transition; 0 = already terminal (completed/failed) or
+-- gone, which the caller must surface as a rejected submit -- the previous
+-- blind UPDATE reported success unconditionally.
 UPDATE backup_snapshots
 SET status = 'completed',
     total_size = $3,
     chunk_count = $4,
     finished_at = now(),
     updated_at = now()
-WHERE id = $1 AND tenant_id = $2
-RETURNING *;
+WHERE id = $1 AND tenant_id = $2 AND status IN ('pending', 'running');
 
--- name: FailBackupSnapshot :one
+-- name: FailBackupSnapshot :execrows
+-- Terminal-transition precondition (GH #458). 'pending' is in the guard
+-- deliberately: CancelSnapshot ("only a running or pending backup can be
+-- cancelled") fails a still-'pending' snapshot through this query, so
+-- narrowing to status='running' would silently stop operator cancel of a
+-- queued backup. That is the watchdog's guard, not this one -- see
+-- FailStalledBackupSnapshot below. What this guard blocks is the overwrite of
+-- an ALREADY-terminal row: a worker error landing after the operator cancelled
+-- must not replace cancelByOperatorMsg with a generic message, and a fail must
+-- never rewrite a completed run's status or finished_at. Rows-affected is the
+-- contract: 1 = a real transition; 0 = already terminal, or gone -- do not
+-- publish the 'failed' SSE event, the failure email, or the schedule-run
+-- reconciliation for a row that had already moved on.
 UPDATE backup_snapshots
 SET status = 'failed',
     error = $3,
     finished_at = now(),
     updated_at = now()
-WHERE id = $1 AND tenant_id = $2
-RETURNING *;
+WHERE id = $1 AND tenant_id = $2 AND status IN ('pending', 'running');
 
 -- name: FailStalledBackupSnapshot :execrows
 -- TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
--- Identical to FailBackupSnapshot except for the added "AND status='running'"
--- guard: ListStalledRunningSnapshots commits, then each hard row is failed in
--- its own separate transaction, so between the two a row may have completed,
--- been operator-cancelled, been agent-failed, or resumed. FailBackupSnapshot's
--- blind UPDATE has no status guard (CancelSnapshot relies on that to fail a
--- still-'pending' row), so it must stay unchanged; this query is the watchdog
--- hard-fail branch's ONLY write path. Rows-affected (0 or 1) tells the caller
+-- Identical to FailBackupSnapshot except that the guard is NARROWER:
+-- status='running' here, status IN ('pending','running') there (GH #458).
+-- ListStalledRunningSnapshots commits, then each hard row is failed in its own
+-- separate transaction, so between the two a row may have completed, been
+-- operator-cancelled, been agent-failed, or resumed. The watchdog only ever
+-- hard-fails a run it observed RUNNING and must never touch a queued 'pending'
+-- row -- which FailBackupSnapshot may, because operator cancel of a queued
+-- backup goes through it (CancelSnapshot). The two guards therefore stay
+-- distinct, and this query remains the watchdog hard-fail branch's ONLY write
+-- path. Rows-affected (0 or 1) tells the caller
 -- whether a real transition happened, so it can gate the 'failed' SSE publish
 -- and the failure notification on an actual state change rather than firing
 -- them for a row that already moved on.
