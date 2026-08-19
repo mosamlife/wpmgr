@@ -29,7 +29,6 @@ const TITLES: Record<string, string> = {
   sites: "Sites",
   updates: "Updates",
   backups: "Backups",
-  migrations: "Migrations",
   uptime: "Uptime",
   performance: "Performance",
   vulnerabilities: "Vulnerabilities",

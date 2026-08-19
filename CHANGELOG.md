@@ -6,6 +6,22 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.141] - 2026-08-19
+
+### Added
+
+- A new endpoint, `POST /api/v1/updates/runs/{id}/cancel`, cancels a scheduled update run before it fires (GH #463). It only succeeds while the run is still `scheduled`; once dispatch has claimed it, stopping it means using the existing halt path instead, because work may already be on real sites by then. Cancelling terminalizes the run and every one of its tasks in one transaction, and a second cancel of an already-cancelled or already-started run returns an error rather than a silent no-op.
+
+### Changed
+
+- Scheduled update runs now actually wait for their scheduled time instead of running immediately (GH #463). A run submitted after this release with a future `scheduled_at` is held until that time and then dispatched; a run submitted to run now is unaffected. This does not apply retroactively: a run created before this release was enqueued immediately regardless of its `scheduled_at`, so upgrading does not put any existing row on hold. If one of those older runs is still sitting unfinished, that reflects a stranded enqueue from before this change, not a deferral, and this release does not alter it.
+- Update runs and tasks carry new statuses that the API and the dashboard now show: runs can be `scheduled`, `dispatching` or `expired`; tasks can be `scheduled` or `expired`. Anything consuming the API programmatically should handle all of them.
+- A scheduled run whose start time passed more than two hours ago is marked `expired` rather than dispatched late, and the dashboard says plainly that nothing was sent to any of its sites.
+
+### Fixed
+
+- `scripts/init-env.sh` could report failure on a successful, fully-configured re-run: its cleanup step's own exit status silently overrode the script's own `exit 0` on that path (GH #467). Re-running it against an already-configured `.env` now exits 0 as it should.
+
 ## [0.61.140] - 2026-08-19
 
 ### Changed

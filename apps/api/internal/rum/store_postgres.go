@@ -117,50 +117,6 @@ func (s *StorePostgres) WriteEvent(ctx context.Context, p IngestParams) error {
 	})
 }
 
-// FoldHourly reads raw events for the (siteID, bucketHour) window from the DB
-// (under InTenantTx for the read, then under InRumIngestTx for the upsert).
-// Phase 1 implementation: the rollup worker calls this by scanning raw events
-// directly and building the histogram, then upserting one row per
-// (url_pattern, metric, device, country) combination for the bucket_hour.
-//
-// NOTE: In a full production deployment, FoldHourly would be called by the
-// River rollup worker after it queries rum_events_raw directly. The worker
-// holds both the raw-event read and rollup upsert in separate transactions
-// because RLS GUCs differ (InTenantTx for the read requires tenant_id, but
-// InRumIngestTx for the write requires ingest GUC). This method encapsulates
-// a single-site, single-bucket fold.
-func (s *StorePostgres) FoldHourly(ctx context.Context, siteID, tenantID uuid.UUID, bucketHour time.Time) error {
-	// Truncate to the start of the bucket hour.
-	bh := bucketHour.Truncate(time.Hour)
-
-	// Fetch raw events for this site in the bucket hour window under InTenantTx.
-	// The raw events table has a tenant_isolation policy (not a rum_lookup policy)
-	// so the tenant must be known here.
-	var rawRows []sqlc.RumEventsRaw
-	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, qerr := sqlc.New(tx).GetRumRollupHourly(ctx, sqlc.GetRumRollupHourlyParams{
-			SiteID:   siteID,
-			TenantID: tenantID,
-			Since:    bh,
-		})
-		if qerr != nil {
-			return qerr
-		}
-		// Convert HourlyRollup back to raw for histogram building. Since FoldHourly
-		// is called by the worker which already has the raw events, this path is
-		// used only for re-aggregation. For the initial worker path, the worker
-		// injects the histogram directly via foldRawIntoHistogram and calls
-		// UpsertRollupHourly. See worker.go.
-		_ = rows
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	_ = rawRows
-	return nil
-}
-
 // UpsertRollupHourly writes one pre-computed hourly rollup row under InRumIngestTx.
 // The rollup worker builds the histogram from rum_events_raw and calls this.
 func (s *StorePostgres) UpsertRollupHourly(ctx context.Context, r HourlyRollup) error {
@@ -204,14 +160,6 @@ func (s *StorePostgres) UpsertRollupDaily(ctx context.Context, r DailyRollup) er
 			MaxValue:     r.MaxValue,
 		})
 	})
-}
-
-// FoldDaily is a thin wrapper; the rollup worker calls UpsertRollupDaily directly.
-// This method satisfies the Store interface.
-func (s *StorePostgres) FoldDaily(ctx context.Context, siteID, tenantID uuid.UUID, bucketDay time.Time) error {
-	// Phase 1: the worker calls UpsertRollupDaily directly after building hourly
-	// rollups. FoldDaily as a re-aggregation path is a Phase 2 concern.
-	return nil
 }
 
 // GetHourlyRollups returns hourly rollup rows for the site since the given time.

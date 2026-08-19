@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -48,6 +49,14 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	// /updates/:runId/retry because :runId is a GET-tree parameter here and a
 	// sibling static segment on the same tree would be ambiguous.
 	r.POST("/updates/runs/:id/retry", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.retry)
+	// GH #463 — call back a scheduled run before it fires. Carries exactly the
+	// authorization creating one does (org-scoped + PermSiteWrite): the same
+	// principal who could schedule a fleet-wide update is the one who must be
+	// able to stop it. There is no separate halt ENDPOINT to match — halting is
+	// internal to the agent wave machine — so this follows the sibling mutation
+	// on this tree rather than inventing a permission. It shares /updates/runs/
+	// with retry for the same routing reason given above.
+	r.POST("/updates/runs/:id/cancel", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteWrite), h.cancel)
 	r.GET("/updates/:runId/events", authz.RequireOrgScope(), authz.RequirePermission(authz.PermSiteRead), h.events)
 }
 
@@ -145,6 +154,93 @@ func (h *Handler) get(c *gin.Context) {
 	}
 	out := toAPIRun(run, tasks)
 	c.JSON(http.StatusOK, &out)
+}
+
+// cancel calls back a scheduled run before it fires (GH #463).
+func (h *Handler) cancel(c *gin.Context) {
+	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Forbidden("tenant_required", "a tenant context is required"))
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httpx.Error(c, domain.Validation("invalid_run_id", "the run id is not a valid UUID"))
+		return
+	}
+
+	res, err := h.svc.CancelScheduledRun(c.Request.Context(), tenantID, runID)
+	if err != nil {
+		// Every failure here is a clean refusal, and unlike create/retry there
+		// is no partial-success case to disentangle: the repo's CAS either
+		// cancelled the run and its tasks in one transaction or changed
+		// nothing at all. httpx maps the typed conflict to 409, which is what
+		// lets the client tell "too late" from a server fault.
+		httpx.Error(c, err)
+		return
+	}
+
+	h.recordRunCancelled(c, tenantID, res)
+	out := gen.UpdateRunCancelResult{
+		// nil tasks: the cancel response is about the RUN. A client that
+		// wants the cancelled task rows re-reads the run detail.
+		Run:            toAPIRun(res.Run, nil),
+		CancelledTasks: int64(res.CancelledTasks),
+	}
+	c.JSON(http.StatusOK, &out)
+}
+
+// recordRunCancelled writes the audit entry for an operator cancellation.
+//
+// Best-effort against the RESPONSE, deliberately: the run and its tasks are
+// already committed terminal, so failing the request here would tell the
+// operator their cancel did not happen when it did — and they would press it
+// again, get a 409, and have no idea which of the two answers was true. The
+// write is still not allowed to be silent, so a failure logs at Error, matching
+// the dispatch and expiry records.
+func (h *Handler) recordRunCancelled(c *gin.Context, tenantID uuid.UUID, res CancelRunResult) {
+	if h.audit == nil {
+		return
+	}
+	// The actor type is COMPUTED, never assumed, and ActorID comes from
+	// Principal.ActorID() rather than UserID. This endpoint is reachable by an
+	// API-key principal, for which UserID is uuid.Nil and APIKeyID carries the
+	// identity — hardcoding ActorUser and reading UserID directly recorded
+	// "a user did this" over a zero UUID, naming nobody, on the one action
+	// whose entire purpose is recording that somebody chose to stop a
+	// fleet-wide operation.
+	//
+	// A wrong audit record is worse than a missing one: a missing record
+	// prompts a question, a wrong one answers it incorrectly. It also breaks
+	// the actor-name join in audit.go, which resolves the user's name for
+	// ActorUser and the key's label for ActorAPIKey.
+	//
+	// Same shape as recordRunCreated and recordRunRetried in this file. The
+	// ActorSystem default is deliberate: no principal in context means no human
+	// and no key, and claiming either would be the same lie in a quieter form.
+	actorType, actorID := auditActor(c.Request.Context())
+	ev := audit.Event{
+		TenantID:   tenantID,
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     ActionRunCancelled,
+		TargetType: "update_run",
+		TargetID:   res.Run.ID.String(),
+		Metadata: map[string]any{
+			"cancelled_tasks": res.CancelledTasks,
+			"run_status":      res.Run.Status,
+			"sites_contacted": 0,
+		},
+	}
+	if res.Run.ScheduledAt != nil {
+		ev.Metadata["scheduled_at"] = res.Run.ScheduledAt.UTC().Format(time.RFC3339)
+	}
+	if _, err := h.audit.Record(c.Request.Context(), ev); err != nil {
+		slog.Error("update: failed to record the scheduled-run cancellation audit entry",
+			slog.String("run_id", res.Run.ID.String()),
+			slog.String("tenant_id", tenantID.String()),
+			slog.Any("error", err))
+	}
 }
 
 // retry creates a NEW run repeating the selected tasks of an existing one (GH
@@ -300,19 +396,42 @@ func taskToEvent(t Task, runStatus string) Event {
 	}
 }
 
+// auditActor resolves the audit actor for a request, and it is one function
+// rather than three copies because the copies were where this went wrong.
+//
+// Two things must move together and neither may be assumed:
+//
+//   - the TYPE, which drives audit.go's actor-name join: the user's name for
+//     ActorUser, the API key's label for ActorAPIKey, nil for ActorSystem;
+//   - the ID, which is APIKeyID for an API-key principal and UserID otherwise.
+//     Principal.ActorID() is the only correct source; reading p.UserID directly
+//     yields uuid.Nil for every API-key caller.
+//
+// Hardcoding ActorUser and reading UserID recorded "a user did this" over a
+// zero UUID — an entry asserting a human acted while naming nobody. That is
+// worse than no entry at all: a missing record prompts a question, a wrong one
+// answers it incorrectly, and it lands on the action someone goes looking for
+// precisely when something has gone wrong.
+//
+// ActorSystem with an empty id is the deliberate default. No principal in
+// context means no human and no key, and naming either would be the same lie in
+// a quieter form.
+func auditActor(ctx context.Context) (string, string) {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok {
+		return audit.ActorSystem, ""
+	}
+	if p.Type == domain.PrincipalAPIKey {
+		return audit.ActorAPIKey, p.ActorID()
+	}
+	return audit.ActorUser, p.ActorID()
+}
+
 func (h *Handler) recordRunCreated(c *gin.Context, run Run, taskCount int) {
 	if h.audit == nil {
 		return
 	}
-	actorType := audit.ActorSystem
-	actorID := ""
-	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
-		actorType = audit.ActorUser
-		if p.Type == domain.PrincipalAPIKey {
-			actorType = audit.ActorAPIKey
-		}
-		actorID = p.ActorID()
-	}
+	actorType, actorID := auditActor(c.Request.Context())
 	_, _ = h.audit.Record(c.Request.Context(), audit.Event{
 		TenantID:   run.TenantID,
 		ActorType:  actorType,
@@ -335,15 +454,7 @@ func (h *Handler) recordRunRetried(c *gin.Context, tenantID, sourceRunID uuid.UU
 	if h.audit == nil {
 		return
 	}
-	actorType := audit.ActorSystem
-	actorID := ""
-	if p, ok := domain.PrincipalFromContext(c.Request.Context()); ok {
-		actorType = audit.ActorUser
-		if p.Type == domain.PrincipalAPIKey {
-			actorType = audit.ActorAPIKey
-		}
-		actorID = p.ActorID()
-	}
+	actorType, actorID := auditActor(c.Request.Context())
 	meta := map[string]any{
 		"source_run_id": sourceRunID.String(),
 		"requested":     res.Requested,

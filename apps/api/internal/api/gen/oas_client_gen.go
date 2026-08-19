@@ -558,6 +558,30 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/media/cancel
 	CancelMedia(ctx context.Context, params CancelMediaParams) (*CancelMediaOK, error)
+	// CancelScheduledUpdateRun invokes cancelScheduledUpdateRun operation.
+	//
+	// Calls back a deferred run (#463) that has not yet started. The run
+	// becomes `halted` and every one of its tasks becomes `cancelled`, in one
+	// transaction.
+	// **Valid ONLY from `scheduled`.** That is the safety property, not a
+	// convenience: it guarantees the cancel can never race a dispatch into a
+	// half-cancelled state. Once the dispatcher has claimed the run
+	// (`dispatching`) or the work is out (`running`), this returns 409 and the
+	// operator must use the halt path instead — a different operation with
+	// different consequences, because halting a running run leaves commands
+	// already in flight on real sites. Cancelling a scheduled run promises
+	// that **nothing was ever sent to any site**, and the precondition is what
+	// makes that promise true.
+	// Tasks become `cancelled` rather than `expired`. Both mean the task was
+	// never attempted, and the distinction is which one to tell the operator:
+	// `cancelled` records a decision somebody made, `expired` records that the
+	// dispatch window closed while the control plane was unavailable.
+	// Idempotent in the way that matters: a second cancel of an
+	// already-cancelled run returns 409 `run_not_cancellable`, never a
+	// spurious success. Requires operator+.
+	//
+	// POST /api/v1/updates/runs/{id}/cancel
+	CancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (CancelScheduledUpdateRunRes, error)
 	// ChangeMyPassword invokes changeMyPassword operation.
 	//
 	// Verifies `current_password`, then sets `new_password`. This session
@@ -9109,6 +9133,117 @@ func (c *Client) sendCancelMedia(ctx context.Context, params CancelMediaParams) 
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelMediaResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// CancelScheduledUpdateRun invokes cancelScheduledUpdateRun operation.
+//
+// Calls back a deferred run (#463) that has not yet started. The run
+// becomes `halted` and every one of its tasks becomes `cancelled`, in one
+// transaction.
+// **Valid ONLY from `scheduled`.** That is the safety property, not a
+// convenience: it guarantees the cancel can never race a dispatch into a
+// half-cancelled state. Once the dispatcher has claimed the run
+// (`dispatching`) or the work is out (`running`), this returns 409 and the
+// operator must use the halt path instead — a different operation with
+// different consequences, because halting a running run leaves commands
+// already in flight on real sites. Cancelling a scheduled run promises
+// that **nothing was ever sent to any site**, and the precondition is what
+// makes that promise true.
+// Tasks become `cancelled` rather than `expired`. Both mean the task was
+// never attempted, and the distinction is which one to tell the operator:
+// `cancelled` records a decision somebody made, `expired` records that the
+// dispatch window closed while the control plane was unavailable.
+// Idempotent in the way that matters: a second cancel of an
+// already-cancelled run returns 409 `run_not_cancellable`, never a
+// spurious success. Requires operator+.
+//
+// POST /api/v1/updates/runs/{id}/cancel
+func (c *Client) CancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (CancelScheduledUpdateRunRes, error) {
+	res, err := c.sendCancelScheduledUpdateRun(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendCancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (res CancelScheduledUpdateRunRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("cancelScheduledUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/updates/runs/{id}/cancel"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, CancelScheduledUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/updates/runs/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/cancel"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeCancelScheduledUpdateRunResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

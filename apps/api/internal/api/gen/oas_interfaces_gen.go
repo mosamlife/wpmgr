@@ -201,6 +201,10 @@ type CancelEnrollmentRes interface {
 	cancelEnrollmentRes()
 }
 
+type CancelScheduledUpdateRunRes interface {
+	cancelScheduledUpdateRunRes()
+}
+
 type ChangeMyPasswordRes interface {
 	changeMyPasswordRes()
 }

@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
 import { useUpdateRuns } from "@/features/updates/use-updates";
+import { ScheduleCountdown } from "@/features/updates/schedule-notices";
 import { AgentFleetSummaryCard } from "@/features/fleet/AgentFleetSummaryCard";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
@@ -24,6 +25,14 @@ export const Route = createFileRoute("/_authed/updates/")({
 
 type RunStatus = UpdateRun["status"];
 
+// Defence in depth against version skew, mirroring
+// features/updates/update-status.tsx: `tsc` enforces that every RunStatus is
+// covered below, but a self-hosted control plane can still send a status
+// literal this bundle predates, so the dereferences below re-type the lookup
+// as partial rather than trusting the exhaustive type at runtime.
+const UNKNOWN_RUN_TONE: StatusTone = "muted";
+const UNKNOWN_RUN_LABEL = "Unknown";
+
 const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   pending: "muted",
   running: "info",
@@ -31,6 +40,15 @@ const RUN_STATUS_TONE: Record<RunStatus, StatusTone> = {
   // GH #255 Phase 2: a wave failed to prove itself; destructive tone flags
   // it for immediate attention among an otherwise calm list of runs.
   halted: "destructive",
+  // GH #463: waiting for scheduled_at, nothing has happened yet.
+  scheduled: "muted",
+  // GH #463: transient, the dispatcher is enqueueing this run's tasks right
+  // now — mirrors "Running".
+  dispatching: "info",
+  // GH #463: terminal, no site was contacted — a missed schedule, not a
+  // failed update, so this deliberately avoids "destructive" (see
+  // features/updates/update-status.tsx for the full reasoning).
+  expired: "warning",
 };
 
 const RUN_STATUS_LABEL: Record<RunStatus, string> = {
@@ -38,6 +56,9 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   running: "Running",
   completed: "Completed",
   halted: "Halted",
+  scheduled: "Scheduled",
+  dispatching: "Dispatching",
+  expired: "Expired",
 };
 
 function UpdatesPage() {
@@ -85,19 +106,45 @@ function UpdatesPage() {
               {runs.map((run) => (
                 <TableRow key={run.id} data-testid="update-run-row">
                   <TableCell className="font-medium">
-                    <Link
-                      to="/updates/$runId"
-                      params={{ runId: run.id }}
-                      className="font-mono text-sm underline-offset-4 hover:underline"
-                    >
-                      {run.id.slice(0, 8)}…
-                    </Link>
+                    <div className="flex flex-col gap-0.5">
+                      <Link
+                        to="/updates/$runId"
+                        params={{ runId: run.id }}
+                        className="font-mono text-sm underline-offset-4 hover:underline"
+                      >
+                        {run.id.slice(0, 8)}…
+                      </Link>
+                      {/* GH #463: a scheduled run is the one row in this list
+                          where "when" is the whole point, so the countdown and
+                          the zone-labelled absolute time sit directly under the
+                          id rather than in the Created column, which means
+                          something else. */}
+                      {run.status === "scheduled" && run.scheduled_at ? (
+                        <ScheduleCountdown
+                          scheduledAt={run.scheduled_at}
+                          className="text-xs font-normal"
+                        />
+                      ) : null}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <StatusChip
-                      tone={RUN_STATUS_TONE[run.status]}
-                      label={RUN_STATUS_LABEL[run.status]}
-                      pulse={run.status === "running"}
+                      tone={
+                        (
+                          RUN_STATUS_TONE as Partial<
+                            Record<RunStatus, StatusTone>
+                          >
+                        )[run.status] ?? UNKNOWN_RUN_TONE
+                      }
+                      label={
+                        (
+                          RUN_STATUS_LABEL as Partial<Record<RunStatus, string>>
+                        )[run.status] ?? UNKNOWN_RUN_LABEL
+                      }
+                      pulse={
+                        run.status === "running" ||
+                        run.status === "dispatching"
+                      }
                     />
                   </TableCell>
                   <TableCell>

@@ -580,16 +580,53 @@ function RowStateLine({
           Skipped
         </span>
       );
+    // GH #463: not yet eligible for dispatch (parent run hasn't reached its
+    // scheduled_at). Nothing is imminent, so plain muted static text —
+    // NOT the pulsing LiveIndicator used for pending/running.
+    case "scheduled":
+      return (
+        <span role="status" className="text-[var(--color-muted-foreground)]">
+          Scheduled
+        </span>
+      );
+    // GH #255 Phase 2: never dispatched because its run halted first.
+    case "cancelled":
+      return (
+        <span role="status" className="text-[var(--color-muted-foreground)]">
+          Not attempted
+        </span>
+      );
+    // GH #463: the parent run expired without dispatching this task.
+    case "expired":
+      return (
+        <span role="status" className="text-[var(--color-muted-foreground)]">
+          Expired
+        </span>
+      );
   }
 }
 
 function RowActionButton({ row, label }: { row: RowUpdate; label: string }) {
-  const isTerminalError = row.state === "failed" || row.state === "rolled_back";
+  // GH #463: expired/cancelled are terminal with nothing ever sent — give
+  // the operator a way to actually start it. Folded into the same Retry
+  // bucket as failed/rolled_back (row.retry() just calls trigger() again, a
+  // fresh immediate run), but the button itself is already the neutral
+  // `variant="outline"` treatment below, not destructive/warning styling, so
+  // nothing extra is needed to keep this muted since nothing actually failed.
+  const isTerminalError =
+    row.state === "failed" ||
+    row.state === "rolled_back" ||
+    row.state === "expired" ||
+    row.state === "cancelled";
   const isBusy =
     row.state === "starting" ||
     row.state === "pending" ||
     row.state === "running";
-  const isDone = row.state === "succeeded" || row.state === "skipped";
+  // GH #463: `scheduled` means a run already exists for this row and will
+  // fire later on its own — hide the action button entirely rather than show
+  // a disabled "Working…" button, since nothing is actively in progress.
+  const isDone =
+    row.state === "succeeded" || row.state === "skipped" || row.state === "scheduled";
 
   if (isDone) return null;
   if (isTerminalError) {

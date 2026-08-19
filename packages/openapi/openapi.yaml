@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.140
+  version: 0.61.141
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -6411,6 +6411,73 @@ paths:
             per-request maximum (`too_many_tasks`), or a selection mixing the
             agent target with plugin/theme/core tasks
             (`agent_target_exclusive`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/updates/runs/{id}/cancel:
+    post:
+      operationId: cancelScheduledUpdateRun
+      summary: Cancel a scheduled update run before it fires
+      description: |
+        Calls back a deferred run (#463) that has not yet started. The run
+        becomes `halted` and every one of its tasks becomes `cancelled`, in one
+        transaction.
+
+        **Valid ONLY from `scheduled`.** That is the safety property, not a
+        convenience: it guarantees the cancel can never race a dispatch into a
+        half-cancelled state. Once the dispatcher has claimed the run
+        (`dispatching`) or the work is out (`running`), this returns 409 and the
+        operator must use the halt path instead — a different operation with
+        different consequences, because halting a running run leaves commands
+        already in flight on real sites. Cancelling a scheduled run promises
+        that **nothing was ever sent to any site**, and the precondition is what
+        makes that promise true.
+
+        Tasks become `cancelled` rather than `expired`. Both mean the task was
+        never attempted, and the distinction is which one to tell the operator:
+        `cancelled` records a decision somebody made, `expired` records that the
+        dispatch window closed while the control plane was unavailable.
+
+        Idempotent in the way that matters: a second cancel of an
+        already-cancelled run returns 409 `run_not_cancellable`, never a
+        spurious success. Requires operator+.
+      tags: [updates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The scheduled run to cancel.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: |
+            The run was cancelled. The returned run carries its new terminal
+            status, and `cancelled_tasks` says how many tasks were terminalized
+            with it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRunCancelResult"
+        "404":
+          description: Update run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            `run_not_cancellable` — the run has left `scheduled`, so there was
+            nothing to call back. Either it already fired (it is now
+            `dispatching`, `running`, `completed` or `expired`) or another
+            operator cancelled it first.
+
+            This is a distinct outcome from a server error and clients MUST
+            render it as such: the correct action is to re-read the run and show
+            its real state, never to retry the cancel. For a run that has
+            already started, the halt path is the operation the operator wants.
           content:
             application/json:
               schema:
@@ -15184,11 +15251,27 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, running, succeeded, failed, rolled_back, skipped, cancelled]
+          enum: [pending, running, succeeded, failed, rolled_back, skipped, cancelled, scheduled, expired]
           description: |
             `cancelled` means the task was never dispatched because its run was
-            halted first; nothing was sent to the site. Only agent self-update
-            runs can halt.
+            halted first, or because an operator cancelled the scheduled run
+            before it fired; nothing was sent to the site. Only agent
+            self-update runs can halt.
+
+            The last two belong to the deferred-dispatch lifecycle (#463):
+
+            - `scheduled` — the parent run has not reached its `scheduled_at`.
+              Not yet eligible for dispatch, and deliberately outside the
+              in-flight set, so it neither reserves its (site, target) slot
+              against an immediate update nor is swept by the stale-task reaper.
+            - `expired` — terminal. The parent run expired without dispatching,
+              so this task was never attempted. Distinct from `cancelled`, which
+              records a decision somebody made, and from `skipped`, which
+              records that the target was busy at dispatch time.
+
+            A task may also reach `skipped` from `scheduled`: its (site, target)
+            was in flight from another run at the moment the schedule fired. The
+            run is not failed by this; the other tasks proceed.
         retryable:
           type: boolean
           description: |
@@ -15205,9 +15288,13 @@ components:
             What happened to this task, on the axis a retry decision turns on.
             The server computes it; the client renders it.
 
-            * `never_ran` - terminal, but nothing was ever sent to the site
-              (today: `cancelled`, collateral of a halted run). Nothing on the
-              site changed, so this is the lowest-risk task to retry.
+            * `never_ran` - terminal, but nothing was ever sent to the site.
+              Two statuses reach it, differing only in why nothing was sent:
+              `cancelled` (a decision — its run halted, or an operator stopped
+              it) and `expired` (a missed window — the run came due while the
+              control plane was unavailable and stayed due past the grace
+              window). Nothing on the site changed in either case, so this is
+              the lowest-risk task to retry.
             * `failed` - the site was contacted and the update did not succeed.
             * `reverted` - the update applied and was then rolled back, so a
               retry walks the identical path and may reproduce the identical
@@ -15217,7 +15304,8 @@ components:
               Usually correct, but a stale WordPress transient can report
               "already current" wrongly, so it stays selectable.
             * `not_applicable` - `succeeded` (retrying re-touches a working
-              site for nothing) or not finished yet (`pending`/`running`).
+              site for nothing) or not finished yet
+              (`pending`/`running`/`scheduled`).
 
             The intended client default selection is `failed` + `never_ran`:
             both mean "this never succeeded", and `never_ran` additionally means
@@ -15255,12 +15343,31 @@ components:
           format: uuid
         status:
           type: string
-          enum: [pending, running, completed, halted]
+          enum: [pending, running, completed, halted, scheduled, dispatching, expired]
           description: |
             `halted` is terminal and specific to an agent self-update run: a
             staged-rollout wave failed to prove itself, so every task the run
             had not already dispatched was cancelled. It is distinct from
             `completed`, which would hide the fact that the run was stopped.
+
+            The last three belong to the deferred-dispatch lifecycle (#463), and
+            a run only ever enters them when it was created with a future
+            `scheduled_at`:
+
+            - `scheduled` — waiting for `scheduled_at`. **No site has been
+              contacted.** The run's tasks are `scheduled` too, which
+              deliberately keeps them out of the in-flight dedup index, so the
+              same plugin on the same site can still be updated immediately in
+              the meantime. Cancellable.
+            - `dispatching` — transient, held only for the moment the dispatcher
+              is enqueueing the run's tasks. A client that sees it should
+              re-read; it is not a state a run rests in.
+            - `expired` — terminal. The run came due while the control plane was
+              unavailable and stayed due past the grace window, so running it
+              now is no longer what the operator asked for. **No site was
+              contacted**, and its tasks are `expired` too. Distinct from
+              `halted` (an agent rollout that stopped itself mid-flight) and
+              from `completed`.
         dry_run:
           type: boolean
         scheduled_at:
@@ -15365,6 +15472,25 @@ components:
             The server-authored sentence for this exclusion, including the
             specifics (which versions, which status). Rendered as-is; a client
             does not need its own copy table to explain an exclusion.
+    UpdateRunCancelResult:
+      type: object
+      required: [run, cancelled_tasks]
+      description: |
+        The outcome of cancelling a scheduled run (#463). Reaching this response
+        at all means the run was `scheduled` and is now terminal, and that
+        nothing was ever sent to any site.
+      properties:
+        run:
+          $ref: "#/components/schemas/UpdateRun"
+        cancelled_tasks:
+          type: integer
+          format: int64
+          description: |
+            How many tasks were terminalized as `cancelled` alongside the run,
+            in the same transaction. Zero is legitimate and is not an error: a
+            run whose tasks had already left `scheduled` cancels with none, and
+            the count is reported so a client can say "3 site updates called
+            back" rather than guessing.
     UpdateRunRetryResult:
       type: object
       required: [requested, created, excluded]

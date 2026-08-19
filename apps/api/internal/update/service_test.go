@@ -46,6 +46,13 @@ func (f *fakeSiteLookup) ListSiteInfoByTag(_ context.Context, _ uuid.UUID, _ str
 type fakeCreateRepo struct {
 	tenantID uuid.UUID
 	tasks    []Task
+	// #463 cancel: cancellable drives the CAS outcome, cancelTasks is how many
+	// tasks the terminalize statement reports, and cancelCalls proves the
+	// service reached the repo at all rather than short-circuiting.
+	cancellable bool
+	cancelTasks int
+	cancelCalls int
+	cancelErr   error
 	// runs mirrors update_runs so GetRun/ListTasks can serve the run-detail
 	// reads the retry path (GH #336) makes before it plans anything.
 	runs []Run

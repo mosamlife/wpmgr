@@ -9062,6 +9062,167 @@ func (s *Server) handleCancelMediaRequest(args [1]string, argsEscaped bool, w ht
 	}
 }
 
+// handleCancelScheduledUpdateRunRequest handles cancelScheduledUpdateRun operation.
+//
+// Calls back a deferred run (#463) that has not yet started. The run
+// becomes `halted` and every one of its tasks becomes `cancelled`, in one
+// transaction.
+// **Valid ONLY from `scheduled`.** That is the safety property, not a
+// convenience: it guarantees the cancel can never race a dispatch into a
+// half-cancelled state. Once the dispatcher has claimed the run
+// (`dispatching`) or the work is out (`running`), this returns 409 and the
+// operator must use the halt path instead — a different operation with
+// different consequences, because halting a running run leaves commands
+// already in flight on real sites. Cancelling a scheduled run promises
+// that **nothing was ever sent to any site**, and the precondition is what
+// makes that promise true.
+// Tasks become `cancelled` rather than `expired`. Both mean the task was
+// never attempted, and the distinction is which one to tell the operator:
+// `cancelled` records a decision somebody made, `expired` records that the
+// dispatch window closed while the control plane was unavailable.
+// Idempotent in the way that matters: a second cancel of an
+// already-cancelled run returns 409 `run_not_cancellable`, never a
+// spurious success. Requires operator+.
+//
+// POST /api/v1/updates/runs/{id}/cancel
+func (s *Server) handleCancelScheduledUpdateRunRequest(args [1]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("cancelScheduledUpdateRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/api/v1/updates/runs/{id}/cancel"),
+	}
+	// Add attributes from config.
+	otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+	// Start a span for this request.
+	ctx, span := s.cfg.Tracer.Start(r.Context(), CancelScheduledUpdateRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		serverSpanKind,
+	)
+	defer span.End()
+
+	// Add Labeler to context.
+	labeler := &Labeler{attrs: otelAttrs}
+	ctx = contextWithLabeler(ctx, labeler)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		elapsedDuration := time.Since(startTime)
+
+		attrSet := labeler.AttributeSet()
+		attrs := attrSet.ToSlice()
+		code := statusWriter.status
+		if code != 0 {
+			codeAttr := semconv.HTTPResponseStatusCode(code)
+			attrs = append(attrs, codeAttr)
+			span.SetAttributes(codeAttr)
+		}
+		attrOpt := metric.WithAttributes(attrs...)
+
+		// Increment request counter.
+		s.requests.Add(ctx, 1, attrOpt)
+
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+	}()
+
+	var (
+		recordError = func(stage string, err error) {
+			span.RecordError(err)
+
+			// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+			// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+			// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+			// max redirects exceeded), in which case status MUST be set to Error.
+			code := statusWriter.status
+			if code < 100 || code >= 500 {
+				span.SetStatus(codes.Error, stage)
+			}
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			if code != 0 {
+				attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+			}
+
+			s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		err          error
+		opErrContext = ogenerrors.OperationContext{
+			Name: CancelScheduledUpdateRunOperation,
+			ID:   "cancelScheduledUpdateRun",
+		}
+	)
+	params, err := decodeCancelScheduledUpdateRunParams(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	var rawBody []byte
+
+	var response CancelScheduledUpdateRunRes
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context:          ctx,
+			OperationName:    CancelScheduledUpdateRunOperation,
+			OperationSummary: "Cancel a scheduled update run before it fires",
+			OperationID:      "cancelScheduledUpdateRun",
+			Body:             nil,
+			RawBody:          rawBody,
+			Params: middleware.Parameters{
+				{
+					Name: "id",
+					In:   "path",
+				}: params.ID,
+			},
+			Raw: r,
+		}
+
+		type (
+			Request  = struct{}
+			Params   = CancelScheduledUpdateRunParams
+			Response = CancelScheduledUpdateRunRes
+		)
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			unpackCancelScheduledUpdateRunParams,
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				response, err = s.h.CancelScheduledUpdateRun(ctx, params)
+				return response, err
+			},
+		)
+	} else {
+		response, err = s.h.CancelScheduledUpdateRun(ctx, params)
+	}
+	if err != nil {
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+
+	if err := encodeCancelScheduledUpdateRunResponse(response, w, span); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+}
+
 // handleChangeMyPasswordRequest handles changeMyPassword operation.
 //
 // Verifies `current_password`, then sets `new_password`. This session

@@ -63,6 +63,7 @@ export {
   listUpdateRuns,
   getUpdateRun,
   retryUpdateRun,
+  cancelScheduledUpdateRun,
   // backups
   createBackup,
   listBackups,
@@ -267,6 +268,7 @@ export type {
   UpdateRunRetryRequest,
   UpdateRunRetryResult,
   UpdateRunRetryExclusion,
+  UpdateRunCancelResult,
   UpdateTask,
   UpdateEvent,
   Tenant,
@@ -347,6 +349,8 @@ export type {
   GetUpdateRunResponse,
   RetryUpdateRunData,
   RetryUpdateRunResponse,
+  CancelScheduledUpdateRunData,
+  CancelScheduledUpdateRunResponse,
   // backups
   BackupCreate,
   BackupSnapshot,
