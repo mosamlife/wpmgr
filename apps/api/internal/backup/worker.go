@@ -942,8 +942,20 @@ func (w *ScheduleWorker) Work(ctx context.Context, _ *river.Job[ScheduleArgs]) e
 			w.logger.Info("backup_scheduler: advisory lock acquired")
 			// Release the advisory lock when the pass finishes (session-level, so
 			// it must be explicitly released on the pinned conn, not left to GC).
+			//
+			// GH #483: on db.CleanupContext, never on ctx. A pass cancelled
+			// mid-flight — rolling deploy, River job timeout — leaves ctx
+			// cancelled by the time this defer runs, and pgx then returns
+			// without sending the unlock while the connection goes back to the
+			// pool healthy and still locked. Every later tick takes a different
+			// connection, reads false, logs "advisory lock held by peer" and
+			// returns nil: SCHEDULED BACKUPS STOP FIRING FLEET-WIDE, with no
+			// error anywhere, until MaxConnLifetime closes the connection half
+			// an hour later.
 			defer func() {
-				_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('backup_scheduler'))`)
+				cctx, ccancel := db.CleanupContext(ctx)
+				defer ccancel()
+				_, _ = conn.Exec(cctx, `SELECT pg_advisory_unlock(hashtext('backup_scheduler'))`)
 			}()
 		}
 	} else {

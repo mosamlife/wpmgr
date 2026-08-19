@@ -217,9 +217,19 @@ func (w *PurgeWorker) purgeOne(ctx context.Context, tenantID uuid.UUID) (purgeOu
 			slog.String("tenant_id", tenantID.String()))
 		return purgeSkipped, nil
 	}
+	// GH #483: on db.CleanupContext, never on ctx. A purge cancelled mid-pass —
+	// and this pass makes slow network calls, so cancellation is the ordinary
+	// case, not the exotic one — leaves ctx cancelled when this defer runs, and
+	// pgx then returns without sending the unlock while the connection goes back
+	// to the pool healthy and still holding the tenant's org_lifecycle lock.
+	// That key is shared with DELETE /orgs/{orgId} and POST
+	// /orgs/{orgId}/restore, so the leak blocks TENANT DELETION AND RESTORE, not
+	// just the next purge tick, until MaxConnLifetime closes the connection.
 	defer func() {
-		if _, uerr := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`, orgLifecycleLockKey, tenantID.String()); uerr != nil {
-			w.logger.Warn("org purge: advisory unlock failed (released on connection close regardless)",
+		cctx, ccancel := db.CleanupContext(ctx)
+		defer ccancel()
+		if _, uerr := conn.Exec(cctx, `SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`, orgLifecycleLockKey, tenantID.String()); uerr != nil {
+			w.logger.Warn("org purge: advisory unlock failed, tenant lifecycle operations are blocked until this connection is recycled",
 				slog.String("tenant_id", tenantID.String()), slog.Any("error", uerr))
 		}
 	}()
