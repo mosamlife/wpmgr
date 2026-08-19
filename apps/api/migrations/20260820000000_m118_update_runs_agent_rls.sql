@@ -141,11 +141,24 @@
 -- it to whoever is debugging at 3am, instead of only in a file they would have
 -- to know to open. db/schema.sql carries the SAME contract text in the same
 -- commit, but as inline "--" comments: that file contains no COMMENT ON
--- statement anywhere (verified: grep -c 'COMMENT ON' db/schema.sql -> 0), it is
--- sqlc's input rather than a dump of the database, and it is already well
--- behind the migrations on RLS. Introducing a construct it has never used, to
--- restate text it already carries, would buy nothing. The policy and the index
--- below ARE mirrored there as real DDL.
+-- STATEMENT anywhere (verified at this commit:
+-- grep -cE '^\s*COMMENT ON' db/schema.sql -> 0), it is sqlc's input rather than
+-- a dump of the database, and it is already well behind the migrations on RLS.
+-- Introducing a construct it has never used, to restate text it already
+-- carries, would buy nothing. The policy and the index below ARE mirrored there
+-- as real DDL.
+--
+-- THE ANCHOR IN THAT PATTERN IS LOAD-BEARING; do not "simplify" it away. The
+-- unanchored grep -c 'COMMENT ON' db/schema.sql returns 2 at this commit, and
+-- both hits are PROSE THIS COMMIT ADDED - the two inline comments in that file
+-- that point back at the COMMENT ON COLUMN statements below. Neither is a
+-- statement. Only the anchored form counts statements, which is the thing being
+-- claimed here.
+--
+-- Recorded because it is this migration's own subject in miniature: the
+-- unanchored claim was TRUE WHEN WRITTEN, and writing it down is what made it
+-- false. A comment whose own quoted command disproves it misleads the next
+-- reader in exactly the way the silent zero-rows scan above would have.
 --
 -- A NOTE FOR PHASE 1, stated here because this comment outlives the phase doc:
 -- these strings are declared ahead of the code that writes them. Phase 1 must
