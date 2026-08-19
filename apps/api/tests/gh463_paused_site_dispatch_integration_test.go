@@ -100,6 +100,15 @@ func seedRunAcrossSites(t *testing.T, repo update.Repo, tenant uuid.UUID, at tim
 	for _, task := range created {
 		out[task.TargetSlug] = task
 	}
+	if len(out) != len(bySlug) {
+		var missing []string
+		for slug := range bySlug {
+			if _, ok := out[slug]; !ok {
+				missing = append(missing, slug)
+			}
+		}
+		t.Fatalf("CreateScheduledRunWithTasks returned %d task(s), want %d (one per seeded site); missing slug(s): %v", len(out), len(bySlug), missing)
+	}
 	return run, out
 }
 
@@ -349,10 +358,11 @@ func TestGH463_ARunWhoseSitesAreAllPausedCompletesWithoutContactingAnySite(t *te
 	siteA := seedSite(t, pool, tenant, "")
 	siteB := seedSite(t, pool, tenant, "")
 
-	run, _ := seedRunAcrossSites(t, repo, tenant, time.Now().Add(-time.Minute), map[string]uuid.UUID{
+	run, tasks := seedRunAcrossSites(t, repo, tenant, time.Now().Add(-time.Minute), map[string]uuid.UUID{
 		"akismet": siteA,
 		"jetpack": siteB,
 	})
+	wantTasks := len(tasks)
 	pauseSiteNow(t, siteRepo, tenant, siteA, "incident")
 	pauseSiteNow(t, siteRepo, tenant, siteB, "incident")
 
@@ -372,12 +382,20 @@ func TestGH463_ARunWhoseSitesAreAllPausedCompletesWithoutContactingAnySite(t *te
 	if s := runStatus(t, pool, tenant, run.ID); s != update.RunCompleted {
 		t.Errorf("run status = %q, want %q (every task reached a terminal state)", s, update.RunCompleted)
 	}
-	for slug, st := range taskStatuses(t, pool, tenant, run.ID) {
+	statuses := taskStatuses(t, pool, tenant, run.ID)
+	if len(statuses) != wantTasks {
+		t.Fatalf("taskStatuses returned %d row(s), want %d (one per seeded site): %+v", len(statuses), wantTasks, statuses)
+	}
+	for slug, st := range statuses {
 		if st != update.TaskSkipped {
 			t.Errorf("task %q = %q, want %q", slug, st, update.TaskSkipped)
 		}
 	}
-	for slug, detail := range taskDetails(t, pool, tenant, run.ID) {
+	details := taskDetails(t, pool, tenant, run.ID)
+	if len(details) != wantTasks {
+		t.Fatalf("taskDetails returned %d row(s), want %d (one per seeded site): %+v", len(details), wantTasks, details)
+	}
+	for slug, detail := range details {
 		if !strings.Contains(strings.ToLower(detail), "paused") {
 			t.Errorf("task %q detail = %q, want it to name the pause", slug, detail)
 		}
