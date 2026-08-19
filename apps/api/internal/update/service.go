@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -79,6 +80,18 @@ type Enqueuer interface {
 	EnqueueTask(ctx context.Context, tenantID, runID, taskID uuid.UUID, dryRun bool) error
 }
 
+// DispatchEnqueuer schedules the one-shot job that fires a deferred run at its
+// scheduled_at (GH #463). Separate from Enqueuer because it is optional: a
+// Service without one still CREATES scheduled runs correctly (they are
+// committed and due-scannable), it simply has nothing pushing them but the
+// Phase 2 safety-net sweeper.
+type DispatchEnqueuer interface {
+	// EnqueueDispatch inserts a dispatch job to become runnable at `at`. The
+	// job carries no task ids: what is dispatchable at fire time is not
+	// knowable now.
+	EnqueueDispatch(ctx context.Context, tenantID, runID uuid.UUID, at time.Time) error
+}
+
 // Service holds the update orchestration logic.
 type Service struct {
 	repo      Repo
@@ -95,7 +108,16 @@ type Service struct {
 	// releases reports the currently published agent version, the yardstick
 	// the agent planner compares each site against.
 	releases AgentReleaseReader
+
+	// dispatcher schedules the deferred-run dispatch job (GH #463). Optional:
+	// nil means a scheduled run is still created and still due-scannable, but
+	// nothing pushes it at its start time.
+	dispatcher DispatchEnqueuer
 }
+
+// SetDispatchEnqueuer wires the deferred-dispatch job inserter. Call once at
+// boot.
+func (s *Service) SetDispatchEnqueuer(d DispatchEnqueuer) { s.dispatcher = d }
 
 // NewService builds an update Service.
 func NewService(repo Repo, sites SiteLookup, enqueuer Enqueuer, v *domain.Validator, clock domain.Clock) *Service {
@@ -132,6 +154,10 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (Run, []Task
 		return Run{}, nil, domain.Validation("items_required", "at least one update item is required")
 	}
 	if err := validateItems(in.Items); err != nil {
+		return Run{}, nil, err
+	}
+	deferred, err := s.resolveSchedule(in.ScheduledAt)
+	if err != nil {
 		return Run{}, nil, err
 	}
 
@@ -185,6 +211,41 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (Run, []Task
 		return Run{}, nil, domain.Validation("no_tasks", "the selection produced no update tasks")
 	}
 
+	// GH #463: a run with a future scheduled_at is born 'scheduled', with every
+	// task 'scheduled' too, and NOTHING is enqueued here. The wizard has
+	// offered this control since M3 and the column has been persisted since
+	// then, but every task was enqueued immediately regardless: an operator who
+	// picked 02:00 updated their fleet the moment they pressed the button.
+	//
+	// The deferral is a SEPARATE repo method rather than a flag on
+	// CreateRunWithTasks because the two differ in the statement they use to
+	// insert each task, not merely in a column value —
+	// CreateScheduledUpdateTask's ON CONFLICT arm is unreachable where
+	// CreateUpdateTask's is the authoritative in-flight guard, so the zero-row
+	// result means opposite things in the two paths. Sharing one function would
+	// mean one body reading a zero row two ways depending on a bool.
+	if deferred {
+		run, createdTasks, err := s.repo.CreateScheduledRunWithTasks(ctx, in, tasks)
+		if err != nil {
+			return Run{}, nil, err
+		}
+		// The dispatch job is the ONLY thing enqueued, and it carries no task
+		// ids: the dispatcher re-reads the run's tasks at fire time, because
+		// what is dispatchable then is not knowable now. A failure to enqueue
+		// it is surfaced (the operator can retry the create) but is NOT fatal
+		// to the run — the run row is committed and still 'scheduled', so it
+		// remains due-scannable. Phase 2's safety-net sweeper is what turns
+		// "the queue insert was lost" into "dispatched a little late" instead
+		// of "never dispatched"; until it lands, a lost insert leaves a run
+		// that an operator must re-create.
+		if s.dispatcher != nil {
+			if derr := s.dispatcher.EnqueueDispatch(ctx, run.TenantID, run.ID, *in.ScheduledAt); derr != nil {
+				return run, createdTasks, derr
+			}
+		}
+		return run, createdTasks, nil
+	}
+
 	run, createdTasks, err := s.repo.CreateRunWithTasks(ctx, in, tasks)
 	if err != nil {
 		return Run{}, nil, err
@@ -206,6 +267,77 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (Run, []Task
 		}
 	}
 	return run, createdTasks, nil
+}
+
+// Schedule bounds for a one-shot deferred run (GH #463).
+const (
+	// scheduleMaxLead caps how far out a run may be scheduled. The bound is not
+	// arithmetic squeamishness: a River job sits in the queue for the whole
+	// interval, and River's own completed/scheduled-job retention is a
+	// deployment setting nobody has verified against a month-long horizon. A
+	// month is also past the point where the operator's reason for choosing the
+	// time is still true.
+	scheduleMaxLead = 30 * 24 * time.Hour
+
+	// scheduleSkewGrace is how far in the PAST a scheduled_at may be and still
+	// be read as "now" rather than refused. The client computes the instant
+	// from a browser clock (update-wizard.tsx builds it from a local
+	// datetime-local value), so a submission for "now" routinely lands a few
+	// seconds behind the server's clock, and a strict now() comparison would
+	// reject it as a past time. Anything older than this was typed, not
+	// skewed.
+	scheduleSkewGrace = 2 * time.Minute
+
+	// scheduleMinLead is the lead time below which deferral is pointless and a
+	// run is created immediately instead. A run born 'scheduled' but already
+	// due waits for the dispatcher's next tick for no benefit, and it is the
+	// one shape that can be simultaneously scheduled and past its own start —
+	// which is the state the grace window has to reason about. Keeping it out
+	// of existence for a sub-minute schedule is cheaper than handling it.
+	scheduleMinLead = time.Minute
+)
+
+// resolveSchedule decides whether a CreateRunInput is deferred, and refuses the
+// two schedules that cannot be honoured.
+//
+// It returns (false, nil) for BOTH a nil scheduled_at and a scheduled_at that
+// is effectively now: the caller's immediate path is unchanged in either case,
+// which keeps every existing run creation on exactly the code it ran on before
+// #463. Only a genuinely future time returns true.
+//
+// Rejection is deliberately at the service and not at the dispatcher. A past
+// time and a too-far time are both operator input errors, and the operator is
+// standing right there at create time; discovering either one asynchronously,
+// hours later, as a run that quietly expired, is the outcome this whole issue
+// exists to stop.
+func (s *Service) resolveSchedule(at *time.Time) (bool, error) {
+	if at == nil {
+		return false, nil
+	}
+	now := s.now()
+	switch {
+	case at.Before(now.Add(-scheduleSkewGrace)):
+		return false, domain.Validation("schedule_in_past",
+			"the scheduled time is in the past; pick a future time or leave the schedule empty to run now")
+	case at.After(now.Add(scheduleMaxLead)):
+		return false, domain.Validation("schedule_too_far",
+			"a run cannot be scheduled more than 30 days ahead")
+	case at.Before(now.Add(scheduleMinLead)):
+		// Inside the skew grace, or under a minute out: run it now.
+		return false, nil
+	}
+	return true, nil
+}
+
+// now reads the service's clock, falling back to the wall clock when none was
+// wired. Only the SCHEDULE VALIDATION uses it. Due-ness itself is never decided
+// here: ListDueUpdateRuns compares against the DATABASE clock, so two replicas
+// with drifting wall clocks cannot disagree about whether a run has arrived.
+func (s *Service) now() time.Time {
+	if s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
 }
 
 // isAgentRun reports whether the run targets the agent's own upgrade.

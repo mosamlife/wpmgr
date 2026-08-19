@@ -261,6 +261,19 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[TaskArgs]) error {
 	if terminal(task.Status) {
 		return nil // already finished (retry/dup); nothing to do.
 	}
+	// GH #463: a task still waiting for its run's scheduled_at is not this
+	// job's to run. Caught HERE, before the site is resolved and before
+	// anything is sent, rather than letting it fall through to the claim CAS —
+	// which would refuse it correctly but only after the round trips, and only
+	// because 'scheduled' happens not to satisfy the claim's precondition.
+	// DispatchWorker enqueues the real job for this task when the schedule
+	// fires, so discarding this one loses nothing.
+	if task.Status == TaskScheduled {
+		w.logger.Warn("update: task job fired before its run was dispatched; discarding the stray job",
+			slog.String("task_id", a.TaskID.String()),
+			slog.String("run_id", a.RunID.String()))
+		return nil
+	}
 
 	// The agent's OWN upgrade travels a wholly separate branch: a wave-gated
 	// three-beat protocol with no health probe and no rollback (see
@@ -630,6 +643,24 @@ func (w *Worker) yieldContendedClaim(ctx context.Context, a TaskArgs, task Task)
 		return river.JobSnooze(w.siteBusyBackoff(task))
 	}
 	if terminal(current.Status) {
+		return nil
+	}
+	// GH #463: a task that is still 'scheduled' has not been dispatched yet,
+	// and this job should not exist. Snoozing on it is the WORST available
+	// outcome and is what the unmodified contract would do: 'scheduled' is not
+	// terminal, so the default arm below snoozes — no error, no attempt
+	// consumed, no terminal state — and the job snoozes forever, invisibly,
+	// because nothing else will ever move a row the dispatcher has not reached.
+	//
+	// Returning nil discards the stray job instead. That is safe precisely
+	// because this job is not what dispatches the task: DispatchWorker moves
+	// the row 'scheduled' -> 'pending' and enqueues its OWN job inside the same
+	// transaction, so dropping this one loses nothing that was ever going to
+	// happen.
+	if current.Status == TaskScheduled {
+		w.logger.Warn("update: task job fired for a task that is still scheduled; discarding the stray job",
+			slog.String("task_id", a.TaskID.String()),
+			slog.String("run_id", current.RunID.String()))
 		return nil
 	}
 	if bound != "" {

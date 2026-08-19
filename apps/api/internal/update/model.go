@@ -29,6 +29,31 @@ const (
 	// was cancelled. It is deliberately distinct from RunCompleted, which would
 	// erase the fact that the run was stopped rather than finished.
 	RunHalted = "halted"
+
+	// RunScheduled is a run created with a future scheduled_at that has not
+	// fired. NOTHING HAS BEEN SENT TO ANY SITE, and that is the property the
+	// rest of the system reads off this value: its tasks are TaskScheduled and
+	// therefore outside update_tasks_inflight_target_idx (so they reserve
+	// nothing) and outside the stale-task reaper's sweep (so they are not
+	// failed for not having progressed). It is the only status
+	// ListDueUpdateRuns scans for, and the only precondition
+	// ClaimUpdateRunForDispatch, ExpireDueUpdateRun and
+	// CancelScheduledUpdateRun accept.
+	RunScheduled = "scheduled"
+	// RunDispatching is TRANSIENT AND HELD ONLY INSIDE ONE TRANSACTION: the
+	// dispatcher claims the run into it, enqueues, and leaves it again before
+	// committing. It is deliberately absent from update_runs_due_idx, so a run
+	// left sitting here is never scanned again — which is exactly why the
+	// claim and the FinishUpdateRunDispatch that closes it must share a
+	// transaction, so a crash rolls the claim back rather than stranding the
+	// run forever. A reader that observes it should re-read.
+	RunDispatching = "dispatching"
+	// RunExpired is terminal: the run came due while the control plane was
+	// unavailable and was still undispatched more than dispatchGraceWindow
+	// later, so running it now is no longer what the operator asked for. No
+	// site was contacted. Distinct from RunHalted, which stops a rollout that
+	// already has commands out on real sites, and from RunCompleted.
+	RunExpired = "expired"
 )
 
 // Task statuses.
@@ -40,10 +65,39 @@ const (
 	TaskRolledBack = "rolled_back"
 	TaskSkipped    = "skipped"
 	// TaskCancelled is terminal: the task was never dispatched because its run
-	// halted first. Distinct from TaskSkipped (the control plane declined this
+	// halted first, or because an operator cancelled the scheduled run before
+	// it fired. Distinct from TaskSkipped (the control plane declined this
 	// particular target) and from TaskFailed (the site was contacted and did
 	// not come back): nothing was ever sent to this site.
 	TaskCancelled = "cancelled"
+
+	// TaskScheduled is the birth status of every task of a deferred run, and
+	// it is NOT terminal — see terminal(). Two exclusions are load-bearing and
+	// both are by construction rather than by a second predicate anybody has
+	// to remember to keep in sync:
+	//
+	//   update_tasks_inflight_target_idx is partial on ('pending','running'),
+	//   so a task waiting for 02:00 does NOT hold the (tenant, site, target)
+	//   slot and the operator's urgent 10:00 update of that same plugin is
+	//   still accepted rather than 409 targets_in_flight.
+	//
+	//   ListStaleUpdateTasks sweeps the same two statuses, so a task waiting
+	//   longer than staleTaskThreshold is not reaped as "stale: task exceeded
+	//   max runtime" hours before it was ever meant to run.
+	//
+	// The price of both is that a scheduled task cannot pre-verify its target
+	// will be free when it fires; MarkScheduledUpdateTaskPending resolves that
+	// at dispatch time, and the loser becomes TaskSkipped.
+	TaskScheduled = "scheduled"
+	// TaskExpired is terminal: the parent run expired without dispatching, so
+	// this task was never attempted and nothing was sent to its site.
+	//
+	// IT IS NOT A SPELLING OF TaskCancelled, and collapsing the two would tell
+	// an operator that somebody stopped their run when in fact the control
+	// plane was simply not up in time to start it. 'cancelled' records a
+	// decision a human made; 'expired' records that the window closed.
+	// schema.sql declares both, so neither needs a migration.
+	TaskExpired = "expired"
 )
 
 // Target types. plugin/theme/core mirror agentcmd.TargetPlugin/Theme/Core.
@@ -230,9 +284,17 @@ type CreateRunInput struct {
 }
 
 // terminal reports whether a task status is a final state.
+//
+// TaskExpired is here and TaskScheduled deliberately is not, and the asymmetry
+// is the whole point of the pair. Every caller of this function uses it to
+// decide "is there anything left to do for this row?", and the two answers are
+// opposite: an expired task will never be attempted and must stop every worker
+// that meets it, whereas a scheduled task has not been attempted YET. Calling
+// TaskScheduled terminal would make Worker.Work return nil for a task whose
+// whole run is still ahead of it.
 func terminal(status string) bool {
 	switch status {
-	case TaskSucceeded, TaskFailed, TaskRolledBack, TaskSkipped, TaskCancelled:
+	case TaskSucceeded, TaskFailed, TaskRolledBack, TaskSkipped, TaskCancelled, TaskExpired:
 		return true
 	default:
 		return false

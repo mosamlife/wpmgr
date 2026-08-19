@@ -46,6 +46,27 @@ var ErrTaskNotClaimed = errors.New("update task was not claimed")
 type Repo interface {
 	// CreateRunWithTasks atomically creates a run and its tasks in one tx.
 	CreateRunWithTasks(ctx context.Context, in CreateRunInput, tasks []NewTask) (Run, []Task, error)
+
+	// CreateScheduledRunWithTasks atomically creates a DEFERRED run (GH #463):
+	// the run and every task are born 'scheduled', nothing enters the
+	// in-flight index and nothing is enqueued. Requires in.ScheduledAt.
+	CreateScheduledRunWithTasks(ctx context.Context, in CreateRunInput, tasks []NewTask) (Run, []Task, error)
+	// ListDueRuns returns every run whose scheduled_at has arrived, across ALL
+	// tenants, capped at limit. Cross-tenant, under InAgentTx. It does NOT
+	// apply the grace window: the caller splits the result into dispatch and
+	// expiry, because a scan that filtered by the window would leave a run
+	// that fell past it unreachable by any query at all.
+	ListDueRuns(ctx context.Context, limit int32) ([]Run, error)
+	// DispatchDueRun claims one due run and, in the SAME transaction, moves
+	// each of its scheduled tasks to 'pending' and enqueues its job. A task
+	// whose target went in flight meanwhile is recorded 'skipped' and does not
+	// fail the run. Claimed=false means another writer owns the run: skip it,
+	// it is not an error.
+	DispatchDueRun(ctx context.Context, enq TxEnqueuer, run Run) (DispatchOutcome, error)
+	// ExpireDueRun terminalizes a run past the grace window along with its
+	// undispatched tasks (as 'expired'), in ONE transaction. Reports whether
+	// the run was expirable and how many tasks it terminalized.
+	ExpireDueRun(ctx context.Context, tenantID, runID uuid.UUID, expireBefore time.Time, detail string) (bool, int, error)
 	GetRun(ctx context.Context, tenantID, runID uuid.UUID) (Run, error)
 	ListRuns(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Run, error)
 	// ListRunSummaries returns runs with pre-computed task aggregate counts
