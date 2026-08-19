@@ -392,18 +392,20 @@ RETURNING *;
 -- name: CountUnfinishedTasksForRun :one
 -- Counts tasks not yet in a terminal state, used to decide when a run completes.
 --
--- 'scheduled' IS COUNTED, and that is a #463 correction rather than a widening.
--- This predicate is the "is the run finished?" test, so it must list every
--- NON-terminal status — which is a different set from the two predicates that
--- happen to share its old spelling, and the reason it must not be kept in sync
--- with them by reflex:
+-- THIS PREDICATE IS A DELIBERATE SUPERSET OF THE IN-FLIGHT SET, NOT A COPY OF
+-- IT. It answers "is any outcome still owed for this task?", which is a
+-- different question from the one the other two predicates in this file ask,
+-- and it is only by coincidence that they shared a spelling:
 --
 --   update_tasks_inflight_target_idx  "does this target hold the dedup slot?"
 --   ListStaleUpdateTasks              "could this row be stuck?"
 --
--- 'scheduled' is deliberately absent from BOTH of those (m118: a waiting task
--- must neither reserve its target nor be reaped as stuck). It is emphatically
--- present here: a scheduled task is the least finished a task can be.
+-- Both of those are exactly {pending, running}. 'scheduled' is deliberately
+-- absent from both (m118: a task waiting for a clock must neither reserve its
+-- target nor be reaped as stuck) and is emphatically present here, because a
+-- task waiting for a clock is the least finished a task can be. Keeping this
+-- predicate in sync with those two by reflex is the mistake; the sets are
+-- supposed to differ, and by exactly this one status.
 --
 -- WITHOUT IT THIS QUERY REPORTS A RUN COMPLETE WHILE IT STILL HAS UNDISPATCHED
 -- WORK. Dispatch moves tasks 'scheduled' -> 'pending' ONE AT A TIME
@@ -416,9 +418,24 @@ RETURNING *;
 -- longer 'scheduled'. The operator sees a completed run that updated a subset
 -- of the fleet it named.
 --
--- Adding it is a no-op on every row that exists today — nothing writes
--- 'scheduled' before #463 Phase 2 — so this changes no current behaviour and
--- no caller signature.
+-- THE SUPERSET RELATIONSHIP IS ENFORCED, NOT MERELY ASSERTED HERE. This query
+-- is registered in notFinishedSupersets (update/inflight_status_guard_test.go),
+-- which reads this predicate out of this file and pins it from three
+-- directions, so neither half of the distinction above can rot:
+--
+--   * dropping an in-flight status ('pending', 'running') fails — every
+--     in-flight task is by definition unfinished, and losing one marks a run
+--     complete while dispatched work is outstanding;
+--   * adding a TERMINAL status ('skipped', 'cancelled', 'expired') fails —
+--     a superset may only add a non-terminal status that holds no dedup slot,
+--     and folding in a terminal one leaves the run permanently incomplete;
+--   * equalling the in-flight set exactly fails — a predicate that is a plain
+--     copy does not belong on that list, and a stale entry there would exempt
+--     a genuine copy from the drift check that is the guard's whole point.
+--
+-- So the invariant to preserve is the RELATIONSHIP, not the literal list: this
+-- predicate is InFlightTaskStatuses plus nonTerminalNotInFlight, and changing
+-- either side is a decision made in that guard, not silently here.
 SELECT count(*) FROM update_tasks
 WHERE run_id = $1 AND tenant_id = $2
   AND status IN ('pending', 'running', 'scheduled');
