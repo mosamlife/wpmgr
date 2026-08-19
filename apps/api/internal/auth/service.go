@@ -457,11 +457,6 @@ func (s *Service) RecordAudit(ctx context.Context, e audit.Event) {
 	_, _ = s.audit.Record(ctx, e)
 }
 
-// CountUsers exposes the user count (used to gate registration in handlers).
-func (s *Service) CountUsers(ctx context.Context) (int64, error) {
-	return s.repo.CountUsers(ctx)
-}
-
 // UpdateProfile sets the user's display name. The name is trimmed and capped at
 // 120 characters. Email is intentionally not editable here (it is the login
 // identity). Returns the updated user + their current memberships.

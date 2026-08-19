@@ -199,8 +199,8 @@ func TestFirstRunOwnership_CorrectClaimStillWorks(t *testing.T) {
 // Two callers presenting the correct claim at the same instant must produce one
 // owner and one organisation, not two.
 //
-// To watch it go red: in internal/auth/bootstrap_repo.go, move the CountUsers
-// read out of the InInstallLockTx callback (do it on r.q before the call), or
+// To watch it go red: in internal/auth/bootstrap_repo.go, move the ownership read
+// out of the InInstallLockTx callback (do it on r.q before the call), or
 // drop the pg_advisory_xact_lock line from Pool.InInstallLockTx. Either restores
 // the check-then-act and this test reports two owners.
 func TestFirstRunOwnership_ConcurrentClaimsMintExactlyOneOwner(t *testing.T) {
@@ -325,7 +325,7 @@ func TestFirstRunOwnership_SocialSignInNeverMints(t *testing.T) {
 // unclaimed install and then requires the claim to still work.
 //
 // To watch it go red: change the ownership probe in Repo.BootstrapInstall back
-// to `q.CountUsers(ctx)` / `count > 0`, and remove the ownership check in the
+// to a user count (`q.CountUsers(ctx)` / `count > 0`), and remove the check in the
 // socialCreate branch of SignInWithSocial (internal/auth/social.go) so the
 // sign-in creates its user row again.
 func TestFirstRunOwnership_AnonymousRequestsCannotCloseTheDoor(t *testing.T) {
