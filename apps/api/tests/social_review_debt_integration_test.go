@@ -267,6 +267,11 @@ func TestRefusedSocialLinkCarriesForwardTheDesiredPlan(t *testing.T) {
 	svc := newAuthStackWithBilling(pool)
 	svc.SetMailer(&recordingMailer{}, "https://manage.example.com", nil)
 	repo := auth.NewRepo(pool)
+	// Open self-serve registration is a property of a NORMAL install, so give
+	// this one its owner first: while an install is unclaimed the self-serve
+	// path writes nothing, keeping the first-account slot for whoever holds the
+	// provisioning claim.
+	claimInstall(t, svc)
 
 	const email = "paid-then-social@example.com"
 	if err := svc.RegisterSelfServe(ctx, auth.RegisterInput{

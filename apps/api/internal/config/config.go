@@ -527,6 +527,26 @@ type AuthConfig struct {
 	IdleTimeout    time.Duration `koanf:"idle_timeout"`
 	AbsoluteExpiry time.Duration `koanf:"absolute_expiry"`
 
+	// BootstrapClaimSecret (WPMGR_BOOTSTRAP_CLAIM_SECRET) is the provisioning
+	// claim the installer mints and hands to the person who is entitled to own
+	// the install. First-run ownership — the very first organisation and its
+	// owner membership — is granted only to a caller that presents it.
+	//
+	// It is a LITERAL value only; this file has no file-indirection convention
+	// for any other secret and inventing one here would be a second mechanism.
+	//
+	// UNSET MEANS "NOBODY MAY CLAIM THIS INSTALL", never "anybody may". An
+	// install that boots without it can still serve every other route; it
+	// simply has no route to first-run ownership until the operator sets the
+	// variable and restarts. That direction is deliberate: the failure mode of
+	// a misconfigured deployment must be an install that cannot be claimed,
+	// not an install that can be claimed freely.
+	//
+	// It is a credential, so it is never logged, never echoed into a response
+	// and never recorded in audit metadata; only its NAME appears in operator
+	// guidance.
+	BootstrapClaimSecret string `koanf:"bootstrap_claim_secret"`
+
 	// WebAuthn relying party configuration (ADR-056 Phase 1).
 	// RPID is the effective domain for WebAuthn (e.g. "manage.wpmgr.app").
 	// RPOrigins is a comma-separated list of allowed origins
@@ -916,6 +936,15 @@ func mapEnvKey(k string) string {
 	// WPMGR_SESSION_SECRET -> auth.session_secret.
 	case k == "session_secret":
 		return "auth.session_secret"
+	// WPMGR_BOOTSTRAP_CLAIM_SECRET -> auth.bootstrap_claim_secret. An explicit
+	// case, not the "auth_" prefix, because the operator-facing name has no
+	// AUTH_ segment. Without this line the key falls through the default
+	// passthrough below and unmarshal silently ignores it — the exact shape
+	// that left social sign-in configured-but-disabled with no error to notice,
+	// and here it would leave a correctly-configured install unable to be
+	// claimed by anyone.
+	case k == "bootstrap_claim_secret":
+		return "auth.bootstrap_claim_secret"
 	case strings.HasPrefix(k, "auth_"):
 		return "auth." + strings.TrimPrefix(k, "auth_")
 	case strings.HasPrefix(k, "oidc_"):

@@ -84,15 +84,6 @@ func membershipToModel(m sqlc.Membership) Membership {
 	}
 }
 
-// CountUsers returns the total number of users (used for first-run bootstrap).
-func (r *Repo) CountUsers(ctx context.Context) (int64, error) {
-	n, err := r.q.CountUsers(ctx)
-	if err != nil {
-		return 0, domain.Internal("user_count_failed", "failed to count users").WithCause(err)
-	}
-	return n, nil
-}
-
 // CreateUser inserts a new user.
 func (r *Repo) CreateUser(ctx context.Context, email, passwordHash, name, oidcIssuer, oidcSubject string) (User, error) {
 	row, err := r.q.CreateUser(ctx, sqlc.CreateUserParams{
