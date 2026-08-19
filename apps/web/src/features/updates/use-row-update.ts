@@ -108,12 +108,31 @@ function projectStatus(
       return "rolled_back";
     case "skipped":
       return "skipped";
-    case "cancelled":
-      return "cancelled";
+    // GH #463: `scheduled` used to reach this switch through the `default`
+    // arm and come out "pending", so a row whose update was deferred read as
+    // though it were queued and about to go — for hours. It has not been
+    // sent and will not be until its start time, which is a different thing
+    // to tell an operator. `RowUpdateState` gains a real `"scheduled"`
+    // member for this rather than folding into an existing one: only two
+    // files consume `RowUpdateState` (`use-row-update.ts` itself and
+    // `available-updates-card.tsx`, confirmed with
+    // `grep -rl "RowUpdateState" apps/web/src`), so widening it was checked
+    // and is safe, not the "every consumer" risk it might look like.
     case "scheduled":
       return "scheduled";
+    // GH #463: `expired` likewise fell through to "pending", leaving a row
+    // spinning forever on work that will never be attempted. Nothing was
+    // sent to the site — that's a different story from `skipped`, which here
+    // means the control plane looked at this one target and declined it.
+    // Folding `expired` into `skipped` would conflate "nothing was ever
+    // sent" with "this target was declined", so it gets its own member.
     case "expired":
       return "expired";
+    // GH #255: never dispatched because its run halted first. Same "nothing
+    // was ever sent" story as `expired` above, different cause, same reason
+    // it is not `skipped`.
+    case "cancelled":
+      return "cancelled";
     default:
       // A status literal outside the current TaskStatus union entirely (a
       // self-hosted control plane ahead of this bundle's generated types).

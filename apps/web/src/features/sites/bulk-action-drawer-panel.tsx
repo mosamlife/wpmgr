@@ -306,17 +306,36 @@ function priority(status: UpdateTask["status"]): number {
       return 4;
     case "skipped":
       return 5;
-    default:
+    // GH #463: waiting on its own start time, not yet actionable — same tier
+    // as an ordinary queued task. Matches bulk-action-drawer.tsx.
+    case "scheduled":
+      return 1;
+    // GH #255 / #463: never dispatched, run halted or expired first.
+    case "cancelled":
+    case "expired":
       return 6;
+    default:
+      return 7;
   }
 }
 
 function rollupStatus(tasks: UpdateTask[]): UpdateTask["status"] {
   if (tasks.some((t) => t.status === "running")) return "running";
   if (tasks.some((t) => t.status === "pending")) return "pending";
+  // GH #463: any task still waiting on its schedule means this row is not
+  // done either. This MUST be checked before the terminal rollups below: a
+  // row of entirely `scheduled` tasks previously fell all the way through to
+  // the `return "succeeded"` default, so a deferred bulk update reported
+  // every site as Done while nothing had been sent to any of them.
+  if (tasks.some((t) => t.status === "scheduled")) return "scheduled";
   if (tasks.some((t) => t.status === "failed")) return "failed";
   if (tasks.some((t) => t.status === "rolled_back")) return "rolled_back";
   if (tasks.every((t) => t.status === "skipped")) return "skipped";
+  // A halted run cancels every task it had not dispatched; an expired run
+  // never dispatched any. Neither may fall through to "succeeded", which
+  // would show an untouched site as done. Same reasoning as `scheduled`.
+  if (tasks.every((t) => t.status === "cancelled")) return "cancelled";
+  if (tasks.every((t) => t.status === "expired")) return "expired";
   return "succeeded";
 }
 
@@ -331,6 +350,13 @@ function toneFor(status: UpdateTask["status"]): StatusTone {
     case "rolled_back":
       return "destructive";
     case "skipped":
+      return "muted";
+    // GH #255 / #463: none of these read as an error — nothing was sent to
+    // the site. See features/updates/update-status.tsx for why `expired` in
+    // particular stays out of "destructive".
+    case "cancelled":
+    case "scheduled":
+    case "expired":
       return "muted";
     default:
       return "muted";
@@ -351,6 +377,15 @@ function statusLabel(status: UpdateTask["status"]): string {
       return "Rolled back";
     case "skipped":
       return "Skipped";
+    // GH #255 / #463: all three previously rendered as "Unknown", which tells
+    // an operator nothing about the one fact that matters for each of them:
+    // no site was contacted.
+    case "cancelled":
+      return "Not attempted";
+    case "scheduled":
+      return "Scheduled";
+    case "expired":
+      return "Expired";
     default:
       return "Unknown";
   }

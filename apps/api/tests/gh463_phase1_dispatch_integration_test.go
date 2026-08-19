@@ -732,6 +732,155 @@ func TestGH463_Phase1_ExpiryPastTheGraceWindow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. Operator cancellation.
+// ---------------------------------------------------------------------------
+
+// TestGH463_Phase1_CancelScheduledRun proves the operator's call-back against a
+// real CAS: a scheduled run cancels with no site contacted, a run that has
+// already fired is refused, and two concurrent cancels produce one winner.
+//
+// RED WITHOUT THE FEATURE: drop "AND status = 'scheduled'" from
+// CancelScheduledUpdateRun and the dispatching-run arm cancels a run whose
+// commands are already out — the operator is told their fleet was called back
+// while it is being updated.
+func TestGH463_Phase1_CancelScheduledRun(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	repo := update.NewRepo(pool)
+
+	tenant := seedTenant(t, pool, "gh463-p1-cancel")
+	siteID := seedSite(t, pool, tenant, "")
+
+	t.Run("a scheduled run cancels and contacts no site", func(t *testing.T) {
+		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
+			time.Now().Add(2*time.Hour), "akismet", "jetpack")
+
+		cancelled, tasks, ok, err := repo.CancelScheduledRun(ctx, tenant, run.ID, "cancelled by an operator")
+		if err != nil {
+			t.Fatalf("CancelScheduledRun: %v", err)
+		}
+		if !ok {
+			t.Fatal("a scheduled run refused cancellation")
+		}
+		if tasks != 2 {
+			t.Errorf("cancelled %d tasks, want 2", tasks)
+		}
+		if cancelled.Status != update.RunHalted {
+			t.Errorf("run status = %q, want %q", cancelled.Status, update.RunHalted)
+		}
+		if got := runStatus(t, pool, tenant, run.ID); got != update.RunHalted {
+			t.Errorf("persisted run status = %q, want %q", got, update.RunHalted)
+		}
+
+		// Tasks are 'cancelled' and NOT 'expired'. Both mean never attempted;
+		// the distinction is what the operator is told, and here they made a
+		// decision.
+		for slug, st := range taskStatuses(t, pool, tenant, run.ID) {
+			if st != update.TaskCancelled {
+				t.Errorf("task %s = %q, want %q", slug, st, update.TaskCancelled)
+			}
+			if st == update.TaskExpired {
+				t.Errorf("task %s recorded as 'expired'; nobody missed a window, an operator cancelled it", slug)
+			}
+		}
+
+		// No site was contacted: the run never left 'scheduled', so nothing was
+		// ever enqueued, and a cancelled run must not become dispatchable.
+		due, derr := repo.ListDueRuns(ctx, 200)
+		if derr != nil {
+			t.Fatalf("ListDueRuns: %v", derr)
+		}
+		for _, r := range due {
+			if r.ID == run.ID {
+				t.Error("a cancelled run is still returned by the due scan; it would be dispatched after being called back")
+			}
+		}
+		enq := &countingTxEnqueuer{}
+		out, derr := repo.DispatchDueRun(ctx, enq, cancelled)
+		if derr != nil {
+			t.Fatalf("re-drive a cancelled run: %v", derr)
+		}
+		if out.Claimed || enq.count() != 0 {
+			t.Errorf("a cancelled run was claimed (%v) and enqueued %d jobs; it must contact no site", out.Claimed, enq.count())
+		}
+	})
+
+	t.Run("a run that already fired is refused", func(t *testing.T) {
+		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
+			time.Now().Add(-time.Minute), "wordfence")
+
+		// Fire it, so it is 'running' with a live task.
+		due, _ := repo.ListDueRuns(ctx, 200)
+		var target update.Run
+		for _, r := range due {
+			if r.ID == run.ID {
+				target = r
+			}
+		}
+		if target.ID == uuid.Nil {
+			t.Fatal("the due run was not scanned")
+		}
+		if _, err := repo.DispatchDueRun(ctx, &countingTxEnqueuer{}, target); err != nil {
+			t.Fatalf("DispatchDueRun: %v", err)
+		}
+
+		_, tasks, ok, err := repo.CancelScheduledRun(ctx, tenant, run.ID, "too late")
+		if err != nil {
+			t.Fatalf("CancelScheduledRun on a running run errored instead of refusing: %v", err)
+		}
+		if ok {
+			t.Error("a RUNNING run was cancelled; its commands are already out on real sites and the operator would be told otherwise")
+		}
+		if tasks != 0 {
+			t.Errorf("a refused cancel terminalized %d tasks, want 0", tasks)
+		}
+		// The dispatched task must be untouched — a refused cancel changes
+		// nothing at all.
+		if got := taskStatuses(t, pool, tenant, run.ID)["wordfence"]; got != update.TaskPending {
+			t.Errorf("the live task is now %q; a refused cancel must change nothing", got)
+		}
+	})
+
+	t.Run("two concurrent cancels give exactly one winner", func(t *testing.T) {
+		run, _ := seedScheduledRunWithTask(t, repo, tenant, siteID,
+			time.Now().Add(3*time.Hour), "yoast")
+
+		const operators = 4
+		wins := make([]bool, operators)
+		errs := make([]error, operators)
+		counts := make([]int, operators)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < operators; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				_, counts[i], wins[i], errs[i] = repo.CancelScheduledRun(ctx, tenant, run.ID, "concurrent cancel")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		winners := 0
+		for i := range wins {
+			if errs[i] != nil {
+				t.Fatalf("operator %d errored; losing a cancel race must be a benign false, never an error: %v", i, errs[i])
+			}
+			if wins[i] {
+				winners++
+				if counts[i] != 1 {
+					t.Errorf("the winning cancel reported %d tasks, want 1", counts[i])
+				}
+			}
+		}
+		if winners != 1 {
+			t.Errorf("%d of %d concurrent cancels won, want exactly 1", winners, operators)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // 4. The index.
 // ---------------------------------------------------------------------------
 

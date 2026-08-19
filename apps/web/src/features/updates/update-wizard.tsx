@@ -16,6 +16,13 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCreateUpdateRun } from "@/features/updates/use-updates";
 import { isAgentPluginComponent } from "@/features/updates/agent-plugin";
+import {
+  SCHEDULE_MAX_LEAD_DAYS,
+  browserTimeZone,
+  formatAbsolute,
+  scheduleBounds,
+  validateSchedule,
+} from "@/features/updates/schedule";
 import type { Site, UpdateItem, UpdateRunCreate } from "@wpmgr/api";
 
 // Bulk update wizard (operator+). Opened from the sites list once the user has
@@ -248,6 +255,17 @@ function WizardForm({
   }
 
   const items = buildItems();
+
+  // GH #463: the schedule bounds the control plane enforces, restated at the
+  // point of typing. `scheduleProblem` is recomputed on every render rather
+  // than memoised on `scheduleAt` alone, because it is time-relative: a value
+  // that was two minutes out when it was typed is in the past by the time the
+  // operator finishes choosing plugins, and the stale verdict would let it
+  // through to a 422.
+  const scheduleZone = browserTimeZone();
+  const scheduleBoundsValue = scheduleBounds();
+  const scheduleProblem = validateSchedule(scheduleAt);
+
   const targetDescribed =
     target.kind === "sites"
       ? `${target.siteIds.length} selected site${target.siteIds.length === 1 ? "" : "s"}`
@@ -262,6 +280,10 @@ function WizardForm({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (items.length === 0) return;
+    // GH #463: re-validate against the clock AT SUBMIT, not against the
+    // verdict rendered earlier. The form is `noValidate`, so `min`/`max` on
+    // the input are a picker hint only and never a gate.
+    if (validateSchedule(scheduleAt)) return;
 
     const scheduleIso = scheduleAt
       ? new Date(scheduleAt).toISOString()
@@ -439,17 +461,50 @@ function WizardForm({
             </label>
 
             <div className="space-y-1">
-              <Label htmlFor="schedule-at">Schedule (optional)</Label>
+              {/* GH #463: the field now names the zone it is read in. A
+                  `datetime-local` value is interpreted in the BROWSER's zone,
+                  and that is the instant submitted below — so an operator in
+                  London scheduling a Sydney site was previously shown neither
+                  zone and had no way to tell which one they had picked. */}
+              <Label htmlFor="schedule-at">
+                Schedule (optional)
+                {scheduleZone ? (
+                  <span className="ml-1.5 font-normal text-[var(--color-muted-foreground)]">
+                    in {scheduleZone}
+                  </span>
+                ) : null}
+              </Label>
               <Input
                 id="schedule-at"
                 type="datetime-local"
                 value={scheduleAt}
                 onChange={(e) => setScheduleAt(e.target.value)}
                 className="w-60"
+                min={scheduleBoundsValue.min}
+                max={scheduleBoundsValue.max}
+                aria-invalid={scheduleProblem ? true : undefined}
+                aria-describedby={
+                  scheduleProblem ? "schedule-at-error" : "schedule-at-hint"
+                }
               />
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                Leave empty to run immediately.
-              </p>
+              {scheduleProblem ? (
+                <p
+                  id="schedule-at-error"
+                  role="alert"
+                  className="text-xs text-[var(--color-destructive)]"
+                >
+                  {scheduleProblem.message}
+                </p>
+              ) : (
+                <p
+                  id="schedule-at-hint"
+                  className="text-xs text-[var(--color-muted-foreground)]"
+                >
+                  {scheduleAt
+                    ? `Runs at ${formatAbsolute(new Date(scheduleAt).toISOString())}. Leave empty to run immediately.`
+                    : `Leave empty to run immediately. Up to ${SCHEDULE_MAX_LEAD_DAYS} days ahead.`}
+                </p>
+              )}
             </div>
           </div>
 
@@ -482,7 +537,13 @@ function WizardForm({
           </Button>
           <Button
             type="submit"
-            disabled={create.isPending || items.length === 0}
+            disabled={
+              create.isPending ||
+              items.length === 0 ||
+              // GH #463: a schedule the control plane would refuse
+              // (`schedule_in_past` / `schedule_too_far`) never reaches it.
+              scheduleProblem !== null
+            }
           >
             {submitLabel}
           </Button>

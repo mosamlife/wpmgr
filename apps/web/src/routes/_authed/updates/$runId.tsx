@@ -38,6 +38,11 @@ import {
   type RetryTask,
 } from "@/features/updates/retry-contract";
 import { useRetrySelection } from "@/features/updates/use-retry-selection";
+import { formatAbsolute } from "@/features/updates/schedule";
+import {
+  ExpiredRunNotice,
+  ScheduledRunNotice,
+} from "@/features/updates/schedule-notices";
 import { RetryActionBar } from "@/features/updates/retry-action-bar";
 import { RetryRunDialog } from "@/features/updates/retry-dialog";
 import { useSites } from "@/features/sites/use-sites";
@@ -244,8 +249,12 @@ function RunDetail({
         subline={
           <>
             Created {created ?? run.created_at}
+            {/* GH #463: this printed `run.scheduled_at` raw — an ISO-8601 UTC
+                string, in a UI whose whole job here is telling an operator
+                WHEN their fleet gets touched. formatAbsolute always names the
+                zone the time is expressed in. */}
             {run.scheduled_at
-              ? ` · Scheduled for ${run.scheduled_at}`
+              ? ` · Scheduled for ${formatAbsolute(run.scheduled_at)}`
               : ""}
           </>
         }
@@ -263,6 +272,38 @@ function RunDetail({
           ) : undefined
         }
       />
+
+      {/* GH #463: waiting. Says plainly that no site has been contacted, which
+          is what an operator opening a scheduled run is checking. `onCancel`
+          is deliberately omitted: the control plane has the
+          CancelScheduledUpdateRun query but no HTTP route yet, and a Cancel
+          button that cannot cancel is worse than none. */}
+      {run.status === "scheduled" && run.scheduled_at ? (
+        <ScheduledRunNotice scheduledAt={run.scheduled_at} />
+      ) : null}
+
+      {/* GH #463: the expired state. Warning, never destructive — a missed
+          schedule is not a broken site, and red here would tell an agency
+          that a client's sites failed when nothing was ever sent. "Run now"
+          reuses the retry path, which is genuinely available: the control
+          plane classifies an expired task as retryable/`never_ran`
+          (apps/api/internal/update/model.go:405). */}
+      {run.status === "expired" ? (
+        <ExpiredRunNotice
+          run={run}
+          onRunNow={
+            retryAvailable && selection.selectableTasks.length > 0
+              ? () => {
+                  // Every task of an expired run is `never_ran`, so "Run now"
+                  // means all of them, not whatever the default selection
+                  // happened to be.
+                  selection.setAllSelectable(true);
+                  setRetryOpen(true);
+                }
+              : undefined
+          }
+        />
+      ) : null}
 
       {halted ? (
         // GH #255 Phase 2: a halt means a bad agent build was caught before

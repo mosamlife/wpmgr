@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusChip } from "@/components/status/status-chip";
 import type { StatusTone } from "@/components/status/status-dot";
 import { useUpdateRuns } from "@/features/updates/use-updates";
+import { ScheduleCountdown } from "@/features/updates/schedule-notices";
 import { AgentFleetSummaryCard } from "@/features/fleet/AgentFleetSummaryCard";
 import { relativeTime } from "@/lib/utils";
 import type { UpdateRun } from "@wpmgr/api";
@@ -105,13 +106,26 @@ function UpdatesPage() {
               {runs.map((run) => (
                 <TableRow key={run.id} data-testid="update-run-row">
                   <TableCell className="font-medium">
-                    <Link
-                      to="/updates/$runId"
-                      params={{ runId: run.id }}
-                      className="font-mono text-sm underline-offset-4 hover:underline"
-                    >
-                      {run.id.slice(0, 8)}…
-                    </Link>
+                    <div className="flex flex-col gap-0.5">
+                      <Link
+                        to="/updates/$runId"
+                        params={{ runId: run.id }}
+                        className="font-mono text-sm underline-offset-4 hover:underline"
+                      >
+                        {run.id.slice(0, 8)}…
+                      </Link>
+                      {/* GH #463: a scheduled run is the one row in this list
+                          where "when" is the whole point, so the countdown and
+                          the zone-labelled absolute time sit directly under the
+                          id rather than in the Created column, which means
+                          something else. */}
+                      {run.status === "scheduled" && run.scheduled_at ? (
+                        <ScheduleCountdown
+                          scheduledAt={run.scheduled_at}
+                          className="text-xs font-normal"
+                        />
+                      ) : null}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <StatusChip

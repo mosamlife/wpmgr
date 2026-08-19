@@ -273,6 +273,46 @@ func TestSweeperSilentSchedulerSignalDoesNotOverFire(t *testing.T) {
 // line is how a dead dispatcher becomes visible, so it must appear even on the
 // empty pass — the case a "only log when there is something to say" instinct
 // would remove, taking the detector with it.
+// TestSweeperSkippedPassStillHeartbeatsButSignalsNothing pins both halves of
+// the F1 hardening.
+//
+// A pass that yielded to a peer's advisory lock is a LIVING sweeper: it ticked,
+// took its turn and stood down. Staying silent would make a healthy
+// multi-replica install indistinguishable from a dead one — which is precisely
+// the state an un-released session lock produces, where every subsequent pass
+// skips forever and the detector goes quiet along with it.
+//
+// But its counters measured NOTHING. Due == 0 there means "did not look", not
+// "looked and found none", so the three measurement signals must stay silent:
+// treating an absent observation as a healthy one is the same mistake as
+// inferring run completion from a partial view.
+func TestSweeperSkippedPassStillHeartbeatsButSignalsNothing(t *testing.T) {
+	now := time.Now()
+	logger, buf := captureLogs()
+	w := NewSweepWorker(&sweepFakeRepo{}, &sweepFakeEnqueuer{}, nil, logger)
+	w.SetClock(func() time.Time { return now })
+
+	// A skipped pass, exactly as sweep() reports one after losing the advisory
+	// lock: every counter zero, because it never looked.
+	w.report(SweepStats{Skipped: true, Due: 3, Overdue: 2, Capped: true})
+
+	if !strings.Contains(buf.String(), "pass complete") {
+		t.Errorf("a skipped pass emitted no heartbeat; a healthy multi-replica install would look identical to a dead sweeper.\nlogs:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"skipped":true`) {
+		t.Errorf("the heartbeat does not mark the pass skipped, so a reader cannot tell a yielded pass from a completed one.\nlogs:\n%s", buf.String())
+	}
+	for _, sig := range []string{
+		"due runs found but none dispatched",
+		"past their grace window",
+		"hit its per-pass bound",
+	} {
+		if logHasWarn(t, buf, sig) {
+			t.Errorf("a SKIPPED pass emitted the %q signal; its zeroes mean 'did not look', not 'looked and found none'.\nlogs:\n%s", sig, buf.String())
+		}
+	}
+}
+
 func TestSweeperHeartbeatIsEmittedOnEveryPass(t *testing.T) {
 	now := time.Now()
 	repo := &sweepFakeRepo{due: nil}
