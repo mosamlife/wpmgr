@@ -181,8 +181,9 @@ print_next_steps() {
   web_port="${web_port:-8088}"
   # Read back from .env rather than trusting a var from this run: the value
   # may have been generated just now, supplied by the operator earlier, or
-  # (if something above failed silently) still absent — print exactly what is
-  # actually persisted, not what this run assumed.
+  # (if something above failed silently) still absent. This is only a
+  # presence check now — the printed block below reads the value itself, at
+  # the operator's run time, so the literal secret never has to appear here.
   claim_secret="$(current_value "${BOOTSTRAP_CLAIM_KEY}")"
 
   local claim_step
@@ -193,22 +194,26 @@ print_next_steps() {
      claim only travels as a request header, deliberately kept out of the
      OpenAPI schema every generated client (including the dashboard) uses.
      Run this once, after the stack is up, to create the first owner account.
-     The block below writes the claim into a private, 600-permission temp
-     file instead of the command line, so it never shows up in \`ps\` output,
-     and removes that file when curl exits, on success or failure:
+     The block below reads the claim straight out of .env and writes it into
+     a private, 600-permission temp curl config file — the secret never
+     appears on the command line or in this printed text, so it cannot land
+     in shell history either, and the temp file is removed when curl exits,
+     on success or failure:
 
-       ( claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
+       ( env_file="${ENV_FILE}" && \\
+         claim_val="\$(grep '^${BOOTSTRAP_CLAIM_KEY}=' "\${env_file}" | head -n1 | sed -E "s/^[^=]*=//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/")" && \\
+         claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
          trap 'rm -f "\${claim_cfg}"' EXIT && \\
-         printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' '${claim_secret}' >"\${claim_cfg}" && \\
+         printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' "\${claim_val}" >"\${claim_cfg}" && \\
          curl -X POST http://localhost:${api_port}/auth/register \\
            -H "Content-Type: application/json" \\
            -K "\${claim_cfg}" \\
            -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
 
-     ${BOOTSTRAP_CLAIM_KEY} is saved in .env — the value written into the temp
-     file above is that exact secret. It is not re-generated on a later
-     re-run of this script once a value is present, so it stays valid until
-     you rotate it yourself.
+     ${BOOTSTRAP_CLAIM_KEY} lives in .env at ${ENV_FILE} — the command above
+     reads it from there each time you run it, so it keeps working even if
+     you rotate the value later. It is not re-generated on a later re-run of
+     this script once a value is present.
 CLAIMEOF
 )"
   else

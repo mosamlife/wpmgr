@@ -212,30 +212,40 @@ api_port="${api_port:-8081}"
 web_port="${web_port:-8088}"
 ver_tag="${WPMGR_VERSION:-latest}"
 # init-env.sh (run in step 3 above) generates and persists this unless it was
-# already set — read back what actually landed in .env, not what this run
-# assumed.
+# already set. This is only a presence check now — the printed block below
+# reads the value itself, at the operator's run time, so the literal secret
+# never has to appear here.
 claim_secret="$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' .env | head -n1 | cut -d= -f2-)"
+# Absolute path to .env: we are already inside WORK_DIR (step 1 cd'd here),
+# but the claim block below is meant to be pasted and run later, possibly
+# from a different directory, so it needs a path that does not depend on cwd.
+env_file_abs="$(pwd)/.env"
 if [ -n "${claim_secret}" ]; then
   claim_block="$(cat <<CLAIMEOF
 Claim ownership (do this once, after the stack is up):
   This install has no owner yet, and the Sign Up form in the dashboard cannot
   create the first one — the claim below travels only as a request header,
   deliberately absent from the API schema every generated client uses. The
-  block below writes the claim into a private, 600-permission temp file
-  instead of the command line, so it never shows up in \`ps\` output, and
-  removes that file when curl exits, on success or failure:
+  block below reads the claim straight out of .env and writes it into a
+  private, 600-permission temp curl config file — the secret never appears
+  on the command line or in this printed text, so it cannot land in shell
+  history either, and the temp file is removed when curl exits, on success
+  or failure:
 
-  ( claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
+  ( env_file="${env_file_abs}" && \\
+    claim_val="\$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' "\${env_file}" | head -n1 | sed -E "s/^[^=]*=//; s/^\"(.*)\"\$/\1/; s/^'(.*)'\$/\1/")" && \\
+    claim_cfg="\$(mktemp)" && chmod 600 "\${claim_cfg}" && \\
     trap 'rm -f "\${claim_cfg}"' EXIT && \\
-    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' '${claim_secret}' >"\${claim_cfg}" && \\
+    printf 'header = "X-Wpmgr-Bootstrap-Claim: %s"\n' "\${claim_val}" >"\${claim_cfg}" && \\
     curl -X POST http://localhost:${api_port}/auth/register \\
       -H "Content-Type: application/json" \\
       -K "\${claim_cfg}" \\
       -d '{"email":"you@example.com","password":"replace-with-12+-chars"}' )
 
-  WPMGR_BOOTSTRAP_CLAIM_SECRET is saved in .env — the value written into the
-  temp file above is that exact secret. Re-running this script will NOT
-  change it once it is set.
+  WPMGR_BOOTSTRAP_CLAIM_SECRET lives in .env at ${env_file_abs} — the command
+  above reads it from there each time you run it, so it keeps working even if
+  you rotate the value later. Re-running this script will NOT change it once
+  it is set.
 CLAIMEOF
 )"
 else
