@@ -462,7 +462,8 @@ func ValidateClaimTimings(applyJobTimeout time.Duration) error {
 	if bound >= staleTaskThreshold {
 		return fmt.Errorf("update: claim staleness bound (%v) must stay under the stale-task reaper threshold (%v), "+
 			"but the configured apply budget (%v) pushes it past: lower update.apply_http_timeout "+
-			"(WPMGR_UPDATE_APPLY_HTTP_TIMEOUT) or update.http_timeout, or raise the reaper threshold to match",
+			"(WPMGR_UPDATE_APPLY_HTTP_TIMEOUT) or update.http_timeout (WPMGR_UPDATE_HTTP_TIMEOUT). "+
+			"The reaper threshold is a compile-time constant and cannot be raised by configuration",
 			bound, staleTaskThreshold, applyJobTimeout)
 	}
 	return nil
