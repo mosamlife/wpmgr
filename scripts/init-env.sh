@@ -216,11 +216,11 @@ print_next_steps() {
      this script once a value is present.
 CLAIMEOF
 )"
-  else
-    claim_step="  5. WARNING: ${BOOTSTRAP_CLAIM_KEY} is not set in .env — this install
-     cannot be claimed by anyone until it is. Set it to a random secret and
-     re-run: docker compose ... up -d (after editing .env) to pick it up."
   fi
+  # No else: when the key is absent, claim_step stays "" (the local's default
+  # under nounset) and the failure below fires after the summary prints. It
+  # does NOT become a numbered step here — a broken, unclaimable install is
+  # not "step 5 of 6" alongside routine setup instructions.
 
   cat <<EOF
 
@@ -251,6 +251,25 @@ ${claim_step}
 
 See docs/install.md for the full guide.
 EOF
+
+  # ${BOOTSTRAP_CLAIM_KEY} is generated unconditionally earlier in this script
+  # (step 1b, above the "all secrets already set" early-exit) whenever it is
+  # missing, so reaching this point without one means that generation did not
+  # persist. Printing the summary above and exiting 0 would report success
+  # over an install nobody can ever own — fail loudly instead.
+  if [ -z "${claim_secret}" ]; then
+    {
+      printf '\n'
+      printf 'ERROR: %s is not set in .env.\n' "${BOOTSTRAP_CLAIM_KEY}"
+      printf 'This script generates it unconditionally earlier in the run, so\n'
+      printf 'reaching this point without one means that generation did not\n'
+      printf 'persist. This install cannot be claimed by anyone until\n'
+      printf '%s has a value: set one in .env yourself, then\n' "${BOOTSTRAP_CLAIM_KEY}"
+      printf 'bring the stack up (or restart the api service if it is already\n'
+      printf 'running) before treating setup as complete.\n'
+    } >&2
+    exit 1
+  fi
 }
 
 # ---------------------------------------------------------------------------

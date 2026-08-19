@@ -249,9 +249,12 @@ Claim ownership (do this once, after the stack is up):
 CLAIMEOF
 )"
 else
-  claim_block="WARNING: WPMGR_BOOTSTRAP_CLAIM_SECRET is not set in .env — this
-  install cannot be claimed by anyone until it is. Set it to a random secret
-  in .env and restart the api service."
+  # init-env.sh (step 3, above) generates this unconditionally and now exits
+  # non-zero itself when generation does not persist, so reaching here with
+  # it still absent should not happen. Kept as a second check in case that
+  # invariant ever changes: fail loudly below rather than let this printed
+  # summary claim success over an install nobody can ever own.
+  claim_block=""
 fi
 
 # ---------------------------------------------------------------------------
@@ -286,3 +289,19 @@ IMPORTANT:
   - Review docs/install.md for the full self-host guide.
 
 EOF
+
+# See the matching check in scripts/init-env.sh (step 3 above) for why this
+# is a hard failure rather than a warning folded into the summary above.
+if [ -z "${claim_secret}" ]; then
+  {
+    printf '\n'
+    printf 'ERROR: WPMGR_BOOTSTRAP_CLAIM_SECRET is not set in .env.\n'
+    printf 'init-env.sh generates it unconditionally and should have failed\n'
+    printf 'before reaching here if generation did not persist. This install\n'
+    printf 'cannot be claimed by anyone until WPMGR_BOOTSTRAP_CLAIM_SECRET has\n'
+    printf 'a value: set one in .env yourself, then bring the stack up (or\n'
+    printf 'restart the api service if it is already running) before treating\n'
+    printf 'setup as complete.\n'
+  } >&2
+  exit 1
+fi
