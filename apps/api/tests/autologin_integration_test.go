@@ -40,6 +40,9 @@ import (
 func startRedis(t *testing.T) (*redis.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
+
+	skipIfDockerUnavailable(t, ctx, "redis")
+
 	req := testcontainers.ContainerRequest{
 		Image:        "redis:7-alpine",
 		ExposedPorts: []string{"6379/tcp"},
@@ -50,7 +53,7 @@ func startRedis(t *testing.T) (*redis.Pool, string) {
 		Started:          true,
 	})
 	if err != nil {
-		setupSkipf(t, err, "redis: container start (docker unavailable?)")
+		setupFatalf(t, err, "redis: container start")
 	}
 	t.Cleanup(func() { _ = c.Terminate(ctx) })
 	host, err := c.Host(ctx)
@@ -102,16 +105,17 @@ func newAutologinSigner(t *testing.T) *agentcmd.Signer {
 // Recorder.
 //
 // Cross-clock note: domain.SystemClock{} below is the HOST's clock — Mint
-// computes expires_at as s.clock.Now().UTC().Add(autologin.JWTTTL) (60s,
-// internal/autologin/model.go) on the host, but Consume's gate is
-// `expires_at > now()` evaluated by the testcontainer's OWN Postgres clock
-// (db/query/autologin.sql, ConsumeAutologinToken). A Consume call in these
-// tests is therefore only guaranteed to pass if host and container clocks
-// agree within the 60s budget minus whatever wall time elapsed between Mint
-// and Consume. Measured skew here is currently zero, so this is not a live
-// bug — but an intermittent Consume failure ("nonce_unavailable") under load
-// is where a real skew would show up first, and this comment is the
-// explanation to find instead of re-deriving it.
+// computes expires_at as s.clock.Now().UTC().Add(autologin.JWTTTL)
+// (internal/autologin/model.go is the source of truth for the TTL value) on
+// the host, but Consume's gate is `expires_at > now()` evaluated by the
+// testcontainer's OWN Postgres clock (db/query/autologin.sql,
+// ConsumeAutologinToken). A Consume call in these tests is therefore only
+// guaranteed to pass if host and container clocks agree within the JWTTTL
+// budget minus whatever wall time elapsed between Mint and Consume. Measured
+// skew here is currently zero, so this is not a live bug — but an
+// intermittent Consume failure ("nonce_unavailable") under load is where a
+// real skew would show up first, and this comment is the explanation to find
+// instead of re-deriving it.
 func buildAutologinService(t *testing.T, pool *db.Pool, redisPool *redis.Pool, siteSvc *site.Service, cfg autologin.Config) (*autologin.Service, *audit.Recorder) {
 	t.Helper()
 	rec := audit.NewRecorder(pool, domain.SystemClock{})

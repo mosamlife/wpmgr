@@ -43,6 +43,32 @@ func setupSkipf(t *testing.T, err error, stage string) {
 	t.Skipf("SETUP SKIP (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
 }
 
+// skipIfDockerUnavailable positively detects whether the Docker/OCI provider
+// testcontainers will use is reachable at all, and skips (via setupSkipf) if
+// it is not. This is the ONLY thing that may resolve to a skip in this
+// package: "the daemon cannot be reached" is checked directly, up front,
+// before any container is asked to start, rather than being inferred from
+// whatever error a later container-start call happens to return.
+//
+// That distinction matters because a container that fails to START despite
+// Docker being reachable (bad image tag, no space left, registry pull
+// failure, resource limits) is a real setup failure, not "Docker is not
+// installed here" — it must go to setupFatalf and turn the run red, never
+// setupSkipf. Routing a start failure to Skip is exactly the failure mode
+// this test package exists to eliminate: a package-level "ok" over a suite
+// that asserted nothing.
+func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
+	t.Helper()
+	provider, err := testcontainers.ProviderDocker.GetProvider()
+	if err != nil {
+		setupSkipf(t, err, stage+" (docker provider unavailable)")
+		return
+	}
+	if err := provider.Health(ctx); err != nil {
+		setupSkipf(t, err, stage+" (docker daemon unreachable)")
+	}
+}
+
 // startPostgres spins up an ephemeral Postgres, applies the embedded
 // migrations as the bootstrap superuser, then provisions a dedicated
 // NON-superuser application role and returns a pool connected as that role.
@@ -54,6 +80,8 @@ func setupSkipf(t *testing.T, err error, stage string) {
 func startPostgres(t *testing.T) *db.Pool {
 	t.Helper()
 	ctx := context.Background()
+
+	skipIfDockerUnavailable(t, ctx, "postgres")
 
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
@@ -67,7 +95,7 @@ func startPostgres(t *testing.T) *db.Pool {
 		),
 	)
 	if err != nil {
-		setupSkipf(t, err, "postgres: container start (docker unavailable?)")
+		setupFatalf(t, err, "postgres: container start")
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
