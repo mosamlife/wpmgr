@@ -344,9 +344,17 @@ func terminal(status string) bool {
 // only one of them is over.
 const (
 	// RetryClassNeverRan: the task reached a terminal state without the control
-	// plane ever sending anything to the site. Today that is exactly
-	// `cancelled` (its run halted first). Nothing on the site changed, which
-	// makes this the LOWEST-risk thing a retry can pick up.
+	// plane ever sending anything to the site. Two statuses qualify, and they
+	// differ only in WHY nothing was sent:
+	//
+	//   cancelled  a decision — its run halted, or an operator stopped it.
+	//   expired    a missed window (#463) — the run came due while the control
+	//              plane was unavailable and stayed due past the grace window.
+	//
+	// Nothing on the site changed in either case, which makes this the
+	// LOWEST-risk thing a retry can pick up — and, for `expired` especially,
+	// the one an operator most wants back: the work did not happen at all, and
+	// not because anything went wrong with it.
 	RetryClassNeverRan = "never_ran"
 	// RetryClassFailed: the site was contacted and the update did not succeed.
 	// The primary retry case.
@@ -383,7 +391,18 @@ func retryClassify(status string) (retryable bool, class string) {
 		return false, RetryClassNotApplicable // pending, running
 	}
 	switch status {
-	case TaskCancelled:
+	// TaskExpired sits with TaskCancelled deliberately, and NOT in the default
+	// arm it would otherwise inherit. That arm exists for TaskSucceeded, whose
+	// answer is "retrying is not meaningful, the work is done" — the precise
+	// opposite of an expired task, where the work did not happen at all.
+	//
+	// Letting it fall through would have offered no retry on the one outcome an
+	// operator most wants to re-run: nothing was sent to the site, nothing on
+	// the site changed, and the only reason it did not run is that the window
+	// passed while the control plane was down. `apps/web`'s retry-contract
+	// makes the same call, giving `expired` its own line rather than the
+	// generic terminal fallback, so the two layers agree.
+	case TaskCancelled, TaskExpired:
 		return true, RetryClassNeverRan
 	case TaskFailed:
 		return true, RetryClassFailed

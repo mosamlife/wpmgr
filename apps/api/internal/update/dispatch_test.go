@@ -207,3 +207,38 @@ func TestScheduledTaskIsNotTerminalButExpiredIs(t *testing.T) {
 		t.Error("TaskExpired and TaskCancelled are the same string; they record different facts")
 	}
 }
+
+// TestExpiredTaskIsRetryableAsNeverRan pins the retry contract for the status
+// this branch introduced.
+//
+// Making a status terminal silently changes retryClassify, because its default
+// arm is TaskSucceeded's: "retrying is not meaningful, the work is done". For an
+// expired task that is exactly backwards — nothing was sent to the site, nothing
+// on the site changed, and the only reason it did not run is that the window
+// passed while the control plane was down. Inheriting the default would have
+// offered no retry on the one outcome an operator most wants back.
+//
+// TaskCancelled is asserted alongside it as the control: the two share a class
+// because both were never attempted, and the test would catch either drifting
+// away from it.
+func TestExpiredTaskIsRetryableAsNeverRan(t *testing.T) {
+	retryable, class := retryClassify(TaskExpired)
+	if !retryable {
+		t.Error("an expired task offers no retry; it was never attempted, so it is the lowest-risk thing a retry can pick up")
+	}
+	if class != RetryClassNeverRan {
+		t.Errorf("retry class for %q = %q, want %q", TaskExpired, class, RetryClassNeverRan)
+	}
+	if class == RetryClassNotApplicable {
+		t.Error("expired fell through to the default arm, which exists for 'succeeded' — the opposite case")
+	}
+
+	// The control: cancelled shares the class for the same reason.
+	if cRetryable, cClass := retryClassify(TaskCancelled); !cRetryable || cClass != RetryClassNeverRan {
+		t.Errorf("retryClassify(%q) = (%v, %q), want (true, %q)", TaskCancelled, cRetryable, cClass, RetryClassNeverRan)
+	}
+	// And the anti-control: succeeded must NOT have become retryable.
+	if sRetryable, _ := retryClassify(TaskSucceeded); sRetryable {
+		t.Error("a succeeded task became retryable; the default arm has been widened past its purpose")
+	}
+}
