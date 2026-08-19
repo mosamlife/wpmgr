@@ -50,6 +50,26 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.140",
+    date: "2026-08-19",
+    summary:
+      "Two operational changes for self-hosters. First-run ownership now requires a provisioning claim, and the control plane validates its update-timing configuration at startup rather than allowing a combination that could dispatch the same update twice. Also fixes a race in claiming an update task.",
+    items: [
+      {
+        tag: "Changed",
+        text: "The control plane now validates its update-timing configuration at startup and refuses to boot when the apply-timeout setting is high enough that the derived claim-staleness bound reaches the stale-task reaper's threshold, naming the setting to lower. The default has roughly 25 minutes of headroom, so no ordinary install is affected.",
+      },
+      {
+        tag: "Changed",
+        text: "Self-hosted installs now require a bootstrap claim secret to establish first-run ownership. scripts/init-env.sh generates it and both quickstart paths route through that script. An install that already has an owner is unaffected; one that was stood up and never claimed needs the operator to re-run the script or set the variable, then restart the api service.",
+      },
+      {
+        tag: "Fixed",
+        text: "Claiming an update task could race, letting two workers both dispatch the same task and apply one item to a site twice. Claiming a task is now a compare-and-swap against the row's own status.",
+      },
+    ],
+  },
+  {
     version: "0.61.139",
     date: "2026-08-17",
     summary:
