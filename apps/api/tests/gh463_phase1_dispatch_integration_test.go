@@ -533,6 +533,112 @@ func TestGH463_Phase1_ABusyTargetIsSkippedAndTheRunSurvives(t *testing.T) {
 	}
 }
 
+// TestGH463_Phase1_ARunWithLiveWorkIsNotMarkedCompleted is the stranded-run
+// defect inverted: not a run nobody would ever finish, but a run declared
+// finished while it is still working.
+//
+// The scenario is an ordinary partial dispatch. An earlier pass moved one task
+// to 'pending' and its command is out on a real site; this pass finds the
+// remaining task's target busy and dispatches nothing. Deciding completion from
+// this pass's own counters ("Dispatched == 0") reaches RunCompleted — because
+// the loop skips non-'scheduled' rows WITHOUT counting them, so the live
+// 'pending' task contributes to neither counter. The operator is told their
+// fleet update finished while commands are still in flight.
+//
+// The fix is not a different sum, it is a different question:
+// CountUnfinishedTasksForRun, which counts pending, running AND scheduled.
+//
+// RED WITHOUT THE FIX: restore `if out.Dispatched == 0 { out.Status =
+// RunCompleted }` and this test reports the run 'completed' with a 'pending'
+// task beneath it.
+func TestGH463_Phase1_ARunWithLiveWorkIsNotMarkedCompleted(t *testing.T) {
+	pool := startPostgres(t)
+	ctx := context.Background()
+	repo := update.NewRepo(pool)
+
+	tenant := seedTenant(t, pool, "gh463-p1-livework")
+	siteID := seedSite(t, pool, tenant, "")
+	run, tasks := seedScheduledRunWithTask(t, repo, tenant, siteID,
+		time.Now().Add(-time.Minute), "akismet", "jetpack")
+
+	// An earlier partial pass: move ONE task to 'pending' by hand, exactly as a
+	// previous dispatch would have left it. Its command is notionally out on
+	// the site right now.
+	var live update.Task
+	for _, tk := range tasks {
+		if tk.TargetSlug == "jetpack" {
+			live = tk
+		}
+	}
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE update_tasks SET status = 'pending' WHERE id = $1`, live.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("simulate the earlier partial pass: %v", err)
+	}
+
+	// And the remaining scheduled task's target is taken by an immediate run,
+	// so this pass dispatches nothing at all.
+	if _, _, err := repo.CreateRunWithTasks(ctx, update.CreateRunInput{TenantID: tenant}, []update.NewTask{{
+		SiteID: siteID, TargetType: update.TargetPlugin, TargetSlug: "akismet",
+		DesiredVersion: "latest", FromVersion: "1.0.0",
+	}}); err != nil {
+		t.Fatalf("seed the competing immediate run: %v", err)
+	}
+
+	due, _ := repo.ListDueRuns(ctx, 100)
+	var target update.Run
+	for _, r := range due {
+		if r.ID == run.ID {
+			target = r
+		}
+	}
+	if target.ID == uuid.Nil {
+		t.Fatal("the run left the due scan")
+	}
+
+	enq := &countingTxEnqueuer{}
+	out, err := repo.DispatchDueRun(ctx, enq, target)
+	if err != nil {
+		t.Fatalf("DispatchDueRun: %v", err)
+	}
+	if !out.Claimed {
+		t.Fatal("the run was not claimed")
+	}
+	if out.Dispatched != 0 {
+		t.Fatalf("this pass dispatched %d tasks; the scenario requires it to dispatch none", out.Dispatched)
+	}
+
+	// The assertion. A run with a live 'pending' task is NOT finished.
+	got := runStatus(t, pool, tenant, run.ID)
+	if got == update.RunCompleted {
+		t.Errorf("run marked %q while a task is still 'pending' and its command is out on the site: the operator is told their fleet update finished while it is still going out", got)
+	}
+	if got != update.RunRunning {
+		t.Errorf("run status = %q, want %q", got, update.RunRunning)
+	}
+
+	// And the control, so the fix is not simply "never complete anything":
+	// once the live task reaches a terminal state, a later pass over a run that
+	// owes nothing does still complete it. Proven directly against the counter
+	// the fix now consults.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE update_tasks SET status = 'succeeded', finished_at = now() WHERE id = $1`, live.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("terminalize the live task: %v", err)
+	}
+	remaining, err := repo.CountUnfinishedTasks(ctx, tenant, run.ID)
+	if err != nil {
+		t.Fatalf("CountUnfinishedTasks: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("unfinished count = %d once every task is terminal, want 0; the completion branch would now be unreachable for a genuinely finished run", remaining)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 3. Expiry.
 // ---------------------------------------------------------------------------

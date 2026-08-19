@@ -286,11 +286,49 @@ func (r *pgRepo) DispatchDueRun(ctx context.Context, enq TxEnqueuer, run Run) (D
 			}
 		}
 
-		// A run whose every task was skipped has nothing left to wait for, so
-		// it goes straight to 'completed' rather than sitting at 'running'
-		// with no worker that would ever finish it.
+		// ASK THE DATABASE WHETHER ANYTHING IS LEFT. Do NOT infer it from this
+		// pass's counters.
+		//
+		// out.Dispatched and out.Skipped describe what THIS PASS did, which is
+		// a strictly narrower thing than what the RUN still owes, and the two
+		// diverge in ways that all point the same dangerous direction:
+		//
+		//   - The loop skips every task that is not 'scheduled' WITHOUT
+		//     counting it. A run holding 'pending' or 'running' tasks from an
+		//     earlier partial pass therefore contributes nothing to either
+		//     counter, so "Dispatched == 0" could be reached with live commands
+		//     already out on the operator's sites.
+		//   - out.Skipped also absorbs the two dispatchOneTask outcomes that
+		//     record no terminal state at all: the row stayed 'scheduled' (a
+		//     concurrent writer moved it, or is about to), and the row was gone.
+		//     Neither means "nothing left to wait for".
+		//
+		// Marking such a run 'completed' tells the operator their fleet update
+		// finished while it is still going out. That is the stranded-run defect
+		// inverted — there, a run nobody would ever finish; here, a run declared
+		// finished while it is still working — and both come from inferring run
+		// state from a partial view instead of asking.
+		//
+		// CountUnfinishedTasksForRun is exactly this question and is already the
+		// authority for it elsewhere. It counts 'pending', 'running' AND
+		// 'scheduled' — the last one added for this very feature — so it sees
+		// the earlier pass's live work, this pass's fresh dispatches, and any
+		// task still awaiting a future pass, while terminal rows (including the
+		// tasks this pass recorded 'skipped') correctly fall out.
+		unfinished, err := q.CountUnfinishedTasksForRun(ctx, sqlc.CountUnfinishedTasksForRunParams{
+			RunID:    run.ID,
+			TenantID: run.TenantID,
+		})
+		if err != nil {
+			return domain.Internal("update_run_unfinished_count_failed",
+				"failed to count unfinished tasks before closing dispatch").WithCause(err)
+		}
+		// Only a run that genuinely owes nothing is 'completed' — the case where
+		// every target was busy and each task was terminalized 'skipped'.
+		// Anything still outstanding stays 'running' and is finished by the
+		// worker that owns it.
 		out.Status = RunRunning
-		if out.Dispatched == 0 {
+		if unfinished == 0 {
 			out.Status = RunCompleted
 		}
 		if _, err := q.FinishUpdateRunDispatch(ctx, sqlc.FinishUpdateRunDispatchParams{
