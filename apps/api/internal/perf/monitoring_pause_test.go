@@ -270,15 +270,22 @@ func TestManualTriggeredJobOnAPausedSiteIsNotFiltered(t *testing.T) {
 // A pause lookup that errors must FAIL CLOSED. This is the half that separates
 // db_clean from the reversible vuln rescan: rescanning on an unknown pause
 // state costs a wasted read, cleaning on one deletes the customer's rows.
+//
+// Fail-closed and fail-visible are separate properties: the clean must not
+// happen (closed), and the failure must not be swallowed into a successful
+// job (visible) — a sustained pause-lookup outage must show up as a failing
+// River job, not a warning nobody reads while every job reports success.
 func TestAPauseCheckErrorDeclinesTheScheduledClean(t *testing.T) {
 	tenant, siteID := uuid.New(), uuid.New()
-	repo := &pauseRepo{fireErr: errors.New("pause lookup unavailable")}
+	wantErr := errors.New("pause lookup unavailable")
+	repo := &pauseRepo{fireErr: wantErr}
 	f := newPauseFixture(t, repo)
 
-	if err := f.dispatcher(t).Work(context.Background(), cleanJob(DBCleanArgs{
+	err := f.dispatcher(t).Work(context.Background(), cleanJob(DBCleanArgs{
 		TenantID: tenant, SiteID: siteID, Trigger: "scheduled",
-	})); err != nil {
-		t.Fatalf("a declined clean must succeed, not fail the job: %v", err)
+	}))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("a pause-check failure must be returned so River retries and the job is visibly failed, got %v", err)
 	}
 	if got := f.agent.cleaned(); len(got) != 0 {
 		t.Fatalf("an unknown pause state must decline the destructive clean, but %v were sent", got)
@@ -286,17 +293,19 @@ func TestAPauseCheckErrorDeclinesTheScheduledClean(t *testing.T) {
 }
 
 // Same, at the sweep: an unavailable pause lookup declines the whole sweep
-// rather than cleaning through it.
+// rather than cleaning through it, and now fails the sweep job visibly too.
 func TestASweepPauseLookupErrorEnqueuesNothing(t *testing.T) {
 	tenant := uuid.New()
+	wantErr := errors.New("pause lookup unavailable")
 	repo := &pauseRepo{
 		due:     []DueDBCleanSite{dueSite(tenant, uuid.New()), dueSite(tenant, uuid.New())},
-		scanErr: errors.New("pause lookup unavailable"),
+		scanErr: wantErr,
 	}
 	f := newPauseFixture(t, repo)
 
-	if err := f.sweeper(t).Work(context.Background(), &river.Job[DBCleanScheduleArgs]{}); err != nil {
-		t.Fatalf("a declined sweep must succeed, not fail the job: %v", err)
+	err := f.sweeper(t).Work(context.Background(), &river.Job[DBCleanScheduleArgs]{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("a pause-lookup failure must be returned so River retries and the sweep is visibly failed, got %v", err)
 	}
 	if got := f.enqueuer.siteIDs(); len(got) != 0 {
 		t.Fatalf("an unknown pause state must enqueue nothing, got %v", got)

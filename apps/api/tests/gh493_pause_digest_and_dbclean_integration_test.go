@@ -18,6 +18,7 @@ package tests
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -33,6 +34,18 @@ import (
 func namesSite(rows []vuln.FleetFindingRow, id uuid.UUID) bool {
 	for _, r := range rows {
 		if r.Finding.SiteID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// namesSiteInSummary is namesSite for FleetSummary.Findings — the Service-level
+// return shape (GetFleetSummary / GetFleetSummaryForDigest), which carries
+// SiteID as a direct field rather than nested under Finding.
+func namesSiteInSummary(rows []vuln.FleetFinding, id uuid.UUID) bool {
+	for _, r := range rows {
+		if r.SiteID == id {
 			return true
 		}
 	}
@@ -67,6 +80,12 @@ func TestGH493PauseIsHonouredByTheDigestAndTheScheduledClean(t *testing.T) {
 	vulnRepo := vuln.NewRepo(pool)
 	perfRepo := perf.NewRepo(pool)
 	siteRepo := site.NewRepo(pool)
+	// The production caller (cmd/wpmgr/vuln_alert_adapter.go) never touches
+	// vulnRepo directly — it calls vuln.Service.GetFleetSummaryForDigest. The
+	// subtest below goes through this same Service, over the same pool, so a
+	// service that routed back to the unfiltered repo methods reddens it even
+	// though the two repo-level subtests above it would stay green.
+	vulnSvc := vuln.NewService(vulnRepo, pool, nil, nil, nil, slog.Default())
 
 	// Baseline BEFORE any pause. Without it every subtest below would pass over
 	// a query that simply returned nothing.
@@ -120,6 +139,29 @@ func TestGH493PauseIsHonouredByTheDigestAndTheScheduledClean(t *testing.T) {
 		}
 		if !namesSite(rows, active) {
 			t.Fatalf("the digest must still name the ACTIVE site — a digest that names nobody is not a fix")
+		}
+	})
+
+	t.Run("the digest ENTRY POINT (GetFleetSummaryForDigest) excludes the paused site", func(t *testing.T) {
+		// This is the caller routing GH #493 actually requires: the repo-level
+		// subtests above call FleetOpenCountsExcludingPaused /
+		// FleetOpenFindingsExcludingPaused directly, which stays green even if
+		// the service forgot to call them. Going through the Service here is
+		// what the production adapter does, so a regression that re-points
+		// GetFleetSummaryForDigest at the unfiltered repo methods reddens THIS
+		// subtest specifically.
+		fleet, _, err := vulnSvc.GetFleetSummaryForDigest(ctx, tenant, 100)
+		if err != nil {
+			t.Fatalf("GetFleetSummaryForDigest: %v", err)
+		}
+		if fleet.High != 1 {
+			t.Fatalf("the digest entry point must count only the active site's finding, expected 1, got %d", fleet.High)
+		}
+		if namesSiteInSummary(fleet.Findings, paused) {
+			t.Fatalf("the digest entry point must not name the paused site")
+		}
+		if !namesSiteInSummary(fleet.Findings, active) {
+			t.Fatalf("the digest entry point must still name the ACTIVE site — a digest that names nobody is not a fix")
 		}
 	})
 

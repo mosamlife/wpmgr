@@ -83,8 +83,13 @@ func (w *DBCleanWorker) Work(ctx context.Context, job *river.Job[DBCleanArgs]) e
 	//
 	// db_clean DELETES ROWS FROM THE CUSTOMER'S LIVE DATABASE, so unlike the
 	// vuln rescan's reversible read this one FAILS CLOSED: a pause-check error
-	// declines the clean rather than proceeding on an unknown. The site keeps
-	// its advanced schedule and cleans on the next interval.
+	// declines the clean rather than proceeding on an unknown — that half is
+	// unconditional and does not change below. What changes is that the error
+	// is also returned instead of swallowed, so River retries this job with
+	// backoff and the failure surfaces as a failed job rather than a silent
+	// success. If every retry hits the same failure the job is eventually
+	// discarded, and the site falls back to its already-advanced
+	// next_db_clean_at for the next interval.
 	//
 	// Only the scheduled trigger is gated. Pause governs the schedule, never
 	// the operator: a manual clean is the operator, and is never filtered.
@@ -95,7 +100,7 @@ func (w *DBCleanWorker) Work(ctx context.Context, job *river.Job[DBCleanArgs]) e
 				slog.String("site_id", a.SiteID.String()),
 				slog.String("tenant_id", a.TenantID.String()),
 				slog.Any("error", perr))
-			return nil
+			return perr
 		}
 		if paused {
 			w.logger.Info("db-clean: scheduled clean declined, monitoring paused",
@@ -198,15 +203,22 @@ func (w *DBCleanScheduleWorker) Work(ctx context.Context, _ *river.Job[DBCleanSc
 	}
 
 	// GH #493 — selection-time pause filter. One round trip for the whole
-	// batch. On error every due site is treated as paused: db_clean deletes
-	// rows from the customer's live database, so an unknown pause state
-	// declines the sweep rather than cleaning through it. The dispatcher
-	// re-checks per site at fire time regardless.
+	// batch. On error the sweep declines entirely — no site in this batch is
+	// enqueued and none has next_db_clean_at advanced — rather than cleaning
+	// through an unknown pause state: db_clean deletes rows from the
+	// customer's live database. The dispatcher re-checks per site at fire
+	// time regardless.
+	//
+	// The error is also returned instead of swallowed, so River retries this
+	// sweep job with backoff and the failure surfaces as a failed job rather
+	// than a silent success. Nothing here advanced any site's schedule, so
+	// the next periodic tick (every 5 min) re-selects the same due sites
+	// independently of that retry.
 	paused, perr := w.svc.repo.PausedSiteIDs(ctx, dueSiteIDs(due))
 	if perr != nil {
 		w.logger.Warn("db-clean schedule: pause lookup failed, declining this sweep",
 			slog.Int("due", len(due)), slog.Any("error", perr))
-		return nil
+		return perr
 	}
 
 	dispatched, skipped := 0, 0
