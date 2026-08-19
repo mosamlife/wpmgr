@@ -99,13 +99,22 @@ type CancelScheduledUpdateRunParams struct {
 // scheduled run promises that nothing was ever sent, and this precondition is
 // what makes that promise true.
 //
-// @status is supplied rather than hardcoded because the run-status vocabulary
-// has no 'cancelled': the values Go writes are RunPending/RunRunning/
-// RunCompleted/RunHalted (update/model.go), so the intended argument is
-// RunHalted. It is parameterised rather than inlined so this file does not mint
-// a seventh run status by literal — see the note handed back with this change,
-// which asks for a ruling and for a new ordinal, since m118's COMMENT ON COLUMN
-// calls itself the contract and does not list 'halted' either.
+// @status is supplied rather than hardcoded because THE RUN VOCABULARY HAS NO
+// 'cancelled'. The run statuses Go writes are defined in update/model.go — that
+// file is the list, and it is not restated here precisely because a copied list
+// goes stale silently. The intended argument is RunHalted, so an operator's
+// cancellation lands the run on 'halted' while its tasks go to 'cancelled'
+// (TerminalizeScheduledTasksForRun sets out why that pair is asymmetric).
+//
+// Parameterised rather than inlined so this file cannot mint a run status by
+// literal: there is no CHECK constraint, so an invented value would store
+// cleanly and then fail to render, gen.UpdateRunStatus being a closed enum.
+//
+// STILL OPEN, and verified against this tree rather than remembered: 'halted'
+// appears in no migration and is absent from db/schema.sql's run-status list,
+// yet m118's COMMENT ON COLUMN calls itself the contract. The contract is
+// therefore incomplete for a value the code has written since long before #463.
+// Correcting it is a NEW ordinal, never an edit to m118.
 //
 // ZERO ROWS MEANS: too late, or already gone. The run has left 'scheduled', so
 // the caller must re-read it and return a conflict to the operator rather than
@@ -638,15 +647,29 @@ type FinishScheduledUpdateTaskParams struct {
 // definition and matches zero rows there. That is correct — FinishUpdateTask
 // records the outcome of an ATTEMPT, and nothing was ever attempted here.
 //
-// @status is the terminal state, and exactly two values are admissible:
+// @status is the terminal state, and exactly three values are admissible.
+// All three mean "nothing was ever sent to this site"; they differ in WHY, and
+// that difference is the whole point of recording them separately:
 //
-//	'skipped'    Its (site, target) was in flight from another run when the
-//	             dispatcher reached it (MarkScheduledUpdateTaskPending's
-//	             zero-row-still-scheduled case). Consistent with 'skipped'
-//	             elsewhere in this file: not attempted, by decision.
-//	'cancelled'  The parent run was cancelled or expired before it fired.
-//	             Consistent with CancelPendingUpdateTask: nothing was ever sent
-//	             to this site, and nothing on it changed.
+//	'skipped'    (update.TaskSkipped) Its (site, target) was in flight from
+//	             another run when the dispatcher reached it
+//	             (MarkScheduledUpdateTaskPending's zero-row-still-scheduled
+//	             case). Consistent with 'skipped' elsewhere in this file: not
+//	             attempted, by decision of the control plane.
+//	'cancelled'  (update.TaskCancelled) A human stopped the run before it
+//	             fired. Consistent with CancelPendingUpdateTask: nothing was
+//	             ever sent to this site, and nothing on it changed.
+//	'expired'    (update.TaskExpired) The parent run expired without
+//	             dispatching, so this task was never attempted. Terminal.
+//	             (m118's COMMENT ON COLUMN and db/schema.sql carry this same
+//	             sentence; the three are meant to agree word for word.)
+//
+// 'cancelled' AND 'expired' ARE NOT SPELLINGS OF EACH OTHER. 'cancelled'
+// records a decision a human made; 'expired' records that the window closed
+// while the control plane was not up in time to start the run. Collapsing them
+// tells an operator that somebody stopped their scheduled update when in fact
+// nobody did — which is the single distinction this feature exists to make, and
+// the erasure m118's column comment was written to prevent.
 //
 // There is NO CHECK CONSTRAINT on this column, so a typo stores cleanly and the
 // row leaves every predicate in this file at once — invisible to the reaper,
@@ -1849,9 +1872,21 @@ type TerminalizeScheduledTasksForRunParams struct {
 // would find them. Splitting these two writes across transactions is the single
 // way to leak rows in this feature.
 //
-// @status takes the same two admissible values as FinishScheduledUpdateTask;
-// the run-level callers pass 'cancelled' for both endings, since in both cases
-// nothing was ever sent to the site.
+// @status takes the same admissible values as FinishScheduledUpdateTask, and
+// THE TWO RUN-LEVEL ENDINGS PASS DIFFERENT ONES. They agree that nothing was
+// ever sent to the site; they disagree about why, and the row is the only place
+// that survives to say so:
+//
+//	expiry  ExpireDueUpdateRun    -> run 'expired', tasks 'expired'
+//	                                (dispatch_repo.go, TaskExpired)
+//	cancel  CancelScheduledUpdateRun -> run 'halted', tasks 'cancelled'
+//	                                (cancel_repo.go, TaskCancelled)
+//
+// The run vocabulary has no 'cancelled', so operator cancellation lands the RUN
+// on 'halted' while its TASKS go to 'cancelled'. That asymmetry is deliberate:
+// minting a 'cancelled' run status would create a value no existing reader can
+// render (gen.UpdateRunStatus is a closed enum). Do not "tidy" the pair into
+// matching by inventing one.
 //
 // ONLY 'scheduled' ROWS ARE TOUCHED, which is what makes this safe to run
 // against a partially dispatched run: a task already moved to 'pending' or
