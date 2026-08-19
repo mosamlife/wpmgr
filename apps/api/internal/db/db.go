@@ -21,6 +21,51 @@ type Pool struct {
 	*pgxpool.Pool
 }
 
+// SessionCleanupTimeout bounds a session-scoped cleanup statement issued from a
+// defer — pg_advisory_unlock above all — on a pinned pooled connection.
+//
+// Two failure modes, and the value has to sit between them:
+//
+//  1. Running the cleanup on the caller's own ctx is a leak. When ctx is already
+//     cancelled (graceful shutdown mid-pass, a River job timeout, a client
+//     disconnect) pgx returns immediately WITHOUT PUTTING THE STATEMENT ON THE
+//     WIRE. The connection then goes back to the pool healthy, still holding a
+//     SESSION-scoped advisory lock, and every later pass takes a different
+//     connection, gets false from pg_try_advisory_lock, concludes a peer is
+//     working and skips. Nothing errors; the work simply stops happening until
+//     MaxConnLifetime (30 min, below) finally closes the connection.
+//     context.WithoutCancel is what stops that.
+//
+//  2. WithoutCancel alone is unbounded. If the socket is wedged rather than the
+//     context cancelled, an uncancellable Exec in a defer blocks shutdown for as
+//     long as the kernel takes to give up. That case is also the case where the
+//     unlock is pointless: a session that cannot be reached is a session that is
+//     about to end, and its locks drop with it. So the bound costs nothing where
+//     it fires.
+//
+// 5 s is the gap. A single unlock round-trip on an ALREADY-ESTABLISHED
+// connection is <10 ms against Cloud SQL over the VPC connector (the same
+// measurement BeforeAcquire's 500 ms ping budget is sized from), so 5 s is
+// ~500× headroom for the healthy path, while staying inside the shutdown grace
+// so a cleanup cannot be what makes a drain overrun.
+const SessionCleanupTimeout = 5 * time.Second
+
+// CleanupContext returns a context for undoing session-scoped state (an advisory
+// unlock, a RESET) before a pinned connection returns to the pool. It detaches
+// from ctx's cancellation and deadline while keeping its values, then bounds
+// itself by SessionCleanupTimeout. See that constant for why it is both.
+//
+// The caller must defer the returned cancel, as with context.WithTimeout:
+//
+//	defer func() {
+//		cctx, ccancel := db.CleanupContext(ctx)
+//		defer ccancel()
+//		_, _ = conn.Exec(cctx, `SELECT pg_advisory_unlock(...)`)
+//	}()
+func CleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), SessionCleanupTimeout)
+}
+
 // Connect opens a pgx connection pool and verifies connectivity. It applies no
 // MinConns floor, making it suitable for short-lived pools such as the
 // migration runner that are closed immediately after use.
