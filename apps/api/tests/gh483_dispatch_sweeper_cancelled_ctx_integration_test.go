@@ -49,12 +49,28 @@ import (
 // context.
 type gh483CancellingSweepRepo struct {
 	update.Repo
+	t       *testing.T
+	pool    *db.Pool
 	cancel  context.CancelFunc
 	dueCall int
+
+	// heldDuringScan is the positive control. It records whether
+	// gh483SweepLockKey was observed HELD at the one point in the pass
+	// where it must be: after SweepWorker.Work has taken the advisory lock
+	// and before the deferred unlock runs. Without this, a rename of
+	// dispatch_sweeper.go's unexported sweepLockKey out from under
+	// gh483SweepLockKey makes gh483SweepLockHeld probe a key nobody holds,
+	// report "not held" both here and in the pre/post checks below, and
+	// every assertion in this test would then be satisfied vacuously —
+	// this is the control that turns that drift into a failure instead.
+	heldDuringScan bool
 }
 
 func (r *gh483CancellingSweepRepo) ListDueRuns(_ context.Context, _ int32) ([]update.Run, error) {
 	r.dueCall++
+	// Read BEFORE cancel(): this is the seam where the lock is live —
+	// taken by sweep(), not yet released by its deferred unlock.
+	r.heldDuringScan = gh483SweepLockHeld(r.t, r.pool, gh483SweepLockKey)
 	r.cancel()
 	return nil, errors.New("gh483: due-run scan unreachable (test injects the cancellation here)")
 }
@@ -144,7 +160,7 @@ func TestGH483_SweepLockCancelledMidPassDoesNotLeakTheDispatchSweepLock(t *testi
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	repo := &gh483CancellingSweepRepo{cancel: cancel}
+	repo := &gh483CancellingSweepRepo{t: t, pool: pool, cancel: cancel}
 
 	worker := update.NewSweepWorker(repo, gh483NoopSweepEnqueuer{}, pool.Pool, nil)
 
@@ -162,6 +178,13 @@ func TestGH483_SweepLockCancelledMidPassDoesNotLeakTheDispatchSweepLock(t *testi
 	if ctx.Err() == nil {
 		t.Fatal("the context was not cancelled, so the deferred unlock ran on a live context " +
 			"and this test proved nothing")
+	}
+	if !repo.heldDuringScan {
+		t.Fatalf("the %s advisory lock was NOT observed held during the due-run scan, before "+
+			"the pass released it. Every assertion below this point is vacuous, most likely "+
+			"because gh483SweepLockKey (%q) no longer matches dispatch_sweeper.go's "+
+			"unexported sweepLockKey — check that constant first, before suspecting the "+
+			"unlock fix itself", gh483SweepLockKey, gh483SweepLockKey)
 	}
 
 	if gh483SweepLockHeld(t, pool, gh483SweepLockKey) {
