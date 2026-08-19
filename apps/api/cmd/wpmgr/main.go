@@ -3747,19 +3747,19 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 	// m59 Phase 3 — email log retention GC: sweeps site_email_log rows older
 	// than the per-site retention_days (default 14) once per hour.
 	// RunOnStart: false — avoids a GC sweep on every deploy/restart.
-	if d.emailLogGCWorker != nil {
-		river.AddWorker(workers, d.emailLogGCWorker)
-		periodics = append(periodics, river.NewPeriodicJob(
-			river.PeriodicInterval(1*time.Hour),
-			func() (river.JobArgs, *river.InsertOpts) { return email.EmailLogGCArgs{}, nil },
-			&river.PeriodicJobOpts{RunOnStart: false},
-		))
+	var gcRegisterErr error
+	periodics, gcRegisterErr = registerEmailLogGCWorker(workers, periodics, d.emailLogGCWorker)
+	if gcRegisterErr != nil {
+		return nil, gcRegisterErr
 	}
 
 	// GH #461 — webhook dedup GC: sweeps email_webhook_events rows older than
 	// the 7-day retention window (webhookDedupRetention) once per hour.
 	// RunOnStart: false — avoids a GC sweep on every deploy/restart.
-	periodics = registerEmailWebhookDedupGCWorker(workers, periodics, d.emailWebhookDedupGCWorker)
+	periodics, gcRegisterErr = registerEmailWebhookDedupGCWorker(workers, periodics, d.emailWebhookDedupGCWorker)
+	if gcRegisterErr != nil {
+		return nil, gcRegisterErr
+	}
 
 	// m62 — org-config propagation worker (on-demand, enqueued by UpsertOrgConfig).
 	if d.emailOrgPropagateWorker != nil {
@@ -4029,16 +4029,42 @@ func startRiver(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, d 
 // worker with River and appends its hourly periodic sweep. Split out from
 // startRiver so the registration itself — not just the fact that startRiver
 // builds a client — can be asserted in a test.
-func registerEmailWebhookDedupGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.WebhookDedupGCWorker) []*river.PeriodicJob {
+//
+// w is unconditionally constructed in run() (no feature flag gates it), so a
+// nil w here is never an intentionally-disabled feature — it means startup
+// wiring is broken. PR #488 bot review, GH #461: silently skipping
+// registration on nil let River start clean while email_webhook_events grew
+// unbounded with no signal at all, the exact failure GC exists to prevent.
+// Error instead of no-op so startRiver fails closed.
+func registerEmailWebhookDedupGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.WebhookDedupGCWorker) ([]*river.PeriodicJob, error) {
 	if w == nil {
-		return periodics
+		return nil, fmt.Errorf("email webhook dedup GC worker is nil: email_webhook_events retention sweep would never run")
 	}
 	river.AddWorker(workers, w)
 	return append(periodics, river.NewPeriodicJob(
 		river.PeriodicInterval(1*time.Hour),
 		func() (river.JobArgs, *river.InsertOpts) { return email.WebhookDedupGCArgs{}, nil },
 		&river.PeriodicJobOpts{RunOnStart: false},
-	))
+	)), nil
+}
+
+// registerEmailLogGCWorker registers the m59 Phase 3 email log retention GC
+// worker with River and appends its hourly periodic sweep. Same shape as
+// registerEmailWebhookDedupGCWorker, and for the same reason: w is
+// unconditionally constructed in run(), so a nil w here means startup wiring
+// is broken, not an intentionally-disabled feature. PR #488 bot review, GH
+// #461: error instead of silently no-op'ing so startRiver fails closed
+// rather than letting site_email_log grow unbounded with no signal.
+func registerEmailLogGCWorker(workers *river.Workers, periodics []*river.PeriodicJob, w *email.EmailLogGCWorker) ([]*river.PeriodicJob, error) {
+	if w == nil {
+		return nil, fmt.Errorf("email log GC worker is nil: site_email_log retention sweep would never run")
+	}
+	river.AddWorker(workers, w)
+	return append(periodics, river.NewPeriodicJob(
+		river.PeriodicInterval(1*time.Hour),
+		func() (river.JobArgs, *river.InsertOpts) { return email.EmailLogGCArgs{}, nil },
+		&river.PeriodicJobOpts{RunOnStart: false},
+	)), nil
 }
 
 // disabledBackupCommander refuses to send backup/restore commands when no CP

@@ -128,6 +128,11 @@ type P75Result struct {
 //
 // The interface is intentionally narrow: the ingest handler needs WriteEvent;
 // the dashboard handler needs GetHourlyRollups / GetDailyRollups + ComputeP75.
+//
+// The three Prune* methods below survived the FoldHourly/FoldDaily removal
+// in this same PR because RumGCWorker.Work (worker.go) actually calls all
+// three on every periodic sweep registered in cmd/wpmgr/main.go, whereas
+// FoldHourly/FoldDaily had zero callers anywhere in the tree.
 type Store interface {
 	// WriteEvent appends one validated event and additively upserts the
 	// corresponding hourly and daily rollup rows, all within a single

@@ -26,7 +26,10 @@ func TestRegisterEmailWebhookDedupGCWorker(t *testing.T) {
 	workers := river.NewWorkers()
 	w := email.NewWebhookDedupGCWorker(nil, slog.Default())
 
-	periodics := registerEmailWebhookDedupGCWorker(workers, nil, w)
+	periodics, err := registerEmailWebhookDedupGCWorker(workers, nil, w)
+	if err != nil {
+		t.Fatalf("expected nil error for a non-nil worker, got: %v", err)
+	}
 
 	if len(periodics) != 1 {
 		t.Fatalf("expected 1 periodic job appended, got %d", len(periodics))
@@ -44,19 +47,24 @@ func TestRegisterEmailWebhookDedupGCWorker(t *testing.T) {
 	}
 }
 
-func TestRegisterEmailWebhookDedupGCWorker_NilWorkerIsNoop(t *testing.T) {
+// TestRegisterEmailWebhookDedupGCWorker_NilWorkerErrors is the PR #488 bot
+// review fix: registerEmailWebhookDedupGCWorker(...) is called with a worker
+// that is unconditionally constructed in run() (no feature flag gates it),
+// so a nil worker here always means broken startup wiring, never an
+// intentionally-disabled feature. The function used to swallow that case as
+// a silent no-op and let startRiver succeed anyway — the exact "guard that
+// finds nothing must go red, not green" failure GH #461 exists to prevent,
+// one level up. It must now surface an error so startRiver fails closed.
+func TestRegisterEmailWebhookDedupGCWorker_NilWorkerErrors(t *testing.T) {
 	workers := river.NewWorkers()
 
-	periodics := registerEmailWebhookDedupGCWorker(workers, nil, nil)
+	periodics, err := registerEmailWebhookDedupGCWorker(workers, nil, nil)
+	if err == nil {
+		t.Fatal("expected a non-nil error for a nil worker, got nil — " +
+			"a nil worker must fail startup, not silently skip registration")
+	}
 
 	if len(periodics) != 0 {
 		t.Fatalf("expected no periodic job for a nil worker, got %d", len(periodics))
-	}
-
-	// With nothing registered, a first-ever AddWorkerSafely call for the
-	// kind must succeed.
-	w := email.NewWebhookDedupGCWorker(nil, slog.Default())
-	if err := river.AddWorkerSafely(workers, w); err != nil {
-		t.Fatalf("expected first registration to succeed, got: %v", err)
 	}
 }
