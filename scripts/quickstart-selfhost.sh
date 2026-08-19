@@ -211,6 +211,31 @@ web_port="$(grep '^WPMGR_WEB_PORT=' .env | head -n1 | cut -d= -f2-)"
 api_port="${api_port:-8081}"
 web_port="${web_port:-8088}"
 ver_tag="${WPMGR_VERSION:-latest}"
+# init-env.sh (run in step 3 above) generates and persists this unless it was
+# already set — read back what actually landed in .env, not what this run
+# assumed.
+claim_secret="$(grep '^WPMGR_BOOTSTRAP_CLAIM_SECRET=' .env | head -n1 | cut -d= -f2-)"
+if [ -n "${claim_secret}" ]; then
+  claim_block="$(cat <<CLAIMEOF
+Claim ownership (do this once, after the stack is up):
+  This install has no owner yet, and the Sign Up form in the dashboard cannot
+  create the first one — the claim below travels only as a request header,
+  deliberately absent from the API schema every generated client uses.
+
+  curl -X POST http://localhost:${api_port}/auth/register \\
+    -H "Content-Type: application/json" \\
+    -H "X-Wpmgr-Bootstrap-Claim: ${claim_secret}" \\
+    -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+
+  WPMGR_BOOTSTRAP_CLAIM_SECRET is saved in .env (the value above is that exact
+  secret). Re-running this script will NOT change it once it is set.
+CLAIMEOF
+)"
+else
+  claim_block="WARNING: WPMGR_BOOTSTRAP_CLAIM_SECRET is not set in .env — this
+  install cannot be claimed by anyone until it is. Set it to a random secret
+  in .env and restart the api service."
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Final instructions.
@@ -234,6 +259,8 @@ Verify:
 
 Open the dashboard at:
   http://localhost:${web_port}
+
+${claim_block}
 
 IMPORTANT:
   - WPMGR_S3_ENDPOINT in .env must be a URL reachable by your WordPress hosts.

@@ -59,6 +59,16 @@ INFRA_PASSWORD_KEYS=(
   WPMGR_S3_SECRET_KEY
 )
 
+# The first-run ownership claim (see apps/api/internal/auth/bootstrap_claim.go).
+# Randomized once, same as the infra passwords above: never rotated on a
+# re-run once a value is present, because rotating it before anyone has
+# claimed the install is harmless but rotating it after is confusing (the
+# operator who wrote it down would suddenly hold a stale value). There is no
+# shipped placeholder for this key in .env.example, so an absent or empty
+# value is the only "needs one" signal — needs_value already treats both that
+# way.
+BOOTSTRAP_CLAIM_KEY=WPMGR_BOOTSTRAP_CLAIM_SECRET
+
 # Committed DEV placeholders shipped in .env.example. These are PUBLIC and the
 # control plane rejects the agent private key in production, so a fresh install
 # must replace them. We treat them like an empty value (regenerate them).
@@ -164,11 +174,41 @@ gen_with_host_tools() {
 
 print_next_steps() {
   # Read the actual host ports from .env (fall back to compose defaults).
-  local api_port web_port
+  local api_port web_port claim_secret
   api_port="$(current_value WPMGR_API_PORT)"
   api_port="${api_port:-8081}"
   web_port="$(current_value WPMGR_WEB_PORT)"
   web_port="${web_port:-8088}"
+  # Read back from .env rather than trusting a var from this run: the value
+  # may have been generated just now, supplied by the operator earlier, or
+  # (if something above failed silently) still absent — print exactly what is
+  # actually persisted, not what this run assumed.
+  claim_secret="$(current_value "${BOOTSTRAP_CLAIM_KEY}")"
+
+  local claim_step
+  if [ -n "${claim_secret}" ]; then
+    claim_step="$(cat <<CLAIMEOF
+  5. Claim ownership of this install. Nobody can sign up through the normal
+     Sign Up form in the dashboard for the FIRST account — the provisioning
+     claim only travels as a request header, deliberately kept out of the
+     OpenAPI schema every generated client (including the dashboard) uses.
+     Run this once, after the stack is up, to create the first owner account:
+
+       curl -X POST http://localhost:${api_port}/auth/register \\
+         -H "Content-Type: application/json" \\
+         -H "X-Wpmgr-Bootstrap-Claim: ${claim_secret}" \\
+         -d '{"email":"you@example.com","password":"replace-with-12+-chars"}'
+
+     ${BOOTSTRAP_CLAIM_KEY} is saved in .env — the value above is that exact
+     secret. It is not re-generated on a later re-run of this script once a
+     value is present, so it stays valid until you rotate it yourself.
+CLAIMEOF
+)"
+  else
+    claim_step="  5. WARNING: ${BOOTSTRAP_CLAIM_KEY} is not set in .env — this install
+     cannot be claimed by anyone until it is. Set it to a random secret and
+     re-run: docker compose ... up -d (after editing .env) to pick it up."
+  fi
 
   cat <<EOF
 
@@ -194,6 +234,8 @@ Next steps:
        curl localhost:${api_port}/readyz    # 200 once DB/Redis/S3 are reachable
 
   4. Open the dashboard at http://localhost:${web_port}
+
+${claim_step}
 
 See docs/install.md for the full guide.
 EOF
@@ -231,6 +273,32 @@ else
   fi
   cp "${ENV_EXAMPLE}" "${ENV_FILE}"
   log "Wrote .env from .env.example"
+fi
+
+# ---------------------------------------------------------------------------
+# 1b. Generate the first-run ownership claim (WPMGR_BOOTSTRAP_CLAIM_SECRET),
+#     unless the operator already supplied one. Without this, POST
+#     /auth/register refuses every first-run attempt with 403
+#     registration_closed and the install can never be claimed.
+#
+#     This runs BEFORE the "everything already set" early-exit below, and is
+#     not gated by it: an operator re-running this script on an .env from
+#     before this variable existed (the upgrade case) must still get one, even
+#     though their four SECRET_KEYS are already populated and would otherwise
+#     short-circuit the rest of this script.
+#
+#     Idempotent, same rule as the infra passwords below: a value already
+#     present (from a prior run, or supplied by the operator in .env before
+#     running this script) is left untouched, never rotated. Rotating it after
+#     ownership is claimed is harmless but rotating it before is confusing —
+#     an operator who copied down a value would have it silently invalidated.
+# ---------------------------------------------------------------------------
+if needs_value "${BOOTSTRAP_CLAIM_KEY}"; then
+  new_claim="$(openssl rand -base64 48 | tr -d '\n')"
+  set_env_value "${BOOTSTRAP_CLAIM_KEY}" "${new_claim}"
+  log "Generated ${BOOTSTRAP_CLAIM_KEY}"
+else
+  log "${BOOTSTRAP_CLAIM_KEY} already set in .env — left unchanged"
 fi
 
 # ---------------------------------------------------------------------------
