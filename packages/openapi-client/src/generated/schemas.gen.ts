@@ -3104,9 +3104,11 @@ export const UpdateTaskSchema = {
         "rolled_back",
         "skipped",
         "cancelled",
+        "scheduled",
+        "expired",
       ],
       description:
-        "`cancelled` means the task was never dispatched because its run was\nhalted first; nothing was sent to the site. Only agent self-update\nruns can halt.\n",
+        "`cancelled` means the task was never dispatched because its run was\nhalted first, or because an operator cancelled the scheduled run\nbefore it fired; nothing was sent to the site. Only agent\nself-update runs can halt.\n\nThe last two belong to the deferred-dispatch lifecycle (#463):\n\n- `scheduled` — the parent run has not reached its `scheduled_at`.\n  Not yet eligible for dispatch, and deliberately outside the\n  in-flight set, so it neither reserves its (site, target) slot\n  against an immediate update nor is swept by the stale-task reaper.\n- `expired` — terminal. The parent run expired without dispatching,\n  so this task was never attempted. Distinct from `cancelled`, which\n  records a decision somebody made, and from `skipped`, which\n  records that the target was busy at dispatch time.\n\nA task may also reach `skipped` from `scheduled`: its (site, target)\nwas in flight from another run at the moment the schedule fired. The\nrun is not failed by this; the other tasks proceed.\n",
     },
     retryable: {
       type: "boolean",
@@ -3169,9 +3171,17 @@ export const UpdateRunSchema = {
     },
     status: {
       type: "string",
-      enum: ["pending", "running", "completed", "halted"],
+      enum: [
+        "pending",
+        "running",
+        "completed",
+        "halted",
+        "scheduled",
+        "dispatching",
+        "expired",
+      ],
       description:
-        "`halted` is terminal and specific to an agent self-update run: a\nstaged-rollout wave failed to prove itself, so every task the run\nhad not already dispatched was cancelled. It is distinct from\n`completed`, which would hide the fact that the run was stopped.\n",
+        "`halted` is terminal and specific to an agent self-update run: a\nstaged-rollout wave failed to prove itself, so every task the run\nhad not already dispatched was cancelled. It is distinct from\n`completed`, which would hide the fact that the run was stopped.\n\nThe last three belong to the deferred-dispatch lifecycle (#463), and\na run only ever enters them when it was created with a future\n`scheduled_at`:\n\n- `scheduled` — waiting for `scheduled_at`. **No site has been\n  contacted.** The run's tasks are `scheduled` too, which\n  deliberately keeps them out of the in-flight dedup index, so the\n  same plugin on the same site can still be updated immediately in\n  the meantime. Cancellable.\n- `dispatching` — transient, held only for the moment the dispatcher\n  is enqueueing the run's tasks. A client that sees it should\n  re-read; it is not a state a run rests in.\n- `expired` — terminal. The run came due while the control plane was\n  unavailable and stayed due past the grace window, so running it\n  now is no longer what the operator asked for. **No site was\n  contacted**, and its tasks are `expired` too. Distinct from\n  `halted` (an agent rollout that stopped itself mid-flight) and\n  from `completed`.\n",
     },
     dry_run: {
       type: "boolean",

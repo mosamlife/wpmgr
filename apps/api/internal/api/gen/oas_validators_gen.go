@@ -14840,6 +14840,12 @@ func (s UpdateRunStatus) Validate() error {
 		return nil
 	case "halted":
 		return nil
+	case "scheduled":
+		return nil
+	case "dispatching":
+		return nil
+	case "expired":
+		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)
 	}
@@ -14922,6 +14928,10 @@ func (s UpdateTaskStatus) Validate() error {
 	case "skipped":
 		return nil
 	case "cancelled":
+		return nil
+	case "scheduled":
+		return nil
+	case "expired":
 		return nil
 	default:
 		return errors.Errorf("invalid value: %v", s)

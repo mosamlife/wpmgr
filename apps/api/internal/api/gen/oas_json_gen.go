@@ -121536,6 +121536,12 @@ func (s *UpdateRunStatus) Decode(d *jx.Decoder) error {
 		*s = UpdateRunStatusCompleted
 	case UpdateRunStatusHalted:
 		*s = UpdateRunStatusHalted
+	case UpdateRunStatusScheduled:
+		*s = UpdateRunStatusScheduled
+	case UpdateRunStatusDispatching:
+		*s = UpdateRunStatusDispatching
+	case UpdateRunStatusExpired:
+		*s = UpdateRunStatusExpired
 	default:
 		*s = UpdateRunStatus(v)
 	}
@@ -122486,6 +122492,10 @@ func (s *UpdateTaskStatus) Decode(d *jx.Decoder) error {
 		*s = UpdateTaskStatusSkipped
 	case UpdateTaskStatusCancelled:
 		*s = UpdateTaskStatusCancelled
+	case UpdateTaskStatusScheduled:
+		*s = UpdateTaskStatusScheduled
+	case UpdateTaskStatusExpired:
+		*s = UpdateTaskStatusExpired
 	default:
 		*s = UpdateTaskStatus(v)
 	}
