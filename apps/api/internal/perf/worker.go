@@ -77,6 +77,34 @@ func (w *DBCleanWorker) Work(ctx context.Context, job *river.Job[DBCleanArgs]) e
 		trigger = "scheduled"
 	}
 
+	// GH #493 — point-of-action pause re-check. The sweeper already filters
+	// paused sites out of its fan-out, but nothing drains River, so a job
+	// enqueued in the window between selection and dispatch must ask again.
+	//
+	// db_clean DELETES ROWS FROM THE CUSTOMER'S LIVE DATABASE, so unlike the
+	// vuln rescan's reversible read this one FAILS CLOSED: a pause-check error
+	// declines the clean rather than proceeding on an unknown. The site keeps
+	// its advanced schedule and cleans on the next interval.
+	//
+	// Only the scheduled trigger is gated. Pause governs the schedule, never
+	// the operator: a manual clean is the operator, and is never filtered.
+	if trigger != "manual" {
+		paused, perr := w.svc.repo.IsMonitoringPaused(ctx, a.SiteID)
+		if perr != nil {
+			w.logger.Warn("db-clean: pause check failed, declining scheduled clean",
+				slog.String("site_id", a.SiteID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.Any("error", perr))
+			return nil
+		}
+		if paused {
+			w.logger.Info("db-clean: scheduled clean declined, monitoring paused",
+				slog.String("site_id", a.SiteID.String()),
+				slog.String("tenant_id", a.TenantID.String()))
+			return nil
+		}
+	}
+
 	var (
 		jobID string
 		err   error
@@ -169,7 +197,19 @@ func (w *DBCleanScheduleWorker) Work(ctx context.Context, _ *river.Job[DBCleanSc
 		return nil
 	}
 
-	dispatched := 0
+	// GH #493 — selection-time pause filter. One round trip for the whole
+	// batch. On error every due site is treated as paused: db_clean deletes
+	// rows from the customer's live database, so an unknown pause state
+	// declines the sweep rather than cleaning through it. The dispatcher
+	// re-checks per site at fire time regardless.
+	paused, perr := w.svc.repo.PausedSiteIDs(ctx, dueSiteIDs(due))
+	if perr != nil {
+		w.logger.Warn("db-clean schedule: pause lookup failed, declining this sweep",
+			slog.Int("due", len(due)), slog.Any("error", perr))
+		return nil
+	}
+
+	dispatched, skipped := 0, 0
 	for _, s := range due {
 		// Advance next_db_clean_at BEFORE enqueuing so a crash after Enqueue does not
 		// create duplicate runs. The window is bounded by the sweep interval (5 min).
@@ -178,6 +218,19 @@ func (w *DBCleanScheduleWorker) Work(ctx context.Context, _ *river.Job[DBCleanSc
 			w.logger.Warn("db-clean schedule: failed to advance next_db_clean_at",
 				slog.String("site_id", s.SiteID.String()),
 				slog.Any("error", advErr))
+			continue
+		}
+		// GH #493 — a paused site is skipped AFTER its schedule is advanced,
+		// not before. Skipping without advancing would leave it permanently
+		// due, and a fleet with many paused sites would then fill the limit=200
+		// selection window and starve the active sites behind it. Advancing
+		// also keeps the cadence, so a site paused for three weeks does not
+		// clean the instant it resumes.
+		if paused[s.SiteID] {
+			skipped++
+			w.logger.Info("db-clean schedule: site skipped, monitoring paused",
+				slog.String("site_id", s.SiteID.String()),
+				slog.String("tenant_id", s.TenantID.String()))
 			continue
 		}
 		if enqErr := w.enqueuer.EnqueueDBClean(ctx, DBCleanArgs{
@@ -203,12 +256,23 @@ func (w *DBCleanScheduleWorker) Work(ctx context.Context, _ *river.Job[DBCleanSc
 		dispatched++
 	}
 
-	if dispatched > 0 {
+	if dispatched > 0 || skipped > 0 {
 		w.logger.Info("db-clean schedule sweep",
 			slog.Int("due", len(due)),
-			slog.Int("dispatched", dispatched))
+			slog.Int("dispatched", dispatched),
+			slog.Int("skipped_paused", skipped))
 	}
 	return nil
+}
+
+// dueSiteIDs projects the sweep's due list down to its site ids, for the
+// single batched pause lookup.
+func dueSiteIDs(due []DueDBCleanSite) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(due))
+	for _, s := range due {
+		ids = append(ids, s.SiteID)
+	}
+	return ids
 }
 
 // nextCleanTime returns the next scheduled run time based on the interval string.

@@ -414,6 +414,65 @@ func (r *Repo) GetDueDBCleanSites(ctx context.Context, limit int) ([]DueDBCleanS
 	return out, nil
 }
 
+// PausedSiteIDs returns the subset of siteIDs whose monitoring is paused, as a
+// set. One round trip for the whole sweep — the alternative, IsMonitoringPaused
+// in a loop, is one transaction per due site every five minutes.
+//
+// Site ids absent from `sites` are simply absent from the returned map, i.e.
+// reported NOT paused. That mirrors vuln.Repo.IsMonitoringPaused: a site
+// deleted between selection and this call has no schedule to honour, and
+// inventing a pause for a missing row would be the wrong failure.
+//
+// Cross-tenant (InAgentTx) — the sweeper enumerates every tenant's due sites.
+func (r *Repo) PausedSiteIDs(ctx context.Context, siteIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(siteIDs))
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx,
+			`SELECT id FROM sites WHERE id = ANY($1) AND monitoring_paused_at IS NOT NULL`,
+			siteIDs)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if serr := rows.Scan(&id); serr != nil {
+				return serr
+			}
+			out[id] = true
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// IsMonitoringPaused reports whether one site's monitoring is paused. This is
+// the point-of-action re-check for a scheduled db_clean job that was enqueued
+// before the pause; nothing drains the River queue when an operator pauses.
+//
+// A missing row reports NOT paused, mirroring vuln.Repo.IsMonitoringPaused.
+//
+// Cross-tenant (InAgentTx) — the dispatch worker runs as the agent actor.
+func (r *Repo) IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error) {
+	var paused bool
+	err := r.pool.InAgentTx(ctx, func(tx pgx.Tx) error {
+		qerr := tx.QueryRow(ctx,
+			`SELECT monitoring_paused_at IS NOT NULL FROM sites WHERE id = $1`, siteID).Scan(&paused)
+		if errors.Is(qerr, pgx.ErrNoRows) {
+			paused = false
+			return nil
+		}
+		return qerr
+	})
+	return paused, err
+}
+
 // UpdateNextDBCleanAt advances next_db_clean_at after a clean job is dispatched.
 // Cross-tenant (InAgentTx) — the sweeper runs as the agent actor.
 func (r *Repo) UpdateNextDBCleanAt(ctx context.Context, siteID uuid.UUID, nextAt time.Time) error {
