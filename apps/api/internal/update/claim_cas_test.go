@@ -116,7 +116,9 @@ func TestClaim_PassesRealStaleAfter(t *testing.T) {
 		t.Fatalf("Work: %v", err)
 	}
 	if repo.markStaleAfter != w.claimStaleAfter {
-		t.Fatalf("the claim must pass the worker's own derived staleness bound, got %v want %v (a zero duration is a NULL interval, which silently disables abandoned-task reclaim)",
+		t.Fatalf("the claim must pass the worker's own derived staleness bound, got %v want %v "+
+			"(a flat constant stops exceeding the apply budget once apply_http_timeout is raised, "+
+			"and a non-positive bound would make every running row instantly reclaimable)",
 			repo.markStaleAfter, w.claimStaleAfter)
 	}
 	if repo.markStaleAfter <= 0 {
