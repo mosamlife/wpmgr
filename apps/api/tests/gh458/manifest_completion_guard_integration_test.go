@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/backup"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -40,6 +41,69 @@ func (f *fixture) countManifestEntries(t *testing.T, snapshotID uuid.UUID) int64
 		t.Fatalf("count manifest entries: %v", err)
 	}
 	return n
+}
+
+// chunkExists reports whether a backup_chunks row exists for hash, read
+// through the app pool's tenant transaction so RLS applies.
+func (f *fixture) chunkExists(t *testing.T, hash string) bool {
+	t.Helper()
+	ctx := context.Background()
+	var n int64
+	err := f.pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM backup_chunks WHERE tenant_id = $1 AND blake3 = $2`,
+			f.tenant, hash).Scan(&n)
+	})
+	if err != nil {
+		t.Fatalf("count backup_chunks for %q: %v", hash, err)
+	}
+	return n > 0
+}
+
+// chunkRefcount reads the current refcount for hash. The caller must already
+// know the row exists.
+func (f *fixture) chunkRefcount(t *testing.T, hash string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var n int64
+	err := f.pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT refcount FROM backup_chunks WHERE tenant_id = $1 AND blake3 = $2`,
+			f.tenant, hash).Scan(&n)
+	})
+	if err != nil {
+		t.Fatalf("read refcount for %q: %v", hash, err)
+	}
+	return n
+}
+
+// seedChunkWithRefcount upserts a backup_chunks row for hash through the
+// GENERATED queries (the same UpsertBackupChunk + IncrementChunkRefcount
+// RecordManifest itself calls) and returns the refcount after one increment,
+// so a later submit can reference an already-stored chunk instead of only a
+// brand-new one.
+func (f *fixture) seedChunkWithRefcount(t *testing.T, hash string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var refcount int64
+	err := f.pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+		if _, err := q.UpsertBackupChunk(ctx, sqlc.UpsertBackupChunkParams{
+			TenantID: f.tenant, Blake3: hash, S3Key: "gh458/" + hash, Size: 10,
+		}); err != nil {
+			return err
+		}
+		chunk, err := q.IncrementChunkRefcount(ctx, sqlc.IncrementChunkRefcountParams{TenantID: f.tenant, Blake3: hash})
+		if err != nil {
+			return err
+		}
+		refcount = chunk.Refcount
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed chunk %q: %v", hash, err)
+	}
+	return refcount
 }
 
 // manifestInput builds a single-entry, single-chunk RecordManifestInput
@@ -82,7 +146,34 @@ func TestGH458RecordManifestRejectsLateSubmit(t *testing.T) {
 		id := f.seedSnapshot(t, "failed", "cancelled by operator")
 		before := f.read(t, id)
 
-		in := manifestInput(f.tenant, id)
+		// A pre-existing chunk this submit ALSO references, distinct from any
+		// hash the fixture might reuse elsewhere. Its refcount before the
+		// submit is the baseline the atomicity assertion below checks stays
+		// unchanged.
+		preHash := "blake3-pre-" + uuid.NewString()
+		beforeRefcount := f.seedChunkWithRefcount(t, preHash)
+
+		// A brand-new hash only THIS submit introduces, so its mere existence
+		// afterwards is proof step 1 (UpsertBackupChunk) survived a rollback.
+		freshHash := "blake3-fresh-" + uuid.NewString()
+
+		in := backup.RecordManifestInput{
+			TenantID:   f.tenant,
+			SnapshotID: id,
+			Entries: []backup.ManifestEntryInput{
+				{
+					Path:        "wp-content/uploads/gh458-" + uuid.NewString() + ".txt",
+					EntryKind:   "file",
+					ChunkHashes: []string{freshHash, preHash},
+					Size:        123,
+					Mode:        0o644,
+				},
+			},
+			Chunks: map[string]backup.ChunkUpload{
+				freshHash: {Blake3: freshHash, Size: 123, S3Key: "gh458/" + freshHash},
+				preHash:   {Blake3: preHash, Size: 10, S3Key: "gh458/" + preHash},
+			},
+		}
 		chunkRefs, storedCount, err := repo.RecordManifest(ctx, in)
 
 		if err == nil {
@@ -111,6 +202,23 @@ func TestGH458RecordManifestRejectsLateSubmit(t *testing.T) {
 		}
 		if after.chunkCount != before.chunkCount {
 			t.Fatalf("snapshot chunk_count changed by a rejected submit: %d -> %d, want unchanged", before.chunkCount, after.chunkCount)
+		}
+
+		// The REJECTION MUST BE ATOMIC, not just manifest-free. RecordManifest
+		// runs the chunk upsert (step 1), the manifest inserts and refcount
+		// increments (step 2), and the guarded CompleteBackupSnapshot (step 3)
+		// inside one InTenantTx. If a future change (e.g. a dedup optimisation
+		// that upserts chunks outside the transaction, since chunks are shared
+		// and content-addressed) moves step 1 out of that transaction, a
+		// rejected submit would start leaving chunk rows and inflated
+		// refcounts behind -- and the manifest-entries-only checks above would
+		// still pass. These two assertions pin the transaction boundary itself,
+		// not just its manifest-table side effect.
+		if f.chunkExists(t, freshHash) {
+			t.Fatalf("backup_chunks row exists for hash %q from a REJECTED submit: RecordManifest is not atomic -- the chunk upsert (step 1) escaped the transaction that the CompleteBackupSnapshot guard (step 3) rolled back, not merely that a count was wrong", freshHash)
+		}
+		if got := f.chunkRefcount(t, preHash); got != beforeRefcount {
+			t.Fatalf("pre-existing chunk %q refcount changed by a REJECTED submit: %d -> %d, want unchanged at %d: RecordManifest is not atomic -- IncrementChunkRefcount (step 2) survived the rollback that the CompleteBackupSnapshot guard (step 3) triggered, not merely that a count was wrong", preHash, beforeRefcount, got, beforeRefcount)
 		}
 	})
 
@@ -143,6 +251,42 @@ func TestGH458RecordManifestRejectsLateSubmit(t *testing.T) {
 		}
 		if after.chunkCount != 1 {
 			t.Fatalf("snapshot chunk_count = %d, want 1", after.chunkCount)
+		}
+	})
+}
+
+// TestGH458CancelSnapshotThroughServiceCancelsPending proves the reason the
+// FailBackupSnapshot guard is "status IN ('pending','running')" rather than
+// "status = 'running'": operator cancel of a still-QUEUED backup must still
+// work. The sibling snapshot_state_guards_integration_test.go's
+// "cancel_of_pending_still_works" subtest exercises the GENERATED
+// FailBackupSnapshot query directly; this test goes one layer up, through
+// backup.Service.CancelSnapshot exactly as the real cancel endpoint does, so a
+// regression in CancelSnapshot's own precondition (snap.Status != StatusRunning
+// && snap.Status != StatusPending) — not just the SQL guard — would also be
+// caught here.
+func TestGH458CancelSnapshotThroughServiceCancelsPending(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	svc := backup.NewService(backup.NewRepo(f.pool), nil, nil, nil, domain.SystemClock{}, backup.Config{})
+
+	t.Run("cancel_of_pending_snapshot_succeeds_end_to_end", func(t *testing.T) {
+		id := f.seedSnapshot(t, "pending", "")
+
+		snap, err := svc.CancelSnapshot(ctx, f.tenant, id)
+		if err != nil {
+			t.Fatalf("CancelSnapshot on a PENDING snapshot: err = %v, want nil (a naive status='running' guard would reject this)", err)
+		}
+		if snap.Status != backup.StatusFailed {
+			t.Fatalf("CancelSnapshot on a PENDING snapshot: returned status = %q, want %q", snap.Status, backup.StatusFailed)
+		}
+
+		after := f.read(t, id)
+		if after.status != "failed" {
+			t.Fatalf("snapshot status after cancel-of-pending = %q, want terminal %q", after.status, "failed")
+		}
+		if after.errMsg != "cancelled by operator" {
+			t.Fatalf("snapshot error after cancel-of-pending = %q, want %q", after.errMsg, "cancelled by operator")
 		}
 	})
 }
