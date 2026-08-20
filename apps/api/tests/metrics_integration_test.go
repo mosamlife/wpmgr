@@ -19,6 +19,8 @@ func startClickHouse(t *testing.T) metrics.Store {
 	t.Helper()
 	ctx := context.Background()
 
+	skipIfDockerUnavailable(t, ctx, "clickhouse")
+
 	container, err := tcclickhouse.Run(ctx,
 		"clickhouse/clickhouse-server:24.3-alpine",
 		tcclickhouse.WithUsername("wpmgr"),
@@ -31,10 +33,15 @@ func startClickHouse(t *testing.T) metrics.Store {
 			wait.ForListeningPort("9000/tcp").WithStartupTimeout(120*time.Second),
 		),
 	)
-	if err != nil {
-		t.Skipf("skipping: cannot start clickhouse container (docker unavailable?): %v", err)
+	// container can be non-nil even when err != nil (partial start); register
+	// cleanup before the error check so a failure path cannot leak it (see
+	// rls_integration_test.go's startPostgres).
+	if container != nil {
+		t.Cleanup(func() { _ = container.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "clickhouse: container start")
+	}
 
 	host, err := container.ConnectionHost(ctx)
 	if err != nil {

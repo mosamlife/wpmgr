@@ -21,14 +21,21 @@ func startBlobstore(t *testing.T) *blobstore.Store {
 	t.Helper()
 	ctx := context.Background()
 
+	skipIfDockerUnavailable(t, ctx, "minio")
+
 	container, err := minio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z",
 		minio.WithUsername("wpmgr"),
 		minio.WithPassword("wpmgr-dev-secret"),
 	)
-	if err != nil {
-		t.Skipf("skipping: cannot start minio container (docker unavailable?): %v", err)
+	// container can be non-nil even when err != nil (partial start); register
+	// cleanup before the error check so a failure path cannot leak it (see
+	// rls_integration_test.go's startPostgres).
+	if container != nil {
+		t.Cleanup(func() { _ = container.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "minio: container start")
+	}
 
 	endpoint, err := container.ConnectionString(ctx)
 	if err != nil {
