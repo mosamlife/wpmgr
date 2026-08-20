@@ -2758,7 +2758,7 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 		reason := agentFailReason(phaseDetail)
 		if reason != "" {
 			// FailSnapshot persists the terminal state AND publishes its own
-			// terminal SSE event. On success, return early so the trailing
+			// terminal SSE event. Return early on success so the trailing
 			// s.publish below does not emit a second event with the stale
 			// pre-failure status (which would regress the SSE stream from
 			// "failed" back to "running"/"pending").
@@ -2766,10 +2766,18 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 			// GH #458: the status check above is a read of a row fetched
 			// earlier, so it can be stale; FailSnapshot's guard is what
 			// decides. transitioned==false means the row went terminal in
-			// that window, so its own transition already published — fall
-			// through WITHOUT returning early so the trailing publish still
-			// reports the current phase, but do not treat this as a failure
-			// we persisted.
+			// that window (operator cancel, watchdog hard-fail, or a
+			// completion) and the winner already published its own terminal
+			// event. Return early there too: this call made no transition, so
+			// it has nothing to announce, and `snap` was read BEFORE the race
+			// was lost, so the trailing publish would report a stale
+			// running/pending status under a "failed" phase — the same stream
+			// regression the transitioned case returns early to avoid.
+			//
+			// Only a FailSnapshot infra error falls through, and deliberately:
+			// nothing transitioned and nothing published, so the agent's
+			// report of a failure is still worth forwarding to subscribers on
+			// the row as we last read it.
 			failedSnap, transitioned, ferr := s.FailSnapshot(ctx, tenantID, snapshotID, reason)
 			switch {
 			case ferr != nil:
@@ -2784,20 +2792,22 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 				slog.Info("RecordProgress: agent-reported failure skipped; snapshot already terminal",
 					slog.String("snapshot_id", snapshotID.String()),
 					slog.String("tenant_id", tenantID.String()))
+				return raw, nil
 			}
 		}
 	}
 
 	// GH #279 proof of life: a non-failure progress POST that reaches this
-	// point (the "failed" fast-fail branch above already returned when it
-	// successfully persisted a terminal failure) proves the agent is still
-	// alive, so clear a soft stall before it can be hard-failed. A
-	// phase=="failed" POST must NEVER clear the stall or publish 'resumed' --
-	// not even when it fell through here because agentFailReason was empty,
-	// or because the snapshot was already terminal (both skip the fast-fail
-	// branch above without returning). The agent is reporting a failure, not
-	// a resume, so this proof-of-life clear only applies to a genuine
-	// non-failure phase.
+	// point (the "failed" fast-fail branch above already returned on every
+	// path that resolved the failure, whether it persisted the transition or
+	// lost the race to another writer) proves the agent is still alive, so
+	// clear a soft stall before it can be hard-failed. A phase=="failed" POST
+	// must NEVER clear the stall or publish 'resumed' -- not even when it fell
+	// through here because agentFailReason was empty, because the row we read
+	// was already terminal, or because FailSnapshot itself errored (all three
+	// skip the fast-fail branch above without returning). The agent is
+	// reporting a failure, not a resume, so this proof-of-life clear only
+	// applies to a genuine non-failure phase.
 	if phase != "failed" {
 		if cleared, _ := s.ClearSnapshotStalledIfRunning(ctx, tenantID, snapshotID); cleared {
 			s.publish(BackupEvent{
@@ -2810,10 +2820,13 @@ func (s *Service) RecordProgress(ctx context.Context, tenantID, snapshotID uuid.
 	}
 
 	// Fan out the validated progress to live SSE subscribers. The Status mirrors
-	// the snapshot's status as returned by UpdateSnapshotProgress (the
-	// FailSnapshot path above short-circuits before this point when it succeeds,
-	// so this publish only fires for non-failure phases or when FailSnapshot
-	// itself errored).
+	// the snapshot's status as returned by UpdateSnapshotProgress. For
+	// phase=="failed" this is reached only when the fast-fail branch above did
+	// not resolve the failure at all: no reason to extract, the row we read was
+	// already terminal, or FailSnapshot returned an infra error. Every path
+	// where a terminal transition was decided -- won or lost -- returned there,
+	// so this never emits a second event for a transition another writer
+	// already published, and never re-announces one this call did not make.
 	s.publish(BackupEvent{
 		SnapshotID:  snapshotID,
 		Phase:       phase,
