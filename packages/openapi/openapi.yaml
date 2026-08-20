@@ -13452,8 +13452,7 @@ components:
           items:
             $ref: "#/components/schemas/SiteComponent"
         core_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: When set, WordPress core has an update available.
           required: [new_version, current_version]
           properties:
@@ -13486,22 +13485,18 @@ components:
           type: boolean
           description: Whether the plugin is network-activated. Optional; older agents omit it.
         available_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: When set, an update is available for this plugin/theme.
           required: [new_version]
           properties:
             new_version:
               type: string
             package:
-              type: string
-              nullable: true
+              type: [string, "null"]
             tested:
-              type: string
-              nullable: true
+              type: [string, "null"]
             requires_php:
-              type: string
-              nullable: true
+              type: [string, "null"]
     SiteAvailableUpdates:
       type: object
       description: Per-site cached list of items with updates available.
@@ -13511,8 +13506,7 @@ components:
           type: string
           format: uuid
         core_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           required: [new_version, current_version]
           properties:
             new_version:
@@ -13539,18 +13533,14 @@ components:
               active:
                 type: boolean
               package:
-                type: string
-                nullable: true
+                type: [string, "null"]
               tested:
-                type: string
-                nullable: true
+                type: [string, "null"]
               requires_php:
-                type: string
-                nullable: true
+                type: [string, "null"]
         as_of:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
     SiteTags:
       type: object
       required: [tags]
@@ -13636,9 +13626,8 @@ components:
           maxLength: 500
           description: Free-text note stored on every site this request pauses.
         resume_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: |
             Optional instant a later phase's sweep will auto-resume at. Must
             be in the future; a past instant is rejected with
@@ -13683,14 +13672,12 @@ components:
               site_revoked,
             ]
         monitoring_paused_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         monitoring_paused_reason: { type: string }
         monitoring_resume_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
     MonitoringBulkResult:
       type: object
       required: [results, changed_count]
@@ -13906,8 +13893,8 @@ components:
               original_path: { type: string }
               original_url: { type: string }
               original_mime: { type: string }
-              original_width: { type: integer, nullable: true }
-              original_height: { type: integer, nullable: true }
+              original_width: { type: [integer, "null"] }
+              original_height: { type: [integer, "null"] }
               original_size_bytes: { type: integer, format: int64 }
               variant_count:
                 type: integer
@@ -13947,12 +13934,11 @@ components:
           additionalProperties: { type: string }
         current_format: { type: string }
         current_size_bytes: { type: integer, format: int64 }
-        bytes_before: { type: integer, format: int64, nullable: true }
-        bytes_after: { type: integer, format: int64, nullable: true }
+        bytes_before: { type: [integer, "null"], format: int64 }
+        bytes_after: { type: [integer, "null"], format: int64 }
         saved_bytes:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: >-
             All-variant savings (summed original-minus-optimized over every
             optimized variant). Drives the dashboard "Bytes saved" rollup.
@@ -14124,15 +14110,13 @@ components:
                   Display name in the site's own locale, resolved exactly as
                   WordPress resolves it for its own role dropdown.
         core_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: Present only when WordPress core has an update available.
           properties:
             new_version: { type: string }
             current_version: { type: string }
         host_flags:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: The agent's defined()-based hosting fingerprint.
           properties:
             is_pressable: { type: boolean }
@@ -14144,8 +14128,7 @@ components:
             is_runcloud: { type: boolean }
             is_cloudways: { type: boolean }
         disk:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: |
             Sampled disk usage in bytes. The wp-content and uploads walks are
             time-capped, so a field may be absent on a very large tree.
@@ -14154,8 +14137,7 @@ components:
             uploads_bytes: { type: integer, format: int64 }
             free_bytes: { type: integer, format: int64 }
         agent_self_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: |
             The outcome of the agent's last self-update apply, replayed on the
             next metadata push. This is the only channel by which a FAILED
@@ -14635,16 +14617,14 @@ components:
         actor_id:
           type: string
         actor_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: |
             Display name of the acting user (users.name), or the API key's
             label (api_keys.name) when the actor is an api_key, resolved
             server-side. Null for system events and for any actor row that no
             longer exists.
         actor_email:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: |
             Email of the acting user, resolved server-side. Null for
             api_key/system actors and for any actor row that no longer
@@ -15126,9 +15106,9 @@ components:
         limit untouched; `null` (or `0`) clears it.
       required: [reason]
       properties:
-        sites: { type: integer, nullable: true }
-        storage_gb: { type: integer, nullable: true }
-        seats: { type: integer, nullable: true }
+        sites: { type: [integer, "null"] }
+        storage_gb: { type: [integer, "null"] }
+        seats: { type: [integer, "null"] }
         reason: { type: string }
     AdminExtendGraceRequest:
       type: object
@@ -15723,9 +15703,8 @@ components:
           items:
             $ref: "#/components/schemas/BackupSnapshot"
         next_offset:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: Offset to pass for the next page; null when no further pages.
     BackupHealthItem:
       type: object
@@ -15841,8 +15820,7 @@ components:
             "deleted" — the snapshot was removed (or, in dry_run, WOULD be
             removed). "skipped" — the snapshot was left in place; see code.
         code:
-          type: string
-          nullable: true
+          type: [string, "null"]
           enum:
             [
               snapshot_not_found,
@@ -15853,8 +15831,7 @@ components:
             ]
           description: Null when outcome=deleted; the skip reason otherwise.
         message:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Human-readable explanation of code; null when outcome=deleted.
     BulkDeleteBackupsCounts:
       type: object
@@ -15943,9 +15920,8 @@ components:
             successful restore.
           default: false
         target_site_url:
-          type: string
+          type: [string, "null"]
           format: uri
-          nullable: true
           description: >
             When set, the agent will rewrite `siteurl` and `home` references
             from the snapshot's source URLs to this target. When unset, the
@@ -15983,16 +15959,13 @@ components:
             Most common table-name prefix (chars up to the first underscore);
             empty when no consistent prefix could be determined.
         wp_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: WordPress db_version from wp_options, when detectable.
         siteurl:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: WordPress siteurl from wp_options, when detectable.
         home:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: WordPress home from wp_options, when detectable.
         is_wordpress:
           type: boolean
@@ -16028,9 +16001,8 @@ components:
                 type: integer
                 format: int64
               auto_increment:
-                type: integer
+                type: [integer, "null"]
                 format: int64
-                nullable: true
               charset:
                 type: string
               has_fk:
@@ -16079,25 +16051,22 @@ components:
           maximum: 59
           description: Minute (0-59) within the hour at which the backup fires.
         day_of_week:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 0
           maximum: 6
-          nullable: true
           description: "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise."
         day_of_month:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 28
-          nullable: true
           description: "Day of month (1-28, capped) for monthly cadence; null otherwise."
         frequency_hours:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 24
-          nullable: true
           description: "Interval in hours for every_n_hours cadence; null otherwise."
         keep_last:
           type: integer
@@ -16107,11 +16076,10 @@ components:
           type: boolean
           description: "Beta. When true, scheduled and run-now backups for this site may take incremental snapshots (the control plane auto-decides full base vs increment per ADR-048)."
         base_window_days:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 365
-          nullable: true
           description: "Optional override of the default incremental base window (7 days). null means use the default."
         timezone:
           type: string
@@ -16173,25 +16141,22 @@ components:
           maximum: 59
           description: Minute (0-59) within the hour at which the backup fires.
         day_of_week:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 0
           maximum: 6
-          nullable: true
           description: "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise."
         day_of_month:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 28
-          nullable: true
           description: "Day of month (1-28, capped) for monthly cadence; null otherwise."
         frequency_hours:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 24
-          nullable: true
           description: "Interval in hours for every_n_hours cadence; null otherwise."
         keep_last:
           type: integer
@@ -16202,11 +16167,10 @@ components:
           default: false
           description: "Beta. Take incremental backups on this schedule (and via run-now). The control plane auto-decides full base vs increment."
         base_window_days:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 365
-          nullable: true
           description: "Optional override of the default incremental base window (7 days). Omit/null to use the default."
     SiteBackupSettingsContents:
       type: object
@@ -16219,11 +16183,10 @@ components:
           type: string
           format: uuid
         backup_components:
-          type: array
+          type: [array, "null"]
           items:
             type: string
             enum: [plugin, theme, upload, wp-content, db, core]
-          nullable: true
           description: |
             Subset of archive components to include. Null/absent means all components (full backup).
             Singular vocabulary matching manifest entry_kind:
@@ -16236,25 +16199,22 @@ components:
           default: false
           description: When true, the WordPress core source root (ABSPATH) is archived.
         exclude_paths:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           maxItems: 100
-          nullable: true
           description: Path-segment names to exclude from file archiving.
         exclude_extensions:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           maxItems: 50
-          nullable: true
           description: File extensions to skip (without leading dot, case-insensitive).
         exclude_file_size_mb:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
           maximum: 102400
-          nullable: true
           description: Skip files strictly larger than this value (MiB). 0/null = no filter.
         created_at:
           type: string
@@ -16267,32 +16227,28 @@ components:
       description: Update the Track-A backup scope/exclusion settings for a site.
       properties:
         backup_components:
-          type: array
+          type: [array, "null"]
           items:
             type: string
             enum: [plugin, theme, upload, wp-content, db, core]
-          nullable: true
           description: Subset of archive components. Null/absent = all components (full backup).
         include_core:
           type: boolean
         exclude_paths:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           maxItems: 100
-          nullable: true
         exclude_extensions:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           maxItems: 50
-          nullable: true
         exclude_file_size_mb:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 0
           maximum: 102400
-          nullable: true
           description: 0 or null clears the filter.
     SiteBackupSettingsNotifications:
       type: object
@@ -16396,13 +16352,11 @@ components:
           type: string
           description: Raw actor identifier (user UUID or `api-key:<id>` or `system`).
         triggered_by_email:
-          type: string
+          type: [string, "null"]
           format: email
-          nullable: true
           description: Email of the triggering user (null for non-user actors or unresolvable IDs).
         triggered_by_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Display name of the triggering user (null for non-user actors or unresolvable IDs).
         created_at:
           type: string
@@ -16509,13 +16463,11 @@ components:
           type: string
           description: Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).
         triggered_by_email:
-          type: string
+          type: [string, "null"]
           format: email
-          nullable: true
           description: Email of the triggering user (null for schedule-fired or unresolvable actors).
         triggered_by_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Display name of the triggering user (null for schedule-fired or unresolvable actors).
         created_at:
           type: string
@@ -16625,9 +16577,8 @@ components:
             on UTC days, so re-bucketing per viewer timezone would split one
             stored day across two rendered cells.
         uptime_pct:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
           description: |
             up_checks/total_checks*100 for the day, or null when the day has
             NO stored measurement. Null is not zero — see the endpoint
@@ -16641,9 +16592,8 @@ components:
             with a single probe, and so "no data" is falsifiable rather than
             something the client infers from a null alone.
         avg_latency_ms:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
           description: |
             Mean response time over SUCCESSFUL probes with a non-zero reading,
             null when the day had none.
@@ -16726,9 +16676,8 @@ components:
             slow_response). Empty/absent when the status needs no further
             explanation.
         uptime_pct_7d:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
           description: |
             7-day uptime percentage, or null when the site has NO measurement
             in the window — never probed, monitoring never enabled, or its
@@ -16755,8 +16704,7 @@ components:
         health_status:
           type: string
         app_up:
-          type: boolean
-          nullable: true
+          type: [boolean, "null"]
           description: |
             GH #291 Phase 2 application-health verdict from the most recent
             app probe: true (WordPress responded), false (conclusively
@@ -17455,9 +17403,8 @@ components:
           type: boolean
           description: True when the entire chain re-verifies intact.
         break_at_seq:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: |
             The seq of the first broken link, or null when the chain is intact.
             Kept for backward compatibility; equals break.seq when broken.
@@ -17501,9 +17448,8 @@ components:
             - content_modified: prev link intact but recomputed hash diverges (content edited after recording).
             - chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain reset).
         prior_seq:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: |
             The seq of the last successfully-verified row. Null when the break is
             at the first/genesis row and no prior row was verified.
@@ -18154,8 +18100,7 @@ components:
             it until its own probe passes. This allows operators to pre-enable the
             flag before the agent performs its first probe.
         woo_theme_fragments_supported:
-          type: boolean
-          nullable: true
+          type: [boolean, "null"]
           readOnly: true
           description: |
             Agent-reported (read-only). Tri-state: null = never probed, false =
@@ -18165,9 +18110,8 @@ components:
             correct initial state (M67); the agent stamps true/false only after
             running a genuine front-end probe.
         woo_fragments_probed_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           readOnly: true
           description: |
             RFC3339 timestamp of the last agent probe. Null when never probed.
@@ -18723,8 +18667,7 @@ components:
           type: string
           description: Public URL of the original (largest) file (guid).
         thumb:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: URL of the thumbnail-size variant; null when unavailable.
         file_size:
           type: integer
@@ -18936,9 +18879,8 @@ components:
           type: string
           format: uuid
         site_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: Present for per-site rows; absent for the org-wide default.
         provider:
           type: string
@@ -18976,14 +18918,12 @@ components:
             indistinguishable from a per-site one. When it is true, `secret_set`
             describes the ORG credential, not one belonging to this site.
         default_connection:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Slug of the connection to use for regular mail (for providers that
             support multiple connections, e.g. SMTP-Multi — Phase 2+).
         fallback_connection:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Slug of the fallback connection (Phase 2+).
         log_emails:
           type: boolean
@@ -19012,8 +18952,7 @@ components:
             Named provider connections for this config (multi-connection, m62+).
             Empty array when no named connections have been created.
         webhook_url:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             The full inbound webhook URL for this config row, e.g.
             https://manage.wpmgr.app/webhooks/email/{provider}/{token}.
@@ -19053,14 +18992,12 @@ components:
             When true, a new route token is generated (invalidating the old
             URL) and returned once in webhook_route_token.
         webhook_signing_key:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             HMAC signing key for verifying provider webhook payloads.
             Write-only. Omit to preserve the existing key. Send null to clear.
         ses_topic_arns:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             type: string
           description: >
@@ -19092,8 +19029,7 @@ components:
             type: string
           description: Current SNS TopicArn allowlist (may be empty).
         webhook_route_token:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Plain route token, returned once when rotate_token was true.
             Store it immediately -- it will not be shown again.
@@ -19122,18 +19058,15 @@ components:
         return_path:
           type: boolean
         secret:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Provider credential (API key, SMTP password, etc.). Omit to
             preserve the existing stored secret. Provide an empty string to
             clear the stored secret.
         default_connection:
-          type: string
-          nullable: true
+          type: [string, "null"]
         fallback_connection:
-          type: string
-          nullable: true
+          type: [string, "null"]
         log_emails:
           type: boolean
         store_body:
@@ -19178,14 +19111,12 @@ components:
           type: boolean
           description: True when the agent confirmed the email was dispatched.
         detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Human-readable detail or error message from the agent. Present when
             ok is false.
         message_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Provider-assigned message-id returned by the agent (Phase 2+).
 
     EmailProviderCatalog:
@@ -19210,8 +19141,7 @@ components:
           type: string
           description: Human-readable provider name.
         docs_url:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: URL to provider-specific setup documentation.
         fields:
           type: array
@@ -19241,18 +19171,15 @@ components:
         is_required:
           type: boolean
         options:
-          type: array
-          nullable: true
+          type: [array, "null"]
           description: Valid option values for select fields.
           items:
             type: string
         default:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Default value hint for the UI.
         help:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Short helper text shown below the field in the UI.
 
     # -------------------------------------------------------------------------
@@ -19292,13 +19219,11 @@ components:
           type: string
           format: uuid
         agent_seq:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: Agent-local sequence number (cursor for the agent push).
         message_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Provider-assigned Message-ID header value.
         to_addresses:
           type: array
@@ -19332,8 +19257,7 @@ components:
           type: boolean
           description: Whether the email body was captured at send time.
         body:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Full email body. Present only in the detail response and only when
             body_stored is true. Never returned in list or export responses.
@@ -19383,14 +19307,12 @@ components:
         entry:
           $ref: "#/components/schemas/SiteEmailLogEntry"
         prev_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: ID of the next-older entry (for the Prev button). Null when at the oldest.
         next_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: ID of the next-newer entry (for the Next button). Null when at the newest.
 
     EmailStatsByDay:
@@ -19465,9 +19387,8 @@ components:
           format: int64
           description: Number of distinct providers used in the range.
         site_count:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
           description: Number of distinct sites in the range (fleet stats only).
         by_day:
           type: array
@@ -19538,9 +19459,8 @@ components:
           format: float
           description: complained/total*100 (0 when total=0).
         last_sent_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the most recent successfully-sent email was dispatched. Null when no sent email in the window.
         sparkline:
           type: array
@@ -19585,17 +19505,15 @@ components:
           type: string
           format: uuid
         site_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: Null for fleet-wide entries (applies to all sites in tenant).
         email_hash:
           type: string
           description: SHA-256 of the lower-cased email address (hex).
         email:
-          type: string
+          type: [string, "null"]
           format: email
-          nullable: true
           description: Plaintext email address (null when not stored at create time).
         reason:
           type: string
@@ -19604,13 +19522,11 @@ components:
           type: string
           description: ses | sendgrid | mailgun | postmark | manual
         event_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the provider event occurred (null for manual entries).
         source_message_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Provider message ID that triggered this suppression (if known).
         created_at:
           type: string
@@ -19625,8 +19541,7 @@ components:
           items:
             $ref: "#/components/schemas/EmailSuppressionEntry"
         next_cursor:
-          type: string
-          nullable: true
+          type: [string, "null"]
         has_more:
           type: boolean
 
@@ -19657,12 +19572,10 @@ components:
         ok:
           type: boolean
         detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Agent response message or error detail.
         message_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Provider message ID assigned to the resent email (if agent returned it).
 
     BulkResendRequest:
@@ -19687,8 +19600,7 @@ components:
         ok:
           type: boolean
         detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     BulkResendResponse:
       type: object
@@ -19817,8 +19729,7 @@ components:
           additionalProperties: true
           description: Provider-specific non-secret fields.
         secret:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Provider credential. Omit to preserve the existing stored secret.
             Provide an empty string to clear it.
@@ -19888,9 +19799,8 @@ components:
           type: string
           description: IANA timezone used to evaluate digest_hour/digest_day.
         next_digest_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >
             Next scheduled digest send time, or null when the digest is
             disabled or not yet scheduled.
@@ -19944,18 +19854,15 @@ components:
                 about routed sites, which are covered independent of this
                 value.
         tenant_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: Present when a settings row exists; absent for default response.
         created_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         updated_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
 
     PutEmailNotifySettingsRequest:
       type: object
@@ -20142,9 +20049,8 @@ components:
       required: [site_ids]
       properties:
         client_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: UUID of the client to assign. Omit or pass null to unassign the sites.
         site_ids:
           type: array
@@ -20727,9 +20633,8 @@ components:
         site_count:
           type: integer
         avg_uptime_pct:
-          type: number
+          type: [number, "null"]
           format: float
-          nullable: true
           description: "Null when no site has uptime checks in the period."
         incidents:
           type: integer
@@ -20756,9 +20661,8 @@ components:
           type: string
           description: "Connection state (connected/degraded/disconnected)."
         uptime_pct:
-          type: number
+          type: [number, "null"]
           format: float
-          nullable: true
           description: "Null when no uptime checks exist for this site in the period."
         uptime_daily:
           type: array
@@ -20767,22 +20671,19 @@ components:
         incidents:
           type: integer
         last_backup_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         backups_in_period:
           type: integer
         updates_in_period:
           type: integer
         vitals_rating:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: "Worst CWV rating across LCP/INP/CLS. Null when no RUM samples."
-          enum: [good, needs-improvement, poor]
+          enum: [good, needs-improvement, poor, null]
         tls_expires_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
 
     PortalSummaryLatestReport:
       type: object
@@ -20839,10 +20740,9 @@ components:
         totals:
           $ref: "#/components/schemas/PortalSummaryTotals"
         vitals_overall:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: "Worst CWV rating across all sites with samples. Null when no samples."
-          enum: [good, needs-improvement, poor]
+          enum: [good, needs-improvement, poor, null]
         vitals_distribution:
           $ref: "#/components/schemas/PortalVitalsDistribution"
         uptime_daily:
@@ -20925,13 +20825,11 @@ components:
             When true the drop-in emits a per-request x-wpmgr-object-cache response
             header with cache hit/miss/state details. Default false.
         last_test_config_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Non-empty after a passing test; cleared when connection fields change.
         last_tested_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         last_test_result:
           allOf:
             - $ref: "#/components/schemas/ObjectCacheTestResult"
@@ -20946,14 +20844,12 @@ components:
         oc_latency_ms:
           type: integer
         oc_last_error_class:
-          type: string
-          nullable: true
+          type: [string, "null"]
         oc_used_memory_bytes:
           type: integer
           format: int64
         oc_hit_ratio_pct:
-          type: number
-          nullable: true
+          type: [number, "null"]
         created_at:
           type: string
           format: date-time
@@ -21040,8 +20936,7 @@ components:
         ]
       properties:
         phpredis_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
         igbinary_available:
           type: boolean
         lzf_available:
@@ -21069,18 +20964,15 @@ components:
         ok:
           type: boolean
         detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
         reachable:
           type: boolean
         latency_ms:
           type: integer
         server_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
         eviction_policy:
-          type: string
-          nullable: true
+          type: [string, "null"]
         max_memory_bytes:
           type: integer
           format: int64
@@ -21090,19 +20982,16 @@ components:
         capabilities:
           $ref: "#/components/schemas/ObjectCacheCapabilities"
         flush_capability_class:
-          type: string
+          type: [string, "null"]
           description: dedicated_db or shared_prefix; drives the flush strategy disclosure.
-          nullable: true
         acl_denials:
-          type: array
+          type: [array, "null"]
           items:
             type: string
-          nullable: true
         round_trip_ok:
           type: boolean
         config_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     ObjectCacheStatsHistoryPoint:
       type: object
@@ -21113,8 +21002,7 @@ components:
           type: string
           format: date-time
         ratio_pct:
-          type: number
-          nullable: true
+          type: [number, "null"]
           description: Hit ratio as a percentage (0–100). Null when no data.
         hit_count:
           type: integer
@@ -21198,8 +21086,7 @@ components:
           type: boolean
           description: True when more entries remain beyond this page.
         cursor:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Opaque resume cursor; present only when `truncated=true`.
 
     FileReadResult:
@@ -21750,8 +21637,7 @@ components:
           type: boolean
           description: True when more results remain beyond this page.
         cursor:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Opaque resume cursor; present only when `truncated=true`.
 
     FileVersion:
@@ -21866,9 +21752,8 @@ components:
             from this install having seen the person open a verification link.
         created_at: { type: string, format: date-time }
         last_login_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: Null until the method has been used to sign in at least once.
     ConnectedAccounts:
       type: object
@@ -22072,13 +21957,13 @@ components:
         role:
           type: string
           description: The WordPress role slug this override applies to (e.g. administrator).
-        require_2fa: { type: boolean, nullable: true }
+        require_2fa: { type: [boolean, "null"] }
         allowed_methods:
           type: array
           items: { type: string }
-        min_zxcvbn_score: { type: integer, nullable: true }
-        block_compromised: { type: boolean, nullable: true }
-        max_age_days: { type: integer, nullable: true }
+        min_zxcvbn_score: { type: [integer, "null"] }
+        block_compromised: { type: [boolean, "null"] }
+        max_age_days: { type: [integer, "null"] }
         created_at: { type: string, format: date-time }
 
     # ---------------------------------------------------------------------------
@@ -22383,9 +22268,8 @@ components:
             appearing closes the path again on the very next request, because
             nothing about this answer is cached.
         last_success_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >
             When this install last CONFIRMED what upstream publishes: the
             last attempt whose outcome was mirrored, current, or unchanged.
@@ -22394,9 +22278,8 @@ components:
             last_attempt_at: a run that failed ten minutes ago must never be
             reported as "checked ten minutes ago".
         last_success_outcome:
-          type: string
-          enum: [mirrored, current, unchanged]
-          nullable: true
+          type: [string, "null"]
+          enum: [mirrored, current, unchanged, null]
           description: >
             Which kind of confirmation last_success_at was. "mirrored": a
             new release was published here. "current": upstream examined and
@@ -22405,26 +22288,23 @@ components:
             conditional request is only sent while the published pointer is
             unchanged too.
         last_success_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             The agent version that confirmation established. Carried forward
             across an "unchanged" (304) result, which by definition names the
             same release.
         last_attempt_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >
             When a mirror run last executed, whatever the result. Null when
             none ever has. Never render an age from this field.
         last_attempt_outcome:
-          type: string
+          type: [string, "null"]
           enum:
             [mirrored, current, unchanged, rate_limited, refused,
              foreign_channel, upstream_unavailable, storage_error,
              not_configured]
-          nullable: true
           description: >
             "rate_limited" is NOT a failure: the mirror keeps a minimum gap
             between upstream requests, and skipping is expected and must
@@ -22436,28 +22316,24 @@ components:
             "storage_error" are the real failures: something was tried and it
             broke.
         last_attempt_detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >
             Short non-secret reason for the last attempt, composed by the
             control plane and capped at 200 characters. Never a raw wrapped
             error, so it can never carry a presigned URL or any credential.
         last_attempt_trigger:
-          type: string
-          enum: [periodic, manual]
-          nullable: true
+          type: [string, "null"]
+          enum: [periodic, manual, null]
           description: Whether the last attempt was the scheduled tick or an operator-requested check now.
         last_mirrored_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >
             When the mirror last actually PUBLISHED a new release into this
             install's storage, as opposed to merely confirming the existing
             one.
         last_mirrored_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     AgentMirrorCheckQueued:
       type: object
@@ -22509,9 +22385,8 @@ components:
         tls_mode: { type: string, description: "none | starttls | tls" }
         allow_insecure_tls: { type: boolean }
         password:
-          type: string
+          type: [string, "null"]
           format: password
-          nullable: true
           description: Write-only. Omit or null to leave the stored ciphertext unchanged.
 
     # ---------------------------------------------------------------------------
@@ -22530,10 +22405,10 @@ components:
           enum: [pending, accepted, expired, revoked]
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
-        accepted_at: { type: string, format: date-time, nullable: true }
-        revoked_at: { type: string, format: date-time, nullable: true }
+        accepted_at: { type: [string, "null"], format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
         attempts: { type: integer }
-        invited_by: { type: string, format: uuid, nullable: true }
+        invited_by: { type: [string, "null"], format: uuid }
 
     # ---------------------------------------------------------------------------
     # M23 Media Optimizer — ADR-044 auto-optimize settings
@@ -22571,8 +22446,8 @@ components:
         name: { type: string }
         url: { type: string }
         started_at: { type: string, format: date-time }
-        ended_at: { type: string, format: date-time, nullable: true }
-        duration_seconds: { type: integer, format: int64, nullable: true }
+        ended_at: { type: [string, "null"], format: date-time }
+        duration_seconds: { type: [integer, "null"], format: int64 }
         ongoing: { type: boolean }
         peak_status: { type: string }
         last_http_status: { type: integer }
@@ -22697,10 +22572,10 @@ components:
         installed: { type: boolean }
         deletable_eligible: { type: boolean }
         size_bytes: { type: integer, format: int64 }
-        autoload: { type: boolean, nullable: true }
-        next_run_at: { type: integer, format: int64, nullable: true }
+        autoload: { type: [boolean, "null"] }
+        next_run_at: { type: [integer, "null"], format: int64 }
         recurrence: { type: string }
-        rows: { type: integer, format: int64, nullable: true }
+        rows: { type: [integer, "null"], format: int64 }
     DbOrphansReport:
       type: object
       required: [options, cron, tables, corpus_version, snapshot_available, hidden_installed, counts]
@@ -22781,11 +22656,10 @@ components:
       required: [clean_active, active_job_id, active_started_at, last_result]
       properties:
         clean_active: { type: boolean }
-        active_job_id: { type: string, nullable: true }
-        active_started_at: { type: string, format: date-time, nullable: true }
+        active_job_id: { type: [string, "null"] }
+        active_started_at: { type: [string, "null"], format: date-time }
         last_result:
-          type: object
-          nullable: true
+          type: [object, "null"]
           required: [job_id, rows_deleted, bytes_freed, result, cleaned_at]
           properties:
             job_id: { type: string }
@@ -22869,7 +22743,7 @@ components:
               url: { type: string }
               name: { type: string }
               connection_state: { type: string }
-              enrolled_at: { type: string, format: date-time, nullable: true }
+              enrolled_at: { type: [string, "null"], format: date-time }
               site_created_at: { type: string, format: date-time }
               tenant_id: { type: string, format: uuid }
               tenant_name: { type: string }
@@ -22973,15 +22847,13 @@ components:
               occurred_at: { type: string, format: date-time }
               actor_type: { type: string }
               actor_id:
-                type: string
+                type: [string, "null"]
                 format: uuid
-                nullable: true
                 description: Absent for an event with no user actor.
               action: { type: string }
               tenant_id:
-                type: string
+                type: [string, "null"]
                 format: uuid
-                nullable: true
                 description: >
                   A denormalized snapshot, not a reference: this log deliberately
                   outlives the organisation an event concerned. Absent when the
@@ -23103,7 +22975,7 @@ components:
         preload_total: { type: integer }
         cache_hit_count: { type: integer, format: int64 }
         cache_miss_count: { type: integer, format: int64 }
-        woo_theme_fragments_supported: { type: boolean, nullable: true }
+        woo_theme_fragments_supported: { type: [boolean, "null"] }
         object_cache:
           type: object
           description: >-
@@ -23134,8 +23006,7 @@ components:
         wp_cache_constant_set: { type: boolean }
         htaccess_managed: { type: boolean }
         rum_beacon_present:
-          type: boolean
-          nullable: true
+          type: [boolean, "null"]
           description: >-
             GH #174 — whether the agent currently holds a non-empty
             rum_beacon_key. Absent (not false) when a pre-#174 agent does not
@@ -23186,8 +23057,8 @@ components:
               original_path: { type: string }
               original_url: { type: string }
               original_mime: { type: string }
-              original_width: { type: integer, nullable: true }
-              original_height: { type: integer, nullable: true }
+              original_width: { type: [integer, "null"] }
+              original_height: { type: [integer, "null"] }
               original_size_bytes: { type: integer, format: int64 }
               variant_count: { type: integer }
               saved_bytes: { type: integer, format: int64 }
@@ -23220,7 +23091,7 @@ components:
               retries: { type: integer }
               resent_count: { type: integer }
               body_stored: { type: boolean }
-              body: { type: string, nullable: true }
+              body: { type: [string, "null"] }
               created_at:
                 description: Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.
               connection_key: { type: string }
@@ -23243,12 +23114,12 @@ components:
             properties:
               id: { type: string }
               tenant_id: { type: string, format: uuid }
-              site_id: { type: string, nullable: true }
-              email: { type: string, nullable: true }
+              site_id: { type: [string, "null"] }
+              email: { type: [string, "null"] }
               reason: { type: string }
               provider: { type: string }
-              event_at: { type: string, format: date-time, nullable: true }
-              source_message_id: { type: string, nullable: true }
+              event_at: { type: [string, "null"], format: date-time }
+              source_message_id: { type: [string, "null"] }
               created_at: { type: string, format: date-time }
         next_cursor: { type: string }
 

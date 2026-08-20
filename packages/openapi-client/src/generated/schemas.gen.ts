@@ -376,8 +376,7 @@ export const SiteComponentsSchema = {
       },
     },
     core_update: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description: "When set, WordPress core has an update available.",
       required: ["new_version", "current_version"],
       properties: {
@@ -429,8 +428,7 @@ export const SiteComponentSchema = {
         "Whether the plugin is network-activated. Optional; older agents omit it.",
     },
     available_update: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description: "When set, an update is available for this plugin/theme.",
       required: ["new_version"],
       properties: {
@@ -438,16 +436,13 @@ export const SiteComponentSchema = {
           type: "string",
         },
         package: {
-          type: "string",
-          nullable: true,
+          type: ["string", "null"],
         },
         tested: {
-          type: "string",
-          nullable: true,
+          type: ["string", "null"],
         },
         requires_php: {
-          type: "string",
-          nullable: true,
+          type: ["string", "null"],
         },
       },
     },
@@ -464,8 +459,7 @@ export const SiteAvailableUpdatesSchema = {
       format: "uuid",
     },
     core_update: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       required: ["new_version", "current_version"],
       properties: {
         new_version: {
@@ -502,24 +496,20 @@ export const SiteAvailableUpdatesSchema = {
             type: "boolean",
           },
           package: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           tested: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           requires_php: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
         },
       },
     },
     as_of: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
   },
 } as const;
@@ -643,9 +633,8 @@ export const PauseMonitoringRequestSchema = {
       description: "Free-text note stored on every site this request pauses.",
     },
     resume_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "Optional instant a later phase's sweep will auto-resume at. Must\nbe in the future; a past instant is rejected with\n`resume_at_in_past` rather than stored as a pause that instantly\nun-pauses.\n",
     },
@@ -700,17 +689,15 @@ export const MonitoringResultSchema = {
       ],
     },
     monitoring_paused_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     monitoring_paused_reason: {
       type: "string",
     },
     monitoring_resume_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
   },
 } as const;
@@ -1030,12 +1017,10 @@ export const AgentMediaSyncBatchSchema = {
             type: "string",
           },
           original_width: {
-            type: "integer",
-            nullable: true,
+            type: ["integer", "null"],
           },
           original_height: {
-            type: "integer",
-            nullable: true,
+            type: ["integer", "null"],
           },
           original_size_bytes: {
             type: "integer",
@@ -1116,19 +1101,16 @@ export const AgentMediaJobStatusSchema = {
       format: "int64",
     },
     bytes_before: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
     },
     bytes_after: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
     },
     saved_bytes: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description:
         'All-variant savings (summed original-minus-optimized over every optimized variant). Drives the dashboard "Bytes saved" rollup.',
     },
@@ -1313,8 +1295,7 @@ export const AgentMetadataSchema = {
       },
     },
     core_update: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description: "Present only when WordPress core has an update available.",
       properties: {
         new_version: {
@@ -1326,8 +1307,7 @@ export const AgentMetadataSchema = {
       },
     },
     host_flags: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description: "The agent's defined()-based hosting fingerprint.",
       properties: {
         is_pressable: {
@@ -1357,8 +1337,7 @@ export const AgentMetadataSchema = {
       },
     },
     disk: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description:
         "Sampled disk usage in bytes. The wp-content and uploads walks are\ntime-capped, so a field may be absent on a very large tree.\n",
       properties: {
@@ -1377,8 +1356,7 @@ export const AgentMetadataSchema = {
       },
     },
     agent_self_update: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description:
         "The outcome of the agent's last self-update apply, replayed on the\nnext metadata push. This is the only channel by which a FAILED\napply reaches the control plane: the apply runs inside a cron\nrequest with no response to ride on.\n",
       properties: {
@@ -2029,14 +2007,12 @@ export const AuditEntrySchema = {
       type: "string",
     },
     actor_name: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Display name of the acting user (users.name), or the API key's\nlabel (api_keys.name) when the actor is an api_key, resolved\nserver-side. Null for system events and for any actor row that no\nlonger exists.\n",
     },
     actor_email: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Email of the acting user, resolved server-side. Null for\napi_key/system actors and for any actor row that no longer\nexists.\n",
     },
@@ -2918,16 +2894,13 @@ export const AdminSetOverridesRequestSchema = {
   required: ["reason"],
   properties: {
     sites: {
-      type: "integer",
-      nullable: true,
+      type: ["integer", "null"],
     },
     storage_gb: {
-      type: "integer",
-      nullable: true,
+      type: ["integer", "null"],
     },
     seats: {
-      type: "integer",
-      nullable: true,
+      type: ["integer", "null"],
     },
     reason: {
       type: "string",
@@ -3613,9 +3586,8 @@ export const BackupFleetListSchema = {
       },
     },
     next_offset: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description:
         "Offset to pass for the next page; null when no further pages.",
     },
@@ -3775,8 +3747,7 @@ export const BulkDeleteBackupsResultItemSchema = {
         '"deleted" — the snapshot was removed (or, in dry_run, WOULD be\nremoved). "skipped" — the snapshot was left in place; see code.\n',
     },
     code: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       enum: [
         "snapshot_not_found",
         "snapshot_in_progress",
@@ -3787,8 +3758,7 @@ export const BulkDeleteBackupsResultItemSchema = {
       description: "Null when outcome=deleted; the skip reason otherwise.",
     },
     message: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Human-readable explanation of code; null when outcome=deleted.",
     },
@@ -3879,9 +3849,8 @@ export const RestoreCreateSchema = {
       default: false,
     },
     target_site_url: {
-      type: "string",
+      type: ["string", "null"],
       format: "uri",
-      nullable: true,
       description:
         "When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs to this target. When unset, the agent uses the current site's URL (no-op when restoring to the same environment). Required for cross-environment restores (dev->prod, staging->prod). The control plane derives this from the destination Site.URL when the restore is dispatched, so callers typically don't need to set it.\n",
     },
@@ -3925,18 +3894,15 @@ export const SqlInspectionSchema = {
         "Most common table-name prefix (chars up to the first underscore);\nempty when no consistent prefix could be determined.\n",
     },
     wp_version: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "WordPress db_version from wp_options, when detectable.",
     },
     siteurl: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "WordPress siteurl from wp_options, when detectable.",
     },
     home: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "WordPress home from wp_options, when detectable.",
     },
     is_wordpress: {
@@ -3980,9 +3946,8 @@ export const SqlInspectionSchema = {
             format: "int64",
           },
           auto_increment: {
-            type: "integer",
+            type: ["integer", "null"],
             format: "int64",
-            nullable: true,
           },
           charset: {
             type: "string",
@@ -4071,29 +4036,26 @@ export const BackupScheduleSchema = {
       description: "Minute (0-59) within the hour at which the backup fires.",
     },
     day_of_week: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 0,
       maximum: 6,
-      nullable: true,
       description:
         "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.",
     },
     day_of_month: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 28,
-      nullable: true,
       description:
         "Day of month (1-28, capped) for monthly cadence; null otherwise.",
     },
     frequency_hours: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 24,
-      nullable: true,
       description:
         "Interval in hours for every_n_hours cadence; null otherwise.",
     },
@@ -4108,11 +4070,10 @@ export const BackupScheduleSchema = {
         "Beta. When true, scheduled and run-now backups for this site may take incremental snapshots (the control plane auto-decides full base vs increment per ADR-048).",
     },
     base_window_days: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 365,
-      nullable: true,
       description:
         "Optional override of the default incremental base window (7 days). null means use the default.",
     },
@@ -4200,29 +4161,26 @@ export const BackupScheduleUpdateSchema = {
       description: "Minute (0-59) within the hour at which the backup fires.",
     },
     day_of_week: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 0,
       maximum: 6,
-      nullable: true,
       description:
         "Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.",
     },
     day_of_month: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 28,
-      nullable: true,
       description:
         "Day of month (1-28, capped) for monthly cadence; null otherwise.",
     },
     frequency_hours: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 24,
-      nullable: true,
       description:
         "Interval in hours for every_n_hours cadence; null otherwise.",
     },
@@ -4238,11 +4196,10 @@ export const BackupScheduleUpdateSchema = {
         "Beta. Take incremental backups on this schedule (and via run-now). The control plane auto-decides full base vs increment.",
     },
     base_window_days: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 365,
-      nullable: true,
       description:
         "Optional override of the default incremental base window (7 days). Omit/null to use the default.",
     },
@@ -4260,12 +4217,11 @@ export const SiteBackupSettingsContentsSchema = {
       format: "uuid",
     },
     backup_components: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
         enum: ["plugin", "theme", "upload", "wp-content", "db", "core"],
       },
-      nullable: true,
       description:
         'Subset of archive components to include. Null/absent means all components (full backup).\nSingular vocabulary matching manifest entry_kind:\n"plugin" (wp-content/plugins/*), "theme" (wp-content/themes/*),\n"upload" (wp-content/uploads/*), "wp-content" (catch-all), "db" (database dump),\n"core" (ABSPATH: wp-admin, wp-includes, root PHP files).\n',
       uniqueItems: true,
@@ -4277,30 +4233,27 @@ export const SiteBackupSettingsContentsSchema = {
         "When true, the WordPress core source root (ABSPATH) is archived.",
     },
     exclude_paths: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
       },
       maxItems: 100,
-      nullable: true,
       description: "Path-segment names to exclude from file archiving.",
     },
     exclude_extensions: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
       },
       maxItems: 50,
-      nullable: true,
       description:
         "File extensions to skip (without leading dot, case-insensitive).",
     },
     exclude_file_size_mb: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 1,
       maximum: 102400,
-      nullable: true,
       description:
         "Skip files strictly larger than this value (MiB). 0/null = no filter.",
     },
@@ -4320,12 +4273,11 @@ export const SiteBackupSettingsContentsUpdateSchema = {
   description: "Update the Track-A backup scope/exclusion settings for a site.",
   properties: {
     backup_components: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
         enum: ["plugin", "theme", "upload", "wp-content", "db", "core"],
       },
-      nullable: true,
       description:
         "Subset of archive components. Null/absent = all components (full backup).",
     },
@@ -4333,27 +4285,24 @@ export const SiteBackupSettingsContentsUpdateSchema = {
       type: "boolean",
     },
     exclude_paths: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
       },
       maxItems: 100,
-      nullable: true,
     },
     exclude_extensions: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
       },
       maxItems: 50,
-      nullable: true,
     },
     exclude_file_size_mb: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int32",
       minimum: 0,
       maximum: 102400,
-      nullable: true,
       description: "0 or null clears the filter.",
     },
   },
@@ -4480,15 +4429,13 @@ export const RestoreRunSchema = {
         "Raw actor identifier (user UUID or `api-key:<id>` or `system`).",
     },
     triggered_by_email: {
-      type: "string",
+      type: ["string", "null"],
       format: "email",
-      nullable: true,
       description:
         "Email of the triggering user (null for non-user actors or unresolvable IDs).",
     },
     triggered_by_name: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Display name of the triggering user (null for non-user actors or unresolvable IDs).",
     },
@@ -4637,15 +4584,13 @@ export const ScheduleRunSchema = {
         "Actor that triggered this run (`schedule` for automatic fires; user UUID for manual).",
     },
     triggered_by_email: {
-      type: "string",
+      type: ["string", "null"],
       format: "email",
-      nullable: true,
       description:
         "Email of the triggering user (null for schedule-fired or unresolvable actors).",
     },
     triggered_by_name: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Display name of the triggering user (null for schedule-fired or unresolvable actors).",
     },
@@ -4804,9 +4749,8 @@ export const FleetUptimeDaySchema = {
         "The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed\non UTC days, so re-bucketing per viewer timezone would split one\nstored day across two rendered cells.\n",
     },
     uptime_pct: {
-      type: "number",
+      type: ["number", "null"],
       format: "double",
-      nullable: true,
       description:
         "up_checks/total_checks*100 for the day, or null when the day has\nNO stored measurement. Null is not zero — see the endpoint\ndescription. Never interpolated from a neighbouring day.\n",
     },
@@ -4817,9 +4761,8 @@ export const FleetUptimeDaySchema = {
         'Probes recorded that day; 0 exactly when uptime_pct is null.\nCarried so a confidently-measured day is distinguishable from one\nwith a single probe, and so "no data" is falsifiable rather than\nsomething the client infers from a null alone.\n',
     },
     avg_latency_ms: {
-      type: "number",
+      type: ["number", "null"],
       format: "double",
-      nullable: true,
       description:
         "Mean response time over SUCCESSFUL probes with a non-zero reading,\nnull when the day had none.\n",
     },
@@ -4937,9 +4880,8 @@ export const FleetUptimeStatusItemSchema = {
         "Short machine-readable explanation for status, populated when\nstatus=degraded (agent_unreachable, agent_degraded, app_down, or\nslow_response). Empty/absent when the status needs no further\nexplanation.\n",
     },
     uptime_pct_7d: {
-      type: "number",
+      type: ["number", "null"],
       format: "double",
-      nullable: true,
       description:
         '7-day uptime percentage, or null when the site has NO measurement\nin the window — never probed, monitoring never enabled, or its\nwhole history aged past the 90-day probe retention. Null is not\nzero: 0 means "measured, and down for the whole window", and a\nclient that renders null as 0 paints a never-probed site as a\ntotal outage (GH #460). Treat null as "no data" and say so.\n',
     },
@@ -4969,8 +4911,7 @@ export const FleetUptimeStatusItemSchema = {
       type: "string",
     },
     app_up: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
       description:
         "GH #291 Phase 2 application-health verdict from the most recent\napp probe: true (WordPress responded), false (conclusively\ndown), or absent/null (never probed, or the most recent probe\nwas inconclusive; see app_probe_reason). Independent of `up`\n(the reachability signal, unchanged forever): a cached 200\n(up=true) can coexist with app_up=false when a page cache is\nmasking a dead PHP backend.\n",
     },
@@ -5812,9 +5753,8 @@ export const ActivityVerifyResultSchema = {
       description: "True when the entire chain re-verifies intact.",
     },
     break_at_seq: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description:
         "The seq of the first broken link, or null when the chain is intact.\nKept for backward compatibility; equals break.seq when broken.\n",
     },
@@ -5865,9 +5805,8 @@ export const ChainBreakSchema = {
         "Classifies the break:\n- missing_events: one or more seq numbers are absent (log cleanup / retention / deletion).\n- link_mismatch: contiguous seq but prev_hash broken (insertion/removal/reorder/prior alteration).\n- content_modified: prev link intact but recomputed hash diverges (content edited after recording).\n- chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain reset).\n",
     },
     prior_seq: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description:
         "The seq of the last successfully-verified row. Null when the break is\nat the first/genesis row and no prior row was verified.\n",
     },
@@ -6974,16 +6913,14 @@ export const PerfConfigSchema = {
         "When true the agent will cache the WooCommerce catalog shell for\nanonymous shoppers who have an active cart. The agent additionally\nhard-gates on its own theme probe (`woo_theme_fragments_supported`)\nbefore serving cached pages to cart-holding visitors, providing a\ndefense-in-depth layer independent of this flag.\nThe API accepts `woo_cacheable_session: true` even when\n`woo_theme_fragments_supported` is false — the agent will not act on\nit until its own probe passes. This allows operators to pre-enable the\nflag before the agent performs its first probe.\n",
     },
     woo_theme_fragments_supported: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
       readOnly: true,
       description:
         "Agent-reported (read-only). Tri-state: null = never probed, false =\nprobed and the active theme does not expose the standard WooCommerce\ncart-fragments hook, true = probed and supported. The CP stores this\nvalue but never lets an operator write it via PUT. Null is the\ncorrect initial state (M67); the agent stamps true/false only after\nrunning a genuine front-end probe.\n",
     },
     woo_fragments_probed_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       readOnly: true,
       description:
         "RFC3339 timestamp of the last agent probe. Null when never probed.\n",
@@ -7858,8 +7795,7 @@ export const MediaCleanCandidateSchema = {
       description: "Public URL of the original (largest) file (guid).",
     },
     thumb: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "URL of the thumbnail-size variant; null when unavailable.",
     },
     file_size: {
@@ -8149,9 +8085,8 @@ export const SiteEmailConfigSchema = {
       format: "uuid",
     },
     site_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "Present for per-site rows; absent for the org-wide default.",
     },
@@ -8193,14 +8128,12 @@ export const SiteEmailConfigSchema = {
         "True when this row is the org-wide default returned for a site that has no config of its own. `site_id` is rewritten to the queried site in that case, so without this flag an inherited row is indistinguishable from a per-site one. When it is true, `secret_set` describes the ORG credential, not one belonging to this site.\n",
     },
     default_connection: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Slug of the connection to use for regular mail (for providers that support multiple connections, e.g. SMTP-Multi — Phase 2+).\n",
     },
     fallback_connection: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Slug of the fallback connection (Phase 2+).",
     },
     log_emails: {
@@ -8235,8 +8168,7 @@ export const SiteEmailConfigSchema = {
         "Named provider connections for this config (multi-connection, m62+). Empty array when no named connections have been created.\n",
     },
     webhook_url: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "The full inbound webhook URL for this config row, e.g. https://manage.wpmgr.app/webhooks/email/{provider}/{token}. Shows a placeholder token segment when a token is stored but not freshly rotated. Absent when no token has been generated yet.\n",
     },
@@ -8275,14 +8207,12 @@ export const PutEmailWebhookConfigRequestSchema = {
         "When true, a new route token is generated (invalidating the old URL) and returned once in webhook_route_token.\n",
     },
     webhook_signing_key: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "HMAC signing key for verifying provider webhook payloads. Write-only. Omit to preserve the existing key. Send null to clear.\n",
     },
     ses_topic_arns: {
-      type: "array",
-      nullable: true,
+      type: ["array", "null"],
       items: {
         type: "string",
       },
@@ -8315,8 +8245,7 @@ export const EmailWebhookConfigResponseSchema = {
       description: "Current SNS TopicArn allowlist (may be empty).",
     },
     webhook_route_token: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Plain route token, returned once when rotate_token was true. Store it immediately -- it will not be shown again.\n",
     },
@@ -8351,18 +8280,15 @@ export const PutEmailConfigRequestSchema = {
       type: "boolean",
     },
     secret: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Provider credential (API key, SMTP password, etc.). Omit to preserve the existing stored secret. Provide an empty string to clear the stored secret.\n",
     },
     default_connection: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     fallback_connection: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     log_emails: {
       type: "boolean",
@@ -8419,14 +8345,12 @@ export const EmailTestResultSchema = {
       description: "True when the agent confirmed the email was dispatched.",
     },
     detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Human-readable detail or error message from the agent. Present when ok is false.\n",
     },
     message_id: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Provider-assigned message-id returned by the agent (Phase 2+).",
     },
@@ -8463,8 +8387,7 @@ export const EmailProviderSpecSchema = {
       description: "Human-readable provider name.",
     },
     docs_url: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "URL to provider-specific setup documentation.",
     },
     fields: {
@@ -8504,21 +8427,18 @@ export const EmailProviderFieldSchema = {
       type: "boolean",
     },
     options: {
-      type: "array",
-      nullable: true,
+      type: ["array", "null"],
       description: "Valid option values for select fields.",
       items: {
         type: "string",
       },
     },
     default: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Default value hint for the UI.",
     },
     help: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Short helper text shown below the field in the UI.",
     },
   },
@@ -8559,14 +8479,12 @@ export const SiteEmailLogEntrySchema = {
       format: "uuid",
     },
     agent_seq: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description: "Agent-local sequence number (cursor for the agent push).",
     },
     message_id: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Provider-assigned Message-ID header value.",
     },
     to_addresses: {
@@ -8615,8 +8533,7 @@ export const SiteEmailLogEntrySchema = {
       description: "Whether the email body was captured at send time.",
     },
     body: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Full email body. Present only in the detail response and only when body_stored is true. Never returned in list or export responses.\n",
     },
@@ -8678,16 +8595,14 @@ export const EmailLogDetailSchema = {
       $ref: "#/components/schemas/SiteEmailLogEntry",
     },
     prev_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "ID of the next-older entry (for the Prev button). Null when at the oldest.",
     },
     next_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "ID of the next-newer entry (for the Next button). Null when at the newest.",
     },
@@ -8802,9 +8717,8 @@ export const EmailStatsSchema = {
       description: "Number of distinct providers used in the range.",
     },
     site_count: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
       description: "Number of distinct sites in the range (fleet stats only).",
     },
     by_day: {
@@ -8887,9 +8801,8 @@ export const SiteDeliveryItemSchema = {
       description: "complained/total*100 (0 when total=0).",
     },
     last_sent_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "When the most recent successfully-sent email was dispatched. Null when no sent email in the window.",
     },
@@ -8947,9 +8860,8 @@ export const EmailSuppressionEntrySchema = {
       format: "uuid",
     },
     site_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "Null for fleet-wide entries (applies to all sites in tenant).",
     },
@@ -8958,9 +8870,8 @@ export const EmailSuppressionEntrySchema = {
       description: "SHA-256 of the lower-cased email address (hex).",
     },
     email: {
-      type: "string",
+      type: ["string", "null"],
       format: "email",
-      nullable: true,
       description:
         "Plaintext email address (null when not stored at create time).",
     },
@@ -8973,15 +8884,13 @@ export const EmailSuppressionEntrySchema = {
       description: "ses | sendgrid | mailgun | postmark | manual",
     },
     event_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "When the provider event occurred (null for manual entries).",
     },
     source_message_id: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Provider message ID that triggered this suppression (if known).",
     },
@@ -9003,8 +8912,7 @@ export const EmailSuppressionPageSchema = {
       },
     },
     next_cursor: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     has_more: {
       type: "boolean",
@@ -9040,13 +8948,11 @@ export const ResendEmailResultSchema = {
       type: "boolean",
     },
     detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Agent response message or error detail.",
     },
     message_id: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Provider message ID assigned to the resent email (if agent returned it).",
     },
@@ -9081,8 +8987,7 @@ export const BulkResendItemResultSchema = {
       type: "boolean",
     },
     detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
   },
 } as const;
@@ -9241,8 +9146,7 @@ export const PutEmailConnectionRequestSchema = {
       description: "Provider-specific non-secret fields.",
     },
     secret: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Provider credential. Omit to preserve the existing stored secret. Provide an empty string to clear it.\n",
     },
@@ -9315,9 +9219,8 @@ export const EmailNotifySettingsSchema = {
       description: "IANA timezone used to evaluate digest_hour/digest_day.",
     },
     next_digest_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "Next scheduled digest send time, or null when the digest is disabled or not yet scheduled.\n",
     },
@@ -9360,21 +9263,18 @@ export const EmailNotifySettingsSchema = {
       },
     },
     tenant_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "Present when a settings row exists; absent for default response.",
     },
     created_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     updated_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
   },
 } as const;
@@ -9625,9 +9525,8 @@ export const AssignSitesRequestSchema = {
   required: ["site_ids"],
   properties: {
     client_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
       description:
         "UUID of the client to assign. Omit or pass null to unassign the sites.",
     },
@@ -10445,9 +10344,8 @@ export const PortalSummaryTotalsSchema = {
       type: "integer",
     },
     avg_uptime_pct: {
-      type: "number",
+      type: ["number", "null"],
       format: "float",
-      nullable: true,
       description: "Null when no site has uptime checks in the period.",
     },
     incidents: {
@@ -10493,9 +10391,8 @@ export const PortalSummarySiteSchema = {
       description: "Connection state (connected/degraded/disconnected).",
     },
     uptime_pct: {
-      type: "number",
+      type: ["number", "null"],
       format: "float",
-      nullable: true,
       description:
         "Null when no uptime checks exist for this site in the period.",
     },
@@ -10509,9 +10406,8 @@ export const PortalSummarySiteSchema = {
       type: "integer",
     },
     last_backup_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     backups_in_period: {
       type: "integer",
@@ -10520,16 +10416,14 @@ export const PortalSummarySiteSchema = {
       type: "integer",
     },
     vitals_rating: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Worst CWV rating across LCP/INP/CLS. Null when no RUM samples.",
-      enum: ["good", "needs-improvement", "poor"],
+      enum: ["good", "needs-improvement", "poor", null],
     },
     tls_expires_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
   },
 } as const;
@@ -10617,11 +10511,10 @@ export const PortalSummarySchema = {
       $ref: "#/components/schemas/PortalSummaryTotals",
     },
     vitals_overall: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Worst CWV rating across all sites with samples. Null when no samples.",
-      enum: ["good", "needs-improvement", "poor"],
+      enum: ["good", "needs-improvement", "poor", null],
     },
     vitals_distribution: {
       $ref: "#/components/schemas/PortalVitalsDistribution",
@@ -10765,15 +10658,13 @@ export const ObjectCacheConfigSchema = {
         "When true the drop-in emits a per-request x-wpmgr-object-cache response header with cache hit/miss/state details. Default false.",
     },
     last_test_config_hash: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Non-empty after a passing test; cleared when connection fields change.",
     },
     last_tested_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     last_test_result: {
       allOf: [
@@ -10794,16 +10685,14 @@ export const ObjectCacheConfigSchema = {
       type: "integer",
     },
     oc_last_error_class: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     oc_used_memory_bytes: {
       type: "integer",
       format: "int64",
     },
     oc_hit_ratio_pct: {
-      type: "number",
-      nullable: true,
+      type: ["number", "null"],
     },
     created_at: {
       type: "string",
@@ -10917,8 +10806,7 @@ export const ObjectCacheCapabilitiesSchema = {
   ],
   properties: {
     phpredis_version: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     igbinary_available: {
       type: "boolean",
@@ -10959,8 +10847,7 @@ export const ObjectCacheTestResultSchema = {
       type: "boolean",
     },
     detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     reachable: {
       type: "boolean",
@@ -10969,12 +10856,10 @@ export const ObjectCacheTestResultSchema = {
       type: "integer",
     },
     server_version: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     eviction_policy: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     max_memory_bytes: {
       type: "integer",
@@ -10988,24 +10873,21 @@ export const ObjectCacheTestResultSchema = {
       $ref: "#/components/schemas/ObjectCacheCapabilities",
     },
     flush_capability_class: {
-      type: "string",
+      type: ["string", "null"],
       description:
         "dedicated_db or shared_prefix; drives the flush strategy disclosure.",
-      nullable: true,
     },
     acl_denials: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "string",
       },
-      nullable: true,
     },
     round_trip_ok: {
       type: "boolean",
     },
     config_hash: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
   },
 } as const;
@@ -11027,8 +10909,7 @@ export const ObjectCacheStatsHistoryPointSchema = {
       format: "date-time",
     },
     ratio_pct: {
-      type: "number",
-      nullable: true,
+      type: ["number", "null"],
       description: "Hit ratio as a percentage (0–100). Null when no data.",
     },
     hit_count: {
@@ -11147,8 +11028,7 @@ export const FileListResultSchema = {
       description: "True when more entries remain beyond this page.",
     },
     cursor: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Opaque resume cursor; present only when `truncated=true`.",
     },
   },
@@ -11820,8 +11700,7 @@ export const FileSearchResultSchema = {
       description: "True when more results remain beyond this page.",
     },
     cursor: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description: "Opaque resume cursor; present only when `truncated=true`.",
     },
   },
@@ -11949,9 +11828,8 @@ export const ConnectedIdentitySchema = {
       format: "date-time",
     },
     last_login_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "Null until the method has been used to sign in at least once.",
     },
@@ -12362,8 +12240,7 @@ export const SitePolicyGroupSchema = {
         "The WordPress role slug this override applies to (e.g. administrator).",
     },
     require_2fa: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
     },
     allowed_methods: {
       type: "array",
@@ -12372,16 +12249,13 @@ export const SitePolicyGroupSchema = {
       },
     },
     min_zxcvbn_score: {
-      type: "integer",
-      nullable: true,
+      type: ["integer", "null"],
     },
     block_compromised: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
     },
     max_age_days: {
-      type: "integer",
-      nullable: true,
+      type: ["integer", "null"],
     },
     created_at: {
       type: "string",
@@ -12889,34 +12763,30 @@ export const AgentMirrorStatusSchema = {
         'Whether the CALLING VIEWER may trigger a mirror check on this install right now, i.e. whether POST /api/v1/admin/agent-mirror/check would admit this caller rather than answer 403. The dashboard renders its "Check now" action in the Sites page Agent column popover exactly when this is true, so an operator is never offered a button that refuses them, and the operator who may act is never left without one.\nThe control plane computes this from the SAME decision the endpoint\'s own gate runs, not a second copy of the rule: superadmin (users.is_superadmin), OR the owner of the only live organisation on this install (GH #322, the single-tenant self-hosted case, where the multi-tenant protection the gate exists for has no other tenant to protect). An API-key principal is always false, since this is an install-level action against a shared upstream request budget and the audit record wants a human.\nFalse whenever enabled is false: no caller may trigger a run that does not exist. False for every non-superadmin on an install with more than one live organisation, which leaves the hosted, multi-tenant case exactly as it was. A second organisation appearing closes the path again on the very next request, because nothing about this answer is cached.\n',
     },
     last_success_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         'When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago must never be reported as "checked ten minutes ago".\n',
     },
     last_success_outcome: {
-      type: "string",
-      enum: ["mirrored", "current", "unchanged"],
-      nullable: true,
+      type: ["string", "null"],
+      enum: ["mirrored", "current", "unchanged", null],
       description:
         'Which kind of confirmation last_success_at was. "mirrored": a new release was published here. "current": upstream examined and this install already publishes exactly it. "unchanged": upstream answered 304, which is a genuine confirmation because the conditional request is only sent while the published pointer is unchanged too.\n',
     },
     last_success_version: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         'The agent version that confirmation established. Carried forward across an "unchanged" (304) result, which by definition names the same release.\n',
     },
     last_attempt_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "When a mirror run last executed, whatever the result. Null when none ever has. Never render an age from this field.\n",
     },
     last_attempt_outcome: {
-      type: "string",
+      type: ["string", "null"],
       enum: [
         "mirrored",
         "current",
@@ -12928,33 +12798,28 @@ export const AgentMirrorStatusSchema = {
         "storage_error",
         "not_configured",
       ],
-      nullable: true,
       description:
         '"rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.\n',
     },
     last_attempt_detail: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
       description:
         "Short non-secret reason for the last attempt, composed by the control plane and capped at 200 characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.\n",
     },
     last_attempt_trigger: {
-      type: "string",
-      enum: ["periodic", "manual"],
-      nullable: true,
+      type: ["string", "null"],
+      enum: ["periodic", "manual", null],
       description:
         "Whether the last attempt was the scheduled tick or an operator-requested check now.",
     },
     last_mirrored_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
       description:
         "When the mirror last actually PUBLISHED a new release into this install's storage, as opposed to merely confirming the existing one.\n",
     },
     last_mirrored_version: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
   },
 } as const;
@@ -13070,9 +12935,8 @@ export const SmtpSettingsUpdateSchema = {
       type: "boolean",
     },
     password: {
-      type: "string",
+      type: ["string", "null"],
       format: "password",
-      nullable: true,
       description:
         "Write-only. Omit or null to leave the stored ciphertext unchanged.",
     },
@@ -13119,22 +12983,19 @@ export const SiteInvitationSchema = {
       format: "date-time",
     },
     accepted_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     revoked_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     attempts: {
       type: "integer",
     },
     invited_by: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
   },
 } as const;
@@ -13216,14 +13077,12 @@ export const FleetIncidentDetailSchema = {
       format: "date-time",
     },
     ended_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     duration_seconds: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
     },
     ongoing: {
       type: "boolean",
@@ -13467,21 +13326,18 @@ export const DbOrphanItemSchema = {
       format: "int64",
     },
     autoload: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
     },
     next_run_at: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
     },
     recurrence: {
       type: "string",
     },
     rows: {
-      type: "integer",
+      type: ["integer", "null"],
       format: "int64",
-      nullable: true,
     },
   },
 } as const;
@@ -13666,17 +13522,14 @@ export const DbCleanStatusSchema = {
       type: "boolean",
     },
     active_job_id: {
-      type: "string",
-      nullable: true,
+      type: ["string", "null"],
     },
     active_started_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
     last_result: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       required: [
         "job_id",
         "rows_deleted",
@@ -13893,9 +13746,8 @@ export const AdminUserSitesSchema = {
             type: "string",
           },
           enrolled_at: {
-            type: "string",
+            type: ["string", "null"],
             format: "date-time",
-            nullable: true,
           },
           site_created_at: {
             type: "string",
@@ -14135,18 +13987,16 @@ export const AdminSystemAuditPageSchema = {
             type: "string",
           },
           actor_id: {
-            type: "string",
+            type: ["string", "null"],
             format: "uuid",
-            nullable: true,
             description: "Absent for an event with no user actor.",
           },
           action: {
             type: "string",
           },
           tenant_id: {
-            type: "string",
+            type: ["string", "null"],
             format: "uuid",
-            nullable: true,
             description:
               "A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.\n",
           },
@@ -14425,8 +14275,7 @@ export const AgentCacheStatsReportSchema = {
       format: "int64",
     },
     woo_theme_fragments_supported: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
     },
     object_cache: {
       type: "object",
@@ -14512,8 +14361,7 @@ export const AgentPerfConfigAckSchema = {
       type: "boolean",
     },
     rum_beacon_present: {
-      type: "boolean",
-      nullable: true,
+      type: ["boolean", "null"],
       description:
         "GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when a pre-#174 agent does not report it.",
     },
@@ -14622,12 +14470,10 @@ export const AgentAutoOptimizeRequestSchema = {
             type: "string",
           },
           original_width: {
-            type: "integer",
-            nullable: true,
+            type: ["integer", "null"],
           },
           original_height: {
-            type: "integer",
-            nullable: true,
+            type: ["integer", "null"],
           },
           original_size_bytes: {
             type: "integer",
@@ -14699,8 +14545,7 @@ export const AgentEmailLogIngestRequestSchema = {
             type: "boolean",
           },
           body: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           created_at: {
             description:
@@ -14748,12 +14593,10 @@ export const AgentSuppressionDeltaPageSchema = {
             format: "uuid",
           },
           site_id: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           email: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           reason: {
             type: "string",
@@ -14762,13 +14605,11 @@ export const AgentSuppressionDeltaPageSchema = {
             type: "string",
           },
           event_at: {
-            type: "string",
+            type: ["string", "null"],
             format: "date-time",
-            nullable: true,
           },
           source_message_id: {
-            type: "string",
-            nullable: true,
+            type: ["string", "null"],
           },
           created_at: {
             type: "string",

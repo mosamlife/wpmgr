@@ -267,7 +267,7 @@ export type SiteComponents = {
   core_update?: {
     new_version: string;
     current_version: string;
-  };
+  } | null;
 };
 
 export type SiteComponent = {
@@ -296,10 +296,10 @@ export type SiteComponent = {
    */
   available_update?: {
     new_version: string;
-    package?: string;
-    tested?: string;
-    requires_php?: string;
-  };
+    package?: string | null;
+    tested?: string | null;
+    requires_php?: string | null;
+  } | null;
 };
 
 /**
@@ -310,7 +310,7 @@ export type SiteAvailableUpdates = {
   core_update?: {
     new_version: string;
     current_version: string;
-  };
+  } | null;
   items: Array<{
     type: "plugin" | "theme";
     slug: string;
@@ -318,11 +318,11 @@ export type SiteAvailableUpdates = {
     version: string;
     new_version: string;
     active: boolean;
-    package?: string;
-    tested?: string;
-    requires_php?: string;
+    package?: string | null;
+    tested?: string | null;
+    requires_php?: string | null;
   }>;
-  as_of?: string;
+  as_of?: string | null;
 };
 
 export type SiteTags = {
@@ -392,7 +392,7 @@ export type PauseMonitoringRequest = {
    * un-pauses.
    *
    */
-  resume_at?: string;
+  resume_at?: string | null;
 };
 
 export type ResumeMonitoringRequest = {
@@ -425,9 +425,9 @@ export type MonitoringResult = {
     | "site_not_found"
     | "site_archived"
     | "site_revoked";
-  monitoring_paused_at?: string;
+  monitoring_paused_at?: string | null;
   monitoring_paused_reason?: string;
-  monitoring_resume_at?: string;
+  monitoring_resume_at?: string | null;
 };
 
 export type MonitoringBulkResult = {
@@ -593,8 +593,8 @@ export type AgentMediaSyncBatch = {
     original_path?: string;
     original_url?: string;
     original_mime?: string;
-    original_width?: number;
-    original_height?: number;
+    original_width?: number | null;
+    original_height?: number | null;
     original_size_bytes?: number;
     /**
      * 1 (full) plus generated sub-sizes.
@@ -630,12 +630,12 @@ export type AgentMediaJobStatus = {
   };
   current_format?: string;
   current_size_bytes?: number;
-  bytes_before?: number;
-  bytes_after?: number;
+  bytes_before?: number | null;
+  bytes_after?: number | null;
   /**
    * All-variant savings (summed original-minus-optimized over every optimized variant). Drives the dashboard "Bytes saved" rollup.
    */
-  saved_bytes?: number;
+  saved_bytes?: number | null;
   compression_level?: string;
   target_format?: string;
   rewrite_stats?: {
@@ -806,7 +806,7 @@ export type AgentMetadata = {
   core_update?: {
     new_version?: string;
     current_version?: string;
-  };
+  } | null;
   /**
    * The agent's defined()-based hosting fingerprint.
    */
@@ -819,7 +819,7 @@ export type AgentMetadata = {
     is_flywheel?: boolean;
     is_runcloud?: boolean;
     is_cloudways?: boolean;
-  };
+  } | null;
   /**
    * Sampled disk usage in bytes. The wp-content and uploads walks are
    * time-capped, so a field may be absent on a very large tree.
@@ -829,7 +829,7 @@ export type AgentMetadata = {
     wp_content_bytes?: number;
     uploads_bytes?: number;
     free_bytes?: number;
-  };
+  } | null;
   /**
    * The outcome of the agent's last self-update apply, replayed on the
    * next metadata push. This is the only channel by which a FAILED
@@ -868,7 +868,7 @@ export type AgentMetadata = {
      *
      */
     rung?: string;
-  };
+  } | null;
   plugins?: Array<SiteComponent>;
   themes?: Array<SiteComponent>;
 };
@@ -1144,14 +1144,14 @@ export type AuditEntry = {
    * longer exists.
    *
    */
-  actor_name?: string;
+  actor_name?: string | null;
   /**
    * Email of the acting user, resolved server-side. Null for
    * api_key/system actors and for any actor row that no longer
    * exists.
    *
    */
-  actor_email?: string;
+  actor_email?: string | null;
   action: string;
   target_type: string;
   target_id: string;
@@ -1522,9 +1522,9 @@ export type AdminReasonRequest = {
  * Each of sites/storage_gb/seats is a signed delta on top of the tenant's current plan's ladder base. An omitted key leaves that limit untouched; `null` (or `0`) clears it.
  */
 export type AdminSetOverridesRequest = {
-  sites?: number;
-  storage_gb?: number;
-  seats?: number;
+  sites?: number | null;
+  storage_gb?: number | null;
+  seats?: number | null;
   reason: string;
 };
 
@@ -2048,7 +2048,7 @@ export type BackupFleetList = {
   /**
    * Offset to pass for the next page; null when no further pages.
    */
-  next_offset?: number;
+  next_offset?: number | null;
 };
 
 export type BackupHealthItem = {
@@ -2132,7 +2132,7 @@ export type BulkDeleteBackupsResultItem = {
   /**
    * Human-readable explanation of code; null when outcome=deleted.
    */
-  message?: string;
+  message?: string | null;
 };
 
 export type BulkDeleteBackupsCounts = {
@@ -2200,7 +2200,7 @@ export type RestoreCreate = {
    * When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs to this target. When unset, the agent uses the current site's URL (no-op when restoring to the same environment). Required for cross-environment restores (dev->prod, staging->prod). The control plane derives this from the destination Site.URL when the restore is dispatched, so callers typically don't need to set it.
    *
    */
-  target_site_url?: string;
+  target_site_url?: string | null;
 };
 
 /**
@@ -2237,15 +2237,15 @@ export type SqlInspection = {
   /**
    * WordPress db_version from wp_options, when detectable.
    */
-  wp_version?: string;
+  wp_version?: string | null;
   /**
    * WordPress siteurl from wp_options, when detectable.
    */
-  siteurl?: string;
+  siteurl?: string | null;
   /**
    * WordPress home from wp_options, when detectable.
    */
-  home?: string;
+  home?: string | null;
   /**
    * True when a {prefix}options table is present in the dump.
    */
@@ -2272,7 +2272,7 @@ export type SqlInspection = {
     name: string;
     rows_estimate: number;
     bytes_estimate?: number;
-    auto_increment?: number;
+    auto_increment?: number | null;
     charset?: string;
     has_fk?: boolean;
   }>;
@@ -2302,15 +2302,15 @@ export type BackupSchedule = {
   /**
    * Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
    */
-  day_of_week?: number;
+  day_of_week?: number | null;
   /**
    * Day of month (1-28, capped) for monthly cadence; null otherwise.
    */
-  day_of_month?: number;
+  day_of_month?: number | null;
   /**
    * Interval in hours for every_n_hours cadence; null otherwise.
    */
-  frequency_hours?: number;
+  frequency_hours?: number | null;
   /**
    * Minimum number of snapshots to retain regardless of age.
    */
@@ -2322,7 +2322,7 @@ export type BackupSchedule = {
   /**
    * Optional override of the default incremental base window (7 days). null means use the default.
    */
-  base_window_days?: number;
+  base_window_days?: number | null;
   /**
    * Read-only. IANA timezone name (or fixed-offset label) resolved from the site's WordPress timezone. Used by the UI to display run times.
    */
@@ -2367,15 +2367,15 @@ export type BackupScheduleUpdate = {
   /**
    * Day of week (0=Sun..6=Sat) for weekly cadence; null otherwise.
    */
-  day_of_week?: number;
+  day_of_week?: number | null;
   /**
    * Day of month (1-28, capped) for monthly cadence; null otherwise.
    */
-  day_of_month?: number;
+  day_of_month?: number | null;
   /**
    * Interval in hours for every_n_hours cadence; null otherwise.
    */
-  frequency_hours?: number;
+  frequency_hours?: number | null;
   /**
    * Minimum number of snapshots to retain regardless of age.
    */
@@ -2387,7 +2387,7 @@ export type BackupScheduleUpdate = {
   /**
    * Optional override of the default incremental base window (7 days). Omit/null to use the default.
    */
-  base_window_days?: number;
+  base_window_days?: number | null;
 };
 
 /**
@@ -2407,7 +2407,7 @@ export type SiteBackupSettingsContents = {
    */
   backup_components?: Array<
     "plugin" | "theme" | "upload" | "wp-content" | "db" | "core"
-  >;
+  > | null;
   /**
    * When true, the WordPress core source root (ABSPATH) is archived.
    */
@@ -2415,15 +2415,15 @@ export type SiteBackupSettingsContents = {
   /**
    * Path-segment names to exclude from file archiving.
    */
-  exclude_paths?: Array<string>;
+  exclude_paths?: Array<string> | null;
   /**
    * File extensions to skip (without leading dot, case-insensitive).
    */
-  exclude_extensions?: Array<string>;
+  exclude_extensions?: Array<string> | null;
   /**
    * Skip files strictly larger than this value (MiB). 0/null = no filter.
    */
-  exclude_file_size_mb?: number;
+  exclude_file_size_mb?: number | null;
   created_at?: string;
   updated_at: string;
 };
@@ -2437,14 +2437,14 @@ export type SiteBackupSettingsContentsUpdate = {
    */
   backup_components?: Array<
     "plugin" | "theme" | "upload" | "wp-content" | "db" | "core"
-  >;
+  > | null;
   include_core?: boolean;
-  exclude_paths?: Array<string>;
-  exclude_extensions?: Array<string>;
+  exclude_paths?: Array<string> | null;
+  exclude_extensions?: Array<string> | null;
   /**
    * 0 or null clears the filter.
    */
-  exclude_file_size_mb?: number;
+  exclude_file_size_mb?: number | null;
 };
 
 /**
@@ -2530,11 +2530,11 @@ export type RestoreRun = {
   /**
    * Email of the triggering user (null for non-user actors or unresolvable IDs).
    */
-  triggered_by_email?: string;
+  triggered_by_email?: string | null;
   /**
    * Display name of the triggering user (null for non-user actors or unresolvable IDs).
    */
-  triggered_by_name?: string;
+  triggered_by_name?: string | null;
   /**
    * When the restore run was created.
    */
@@ -2640,11 +2640,11 @@ export type ScheduleRun = {
   /**
    * Email of the triggering user (null for schedule-fired or unresolvable actors).
    */
-  triggered_by_email?: string;
+  triggered_by_email?: string | null;
   /**
    * Display name of the triggering user (null for schedule-fired or unresolvable actors).
    */
-  triggered_by_name?: string;
+  triggered_by_name?: string | null;
   /**
    * When the schedule run row was created.
    */
@@ -2744,7 +2744,7 @@ export type FleetUptimeDay = {
    * description. Never interpolated from a neighbouring day.
    *
    */
-  uptime_pct: number;
+  uptime_pct: number | null;
   /**
    * Probes recorded that day; 0 exactly when uptime_pct is null.
    * Carried so a confidently-measured day is distinguishable from one
@@ -2758,7 +2758,7 @@ export type FleetUptimeDay = {
    * null when the day had none.
    *
    */
-  avg_latency_ms: number;
+  avg_latency_ms: number | null;
 };
 
 export type FleetUptimeHistoryItem = {
@@ -2821,7 +2821,7 @@ export type FleetUptimeStatusItem = {
    * total outage (GH #460). Treat null as "no data" and say so.
    *
    */
-  uptime_pct_7d: number;
+  uptime_pct_7d: number | null;
   avg_latency_ms_7d: number;
   latest_total_ms?: number;
   last_probe_at?: string;
@@ -2839,7 +2839,7 @@ export type FleetUptimeStatusItem = {
    * masking a dead PHP backend.
    *
    */
-  app_up?: boolean;
+  app_up?: boolean | null;
   /**
    * Machine-readable reason for the most recent app-health verdict
    * (agent_fresh, rest_ok, rest_5xx, wp_fatal_error, cache_hit,
@@ -3394,7 +3394,7 @@ export type ActivityVerifyResult = {
    * Kept for backward compatibility; equals break.seq when broken.
    *
    */
-  break_at_seq?: number;
+  break_at_seq?: number | null;
   /**
    * Total number of events folded during verification.
    */
@@ -3430,7 +3430,7 @@ export type ChainBreak = {
    * at the first/genesis row and no prior row was verified.
    *
    */
-  prior_seq?: number;
+  prior_seq?: number | null;
   /**
    * Number of missing sequence numbers between prior_seq and seq.
    * 0 when contiguous or when there is no prior row.
@@ -4011,12 +4011,12 @@ export type PerfConfig = {
    * running a genuine front-end probe.
    *
    */
-  readonly woo_theme_fragments_supported?: boolean;
+  readonly woo_theme_fragments_supported?: boolean | null;
   /**
    * RFC3339 timestamp of the last agent probe. Null when never probed.
    *
    */
-  readonly woo_fragments_probed_at?: string;
+  readonly woo_fragments_probed_at?: string | null;
   /**
    * Enable Real User Monitoring collection for this site.
    *
@@ -4616,7 +4616,7 @@ export type MediaCleanCandidate = {
   /**
    * URL of the thumbnail-size variant; null when unavailable.
    */
-  thumb?: string;
+  thumb?: string | null;
   /**
    * Size of the original file in bytes. 0 when the file is missing from disk.
    */
@@ -4803,7 +4803,7 @@ export type SiteEmailConfig = {
   /**
    * Present for per-site rows; absent for the org-wide default.
    */
-  site_id?: string;
+  site_id?: string | null;
   /**
    * Provider slug (smtp | ses | sendgrid | mailgun | postmark). Must match a slug in the provider catalog.
    *
@@ -4844,11 +4844,11 @@ export type SiteEmailConfig = {
    * Slug of the connection to use for regular mail (for providers that support multiple connections, e.g. SMTP-Multi — Phase 2+).
    *
    */
-  default_connection?: string;
+  default_connection?: string | null;
   /**
    * Slug of the fallback connection (Phase 2+).
    */
-  fallback_connection?: string;
+  fallback_connection?: string | null;
   /**
    * Whether outgoing emails are recorded in site_email_log.
    */
@@ -4883,7 +4883,7 @@ export type SiteEmailConfig = {
    * The full inbound webhook URL for this config row, e.g. https://manage.wpmgr.app/webhooks/email/{provider}/{token}. Shows a placeholder token segment when a token is stored but not freshly rotated. Absent when no token has been generated yet.
    *
    */
-  webhook_url?: string;
+  webhook_url?: string | null;
   /**
    * True when an HMAC signing key is stored for this row. The key itself is never returned.
    *
@@ -4912,12 +4912,12 @@ export type PutEmailWebhookConfigRequest = {
    * HMAC signing key for verifying provider webhook payloads. Write-only. Omit to preserve the existing key. Send null to clear.
    *
    */
-  webhook_signing_key?: string;
+  webhook_signing_key?: string | null;
   /**
    * SES only. Replace the SNS TopicArn allowlist. null preserves the existing list. Empty array clears the list (no filter).
    *
    */
-  ses_topic_arns?: Array<string>;
+  ses_topic_arns?: Array<string> | null;
 };
 
 /**
@@ -4942,7 +4942,7 @@ export type EmailWebhookConfigResponse = {
    * Plain route token, returned once when rotate_token was true. Store it immediately -- it will not be shown again.
    *
    */
-  webhook_route_token?: string;
+  webhook_route_token?: string | null;
 };
 
 /**
@@ -4969,9 +4969,9 @@ export type PutEmailConfigRequest = {
    * Provider credential (API key, SMTP password, etc.). Omit to preserve the existing stored secret. Provide an empty string to clear the stored secret.
    *
    */
-  secret?: string;
-  default_connection?: string;
-  fallback_connection?: string;
+  secret?: string | null;
+  default_connection?: string | null;
+  fallback_connection?: string | null;
   log_emails?: boolean;
   store_body?: boolean;
   /**
@@ -5022,11 +5022,11 @@ export type EmailTestResult = {
    * Human-readable detail or error message from the agent. Present when ok is false.
    *
    */
-  detail?: string;
+  detail?: string | null;
   /**
    * Provider-assigned message-id returned by the agent (Phase 2+).
    */
-  message_id?: string;
+  message_id?: string | null;
 };
 
 /**
@@ -5051,7 +5051,7 @@ export type EmailProviderSpec = {
   /**
    * URL to provider-specific setup documentation.
    */
-  docs_url?: string;
+  docs_url?: string | null;
   fields: Array<EmailProviderField>;
 };
 
@@ -5081,15 +5081,15 @@ export type EmailProviderField = {
   /**
    * Valid option values for select fields.
    */
-  options?: Array<string>;
+  options?: Array<string> | null;
   /**
    * Default value hint for the UI.
    */
-  default?: string;
+  default?: string | null;
   /**
    * Short helper text shown below the field in the UI.
    */
-  help?: string;
+  help?: string | null;
 };
 
 /**
@@ -5103,11 +5103,11 @@ export type SiteEmailLogEntry = {
   /**
    * Agent-local sequence number (cursor for the agent push).
    */
-  agent_seq?: number;
+  agent_seq?: number | null;
   /**
    * Provider-assigned Message-ID header value.
    */
-  message_id?: string;
+  message_id?: string | null;
   /**
    * Recipient addresses.
    */
@@ -5148,7 +5148,7 @@ export type SiteEmailLogEntry = {
    * Full email body. Present only in the detail response and only when body_stored is true. Never returned in list or export responses.
    *
    */
-  body?: string;
+  body?: string | null;
   /**
    * Named connection slug that sent this email (m62+). Empty string when the primary config was used (no named connection).
    *
@@ -5190,11 +5190,11 @@ export type EmailLogDetail = {
   /**
    * ID of the next-older entry (for the Prev button). Null when at the oldest.
    */
-  prev_id?: string;
+  prev_id?: string | null;
   /**
    * ID of the next-newer entry (for the Next button). Null when at the newest.
    */
-  next_id?: string;
+  next_id?: string | null;
 };
 
 /**
@@ -5251,7 +5251,7 @@ export type EmailStats = {
   /**
    * Number of distinct sites in the range (fleet stats only).
    */
-  site_count?: number;
+  site_count?: number | null;
   by_day: Array<EmailStatsByDay>;
   by_provider: Array<EmailStatsByProvider>;
 };
@@ -5288,7 +5288,7 @@ export type SiteDeliveryItem = {
   /**
    * When the most recent successfully-sent email was dispatched. Null when no sent email in the window.
    */
-  last_sent_at?: string;
+  last_sent_at?: string | null;
   /**
    * Daily sent counts across the window, oldest→newest. Always [] never null.
    */
@@ -5323,7 +5323,7 @@ export type EmailSuppressionEntry = {
   /**
    * Null for fleet-wide entries (applies to all sites in tenant).
    */
-  site_id?: string;
+  site_id?: string | null;
   /**
    * SHA-256 of the lower-cased email address (hex).
    */
@@ -5331,7 +5331,7 @@ export type EmailSuppressionEntry = {
   /**
    * Plaintext email address (null when not stored at create time).
    */
-  email?: string;
+  email?: string | null;
   /**
    * hard_bounce | complaint | unsubscribe | manual
    */
@@ -5343,17 +5343,17 @@ export type EmailSuppressionEntry = {
   /**
    * When the provider event occurred (null for manual entries).
    */
-  event_at?: string;
+  event_at?: string | null;
   /**
    * Provider message ID that triggered this suppression (if known).
    */
-  source_message_id?: string;
+  source_message_id?: string | null;
   created_at: string;
 };
 
 export type EmailSuppressionPage = {
   entries: Array<EmailSuppressionEntry>;
-  next_cursor?: string;
+  next_cursor?: string | null;
   has_more: boolean;
 };
 
@@ -5382,11 +5382,11 @@ export type ResendEmailResult = {
   /**
    * Agent response message or error detail.
    */
-  detail?: string;
+  detail?: string | null;
   /**
    * Provider message ID assigned to the resent email (if agent returned it).
    */
-  message_id?: string;
+  message_id?: string | null;
 };
 
 export type BulkResendRequest = {
@@ -5399,7 +5399,7 @@ export type BulkResendRequest = {
 export type BulkResendItemResult = {
   log_id: string;
   ok: boolean;
-  detail?: string;
+  detail?: string | null;
 };
 
 export type BulkResendResponse = {
@@ -5506,7 +5506,7 @@ export type PutEmailConnectionRequest = {
    * Provider credential. Omit to preserve the existing stored secret. Provide an empty string to clear it.
    *
    */
-  secret?: string;
+  secret?: string | null;
 };
 
 /**
@@ -5560,7 +5560,7 @@ export type EmailNotifySettings = {
    * Next scheduled digest send time, or null when the digest is disabled or not yet scheduled.
    *
    */
-  next_digest_at?: string;
+  next_digest_at?: string | null;
   /**
    * True when the instance-level SMTP/mailer is configured. Alerts and digests require this to be true to deliver.
    *
@@ -5595,9 +5595,9 @@ export type EmailNotifySettings = {
   /**
    * Present when a settings row exists; absent for default response.
    */
-  tenant_id?: string;
-  created_at?: string;
-  updated_at?: string;
+  tenant_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 /**
@@ -5734,7 +5734,7 @@ export type AssignSitesRequest = {
   /**
    * UUID of the client to assign. Omit or pass null to unassign the sites.
    */
-  client_id?: string;
+  client_id?: string | null;
   /**
    * List of site UUIDs to assign (or unassign).
    */
@@ -6085,7 +6085,7 @@ export type PortalSummaryTotals = {
   /**
    * Null when no site has uptime checks in the period.
    */
-  avg_uptime_pct?: number;
+  avg_uptime_pct?: number | null;
   incidents: number;
   backups_count: number;
   updates_applied: number;
@@ -6103,17 +6103,17 @@ export type PortalSummarySite = {
   /**
    * Null when no uptime checks exist for this site in the period.
    */
-  uptime_pct?: number;
+  uptime_pct?: number | null;
   uptime_daily?: Array<PortalUptimeDay>;
   incidents: number;
-  last_backup_at?: string;
+  last_backup_at?: string | null;
   backups_in_period: number;
   updates_in_period: number;
   /**
    * Worst CWV rating across LCP/INP/CLS. Null when no RUM samples.
    */
-  vitals_rating?: "good" | "needs-improvement" | "poor";
-  tls_expires_at?: string;
+  vitals_rating?: "good" | "needs-improvement" | "poor" | null;
+  tls_expires_at?: string | null;
 };
 
 export type PortalSummaryLatestReport = {
@@ -6146,7 +6146,7 @@ export type PortalSummary = {
   /**
    * Worst CWV rating across all sites with samples. Null when no samples.
    */
-  vitals_overall?: "good" | "needs-improvement" | "poor";
+  vitals_overall?: "good" | "needs-improvement" | "poor" | null;
   vitals_distribution?: PortalVitalsDistribution;
   /**
    * Fleet day-wise average across sites with data.
@@ -6202,8 +6202,8 @@ export type ObjectCacheConfig = {
   /**
    * Non-empty after a passing test; cleared when connection fields change.
    */
-  last_test_config_hash?: string;
-  last_tested_at?: string;
+  last_test_config_hash?: string | null;
+  last_tested_at?: string | null;
   /**
    * The stored result of the most recent connection test, including the server capability report, so the dashboard can show requirements without re-running a test.
    */
@@ -6213,9 +6213,9 @@ export type ObjectCacheConfig = {
    */
   oc_state: string;
   oc_latency_ms: number;
-  oc_last_error_class?: string;
+  oc_last_error_class?: string | null;
   oc_used_memory_bytes: number;
-  oc_hit_ratio_pct?: number;
+  oc_hit_ratio_pct?: number | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -6259,7 +6259,7 @@ export type ObjectCacheConfigPut = {
  * Server and PHP extension capabilities detected by the agent during a connection test. phpredis_version empty or absent means the phpredis extension is not installed on the server.
  */
 export type ObjectCacheCapabilities = {
-  phpredis_version?: string;
+  phpredis_version?: string | null;
   igbinary_available: boolean;
   lzf_available: boolean;
   lz4_available: boolean;
@@ -6276,21 +6276,21 @@ export type ObjectCacheCapabilities = {
  */
 export type ObjectCacheTestResult = {
   ok: boolean;
-  detail?: string;
+  detail?: string | null;
   reachable: boolean;
   latency_ms?: number;
-  server_version?: string;
-  eviction_policy?: string;
+  server_version?: string | null;
+  eviction_policy?: string | null;
   max_memory_bytes?: number;
   used_memory_bytes?: number;
   capabilities?: ObjectCacheCapabilities;
   /**
    * dedicated_db or shared_prefix; drives the flush strategy disclosure.
    */
-  flush_capability_class?: string;
-  acl_denials?: Array<string>;
+  flush_capability_class?: string | null;
+  acl_denials?: Array<string> | null;
   round_trip_ok: boolean;
-  config_hash?: string;
+  config_hash?: string | null;
 };
 
 /**
@@ -6301,7 +6301,7 @@ export type ObjectCacheStatsHistoryPoint = {
   /**
    * Hit ratio as a percentage (0–100). Null when no data.
    */
-  ratio_pct?: number;
+  ratio_pct?: number | null;
   hit_count: number;
   miss_count: number;
   used_memory_bytes: number;
@@ -6375,7 +6375,7 @@ export type FileListResult = {
   /**
    * Opaque resume cursor; present only when `truncated=true`.
    */
-  cursor?: string;
+  cursor?: string | null;
 };
 
 /**
@@ -6895,7 +6895,7 @@ export type FileSearchResult = {
   /**
    * Opaque resume cursor; present only when `truncated=true`.
    */
-  cursor?: string;
+  cursor?: string | null;
 };
 
 /**
@@ -6993,7 +6993,7 @@ export type ConnectedIdentity = {
   /**
    * Null until the method has been used to sign in at least once.
    */
-  last_login_at?: string;
+  last_login_at?: string | null;
 };
 
 /**
@@ -7183,11 +7183,11 @@ export type SitePolicyGroup = {
    * The WordPress role slug this override applies to (e.g. administrator).
    */
   role: string;
-  require_2fa?: boolean;
+  require_2fa?: boolean | null;
   allowed_methods?: Array<string>;
-  min_zxcvbn_score?: number;
-  block_compromised?: boolean;
-  max_age_days?: number;
+  min_zxcvbn_score?: number | null;
+  block_compromised?: boolean | null;
+  max_age_days?: number | null;
   created_at?: string;
 };
 
@@ -7404,22 +7404,22 @@ export type AgentMirrorStatus = {
    * When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago must never be reported as "checked ten minutes ago".
    *
    */
-  last_success_at: string;
+  last_success_at: string | null;
   /**
    * Which kind of confirmation last_success_at was. "mirrored": a new release was published here. "current": upstream examined and this install already publishes exactly it. "unchanged": upstream answered 304, which is a genuine confirmation because the conditional request is only sent while the published pointer is unchanged too.
    *
    */
-  last_success_outcome: "mirrored" | "current" | "unchanged";
+  last_success_outcome: "mirrored" | "current" | "unchanged" | null;
   /**
    * The agent version that confirmation established. Carried forward across an "unchanged" (304) result, which by definition names the same release.
    *
    */
-  last_success_version: string;
+  last_success_version: string | null;
   /**
    * When a mirror run last executed, whatever the result. Null when none ever has. Never render an age from this field.
    *
    */
-  last_attempt_at: string;
+  last_attempt_at: string | null;
   /**
    * "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.
    *
@@ -7438,17 +7438,17 @@ export type AgentMirrorStatus = {
    * Short non-secret reason for the last attempt, composed by the control plane and capped at 200 characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.
    *
    */
-  last_attempt_detail: string;
+  last_attempt_detail: string | null;
   /**
    * Whether the last attempt was the scheduled tick or an operator-requested check now.
    */
-  last_attempt_trigger: "periodic" | "manual";
+  last_attempt_trigger: "periodic" | "manual" | null;
   /**
    * When the mirror last actually PUBLISHED a new release into this install's storage, as opposed to merely confirming the existing one.
    *
    */
-  last_mirrored_at: string;
-  last_mirrored_version: string;
+  last_mirrored_at: string | null;
+  last_mirrored_version: string | null;
 };
 
 export type AgentMirrorCheckQueued = {
@@ -7495,7 +7495,7 @@ export type SmtpSettingsUpdate = {
   /**
    * Write-only. Omit or null to leave the stored ciphertext unchanged.
    */
-  password?: string;
+  password?: string | null;
 };
 
 export type SiteInvitation = {
@@ -7506,10 +7506,10 @@ export type SiteInvitation = {
   status: "pending" | "accepted" | "expired" | "revoked";
   expires_at: string;
   created_at: string;
-  accepted_at?: string;
-  revoked_at?: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
   attempts: number;
-  invited_by?: string;
+  invited_by?: string | null;
 };
 
 export type MediaSettings = {
@@ -7539,8 +7539,8 @@ export type FleetIncidentDetail = {
   name: string;
   url: string;
   started_at: string;
-  ended_at?: string;
-  duration_seconds?: number;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
   ongoing: boolean;
   peak_status: string;
   last_http_status: number;
@@ -7637,10 +7637,10 @@ export type DbOrphanItem = {
   installed: boolean;
   deletable_eligible: boolean;
   size_bytes?: number;
-  autoload?: boolean;
-  next_run_at?: number;
+  autoload?: boolean | null;
+  next_run_at?: number | null;
   recurrence?: string;
-  rows?: number;
+  rows?: number | null;
 };
 
 export type DbOrphansReport = {
@@ -7711,8 +7711,8 @@ export type DbTableActionResponse = {
 
 export type DbCleanStatus = {
   clean_active: boolean;
-  active_job_id: string;
-  active_started_at: string;
+  active_job_id: string | null;
+  active_started_at: string | null;
   last_result: {
     job_id: string;
     rows_deleted: number;
@@ -7724,7 +7724,7 @@ export type DbCleanStatus = {
       [key: string]: unknown;
     };
     cleaned_at: string;
-  };
+  } | null;
 };
 
 export type RumTrendDayPoint = {
@@ -7786,7 +7786,7 @@ export type AdminUserSites = {
     url: string;
     name: string;
     connection_state: string;
-    enrolled_at?: string;
+    enrolled_at?: string | null;
     site_created_at: string;
     tenant_id: string;
     tenant_name: string;
@@ -7861,13 +7861,13 @@ export type AdminSystemAuditPage = {
     /**
      * Absent for an event with no user actor.
      */
-    actor_id?: string;
+    actor_id?: string | null;
     action: string;
     /**
      * A denormalized snapshot, not a reference: this log deliberately outlives the organisation an event concerned. Absent when the event had no organisation at all, which is the case for the authentication events of accounts with no membership.
      *
      */
-    tenant_id?: string;
+    tenant_id?: string | null;
     tenant_name: string;
     metadata: {
       [key: string]: unknown;
@@ -7963,7 +7963,7 @@ export type AgentCacheStatsReport = {
   preload_total?: number;
   cache_hit_count?: number;
   cache_miss_count?: number;
-  woo_theme_fragments_supported?: boolean;
+  woo_theme_fragments_supported?: boolean | null;
   /**
    * Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when the Object Cache feature is not wired.
    */
@@ -7993,7 +7993,7 @@ export type AgentPerfConfigAck = {
   /**
    * GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when a pre-#174 agent does not report it.
    */
-  rum_beacon_present?: boolean;
+  rum_beacon_present?: boolean | null;
 };
 
 export type AgentDbCleanProgress = {
@@ -8031,8 +8031,8 @@ export type AgentAutoOptimizeRequest = {
     original_path?: string;
     original_url?: string;
     original_mime?: string;
-    original_width?: number;
-    original_height?: number;
+    original_width?: number | null;
+    original_height?: number | null;
     original_size_bytes?: number;
     variant_count?: number;
     saved_bytes?: number;
@@ -8056,7 +8056,7 @@ export type AgentEmailLogIngestRequest = {
     retries?: number;
     resent_count?: number;
     body_stored?: boolean;
-    body?: string;
+    body?: string | null;
     /**
      * Any parseable timestamp (RFC3339 or a MySQL-style string); unparseable values default to now.
      */
@@ -8073,12 +8073,12 @@ export type AgentSuppressionDeltaPage = {
   entries: Array<{
     id: string;
     tenant_id: string;
-    site_id?: string;
-    email?: string;
+    site_id?: string | null;
+    email?: string | null;
     reason: string;
     provider: string;
-    event_at?: string;
-    source_message_id?: string;
+    event_at?: string | null;
+    source_message_id?: string | null;
     created_at: string;
   }>;
   next_cursor: string;
