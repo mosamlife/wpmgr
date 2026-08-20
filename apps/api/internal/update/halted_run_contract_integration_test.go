@@ -25,6 +25,7 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -170,8 +171,12 @@ func haltContractWorker(repo Repo) *Worker {
 // generate, and the halted-run assertion reads "completed".
 //
 // The gate re-judgement in step 2 is NOT what saves this run, which is the
-// whole reason the fixture is a kill-switch halt: DeriveAgentWaveState sees one
-// skipped task and one succeeded task, derives no halt, and re-asserts nothing.
+// whole reason the fixture looks the way it does: every wave confirms at least
+// one site, so haltReasonFor finds nothing to halt on and DeriveAgentWaveState
+// re-asserts nothing. That property is asserted, not assumed — see the Fatal on
+// st.Halt below. Build this on a rollout that had NOT proved itself and the
+// gate re-derives the halt for free, the Go compensation puts 'halted' back,
+// and the test goes green against a database with no precondition at all.
 func TestKillSwitchHaltSurvivesTheLastRunningTaskFinishing(t *testing.T) {
 	app, admin := startHaltContractPostgres(t)
 	ctx := context.Background()
@@ -180,20 +185,54 @@ func TestKillSwitchHaltSurvivesTheLastRunningTaskFinishing(t *testing.T) {
 	w := haltContractWorker(repo)
 
 	tenant := seedHaltContractTenant(t, admin, "gh482-halt")
-	siteA := seedHaltContractSite(t, admin, tenant, "https://a.gh482.example")
-	siteB := seedHaltContractSite(t, admin, tenant, "https://b.gh482.example")
 
-	run, tasks, err := repo.CreateRunWithTasks(ctx, CreateRunInput{TenantID: tenant}, []NewTask{
-		{SiteID: siteA, TargetType: TargetAgent, TargetSlug: AgentTargetSlug, DesiredVersion: "0.62.0", FromVersion: "0.61.80"},
-		{SiteID: siteB, TargetType: TargetAgent, TargetSlug: AgentTargetSlug, DesiredVersion: "0.62.0", FromVersion: "0.61.80"},
-	})
+	// SIX sites, because the fixture's whole value depends on the wave shape.
+	// PlanWaves(6) is canary [0,1), pilot [1,4), rest [4,6) — a FINAL WAVE OF
+	// TWO, which is what lets one task be in flight while another meets the
+	// kill switch, inside the same wave, with every earlier wave already
+	// confirmed. See the derivation assertion below for why that matters.
+	seed := make([]NewTask, 0, 6)
+	for i := 0; i < 6; i++ {
+		seed = append(seed, NewTask{
+			SiteID:     seedHaltContractSite(t, admin, tenant, fmt.Sprintf("https://s%d.gh482.example", i)),
+			TargetType: TargetAgent, TargetSlug: AgentTargetSlug,
+			DesiredVersion: "0.62.0", FromVersion: "0.61.80",
+		})
+	}
+
+	run, tasks, err := repo.CreateRunWithTasks(ctx, CreateRunInput{TenantID: tenant}, seed)
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	if len(tasks) != 2 {
-		t.Fatalf("seeded %d tasks, want 2", len(tasks))
+	if len(tasks) != 6 {
+		t.Fatalf("seeded %d tasks, want 6", len(tasks))
 	}
-	killed, inFlight := tasks[0], tasks[1]
+
+	// The rollout's own order, not insertion order: batch-inserted tasks share
+	// a created_at, so waveOrder breaks the tie on id. Reading the plan from
+	// the production functions keeps this fixture correct if the wave sizes are
+	// ever retuned.
+	order := waveOrder(tasks)
+	waves := PlanWaves(len(order))
+	last := waves[len(waves)-1]
+	if last.End-last.Start < 2 {
+		t.Fatalf("the final wave holds %d task(s); this fixture needs 2 (one in flight, one killed)", last.End-last.Start)
+	}
+	inFlight, killed := order[last.End-2], order[last.End-1]
+
+	// Every wave before the last one CONFIRMS. This is what makes the halt
+	// non-derivable: haltReasonFor halts any wave that confirmed no site, so a
+	// rollout that had not proved itself would let the wave gate re-derive the
+	// halt from the task rows and re-assert 'halted' all on its own — and the
+	// test would pass with no SQL precondition at all.
+	for i := 0; i < last.End-2; i++ {
+		if _, err := repo.FinishTask(ctx, FinishTaskInput{
+			TenantID: tenant, TaskID: order[i].ID, Status: TaskSucceeded,
+			FromVersion: "0.61.80", ToVersion: "0.62.0", Detail: "confirmed",
+		}); err != nil {
+			t.Fatalf("confirm the earlier waves (task %d): %v", i, err)
+		}
+	}
 
 	// The in-flight task's command is already out on its site.
 	running, err := repo.MarkTaskRunning(ctx, tenant, inFlight.ID, 30*time.Minute)
@@ -232,6 +271,21 @@ func TestKillSwitchHaltSurvivesTheLastRunningTaskFinishing(t *testing.T) {
 
 	if n, err := repo.CountUnfinishedTasks(ctx, tenant, run.ID); err != nil || n != 0 {
 		t.Fatalf("unfinished tasks = %d (err %v), want 0 — the completion check must have been reached for this test to mean anything", n, err)
+	}
+
+	// THE FIXTURE'S LOAD-BEARING PROPERTY, asserted rather than assumed: with
+	// the rows in their final shape the wave gate derives NO halt, so nothing
+	// in Go puts 'halted' back. finishAgentTask has just re-judged the gate and
+	// found no reason to halt; whatever the run says next is what the database
+	// refused, or allowed, on its own. If this ever flips, the assertions below
+	// would pass even with the precondition deleted, and this Fatal is what
+	// stops that going unnoticed.
+	final, err := repo.ListTasks(ctx, tenant, run.ID)
+	if err != nil {
+		t.Fatalf("list the run's tasks: %v", err)
+	}
+	if st := DeriveAgentWaveState(final); st.Halt {
+		t.Fatalf("the wave gate re-derives this halt (%q), so the Go compensation would mask a missing precondition; this fixture must use a halt it CANNOT derive", st.HaltReason)
 	}
 
 	if got := readRunStatus(t, app, tenant, run.ID); got != RunHalted {
