@@ -43,14 +43,22 @@ jobs:
         env:
           GOWORK: "off"
           CGO_ENABLED: "0"
-        # apps/api/tests is excluded from BUILD specifically: every file in it is
-        # a _test.go file, so it has no buildable non-test files and `go build`
-        # errors on it when named explicitly. Vet (below) keeps it: vet compiles
-        # the _test.go files, so the integration tests still cannot silently rot.
+        # A package with no buildable non-test file (every .go file in it is
+        # _test.go) makes `go build` error with "no non-test Go files" the
+        # moment it is named explicitly. apps/api/tests is one today; any test-
+        # only subpackage added under it (or anywhere else in apps/api) is
+        # another. Rather than excluding by path — which has to be re-anchored
+        # by hand every time such a package is added, and silently stops
+        # covering the NEXT one — filter by the actual property `go build`
+        # cares about: `go list -f '{{if .GoFiles}}...{{end}}'` prints an
+        # import path only for packages that have buildable files at all, so
+        # a test-only package drops out of the build set on its own. This
+        # also means apps/api/tests/contract, which carries doc.go for
+        # exactly this reason, keeps building here with no special case.
         #
-        # The pattern is anchored with $ so it excludes ONLY that package and not
-        # its subpackages. apps/api/tests/contract must keep building here.
-        run: go build $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e '/apps/api/tests$')
+        # Vet (below) still covers the packages this drops: vet compiles the
+        # _test.go files too, so a test-only package still cannot silently rot.
+        run: go build $(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder)
 
       - name: Vet
         env:
@@ -86,13 +94,28 @@ jobs:
         # rotting between integration runs. Note that is VET doing it, not
         # Build, for the reason given on the Build step above.
         #
-        # The pattern is anchored with $ so it excludes ONLY that package.
-        # apps/api/tests/contract holds the containerless spec-versus-code gates
-        # (TestOpenAPIRouteCoverage and TestOpenAPIRequestBodyFieldCoverage);
-        # they run against an empty *db.Pool in about a second and MUST run on
-        # every PR, because they are what stops an undocumented route or a
-        # handler json tag that no longer matches its schema from merging.
-        run: go test $(go list ./... | grep -v -e /cmd/media-encoder -e /internal/media/encoder -e '/apps/api/tests$')
+        # The pattern excludes apps/api/tests ITSELF AND EVERY SUBDIRECTORY
+        # ( '/apps/api/tests($|/)' ), not just the exact path: a subpackage
+        # added under it (e.g. apps/api/tests/gh458) is, by the convention
+        # every existing one follows, container-backed like its siblings, so
+        # it belongs in api-integration.yml's lane too and must not silently
+        # start running here — an anchor of just `$` would miss it and this
+        # fast lane would eat a testcontainers run with none of the Docker
+        # prep api-integration.yml does for it. That is not hypothetical: it
+        # is what apps/api/tests/gh458 does the moment the anchor is `$`-only.
+        #
+        # apps/api/tests/contract is the one deliberate exception, so it is
+        # added back explicitly rather than by pattern. It holds the
+        # containerless spec-versus-code gates (TestOpenAPIRouteCoverage and
+        # TestOpenAPIRequestBodyFieldCoverage); they run against an empty
+        # *db.Pool in about a second and MUST run on every PR, because they
+        # are what stops an undocumented route or a handler json tag that no
+        # longer matches its schema from merging. A future package that is
+        # deliberately fast and containerless needs the same explicit
+        # addition — that is a one-time choice made when such a package is
+        # created, the same way contract's was, not something this pattern
+        # can infer from a path.
+        run: go test $(go list ./... | grep -Ev -e '/cmd/media-encoder' -e '/internal/media/encoder' -e '/apps/api/tests($|/)') ./tests/contract/...
 
   # ---- JS / web ----
   js:
