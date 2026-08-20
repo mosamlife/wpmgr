@@ -38,6 +38,8 @@ func startPostgresBeforeM108(t *testing.T) *db.Pool {
 	t.Helper()
 	ctx := context.Background()
 
+	skipIfDockerUnavailable(t, ctx, "postgres")
+
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
 		tcpostgres.WithDatabase("wpmgr"),
@@ -49,10 +51,15 @@ func startPostgresBeforeM108(t *testing.T) *db.Pool {
 				WithStartupTimeout(60*time.Second),
 		),
 	)
-	if err != nil {
-		t.Skipf("skipping: cannot start postgres container (docker unavailable?): %v", err)
+	// container can be non-nil even when err != nil (partial start); register
+	// cleanup before the error check so a failure path cannot leak it (see
+	// rls_integration_test.go's startPostgres).
+	if container != nil {
+		t.Cleanup(func() { _ = container.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "postgres: container start")
+	}
 
 	adminDSN, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
