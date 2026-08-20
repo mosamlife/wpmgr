@@ -694,10 +694,16 @@ func (w *Worker) haltAgentRunWith(ctx context.Context, task Task, status, fromVe
 
 // finishAgentTask records an agent task's terminal state and then re-judges
 // the run's wave gate. Every agent-task terminal transition goes through here,
-// which is what makes the gate self-correcting: the halt verdict is recomputed
-// from the authoritative rows after every change, and the run's status is
-// re-asserted afterwards (see haltLocked) so an ordinary run-completion check
-// can never quietly overwrite a halt with "completed".
+// which is what makes the GATE self-correcting: the halt verdict is recomputed
+// from the authoritative rows after every change.
+//
+// That re-judgement is NOT what stops a run-completion check overwriting a
+// halt, and this comment used to claim it was. It can only re-derive a halt
+// DeriveAgentWaveState can see in the task rows; a kill-switch halt or a
+// withdrawn release manifest (Worker.haltAgentRunWith) leaves no such trace and
+// was never recovered. SetUpdateRunStatus's own precondition is what makes
+// "completed" unable to land on a halted run (#482), on every path, in one
+// transaction.
 func (w *Worker) finishAgentTask(ctx context.Context, task Task, status, fromVersion, toVersion, detail, errMsg string) error {
 	if err := w.finish(ctx, task, status, fromVersion, toVersion, detail, errMsg); err != nil {
 		return err
@@ -721,7 +727,7 @@ func (w *Worker) evaluateAgentRun(ctx context.Context, tenantID, runID uuid.UUID
 			slog.String("run_id", runID.String()), slog.Any("error", err))
 		return
 	}
-	if ev.Halted {
+	if ev.Halted || ev.Refused {
 		w.recordRunHalted(ctx, tenantID, runID, ev)
 		return
 	}
@@ -740,7 +746,20 @@ func (w *Worker) evaluateAgentRun(ctx context.Context, tenantID, runID uuid.UUID
 // recordRunHalted logs and audits a halt exactly once (AgentRunEvaluation.
 // Changed is true only for the caller that performed the transition, so
 // concurrent finishers do not produce duplicate incident records).
+//
+// A REFUSED HALT IS NOT A HALT and gets neither. ev.Refused means the database
+// declined the write because the run is already terminal in another status, so
+// an update.run.halted event here would assert something that did not happen.
+// It is still logged, because a halt aimed at a run that cannot take one says
+// the calling sequence believed something false about that run.
 func (w *Worker) recordRunHalted(ctx context.Context, tenantID, runID uuid.UUID, ev AgentRunEvaluation) {
+	if ev.Refused {
+		w.logger.Info("agent self-update: halt refused; the run is already terminal in another status",
+			slog.String("run_id", runID.String()),
+			slog.String("reason", ev.Reason),
+			slog.Int("cancelled_tasks", ev.Cancelled))
+		return
+	}
 	if !ev.Changed {
 		return
 	}

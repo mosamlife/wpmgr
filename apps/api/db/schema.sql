@@ -923,9 +923,13 @@ CREATE TABLE update_runs (
     -- user deletion so the run history survives.
     created_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
     -- status. NO CHECK CONSTRAINT EXISTS on this column, so this comment (and
-    -- the matching COMMENT ON COLUMN installed by m118, which is what \d+ shows
-    -- in a live database) is the ONLY contract. A typo'd value stores fine and
-    -- silently never dispatches.
+    -- the matching COMMENT ON COLUMN, installed by m118 and REPLACED by m119,
+    -- which is what \d+ shows in a live database) is the ONLY contract. A
+    -- typo'd value stores fine and silently never dispatches.
+    --
+    -- This list is reconciled against internal/update/model.go's "Run statuses"
+    -- const block. m119/#482 added 'halted', which the wave machine had been
+    -- writing since long before #463 while appearing in no migration at all.
     --   pending      Created, tasks enqueued for immediate execution (the m3
     --                default). The worker advances it.
     --   scheduled    (m118/#463) Created with a future scheduled_at, not yet
@@ -936,9 +940,20 @@ CREATE TABLE update_runs (
     --                second replica or a restart cannot claim it twice.
     --   running      >=1 task running.
     --   completed    All tasks reached a terminal state.
+    --   halted       (m119/#482) Terminal. The run was STOPPED, not finished,
+    --                and is deliberately not 'completed', which would erase
+    --                that. Two writers: a wave gate refusing to advance an
+    --                agent self-update rollout (agent_repo.go haltLocked), and
+    --                an operator cancelling a scheduled run before it fired
+    --                (cancel_repo.go CancelScheduledRun, #463). The run
+    --                vocabulary has no separate 'cancelled' — the task statuses
+    --                underneath distinguish the two cases (a halt leaves a
+    --                mixture of real outcomes; a cancel leaves them uniformly
+    --                'cancelled' with nothing ever sent).
     --   expired      (m118/#463) Passed its dispatch window undispatched.
     --                Terminal and never retried: a deferred bulk update that
-    --                fires days late is a surprise, not a service.
+    --                fires days late is a surprise, not a service. Distinct
+    --                from 'halted', which was stopped by a gate or a human.
     status       text        NOT NULL DEFAULT 'pending',
     dry_run      boolean     NOT NULL DEFAULT false,
     -- scheduled_at is when the run should execute; NULL/now() means immediately.
@@ -1004,8 +1019,20 @@ CREATE TABLE update_tasks (
     from_version text        NOT NULL DEFAULT '',
     to_version   text        NOT NULL DEFAULT '',
     -- status: pending | running | succeeded | failed | rolled_back | skipped.
-    -- NO CHECK CONSTRAINT EXISTS; this comment and m118's COMMENT ON COLUMN are
-    -- the contract. m118/#463 adds two more:
+    -- NO CHECK CONSTRAINT EXISTS; this comment and the COMMENT ON COLUMN
+    -- (m118, REPLACED by m119) are the contract. This list is reconciled
+    -- against internal/update/model.go's "Task statuses" const block.
+    -- m118/#463 adds 'scheduled' and 'expired'; m119/#482 adds 'cancelled',
+    -- which the wave machine had been writing all along undeclared:
+    --   cancelled  (m119/#482) Terminal. NOTHING WAS EVER SENT TO THIS SITE
+    --              and a human or a gate decided that. Written by
+    --              agent_repo.go haltLocked (over tasks still 'pending' only —
+    --              a 'running' task is left alone, because its command is
+    --              already delivered and cancelling it would both record a
+    --              falsehood and stop the confirm poll) and by cancel_repo.go
+    --              CancelScheduledRun (#463). Distinct from 'skipped' (the CP
+    --              declined the target, no human stopped anything), from
+    --              'failed' (the site WAS contacted) and from 'expired'.
     --   scheduled  Belongs to a run that is still 'scheduled', not yet
     --              eligible. WARNING: 'scheduled' is NOT in
     --              update_tasks_inflight_target_idx's predicate below
@@ -1014,7 +1041,9 @@ CREATE TABLE update_tasks (
     --              concurrent immediate run. Widening that unique index is a
     --              separate migration with a data-dedup step.
     --   expired    The parent run expired without dispatching, so this task was
-    --              never attempted. Terminal.
+    --              never attempted. Terminal. NOT a spelling of 'cancelled':
+    --              'cancelled' records a decision somebody made, 'expired'
+    --              records that the window closed.
     status       text        NOT NULL DEFAULT 'pending',
     detail       text        NOT NULL DEFAULT '',
     error        text        NOT NULL DEFAULT '',

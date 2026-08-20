@@ -40,6 +40,23 @@ var ErrTaskNotOpen = errors.New("update task is not open")
 // reclaimable. See Worker.yieldContendedClaim.
 var ErrTaskNotClaimed = errors.New("update task was not claimed")
 
+// ErrRunNotOpen is the run-level twin of ErrTaskNotOpen: SetRunStatus matched
+// no row because the run is already TERMINAL ('halted' or 'expired') and the
+// caller asked for a different status. The run is returned unchanged alongside
+// it, exactly as FinishTask returns the recorded task.
+//
+// It is NOT an error condition, and specifically not domain.NotFound, which
+// this path returned for the same condition before #482 gave SetUpdateRunStatus
+// its precondition. The run virtually always still exists; it is simply not
+// accepting the transition. The caller that meets this in normal operation is
+// Worker.maybeCompleteRun: a halt cancels every pending task and DELIBERATELY
+// leaves running ones alone, so the last of those finishing counts zero
+// unfinished siblings and tries to write 'completed' over 'halted'. Refusing
+// that write is the whole point of the guard, so treating the refusal as a
+// failure would log a warning on every correct halt and teach an operator to
+// ignore the one line that matters. See Worker.maybeCompleteRun.
+var ErrRunNotOpen = errors.New("update run is not open")
+
 // Repo is the tenant-scoped persistence interface for update runs/tasks. Every
 // method runs inside a tenant-scoped transaction so RLS enforces isolation even
 // if a query omitted its tenant filter.
@@ -101,6 +118,12 @@ type Repo interface {
 	// (pending|running). A task that already reached a terminal state is
 	// returned unchanged alongside ErrTaskNotOpen: its recorded outcome wins.
 	FinishTask(ctx context.Context, in FinishTaskInput) (Task, error)
+	// SetRunStatus writes a run's status. A TERMINAL run ('halted'|'expired')
+	// is returned unchanged alongside ErrRunNotOpen when a DIFFERENT status is
+	// asked for; re-writing a terminal run's own status stays a no-op success,
+	// so haltLocked's deliberate re-assert and two tasks racing to 'completed'
+	// both still succeed. See ErrRunNotOpen and SetUpdateRunStatus in
+	// db/query/updates.sql.
 	SetRunStatus(ctx context.Context, tenantID, runID uuid.UUID, status string) (Run, error)
 	CountUnfinishedTasks(ctx context.Context, tenantID, runID uuid.UUID) (int64, error)
 	CountRunningTasksForTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
@@ -457,12 +480,26 @@ func (r *pgRepo) FinishTask(ctx context.Context, in FinishTaskInput) (Task, erro
 func (r *pgRepo) SetRunStatus(ctx context.Context, tenantID, runID uuid.UUID, status string) (Run, error) {
 	var out Run
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).SetUpdateRunStatus(ctx, sqlc.SetUpdateRunStatusParams{ID: runID, TenantID: tenantID, Status: status})
+		q := sqlc.New(tx)
+		row, err := q.SetUpdateRunStatus(ctx, sqlc.SetUpdateRunStatusParams{ID: runID, TenantID: tenantID, Status: status})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("update_run_not_found", "update run not found")
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return domain.Internal("update_run_status_failed", "failed to set run status").WithCause(err)
 			}
-			return domain.Internal("update_run_status_failed", "failed to set run status").WithCause(err)
+			// SetUpdateRunStatus only matches a run that is either already at
+			// the requested status or NOT terminal (#482), so no row means
+			// either the run does not exist or it is terminal and this is a
+			// different status. Read it back to tell the two apart, and return
+			// the recorded run rather than reporting a live row as missing.
+			existing, gerr := q.GetUpdateRun(ctx, sqlc.GetUpdateRunParams{ID: runID, TenantID: tenantID})
+			if gerr != nil {
+				if errors.Is(gerr, pgx.ErrNoRows) {
+					return domain.NotFound("update_run_not_found", "update run not found")
+				}
+				return domain.Internal("update_run_get_failed", "failed to load update run").WithCause(gerr)
+			}
+			out = toRun(existing)
+			return ErrRunNotOpen
 		}
 		out = toRun(row)
 		return nil

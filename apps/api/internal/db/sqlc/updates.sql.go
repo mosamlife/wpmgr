@@ -732,13 +732,17 @@ type FinishUpdateRunDispatchParams struct {
 // skipped and there is nothing to wait for).
 //
 // This exists so the scheduled lifecycle never has to touch SetUpdateRunStatus,
-// which has NO precondition at all: it writes whatever it is given to whatever
-// the row currently holds. That was harmless while runs only ever moved
-// forwards under one worker, and it stops being harmless the moment a second
-// writer (this dispatcher) can be mid-transition on the same row — an
-// unconditioned write lands on top of a claim, or resurrects an 'expired' run
-// into 'running'. See the note handed to backend-architect: SetUpdateRunStatus
-// keeps its existing callers and must not acquire new ones on this path.
+// whose only precondition is that the run is not already terminal (#482): among
+// non-terminal statuses it still writes whatever it is given over whatever the
+// row currently holds. That was harmless while runs only ever moved forwards
+// under one worker, and it stops being harmless the moment a second writer
+// (this dispatcher) can be mid-transition on the same row — 'dispatching' is
+// NOT in that guarded set, precisely because it is transient rather than
+// terminal, so an unconditioned write still lands on top of a live claim. (The
+// other half of the original worry, resurrecting an 'expired' run into
+// 'running', is now refused by that statement itself.) See the note handed to
+// backend-architect: SetUpdateRunStatus keeps its existing callers and must not
+// acquire new ones on this path.
 //
 // ZERO ROWS MEANS: the run was not in 'dispatching', so this caller did not own
 // the claim it thinks it owns. Treat it as a bug in the calling sequence and
@@ -1733,6 +1737,7 @@ const setUpdateRunStatus = `-- name: SetUpdateRunStatus :one
 UPDATE update_runs
 SET status = $3, updated_at = now()
 WHERE id = $1 AND tenant_id = $2
+  AND (status = $3 OR status NOT IN ('halted', 'expired'))
 RETURNING id, tenant_id, created_by, status, dry_run, scheduled_at, created_at, updated_at
 `
 
@@ -1742,6 +1747,58 @@ type SetUpdateRunStatusParams struct {
 	Status   string    `json:"status"`
 }
 
+// The general run-status write, used by the immediate (non-scheduled)
+// lifecycle: pending -> running on the first task start, and -> 'completed'
+// when the last task finishes.
+//
+// A TERMINAL RUN CANNOT BE MOVED OFF ITS TERMINAL STATUS. That is what the
+// second predicate buys, and it is not defensive tidying: without it, a HALTED
+// RUN SILENTLY BECAME 'completed', which is the one outcome the halt exists to
+// prevent. The sequence (#482):
+//
+//  1. A wave gate or the kill switch halts an agent self-update rollout.
+//     haltLocked cancels every task nothing was sent for and DELIBERATELY
+//     LEAVES RUNNING ONES ALONE (see CancelPendingUpdateTask above): their
+//     command is already on the site, so the confirm poll must survive.
+//  2. That running task finishes. FinishUpdateTask matches (it was open), so
+//     Worker.finish proceeds to its ordinary run-completion check.
+//  3. CountUnfinishedTasksForRun now returns 0 — the halt terminalized every
+//     sibling — so the worker writes 'completed' over 'halted'.
+//
+// The operator is then told a wave-gated rollout finished normally, when it was
+// stopped with commands out on real sites. The audit event says halted and the
+// run says completed.
+//
+// This was known and compensated for in Go rather than prevented: haltLocked
+// re-asserts 'halted' after every agent-task terminal transition. That
+// compensation is incomplete in both directions. It only recovers when
+// DeriveAgentWaveState can re-derive the halt FROM THE TASK ROWS, and the two
+// halts that come from outside them (the kill switch and a withdrawn release
+// manifest, both routed through Worker.haltAgentRunWith) cannot be re-derived,
+// so those runs stayed 'completed' permanently. Even when it did recover, the
+// window had already published a RunCompleted event to the operator's live view.
+// A precondition in SQL has neither hole and needs no second transaction.
+//
+// 'halted' AND 'expired' ARE THE GUARDED SET BECAUSE THEY ARE EXACTLY THE TWO
+// VALUES m119's column contract calls Terminal. 'completed' is deliberately NOT
+// guarded: the wave gate may legitimately re-judge a finished run as halted when
+// the LAST task's failure is what breaches the gate, and blocking that would
+// suppress a real incident record. Nothing else in the run vocabulary is
+// terminal, and this statement must stay able to write every ordinary forward
+// transition.
+//
+// `status = $3` FIRST KEEPS THE STATEMENT IDEMPOTENT, and dropping it would
+// break two honest callers. haltLocked re-writes 'halted' onto an already-halted
+// run on purpose, and two tasks finishing concurrently can both count zero
+// unfinished and both write 'completed'. Neither CHANGES the status, so neither
+// is the transition this guard exists to stop; a bare NOT IN would fail them
+// both and turn a no-op into an error path.
+//
+// ZERO ROWS THEREFORE MEANS: the run is terminal and you asked for a DIFFERENT
+// status. It is not "not found" and must not be reported as one. For the
+// run-completion caller it is the normal, correct outcome of finishing a task
+// that outlived a halt, not a failure — see the note handed to
+// backend-architect.
 func (q *Queries) SetUpdateRunStatus(ctx context.Context, arg SetUpdateRunStatusParams) (UpdateRun, error) {
 	row := q.db.QueryRow(ctx, setUpdateRunStatus, arg.ID, arg.TenantID, arg.Status)
 	var i UpdateRun

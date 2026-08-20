@@ -1130,11 +1130,7 @@ func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toV
 		return nil
 	}
 
-	runStatus := RunRunning
-	if done := w.maybeCompleteRun(ctx, task.TenantID, task.RunID); done {
-		runStatus = RunCompleted
-	}
-	w.publish(finished, runStatus)
+	w.publish(finished, w.maybeCompleteRun(ctx, task.TenantID, task.RunID))
 	w.recordAudit(ctx, finished)
 
 	// Post-update inventory refresh: ask the agent to re-read its plugin/theme
@@ -1183,21 +1179,56 @@ func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task) {
 	}
 }
 
-// maybeCompleteRun marks the run completed when no tasks remain unfinished.
-func (w *Worker) maybeCompleteRun(ctx context.Context, tenantID, runID uuid.UUID) bool {
+// maybeCompleteRun marks the run completed when no tasks remain unfinished,
+// and returns THE RUN STATUS THE CALLER SHOULD PUBLISH: the status this run row
+// actually holds when this function returns, read back from the database rather
+// than assumed from what was asked for. Worker.finish feeds it straight to
+// publish, which is what the operator's live view renders (see the run-events
+// stream in handler.go).
+//
+// THAT IS A TRUE STATEMENT ABOUT THIS MOMENT, NOT A PROMISE THAT NOTHING
+// SUPERSEDES IT, and there is one path where something does. finishAgentTask
+// calls finish (which publishes) and only then re-judges the wave gate, so a
+// last task whose own failure breaches the gate publishes 'completed' — correct
+// at the instant it is read — and the gate then writes 'halted' over it. The
+// SSE stream terminates on RunCompleted (handler.go), so the operator's live
+// view's last word is "completed" on a run whose row ends 'halted'.
+//
+// This is a display lag, not a lost halt: the row is authoritative and correct,
+// the audit event is written, and any refetch of the run renders 'halted'. The
+// web client also closes on isTerminalRunStatus, which already covers 'halted'.
+// Do NOT try to fix it by changing the stream's termination condition — that is
+// a wider behavioural change than the window it closes.
+//
+// The completion write can be legitimately REFUSED. A halt cancels every
+// pending task and deliberately leaves running ones alone, so the last of those
+// finishing sees zero unfinished siblings and asks for 'completed' on a run
+// that reads 'halted'. SetUpdateRunStatus's precondition rejects that (#482)
+// and SetRunStatus reports ErrRunNotOpen WITH THE RUN UNCHANGED. That is the
+// normal, correct outcome of a task outliving a halt, not a failure: it is
+// logged at Info and the run's actual terminal status is what gets published.
+// Warning on it would put a false alarm on every correct halt.
+func (w *Worker) maybeCompleteRun(ctx context.Context, tenantID, runID uuid.UUID) string {
 	n, err := w.repo.CountUnfinishedTasks(ctx, tenantID, runID)
 	if err != nil {
 		w.logger.Warn("update: count unfinished tasks", slog.Any("error", err))
-		return false
+		return RunRunning
 	}
 	if n > 0 {
-		return false
+		return RunRunning
 	}
-	if _, err := w.repo.SetRunStatus(ctx, tenantID, runID, RunCompleted); err != nil {
+	run, err := w.repo.SetRunStatus(ctx, tenantID, runID, RunCompleted)
+	if err != nil {
+		if errors.Is(err, ErrRunNotOpen) {
+			w.logger.Info("update: run is terminal; leaving its recorded status alone",
+				slog.String("run_id", runID.String()),
+				slog.String("recorded_status", run.Status))
+			return run.Status
+		}
 		w.logger.Warn("update: set run completed", slog.Any("error", err))
-		return false
+		return RunRunning
 	}
-	return true
+	return RunCompleted
 }
 
 // ensureRunRunning transitions a pending run to running on the first task start.
