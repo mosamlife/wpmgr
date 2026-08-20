@@ -21,6 +21,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/tests/testinfra"
 )
 
 const testRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
@@ -32,6 +33,8 @@ const testRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqm
 func startPostgres(t *testing.T) (app *db.Pool, admin *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
+
+	testinfra.SkipIfDockerUnavailable(t, ctx, "postgres")
 
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
@@ -45,7 +48,7 @@ func startPostgres(t *testing.T) (app *db.Pool, admin *db.Pool) {
 		),
 	)
 	if err != nil {
-		t.Skipf("skipping: cannot start postgres container (docker unavailable?): %v", err)
+		testinfra.SetupFatalf(t, err, "postgres: container start")
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
