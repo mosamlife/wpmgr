@@ -52,10 +52,19 @@ func startRedis(t *testing.T) (*redis.Pool, string) {
 		ContainerRequest: req,
 		Started:          true,
 	})
-	if err != nil {
-		setupFatalf(t, err, "redis: container start")
+	// Register cleanup BEFORE inspecting err: GenericContainer can return a
+	// non-nil container alongside a non-nil error on a partial start (create
+	// succeeded but Start failed, etc). setupFatalf below calls t.Fatalf,
+	// which never returns, so anything after it never runs; cleanup must be
+	// registered first or a partially-started container leaks for the life
+	// of the machine. See rls_integration_test.go's startPostgres for the
+	// same fix and the library source citation.
+	if c != nil {
+		t.Cleanup(func() { _ = c.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "redis: container start")
+	}
 	host, err := c.Host(ctx)
 	if err != nil {
 		setupFatalf(t, err, "redis: resolve container host")

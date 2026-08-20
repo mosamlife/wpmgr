@@ -5,6 +5,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -45,10 +46,9 @@ func setupSkipf(t *testing.T, err error, stage string) {
 
 // skipIfDockerUnavailable positively detects whether the Docker/OCI provider
 // testcontainers will use is reachable at all, and skips (via setupSkipf) if
-// it is not. This is the ONLY thing that may resolve to a skip in this
-// package: "the daemon cannot be reached" is checked directly, up front,
-// before any container is asked to start, rather than being inferred from
-// whatever error a later container-start call happens to return.
+// it is not. This is checked directly, up front, before any container is
+// asked to start, rather than being inferred from whatever error a later
+// container-start call happens to return.
 //
 // That distinction matters because a container that fails to START despite
 // Docker being reachable (bad image tag, no space left, registry pull
@@ -57,6 +57,12 @@ func setupSkipf(t *testing.T, err error, stage string) {
 // setupSkipf. Routing a start failure to Skip is exactly the failure mode
 // this test package exists to eliminate: a package-level "ok" over a suite
 // that asserted nothing.
+//
+// setupFatalfOrSkipIfDaemonDied below is the one other path that may resolve
+// to a skip, for the narrow case of a container-start error specifically. It
+// still only skips on a second, independent positive Health() probe — never
+// by inspecting the start error's text — so it cannot reclassify an ordinary
+// start failure as unavailability.
 func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
 	t.Helper()
 	provider, err := testcontainers.ProviderDocker.GetProvider()
@@ -67,6 +73,35 @@ func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
 	if err := provider.Health(ctx); err != nil {
 		setupSkipf(t, err, stage+" (docker daemon unreachable)")
 	}
+}
+
+// setupFatalfOrSkipIfDaemonDied handles an error from a container-START call
+// specifically (tcpostgres.Run, testcontainers.GenericContainer). At that
+// point skipIfDockerUnavailable already proved the daemon was reachable
+// immediately before this container's start began, so an error here is
+// usually a genuine start failure (bad image tag, no space left, registry
+// pull failure) with the daemon perfectly healthy — that MUST stay fatal, or
+// this package regresses to exactly the "skip on anything" failure mode it
+// was built to eliminate.
+//
+// The one case that should skip instead is the daemon dying in the window
+// this container's own startup (image pull plus up to a 60s wait strategy)
+// spans: Docker Desktop crashing, an OOM kill, disk pressure taking the
+// daemon down mid-run. That is told apart from an ordinary start failure with
+// a SECOND positive Health() probe, the same mechanism skipIfDockerUnavailable
+// already trusts — never by pattern-matching startErr's text. An ordinary
+// start failure re-probes healthy and falls straight through to setupFatalf.
+func setupFatalfOrSkipIfDaemonDied(t *testing.T, ctx context.Context, startErr error, stage string) {
+	t.Helper()
+	provider, provErr := testcontainers.ProviderDocker.GetProvider()
+	if provErr == nil {
+		if healthErr := provider.Health(ctx); healthErr != nil {
+			setupSkipf(t, fmt.Errorf("start error: %v; daemon health re-probe now fails: %w", startErr, healthErr),
+				stage+" (docker daemon died mid-start)")
+			return
+		}
+	}
+	setupFatalf(t, startErr, stage)
 }
 
 // startPostgres spins up an ephemeral Postgres, applies the embedded
@@ -94,10 +129,21 @@ func startPostgres(t *testing.T) *db.Pool {
 				WithStartupTimeout(60*time.Second),
 		),
 	)
-	if err != nil {
-		setupFatalf(t, err, "postgres: container start")
+	// Register cleanup BEFORE inspecting err: tcpostgres.Run can return a
+	// non-nil container alongside a non-nil error on a partial start (the
+	// container was created, or even started, and a later step in Run
+	// failed) — testcontainers-go's own GenericContainer says as much: "At
+	// this point `c` might not be nil. Give the caller an opportunity to call
+	// Destroy on the container." setupFatalf below calls t.Fatalf, which
+	// never returns (runtime.Goexit), so anything after it never runs; if
+	// cleanup registration came after that call, a partially-started
+	// container would leak for the life of the machine on every failure path.
+	if container != nil {
+		t.Cleanup(func() { _ = container.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "postgres: container start")
+	}
 
 	adminDSN, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
