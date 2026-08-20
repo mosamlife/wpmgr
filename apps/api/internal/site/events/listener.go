@@ -131,12 +131,35 @@ func (l *Listener) listen(ctx context.Context) error {
 //     Hijack removes it from the pool for good instead. Dropping one
 //     connection is cheap; the pool re-dials on the next Acquire, and Run's
 //     backoff bounds how often a persistently failing cleanup can do it.
+//     Hijack does not call triggerHealthCheck() the way Release's Destroy path
+//     does (pgxpool/conn.go:37), so on this error branch the pool can sit one
+//     connection below its MinConns=2 floor (db.go:148) until the next
+//     periodic health check (every 30s) re-dials it. Cosmetic, and bounded by
+//     that interval.
 //
-// The channel is named explicitly rather than using UNLISTEN *. River borrows
-// this same pool (see db.ConnectApp) and runs its own LISTEN on it, so `*` is
-// a wider blast radius than this function has any business having: the exact
-// inverse of "we issued LISTEN wpmgr_site_events" is "we issue UNLISTEN
-// wpmgr_site_events", and nothing else.
+// The channel is named explicitly rather than using UNLISTEN *, and the reason
+// is precision, not blast radius. What this function issued is exactly LISTEN
+// wpmgr_site_events (line 82), so what it issues here — UNLISTEN
+// wpmgr_site_events — is the exact inverse of that statement, and nothing
+// else. That is enough on its own, and deliberately does not lean on either of
+// the facts below holding, because both take more digging to be sure of than
+// this function's own two lines do:
+//
+//   - UNLISTEN is SESSION state, so `*` could only ever reach the session
+//     already pinned to this *pgxpool.Conn — pgxpool never hands one
+//     connection to two owners at once, whatever else is Acquire-ing from the
+//     pool concurrently.
+//   - River does borrow this same pool (db.ConnectApp; this listener is
+//     constructed at cmd/wpmgr/main.go:1451, River started at :1892, both
+//     under the same `pool` in run()) and does issue its own LISTEN
+//     (riverpgxv5@v0.38.0/river_pgx_v5_driver.go:1104). But that connection is
+//     hijacked out of the pool for good before its LISTEN is even issued
+//     (:1095) — the identical move this function's own error branch makes
+//     below — so it was never reachable through the pool to a `*` in the
+//     first place.
+//
+// Naming the channel does not need either bullet to be true. It is just what
+// "undo exactly what you did" looks like.
 func (l *Listener) unsubscribe(ctx context.Context, conn *pgxpool.Conn) {
 	cctx, ccancel := db.CleanupContext(ctx)
 	defer ccancel()

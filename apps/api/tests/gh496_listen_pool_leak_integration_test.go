@@ -48,6 +48,18 @@ package tests
 // NOT RUN BY CI (apps/api/tests is excluded from the fast lane by owner
 // decision). Run with `make test-integration` from the repository root, or
 // directly with the command in each test's doc comment.
+//
+// NOT PINNED: the Hijack+Close branch inside unsubscribe()'s error path. Every
+// assertion here goes through pg_listening_channels(), which proves the
+// outcome (no pooled connection is left subscribed) but cannot tell which
+// branch produced it — "UNLISTEN succeeded, connection released" and
+// "UNLISTEN failed, connection hijacked and closed" both leave zero subscribed
+// connections in the pool. On the path exercised here UNLISTEN does not fail,
+// so only the success branch runs. Pinning the Hijack branch would need a
+// different observable — pool.Stat().NewConnsCount() catching the pool
+// re-dialling a connection it lost — not pg_listening_channels(). Left
+// unpinned deliberately; do not read coverage of that branch out of these
+// tests passing.
 
 import (
 	"context"
@@ -243,9 +255,11 @@ func TestGH496_CancelledListenerDoesNotLeakItsSubscriptionIntoThePool(t *testing
 //  2. a SECOND listener started after the first one was cancelled still
 //     receives them — which is where a wrong fix lands. UNLISTEN on the
 //     caller's own (already-cancelled) context sends nothing and would leave
-//     the leak in place; UNLISTEN * would reach past this listener's own
-//     subscription on a pool River also LISTENs on; and Hijack-on-every-release
-//     would churn the pool. The restarted listener runs on a pool whose
+//     the leak in place; Hijack-on-every-release would churn the pool. (This
+//     test does not distinguish UNLISTEN wpmgr_site_events from UNLISTEN * —
+//     both clear the leaked subscription on this session either way; see
+//     unsubscribe()'s doc comment in listener.go for why the targeted form is
+//     preferred regardless.) The restarted listener runs on a pool whose
 //     connections have been through the cleanup path at least once, so it is
 //     the case that catches a cleanup which corrupts the session.
 //
