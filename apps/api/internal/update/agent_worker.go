@@ -727,7 +727,7 @@ func (w *Worker) evaluateAgentRun(ctx context.Context, tenantID, runID uuid.UUID
 			slog.String("run_id", runID.String()), slog.Any("error", err))
 		return
 	}
-	if ev.Halted {
+	if ev.Halted || ev.Refused {
 		w.recordRunHalted(ctx, tenantID, runID, ev)
 		return
 	}
@@ -746,7 +746,20 @@ func (w *Worker) evaluateAgentRun(ctx context.Context, tenantID, runID uuid.UUID
 // recordRunHalted logs and audits a halt exactly once (AgentRunEvaluation.
 // Changed is true only for the caller that performed the transition, so
 // concurrent finishers do not produce duplicate incident records).
+//
+// A REFUSED HALT IS NOT A HALT and gets neither. ev.Refused means the database
+// declined the write because the run is already terminal in another status, so
+// an update.run.halted event here would assert something that did not happen.
+// It is still logged, because a halt aimed at a run that cannot take one says
+// the calling sequence believed something false about that run.
 func (w *Worker) recordRunHalted(ctx context.Context, tenantID, runID uuid.UUID, ev AgentRunEvaluation) {
+	if ev.Refused {
+		w.logger.Info("agent self-update: halt refused; the run is already terminal in another status",
+			slog.String("run_id", runID.String()),
+			slog.String("reason", ev.Reason),
+			slog.Int("cancelled_tasks", ev.Cancelled))
+		return
+	}
 	if !ev.Changed {
 		return
 	}

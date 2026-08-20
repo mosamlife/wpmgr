@@ -66,6 +66,18 @@ type AgentRunEvaluation struct {
 	// Changed is true only for the call that performed the halt transition, so
 	// exactly one caller records the audit event and logs the incident.
 	Changed bool
+	// Refused is true when the run REFUSED the halt: SetUpdateRunStatus's #482
+	// precondition declined it because the run is already terminal in some
+	// OTHER status (today only 'expired' — an already-'halted' run matches the
+	// statement's idempotent `status = $3` arm and returns its row).
+	//
+	// It exists so a refusal cannot be mistaken for a halt. The refusal comes
+	// back from SQL as zero rows, which used to be swallowed as "run not
+	// found"; now that the same zero rows also mean "terminal, and you asked
+	// for a different status", swallowing it would let a caller announce a halt
+	// that never landed. When Refused is true, Halted and Changed are both
+	// false and NO update.run.halted audit event may be written.
+	Refused bool
 	// Dispatchable is the tasks of a wave that JUST opened: the set the caller
 	// should enqueue now, and nothing it has already enqueued. Empty when
 	// Halted, and empty on the transitions that open no new wave, which is
@@ -317,7 +329,10 @@ func (r *pgRepo) HaltAgentRun(ctx context.Context, tenantID, runID uuid.UUID, re
 // (#482). See its comment in db/query/updates.sql.
 //
 // Changed is true only when this call was the one that moved the run into the
-// halted state, so exactly one caller records the audit event.
+// halted state, so exactly one caller records the audit event. Refused is the
+// other side of that coin: the run was terminal in another status and the halt
+// was declined, in which case nothing may be recorded at all. See the zero-rows
+// branch below.
 func haltLocked(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, run Run, tasks []Task, reason string) (AgentRunEvaluation, error) {
 	ev := AgentRunEvaluation{Halted: true, Reason: reason, Changed: run.Status != RunHalted}
 
@@ -345,6 +360,22 @@ func haltLocked(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, run Ru
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return AgentRunEvaluation{}, domain.Internal("update_run_status_failed", "failed to halt update run").WithCause(err)
 		}
+		// ZERO ROWS HERE IS "REFUSED", NEVER "NOT FOUND". Every caller reaches
+		// this function through loadAgentRunLocked, which has already turned a
+		// missing row into domain.NotFound, and the run is held under
+		// lockAgentRun's advisory lock for the whole transaction, so the row
+		// exists and nobody else can move it. What is left is #482's
+		// precondition declining the write because the run is terminal in a
+		// DIFFERENT status than the one asked for — today only 'expired'.
+		//
+		// THE HALT DID NOT LAND, so this must not read like one. Reporting it
+		// as a halt is what made the old swallow dangerous: Changed was
+		// computed from the pre-write snapshot, so an 'expired' run produced an
+		// update.run.halted audit event for a halt the database refused —
+		// success announced over this function's own error.
+		ev.Halted = false
+		ev.Changed = false
+		ev.Refused = true
 	}
 	return ev, nil
 }

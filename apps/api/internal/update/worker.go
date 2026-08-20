@@ -1180,9 +1180,25 @@ func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task) {
 }
 
 // maybeCompleteRun marks the run completed when no tasks remain unfinished,
-// and returns THE RUN STATUS THE CALLER SHOULD PUBLISH — the run's real one,
-// never a guess. Worker.finish feeds it straight to publish, which is what the
-// operator's live view renders (see the run-events stream in handler.go).
+// and returns THE RUN STATUS THE CALLER SHOULD PUBLISH: the status this run row
+// actually holds when this function returns, read back from the database rather
+// than assumed from what was asked for. Worker.finish feeds it straight to
+// publish, which is what the operator's live view renders (see the run-events
+// stream in handler.go).
+//
+// THAT IS A TRUE STATEMENT ABOUT THIS MOMENT, NOT A PROMISE THAT NOTHING
+// SUPERSEDES IT, and there is one path where something does. finishAgentTask
+// calls finish (which publishes) and only then re-judges the wave gate, so a
+// last task whose own failure breaches the gate publishes 'completed' — correct
+// at the instant it is read — and the gate then writes 'halted' over it. The
+// SSE stream terminates on RunCompleted (handler.go), so the operator's live
+// view's last word is "completed" on a run whose row ends 'halted'.
+//
+// This is a display lag, not a lost halt: the row is authoritative and correct,
+// the audit event is written, and any refetch of the run renders 'halted'. The
+// web client also closes on isTerminalRunStatus, which already covers 'halted'.
+// Do NOT try to fix it by changing the stream's termination condition — that is
+// a wider behavioural change than the window it closes.
 //
 // The completion write can be legitimately REFUSED. A halt cancels every
 // pending task and deliberately leaves running ones alone, so the last of those

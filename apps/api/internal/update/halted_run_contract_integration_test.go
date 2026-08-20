@@ -36,12 +36,78 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
+
+// setupFatalf, setupSkipf, skipIfDockerUnavailable and
+// setupFatalfOrSkipIfDaemonDied are local copies of the four helpers commit
+// 54ad8ae4 (#503) standardised across the tests package. They are duplicated
+// rather than imported because those live in package tests, which an internal
+// package cannot import.
+//
+// What all four buy: A SKIPPED PROOF STILL PRINTS ok. This file is the only
+// executed proof that a halted run cannot read 'completed', so a container that
+// fails to start for any reason OTHER than "there is no reachable Docker on
+// this machine" must redden the package, never disappear into a SKIP line under
+// an ok. Only a positive health probe may resolve to a skip; "we could not
+// tell" resolves to fatal.
+func setupFatalf(t *testing.T, err error, stage string) {
+	t.Helper()
+	t.Fatalf("SETUP FAILURE (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
+}
+
+// setupSkipf is setupFatalf's skip counterpart, reserved for the single case of
+// "Docker is not available on this machine at all" — the one setup failure that
+// is not a mid-run flake and that every container-backed test would hit
+// identically, so skipping is the honest signal rather than a hidden pass.
+func setupSkipf(t *testing.T, err error, stage string) {
+	t.Helper()
+	t.Skipf("SETUP SKIP (infrastructure, not the test's own assertion) at stage=%q: %v", stage, err)
+}
+
+// skipIfDockerUnavailable positively probes the provider testcontainers will
+// use, BEFORE any container is asked to start, rather than inferring Docker's
+// absence from whatever error a later start call happens to return.
+func skipIfDockerUnavailable(t *testing.T, ctx context.Context, stage string) {
+	t.Helper()
+	provider, err := testcontainers.ProviderDocker.GetProvider()
+	if err != nil {
+		setupSkipf(t, err, stage+" (docker provider unavailable)")
+		return
+	}
+	if err := provider.Health(ctx); err != nil {
+		setupSkipf(t, err, stage+" (docker daemon unreachable)")
+	}
+}
+
+// setupFatalfOrSkipIfDaemonDied handles an error from the container-START call
+// itself. skipIfDockerUnavailable has already proved the daemon was reachable
+// immediately beforehand, so an error here is ordinarily a real setup failure
+// with Docker perfectly healthy — a bad image tag, no space left, a registry
+// pull failure — and that MUST stay fatal.
+//
+// The one case that should still skip is the daemon dying inside the window
+// this container's own startup spans. That is told apart with a SECOND positive
+// Health() probe, never by pattern-matching the start error's text: an ordinary
+// start failure re-probes healthy and falls straight through to setupFatalf.
+func setupFatalfOrSkipIfDaemonDied(t *testing.T, ctx context.Context, startErr error, stage string) {
+	t.Helper()
+	provider, provErr := testcontainers.ProviderDocker.GetProvider()
+	if provErr == nil {
+		if healthErr := provider.Health(ctx); healthErr != nil {
+			setupSkipf(t, fmt.Errorf("start error: %v; daemon health re-probe now fails: %w", startErr, healthErr),
+				stage+" (docker daemon died mid-start)")
+			return
+		}
+	}
+	setupFatalf(t, startErr, stage)
+}
 
 // startHaltContractPostgres returns (appPool, adminPool). appPool connects as
 // wpmgr_app — non-superuser, NOBYPASSRLS, the role every real install runs as —
@@ -51,6 +117,8 @@ import (
 func startHaltContractPostgres(t *testing.T) (*db.Pool, *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
+
+	skipIfDockerUnavailable(t, ctx, "postgres")
 
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
@@ -63,21 +131,28 @@ func startHaltContractPostgres(t *testing.T) (*db.Pool, *db.Pool) {
 				WithStartupTimeout(90*time.Second),
 		),
 	)
+	// Registered BEFORE the error is handled: a start that fails partway can
+	// still leave a container behind, and a cleanup registered after the check
+	// is unreachable on exactly the paths that leak one.
+	t.Cleanup(func() {
+		if container != nil {
+			_ = container.Terminate(context.Background())
+		}
+	})
 	if err != nil {
-		t.Skipf("skipping: cannot start postgres container (docker unavailable?): %v", err)
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "postgres")
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
 	adminDSN, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		setupFatalf(t, err, "postgres connection string")
 	}
 	adminPool, err := db.Connect(ctx, adminDSN)
 	if err != nil {
-		t.Fatalf("connect admin: %v", err)
+		setupFatalf(t, err, "connect admin")
 	}
 	if err := adminPool.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
+		setupFatalf(t, err, "migrate")
 	}
 	for _, stmt := range []string{
 		"ALTER ROLE wpmgr_app LOGIN PASSWORD 'app'",
@@ -86,7 +161,7 @@ func startHaltContractPostgres(t *testing.T) (*db.Pool, *db.Pool) {
 		"REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
-			t.Fatalf("provision app role (%q): %v", stmt, err)
+			setupFatalf(t, err, fmt.Sprintf("provision app role (%q)", stmt))
 		}
 	}
 	t.Cleanup(adminPool.Close)
@@ -94,7 +169,7 @@ func startHaltContractPostgres(t *testing.T) (*db.Pool, *db.Pool) {
 	appDSN := strings.Replace(adminDSN, "wpmgr:wpmgr@", "wpmgr_app:app@", 1)
 	appPool, err := db.Connect(ctx, appDSN)
 	if err != nil {
-		t.Fatalf("connect app: %v", err)
+		setupFatalf(t, err, "connect app")
 	}
 	t.Cleanup(appPool.Close)
 	return appPool, adminPool
@@ -357,5 +432,133 @@ func TestAnUnhaltedRunStillCompletes(t *testing.T) {
 	}
 	if got := w.maybeCompleteRun(ctx, tenant, run.ID); got != RunCompleted {
 		t.Errorf("published run status = %q, want %q", got, RunCompleted)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The refused halt
+// ---------------------------------------------------------------------------
+
+// countRunHaltedAudit counts update.run.halted entries for one run, read
+// through the same tenant wrapper the recorder writes through.
+func countRunHaltedAudit(t *testing.T, pool *db.Pool, tenant, runID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.InTenantTx(context.Background(), tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			`SELECT count(*) FROM audit_log
+			  WHERE tenant_id = $1 AND action = $2 AND target_id = $3`,
+			tenant, ActionRunHalted, runID.String()).Scan(&n)
+	}); err != nil {
+		t.Fatalf("count halted audit records: %v", err)
+	}
+	return n
+}
+
+// TestARefusedHaltRecordsNoHaltedAudit pins the other half of #482's
+// precondition: what happens to the CALLER when the database says no.
+//
+// SetUpdateRunStatus reports its refusal as zero rows, which pgx surfaces as
+// pgx.ErrNoRows — the same error a missing row produces. Before this change
+// haltLocked swallowed it as "run not found", which was defensible while that
+// was the only thing it could mean. The #482 precondition gave it a second
+// meaning: "the run is terminal and you asked for a different status". At that
+// point the swallow started reporting a REFUSED halt as a successful one, and
+// AgentRunEvaluation.Changed had already been computed from the pre-write
+// snapshot, so recordRunHalted wrote an update.run.halted event for a halt that
+// the database never let land. Announcing success over your own error.
+//
+// The only run status that can refuse a halt is 'expired' ('halted' matches the
+// statement's idempotent `status = $3` arm and returns its row). No live worker
+// sequence reaches it today — an expired run never dispatched anything, so
+// nothing of its finishes later to re-judge the gate — which is why this was a
+// latent defect and not an incident. The fixture therefore seeds the terminal
+// state directly through the admin pool rather than reshaping production code
+// to manufacture a route into it; the unit under test is haltLocked's handling
+// of the refusal and recordRunHalted's audit gate, and both are reached
+// through the real repo, over the wpmgr_app role, exactly as production does.
+//
+// RED WITHOUT THE FIX: restore `if !errors.Is(err, pgx.ErrNoRows) { return ... }`
+// as the whole of haltLocked's zero-rows branch (drop the three ev assignments)
+// and the refused run books an update.run.halted event.
+func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
+	app, admin := startHaltContractPostgres(t)
+	ctx := context.Background()
+
+	repo := NewRepo(app)
+	waves := repo.(AgentWaveRepo)
+	// A REAL recorder over the app pool, not a fake: the assertion below is a
+	// count of zero, and a stubbed-out recorder would satisfy it while proving
+	// nothing. The positive control at the end is what makes the zero mean
+	// something.
+	w := NewWorker(repo, nil, nil, nil, nil, audit.NewRecorder(app, domain.SystemClock{}), nil, 5, 0)
+	w.SetAgentSelfUpdate(AgentSelfUpdateDeps{Waves: waves})
+
+	tenant := seedHaltContractTenant(t, admin, "gh482-refused")
+
+	newRun := func(host string) (Run, []Task) {
+		t.Helper()
+		run, tasks, err := repo.CreateRunWithTasks(ctx, CreateRunInput{TenantID: tenant}, []NewTask{{
+			SiteID:     seedHaltContractSite(t, admin, tenant, host),
+			TargetType: TargetAgent, TargetSlug: AgentTargetSlug,
+			DesiredVersion: "0.62.0", FromVersion: "0.61.80",
+		}})
+		if err != nil {
+			t.Fatalf("create run (%s): %v", host, err)
+		}
+		return run, tasks
+	}
+
+	// --- The refusal ------------------------------------------------------
+	refused, _ := newRun("https://refused.gh482.example")
+	if _, err := admin.Exec(ctx,
+		`UPDATE update_runs SET status = $1 WHERE id = $2 AND tenant_id = $3`,
+		RunExpired, refused.ID, tenant); err != nil {
+		t.Fatalf("seed the run into %q: %v", RunExpired, err)
+	}
+
+	ev, err := waves.HaltAgentRun(ctx, tenant, refused.ID, "agent self-update disabled by the kill switch")
+	if err != nil {
+		t.Fatalf("halt an expired run: %v (a refusal is a normal outcome, not an error)", err)
+	}
+	if !ev.Refused {
+		t.Errorf("Refused = false on a halt the database declined; the caller cannot tell a refusal from a halt")
+	}
+	if ev.Changed {
+		t.Errorf("Changed = true on a refused halt: this is the flag recordRunHalted audits on")
+	}
+	if ev.Halted {
+		t.Errorf("Halted = true on a run that is %q, not halted", RunExpired)
+	}
+	if got := readRunStatus(t, app, tenant, refused.ID); got != RunExpired {
+		t.Fatalf("run status = %q, want %q: the halt landed after all and this test is testing nothing", got, RunExpired)
+	}
+
+	// The exact worker step that used to announce the halt that never landed.
+	w.recordRunHalted(ctx, tenant, refused.ID, ev)
+
+	if n := countRunHaltedAudit(t, app, tenant, refused.ID); n != 0 {
+		t.Errorf("audit_log holds %d %q record(s) for a halt the database refused, want 0: the log asserts something that did not happen",
+			n, ActionRunHalted)
+	}
+
+	// --- The positive control ---------------------------------------------
+	// Without this, a recorder that silently wrote nothing at all would pass
+	// the assertion above. A halt that DOES land must still be audited.
+	landed, tasks := newRun("https://landed.gh482.example")
+	running, err := repo.MarkTaskRunning(ctx, tenant, tasks[0].ID, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if err := w.haltAgentRunWith(ctx, running, TaskSkipped, running.FromVersion, "",
+		"refused: kill switch", "", "agent self-update disabled by the kill switch"); err != nil {
+		t.Fatalf("halt the live run: %v", err)
+	}
+	if got := readRunStatus(t, app, tenant, landed.ID); got != RunHalted {
+		t.Fatalf("control run status = %q, want %q", got, RunHalted)
+	}
+	if n := countRunHaltedAudit(t, app, tenant, landed.ID); n != 1 {
+		t.Errorf("audit_log holds %d %q record(s) for a halt that DID land, want 1: the zero above proves nothing if the recorder never writes",
+			n, ActionRunHalted)
 	}
 }
