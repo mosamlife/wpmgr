@@ -86,7 +86,7 @@ type Commander interface {
 // ADR-048: incremental fields are omitempty; zero values mean full backup.
 type BackupArgs struct {
 	TenantID   uuid.UUID `json:"tenant_id"`
-	SnapshotID uuid.UUID `json:"snapshot_id"`
+	SnapshotID uuid.UUID `json:"snapshot_id" river:"unique"`
 	// ADR-048 incremental chain fields. All omitempty; absent = full backup.
 	IsIncremental    bool      `json:"is_incremental,omitempty"`
 	ParentSnapshotID uuid.UUID `json:"parent_snapshot_id,omitempty"`
@@ -137,6 +137,96 @@ func NewBackupWorker(svc *Service, cmd Commander, rec *audit.Recorder, logger *s
 // (a wedged backup must eventually error out so River can retry).
 func (w *BackupWorker) Timeout(*river.Job[BackupArgs]) time.Duration { return w.jobTimeout }
 
+// resumedOwnClaim reports whether a snapshot the claim guard refused is in
+// fact this job's OWN claim, made by an earlier attempt of this same job, and
+// may therefore be re-dispatched.
+//
+// It is true for exactly one shape: a retry (Attempt > 1) over a row that is
+// still 'running'. The whole question is whether "still running" can mean
+// "someone else is running it", and for a backup snapshot it cannot:
+//
+//   - status='running' has exactly one writer. MarkBackupSnapshotRunning
+//     (db/query/backups.sql:39) is the only statement in the schema that sets
+//     it; every other query naming 'running' reads it or transitions out of
+//     it. So a running row was claimed by some BackupWorker.Work, not by the
+//     watchdog, the agent callbacks or an operator action.
+//
+//   - a snapshot has exactly one River job. Both enqueue paths insert one job
+//     immediately after creating the snapshot row it names — CreateSnapshot
+//     (service.go:597/618) and the scheduler (service.go:3483/3485) — and
+//     nothing re-enqueues an existing snapshot. That is now a constraint and
+//     not just an absence: both inserts carry backupInsertOpts()
+//     (enqueuer.go), whose UniqueOpts.ByArgs keys on the snapshot ID, so a
+//     second job for a snapshot that already has one is refused by River
+//     rather than merely un-written. River guarantees a single execution of a
+//     given job at a time, so the only Work that can be inside this row is
+//     this one.
+//
+//   - and per site, backup_snapshots_one_inflight_per_site (db/schema.sql:1487)
+//     is a UNIQUE index on site_id WHERE status IN ('pending','running'), so
+//     a second in-flight snapshot for the site cannot exist to be confused
+//     with this one either.
+//
+// That is why this needs no staleness bound, where MarkUpdateTaskRunning's
+// reclaim arm does: update_tasks genuinely can have two jobs over one row, so
+// there "running" is ambiguous and only age disambiguates it. Here it is not
+// ambiguous, and an age bound would only add a window in which a legitimate
+// retry is dropped on the floor.
+//
+// The residual is the same one that query documents and cannot fix either:
+// River cancelling attempt 1's context ends the control plane's WAIT for the
+// agent, it does not stop a backup the agent has already begun. So a retry can
+// still produce a duplicate DISPATCH against a live agent. That is the
+// pre-GH#458 behaviour, and the terminal guard on CompleteBackupSnapshot
+// rejects the losing manifest submit. What bounds the duplicate dispatch
+// itself is the AGENT's per-snapshot flock, taken by TaskRunner::run
+// (apps/agent/includes/backup/class-task-runner.php:275-295, rationale at
+// :185-212): flock(LOCK_EX|LOCK_NB) on a deterministic per-snapshot lock file,
+// held by the OS for the lifetime of the winning PHP process, so it survives a
+// dropped $wpdb connection. The loser returns without mutating phase and
+// without submitting.
+//
+// It is NOT bounded by the agent's runner_in_flight refusal (see the constant
+// at the top of this file). That comes from BackupCommand::tryClaimDedup
+// (apps/agent/includes/commands/class-backup-command.php:379-393), which is a
+// time-windowed check-then-act and not a lock at all: DEDUP_WINDOW_SECONDS is
+// 300 (same file, :72), started_at is never refreshed during a run, and
+// backup.http_timeout defaults to 10m (config.go:821 —
+// NewBackupWorker's jobTimeout is derived from it). So in the DEFAULT
+// configuration the claim made at T=0 is already outside the window by the
+// time attempt 1 gives up at T≈600s: the cutoff test is `started_at > now-300`,
+// 0 > 301 is false, and tryClaimDedup RECLAIMS and returns true rather than
+// reporting runner_in_flight. The refusal only fires while
+// DEDUP_WINDOW_SECONDS exceeds the control plane's per-attempt deadline, which
+// it does not. Treat runner_in_flight as a fast-path optimisation for quick
+// retries; the flock is the correctness bound.
+//
+// The separate, stronger property — that two ATTEMPTS of this job cannot be
+// in Work at the same time, which is what makes "still running" unambiguous
+// above — is River's, but it holds on a timeout RATIO and not on River
+// unconditionally. River only re-runs an attempt whose row it has rescued, and
+// RescueStuckJobsAfter is unset repo-wide (as is river.Config.JobTimeout, see
+// cmd/wpmgr/main.go:758), so River's own 1h JobRescuerRescueAfterDefault
+// applies; this worker's deadline is cfg.Backup.HTTPTimeout + 2m = 12m
+// (cmd/wpmgr/main.go:917). Attempt 1 is therefore cancelled ~48m before the
+// rescuer could release the row. Raise backupJobTimeout past the rescue
+// threshold, or lower RescueStuckJobsAfter under it, and the two can overlap —
+// at which point "attempt > 1 and still running" stops being evidence of sole
+// ownership and this function needs a different proof. Anyone retuning either
+// number owns re-deriving it.
+//
+// Stranding the run instead is strictly worse: nothing recovers it but the
+// watchdog, and only after the hard threshold.
+//
+// job.JobRow is nil in unit tests that construct a bare river.Job literal;
+// treat that as attempt 1 (no resume) rather than dereferencing it.
+func (w *BackupWorker) resumedOwnClaim(job *river.Job[BackupArgs], cur Snapshot) bool {
+	if job == nil || job.JobRow == nil {
+		return false
+	}
+	return job.Attempt > 1 && cur.Status == StatusRunning
+}
+
 // Work dispatches one backup. A transient transport error returns the error so
 // River retries; an agent refusal marks the snapshot failed (terminal).
 func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) error {
@@ -160,11 +250,54 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		return w.fail(ctx, snap, "no age recipient on snapshot")
 	}
 
-	running, err := w.svc.MarkRunning(ctx, a.TenantID, a.SnapshotID)
+	running, claimed, err := w.svc.MarkRunning(ctx, a.TenantID, a.SnapshotID)
 	if err != nil {
 		return err
 	}
-	w.recordAudit(ctx, running, ActionBackupStarted, nil)
+	if !claimed {
+		// GH #458: the claim is atomic ("AND status='pending'"), and it lost.
+		// The terminal check at the top of Work read the row in a separate
+		// transaction, so between there and here the snapshot was cancelled,
+		// watchdog-failed, or completed by a late agent manifest submit. In
+		// all of those this job is not the run's owner: it dispatches nothing,
+		// records no 'started' audit entry, and succeeds rather than returning
+		// an error that would have River retry a snapshot that is never going
+		// to be pending again.
+		//
+		// EXCEPT for the one case that is not a lost claim at all — a retry of
+		// THIS job re-entering Work over the row IT already claimed. The
+		// original guard treated that as a loss and returned nil, so a
+		// transient transport error on attempt 1 left the snapshot 'running'
+		// with nothing dispatched behind it until the watchdog hard-failed it.
+		// resumedOwnClaim is what separates the two; see its doc for why
+		// "attempt > 1 and still running" is sufficient evidence of ownership
+		// for a backup snapshot (it is NOT sufficient for an update task,
+		// which is why MarkUpdateTaskRunning bounds its reclaim arm by age
+		// instead).
+		cur, cerr := w.svc.repo.GetSnapshot(ctx, a.TenantID, a.SnapshotID)
+		if cerr != nil {
+			return cerr
+		}
+		if !w.resumedOwnClaim(job, cur) {
+			w.logger.Info("backup claim lost; snapshot no longer pending",
+				slog.String("snapshot_id", a.SnapshotID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.String("status", cur.Status))
+			return nil
+		}
+		w.logger.Info("backup claim resumed by retry of the owning job",
+			slog.String("snapshot_id", a.SnapshotID.String()),
+			slog.String("tenant_id", a.TenantID.String()),
+			slog.Int("attempt", job.Attempt))
+		// Fall through and re-dispatch on the row this job already owns. No
+		// second 'started' audit entry and no second 'started' SSE event
+		// (MarkRunning publishes that, and attempt 1 already did): the run was
+		// announced once and is being retried, not started again. `running`
+		// is deliberately NOT reassigned from cur here — its only reader is
+		// the recordAudit call in the else arm below, which this arm skips.
+	} else {
+		w.recordAudit(ctx, running, ActionBackupStarted, nil)
+	}
 
 	// Track A (m49): resolve component-scope + exclusion settings from the
 	// site's schedule. Zero value = no filter (all components, no exclusions),
@@ -306,9 +439,20 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 }
 
 func (w *BackupWorker) fail(ctx context.Context, snap Snapshot, msg string) error {
-	failed, err := w.svc.FailSnapshot(ctx, snap.TenantID, snap.ID, msg)
+	failed, transitioned, err := w.svc.FailSnapshot(ctx, snap.TenantID, snap.ID, msg)
 	if err != nil {
 		return err
+	}
+	if !transitioned {
+		// GH #458: the row had already moved on (operator cancel, watchdog
+		// hard-fail, or a completion that raced this error path). Its own
+		// terminal transition already published its event and recorded its own
+		// audit entry; writing ActionBackupFailed here would record a failure
+		// that never happened against a snapshot that may have completed.
+		w.logger.Info("backup fail skipped; snapshot already terminal",
+			slog.String("snapshot_id", snap.ID.String()),
+			slog.String("tenant_id", snap.TenantID.String()))
+		return nil
 	}
 	w.recordAudit(ctx, failed, ActionBackupFailed, map[string]any{"error": msg})
 	return nil // terminal failure recorded; the River job succeeds.

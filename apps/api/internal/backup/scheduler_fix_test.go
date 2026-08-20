@@ -213,14 +213,14 @@ func (r *schedulerTestRepo) GetSnapshot(_ context.Context, _, _ uuid.UUID) (Snap
 func (r *schedulerTestRepo) ListSnapshotsForSite(_ context.Context, _, _ uuid.UUID, _, _ int32) ([]Snapshot, error) {
 	panic("schedulerTestRepo.ListSnapshotsForSite not expected")
 }
-func (r *schedulerTestRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
+func (r *schedulerTestRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, bool, error) {
 	panic("schedulerTestRepo.MarkSnapshotRunning not expected")
 }
-func (r *schedulerTestRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, error) {
+func (r *schedulerTestRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, bool, error) {
 	panic("schedulerTestRepo.CompleteSnapshot not expected")
 }
-func (r *schedulerTestRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
-	return Snapshot{Status: StatusFailed}, nil
+func (r *schedulerTestRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, bool, error) {
+	return Snapshot{Status: StatusFailed}, true, nil
 }
 func (r *schedulerTestRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {
 	panic("schedulerTestRepo.FailStalledSnapshot not expected")

@@ -387,13 +387,13 @@ func (r *gcFakeRepo) GetSnapshotScoped(context.Context, db.ScopedPrincipal, uuid
 func (r *gcFakeRepo) ListSnapshotsForSite(context.Context, uuid.UUID, uuid.UUID, int32, int32) ([]Snapshot, error) {
 	panic("unused")
 }
-func (r *gcFakeRepo) MarkSnapshotRunning(context.Context, uuid.UUID, uuid.UUID) (Snapshot, error) {
+func (r *gcFakeRepo) MarkSnapshotRunning(context.Context, uuid.UUID, uuid.UUID) (Snapshot, bool, error) {
 	panic("unused")
 }
-func (r *gcFakeRepo) CompleteSnapshot(context.Context, uuid.UUID, uuid.UUID, int64, int64) (Snapshot, error) {
+func (r *gcFakeRepo) CompleteSnapshot(context.Context, uuid.UUID, uuid.UUID, int64, int64) (Snapshot, bool, error) {
 	panic("unused")
 }
-func (r *gcFakeRepo) FailSnapshot(context.Context, uuid.UUID, uuid.UUID, string) (Snapshot, error) {
+func (r *gcFakeRepo) FailSnapshot(context.Context, uuid.UUID, uuid.UUID, string) (Snapshot, bool, error) {
 	panic("unused")
 }
 func (r *gcFakeRepo) FailStalledSnapshot(context.Context, uuid.UUID, uuid.UUID, string) (int64, error) {

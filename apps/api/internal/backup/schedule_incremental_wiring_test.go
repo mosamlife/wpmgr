@@ -97,13 +97,13 @@ func (r *wiringRepo) GetSnapshotScoped(_ context.Context, _ db.ScopedPrincipal, 
 func (r *wiringRepo) ListSnapshotsForSite(_ context.Context, _, _ uuid.UUID, _, _ int32) ([]Snapshot, error) {
 	panic("unused")
 }
-func (r *wiringRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
+func (r *wiringRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, bool, error) {
 	panic("unused")
 }
-func (r *wiringRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, error) {
+func (r *wiringRepo) CompleteSnapshot(_ context.Context, _, _ uuid.UUID, _, _ int64) (Snapshot, bool, error) {
 	panic("unused")
 }
-func (r *wiringRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
+func (r *wiringRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, bool, error) {
 	panic("unused")
 }
 func (r *wiringRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {

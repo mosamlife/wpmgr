@@ -44,9 +44,29 @@ type Repo interface {
 	// PlanRestore as the gate lookup.
 	GetSnapshotScoped(ctx context.Context, p db.ScopedPrincipal, tenantID, snapshotID uuid.UUID) (Snapshot, error)
 	ListSnapshotsForSite(ctx context.Context, tenantID, siteID uuid.UUID, limit, offset int32) ([]Snapshot, error)
-	MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error)
-	CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, error)
-	FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (Snapshot, error)
+	// MarkSnapshotRunning claims a snapshot for a run. GH #458: the UPDATE
+	// carries "AND status='pending'", so transitioned reports whether THIS
+	// caller won the claim. false means the row was not pending — already
+	// claimed by a duplicate job, already terminal (cancelled/watchdog-failed
+	// while it sat in the queue), or gone — and the caller must not proceed as
+	// the run's owner: no 'started' SSE event, no schedule-run reconciliation,
+	// no audit entry. false is not an error; the returned Snapshot is zero.
+	MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (snap Snapshot, transitioned bool, err error)
+	// CompleteSnapshot stamps the terminal 'completed' state. GH #458: the
+	// UPDATE carries "AND status IN ('pending','running')", so transitioned is
+	// false when the row was already terminal or gone, which the caller must
+	// surface as a rejected completion rather than reporting success over a
+	// write that did not happen. The returned Snapshot is zero when false.
+	CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (snap Snapshot, transitioned bool, err error)
+	// FailSnapshot stamps the terminal 'failed' state, and is also the path an
+	// operator cancel takes (CancelSnapshot fails the row with
+	// cancelByOperatorMsg). GH #458: the UPDATE carries "AND status IN
+	// ('pending','running')" — 'pending' stays in the guard precisely so cancel
+	// of a queued backup keeps working — so transitioned is false only when the
+	// row had already moved on. On false the caller must publish no 'failed'
+	// SSE event, send no failure email, reconcile no schedule run and record no
+	// audit entry. The returned Snapshot is zero when false.
+	FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (snap Snapshot, transitioned bool, err error)
 	// UpdateSnapshotProgress replaces the JSONB progress payload with the given
 	// raw bytes (caller-validated JSON) and bumps progress_updated_at to now.
 	// Tenant-scoped — the caller passes the tenant from the verified agent
@@ -73,9 +93,11 @@ type Repo interface {
 	// Tenant-scoped.
 	ClearSnapshotStalled(ctx context.Context, tenantID, snapshotID uuid.UUID) (bool, error)
 	// FailStalledSnapshot is the TOCTOU-safe hard-fail path used ONLY by the
-	// progress watchdog's hard-deadline branch (GH #279 must-fix). Unlike
-	// FailSnapshot's blind UPDATE — which CancelSnapshot depends on to fail a
-	// still-'pending' row and so must keep no status guard — this adds
+	// progress watchdog's hard-deadline branch (GH #279 must-fix). Its guard is
+	// NARROWER than FailSnapshot's: status='running' here versus
+	// status IN ('pending','running') there (GH #458), because operator cancel
+	// of a QUEUED backup goes through FailSnapshot while the watchdog may only
+	// ever hard-fail a run it observed running. So this adds
 	// "AND status='running'" so a row that completed, was cancelled, was
 	// agent-failed, or resumed between ListStalledRunningSnapshots' commit and
 	// this call is left untouched. Returns the number of rows actually
@@ -641,24 +663,74 @@ func (r *pgRepo) ListSnapshotsForSite(ctx context.Context, tenantID, siteID uuid
 	return out, err
 }
 
-func (r *pgRepo) MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, error) {
-	return r.mutateSnapshot(ctx, tenantID, func(q *sqlc.Queries) (sqlc.BackupSnapshot, error) {
+func (r *pgRepo) MarkSnapshotRunning(ctx context.Context, tenantID, snapshotID uuid.UUID) (Snapshot, bool, error) {
+	return r.guardedSnapshotTransition(ctx, tenantID, snapshotID, func(q *sqlc.Queries) (int64, error) {
 		return q.MarkBackupSnapshotRunning(ctx, sqlc.MarkBackupSnapshotRunningParams{ID: snapshotID, TenantID: tenantID})
 	}, "backup_snapshot_run_failed")
 }
 
-func (r *pgRepo) CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, error) {
-	return r.mutateSnapshot(ctx, tenantID, func(q *sqlc.Queries) (sqlc.BackupSnapshot, error) {
+func (r *pgRepo) CompleteSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, bool, error) {
+	return r.guardedSnapshotTransition(ctx, tenantID, snapshotID, func(q *sqlc.Queries) (int64, error) {
 		return q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
 			ID: snapshotID, TenantID: tenantID, TotalSize: totalSize, ChunkCount: chunkCount,
 		})
 	}, "backup_snapshot_complete_failed")
 }
 
-func (r *pgRepo) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (Snapshot, error) {
-	return r.mutateSnapshot(ctx, tenantID, func(q *sqlc.Queries) (sqlc.BackupSnapshot, error) {
+func (r *pgRepo) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, errMsg string) (Snapshot, bool, error) {
+	return r.guardedSnapshotTransition(ctx, tenantID, snapshotID, func(q *sqlc.Queries) (int64, error) {
 		return q.FailBackupSnapshot(ctx, sqlc.FailBackupSnapshotParams{ID: snapshotID, TenantID: tenantID, Error: errMsg})
 	}, "backup_snapshot_fail_failed")
+}
+
+// guardedSnapshotTransition runs one of the three GH #458 status-guarded
+// snapshot UPDATEs and, when it actually moved a row, re-reads that row INSIDE
+// THE SAME transaction so the Snapshot returned is the one the guard decided
+// about — a re-read in a second transaction could observe a row another writer
+// has since changed. Shape follows SetSnapshotLocked below (UPDATE, then
+// SELECT with snapshotSelectColumns); mutateSnapshot cannot be reused because
+// these queries are :execrows and no longer RETURNING *.
+//
+// rows==0 is not an error, it is the contract: the row was not in a status the
+// guard admits (already claimed, already terminal, or gone). Only the caller
+// knows what that means — a lost claim, a rejected late submit, or a cancel of
+// a run that had already finished — so it is surfaced as transitioned=false
+// with a ZERO Snapshot, never a stale-looking row a caller could mistake for a
+// real transition.
+func (r *pgRepo) guardedSnapshotTransition(
+	ctx context.Context,
+	tenantID, snapshotID uuid.UUID,
+	fn func(*sqlc.Queries) (int64, error),
+	code string,
+) (Snapshot, bool, error) {
+	var (
+		out          Snapshot
+		transitioned bool
+	)
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		n, err := fn(sqlc.New(tx))
+		if err != nil {
+			return domain.Internal(code, "failed to update snapshot").WithCause(err)
+		}
+		if n == 0 {
+			return nil
+		}
+		transitioned = true
+		row := tx.QueryRow(ctx,
+			snapshotSelectColumns+` FROM backup_snapshots WHERE id=$1 AND tenant_id=$2`,
+			snapshotID, tenantID,
+		)
+		s, serr := scanSnapshotWithChainFields(row)
+		if serr != nil {
+			return domain.Internal(code, "failed to re-read snapshot after state transition").WithCause(serr)
+		}
+		out = s
+		return nil
+	})
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	return out, transitioned, nil
 }
 
 // UpdateSnapshotProgress is tenant-scoped (RLS enforces it); the agent handler
@@ -912,14 +984,23 @@ func (r *pgRepo) RecordManifest(ctx context.Context, in RecordManifestInput) (in
 			return terr
 		}
 
-		// 3. Complete the snapshot.
-		if _, err := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
+		// 3. Complete the snapshot. GH #458: CompleteBackupSnapshot is guarded
+		// ("AND status IN ('pending','running')") and is :execrows, so a
+		// rejected submit arrives as rows==0 and NEVER as pgx.ErrNoRows —
+		// checking for ErrNoRows here would be dead code and this whole
+		// transaction would commit the manifest rows and refcount bumps while
+		// reporting success for a snapshot it did not complete. Rolling the
+		// transaction back with the same NotFound the pre-#458 code returned is
+		// what makes a late submit against a cancelled or already-completed
+		// snapshot a rejection instead of a silent no-op.
+		n, err := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
 			ID: in.SnapshotID, TenantID: in.TenantID, TotalSize: totalSize, ChunkCount: chunkRefs,
-		}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
-			}
+		})
+		if err != nil {
 			return domain.Internal("backup_snapshot_complete_failed", "failed to complete snapshot").WithCause(err)
+		}
+		if n == 0 {
+			return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
 		}
 		return nil
 	})
@@ -1794,26 +1875,32 @@ func (r *pgRepo) CompleteIncrementalManifest(ctx context.Context, in CompleteInc
 			if terr := touchReferencedChunks(ctx, tx, in.TenantID, referenced); terr != nil {
 				return terr
 			}
-			if _, err := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
+			// GH #458 rejected-submit contract — see RecordManifest for why
+			// rows==0 (not pgx.ErrNoRows) is the signal here.
+			n, cerr := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
 				ID: in.SnapshotID, TenantID: in.TenantID, TotalSize: totalSize, ChunkCount: chunkRefs,
-			}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
-				}
-				return domain.Internal("backup_snapshot_complete_failed", "failed to complete snapshot").WithCause(err)
+			})
+			if cerr != nil {
+				return domain.Internal("backup_snapshot_complete_failed", "failed to complete snapshot").WithCause(cerr)
+			}
+			if n == 0 {
+				return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
 			}
 			return nil
 		}
 
 		// 3. Files-only path: complete the snapshot directly with caller-supplied
 		//    counters.
-		if _, err := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
+		// GH #458 rejected-submit contract — see RecordManifest for why rows==0
+		// (not pgx.ErrNoRows) is the signal here.
+		n, cerr := q.CompleteBackupSnapshot(ctx, sqlc.CompleteBackupSnapshotParams{
 			ID: in.SnapshotID, TenantID: in.TenantID, TotalSize: in.TotalSize, ChunkCount: in.ChunkRefs,
-		}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
-			}
-			return domain.Internal("backup_snapshot_complete_failed", "failed to complete snapshot").WithCause(err)
+		})
+		if cerr != nil {
+			return domain.Internal("backup_snapshot_complete_failed", "failed to complete snapshot").WithCause(cerr)
+		}
+		if n == 0 {
+			return domain.NotFound("backup_snapshot_not_found", "backup snapshot not found")
 		}
 		chunkRefs = in.ChunkRefs
 		return nil
@@ -2286,15 +2373,15 @@ func (r *pgRepo) UpdateSnapshotCycleStats(ctx context.Context, tenantID, snapsho
 // backup_snapshots_site_scope RLS policy acts as the DB-level backstop.
 func (r *pgRepo) FleetListSnapshots(ctx context.Context, p db.ScopedPrincipal, tenantID uuid.UUID, f FleetListFilter) (FleetSnapshotPage, error) {
 	params := sqlc.FleetListSnapshotsParams{
-		TenantID:     tenantID,
+		TenantID:      tenantID,
 		SiteIdsFilter: len(f.SiteIDs) > 0,
-		SiteIds:      f.SiteIDs,
-		StatusFilter: f.Status != "",
-		StatusVal:    f.Status,
-		AfterFilter:  f.CreatedAfter != nil,
-		BeforeFilter: f.CreatedBefore != nil,
-		RowOffset:    f.Offset,
-		RowLimit:     f.Limit,
+		SiteIds:       f.SiteIDs,
+		StatusFilter:  f.Status != "",
+		StatusVal:     f.Status,
+		AfterFilter:   f.CreatedAfter != nil,
+		BeforeFilter:  f.CreatedBefore != nil,
+		RowOffset:     f.Offset,
+		RowLimit:      f.Limit,
 	}
 	if f.CreatedAfter != nil {
 		params.CreatedAfter = *f.CreatedAfter
