@@ -6,6 +6,16 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.143] - 2026-08-20
+
+### Fixed
+
+- An agent self-update run halted by the kill switch, or by a withdrawn release manifest, could be overwritten to `completed` when a task already in flight finished afterward: the run status write carried no precondition against writing over a terminal `halted` or `expired` run. Operators saw a rollout they had stopped reported as finished. `SetUpdateRunStatus` now refuses to move a run off `halted` or `expired` (GH #482, #490).
+- A backup snapshot's claim (`pending` to `running`) and its terminal outcome (to `completed` or `failed`) were each a blind update keyed only on `(id, tenant_id)`, so a late failure could land on a snapshot already completed, or the reverse, with nothing stopping either. That leaked chunk storage permanently, since no retention rule selects a failed snapshot for cleanup, and could leave a good backup refused for restore. A late manifest submit against a cancelled or already completed snapshot also returned success while writing nothing; it now returns not found and the transaction rolls back. All three writes are now guarded by the snapshot's current status (GH #458, #497).
+- `events.Listener` released its Postgres connection back to the shared application pool on cancellation without issuing `UNLISTEN` first. `LISTEN` is session state, so the connection returned to the pool still subscribed, and the next unrelated caller to acquire it could receive notifications meant for the cancelled listener. The listener now unsubscribes before releasing the connection, and hijacks it out of the pool entirely when the `UNLISTEN` cannot be confirmed (GH #496, #504).
+- Thirteen integration test files turned any container start failure, not only an unreachable Docker daemon, into a skip, so a bad image pull, low disk space, or a resource limit read as `SKIP` and the suite still printed `ok` having asserted nothing. A container start failure is now fatal; only a positively probed unreachable Docker daemon still skips (GH #501, #503).
+- A rules file and an agent definition each claimed a `PreToolUse` hook still blocks an edit to an already applied migration and backs up the generated tree permission rule. That hook, and the rest of the shell guards, was removed on 2026-08-14; `.claude/settings.json` configures no hooks at all today. The three stale claims now say what still enforces what and point at `docs/harness.md` (GH #471, #505). Affects contributors to this repository, not the running system.
+
 ## [0.61.142] - 2026-08-20
 
 ### Added
