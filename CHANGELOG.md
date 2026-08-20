@@ -6,6 +6,27 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.142] - 2026-08-20
+
+### Added
+
+- New endpoint `GET /api/v1/fleet/uptime-history` returns a measured 90-day availability strip, one entry per UTC day, in place of a figure the dashboard previously derived from a single 7-day number (GH #460).
+
+### Changed
+
+- The probe-retention window the new uptime strip depends on is now pinned, and the retention guard that enforces it derives from that same window instead of a separate value (GH #460).
+
+### Fixed
+
+- A scheduled update run no longer dispatches to a site that was paused after the run was scheduled (GH #463, #492).
+- Scheduled database cleaning, which deletes rows from a customer's own live database, and the vulnerability digest now both decline a paused site the same way (GH #493, #494).
+- A site with no measurement now reports uptime as null instead of 0%; previously a site that had never been probed rendered as 90 days of solid outage (GH #460).
+- Session advisory locks are now released on a detached, bounded context. Three call sites, all reachable by an ordinary graceful shutdown or a River job timeout, could leak a session-scoped lock because the deferred unlock ran on an already-cancelled context and silently did nothing: while leaked, scheduled backups stopped fleet-wide, per-tenant chunk GC stopped, and `DELETE /orgs/{orgId}` / `POST /orgs/{orgId}/restore` blocked until the pooled connection recycled, up to 30 minutes later (GH #483, #495).
+- The webhook dedup GC worker is now registered with River; it was written but never wired in, so it has never run (GH #461).
+- Email GC registration now fails startup instead of being silently skipped when it is handed a nil worker.
+- Removed a migrations stub that advertised a capability that was never built (GH #462).
+- Removed dead RUM hourly/daily fold paths and an unreachable ClickHouse store.
+
 ## [0.61.141] - 2026-08-19
 
 ### Added

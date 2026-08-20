@@ -160,6 +160,26 @@ type Store interface {
 	// Always scoped to tenantID; siteIDs must belong to that tenant (the caller
 	// verifies ownership in Postgres before reaching this).
 	QueryFleetUptime(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID]FleetUptimeRow, error)
+	// QueryFleetDailySeries returns one Point per (site, UTC day) for a batch
+	// of sites in a SINGLE query — the fleet-wide daily availability strip
+	// (GH #460). Points for one site are ordered oldest-first.
+	//
+	// A site with no probes in the window is ABSENT from the map, and a day
+	// with no probes produces NO point, exactly like QuerySeries. Neither is
+	// zero-filled: "we did not measure" and "we measured zero" are different
+	// facts about a site, and a strip that renders a gap as 0% tells an
+	// operator their site was down when we simply never looked. Callers
+	// densify the requested window into one entry per UTC day and mark the
+	// absent ones as no-data.
+	//
+	// Batching is part of the contract, not an implementation detail: this
+	// exists so the fleet strip is one round trip. A caller that loops it per
+	// site reintroduces the pre-m99 per-site scan the rollup was built to
+	// remove.
+	//
+	// Always scoped to tenantID; siteIDs must belong to that tenant (the
+	// caller verifies ownership in Postgres before reaching this).
+	QueryFleetDailySeries(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID][]Point, error)
 	// QueryProbeWindow returns up to limitN raw probe rows for one site within
 	// [from, to], most-recent-first — the probe timeline for the fleet
 	// incident-detail endpoint (GH #148 part 1). GRACEFUL DEGRADATION:
@@ -719,6 +739,77 @@ LIMIT ?`, s.db), tenantID, siteID, chTime(from), chTime(to), limitN)
 		})
 	}
 	return out, rows.Err()
+}
+
+// QueryFleetDailySeries returns one Point per (site, UTC day) for a batch of
+// sites in one query — the ClickHouse half of the fleet daily strip (GH #460).
+//
+// uptime_checks is a flat per-probe table with no rollup, so unlike the
+// Postgres backend there is no three-part decomposition to reuse: a single
+// GROUP BY over the window is already the cheapest correct read here, and it
+// is exact for the same reason the raw edge days are exact on Postgres.
+//
+// toStartOfDay(checked_at, 'UTC') pins the bucket to UTC EXPLICITLY rather
+// than inheriting the ClickHouse server's timezone, so a non-UTC deployment
+// labels the same probe with the same day as the Postgres backend does. The
+// existing chStore.QuerySeries uses interval buckets and the server default;
+// this one must agree day-for-day with site_uptime_daily, so it cannot.
+//
+// Latency semantics match the Postgres daily path (mean over SUCCESSFUL
+// probes with a non-zero reading), NOT chStore.QuerySeries's avg over every
+// probe — a 5xx still records a real total_ms, and folding those into an
+// availability strip's latency would make the two backends disagree.
+//
+// A site with no probes in the window is absent from the map; a day with no
+// probes yields no point. Neither is zero-filled — see the Store interface.
+func (s *chStore) QueryFleetDailySeries(ctx context.Context, tenantID uuid.UUID, siteIDs []uuid.UUID, window time.Duration) (map[uuid.UUID][]Point, error) {
+	out := make(map[uuid.UUID][]Point, len(siteIDs))
+	if !s.Enabled() || len(siteIDs) == 0 {
+		return out, nil
+	}
+	since := time.Now().UTC().Add(-window)
+	rows, err := s.conn.Query(ctx, fmt.Sprintf(`
+SELECT site_id,
+       toStartOfDay(checked_at, 'UTC') AS bucket,
+       count()                         AS checks,
+       sum(up)                         AS up_checks,
+       sumIf(total_ms, up = 1 AND total_ms != 0)   AS sum_latency_ms,
+       countIf(up = 1 AND total_ms != 0)           AS latency_samples
+FROM %s.uptime_checks
+WHERE tenant_id = ? AND site_id IN ? AND checked_at >= ?
+GROUP BY site_id, bucket
+ORDER BY site_id, bucket ASC`, s.db), tenantID, siteIDs, chTime(since))
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse fleet daily series query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			siteID         uuid.UUID
+			bucket         time.Time
+			checks         uint64
+			upChecks       uint64
+			sumLatencyMs   float64
+			latencySamples uint64
+		)
+		if err := rows.Scan(&siteID, &bucket, &checks, &upChecks, &sumLatencyMs, &latencySamples); err != nil {
+			return nil, fmt.Errorf("clickhouse fleet daily series scan: %w", err)
+		}
+		p := Point{
+			Bucket:   bucket.UTC(),
+			Checks:   checks,
+			UpChecks: upChecks,
+		}
+		if latencySamples > 0 {
+			p.AvgLatencyMs = sumLatencyMs / float64(latencySamples)
+		}
+		out[siteID] = append(out[siteID], p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // QuerySeries returns a downsampled per-bucket series for one site over a window

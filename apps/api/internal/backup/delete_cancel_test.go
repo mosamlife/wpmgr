@@ -75,13 +75,19 @@ func (r *deleteCancelFakeRepo) ListCompletedChainSnapshots(_ context.Context, _ 
 	return out, nil
 }
 
-func (r *deleteCancelFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (Snapshot, error) {
+func (r *deleteCancelFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, msg string) (Snapshot, bool, error) {
+	s, ok := r.snapshots[snapshotID]
+	// GH #458: mirror the real query's guard exactly. A fake that always
+	// reports a transition would hide the very defect the guard exists to
+	// catch.
+	if !ok || (s.Status != StatusPending && s.Status != StatusRunning) {
+		return Snapshot{}, false, nil
+	}
 	r.failed[snapshotID] = msg
-	s := r.snapshots[snapshotID]
 	s.Status = StatusFailed
 	s.Error = msg
 	r.snapshots[snapshotID] = s
-	return s, nil
+	return s, true, nil
 }
 
 func (r *deleteCancelFakeRepo) DeleteSnapshot(_ context.Context, _, snapshotID uuid.UUID) error {

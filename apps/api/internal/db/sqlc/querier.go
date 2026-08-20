@@ -386,7 +386,17 @@ type Querier interface {
 	// which is defensive only — FireRecovery only ever fires when prev.InIncident
 	// was true, so a matching open row should already exist.
 	CloseIncident(ctx context.Context, arg CloseIncidentParams) error
-	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (BackupSnapshot, error)
+	// Terminal-transition precondition (GH #458): only a 'pending' or 'running'
+	// snapshot may complete. 'pending' stays allowed because the files-only and
+	// carry-forward completion paths can land without an intervening MarkRunning.
+	// What the guard blocks is resurrection: a late agent manifest submit arriving
+	// after the operator cancelled (CancelSnapshot stamps 'failed') or after the
+	// watchdog hard-failed the run must not flip the row to 'completed' and must
+	// not overwrite the recorded error and finished_at. Rows-affected is the
+	// contract: 1 = a real transition; 0 = already terminal (completed/failed) or
+	// gone, which the caller must surface as a rejected submit -- the previous
+	// blind UPDATE reported success unconditionally.
+	CompleteBackupSnapshot(ctx context.Context, arg CompleteBackupSnapshotParams) (int64, error)
 	CompleteReport(ctx context.Context, arg CompleteReportParams) (GeneratedReport, error)
 	// Marks a task done. Set ONLY after the whole prefix drained with no error, so
 	// a crash partway leaves completed_at NULL and the next tick re-lists (a
@@ -826,19 +836,34 @@ type Querier interface {
 	ExpireDueUpdateRun(ctx context.Context, arg ExpireDueUpdateRunParams) (UpdateRun, error)
 	// Lock a challenge by setting used_at (reached attempt limit or timeout).
 	ExpireTwoFactorChallenge(ctx context.Context, id uuid.UUID) error
-	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (BackupSnapshot, error)
+	// Terminal-transition precondition (GH #458). 'pending' is in the guard
+	// deliberately: CancelSnapshot ("only a running or pending backup can be
+	// cancelled") fails a still-'pending' snapshot through this query, so
+	// narrowing to status='running' would silently stop operator cancel of a
+	// queued backup. That is the watchdog's guard, not this one -- see
+	// FailStalledBackupSnapshot below. What this guard blocks is the overwrite of
+	// an ALREADY-terminal row: a worker error landing after the operator cancelled
+	// must not replace cancelByOperatorMsg with a generic message, and a fail must
+	// never rewrite a completed run's status or finished_at. Rows-affected is the
+	// contract: 1 = a real transition; 0 = already terminal, or gone -- do not
+	// publish the 'failed' SSE event, the failure email, or the schedule-run
+	// reconciliation for a row that had already moved on.
+	FailBackupSnapshot(ctx context.Context, arg FailBackupSnapshotParams) (int64, error)
 	FailReport(ctx context.Context, arg FailReportParams) (GeneratedReport, error)
 	// Records a failed attempt and backs the task off. The row is left incomplete
 	// so the next tick retries; it is never deleted.
 	FailSiteObjectReclaim(ctx context.Context, arg FailSiteObjectReclaimParams) (int64, error)
 	// TOCTOU-safe hard-fail for the two-tier progress watchdog (GH #279 must-fix).
-	// Identical to FailBackupSnapshot except for the added "AND status='running'"
-	// guard: ListStalledRunningSnapshots commits, then each hard row is failed in
-	// its own separate transaction, so between the two a row may have completed,
-	// been operator-cancelled, been agent-failed, or resumed. FailBackupSnapshot's
-	// blind UPDATE has no status guard (CancelSnapshot relies on that to fail a
-	// still-'pending' row), so it must stay unchanged; this query is the watchdog
-	// hard-fail branch's ONLY write path. Rows-affected (0 or 1) tells the caller
+	// Identical to FailBackupSnapshot except that the guard is NARROWER:
+	// status='running' here, status IN ('pending','running') there (GH #458).
+	// ListStalledRunningSnapshots commits, then each hard row is failed in its own
+	// separate transaction, so between the two a row may have completed, been
+	// operator-cancelled, been agent-failed, or resumed. The watchdog only ever
+	// hard-fails a run it observed RUNNING and must never touch a queued 'pending'
+	// row -- which FailBackupSnapshot may, because operator cancel of a queued
+	// backup goes through it (CancelSnapshot). The two guards therefore stay
+	// distinct, and this query remains the watchdog hard-fail branch's ONLY write
+	// path. Rows-affected (0 or 1) tells the caller
 	// whether a real transition happened, so it can gate the 'failed' SSE publish
 	// and the failure notification on an actual state change rather than firing
 	// them for a row that already moved on.
@@ -2534,7 +2559,18 @@ type Querier interface {
 	// we still UPDATE the PG row so the audit/observability story is complete.
 	// Idempotent: returns 0 if another path already marked it (safe).
 	MarkAutologinTokenConsumed(ctx context.Context, arg MarkAutologinTokenConsumedParams) (int64, error)
-	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (BackupSnapshot, error)
+	// Claim precondition (GH #458): 'pending' is the only status a claim may
+	// transition out of. Without it the UPDATE was blind, so a duplicate/retried
+	// worker job, or a job whose snapshot was cancelled or watchdog-failed while
+	// it sat in the queue, dragged a terminal row back to 'running' and cleared
+	// the run's real outcome. Rows-affected is the contract: 1 = this caller won
+	// the claim and owns the run; 0 = the row was not 'pending' (already claimed,
+	// already terminal, or gone), and the caller must NOT proceed as the owner and
+	// must NOT publish the 'started' SSE event or the schedule-run reconciliation
+	// for it. :execrows (not :exec) because a precondition whose failure is
+	// invisible is worse than no precondition -- same reasoning as
+	// FailStalledBackupSnapshot below.
+	MarkBackupSnapshotRunning(ctx context.Context, arg MarkBackupSnapshotRunningParams) (int64, error)
 	// Soft-stall stamp (GH #279): idempotent via the status='running' AND
 	// stalled_at IS NULL guard -- a row already stalled, or no longer running,
 	// matches zero rows and the caller treats that as a no-op (not an error).

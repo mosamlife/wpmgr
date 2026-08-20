@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WPMgr API
-  version: 0.61.141
+  version: 0.61.142
   description: |
     Control-plane REST API for **WPMgr**, the open-source, self-hostable
     WordPress fleet management platform (AGPL-3.0). One control plane enrolls,
@@ -7475,6 +7475,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FleetUptimeStatus"
+  /api/v1/fleet/uptime-history:
+    get:
+      operationId: getFleetUptimeHistory
+      summary: Per-site daily availability strip over 7, 30 or 90 UTC days
+      description: |
+        Returns, for every site the principal can see, one entry per UTC day
+        across the requested window — oldest first, densified, with no gaps in
+        the date sequence.
+
+        Every entry is either a stored measurement or an explicit null. There
+        is no interpolation, no carry-forward and no default: `uptime_pct` is
+        null on any day with no recorded probes (the site did not exist yet,
+        monitoring was off, the probe worker did not run, or the day has aged
+        past the 90-day probe retention). Null is NOT zero — zero means the
+        site was measured and was down for every probe of that day. Rendering
+        null as 0% tells an operator their site was down when we simply never
+        looked (GH #460).
+
+        `measured_days` is how many of the entries carry a measurement, so a
+        young site can be shown as "28 of 90 days measured" rather than
+        implying 90 days of history.
+
+        Site-scoped principals see only their granted sites. Requires viewer+.
+      tags: [uptime]
+      parameters:
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 90d
+          description: |
+            The window is an enum, not a free duration: the day count is also
+            the length of every returned array, so an arbitrary window would
+            be an arbitrary response size. An unrecognised value is a 400,
+            never a silently substituted default.
+      responses:
+        "200":
+          description: Per-site daily availability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetUptimeHistory"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/fleet/incidents:
     get:
       operationId: getFleetIncidents
@@ -16562,6 +16611,87 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/UptimeSummaryItem"
+    FleetUptimeDay:
+      type: object
+      required: [date, uptime_pct, checks, avg_latency_ms]
+      description: |
+        One UTC day of measured availability for one site.
+      properties:
+        date:
+          type: string
+          format: date
+          description: |
+            The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed
+            on UTC days, so re-bucketing per viewer timezone would split one
+            stored day across two rendered cells.
+        uptime_pct:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            up_checks/total_checks*100 for the day, or null when the day has
+            NO stored measurement. Null is not zero — see the endpoint
+            description. Never interpolated from a neighbouring day.
+        checks:
+          type: integer
+          format: int64
+          description: |
+            Probes recorded that day; 0 exactly when uptime_pct is null.
+            Carried so a confidently-measured day is distinguishable from one
+            with a single probe, and so "no data" is falsifiable rather than
+            something the client infers from a null alone.
+        avg_latency_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Mean response time over SUCCESSFUL probes with a non-zero reading,
+            null when the day had none.
+    FleetUptimeHistoryItem:
+      type: object
+      required: [site_id, name, url, days, measured_days]
+      properties:
+        site_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+        days:
+          type: array
+          description: |
+            Always exactly the window's day count, oldest first, with no gaps:
+            the server densifies across every UTC day in the window, so a
+            client can index positionally without re-deriving dates and every
+            unmeasured day is explicitly present with a null uptime_pct
+            rather than silently missing.
+          items:
+            $ref: "#/components/schemas/FleetUptimeDay"
+        measured_days:
+          type: integer
+          description: |
+            How many entries in days carry a measurement.
+    FleetUptimeHistory:
+      type: object
+      required: [window, days, start_date, end_date, items]
+      properties:
+        window:
+          type: string
+          enum: [7d, 30d, 90d]
+        days:
+          type: integer
+          description: Number of entries in every item's days array.
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FleetUptimeHistoryItem"
     FleetUptimeCounts:
       type: object
       required: [up, degraded, down, unknown]
@@ -16598,6 +16728,14 @@ components:
         uptime_pct_7d:
           type: number
           format: double
+          nullable: true
+          description: |
+            7-day uptime percentage, or null when the site has NO measurement
+            in the window — never probed, monitoring never enabled, or its
+            whole history aged past the 90-day probe retention. Null is not
+            zero: 0 means "measured, and down for the whole window", and a
+            client that renders null as 0 paints a never-probed site as a
+            total outage (GH #460). Treat null as "no data" and say so.
         avg_latency_ms_7d:
           type: number
           format: double

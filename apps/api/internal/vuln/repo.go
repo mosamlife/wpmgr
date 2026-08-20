@@ -891,15 +891,47 @@ func (r *Repo) RestoreFinding(ctx context.Context, tenantID, siteID, findingID u
 	})
 }
 
+// unpausedOnlySQL is the m117 (GH #414 / GH #493) pause predicate, appended to
+// the fleet reads on the DIGEST path only.
+//
+// It is a compile-time constant spliced into two queries whose sole difference
+// is this clause. The alternative — two hand-maintained copies of each query —
+// is how the digest came to disagree with its siblings in the first place.
+//
+// s.tenant_id = v.tenant_id is redundant under InTenantTx's RLS and is kept for
+// defence in depth and to hold the index, per the repo convention.
+const unpausedOnlySQL = `
+	AND EXISTS (
+		SELECT 1 FROM sites s
+		WHERE s.id = v.site_id
+		  AND s.tenant_id = v.tenant_id
+		  AND s.monitoring_paused_at IS NULL
+	)`
+
 // FleetOpenCounts returns the open finding counts per severity across all
-// sites for a tenant.
+// sites for a tenant, INCLUDING paused ones.
+//
+// GH #493: this is the DASHBOARD read and it must stay unfiltered — an
+// operator looking at their own fleet has to see a paused site's findings.
+// The digest wants FleetOpenCountsExcludingPaused instead.
 func (r *Repo) FleetOpenCounts(ctx context.Context, tenantID uuid.UUID) (critical, high, medium, low, unknown int, err error) {
+	return r.fleetOpenCounts(ctx, tenantID, "")
+}
+
+// FleetOpenCountsExcludingPaused is FleetOpenCounts with paused sites removed.
+// The email digest is a push to the customer, and m117 lists vulnerability
+// rescans and their alerts among what pause stops.
+func (r *Repo) FleetOpenCountsExcludingPaused(ctx context.Context, tenantID uuid.UUID) (critical, high, medium, low, unknown int, err error) {
+	return r.fleetOpenCounts(ctx, tenantID, unpausedOnlySQL)
+}
+
+func (r *Repo) fleetOpenCounts(ctx context.Context, tenantID uuid.UUID, pausePredicate string) (critical, high, medium, low, unknown int, err error) {
 	err = r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT severity, count(*)
-			FROM site_vulnerabilities
-			WHERE tenant_id = $1 AND status = 'open'
-			GROUP BY severity`, tenantID)
+			SELECT v.severity, count(*)
+			FROM site_vulnerabilities v
+			WHERE v.tenant_id = $1 AND v.status = 'open'`+pausePredicate+`
+			GROUP BY v.severity`, tenantID)
 		if err != nil {
 			return err
 		}
@@ -929,8 +961,23 @@ func (r *Repo) FleetOpenCounts(ctx context.Context, tenantID uuid.UUID) (critica
 }
 
 // FleetOpenFindings returns the cross-site open findings list for the tenant,
-// ordered by severity then cvss_score then first_seen.
+// ordered by severity then cvss_score then first_seen. INCLUDES paused sites.
+//
+// GH #493: this is the DASHBOARD read and it must stay unfiltered. The digest
+// wants FleetOpenFindingsExcludingPaused instead.
 func (r *Repo) FleetOpenFindings(ctx context.Context, tenantID uuid.UUID, limit int) ([]FleetFindingRow, error) {
+	return r.fleetOpenFindings(ctx, tenantID, limit, "")
+}
+
+// FleetOpenFindingsExcludingPaused is FleetOpenFindings with paused sites
+// removed, so the digest neither counts nor NAMES them. alerts.sql:236 already
+// records the principle: naming a paused site in an alert is the same broken
+// promise as alerting on it.
+func (r *Repo) FleetOpenFindingsExcludingPaused(ctx context.Context, tenantID uuid.UUID, limit int) ([]FleetFindingRow, error) {
+	return r.fleetOpenFindings(ctx, tenantID, limit, unpausedOnlySQL)
+}
+
+func (r *Repo) fleetOpenFindings(ctx context.Context, tenantID uuid.UUID, limit int, pausePredicate string) ([]FleetFindingRow, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -946,7 +993,7 @@ func (r *Repo) FleetOpenFindings(ctx context.Context, tenantID uuid.UUID, limit 
 			FROM site_vulnerabilities v
 			LEFT JOIN wordfence_vuln_feed f USING (vuln_id)
 			JOIN sites s ON s.id = v.site_id
-			WHERE v.tenant_id = $1 AND v.status = 'open'
+			WHERE v.tenant_id = $1 AND v.status = 'open'`+pausePredicate+`
 			ORDER BY
 				CASE v.severity
 					WHEN 'critical' THEN 1

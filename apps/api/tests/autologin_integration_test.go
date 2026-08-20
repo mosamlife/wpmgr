@@ -40,6 +40,9 @@ import (
 func startRedis(t *testing.T) (*redis.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
+
+	skipIfDockerUnavailable(t, ctx, "redis")
+
 	req := testcontainers.ContainerRequest{
 		Image:        "redis:7-alpine",
 		ExposedPorts: []string{"6379/tcp"},
@@ -49,17 +52,26 @@ func startRedis(t *testing.T) (*redis.Pool, string) {
 		ContainerRequest: req,
 		Started:          true,
 	})
-	if err != nil {
-		t.Skipf("skipping: cannot start redis container (docker unavailable?): %v", err)
+	// Register cleanup BEFORE inspecting err: GenericContainer can return a
+	// non-nil container alongside a non-nil error on a partial start (create
+	// succeeded but Start failed, etc). setupFatalf below calls t.Fatalf,
+	// which never returns, so anything after it never runs; cleanup must be
+	// registered first or a partially-started container leaks for the life
+	// of the machine. See rls_integration_test.go's startPostgres for the
+	// same fix and the library source citation.
+	if c != nil {
+		t.Cleanup(func() { _ = c.Terminate(ctx) })
 	}
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	if err != nil {
+		setupFatalfOrSkipIfDaemonDied(t, ctx, err, "redis: container start")
+	}
 	host, err := c.Host(ctx)
 	if err != nil {
-		t.Fatalf("redis host: %v", err)
+		setupFatalf(t, err, "redis: resolve container host")
 	}
 	port, err := c.MappedPort(ctx, "6379/tcp")
 	if err != nil {
-		t.Fatalf("redis port: %v", err)
+		setupFatalf(t, err, "redis: resolve mapped port")
 	}
 	addr := fmt.Sprintf("%s:%s", host, port.Port())
 	pool := auth.NewRedisPool(addr, "")
@@ -100,6 +112,19 @@ func newAutologinSigner(t *testing.T) *agentcmd.Signer {
 // buildAutologinService assembles a real Service backed by the test PG pool +
 // Redis pool, an in-memory rate limiter, and a no-op-but-recording audit
 // Recorder.
+//
+// Cross-clock note: domain.SystemClock{} below is the HOST's clock — Mint
+// computes expires_at as s.clock.Now().UTC().Add(autologin.JWTTTL)
+// (internal/autologin/model.go is the source of truth for the TTL value) on
+// the host, but Consume's gate is `expires_at > now()` evaluated by the
+// testcontainer's OWN Postgres clock (db/query/autologin.sql,
+// ConsumeAutologinToken). A Consume call in these tests is therefore only
+// guaranteed to pass if host and container clocks agree within the JWTTTL
+// budget minus whatever wall time elapsed between Mint and Consume. Measured
+// skew here is currently zero, so this is not a live bug — but an
+// intermittent Consume failure ("nonce_unavailable") under load is where a
+// real skew would show up first, and this comment is the explanation to find
+// instead of re-deriving it.
 func buildAutologinService(t *testing.T, pool *db.Pool, redisPool *redis.Pool, siteSvc *site.Service, cfg autologin.Config) (*autologin.Service, *audit.Recorder) {
 	t.Helper()
 	rec := audit.NewRecorder(pool, domain.SystemClock{})

@@ -121,18 +121,21 @@ func (r *fakeRepo) GetSnapshot(_ context.Context, _, snapshotID uuid.UUID) (Snap
 	return s, nil
 }
 
-func (r *fakeRepo) CompleteSnapshot(_ context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, error) {
+func (r *fakeRepo) CompleteSnapshot(_ context.Context, tenantID, snapshotID uuid.UUID, totalSize, chunkCount int64) (Snapshot, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.snapshots[snapshotID]
-	if !ok {
-		return Snapshot{}, domain.NotFound("backup_snapshot_not_found", "not found")
+	// GH #458: mirror the real query's guard exactly. A fake that always
+	// reports a transition would hide the very defect the guard exists to
+	// catch.
+	if !ok || (s.Status != StatusPending && s.Status != StatusRunning) {
+		return Snapshot{}, false, nil
 	}
 	s.Status = StatusCompleted
 	s.TotalSize = totalSize
 	s.ChunkCount = chunkCount
 	r.snapshots[snapshotID] = s
-	return s, nil
+	return s, true, nil
 }
 
 func (r *fakeRepo) RecordManifest(_ context.Context, in RecordManifestInput) (int64, int64, error) {
@@ -161,10 +164,10 @@ func (r *fakeRepo) GetSnapshotScoped(_ context.Context, _ db.ScopedPrincipal, _,
 func (r *fakeRepo) ListSnapshotsForSite(_ context.Context, _, _ uuid.UUID, _, _ int32) ([]Snapshot, error) {
 	panic("fakeRepo.ListSnapshotsForSite not implemented")
 }
-func (r *fakeRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, error) {
+func (r *fakeRepo) MarkSnapshotRunning(_ context.Context, _, _ uuid.UUID) (Snapshot, bool, error) {
 	panic("fakeRepo.MarkSnapshotRunning not implemented")
 }
-func (r *fakeRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, error) {
+func (r *fakeRepo) FailSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (Snapshot, bool, error) {
 	panic("fakeRepo.FailSnapshot not implemented")
 }
 func (r *fakeRepo) FailStalledSnapshot(_ context.Context, _, _ uuid.UUID, _ string) (int64, error) {

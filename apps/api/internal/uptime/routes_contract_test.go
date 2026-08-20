@@ -21,6 +21,8 @@ var canonicalUptimeRoutes = []string{
 	"PUT    /api/v1/alert-config",
 	// Fleet uptime status + incidents.
 	"GET    /api/v1/fleet/status",
+	// Fleet daily availability strip (GH #460).
+	"GET    /api/v1/fleet/uptime-history",
 	"GET    /api/v1/fleet/incidents",
 	"GET    /api/v1/fleet/incidents/:incidentId",
 	// Per-site app-health settings (GH #291 Phase 3).

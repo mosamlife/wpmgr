@@ -44,17 +44,36 @@ func (r *watchdogFakeRepo) ExistingChunkHashes(_ context.Context, _ uuid.UUID, _
 	return map[string]Chunk{}, nil
 }
 
-func (r *watchdogFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, errMsg string) (Snapshot, error) {
+// MarkSnapshotRunning mirrors MarkBackupSnapshotRunning's GH #458 claim guard
+// ("AND status='pending'") exactly: transitioned is true only for a row that
+// really was pending, so the claim is exactly-once and can never revive a
+// terminal row. Overrides the embedded fakeRepo's panic stub.
+func (r *watchdogFakeRepo) MarkSnapshotRunning(_ context.Context, _, snapshotID uuid.UUID) (Snapshot, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.snapshots[snapshotID]
-	if !ok {
-		return Snapshot{}, domain.NotFound("backup_snapshot_not_found", "not found")
+	if !ok || s.Status != StatusPending {
+		return Snapshot{}, false, nil
+	}
+	s.Status = StatusRunning
+	r.snapshots[snapshotID] = s
+	return s, true, nil
+}
+
+func (r *watchdogFakeRepo) FailSnapshot(_ context.Context, _, snapshotID uuid.UUID, errMsg string) (Snapshot, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.snapshots[snapshotID]
+	// GH #458: mirror the real query's guard exactly. A fake that always
+	// reports a transition would hide the very defect the guard exists to
+	// catch.
+	if !ok || (s.Status != StatusPending && s.Status != StatusRunning) {
+		return Snapshot{}, false, nil
 	}
 	s.Status = StatusFailed
 	s.Error = errMsg
 	r.snapshots[snapshotID] = s
-	return s, nil
+	return s, true, nil
 }
 
 // FailStalledSnapshot mirrors the real FailStalledBackupSnapshot query's

@@ -1996,6 +1996,29 @@ func (UnimplementedHandler) GetFleetRumAggregate(ctx context.Context, params Get
 	return r, ht.ErrNotImplemented
 }
 
+// GetFleetUptimeHistory implements getFleetUptimeHistory operation.
+//
+// Returns, for every site the principal can see, one entry per UTC day
+// across the requested window — oldest first, densified, with no gaps in
+// the date sequence.
+// Every entry is either a stored measurement or an explicit null. There
+// is no interpolation, no carry-forward and no default: `uptime_pct` is
+// null on any day with no recorded probes (the site did not exist yet,
+// monitoring was off, the probe worker did not run, or the day has aged
+// past the 90-day probe retention). Null is NOT zero — zero means the
+// site was measured and was down for every probe of that day. Rendering
+// null as 0% tells an operator their site was down when we simply never
+// looked (GH #460).
+// `measured_days` is how many of the entries carry a measurement, so a
+// young site can be shown as "28 of 90 days measured" rather than
+// implying 90 days of history.
+// Site-scoped principals see only their granted sites. Requires viewer+.
+//
+// GET /api/v1/fleet/uptime-history
+func (UnimplementedHandler) GetFleetUptimeHistory(ctx context.Context, params GetFleetUptimeHistoryParams) (r GetFleetUptimeHistoryRes, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // GetFleetUptimeStatus implements getFleetUptimeStatus operation.
 //
 // Returns summary counts {up, degraded, down, unknown} and a per-site list

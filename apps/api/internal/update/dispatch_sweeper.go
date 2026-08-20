@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 )
 
 // GH #463 Phase 2 — the safety net, and the alarms.
@@ -239,7 +241,7 @@ func (w *SweepWorker) sweep(ctx context.Context) (SweepStats, error) {
 			return stats, nil
 		} else {
 			defer func() {
-				// context.WithoutCancel, and it is NOT belt-and-braces. If ctx
+				// db.CleanupContext, and it is NOT belt-and-braces. If ctx
 				// is already cancelled when this defer runs — a graceful
 				// shutdown mid-pass, or a River job timeout — pgx returns
 				// immediately WITHOUT SENDING THE UNLOCK, and the connection
@@ -256,9 +258,21 @@ func (w *SweepWorker) sweep(ctx context.Context) (SweepStats, error) {
 				// Bounded rather than permanent — db.MaxConnLifetime (30m)
 				// eventually closes the connection and drops the lock — but
 				// half an hour of a silently skipped safety net is exactly the
-				// window this feature keeps being bitten in. Same form as
+				// window this feature keeps being bitten in.
+				//
+				// db.CleanupContext is WithoutCancel (so the statement is
+				// actually sent) plus db.SessionCleanupTimeout (so an
+				// uncancellable Exec in a defer cannot hang a graceful drain on
+				// a wedged socket). The bound cannot itself strand the lock: a
+				// deadline that fires MID-statement makes pgx close the
+				// connection, Release destroys it and the backend exits, which
+				// drops the lock. Too short degrades to connection churn, never
+				// to a retained lock. One idiom across every session-lock
+				// release in this codebase; see db.SessionCleanupTimeout and
 				// backup/tenant_reclaim_worker.go's reclaim-lock release.
-				_, _ = conn.Exec(context.WithoutCancel(ctx),
+				cctx, ccancel := db.CleanupContext(ctx)
+				defer ccancel()
+				_, _ = conn.Exec(cctx,
 					`SELECT pg_advisory_unlock(hashtext($1))`, sweepLockKey)
 			}()
 		}

@@ -359,13 +359,37 @@ func (s *Service) Remediate(ctx context.Context, tenantID, siteID, findingID, us
 	})
 }
 
-// GetFleetSummary returns the cross-site vulnerability counts + prioritized list.
+// GetFleetSummary returns the cross-site vulnerability counts + prioritized
+// list for the OPERATOR'S OWN DASHBOARD. It includes paused sites deliberately:
+// an operator looking at their fleet must see every site and every finding,
+// paused or not. GH #493 — the digest must call GetFleetSummaryForDigest.
 func (s *Service) GetFleetSummary(ctx context.Context, tenantID uuid.UUID, limit int) (FleetSummary, FeedMeta, error) {
-	critical, high, medium, low, unknown, err := s.repo.FleetOpenCounts(ctx, tenantID)
+	return s.fleetSummary(ctx, tenantID, limit, false)
+}
+
+// GetFleetSummaryForDigest is GetFleetSummary with paused sites excluded, for
+// the hourly email digest (GH #493).
+//
+// The split lives here rather than inside the shared repo methods because the
+// dashboard and the digest want genuinely different answers: pause governs what
+// we PUSH at the customer, never what the operator is allowed to look at.
+func (s *Service) GetFleetSummaryForDigest(ctx context.Context, tenantID uuid.UUID, limit int) (FleetSummary, FeedMeta, error) {
+	return s.fleetSummary(ctx, tenantID, limit, true)
+}
+
+func (s *Service) fleetSummary(ctx context.Context, tenantID uuid.UUID, limit int, excludePaused bool) (FleetSummary, FeedMeta, error) {
+	counts := s.repo.FleetOpenCounts
+	findings := s.repo.FleetOpenFindings
+	if excludePaused {
+		counts = s.repo.FleetOpenCountsExcludingPaused
+		findings = s.repo.FleetOpenFindingsExcludingPaused
+	}
+
+	critical, high, medium, low, unknown, err := counts(ctx, tenantID)
 	if err != nil {
 		return FleetSummary{}, FeedMeta{}, domain.Internal("fleet_counts_failed", "failed to aggregate fleet vulnerability counts").WithCause(err)
 	}
-	rows, err := s.repo.FleetOpenFindings(ctx, tenantID, limit)
+	rows, err := findings(ctx, tenantID, limit)
 	if err != nil {
 		return FleetSummary{}, FeedMeta{}, domain.Internal("fleet_findings_failed", "failed to list fleet vulnerability findings").WithCause(err)
 	}

@@ -85,7 +85,7 @@ func newFailTrackingWorkerRepo() *failTrackingWorkerRepo {
 	}
 }
 
-func (r *failTrackingWorkerRepo) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (Snapshot, error) {
+func (r *failTrackingWorkerRepo) FailSnapshot(ctx context.Context, tenantID, snapshotID uuid.UUID, msg string) (Snapshot, bool, error) {
 	r.failCalled = true
 	return r.fakeWorkerRepo.FailSnapshot(ctx, tenantID, snapshotID, msg)
 }

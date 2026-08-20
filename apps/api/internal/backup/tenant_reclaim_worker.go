@@ -658,8 +658,15 @@ func NewTenantReclaimStore(pool *db.Pool) TenantReclaimStore {
 //     scope, so session and xact holders mutually exclude.
 //   - Released on EVERY path including error and panic: the caller defers the
 //     returned func, which unlocks and then returns the connection to the pool,
-//     in that order. Even if the unlock statement itself fails the lock still
-//     drops when the session closes, so the failure mode is bounded.
+//     in that order — and the unlock runs on db.CleanupContext, never on ctx.
+//     There is no "the session closes anyway" fallback here, because the
+//     connection is POOLED: Release hands the session back alive, still holding
+//     whatever it was holding. An unlock that does not reach the wire therefore
+//     strands org.LifecycleLockKey for this tenant on an idle pooled connection:
+//     the Lane B purge and the next drain read false and skip, DELETE
+//     /orgs/{orgId} and POST /orgs/{orgId}/restore block on it, and none of that
+//     clears until db.MaxConnLifetime (30m) recycles the connection. See GH #483
+//     and the comment on the returned closure.
 func (s *pgTenantReclaimStore) LockTenantLifecycle(ctx context.Context, tenantID uuid.UUID) (func(), bool, error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
@@ -678,9 +685,31 @@ func (s *pgTenantReclaimStore) LockTenantLifecycle(ctx context.Context, tenantID
 		return nil, false, nil
 	}
 	return func() {
-		// Best effort, then hand the connection back. A failed unlock is harmless:
-		// the lock is session-scoped and drops with the session either way.
-		_, _ = conn.Exec(context.WithoutCancel(ctx),
+		// Unlock, then hand the connection back, in that order — and NOT "best
+		// effort, a failed unlock is harmless because the lock drops with the
+		// session", which is what this comment used to say and is false on a
+		// POOLED connection. Release does not close the session; it returns it to
+		// the pool, still holding this tenant's org_lifecycle lock.
+		//
+		// GH #483: db.CleanupContext, never ctx. A drain cancelled mid-flight —
+		// rolling deploy, River job timeout — leaves ctx dead by the time this
+		// runs, and on a dead ctx pgx returns BEFORE the statement reaches the
+		// wire. That does not break the connection, so the pool takes it back
+		// healthy and locked. Every later drain and Lane B purge for this tenant
+		// then reads false from pg_try_advisory_lock and skips, while DELETE
+		// /orgs/{orgId} and POST /orgs/{orgId}/restore — same key, taken with the
+		// BLOCKING pg_advisory_xact_lock — wait on it instead, until
+		// db.MaxConnLifetime (30m) recycles the connection.
+		// WithoutCancel is what puts the statement on the wire;
+		// db.SessionCleanupTimeout is what stops an uncancellable Exec in a defer
+		// from hanging a graceful drain on a wedged socket. The bound cannot
+		// itself strand a lock: a deadline that fires MID-statement makes pgx
+		// close the connection, Release then destroys it, and the backend exits —
+		// which drops the lock. A too-short bound degrades to connection churn,
+		// never to a retained lock.
+		cctx, ccancel := db.CleanupContext(ctx)
+		defer ccancel()
+		_, _ = conn.Exec(cctx,
 			`SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`,
 			org.LifecycleLockKey, tenantID.String())
 		conn.Release()

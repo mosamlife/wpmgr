@@ -137,6 +137,13 @@ type repository interface {
 	// M38 — CP-owned db-clean scheduling.
 	GetDueDBCleanSites(ctx context.Context, limit int) ([]DueDBCleanSite, error)
 	UpdateNextDBCleanAt(ctx context.Context, siteID uuid.UUID, nextAt time.Time) error
+	// m117 (GH #414) / GH #493 — monitoring pause, consulted by the SCHEDULED
+	// db-clean path only. These live on the repository interface rather than on
+	// a worker field so that no boot path can wire up a scheduler that has
+	// forgotten to ask: the sweeper and the dispatcher both already hold
+	// s.repo. Service.DBClean — the operator's own click — calls neither.
+	PausedSiteIDs(ctx context.Context, siteIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	IsMonitoringPaused(ctx context.Context, siteID uuid.UUID) (bool, error)
 	// M39 — watchdog columns for db_clean + db_scan.
 	SetActiveDBCleanJob(ctx context.Context, siteID uuid.UUID, jobID string, startedAt time.Time) error
 	ClearActiveDBCleanJob(ctx context.Context, siteID uuid.UUID) error
