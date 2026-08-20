@@ -63,6 +63,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -118,22 +119,41 @@ func gh496StartListener(t *testing.T, ctx context.Context, pool *db.Pool, tenant
 	// does is simply lost (LISTEN/NOTIFY has no replay). Publish on a ticker
 	// until one lands, so the gate is "a notification made it end to end",
 	// never "we waited long enough".
+	//
+	// ONE deadline governs the whole readiness phase — both the repeated
+	// Publish calls AND the wait for delivery — via a single context fed to
+	// both. Publish runs before the select on every iteration; left on an
+	// unbounded context, a publish that blocks (a wedged connection, a
+	// stalled write) would never reach the select at all, so the select's own
+	// deadline arm would never run — an unbounded wait hiding inside a loop
+	// that looks bounded. A per-publish timeout that reset on every tick would
+	// not fix this either: it would let an unbounded number of individually
+	// timely-looking publishes add up past 30s in total. One context, one
+	// expiry, and it is shared by the call that can block and the select that
+	// is supposed to bound it.
+	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	pub := events.NewPublisher(pool, domain.SystemClock{})
-	deadline := time.After(30 * time.Second)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if err := pub.Publish(ctx, site.ConnectionEvent{
+		if err := pub.Publish(readyCtx, site.ConnectionEvent{
 			TenantID: tenant,
 			Type:     "gh496.readiness",
 		}); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("the readiness publish did not return within the 30s readiness budget "+
+					"(a wedged connection or a stalled write on the publish path) — this is a "+
+					"publish failure, not evidence the listener failed to deliver: %v", err)
+			}
 			t.Fatalf("publish the readiness event: %v", err)
 		}
 		select {
 		case <-sub:
 			return sub, unsubscribe, done
 		case <-tick.C:
-		case <-deadline:
+		case <-readyCtx.Done():
 			t.Fatal("the listener never delivered a notification through the Hub within 30s, " +
 				"so it was never attached and nothing below would be attributable to the fix")
 		}
@@ -277,10 +297,20 @@ func TestGH496_ListenerStillDeliversAndSurvivesARestart(t *testing.T) {
 	defer cancel1()
 	sub1, unsubscribe1, done1 := gh496StartListener(t, ctx1, pool, tenant)
 
-	if err := pub.Publish(context.Background(), site.ConnectionEvent{
+	// Same shape as the readiness loop above, and the same fix: bound the
+	// call that can block, not just the select that looks like it bounds the
+	// wait. context.Background() here would let a wedged Publish sail past
+	// the select's 30s deadline arm without ever reaching it.
+	pubCtx1, pubCancel1 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pubCancel1()
+	if err := pub.Publish(pubCtx1, site.ConnectionEvent{
 		TenantID: tenant,
 		Type:     "gh496.first",
 	}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the first publish did not return within its 30s budget — a publish " +
+				"failure, not evidence the live listener failed to deliver: %v", err)
+		}
 		t.Fatalf("publish on the live listener: %v", err)
 	}
 	select {
@@ -308,10 +338,17 @@ func TestGH496_ListenerStillDeliversAndSurvivesARestart(t *testing.T) {
 	sub2, unsubscribe2, done2 := gh496StartListener(t, ctx2, pool, tenant)
 	defer unsubscribe2()
 
-	if err := pub.Publish(context.Background(), site.ConnectionEvent{
+	// Same fix as the first pass above: bound the publish itself.
+	pubCtx2, pubCancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pubCancel2()
+	if err := pub.Publish(pubCtx2, site.ConnectionEvent{
 		TenantID: tenant,
 		Type:     "gh496.second",
 	}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the second publish did not return within its 30s budget — a publish " +
+				"failure, not evidence the restarted listener failed to deliver: %v", err)
+		}
 		t.Fatalf("publish on the restarted listener: %v", err)
 	}
 	select {
