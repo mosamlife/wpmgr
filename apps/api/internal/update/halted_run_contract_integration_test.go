@@ -455,6 +455,38 @@ func countRunHaltedAudit(t *testing.T, pool *db.Pool, tenant, runID uuid.UUID) i
 	return n
 }
 
+// readTaskStatus reads one task's ground truth through the same tenant wrapper
+// the repo writes through, so the read is subject to the same policies.
+func readTaskStatus(t *testing.T, pool *db.Pool, tenant, taskID uuid.UUID) string {
+	t.Helper()
+	var s string
+	if err := pool.InTenantTx(context.Background(), tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			`SELECT status FROM update_tasks WHERE id = $1 AND tenant_id = $2`, taskID, tenant).Scan(&s)
+	}); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	return s
+}
+
+// readHaltAuditCancelledTasks reads the cancelled_tasks number the halt audit
+// record published for one run. The count of records says an event was booked;
+// this says WHAT IT CLAIMED, which is the half that can be false while the
+// count is right.
+func readHaltAuditCancelledTasks(t *testing.T, pool *db.Pool, tenant, runID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.InTenantTx(context.Background(), tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(),
+			`SELECT (metadata->>'cancelled_tasks')::int FROM audit_log
+			  WHERE tenant_id = $1 AND action = $2 AND target_id = $3`,
+			tenant, ActionRunHalted, runID.String()).Scan(&n)
+	}); err != nil {
+		t.Fatalf("read cancelled_tasks from the halt audit record: %v", err)
+	}
+	return n
+}
+
 // TestARefusedHaltRecordsNoHaltedAudit pins the other half of #482's
 // precondition: what happens to the CALLER when the database says no.
 //
@@ -478,9 +510,22 @@ func countRunHaltedAudit(t *testing.T, pool *db.Pool, tenant, runID uuid.UUID) i
 // of the refusal and recordRunHalted's audit gate, and both are reached
 // through the real repo, over the wpmgr_app role, exactly as production does.
 //
-// RED WITHOUT THE FIX: restore `if !errors.Is(err, pgx.ErrNoRows) { return ... }`
-// as the whole of haltLocked's zero-rows branch (drop the three ev assignments)
-// and the refused run books an update.run.halted event.
+// IT ALSO PINS THE ORDER haltLocked asks in, which is the second half of the
+// same sentence. "Refused" is only honest if NOTHING happened, and while the
+// cancel loop ran before the status write a refusal returned a nil error over a
+// transaction that had already terminalized every pending task of the run: the
+// caller got Halted=false alongside Cancelled=N, the operator's log line said
+// the halt did not land, and N sites' tasks were cancelled anyway by a halt the
+// database had refused. The status transition is attempted first now, so a
+// declined halt cannot touch a task row at all.
+//
+// RED WITHOUT THE FIX, two independent plants:
+//
+//   - Restore `if !errors.Is(err, pgx.ErrNoRows) { return ... }` as the whole of
+//     haltLocked's zero-rows branch (drop the ev assignments) and the refused
+//     run books an update.run.halted event.
+//   - Move haltLocked's SetUpdateRunStatus call back below the cancel loop and
+//     the refused run's pending tasks come back 'cancelled' with ev.Cancelled=2.
 func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
 	app, admin := startHaltContractPostgres(t)
 	ctx := context.Background()
@@ -496,21 +541,38 @@ func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
 
 	tenant := seedHaltContractTenant(t, admin, "gh482-refused")
 
-	newRun := func(host string) (Run, []Task) {
+	// Every run here is created with MORE THAN ONE task on purpose. A halt's
+	// effect on task rows is the thing this test now measures on both sides,
+	// and a single-task run cannot tell "cancelled the pending ones" apart from
+	// "cancelled the one task it was handed".
+	newRun := func(hosts ...string) (Run, []Task) {
 		t.Helper()
-		run, tasks, err := repo.CreateRunWithTasks(ctx, CreateRunInput{TenantID: tenant}, []NewTask{{
-			SiteID:     seedHaltContractSite(t, admin, tenant, host),
-			TargetType: TargetAgent, TargetSlug: AgentTargetSlug,
-			DesiredVersion: "0.62.0", FromVersion: "0.61.80",
-		}})
+		specs := make([]NewTask, 0, len(hosts))
+		for _, h := range hosts {
+			specs = append(specs, NewTask{
+				SiteID:     seedHaltContractSite(t, admin, tenant, h),
+				TargetType: TargetAgent, TargetSlug: AgentTargetSlug,
+				DesiredVersion: "0.62.0", FromVersion: "0.61.80",
+			})
+		}
+		run, tasks, err := repo.CreateRunWithTasks(ctx, CreateRunInput{TenantID: tenant}, specs)
 		if err != nil {
-			t.Fatalf("create run (%s): %v", host, err)
+			t.Fatalf("create run (%v): %v", hosts, err)
+		}
+		if len(tasks) != len(hosts) {
+			t.Fatalf("created %d task(s) for %d host(s): the fixture is not the shape the assertions below read",
+				len(tasks), len(hosts))
 		}
 		return run, tasks
 	}
 
 	// --- The refusal ------------------------------------------------------
-	refused, _ := newRun("https://refused.gh482.example")
+	refused, refusedTasks := newRun("https://refused-a.gh482.example", "https://refused-b.gh482.example")
+	for _, task := range refusedTasks {
+		if got := readTaskStatus(t, app, tenant, task.ID); got != TaskPending {
+			t.Fatalf("fixture task status = %q, want %q: a refused halt cannot be shown to leave pending tasks alone if none are pending", got, TaskPending)
+		}
+	}
 	if _, err := admin.Exec(ctx,
 		`UPDATE update_runs SET status = $1 WHERE id = $2 AND tenant_id = $3`,
 		RunExpired, refused.ID, tenant); err != nil {
@@ -534,6 +596,21 @@ func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
 		t.Fatalf("run status = %q, want %q: the halt landed after all and this test is testing nothing", got, RunExpired)
 	}
 
+	// A REFUSED HALT IS A NO-OP TRANSACTION, NOT A PARTIAL ONE. The status
+	// write is asked for first precisely so the cancel loop is never reached,
+	// and these two assertions are the difference between "the halt did not
+	// land" and "the halt did not land, but it cancelled everything on its way
+	// out and then reported that it had changed nothing".
+	if ev.Cancelled != 0 {
+		t.Errorf("Cancelled = %d on a refused halt, want 0: the evaluation reports work the refusal says did not happen", ev.Cancelled)
+	}
+	for i, task := range refusedTasks {
+		if got := readTaskStatus(t, app, tenant, task.ID); got != TaskPending {
+			t.Errorf("refused run's task %d status = %q, want %q: a halt the database declined terminalized a real site's task",
+				i, got, TaskPending)
+		}
+	}
+
 	// The exact worker step that used to announce the halt that never landed.
 	w.recordRunHalted(ctx, tenant, refused.ID, ev)
 
@@ -544,9 +621,17 @@ func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
 
 	// --- The positive control ---------------------------------------------
 	// Without this, a recorder that silently wrote nothing at all would pass
-	// the assertion above. A halt that DOES land must still be audited.
-	landed, tasks := newRun("https://landed.gh482.example")
-	running, err := repo.MarkTaskRunning(ctx, tenant, tasks[0].ID, 30*time.Minute)
+	// the assertion above, and a haltLocked that had simply stopped cancelling
+	// tasks would pass the two above that. A halt that DOES land must still
+	// audit exactly once AND still cancel every task nothing was sent for.
+	//
+	// Two tasks, deliberately in different states when the halt arrives: the
+	// first is dispatched (haltAgentRunWith finishes it as 'skipped' before
+	// halting), the second is still pending and is the one the halt must
+	// cancel. That is the ordinary kill-switch shape.
+	landed, tasks := newRun("https://landed.gh482.example", "https://landed-pending.gh482.example")
+	dispatched, stillPending := tasks[0], tasks[1]
+	running, err := repo.MarkTaskRunning(ctx, tenant, dispatched.ID, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
@@ -557,8 +642,17 @@ func TestARefusedHaltRecordsNoHaltedAudit(t *testing.T) {
 	if got := readRunStatus(t, app, tenant, landed.ID); got != RunHalted {
 		t.Fatalf("control run status = %q, want %q", got, RunHalted)
 	}
+	if got := readTaskStatus(t, app, tenant, stillPending.ID); got != TaskCancelled {
+		t.Errorf("pending task of a halt that DID land = %q, want %q: moving the status write ahead of the cancel loop must not stop the cancel loop running",
+			got, TaskCancelled)
+	}
 	if n := countRunHaltedAudit(t, app, tenant, landed.ID); n != 1 {
 		t.Errorf("audit_log holds %d %q record(s) for a halt that DID land, want 1: the zero above proves nothing if the recorder never writes",
 			n, ActionRunHalted)
+	}
+	// The audit record's own number, not just the row count: this is where a
+	// Cancelled that disagreed with the task rows would surface to an operator.
+	if n := readHaltAuditCancelledTasks(t, app, tenant, landed.ID); n != 1 {
+		t.Errorf("the halt audit record claims cancelled_tasks = %d, want 1: the operator's record disagrees with what happened to the task rows", n)
 	}
 }

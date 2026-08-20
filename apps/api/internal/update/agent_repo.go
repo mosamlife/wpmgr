@@ -61,7 +61,9 @@ type AgentRunEvaluation struct {
 	Halted bool
 	// Reason explains the halt in operator-readable terms; empty when !Halted.
 	Reason string
-	// Cancelled counts the tasks THIS call cancelled.
+	// Cancelled counts the tasks THIS call cancelled. Always 0 when Refused:
+	// haltLocked asks for the status transition before it cancels anything, so
+	// a declined halt leaves every task exactly as it found it.
 	Cancelled int
 	// Changed is true only for the call that performed the halt transition, so
 	// exactly one caller records the audit event and logs the incident.
@@ -76,7 +78,10 @@ type AgentRunEvaluation struct {
 	// found"; now that the same zero rows also mean "terminal, and you asked
 	// for a different status", swallowing it would let a caller announce a halt
 	// that never landed. When Refused is true, Halted and Changed are both
-	// false and NO update.run.halted audit event may be written.
+	// false, Cancelled is 0, and NO update.run.halted audit event may be
+	// written. A REFUSED HALT IS A NO-OP TRANSACTION, not a partial one:
+	// haltLocked attempts the status write before it cancels a single task, so
+	// there is no half-halt to describe.
 	Refused bool
 	// Dispatchable is the tasks of a wave that JUST opened: the set the caller
 	// should enqueue now, and nothing it has already enqueued. Empty when
@@ -185,8 +190,14 @@ func (r *pgRepo) ClaimAgentWaveTask(ctx context.Context, tenantID, runID, taskID
 			if _, herr := haltLocked(ctx, q, tenantID, run, tasks, reason); herr != nil {
 				return herr
 			}
-			// Re-read our own row: haltLocked cancelled it if it was still
-			// pending, and left it running if it had already been dispatched.
+			// Re-read our own row rather than assuming what haltLocked did to
+			// it. On a halt that landed it was cancelled if it was still
+			// pending, and left alone if it had already been dispatched. On a
+			// REFUSED halt (the run is terminal in another status, so #482's
+			// precondition declined the transition) haltLocked cancels nothing
+			// and the row comes back untouched. ClaimHalted either way: the
+			// caller must not contact the site for a run that is terminal,
+			// whichever terminal status it holds.
 			cancelled, cerr := q.GetUpdateTask(ctx, sqlc.GetUpdateTaskParams{ID: taskID, TenantID: tenantID})
 			if cerr != nil {
 				return domain.Internal("update_task_get_failed", "failed to load update task").WithCause(cerr)
@@ -312,6 +323,23 @@ func (r *pgRepo) HaltAgentRun(ctx context.Context, tenantID, runID uuid.UUID, re
 // carries the status='pending' precondition in SQL rather than trusting the
 // snapshot read at the top of this transaction.
 //
+// THE RUN STATUS IS WRITTEN FIRST, BEFORE ANY TASK IS CANCELLED, and the order
+// is the contract rather than a preference. SetUpdateRunStatus is the only
+// thing that can decline this halt (#482), so asking it first is what makes
+// "refused" mean NOTHING HAPPENED. Cancelling first and asking afterwards left
+// the refusal branch returning a nil error over a transaction that had already
+// terminalized N tasks: the caller was handed Halted=false with Cancelled=N,
+// the run kept its old status, and the sites' tasks were cancelled by a halt
+// the database had refused. An outcome reported cleaner than it was, which is
+// the same shape as the swallow this branch replaced, one layer down.
+//
+// Nothing in the cancel depends on the run reading 'halted' by the time it
+// runs: CancelPendingUpdateTask's predicate is (id, tenant_id, status =
+// 'pending') and never looks at update_runs. Both statements are in one
+// transaction under lockAgentRun's advisory lock, so no other transaction can
+// observe the run halted with its pending tasks not yet cancelled, and an
+// infra error from the cancel loop still unwinds the status write with it.
+//
 // The run status is (re-)written even when it already reads halted. That is a
 // deliberate no-op re-assert, and SetUpdateRunStatus stays idempotent for it
 // (its `status = $3` arm) precisely so this caller keeps working.
@@ -331,9 +359,35 @@ func (r *pgRepo) HaltAgentRun(ctx context.Context, tenantID, runID uuid.UUID, re
 // Changed is true only when this call was the one that moved the run into the
 // halted state, so exactly one caller records the audit event. Refused is the
 // other side of that coin: the run was terminal in another status and the halt
-// was declined, in which case nothing may be recorded at all. See the zero-rows
-// branch below.
+// was declined, in which case nothing happened and nothing may be recorded. See
+// the zero-rows branch below.
 func haltLocked(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, run Run, tasks []Task, reason string) (AgentRunEvaluation, error) {
+	if _, err := q.SetUpdateRunStatus(ctx, sqlc.SetUpdateRunStatusParams{ID: run.ID, TenantID: tenantID, Status: RunHalted}); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return AgentRunEvaluation{}, domain.Internal("update_run_status_failed", "failed to halt update run").WithCause(err)
+		}
+		// ZERO ROWS HERE IS "REFUSED", NEVER "NOT FOUND". Every caller reaches
+		// this function through loadAgentRunLocked, which has already turned a
+		// missing row into domain.NotFound, and the run is held under
+		// lockAgentRun's advisory lock for the whole transaction, so the row
+		// exists and nobody else can move it. What is left is #482's
+		// precondition declining the write because the run is terminal in a
+		// DIFFERENT status than the one asked for — today only 'expired'.
+		//
+		// THE HALT DID NOT LAND AND NOTHING ELSE MAY EITHER. Returning before
+		// the cancel loop is what makes that literally true rather than nearly
+		// true: Cancelled stays 0, no task row is touched, and the evaluation
+		// this hands back describes a transaction that changed nothing. Only
+		// Reason is carried, because a refusal still has to say what was being
+		// attempted when the database said no (recordRunHalted logs it).
+		//
+		// Reporting this as a halt is what made the old swallow dangerous:
+		// Changed was computed from the pre-write snapshot, so an 'expired' run
+		// produced an update.run.halted audit event for a halt the database
+		// refused — success announced over this function's own error.
+		return AgentRunEvaluation{Reason: reason, Refused: true}, nil
+	}
+
 	ev := AgentRunEvaluation{Halted: true, Reason: reason, Changed: run.Status != RunHalted}
 
 	detail := "cancelled: " + reason
@@ -354,28 +408,6 @@ func haltLocked(ctx context.Context, q *sqlc.Queries, tenantID uuid.UUID, run Ru
 			return AgentRunEvaluation{}, domain.Internal("update_task_finish_failed", "failed to cancel update task").WithCause(err)
 		}
 		ev.Cancelled++
-	}
-
-	if _, err := q.SetUpdateRunStatus(ctx, sqlc.SetUpdateRunStatusParams{ID: run.ID, TenantID: tenantID, Status: RunHalted}); err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return AgentRunEvaluation{}, domain.Internal("update_run_status_failed", "failed to halt update run").WithCause(err)
-		}
-		// ZERO ROWS HERE IS "REFUSED", NEVER "NOT FOUND". Every caller reaches
-		// this function through loadAgentRunLocked, which has already turned a
-		// missing row into domain.NotFound, and the run is held under
-		// lockAgentRun's advisory lock for the whole transaction, so the row
-		// exists and nobody else can move it. What is left is #482's
-		// precondition declining the write because the run is terminal in a
-		// DIFFERENT status than the one asked for — today only 'expired'.
-		//
-		// THE HALT DID NOT LAND, so this must not read like one. Reporting it
-		// as a halt is what made the old swallow dangerous: Changed was
-		// computed from the pre-write snapshot, so an 'expired' run produced an
-		// update.run.halted audit event for a halt the database refused —
-		// success announced over this function's own error.
-		ev.Halted = false
-		ev.Changed = false
-		ev.Refused = true
 	}
 	return ev, nil
 }
