@@ -53,9 +53,12 @@ fix. **A correction is a NEW ordinal plus a converge path** for databases that
 ran the earlier version, that is exactly what m114 and m115 are, and m114's own
 header documents it.
 
-A `PreToolUse` hook denies an edit to any migration that already exists in
-`HEAD`, for this reason. If you believe you have the one legitimate exception,
-say so and get a ruling; do not work around the hook.
+**Nothing stops you editing an applied migration.** A `PreToolUse` hook used to;
+it was removed on 2026-08-14 with the rest of the shell guards, and
+`.claude/settings.json` configures no hooks at all today. `docs/harness.md` is
+the single record of what still enforces what. So this is a standing instruction
+you follow, not a rule a machine applies: if you believe you have the one
+legitimate exception, say so and get a ruling before you edit.
 
 ### 2. A site-keyed table gets the site-scope policy, not just tenant isolation
 
