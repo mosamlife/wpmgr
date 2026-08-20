@@ -25,7 +25,13 @@ Editing an applied migration is a silent no-op that looks like a fix. A
 correction is a **new ordinal plus a converge path** for databases that ran the
 earlier version. m114 and m115 exist only because of this.
 
-A `PreToolUse` hook denies edits to migrations that already exist in `HEAD`.
+**Nothing enforces this any more.** The `PreToolUse` hook that used to deny
+edits to a migration already in `HEAD` was removed on 2026-08-14 along with the
+rest of the shell guards; `.claude/settings.json` carries no `hooks` key today
+(`docs/harness.md` has the full picture of what still enforces what). This is a
+standing instruction now, not a mechanism: notice the ordinal already has a row
+in `schema_migrations` on some database, and write a new one instead, because
+nothing will stop you if you don't.
 
 ## Ordinal is apply order, not commit order
 
@@ -113,9 +119,14 @@ interrupted run with uncommitted work loses everything.
 ## Regenerate sqlc, and prove the regeneration was real
 
 Any change to a column set or to `db/query/*.sql` is followed by a real
-`sqlc generate`. Hand-editing the generated tree is refused by a permission rule
-and by both guards, but the opposite failure is not: **generated files that were
-never regenerated still compile and still pass tests.**
+`sqlc generate`. Hand-editing the generated tree through `Edit`, `Write` or
+`NotebookEdit` is refused by the permission rule in `.claude/settings.json`. The
+two hooks that used to back it up, one on the edit tools and one on `Bash`, were
+removed on 2026-08-14 (`docs/harness.md`), so a shell write — `sed -i`, `tee`, a
+heredoc, `git apply` — now reaches the tree unchallenged; nothing but this
+paragraph refuses it. The opposite failure is caught by nothing at all:
+**generated files that were never regenerated still compile and still pass
+tests.**
 
 A hand-synced tree took production down. `GetPerfConfig`'s `Scan` gained three
 destinations that the `SELECT` list never did, so pgx returned `number of field
