@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -71,7 +72,12 @@ func (l *Listener) listen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Release()
+	// GH #496: the unsubscribe is deferred BEFORE the LISTEN is issued, not
+	// after it succeeds. conn.Exec can fail with the statement already applied
+	// server-side (the context dies between the send and the read), so "the
+	// LISTEN returned an error" is not evidence that the session is unsubscribed.
+	// One wasted round-trip on the error path buys that certainty.
+	defer l.unsubscribe(ctx, conn)
 
 	if _, err := conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
 		return err
@@ -88,6 +94,61 @@ func (l *Listener) listen(ctx context.Context) error {
 		}
 		l.dispatch(ctx, notification.Payload)
 	}
+}
+
+// unsubscribe undoes the SESSION-scoped LISTEN before the pooled connection
+// goes back to the pool, and destroys the connection outright if it cannot
+// confirm that it did.
+//
+// GH #496. listen() takes a connection from the SHARED application pool and
+// issues LISTEN, which is session state, not statement state. A plain
+// conn.Release() therefore hands the next — unrelated — caller a connection
+// that is still subscribed to wpmgr_site_events, and pgx does not save us
+// from it: on cancellation the default BuildContextWatcherHandler is
+// DeadlineContextWatcherHandler (pgconn/config.go:314), which calls
+// SetDeadline rather than closing; the resulting read failure is a timeout
+// net.Error, and pgconn.peekMessage skips asyncClose for exactly that case
+// (`if !(isNetErr && netErr.Timeout())`); so pgxpool.Conn.Release sees
+// IsClosed/IsBusy/TxStatus all clean and files the connection as healthy.
+// The consequence is worse than a stray subscription: pgx installs
+// bufferNotifications as the connection's notification handler (conn.go:274),
+// appending to a slice that ONLY WaitForNotification drains — and the caller
+// who gets this connection next is not calling WaitForNotification.
+//
+// Two properties this must have, and both are load-bearing:
+//
+//  1. It runs on db.CleanupContext, never on ctx. The cancellation of ctx is
+//     the ordinary reason we are here, and pgx returns from Exec on an
+//     already-cancelled context WITHOUT PUTTING THE STATEMENT ON THE WIRE —
+//     so an UNLISTEN on ctx would be the same bug wearing a fix. See GH #483
+//     and db.SessionCleanupTimeout for the same class.
+//
+//  2. It does not trust the UNLISTEN to have landed. The 5s bound in
+//     db.CleanupContext expiring produces a deadline, which produces a timeout
+//     net.Error, which is precisely the error pgx does NOT close the
+//     connection for — so a timed-out UNLISTEN would otherwise release a
+//     still-subscribed connection by the very mechanism described above.
+//     Hijack removes it from the pool for good instead. Dropping one
+//     connection is cheap; the pool re-dials on the next Acquire, and Run's
+//     backoff bounds how often a persistently failing cleanup can do it.
+//
+// The channel is named explicitly rather than using UNLISTEN *. River borrows
+// this same pool (see db.ConnectApp) and runs its own LISTEN on it, so `*` is
+// a wider blast radius than this function has any business having: the exact
+// inverse of "we issued LISTEN wpmgr_site_events" is "we issue UNLISTEN
+// wpmgr_site_events", and nothing else.
+func (l *Listener) unsubscribe(ctx context.Context, conn *pgxpool.Conn) {
+	cctx, ccancel := db.CleanupContext(ctx)
+	defer ccancel()
+
+	if _, err := conn.Exec(cctx, "UNLISTEN "+notifyChannel); err != nil {
+		l.logger.Warn("site events listener: UNLISTEN failed; destroying the connection rather than returning a subscribed one to the pool",
+			slog.String("channel", notifyChannel), slog.Any("error", err))
+		raw := conn.Hijack()
+		_ = raw.Close(cctx)
+		return
+	}
+	conn.Release()
 }
 
 // dispatch loads the announced event under its tenant's scope and fans it out.
