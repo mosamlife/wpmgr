@@ -137,6 +137,56 @@ func NewBackupWorker(svc *Service, cmd Commander, rec *audit.Recorder, logger *s
 // (a wedged backup must eventually error out so River can retry).
 func (w *BackupWorker) Timeout(*river.Job[BackupArgs]) time.Duration { return w.jobTimeout }
 
+// resumedOwnClaim reports whether a snapshot the claim guard refused is in
+// fact this job's OWN claim, made by an earlier attempt of this same job, and
+// may therefore be re-dispatched.
+//
+// It is true for exactly one shape: a retry (Attempt > 1) over a row that is
+// still 'running'. The whole question is whether "still running" can mean
+// "someone else is running it", and for a backup snapshot it cannot:
+//
+//   - status='running' has exactly one writer. MarkBackupSnapshotRunning
+//     (db/query/backups.sql:39) is the only statement in the schema that sets
+//     it; every other query naming 'running' reads it or transitions out of
+//     it. So a running row was claimed by some BackupWorker.Work, not by the
+//     watchdog, the agent callbacks or an operator action.
+//
+//   - a snapshot has exactly one River job. Both enqueue paths insert one job
+//     immediately after creating the snapshot row it names — CreateSnapshot
+//     (service.go:597/618) and the scheduler (service.go:3483/3485) — and
+//     nothing re-enqueues an existing snapshot. River guarantees a single
+//     execution of a given job at a time, so the only Work that can be inside
+//     this row is this one.
+//
+//   - and per site, backup_snapshots_one_inflight_per_site (db/schema.sql:1487)
+//     is a UNIQUE index on site_id WHERE status IN ('pending','running'), so
+//     a second in-flight snapshot for the site cannot exist to be confused
+//     with this one either.
+//
+// That is why this needs no staleness bound, where MarkUpdateTaskRunning's
+// reclaim arm does: update_tasks genuinely can have two jobs over one row, so
+// there "running" is ambiguous and only age disambiguates it. Here it is not
+// ambiguous, and an age bound would only add a window in which a legitimate
+// retry is dropped on the floor.
+//
+// The residual is the same one that query documents and cannot fix either:
+// River cancelling attempt 1's context ends the control plane's WAIT for the
+// agent, it does not stop a backup the agent has already begun. So a retry can
+// still produce a duplicate DISPATCH against a live agent. That is the
+// pre-GH#458 behaviour, it is bounded by the agent's own run lock, and the
+// terminal guard on CompleteBackupSnapshot rejects the losing manifest submit.
+// Stranding the run instead is strictly worse: nothing recovers it but the
+// watchdog, and only after the hard threshold.
+//
+// job.JobRow is nil in unit tests that construct a bare river.Job literal;
+// treat that as attempt 1 (no resume) rather than dereferencing it.
+func (w *BackupWorker) resumedOwnClaim(job *river.Job[BackupArgs], cur Snapshot) bool {
+	if job == nil || job.JobRow == nil {
+		return false
+	}
+	return job.Attempt > 1 && cur.Status == StatusRunning
+}
+
 // Work dispatches one backup. A transient transport error returns the error so
 // River retries; an agent refusal marks the snapshot failed (terminal).
 func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) error {
@@ -168,17 +218,45 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		// GH #458: the claim is atomic ("AND status='pending'"), and it lost.
 		// The terminal check at the top of Work read the row in a separate
 		// transaction, so between there and here the snapshot was cancelled,
-		// watchdog-failed, or claimed by a duplicate/retried job. Same outcome
-		// as that check: this job is not the run's owner, so it dispatches
-		// nothing, records no 'started' audit entry, and succeeds rather than
-		// returning an error that would have River retry a snapshot that is
-		// never going to be pending again.
-		w.logger.Info("backup claim lost; snapshot no longer pending",
+		// watchdog-failed, or completed by a late agent manifest submit. In
+		// all of those this job is not the run's owner: it dispatches nothing,
+		// records no 'started' audit entry, and succeeds rather than returning
+		// an error that would have River retry a snapshot that is never going
+		// to be pending again.
+		//
+		// EXCEPT for the one case that is not a lost claim at all — a retry of
+		// THIS job re-entering Work over the row IT already claimed. The
+		// original guard treated that as a loss and returned nil, so a
+		// transient transport error on attempt 1 left the snapshot 'running'
+		// with nothing dispatched behind it until the watchdog hard-failed it.
+		// resumedOwnClaim is what separates the two; see its doc for why
+		// "attempt > 1 and still running" is sufficient evidence of ownership
+		// for a backup snapshot (it is NOT sufficient for an update task,
+		// which is why MarkUpdateTaskRunning bounds its reclaim arm by age
+		// instead).
+		cur, cerr := w.svc.repo.GetSnapshot(ctx, a.TenantID, a.SnapshotID)
+		if cerr != nil {
+			return cerr
+		}
+		if !w.resumedOwnClaim(job, cur) {
+			w.logger.Info("backup claim lost; snapshot no longer pending",
+				slog.String("snapshot_id", a.SnapshotID.String()),
+				slog.String("tenant_id", a.TenantID.String()),
+				slog.String("status", cur.Status))
+			return nil
+		}
+		w.logger.Info("backup claim resumed by retry of the owning job",
 			slog.String("snapshot_id", a.SnapshotID.String()),
-			slog.String("tenant_id", a.TenantID.String()))
-		return nil
+			slog.String("tenant_id", a.TenantID.String()),
+			slog.Int("attempt", job.Attempt))
+		// Fall through and re-dispatch on the row this job already owns. No
+		// second 'started' audit entry and no second 'started' SSE event
+		// (MarkRunning publishes that, and attempt 1 already did): the run was
+		// announced once and is being retried, not started again.
+		running = cur
+	} else {
+		w.recordAudit(ctx, running, ActionBackupStarted, nil)
 	}
-	w.recordAudit(ctx, running, ActionBackupStarted, nil)
 
 	// Track A (m49): resolve component-scope + exclusion settings from the
 	// site's schedule. Zero value = no filter (all components, no exclusions),
