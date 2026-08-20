@@ -21,9 +21,54 @@ func NewRiverEnqueuer(client *river.Client[pgx.Tx]) *RiverEnqueuer {
 	return &RiverEnqueuer{client: client}
 }
 
+// backupInsertOpts is the InsertOpts BOTH backup enqueue paths must use.
+//
+// GH #458 review: BackupWorker.resumedOwnClaim treats "attempt > 1 and the row
+// is still running" as proof that the running row is THIS job's own claim.
+// That inference is only sound while a snapshot has exactly ONE River job. Up
+// to now that held by convention — nothing re-enqueues an existing snapshot —
+// which is a property of code nobody has written yet, and it fails SILENTLY if
+// someone writes it: job B's attempt 2 would re-dispatch over job A's live
+// claim, the log line says "resumed by the owning job" either way, and no test
+// notices. UniqueOpts makes the invariant a database constraint instead, on
+// the same idiom EnqueueSqlInspectLegacy already uses below.
+//
+// ByArgs: true — the uniqueness hash covers the encoded args, and BackupArgs
+// carries SnapshotID, so two DIFFERENT snapshots hash differently and both
+// enqueue. That is the property that matters most here; see
+// TestBackupInsertOpts_DifferentSnapshotsAreNotDeduped.
+//
+// No ByPeriod, deliberately, and unlike EnqueueSqlInspectLegacy. A period
+// re-opens exactly the window this closes: a second job for the SAME snapshot
+// once the period elapses. The usual argument for a period — that the same
+// logical work is legitimately re-requested later — does not apply, because
+// the key here is a snapshot UUID minted per snapshot ROW. A legitimate re-run
+// is a new row with a new UUID and therefore a new key; the only thing an
+// unbounded window blocks is a second job for a snapshot that already has one,
+// which is the thing being blocked on purpose. River's default ByState
+// includes completed, so the key stays claimed until the job cleaner reaps the
+// completed row.
+//
+// Residual, worth knowing before changing either enqueue path: the hash covers
+// the WHOLE encoded args blob, not just the snapshot ID. The two paths agree
+// for a full snapshot — `omitempty` does NOT drop a zero uuid.UUID (it is a
+// [16]byte, so never "empty" to encoding/json), so parent/base/chain are
+// serialised as zero UUIDs either way — but EnqueueBackupWithChain also emits
+// is_incremental and generation, which ARE dropped when zero. So for an
+// INCREMENTAL snapshot the two paths hash differently. A future re-enqueue
+// must rebuild the args the way the original insert did (an incremental
+// snapshot back through EnqueueBackupWithChain) for River to see it as the
+// same job. Narrowing the key with `river:"unique"` struct tags on
+// SnapshotID would remove that coupling if a re-enqueue path is ever added.
+func backupInsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{
+		UniqueOpts: river.UniqueOpts{ByArgs: true},
+	}
+}
+
 // EnqueueBackup inserts one backup job.
 func (e *RiverEnqueuer) EnqueueBackup(ctx context.Context, tenantID, snapshotID uuid.UUID) error {
-	if _, err := e.client.Insert(ctx, BackupArgs{TenantID: tenantID, SnapshotID: snapshotID}, nil); err != nil {
+	if _, err := e.client.Insert(ctx, BackupArgs{TenantID: tenantID, SnapshotID: snapshotID}, backupInsertOpts()); err != nil {
 		return fmt.Errorf("enqueue backup: %w", err)
 	}
 	return nil
@@ -49,7 +94,7 @@ func (e *RiverEnqueuer) EnqueueBackupWithChain(ctx context.Context, snap Snapsho
 	if snap.ChainID != nil {
 		args.ChainID = *snap.ChainID
 	}
-	if _, err := e.client.Insert(ctx, args, nil); err != nil {
+	if _, err := e.client.Insert(ctx, args, backupInsertOpts()); err != nil {
 		return fmt.Errorf("enqueue backup (incremental): %w", err)
 	}
 	return nil

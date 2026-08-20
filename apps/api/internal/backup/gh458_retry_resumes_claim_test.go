@@ -114,12 +114,21 @@ func TestBackupWorker_FirstAttemptDoesNotStealAnotherOwnersClaim(t *testing.T) {
 	}
 }
 
-// TestBackupWorker_RetryDoesNotResumeATerminalSnapshot keeps the resume arm
-// honest in the other direction: a retry whose snapshot was cancelled or
-// watchdog-failed while it sat in the queue finds a terminal row, and must
-// still dispatch nothing. (The terminal check at the top of Work covers this
-// one, which is exactly the point — the resume arm must not widen it.)
-func TestBackupWorker_RetryDoesNotResumeATerminalSnapshot(t *testing.T) {
+// TestBackupWorker_RetryDoesNotResumeATerminalSnapshotViaTheTopOfWorkGuard
+// asserts what its name says and nothing more: a retry whose snapshot was
+// cancelled or watchdog-failed BEFORE Work ran finds a terminal row at the top
+// of Work and returns there, dispatching nothing.
+//
+// It is named for the guard it exercises because the guard it does NOT
+// exercise is resumedOwnClaim's status half. Work short-circuits at
+// worker.go's terminal check before the claim is ever attempted, so this test
+// passes against a resumedOwnClaim with the status check deleted, and it
+// passed against the pre-GH#458 worker too. The review found it being read as
+// coverage of the resume arm under its old name
+// (…_RetryDoesNotResumeATerminalSnapshot). Coverage of the resume arm's status
+// half lives in gh458_resume_status_guard_test.go, which reproduces the row
+// going terminal BETWEEN the two reads.
+func TestBackupWorker_RetryDoesNotResumeATerminalSnapshotViaTheTopOfWorkGuard(t *testing.T) {
 	repo, cmd, svc, tenantID, snapshotID := runningSnapshotFixture(t)
 	snap := repo.snapshots[snapshotID]
 	snap.Status = StatusFailed

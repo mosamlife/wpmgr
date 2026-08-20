@@ -154,9 +154,13 @@ func (w *BackupWorker) Timeout(*river.Job[BackupArgs]) time.Duration { return w.
 //   - a snapshot has exactly one River job. Both enqueue paths insert one job
 //     immediately after creating the snapshot row it names — CreateSnapshot
 //     (service.go:597/618) and the scheduler (service.go:3483/3485) — and
-//     nothing re-enqueues an existing snapshot. River guarantees a single
-//     execution of a given job at a time, so the only Work that can be inside
-//     this row is this one.
+//     nothing re-enqueues an existing snapshot. That is now a constraint and
+//     not just an absence: both inserts carry backupInsertOpts()
+//     (enqueuer.go), whose UniqueOpts.ByArgs keys on the snapshot ID, so a
+//     second job for a snapshot that already has one is refused by River
+//     rather than merely un-written. River guarantees a single execution of a
+//     given job at a time, so the only Work that can be inside this row is
+//     this one.
 //
 //   - and per site, backup_snapshots_one_inflight_per_site (db/schema.sql:1487)
 //     is a UNIQUE index on site_id WHERE status IN ('pending','running'), so
@@ -173,8 +177,44 @@ func (w *BackupWorker) Timeout(*river.Job[BackupArgs]) time.Duration { return w.
 // River cancelling attempt 1's context ends the control plane's WAIT for the
 // agent, it does not stop a backup the agent has already begun. So a retry can
 // still produce a duplicate DISPATCH against a live agent. That is the
-// pre-GH#458 behaviour, it is bounded by the agent's own run lock, and the
-// terminal guard on CompleteBackupSnapshot rejects the losing manifest submit.
+// pre-GH#458 behaviour, and the terminal guard on CompleteBackupSnapshot
+// rejects the losing manifest submit. What bounds the duplicate dispatch
+// itself is the AGENT's per-snapshot flock, taken by TaskRunner::run
+// (apps/agent/includes/backup/class-task-runner.php:275-295, rationale at
+// :185-212): flock(LOCK_EX|LOCK_NB) on a deterministic per-snapshot lock file,
+// held by the OS for the lifetime of the winning PHP process, so it survives a
+// dropped $wpdb connection. The loser returns without mutating phase and
+// without submitting.
+//
+// It is NOT bounded by the agent's runner_in_flight refusal (see the constant
+// at the top of this file). That comes from BackupCommand::tryClaimDedup
+// (apps/agent/includes/commands/class-backup-command.php:379-393), which is a
+// time-windowed check-then-act and not a lock at all: DEDUP_WINDOW_SECONDS is
+// 300 (same file, :72), started_at is never refreshed during a run, and
+// backup.http_timeout defaults to 10m (config.go:821 —
+// NewBackupWorker's jobTimeout is derived from it). So in the DEFAULT
+// configuration the claim made at T=0 is already outside the window by the
+// time attempt 1 gives up at T≈600s: the cutoff test is `started_at > now-300`,
+// 0 > 301 is false, and tryClaimDedup RECLAIMS and returns true rather than
+// reporting runner_in_flight. The refusal only fires while
+// DEDUP_WINDOW_SECONDS exceeds the control plane's per-attempt deadline, which
+// it does not. Treat runner_in_flight as a fast-path optimisation for quick
+// retries; the flock is the correctness bound.
+//
+// The separate, stronger property — that two ATTEMPTS of this job cannot be
+// in Work at the same time, which is what makes "still running" unambiguous
+// above — is River's, but it holds on a timeout RATIO and not on River
+// unconditionally. River only re-runs an attempt whose row it has rescued, and
+// RescueStuckJobsAfter is unset repo-wide (as is river.Config.JobTimeout, see
+// cmd/wpmgr/main.go:758), so River's own 1h JobRescuerRescueAfterDefault
+// applies; this worker's deadline is cfg.Backup.HTTPTimeout + 2m = 12m
+// (cmd/wpmgr/main.go:917). Attempt 1 is therefore cancelled ~48m before the
+// rescuer could release the row. Raise backupJobTimeout past the rescue
+// threshold, or lower RescueStuckJobsAfter under it, and the two can overlap —
+// at which point "attempt > 1 and still running" stops being evidence of sole
+// ownership and this function needs a different proof. Anyone retuning either
+// number owns re-deriving it.
+//
 // Stranding the run instead is strictly worse: nothing recovers it but the
 // watchdog, and only after the hard threshold.
 //
@@ -252,8 +292,9 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupArgs]) err
 		// Fall through and re-dispatch on the row this job already owns. No
 		// second 'started' audit entry and no second 'started' SSE event
 		// (MarkRunning publishes that, and attempt 1 already did): the run was
-		// announced once and is being retried, not started again.
-		running = cur
+		// announced once and is being retried, not started again. `running`
+		// is deliberately NOT reassigned from cur here — its only reader is
+		// the recordAudit call in the else arm below, which this arm skips.
 	} else {
 		w.recordAudit(ctx, running, ActionBackupStarted, nil)
 	}
