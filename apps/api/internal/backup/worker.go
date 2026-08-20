@@ -86,7 +86,7 @@ type Commander interface {
 // ADR-048: incremental fields are omitempty; zero values mean full backup.
 type BackupArgs struct {
 	TenantID   uuid.UUID `json:"tenant_id"`
-	SnapshotID uuid.UUID `json:"snapshot_id"`
+	SnapshotID uuid.UUID `json:"snapshot_id" river:"unique"`
 	// ADR-048 incremental chain fields. All omitempty; absent = full backup.
 	IsIncremental    bool      `json:"is_incremental,omitempty"`
 	ParentSnapshotID uuid.UUID `json:"parent_snapshot_id,omitempty"`

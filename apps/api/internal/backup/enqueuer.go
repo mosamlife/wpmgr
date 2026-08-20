@@ -33,10 +33,11 @@ func NewRiverEnqueuer(client *river.Client[pgx.Tx]) *RiverEnqueuer {
 // notices. UniqueOpts makes the invariant a database constraint instead, on
 // the same idiom EnqueueSqlInspectLegacy already uses below.
 //
-// ByArgs: true — the uniqueness hash covers the encoded args, and BackupArgs
-// carries SnapshotID, so two DIFFERENT snapshots hash differently and both
-// enqueue. That is the property that matters most here; see
-// TestBackupInsertOpts_DifferentSnapshotsAreNotDeduped.
+// ByArgs: true — the uniqueness hash covers the encoded args. BackupArgs.
+// SnapshotID carries `river:"unique"`, which narrows the hash to just that
+// field, so two DIFFERENT snapshots always hash differently and both enqueue,
+// regardless of what else either enqueue path sets. That is the property that
+// matters most here; see TestBackupInsertOpts_DifferentSnapshotsAreNotDeduped.
 //
 // No ByPeriod, deliberately, and unlike EnqueueSqlInspectLegacy. A period
 // re-opens exactly the window this closes: a second job for the SAME snapshot
@@ -49,17 +50,19 @@ func NewRiverEnqueuer(client *river.Client[pgx.Tx]) *RiverEnqueuer {
 // includes completed, so the key stays claimed until the job cleaner reaps the
 // completed row.
 //
-// Residual, worth knowing before changing either enqueue path: the hash covers
-// the WHOLE encoded args blob, not just the snapshot ID. The two paths agree
-// for a full snapshot — `omitempty` does NOT drop a zero uuid.UUID (it is a
-// [16]byte, so never "empty" to encoding/json), so parent/base/chain are
-// serialised as zero UUIDs either way — but EnqueueBackupWithChain also emits
-// is_incremental and generation, which ARE dropped when zero. So for an
-// INCREMENTAL snapshot the two paths hash differently. A future re-enqueue
-// must rebuild the args the way the original insert did (an incremental
-// snapshot back through EnqueueBackupWithChain) for River to see it as the
-// same job. Narrowing the key with `river:"unique"` struct tags on
-// SnapshotID would remove that coupling if a re-enqueue path is ever added.
+// Residual, worth knowing before changing either enqueue path: BackupArgs.
+// SnapshotID carries a `river:"unique"` struct tag, so the uniqueness hash
+// covers ONLY the encoded snapshot_id, not the whole args blob. Before that
+// tag existed, ByArgs hashed the full payload and the two enqueue paths
+// disagreed for an INCREMENTAL snapshot — `omitempty` does NOT drop a zero
+// uuid.UUID (it is a [16]byte, so never "empty" to encoding/json), so
+// parent/base/chain serialised as zero UUIDs either way, but
+// EnqueueBackupWithChain also emits is_incremental and generation, which ARE
+// dropped when zero. That made a full snapshot's two paths hash the same by
+// coincidence while an incremental snapshot's hashed differently, so the
+// constraint held for full backups and silently didn't for incrementals. The
+// tag removes the coupling: any enqueue path that sets the same SnapshotID
+// collides, regardless of what else is in the args.
 func backupInsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{
 		UniqueOpts: river.UniqueOpts{ByArgs: true},
