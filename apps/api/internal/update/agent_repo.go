@@ -300,12 +300,21 @@ func (r *pgRepo) HaltAgentRun(ctx context.Context, tenantID, runID uuid.UUID, re
 // carries the status='pending' precondition in SQL rather than trusting the
 // snapshot read at the top of this transaction.
 //
-// The run status is (re-)written even when it already reads halted. That is
-// deliberate: a task that was already dispatched when the halt landed will
-// finish later, and Worker.finish's ordinary run-completion check can flip a
-// halted run to completed. Since every agent task's terminal transition is
-// followed by EvaluateAgentRun, which lands here, that drift is always
-// corrected and the run's final recorded state is the honest one.
+// The run status is (re-)written even when it already reads halted. That is a
+// deliberate no-op re-assert, and SetUpdateRunStatus stays idempotent for it
+// (its `status = $3` arm) precisely so this caller keeps working.
+//
+// IT IS NO LONGER THE THING THAT KEEPS A HALT HONEST, and must not be relied on
+// as such. A task already dispatched when the halt landed finishes later, and
+// Worker.finish's ordinary run-completion check would flip 'halted' to
+// 'completed'. This re-assert was the compensation for that, and it was
+// incomplete: it only recovers a halt DeriveAgentWaveState can re-derive from
+// the task rows, so the two that come from outside them — the kill switch and a
+// withdrawn release manifest, both routed through Worker.haltAgentRunWith —
+// stayed 'completed' permanently, and even a recovered one had already
+// published RunCompleted to the operator's live view. The guarantee now lives
+// in SQL: SetUpdateRunStatus refuses to move a terminal run off its status
+// (#482). See its comment in db/query/updates.sql.
 //
 // Changed is true only when this call was the one that moved the run into the
 // halted state, so exactly one caller records the audit event.

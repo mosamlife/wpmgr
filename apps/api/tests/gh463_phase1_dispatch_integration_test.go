@@ -765,7 +765,7 @@ func TestGH463_Phase1_ExpiryPastTheGraceWindow(t *testing.T) {
 		t.Fatalf("re-drive an expired run: %v", err)
 	}
 	if out2.Claimed {
-		t.Error("an expired run was claimed for dispatch; SetUpdateRunStatus's missing precondition would have allowed exactly this")
+		t.Error("an expired run was claimed for dispatch; a status-blind run write would have allowed exactly this")
 	}
 	if inert.count() != 0 {
 		t.Errorf("an expired run enqueued %d jobs, want 0: no site may be contacted", inert.count())

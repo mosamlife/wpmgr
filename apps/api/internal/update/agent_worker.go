@@ -694,10 +694,16 @@ func (w *Worker) haltAgentRunWith(ctx context.Context, task Task, status, fromVe
 
 // finishAgentTask records an agent task's terminal state and then re-judges
 // the run's wave gate. Every agent-task terminal transition goes through here,
-// which is what makes the gate self-correcting: the halt verdict is recomputed
-// from the authoritative rows after every change, and the run's status is
-// re-asserted afterwards (see haltLocked) so an ordinary run-completion check
-// can never quietly overwrite a halt with "completed".
+// which is what makes the GATE self-correcting: the halt verdict is recomputed
+// from the authoritative rows after every change.
+//
+// That re-judgement is NOT what stops a run-completion check overwriting a
+// halt, and this comment used to claim it was. It can only re-derive a halt
+// DeriveAgentWaveState can see in the task rows; a kill-switch halt or a
+// withdrawn release manifest (Worker.haltAgentRunWith) leaves no such trace and
+// was never recovered. SetUpdateRunStatus's own precondition is what makes
+// "completed" unable to land on a halted run (#482), on every path, in one
+// transaction.
 func (w *Worker) finishAgentTask(ctx context.Context, task Task, status, fromVersion, toVersion, detail, errMsg string) error {
 	if err := w.finish(ctx, task, status, fromVersion, toVersion, detail, errMsg); err != nil {
 		return err

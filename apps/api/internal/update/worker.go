@@ -1130,11 +1130,7 @@ func (w *Worker) finish(ctx context.Context, task Task, status, fromVersion, toV
 		return nil
 	}
 
-	runStatus := RunRunning
-	if done := w.maybeCompleteRun(ctx, task.TenantID, task.RunID); done {
-		runStatus = RunCompleted
-	}
-	w.publish(finished, runStatus)
+	w.publish(finished, w.maybeCompleteRun(ctx, task.TenantID, task.RunID))
 	w.recordAudit(ctx, finished)
 
 	// Post-update inventory refresh: ask the agent to re-read its plugin/theme
@@ -1183,21 +1179,40 @@ func (w *Worker) maybeEnqueueRefresh(ctx context.Context, task Task) {
 	}
 }
 
-// maybeCompleteRun marks the run completed when no tasks remain unfinished.
-func (w *Worker) maybeCompleteRun(ctx context.Context, tenantID, runID uuid.UUID) bool {
+// maybeCompleteRun marks the run completed when no tasks remain unfinished,
+// and returns THE RUN STATUS THE CALLER SHOULD PUBLISH — the run's real one,
+// never a guess. Worker.finish feeds it straight to publish, which is what the
+// operator's live view renders (see the run-events stream in handler.go).
+//
+// The completion write can be legitimately REFUSED. A halt cancels every
+// pending task and deliberately leaves running ones alone, so the last of those
+// finishing sees zero unfinished siblings and asks for 'completed' on a run
+// that reads 'halted'. SetUpdateRunStatus's precondition rejects that (#482)
+// and SetRunStatus reports ErrRunNotOpen WITH THE RUN UNCHANGED. That is the
+// normal, correct outcome of a task outliving a halt, not a failure: it is
+// logged at Info and the run's actual terminal status is what gets published.
+// Warning on it would put a false alarm on every correct halt.
+func (w *Worker) maybeCompleteRun(ctx context.Context, tenantID, runID uuid.UUID) string {
 	n, err := w.repo.CountUnfinishedTasks(ctx, tenantID, runID)
 	if err != nil {
 		w.logger.Warn("update: count unfinished tasks", slog.Any("error", err))
-		return false
+		return RunRunning
 	}
 	if n > 0 {
-		return false
+		return RunRunning
 	}
-	if _, err := w.repo.SetRunStatus(ctx, tenantID, runID, RunCompleted); err != nil {
+	run, err := w.repo.SetRunStatus(ctx, tenantID, runID, RunCompleted)
+	if err != nil {
+		if errors.Is(err, ErrRunNotOpen) {
+			w.logger.Info("update: run is terminal; leaving its recorded status alone",
+				slog.String("run_id", runID.String()),
+				slog.String("recorded_status", run.Status))
+			return run.Status
+		}
 		w.logger.Warn("update: set run completed", slog.Any("error", err))
-		return false
+		return RunRunning
 	}
-	return true
+	return RunCompleted
 }
 
 // ensureRunRunning transitions a pending run to running on the first task start.
