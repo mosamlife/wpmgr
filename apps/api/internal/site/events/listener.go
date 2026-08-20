@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
@@ -71,7 +72,12 @@ func (l *Listener) listen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Release()
+	// GH #496: the unsubscribe is deferred BEFORE the LISTEN is issued, not
+	// after it succeeds. conn.Exec can fail with the statement already applied
+	// server-side (the context dies between the send and the read), so "the
+	// LISTEN returned an error" is not evidence that the session is unsubscribed.
+	// One wasted round-trip on the error path buys that certainty.
+	defer l.unsubscribe(ctx, conn)
 
 	if _, err := conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
 		return err
@@ -88,6 +94,84 @@ func (l *Listener) listen(ctx context.Context) error {
 		}
 		l.dispatch(ctx, notification.Payload)
 	}
+}
+
+// unsubscribe undoes the SESSION-scoped LISTEN before the pooled connection
+// goes back to the pool, and destroys the connection outright if it cannot
+// confirm that it did.
+//
+// GH #496. listen() takes a connection from the SHARED application pool and
+// issues LISTEN, which is session state, not statement state. A plain
+// conn.Release() therefore hands the next — unrelated — caller a connection
+// that is still subscribed to wpmgr_site_events, and pgx does not save us
+// from it: on cancellation the default BuildContextWatcherHandler is
+// DeadlineContextWatcherHandler (pgconn/config.go:314), which calls
+// SetDeadline rather than closing; the resulting read failure is a timeout
+// net.Error, and pgconn.peekMessage skips asyncClose for exactly that case
+// (`if !(isNetErr && netErr.Timeout())`); so pgxpool.Conn.Release sees
+// IsClosed/IsBusy/TxStatus all clean and files the connection as healthy.
+// The consequence is worse than a stray subscription: pgx installs
+// bufferNotifications as the connection's notification handler (conn.go:274),
+// appending to a slice that ONLY WaitForNotification drains — and the caller
+// who gets this connection next is not calling WaitForNotification.
+//
+// Two properties this must have, and both are load-bearing:
+//
+//  1. It runs on db.CleanupContext, never on ctx. The cancellation of ctx is
+//     the ordinary reason we are here, and pgx returns from Exec on an
+//     already-cancelled context WITHOUT PUTTING THE STATEMENT ON THE WIRE —
+//     so an UNLISTEN on ctx would be the same bug wearing a fix. See GH #483
+//     and db.SessionCleanupTimeout for the same class.
+//
+//  2. It does not trust the UNLISTEN to have landed. The 5s bound in
+//     db.CleanupContext expiring produces a deadline, which produces a timeout
+//     net.Error, which is precisely the error pgx does NOT close the
+//     connection for — so a timed-out UNLISTEN would otherwise release a
+//     still-subscribed connection by the very mechanism described above.
+//     Hijack removes it from the pool for good instead. Dropping one
+//     connection is cheap; the pool re-dials on the next Acquire, and Run's
+//     backoff bounds how often a persistently failing cleanup can do it.
+//     Hijack does not call triggerHealthCheck() the way Release's Destroy path
+//     does (pgxpool/conn.go:37), so on this error branch the pool can sit one
+//     connection below its MinConns=2 floor (db.go:148) until the next
+//     periodic health check (every 30s) re-dials it. Cosmetic, and bounded by
+//     that interval.
+//
+// The channel is named explicitly rather than using UNLISTEN *, and the reason
+// is precision, not blast radius. What this function issued is exactly LISTEN
+// wpmgr_site_events (line 82), so what it issues here — UNLISTEN
+// wpmgr_site_events — is the exact inverse of that statement, and nothing
+// else. That is enough on its own, and deliberately does not lean on either of
+// the facts below holding, because both take more digging to be sure of than
+// this function's own two lines do:
+//
+//   - UNLISTEN is SESSION state, so `*` could only ever reach the session
+//     already pinned to this *pgxpool.Conn — pgxpool never hands one
+//     connection to two owners at once, whatever else is Acquire-ing from the
+//     pool concurrently.
+//   - River does borrow this same pool (db.ConnectApp; this listener is
+//     constructed at cmd/wpmgr/main.go:1451, River started at :1892, both
+//     under the same `pool` in run()) and does issue its own LISTEN
+//     (riverpgxv5@v0.38.0/river_pgx_v5_driver.go:1104). But that connection is
+//     hijacked out of the pool for good before its LISTEN is even issued
+//     (:1095) — the identical move this function's own error branch makes
+//     below — so it was never reachable through the pool to a `*` in the
+//     first place.
+//
+// Naming the channel does not need either bullet to be true. It is just what
+// "undo exactly what you did" looks like.
+func (l *Listener) unsubscribe(ctx context.Context, conn *pgxpool.Conn) {
+	cctx, ccancel := db.CleanupContext(ctx)
+	defer ccancel()
+
+	if _, err := conn.Exec(cctx, "UNLISTEN "+notifyChannel); err != nil {
+		l.logger.Warn("site events listener: UNLISTEN failed; destroying the connection rather than returning a subscribed one to the pool",
+			slog.String("channel", notifyChannel), slog.Any("error", err))
+		raw := conn.Hijack()
+		_ = raw.Close(cctx)
+		return
+	}
+	conn.Release()
 }
 
 // dispatch loads the announced event under its tenant's scope and fans it out.
