@@ -151,6 +151,63 @@ jobs:
       - name: Test
         run: pnpm --filter @wpmgr/web test
 
+  # ---- Codegen drift ----
+  # packages/openapi/openapi.yaml is the source of truth for two committed
+  # generated trees: apps/api/internal/api/gen (ogen) and
+  # packages/openapi-client/src/generated (@hey-api/openapi-ts). This job
+  # regenerates both and fails if what is committed differs from what the spec
+  # now produces.
+  #
+  # WHY IT EXISTS (GH #511). `make gen` used to run a script that echoed
+  # "wired in Phase 4" and exited 0 while both generators had been wired and in
+  # daily use for months. So the documented command reported success and
+  # regenerated nothing, and a spec edit could be committed with a stale
+  # generated tree that looked freshly generated. Fixing the script fixes the
+  # command; this job is what stops the stale commit itself, rather than
+  # trusting every contributor to have run the right thing.
+  #
+  # THE LOGIC LIVES IN A SCRIPT, NOT IN THIS FILE, and so does the drift
+  # comparison: `scripts/gen-openapi.sh --check` is the same script `make gen`
+  # runs, with the diff on the end, so the developer command and the CI command
+  # cannot drift apart the way the thing they check drifts apart. The suite runs
+  # FIRST, as it does for the version-surface guard: if the guard's own
+  # behaviour has regressed, that is the more useful failure to read, and a
+  # guard that has failed open cannot pass by finding nothing.
+  codegen-drift:
+    name: Codegen drift (OpenAPI -> Go + TS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Shims only, no toolchain needed, so a broken guard is caught before the
+      # expensive setup below rather than after it.
+      - name: Codegen guard self-test
+        run: scripts/gen-openapi_test.sh
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Regenerates both trees and fails if either generator is absent, exits
+      # non-zero, or exits 0 without writing; then fails if the committed trees
+      # differ from the fresh generation.
+      - name: Regenerate and compare against the committed trees
+        run: scripts/gen-openapi.sh --check
+
   # ---- Commit message hygiene ----
   # Refuses a PR whose own commits carry an assistant trailer or a session URL.
   #

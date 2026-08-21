@@ -490,8 +490,20 @@ agent-release-dry-run: agent-zip ## Preview the agent release (build zip + print
 	./scripts/release-agent.sh --dry-run
 
 .PHONY: gen
-gen: ## Regenerate OpenAPI clients (Go + TS)
+gen: ## Regenerate OpenAPI clients (Go + TS) from packages/openapi/openapi.yaml
+	# Until GH #511 this target ran a script that echoed "wired in Phase 4" and
+	# exited 0 while both generators had been wired for months, so editing the
+	# spec and running `make gen` produced a stale tree that looked fresh. The
+	# script now fails if either generator is missing or writes nothing.
 	./scripts/gen-openapi.sh
+
+.PHONY: gen-check
+gen-check: ## Fail if the committed generated trees differ from a fresh generation
+	./scripts/gen-openapi.sh --check
+
+.PHONY: gen-test
+gen-test: ## Test suite for scripts/gen-openapi.sh (shims only, no toolchain needed)
+	./scripts/gen-openapi_test.sh
 
 .PHONY: gen-secrets
 gen-secrets: ## Print the boot-critical self-host secrets as ready-to-paste env lines
