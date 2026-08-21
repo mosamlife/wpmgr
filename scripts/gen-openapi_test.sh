@@ -39,16 +39,45 @@ FAIL=0
 WORKROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/gen-openapi-test.XXXXXX")" && pwd)"
 trap 'rm -rf "$WORKROOT"' EXIT
 
-# A PATH with neither `go` nor `pnpm` on it, but with the coreutils the script
-# needs. Cases add a shim directory in front of this.
-BASE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+# The missing-tool cases need a PATH that provably does NOT contain `go` or
+# `pnpm` but still contains the utilities the script under test calls. It is
+# built here as a directory of symlinks to exactly those utilities, rather than
+# hard-coded as a list of system directories.
+#
+# Hard-coding it was wrong, and CI said so: an earlier version used
+# "/usr/bin:/bin:/usr/sbin:/sbin", which is genuinely stripped on macOS but not
+# on a GitHub ubuntu runner, where Go is installed at /usr/bin/go. The abort
+# below caught it rather than letting the missing-tool cases quietly test
+# nothing, which is the whole point of having it.
+BASE_BIN="$WORKROOT/basebin"
+mkdir -p "$BASE_BIN"
 
-if command -v go >/dev/null 2>&1 && PATH="$BASE_PATH" command -v go >/dev/null 2>&1; then
-	printf 'gen-openapi_test: FATAL: `go` is on the stripped PATH (%s), so the\n' "$BASE_PATH" >&2
-	printf '  missing-tool cases cannot be tested honestly. Aborting rather than\n' >&2
-	printf '  reporting a pass that proved nothing.\n' >&2
-	exit 1
-fi
+# bash runs the script under test; the rest are what the script itself calls
+# (mktemp/find/rm for the marker, cat for the drift message, git for --check).
+for tool in bash mktemp find rm cat git; do
+	resolved="$(command -v "$tool" 2>/dev/null || true)"
+	if [ -z "$resolved" ]; then
+		printf 'gen-openapi_test: FATAL: required utility %s not found on PATH.\n' "$tool" >&2
+		printf '  The suite cannot build its stripped PATH without it. Aborting\n' >&2
+		printf '  rather than reporting a pass that proved nothing.\n' >&2
+		exit 1
+	fi
+	ln -sf "$resolved" "$BASE_BIN/$tool"
+done
+
+BASE_PATH="$BASE_BIN"
+
+# Assert the stripped PATH really is stripped. If either generator resolves
+# under it, every missing-tool case below would silently test the opposite of
+# what it claims, so stop instead.
+for tool in go pnpm; do
+	if PATH="$BASE_PATH" command -v "$tool" >/dev/null 2>&1; then
+		printf 'gen-openapi_test: FATAL: `%s` resolves on the stripped PATH (%s),\n' "$tool" "$BASE_PATH" >&2
+		printf '  so the missing-tool cases cannot be tested honestly. Aborting\n' >&2
+		printf '  rather than reporting a pass that proved nothing.\n' >&2
+		exit 1
+	fi
+done
 
 ok() {
 	PASS=$((PASS + 1))
