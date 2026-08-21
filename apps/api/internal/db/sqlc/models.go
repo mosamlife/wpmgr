@@ -51,15 +51,20 @@ type AlertConfig struct {
 }
 
 type ApiKey struct {
-	ID         uuid.UUID          `json:"id"`
-	TenantID   uuid.UUID          `json:"tenant_id"`
-	Name       string             `json:"name"`
-	Prefix     string             `json:"prefix"`
-	KeyHash    string             `json:"key_hash"`
-	Role       string             `json:"role"`
-	CreatedAt  time.Time          `json:"created_at"`
-	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
-	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	ID             uuid.UUID          `json:"id"`
+	TenantID       uuid.UUID          `json:"tenant_id"`
+	Name           string             `json:"name"`
+	Prefix         string             `json:"prefix"`
+	KeyHash        string             `json:"key_hash"`
+	Role           string             `json:"role"`
+	CreatedAt      time.Time          `json:"created_at"`
+	LastUsedAt     pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
+	Kind           string             `json:"kind"`
+	AuthModel      string             `json:"auth_model"`
+	Capabilities   []string           `json:"capabilities"`
+	SiteScope      string             `json:"site_scope"`
+	AllowedSiteIds []uuid.UUID        `json:"allowed_site_ids"`
 }
 
 type AppAlertRollout struct {
