@@ -2,8 +2,12 @@ package authz_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
@@ -170,32 +174,107 @@ func TestSiteScopedCollaboratorUnchanged(t *testing.T) {
 	}
 }
 
-// TestRunTenantTxDispatchMatchesDomainPredicate cross-checks the predicate that
-// internal/db/db.go restates inline (it cannot import domain — domain imports
-// db) against domain.Principal.IsSiteConstrained, over every combination that
-// matters. If the two ever disagree, a principal is constrained at the HTTP
-// gate and tenant-wide inside the transaction, or the reverse.
-func TestRunTenantTxDispatchMatchesDomainPredicate(t *testing.T) {
+// TestIsSiteConstrainedSemantics pins what the shared predicate MEANS, case by
+// case, in literal booleans rather than by restating the expression.
+//
+// It replaces TestRunTenantTxDispatchMatchesDomainPredicate, which claimed to
+// cross-check db.RunTenantTx's dispatch and never called into internal/db at
+// all: it restated the dispatch condition in its own body and compared that
+// restatement to IsSiteConstrained, so it compared two copies that both lived
+// outside db.go. Gutting the dispatch — `if false` around the InScopedTenantTx
+// branch — routed every site-scoped principal through InTenantTx with
+// app.site_scope unset, and it passed.
+//
+// #513 removed the reason for a drift test: internal/db now calls
+// domain.IsSiteConstrained, so there is only one copy left to drift. What the
+// dispatch DOES with the answer is proved by TestDispatchTenantTxRoutes in
+// internal/db, which drives the real routing against a recorder and asserts
+// which transaction helper ran.
+func TestIsSiteConstrainedSemantics(t *testing.T) {
 	site := uuid.New()
 	cases := []struct {
 		name    string
 		scope   string
 		allowed []uuid.UUID
+		want    bool
 	}{
-		{"unset scope, no allowlist", "", nil},
-		{"org scope, no allowlist", domain.ScopeOrg, nil},
-		{"site scope, no allowlist", domain.ScopeSite, nil},
-		{"site scope, with allowlist", domain.ScopeSite, []uuid.UUID{site}},
-		{"unset scope, with allowlist", "", []uuid.UUID{site}},
-		{"org scope, with allowlist", domain.ScopeOrg, []uuid.UUID{site}},
+		{"unset scope, no allowlist: legacy org principal, tenant-wide", "", nil, false},
+		{"org scope, no allowlist: org member, tenant-wide", domain.ScopeOrg, nil, false},
+		{"site scope, no allowlist: restricted to zero sites, fail-closed", domain.ScopeSite, nil, true},
+		{"site scope, with allowlist: the collaborator case", domain.ScopeSite, []uuid.UUID{site}, true},
+		{"unset scope, with allowlist: backstop, label missing", "", []uuid.UUID{site}, true},
+		{"org scope, with allowlist: backstop, label wrong", domain.ScopeOrg, []uuid.UUID{site}, true},
 	}
 	for _, tc := range cases {
-		p := domain.Principal{Scope: tc.scope, AllowedSiteIDs: tc.allowed}
-		// This expression is the literal condition in db.RunTenantTx.
-		dbDispatchesScoped := tc.scope == "site" || len(p.GetAllowedSiteIDs()) > 0
-		if got := p.IsSiteConstrained(); got != dbDispatchesScoped {
-			t.Errorf("DRIFT (%s): domain.IsSiteConstrained=%v but db.RunTenantTx would dispatch scoped=%v",
-				tc.name, got, dbDispatchesScoped)
+		t.Run(tc.name, func(t *testing.T) {
+			if got := domain.IsSiteConstrained(tc.scope, tc.allowed); got != tc.want {
+				t.Errorf("domain.IsSiteConstrained(%q, %v) = %v, want %v", tc.scope, tc.allowed, got, tc.want)
+			}
+			p := domain.Principal{Scope: tc.scope, AllowedSiteIDs: tc.allowed}
+			if got := p.IsSiteConstrained(); got != tc.want {
+				t.Errorf("Principal.IsSiteConstrained() = %v, want %v — the method must hold no logic of its own", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRequirePermissionOrgGateUsesSharedPredicate is the F2 regression. The
+// org-level permission gate was the last site gate still on a bare
+// `p.Scope == domain.ScopeSite`, and it guards member:manage, apikey:manage,
+// audit:read, tenant:manage and billing:manage. A principal carrying a site
+// allowlist without the scope label was constrained by RequireSiteAccess and by
+// the RLS dispatch, and waved through here.
+func TestRequirePermissionOrgGateUsesSharedPredicate(t *testing.T) {
+	site := uuid.New()
+	backstop := domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: uuid.New(),
+		Role: string(authz.RoleOwner), Scope: domain.ScopeOrg,
+		AllowedSiteIDs: []uuid.UUID{site},
+	}
+	if !backstop.IsSiteConstrained() {
+		t.Fatalf("precondition: an allowlist-carrying principal must be site-constrained")
+	}
+
+	for _, perm := range []authz.Permission{
+		authz.PermMemberManage, authz.PermAPIKeyManage, authz.PermAuditRead,
+		authz.PermTenantManage, authz.PermBillingManage,
+	} {
+		t.Run(string(perm), func(t *testing.T) {
+			rec := runRequirePermission(t, backstop, perm)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("org-level %s returned %d for a site-constrained principal, want 403", perm, rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "org_scope_required") {
+				t.Errorf("org-level %s: body %q, want code org_scope_required", perm, rec.Body.String())
+			}
+		})
+	}
+
+	// And the honest case it must not block: a real owner, no allowlist.
+	owner := domain.Principal{
+		Type: domain.PrincipalUser, UserID: uuid.New(), TenantID: uuid.New(),
+		Role: string(authz.RoleOwner), Scope: domain.ScopeOrg,
+	}
+	for _, perm := range []authz.Permission{authz.PermMemberManage, authz.PermTenantManage} {
+		if rec := runRequirePermission(t, owner, perm); rec.Code != http.StatusOK {
+			t.Errorf("OVER-FIRE: unconstrained owner refused %s with %d: %s", perm, rec.Code, rec.Body.String())
 		}
 	}
+}
+
+// runRequirePermission drives the real gin middleware over a real request, so
+// the gate is reached the same way a route reaches it.
+func runRequirePermission(t *testing.T, p domain.Principal, perm authz.Permission) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/x", func(c *gin.Context) {
+		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), p))
+		c.Next()
+	}, authz.RequirePermission(perm), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	return rec
 }

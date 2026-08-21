@@ -122,15 +122,24 @@ func (p Principal) GetTenantID() uuid.UUID { return p.TenantID }
 // It satisfies the db.Pool.RunTenantTx principal interface.
 func (p Principal) GetAllowedSiteIDs() []uuid.UUID { return p.AllowedSiteIDs }
 
-// IsSiteConstrained reports whether this principal's site access is limited to
-// an explicit allowlist rather than being tenant-wide. It is the SINGLE
-// predicate behind every site gate — CanAccessSite, authz.RequireSiteAccess,
-// authz.AuthorizeSites and db.RunTenantTx's dispatch all ask this one question,
-// so a principal cannot be constrained by one gate and tenant-wide at the next.
+// IsSiteConstrained reports whether a principal's site access is limited to an
+// explicit allowlist rather than being tenant-wide. It is the SINGLE predicate
+// behind every site gate — Principal.CanAccessSite, authz.RequireSiteAccess,
+// authz.RequirePermission's org-level guard, authz.AuthorizeSites,
+// db.RunTenantTx's RLS dispatch and email.Repo.scopedTenantTx all call THIS
+// function, so a principal cannot be constrained by one gate and tenant-wide at
+// the next.
+//
+// It takes the two fields rather than a Principal so that packages which cannot
+// hold a domain.Principal can still call it. internal/db reaches it through the
+// db.ScopedPrincipal interface accessors; that is why this exists as a
+// package-level function and not only as a method. Before #513 internal/db
+// restated the expression inline and a test restated it a third time, so the
+// test compared two copies and neither was the shipped dispatch.
 //
 // Two disjuncts, and the second is the fail-closed backstop:
 //
-//   - Scope == ScopeSite is authoritative and is the ONLY condition that can
+//   - scope == ScopeSite is authoritative and is the ONLY condition that can
 //     fire for a principal loaded from the database. m120's
 //     api_keys_site_scope_check pins site_scope to 'org' | 'site', and
 //     api_keys_site_scope_allowlist_check forbids the half-state (site_scope
@@ -138,7 +147,7 @@ func (p Principal) GetAllowedSiteIDs() []uuid.UUID { return p.AllowedSiteIDs }
 //     emptiness of the list, is what says "restricted", because "restricted to
 //     zero sites" is a legitimate fail-CLOSED state that must stay expressible.
 //
-//   - A non-empty AllowedSiteIDs constrains regardless of the Scope label. For
+//   - A non-empty allowedSiteIDs constrains regardless of the scope label. For
 //     any principal built by apikey.PrincipalFor or by the session path this
 //     disjunct is UNREACHABLE — PrincipalFor copies the allowlist only when
 //     Scope == ScopeSite, and the DB CHECK makes the stored half-state
@@ -151,8 +160,15 @@ func (p Principal) GetAllowedSiteIDs() []uuid.UUID { return p.AllowedSiteIDs }
 // The zero-value Scope means org, and org-scoped user principals are legitimately
 // tenant-wide today. Refusing them would break real access for real members,
 // which is why the predicate keys on an expressed restriction, not on silence.
+func IsSiteConstrained(scope string, allowedSiteIDs []uuid.UUID) bool {
+	return scope == ScopeSite || len(allowedSiteIDs) > 0
+}
+
+// IsSiteConstrained reports whether this principal's site access is limited to
+// an explicit allowlist rather than being tenant-wide. It is the method form of
+// the package-level IsSiteConstrained and holds no logic of its own.
 func (p Principal) IsSiteConstrained() bool {
-	return p.Scope == ScopeSite || len(p.AllowedSiteIDs) > 0
+	return IsSiteConstrained(p.Scope, p.AllowedSiteIDs)
 }
 
 // CanAccessSite reports whether this principal may access the given site.

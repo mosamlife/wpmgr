@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // Pool wraps a pgxpool and exposes tenant-scoped transaction helpers.
@@ -609,8 +611,10 @@ func (p *Pool) InInviteLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) e
 
 // ScopedPrincipal is the interface RunTenantTx requires from a principal. It
 // is implemented by domain.Principal and any test double that carries the four
-// scope fields. Using an interface here avoids a circular import between db and
-// domain (domain cannot import db; db cannot import domain).
+// scope fields. The interface, not the concrete type, is what keeps db from
+// depending on the shape of domain.Principal; db does import domain for the
+// shared site-constraint predicate, which is safe because domain imports
+// nothing from this package.
 type ScopedPrincipal interface {
 	GetScope() string
 	GetUserID() uuid.UUID
@@ -618,39 +622,60 @@ type ScopedPrincipal interface {
 	GetAllowedSiteIDs() []uuid.UUID
 }
 
-// RunTenantTx is the central dispatch helper that chooses the correct
-// transaction wrapper based on the principal's Scope. Repos and services
-// MUST use this instead of calling InTenantTx / InTenantTxAsUser /
-// InScopedTenantTx directly, so that a forgotten call-site cannot silently
-// bypass the site-scope RLS.
+// tenantTxHelpers is the set of transaction wrappers the dispatch chooses
+// between. *Pool implements it. It exists so the dispatch can be driven by a
+// unit test that records WHICH helper ran without needing a database — the
+// only kind of test that can catch the branch being gutted.
+//
+// Before #513 the guard on this dispatch compared two restatements of the
+// predicate, both outside this file. Replacing the scoped branch with
+// `if false` left every site-scoped principal running under InTenantTx with
+// app.site_scope and app.allowed_site_ids unset, and the guard still passed.
+type tenantTxHelpers interface {
+	InTenantTx(ctx context.Context, tenantID uuid.UUID, fn func(tx pgx.Tx) error) error
+	InTenantTxAsUser(ctx context.Context, tenantID, userID uuid.UUID, fn func(tx pgx.Tx) error) error
+	InScopedTenantTx(ctx context.Context, tenantID, userID uuid.UUID, allowedSiteIDs []uuid.UUID, fn func(tx pgx.Tx) error) error
+}
+
+// dispatchTenantTx holds the whole routing decision for RunTenantTx. It is a
+// free function over tenantTxHelpers rather than a method so that
+// TestDispatchTenantTxRoutes in this package can run it against a recorder and
+// assert the helper it actually called.
 //
 // Dispatch rules:
-//   - Scope == "site": InScopedTenantTx with p.AllowedSiteIDs
-//   - Scope == "org" (or empty, for backward compat): InTenantTxAsUser when
-//     UserID is non-nil, InTenantTx otherwise (API-key principals have no
-//     UserID; they don't need the memberships_self_read policy)
-//
-// The fn receives the raw pgx.Tx. Callers wrap it with sqlc.New(tx) as usual.
-func (p *Pool) RunTenantTx(ctx context.Context, principal ScopedPrincipal, fn func(tx pgx.Tx) error) error {
-	scope := principal.GetScope()
+//   - site-constrained (domain.IsSiteConstrained): InScopedTenantTx with the
+//     principal's allowlist
+//   - otherwise: InTenantTxAsUser when UserID is non-nil, InTenantTx otherwise
+//     (API-key principals have no UserID; they don't need the
+//     memberships_self_read policy)
+func dispatchTenantTx(ctx context.Context, h tenantTxHelpers, principal ScopedPrincipal, fn func(tx pgx.Tx) error) error {
 	tenantID := principal.GetTenantID()
 	userID := principal.GetUserID()
+	allowed := principal.GetAllowedSiteIDs()
 
-	// This condition is domain.Principal.IsSiteConstrained, restated. db cannot
-	// import domain (domain imports db), so the predicate is duplicated here
-	// rather than shared, and TestRunTenantTxDispatchMatchesDomainPredicate in
-	// internal/authz cross-checks the two over a table of cases so they cannot
-	// drift apart. The second disjunct is the fail-closed backstop: a principal
+	// domain.IsSiteConstrained is THE predicate; this package no longer keeps a
+	// copy of it. Its second disjunct is the fail-closed backstop: a principal
 	// carrying an allowlist must reach InScopedTenantTx — which is what sets
 	// app.site_scope and app.allowed_site_ids — even if its scope label is
 	// missing, because falling through would run the whole transaction
 	// tenant-wide with the site-scope GUCs unset.
-	if scope == "site" || len(principal.GetAllowedSiteIDs()) > 0 {
-		return p.InScopedTenantTx(ctx, tenantID, userID, principal.GetAllowedSiteIDs(), fn)
+	if domain.IsSiteConstrained(principal.GetScope(), allowed) {
+		return h.InScopedTenantTx(ctx, tenantID, userID, allowed, fn)
 	}
 	// "org" or "" (backward compat for existing flows that never set Scope)
 	if userID != uuid.Nil {
-		return p.InTenantTxAsUser(ctx, tenantID, userID, fn)
+		return h.InTenantTxAsUser(ctx, tenantID, userID, fn)
 	}
-	return p.InTenantTx(ctx, tenantID, fn)
+	return h.InTenantTx(ctx, tenantID, fn)
+}
+
+// RunTenantTx is the central dispatch helper that chooses the correct
+// transaction wrapper based on the principal's scope. Repos and services
+// MUST use this instead of calling InTenantTx / InTenantTxAsUser /
+// InScopedTenantTx directly, so that a forgotten call-site cannot silently
+// bypass the site-scope RLS. The routing itself lives in dispatchTenantTx.
+//
+// The fn receives the raw pgx.Tx. Callers wrap it with sqlc.New(tx) as usual.
+func (p *Pool) RunTenantTx(ctx context.Context, principal ScopedPrincipal, fn func(tx pgx.Tx) error) error {
+	return dispatchTenantTx(ctx, p, principal, fn)
 }

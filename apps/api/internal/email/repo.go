@@ -563,9 +563,20 @@ func NewRepo(pool *db.Pool) *Repo { return &Repo{pool: pool} }
 // rows; scoping that transaction to the inherited principal's site allowlist
 // would filter the wrong tenant's data. When the principal is not the owner of
 // the tenant being queried, it tells us nothing and is ignored.
+//
+// The "is this principal restricted" half of the condition is
+// domain.IsSiteConstrained, reached through Principal.IsSiteConstrained — the
+// same single predicate as db.RunTenantTx and every HTTP site gate. This
+// package must not restate it: #513 found this file deciding the RLS dispatch
+// on a bare `Scope == ScopeSite`, so a principal carrying an allowlist without
+// the label was constrained at the gate and tenant-wide over every email row.
+// Which helper actually runs is proved behaviourally by
+// repo_site_scope_integration_test.go against real policies, and the structural
+// guard in repo_tx_dispatch_test.go refuses a new method that skips this
+// wrapper.
 func (r *Repo) scopedTenantTx(ctx context.Context, tenantID uuid.UUID, fn func(tx pgx.Tx) error) error {
 	if p, ok := domain.PrincipalFromContext(ctx); ok &&
-		p.Scope == domain.ScopeSite &&
+		p.IsSiteConstrained() &&
 		p.TenantID == tenantID {
 		return r.pool.InScopedTenantTx(ctx, tenantID, p.UserID, p.AllowedSiteIDs, fn)
 	}
