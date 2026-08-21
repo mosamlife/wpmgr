@@ -571,7 +571,65 @@ CREATE TABLE api_keys (
     role         text        NOT NULL DEFAULT 'operator',
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_used_at timestamptz,
-    revoked_at   timestamptz
+    revoked_at   timestamptz,
+    -- m120 (#510): explicit capability set + site allowlist, so a machine
+    -- principal can be granted least privilege instead of a whole role rank.
+    -- What sort of principal this key represents. Closed discriminator.
+    kind             text   NOT NULL DEFAULT 'integration',
+    -- How permissions are computed: 'role' (legacy, authz.Allows over role) or
+    -- 'capability' (the capabilities set is authoritative and role is NOT
+    -- consulted). Deliberately redundant with `capabilities IS NOT NULL` and
+    -- held in lockstep by api_keys_auth_model_capabilities_check: SQL NULL and
+    -- '{}' both scan into a zero-length []string in Go, and that collapse is
+    -- the fail-open this column exists to prevent.
+    auth_model       text   NOT NULL DEFAULT 'role',
+    -- Nullable, NO default. '{}' as a default would give every pre-existing key
+    -- a zero-length capability set and strip the fleet's authority at boot.
+    capabilities     text[],
+    -- 'org' (tenant-wide, the existing behaviour) or 'site'. Values are exactly
+    -- domain.ScopeOrg / domain.ScopeSite.
+    site_scope       text   NOT NULL DEFAULT 'org',
+    -- Site allowlist. STORED HERE, NOT ENFORCED HERE: no RLS policy reads it.
+    -- The boundary is application-enforced in Go at one audited chokepoint in
+    -- v1; database-level site scoping for API-key principals is v2. NOT NULL
+    -- with an empty default because site_scope carries the "is restricted"
+    -- signal, so this column never needs NULL to mean "unrestricted".
+    allowed_site_ids uuid[] NOT NULL DEFAULT '{}'::uuid[],
+
+    -- m120: closed structural discriminators ARE constrained here.
+    CONSTRAINT api_keys_kind_check       CHECK (kind IN ('integration', 'agent')),
+    CONSTRAINT api_keys_auth_model_check CHECK (auth_model IN ('role', 'capability')),
+    CONSTRAINT api_keys_site_scope_check CHECK (site_scope IN ('org', 'site')),
+    -- Shape of the capability set only. The 30-string permission vocabulary is
+    -- owned by internal/authz/role.go and grows with ordinary feature work;
+    -- enumerating it in a CHECK would make every new permission fail 23514 in
+    -- production until a migration caught up, and migrations apply inside
+    -- main() at boot. Uses IMMUTABLE primitives exclusively (array_to_string is
+    -- STABLE, so a whole-array regex is not available here).
+    CONSTRAINT api_keys_capabilities_shape_check CHECK (
+        capabilities IS NULL
+        OR (
+            coalesce(array_ndims(capabilities), 1) = 1
+            AND cardinality(capabilities) <= 64
+            AND array_position(capabilities, NULL) IS NULL
+            AND NOT ('' = ANY (capabilities))
+        )
+    ),
+    -- Keeps auth_model and capabilities from ever diverging.
+    CONSTRAINT api_keys_auth_model_capabilities_check CHECK (
+        (auth_model = 'capability' AND capabilities IS NOT NULL)
+        OR (auth_model = 'role' AND capabilities IS NULL)
+    ),
+    -- An org-scoped key must not carry an allowlist: that half-state invites two
+    -- readers to disagree about where the boundary is.
+    CONSTRAINT api_keys_site_scope_allowlist_check CHECK (
+        site_scope = 'site' OR cardinality(allowed_site_ids) = 0
+    ),
+    -- The least-privilege guarantee in the database: an agent key can never
+    -- fall back to whole-role authority.
+    CONSTRAINT api_keys_agent_capability_check CHECK (
+        kind <> 'agent' OR auth_model = 'capability'
+    )
 );
 
 -- prefix is globally unique so the auth middleware can look a key up by prefix

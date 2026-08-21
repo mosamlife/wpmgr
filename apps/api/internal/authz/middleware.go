@@ -12,9 +12,10 @@ import (
 // allowlist for site-scoped principals. It must be applied AFTER RequireAuth
 // and RequireTenant (and typically after RequirePermission) on per-site routes.
 //
-// Behaviour:
-//   - Scope == "org" (or ""): no-op; full org members pass unconditionally.
-//   - Scope == "site": the :siteId path parameter is parsed and checked against
+// Behaviour, keyed on domain.IsSiteConstrained and not on the scope label:
+//   - unconstrained (org member, tenant-wide key, legacy zero-value scope):
+//     no-op; they pass unconditionally.
+//   - site constrained: the :siteId path parameter is parsed and checked against
 //     p.AllowedSiteIDs. If siteId is absent from the allowlist, the request is
 //     aborted with 404 (not 403, to avoid confirming site existence to a caller
 //     who has no access to this tenant at all).
@@ -31,8 +32,11 @@ func RequireSiteAccess(siteIDParam string) gin.HandlerFunc {
 			return
 		}
 
-		// Org-scoped (or legacy zero-value) principals: no site allowlist check.
-		if p.Scope != domain.ScopeSite {
+		// Unconstrained principals (org members, tenant-wide keys, legacy
+		// zero-value scope) pass: no allowlist to check. IsSiteConstrained is
+		// the shared predicate — see its doc comment for why a bare "no scope"
+		// is not treated as a restriction and why a populated allowlist is.
+		if !p.IsSiteConstrained() {
 			c.Next()
 			return
 		}
@@ -73,7 +77,15 @@ func RequireOrgScope() gin.HandlerFunc {
 			abort(c, domain.Unauthorized("unauthenticated", "authentication required"))
 			return
 		}
-		if p.Scope == domain.ScopeSite {
+		// IsSiteConstrained, not a bare Scope compare: this middleware IS the
+		// whole boundary for the fleet rollups that carry it (the email fleet
+		// group, /vulnerabilities, /perf/db/fleet-health, /perf/rum/fleet,
+		// /fleet/agents), none of which filter per site in the handler because
+		// none of them can — they aggregate the tenant. A principal that is
+		// constrained by an allowlist but whose scope label is missing would
+		// have walked straight through the old compare into a tenant-wide
+		// aggregate.
+		if p.IsSiteConstrained() {
 			abort(c, domain.Forbidden("org_scope_required", "this resource is not available to site-scoped access"))
 			return
 		}
@@ -129,10 +141,10 @@ func RequireRole(min Role) gin.HandlerFunc {
 	}
 }
 
-// orgLevelPerms is the set of permissions that require Scope=="org". A
-// site-scoped collaborator (Scope=="site") must never be able to exercise any
-// of these, regardless of the role they were granted on a specific site. This
-// is the belt-and-braces guard at the permission layer; the RLS restrictive
+// orgLevelPerms is the set of permissions no site-constrained principal may
+// exercise, regardless of the role it was granted on a specific site. "Site
+// constrained" is domain.IsSiteConstrained, not the scope label alone. This is
+// the belt-and-braces guard at the permission layer; the RLS restrictive
 // policies on the underlying tables are the database-level guard.
 var orgLevelPerms = map[Permission]struct{}{
 	PermMemberManage:  {},
@@ -147,24 +159,35 @@ var orgLevelPerms = map[Permission]struct{}{
 }
 
 // RequirePermission aborts unless the principal's role holds the permission.
-// FIX 1 (CRITICAL): if the requested permission is org-level AND the principal's
-// Scope != "org", the request is rejected with 403 (code 'org_scope_required')
-// REGARDLESS of role. This prevents a site-scoped collaborator from ever
-// reaching member management, API keys, audit log, or tenant management.
+//
+// If the requested permission is org-level AND the principal is site
+// constrained, the request is rejected with 403 (code 'org_scope_required')
+// REGARDLESS of role. This is what stops a site-scoped collaborator, or a
+// site-scoped capability key, from reaching member management, API keys, the
+// audit log or tenant management.
 func RequirePermission(perm Permission) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p, ok := principalWithTenant(c)
 		if !ok {
 			return
 		}
-		// Org-level permission guard: reject site-scoped principals unconditionally.
+		// Org-level permission guard: reject site-constrained principals
+		// unconditionally. This asks domain.IsSiteConstrained, the same single
+		// predicate as RequireSiteAccess, RequireOrgScope and the RLS dispatch
+		// in db.RunTenantTx — a bare Scope compare here would have let a
+		// principal carrying an allowlist without the label reach member
+		// management, API keys, the audit log and tenant settings while every
+		// other gate treated it as constrained.
 		if _, isOrgLevel := orgLevelPerms[perm]; isOrgLevel {
-			if p.Scope == domain.ScopeSite {
+			if p.IsSiteConstrained() {
 				abort(c, domain.Forbidden("org_scope_required", "this action requires full organisation membership"))
 				return
 			}
 		}
-		if !Allows(Role(p.Role), perm) {
+		// m120 (#510): PrincipalAllows, not Allows. For a capability principal
+		// the explicit set is authoritative and the role is never consulted;
+		// for every other principal this is identical to Allows(Role, perm).
+		if !PrincipalAllows(p, perm) {
 			abort(c, domain.Forbidden("insufficient_permission", "your role does not permit this action"))
 			return
 		}

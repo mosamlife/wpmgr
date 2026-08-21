@@ -515,6 +515,17 @@ type Querier interface {
 	// Count registered WebAuthn credentials for a user. Used to recompute
 	// two_factor_enabled after credential deletion.
 	CountWebAuthnCredentials(ctx context.Context, userID uuid.UUID) (int64, error)
+	// CreateAPIKey is the ONLY INSERT path for api_keys, deliberately. m120 (#510)
+	// extended it in place rather than adding a second capability-aware INSERT
+	// alongside it: two INSERT statements over a table whose CHECK constraints
+	// encode an authorization contract is one statement that can forget a column,
+	// and the column it forgets defaults to the permissive legacy value.
+	//
+	// Callers pass auth_model='role' + capabilities=NULL for a legacy role key, or
+	// auth_model='capability' + a non-NULL (possibly empty) set for a least-
+	// privilege key. api_keys_auth_model_capabilities_check refuses every other
+	// combination, so an inconsistent pair fails 23514 here rather than
+	// authenticating with surprise authority later.
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	// M4 backup queries. Every statement is tenant-scoped both explicitly
 	// (tenant_id in the WHERE/VALUES) and by RLS (the app.tenant_id policy).

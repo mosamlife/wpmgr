@@ -29,6 +29,15 @@ const keyPrefix = "wpmgr"
 
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
+// KindIntegration is an ordinary operator-minted key. Default; may use either
+// authorization model.
+const KindIntegration = "integration"
+
+// KindAgent is a machine principal minted for an automated caller. m120's
+// api_keys_agent_capability_check refuses an agent key on the role model, so
+// these are always least-privilege.
+const KindAgent = "agent"
+
 // APIKey is a stored key record (never includes the secret).
 type APIKey struct {
 	ID         uuid.UUID
@@ -39,6 +48,38 @@ type APIKey struct {
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
+
+	// Kind is KindIntegration or KindAgent.
+	Kind string
+	// AuthModel is domain.AuthModelRole or domain.AuthModelCapability. It is
+	// the sole discriminator for how this key's permissions are computed, and
+	// it is NOT derivable from Capabilities: a NULL capabilities column and an
+	// empty one both scan into a zero-length slice.
+	AuthModel string
+	// Capabilities is the explicit permission set, non-nil exactly when
+	// AuthModel is domain.AuthModelCapability. Nil for a role key.
+	Capabilities []string
+	// SiteScope is domain.ScopeOrg or domain.ScopeSite.
+	SiteScope string
+	// AllowedSiteIDs is the site allowlist, non-empty only when SiteScope is
+	// domain.ScopeSite. STORED, NOT ENFORCED BY RLS: no policy reads the
+	// column (see the m120 header). The site boundary for these principals is
+	// enforced in Go, and the enforcement chokepoint is NOT yet wired — see
+	// PrincipalFor.
+	AllowedSiteIDs []uuid.UUID
+}
+
+// CapabilitySpec describes a least-privilege key to be minted.
+type CapabilitySpec struct {
+	// Kind is KindIntegration or KindAgent. Empty defaults to KindIntegration.
+	Kind string
+	// Capabilities is the explicit permission set. It MUST be non-nil; an
+	// empty non-nil set is legal and means zero authority. Nil is refused,
+	// because nil is how a role key is represented and accepting it here would
+	// mint a role key wearing a capability label.
+	Capabilities []string
+	// AllowedSiteIDs restricts the key to these sites. Empty means org scope.
+	AllowedSiteIDs []uuid.UUID
 }
 
 // Created bundles a freshly created key with its one-time plaintext token.
@@ -86,12 +127,17 @@ func NewService(pool *db.Pool) *Service {
 
 func toModel(k sqlc.ApiKey) APIKey {
 	m := APIKey{
-		ID:        k.ID,
-		TenantID:  k.TenantID,
-		Name:      k.Name,
-		Prefix:    k.Prefix,
-		Role:      authz.Role(k.Role),
-		CreatedAt: k.CreatedAt,
+		ID:             k.ID,
+		TenantID:       k.TenantID,
+		Name:           k.Name,
+		Prefix:         k.Prefix,
+		Role:           authz.Role(k.Role),
+		CreatedAt:      k.CreatedAt,
+		Kind:           k.Kind,
+		AuthModel:      k.AuthModel,
+		Capabilities:   k.Capabilities,
+		SiteScope:      k.SiteScope,
+		AllowedSiteIDs: k.AllowedSiteIds,
 	}
 	if k.LastUsedAt.Valid {
 		t := k.LastUsedAt.Time
@@ -116,24 +162,123 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, name string, r
 	if role == authz.RoleClient {
 		return Created{}, domain.Validation("apikey_role_invalid", "client role cannot be assigned to an API key")
 	}
-	prefix, err := randomToken(6)
+	prefix, secret, err := newTokenParts()
 	if err != nil {
-		return Created{}, domain.Internal("apikey_gen_failed", "failed to generate key").WithCause(err)
+		return Created{}, err
 	}
-	secret, err := randomToken(24)
-	if err != nil {
-		return Created{}, domain.Internal("apikey_gen_failed", "failed to generate key").WithCause(err)
-	}
-	token := keyPrefix + "_" + prefix + "_" + secret
+	// m120 (#510): the three discriminator columns and the two array columns are
+	// passed EXPLICITLY. Leaving them off a keyed literal is not a compile
+	// error — it silently sends "" for the strings and SQL NULL for the arrays,
+	// which the CHECK and NOT NULL constraints then refuse at runtime. Keep
+	// every column named here even where the value equals the column default.
+	return s.insert(ctx, tenantID, name, prefix, secret, insertSpec{
+		role:      role,
+		kind:      KindIntegration,
+		authModel: domain.AuthModelRole,
+		// nil, not []string{}: SQL NULL is what the role model requires, and
+		// api_keys_auth_model_capabilities_check enforces the pairing.
+		capabilities: nil,
+		siteScope:    domain.ScopeOrg,
+		// Non-nil empty, not nil: the column is NOT NULL DEFAULT '{}', and a
+		// nil slice encodes as SQL NULL, which fails 23502.
+		allowedSiteIDs: []uuid.UUID{},
+	})
+}
 
+// CreateCapability mints a least-privilege key whose authority is an explicit
+// capability set. The stored role is deliberately RoleClient — the one role
+// that holds zero permissions in the matrix — so that if any future code path
+// ever reaches this key's role instead of its capabilities, the answer is "no"
+// rather than a silent grant. The capability model does not consult it, and
+// nothing should, but a fail-safe value costs nothing here.
+func (s *Service) CreateCapability(ctx context.Context, tenantID uuid.UUID, name string, spec CapabilitySpec) (Created, error) {
+	if name == "" {
+		return Created{}, domain.Validation("apikey_name_required", "API key name is required")
+	}
+	kind := spec.Kind
+	if kind == "" {
+		kind = KindIntegration
+	}
+	if kind != KindIntegration && kind != KindAgent {
+		return Created{}, domain.Validation("apikey_kind_invalid", "invalid API key kind")
+	}
+	// Vocabulary and per-element format live here because the database
+	// deliberately does not enumerate the permission strings; see
+	// authz.ValidateCapabilities. An unknown capability is refused, not dropped.
+	if err := authz.ValidateCapabilities(spec.Capabilities); err != nil {
+		return Created{}, err
+	}
+
+	// Normalise the capability set to non-nil so it reaches Postgres as '{}'
+	// rather than NULL. ValidateCapabilities already refused a nil set, so this
+	// only ever converts an empty-but-non-nil slice that pgx would still encode
+	// correctly — it is belt-and-braces against a future caller path.
+	caps := spec.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
+
+	siteScope := domain.ScopeOrg
+	allowed := []uuid.UUID{}
+	if len(spec.AllowedSiteIDs) > 0 {
+		siteScope = domain.ScopeSite
+		allowed = append(allowed, spec.AllowedSiteIDs...)
+	}
+
+	prefix, secret, err := newTokenParts()
+	if err != nil {
+		return Created{}, err
+	}
+	return s.insert(ctx, tenantID, name, prefix, secret, insertSpec{
+		role:           authz.RoleClient,
+		kind:           kind,
+		authModel:      domain.AuthModelCapability,
+		capabilities:   caps,
+		siteScope:      siteScope,
+		allowedSiteIDs: allowed,
+	})
+}
+
+// insertSpec carries the full api_keys column set for one INSERT. It exists so
+// that both mint paths go through a single struct literal that names every
+// m120 column, making an omission a compile error at the one place it is built
+// rather than a silent zero value at each call site.
+type insertSpec struct {
+	role           authz.Role
+	kind           string
+	authModel      string
+	capabilities   []string
+	siteScope      string
+	allowedSiteIDs []uuid.UUID
+}
+
+func newTokenParts() (prefix, secret string, err error) {
+	prefix, err = randomToken(6)
+	if err != nil {
+		return "", "", domain.Internal("apikey_gen_failed", "failed to generate key").WithCause(err)
+	}
+	secret, err = randomToken(24)
+	if err != nil {
+		return "", "", domain.Internal("apikey_gen_failed", "failed to generate key").WithCause(err)
+	}
+	return prefix, secret, nil
+}
+
+func (s *Service) insert(ctx context.Context, tenantID uuid.UUID, name, prefix, secret string, spec insertSpec) (Created, error) {
+	token := keyPrefix + "_" + prefix + "_" + secret
 	var created Created
-	err = s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := s.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		row, err := sqlc.New(tx).CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{
-			TenantID: tenantID,
-			Name:     name,
-			Prefix:   prefix,
-			KeyHash:  hashSecret(secret),
-			Role:     string(role),
+			TenantID:       tenantID,
+			Name:           name,
+			Prefix:         prefix,
+			KeyHash:        hashSecret(secret),
+			Role:           string(spec.role),
+			Kind:           spec.kind,
+			AuthModel:      spec.authModel,
+			Capabilities:   spec.capabilities,
+			SiteScope:      spec.siteScope,
+			AllowedSiteIds: spec.allowedSiteIDs,
 		})
 		if err != nil {
 			return domain.Internal("apikey_create_failed", "failed to create API key").WithCause(err)
@@ -142,6 +287,38 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, name string, r
 		return nil
 	})
 	return created, err
+}
+
+// PrincipalFor builds the request principal for an authenticated key. The
+// stored site_scope values are exactly domain.ScopeOrg / domain.ScopeSite and
+// the auth_model values exactly domain.AuthModelRole /
+// domain.AuthModelCapability, so this is an assignment, not a translation.
+//
+// NOTE (out of scope for the #510 Go half, deliberately): populating
+// Scope/AllowedSiteIDs here makes authz.RequireSiteAccess enforce the allowlist
+// on every by-id route that already calls it, because that middleware keys on
+// Scope == domain.ScopeSite. Routes that do NOT call it — and the bulk routes
+// that fan out over many sites in the handler — are not covered by this change.
+func PrincipalFor(k APIKey) domain.Principal {
+	p := domain.Principal{
+		Type:         domain.PrincipalAPIKey,
+		APIKeyID:     k.ID,
+		TenantID:     k.TenantID,
+		Role:         string(k.Role),
+		Scope:        k.SiteScope,
+		AuthModel:    k.AuthModel,
+		Capabilities: k.Capabilities,
+	}
+	if p.Scope == "" {
+		p.Scope = domain.ScopeOrg
+	}
+	if p.AuthModel == "" {
+		p.AuthModel = domain.AuthModelRole
+	}
+	if p.Scope == domain.ScopeSite {
+		p.AllowedSiteIDs = append([]uuid.UUID(nil), k.AllowedSiteIDs...)
+	}
+	return p
 }
 
 // List returns a tenant's API keys.

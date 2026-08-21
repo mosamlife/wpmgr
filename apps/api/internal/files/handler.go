@@ -1370,12 +1370,18 @@ func bindJSON(c *gin.Context, dst any) error {
 	return nil
 }
 
+// allows answers the in-handler permission question for conditional behaviour
+// (a field the caller may not see, a branch it may not take). It MUST route
+// through authz.PrincipalAllows, never authz.Allows: the latter takes only the
+// role, so a capability key — whose role is a placeholder and whose authority
+// is the explicit set — would be handed its full role rank here. That was the
+// bypass #510 exists to close, and TestNoDirectAllowsOutsideAuthz keeps it shut.
 func (h *Handler) allows(c *gin.Context, perm authz.Permission) bool {
 	p, ok := domain.PrincipalFromContext(c.Request.Context())
 	if !ok {
 		return false
 	}
-	return authz.Allows(authz.Role(p.Role), perm)
+	return authz.PrincipalAllows(p, perm)
 }
 
 func (h *Handler) record(c *gin.Context, p domain.Principal, action string, siteID uuid.UUID, meta map[string]any) {

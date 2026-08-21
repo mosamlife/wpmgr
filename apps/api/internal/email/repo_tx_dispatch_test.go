@@ -139,9 +139,23 @@ func TestScopedTenantTxStillDispatchesOnSiteScope(t *testing.T) {
 		t.Fatal("Repo.scopedTenantTx no longer calls InScopedTenantTx, so nothing sets " +
 			"app.site_scope on the email path and the m112 policies never activate")
 	}
-	if !mentionsIdent(body, "ScopeSite") {
-		t.Fatal("Repo.scopedTenantTx no longer tests for domain.ScopeSite, so its dispatch " +
-			"cannot be selecting site-scoped principals")
+	// The dispatch must ask the SHARED predicate, not a local restatement.
+	// #513 found this helper deciding on a bare `p.Scope == domain.ScopeSite`
+	// while every other site gate had moved to IsSiteConstrained, which left a
+	// principal carrying an allowlist without the scope label constrained at
+	// the HTTP gate and tenant-wide over every email row. mentionsIdent matches
+	// the selector name, so this accepts p.IsSiteConstrained() and
+	// domain.IsSiteConstrained(...) alike and rejects a copy of the expression.
+	if !mentionsIdent(body, "IsSiteConstrained") {
+		t.Fatal("Repo.scopedTenantTx no longer asks IsSiteConstrained. That predicate is the " +
+			"single definition of \"this principal is restricted to an allowlist\" — shared " +
+			"with db.RunTenantTx and every HTTP site gate. A restatement here (a bare " +
+			"Scope == ScopeSite, say) drifts silently and sends a constrained principal " +
+			"into a tenant-wide transaction.")
+	}
+	if mentionsIdent(body, "ScopeSite") {
+		t.Fatal("Repo.scopedTenantTx compares against domain.ScopeSite directly again. Ask " +
+			"IsSiteConstrained instead; the scope label is only one of its two disjuncts.")
 	}
 }
 
