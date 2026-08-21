@@ -197,8 +197,15 @@ write_shim "$T" go write
 write_shim "$T" pnpm write
 run_case "$T" "$T"
 expect_status "happy" 0
-expect_output "happy" "regenerated $T/apps/api/internal/api/gen"
-expect_output "happy" "regenerated $T/packages/openapi-client/src/generated"
+# Trailing relative portion only, not the full "$T/..." path: $T comes from
+# mktemp -d, and on macOS /tmp is a symlink to /private/tmp (mktemp itself
+# resolves it, so the absolute prefix happens to match), while on Linux
+# there is no such symlink and the prefixes diverge even though the script's
+# behaviour is identical. See go-noop/ts-noop below for where this was
+# caught: it still fails if the message stops naming the tree.
+expect_output "happy" "regenerated"
+expect_output "happy" "apps/api/internal/api/gen"
+expect_output "happy" "packages/openapi-client/src/generated"
 expect_output "happy" "OK: both trees regenerated"
 
 # ---------------------------------------------------------------------------
@@ -227,7 +234,13 @@ write_shim "$T" pnpm write
 run_case "$T" "$T"
 expect_status "go-noop" 1
 expect_output "go-noop" "exited 0 but wrote nothing"
-expect_output "go-noop" "$T/apps/api/internal/api/gen"
+# Trailing relative portion only, not "$T/...": $T is built from mktemp -d,
+# and the absolute prefix the script prints does not portably equal it (this
+# assertion was "$T/apps/api/internal/api/gen" and failed on Linux CI while
+# passing locally on macOS, where /tmp happens to resolve through /private/tmp
+# to the same path mktemp already returns). Still fails if the message stops
+# naming which tree was empty.
+expect_output "go-noop" "apps/api/internal/api/gen"
 
 printf '\ncase: ts generator exits 0 and writes nothing -- must fail\n'
 T="$(make_tree ts_noop)"
@@ -236,7 +249,12 @@ write_shim "$T" pnpm nothing
 run_case "$T" "$T"
 expect_status "ts-noop" 1
 expect_output "ts-noop" "exited 0 but wrote nothing"
-expect_output "ts-noop" "$T/packages/openapi-client/src/generated"
+# Trailing relative portion only -- see the go-noop comment above. This is
+# the exact assertion that failed on Linux CI ("does not mention
+# '/tmp/gen-openapi-test.FsicRA/ts_noop/packages/openapi-client/src/generated'")
+# while the underlying behaviour (exit 1, message naming the tree) was
+# already correct there.
+expect_output "ts-noop" "packages/openapi-client/src/generated"
 
 # ---------------------------------------------------------------------------
 printf '\ncase: generator exits non-zero -- must fail, not continue\n'
