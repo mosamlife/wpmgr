@@ -30,17 +30,13 @@ import { relativeTime } from "@/lib/utils";
 // client agrees) and trusted verbatim here. This module never re-derives
 // staleness or the roll-up from raw timestamps.
 //
-// NOTE ON NULLS: packages/openapi/openapi.yaml is OpenAPI 3.1, where
-// `nullable: true` is not a valid keyword; the generator therefore emits
-// every nullable AgentMirrorStatus field (last_success_at,
-// last_success_version, last_attempt_at, last_attempt_outcome,
-// last_attempt_detail, last_mirrored_at, last_mirrored_version, ...) as a
-// plain non-optional `string`/enum type even though the control plane sends
-// a genuine JSON `null` for "never recorded" (see
-// agentrelease/handler.go's formatMirrorTime/nonEmptyMirrorString). The
-// `nullableString` helper below undoes that generated optimism explicitly
-// rather than trust the generated type where the wire truth disagrees with
-// it.
+// NOTE ON NULLS (GH #479, GH #508): the spec expresses nullability in the 3.1
+// union form, so the generated AgentMirrorStatus tells the truth for every
+// "never recorded" field, `last_attempt_outcome` included, and this module
+// reads all of them directly with no cast and no shim. Each one is filled by
+// agentrelease/handler.go's formatMirrorTime or nonEmptyMirrorString, both of
+// which return nil for "never happened", so the wire genuinely carries null
+// there before the first mirror run.
 
 export type ReferenceCheckTone = "info" | "warn";
 
@@ -64,14 +60,6 @@ function ago(iso: string | null): string {
   return relativeTime(iso) ?? "recently";
 }
 
-/** See the NOTE ON NULLS above: the generated type claims these string
- *  fields are never null, but the wire sends a real null for "never
- *  recorded". */
-function nullableString<T extends string>(value: T): T | null {
-  const raw: unknown = value;
-  return raw as T | null;
-}
-
 const SIX_HOUR_CYCLE_NOTE =
   "That is longer than the usual 6 hour cycle, so a newer release may exist and WPMgr would not know.";
 
@@ -79,11 +67,11 @@ function describeEnabledMirrorState(
   mirror: AgentMirrorStatus,
   hasPublishedReference: boolean,
 ): ReferenceCheckMessage {
-  const lastAttemptAt = nullableString(mirror.last_attempt_at);
-  const lastAttemptOutcome = nullableString(mirror.last_attempt_outcome);
-  const lastAttemptDetail = nullableString(mirror.last_attempt_detail);
-  const lastSuccessAt = nullableString(mirror.last_success_at);
-  const lastSuccessVersion = nullableString(mirror.last_success_version) ?? "an earlier release";
+  const lastAttemptAt = mirror.last_attempt_at;
+  const lastAttemptOutcome = mirror.last_attempt_outcome;
+  const lastAttemptDetail = mirror.last_attempt_detail;
+  const lastSuccessAt = mirror.last_success_at;
+  const lastSuccessVersion = mirror.last_success_version ?? "an earlier release";
 
   // The mirror could not run at all (object storage/HTTP client not wired).
   // Never self-heals, so this warns immediately regardless of staleness.

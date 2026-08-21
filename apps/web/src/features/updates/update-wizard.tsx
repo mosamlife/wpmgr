@@ -74,10 +74,15 @@ function normalizeVersion(version: string): string {
  * cached `1.5.1 -> 1.5.1` row) being treated as a real update (GH #211).
  * The backend is also being fixed to stop sending/persisting these, but this
  * keeps the wizard correct against already-cached data.
+ *
+ * A null `available_update` is the wire's way of saying there is no update for
+ * this component, which is a distinct fact from "we have not looked". Both
+ * answer this predicate with false, and the caller renders the component with
+ * no update badge rather than a zero or a blank.
  */
 function isRealUpdate(
   installedVersion: string | undefined,
-  availableUpdate: { new_version: string } | undefined,
+  availableUpdate: { new_version: string } | null | undefined,
 ): boolean {
   if (!availableUpdate) return false;
   if (installedVersion === undefined) return true;

@@ -136,7 +136,7 @@ export function FleetEmailDeliverability({ stats }: FleetEmailDeliverabilityProp
         <StatCard label="Total" value={stats.total} />
         <StatCard label="Sent" value={stats.sent_count} variant="success" />
         <StatCard label="Failed" value={stats.failed_count} variant="destructive" />
-        {stats.site_count !== undefined ? (
+        {stats.site_count != null ? (
           <StatCard label="Sites" value={stats.site_count} />
         ) : null}
       </div>

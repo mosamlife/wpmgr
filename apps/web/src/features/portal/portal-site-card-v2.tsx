@@ -44,7 +44,7 @@ function siteStatusVariant(
 // TLS expiry helper
 // ---------------------------------------------------------------------------
 
-function tlsLabel(expiresAt: string | undefined): string | null {
+function tlsLabel(expiresAt: string | null | undefined): string | null {
   if (!expiresAt) return null;
   const exp = new Date(expiresAt);
   const now = Date.now();

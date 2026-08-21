@@ -112,7 +112,7 @@ function ReadyBody({ report }: { report: SqlInspection }) {
 }
 
 function MetadataGrid({ report }: { report: SqlInspection }) {
-  const rows: Array<{ label: string; value: string | undefined }> = [
+  const rows: Array<{ label: string; value: string | null | undefined }> = [
     { label: "Site URL", value: report.siteurl },
     { label: "Home URL", value: report.home },
     { label: "Table prefix", value: report.table_prefix },
@@ -128,7 +128,13 @@ function MetadataGrid({ report }: { report: SqlInspection }) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string | undefined }) {
+function Row({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null | undefined;
+}) {
   return (
     <>
       <dt className="text-[var(--color-muted-foreground)]">{label}</dt>

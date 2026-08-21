@@ -1145,6 +1145,16 @@ type StartScanRunRes interface {
 	startScanRunRes()
 }
 
+type StreamBackupSnapshotEventsRes interface {
+	initSSEStream(sseConnectFunc, sseClientConfig)
+	streamBackupSnapshotEventsRes()
+}
+
+type StreamUpdateRunEventsRes interface {
+	initSSEStream(sseConnectFunc, sseClientConfig)
+	streamUpdateRunEventsRes()
+}
+
 type SuspendAdminAccountRes interface {
 	suspendAdminAccountRes()
 }

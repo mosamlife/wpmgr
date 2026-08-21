@@ -1,14 +1,21 @@
 # ogen generator configuration. See https://ogen.dev/docs/configuration
-# Default generation produces typed models, request/response validation,
-# a server interface, and a client. We consume the types + validation and
-# wire handlers under Gin (ogen's own router is not mounted).
+# We consume the generated types, their Validate() methods and the client.
+# Gin owns HTTP routing in internal/server, so ogen's server half (the Handler
+# interface, the router, the unimplemented stub and the server-side
+# encoders/decoders) was generated but never mounted. Since 2026-08-21 it is
+# not generated at all: `paths/server` and `webhooks/server` are off below.
 #
-# The SSE endpoints (GET /api/v1/updates/{runId}/events,
-# GET /api/v1/backups/{snapshotId}/events) use text/event-stream, which ogen
-# cannot model as a typed operation. We still document their event payloads as
-# the UpdateEvent / BackupEvent schemas (generated as normal types) and handle
-# the streaming transport by hand in the Gin handlers, so we tell ogen to skip
-# the unsupported content type rather than fail generation.
+# That switch is what lets the SSE endpoints generate. ogen still cannot model
+# text/event-stream as a server operation, and with server generation on it
+# registered response marker methods on the shared Error type before raising
+# the not-implemented error, emitting a method that referenced two types it
+# then never wrote — so the package did not compile. With server generation
+# off, no operation is skipped: streamSiteEvents, streamUpdateRunEvents and
+# streamBackupSnapshotEvents all materialise as ordinary client methods and
+# typed event payloads. The Gin handlers still own the streaming transport by
+# hand; nothing consumes the generated SSE client methods today.
 generator:
-  ignore_not_implemented:
-    - "unsupported content types"
+  features:
+    disable:
+      - "paths/server"
+      - "webhooks/server"

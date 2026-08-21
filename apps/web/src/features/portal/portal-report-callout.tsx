@@ -35,7 +35,9 @@ function formatPeriod(report: PortalSummaryLatestReport): string {
 // ---------------------------------------------------------------------------
 
 export interface PortalReportCalloutProps {
-  latestReport: PortalSummaryLatestReport | undefined;
+  // Null and undefined both mean "no report yet": the field is omitted on some
+  // responses and an explicit JSON null on others. Both render as absence.
+  latestReport: PortalSummaryLatestReport | null | undefined;
 }
 
 export function PortalReportCallout({ latestReport }: PortalReportCalloutProps) {

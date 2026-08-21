@@ -85,7 +85,12 @@ export interface PortalHeroProps {
   agencyName: string;
   periodLabel: string;
   totals: PortalSummaryTotals;
-  vitalsOverall: "good" | "needs-improvement" | "poor" | undefined;
+  /**
+   * Null when the fleet has not collected enough real-user samples to rate
+   * Core Web Vitals. That is a different fact from a bad score and is never
+   * rendered as one: see the "Site speed" tile below.
+   */
+  vitalsOverall: "good" | "needs-improvement" | "poor" | null | undefined;
 }
 
 export function PortalHero({
@@ -155,16 +160,17 @@ export function PortalHero({
         </KpiTile>
 
         {/* Site speed (vitals) */}
-        <KpiTile
-          label="Site speed"
-          subline={vitalsLabel ? undefined : "No data yet"}
-        >
+        <KpiTile label="Site speed">
           {vitalsLabel ? (
             <span className={cn("font-sans text-xl", vitalsColor ?? "")}>
               {vitalsLabel}
             </span>
           ) : (
-            <span className="text-[var(--color-muted-foreground)]">—</span>
+            // Absence is stated in words, not as a placeholder glyph. A dash
+            // in a slot that otherwise holds a rating reads as a rating.
+            <span className="font-sans text-sm font-normal text-[var(--color-muted-foreground)]">
+              Not enough data
+            </span>
           )}
         </KpiTile>
       </div>

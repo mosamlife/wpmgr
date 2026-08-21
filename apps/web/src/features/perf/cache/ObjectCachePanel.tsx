@@ -251,8 +251,8 @@ interface StatusHeaderProps {
   oc_state: OcState;
   oc_latency_ms: number;
   oc_used_memory_bytes: number;
-  oc_hit_ratio_pct?: number;
-  oc_last_error_class?: string;
+  oc_hit_ratio_pct?: number | null;
+  oc_last_error_class?: string | null;
   enabled: boolean;
   canOperate: boolean;
   onEnable: () => void;
@@ -298,7 +298,7 @@ function StatusHeader({
                 label="Memory"
                 value={formatBytes(oc_used_memory_bytes)}
               />
-              {oc_hit_ratio_pct !== undefined ? (
+              {oc_hit_ratio_pct != null ? (
                 <StatChip
                   icon={<Zap aria-hidden="true" className="size-3.5" />}
                   label="Hit ratio"
@@ -1358,8 +1358,8 @@ export function ObjectCachePanel({
         {isConfigured ? (
           <StatusHeader
             oc_state={oc_state}
-            oc_latency_ms={cfg.oc_latency_ms ?? 0}
-            oc_used_memory_bytes={cfg.oc_used_memory_bytes ?? 0}
+            oc_latency_ms={cfg.oc_latency_ms}
+            oc_used_memory_bytes={cfg.oc_used_memory_bytes}
             oc_hit_ratio_pct={cfg.oc_hit_ratio_pct}
             oc_last_error_class={cfg.oc_last_error_class}
             enabled={cfg.enabled}

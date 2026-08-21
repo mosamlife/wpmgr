@@ -786,7 +786,9 @@ export function useResendEmail(
       if (result.ok) {
         toast.success("Email queued for resend");
       } else {
-        toast.error("Resend failed", { description: result.detail });
+        // A null detail means the agent gave no reason. Pass undefined so the
+        // toast renders the title alone rather than an empty description line.
+        toast.error("Resend failed", { description: result.detail ?? undefined });
       }
       void queryClient.invalidateQueries({
         queryKey: emailKeys.all,
