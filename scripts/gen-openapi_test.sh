@@ -53,8 +53,10 @@ BASE_BIN="$WORKROOT/basebin"
 mkdir -p "$BASE_BIN"
 
 # bash runs the script under test; the rest are what the script itself calls
-# (mktemp/find/rm for the marker, cat for the drift message, git for --check).
-for tool in bash mktemp find rm cat git; do
+# (mktemp/find/rm for the marker, cat for the drift message, git for --check,
+# ps/sleep/kill for the run_generator deadline watchdog -- kill is a bash
+# builtin so it needs no PATH entry, but ps and sleep are external).
+for tool in bash mktemp find rm cat git ps sleep; do
 	resolved="$(command -v "$tool" 2>/dev/null || true)"
 	if [ -z "$resolved" ]; then
 		printf 'gen-openapi_test: FATAL: required utility %s not found on PATH.\n' "$tool" >&2

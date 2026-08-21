@@ -50,6 +50,9 @@ usage: scripts/gen-openapi.sh [--check] [ROOT]
             from what was just generated (drift detection for CI)
   ROOT      repository root to operate on (default: the repo containing this
             script)
+
+  GEN_OPENAPI_DEADLINE  seconds each generator gets before it is killed
+                         (default: 120). See run_generator in this script.
 USAGE
 }
 
@@ -129,8 +132,39 @@ require_dir() {
 }
 
 MARKER=""
-cleanup() { [ -n "$MARKER" ] && rm -f "$MARKER"; return 0; }
+TIMEOUT_FLAG=""
+cleanup() {
+	[ -n "$MARKER" ] && rm -f "$MARKER"
+	[ -n "$TIMEOUT_FLAG" ] && rm -f "$TIMEOUT_FLAG"
+	return 0
+}
 trap cleanup EXIT
+
+# Print $1 and every descendant pid of it, one per line, by walking
+# `ps`-reported parent links. Used to reach a whole subprocess tree (a
+# generator plus whatever it spawned) without process-group/job-control
+# machinery: enabling job control (`set -m`) to get a fresh pgid needs a
+# controlling terminal, and this script has none when it runs inside a pipe
+# or `$(...)` -- which is exactly how its own test suite invokes it, and
+# exactly how the `codegen-drift` CI job invokes it too. A bare `set -m` in
+# that context does not reliably return; that was tried here and hung.
+pid_tree() {
+	local root="$1" pid ppid
+	printf '%s\n' "$root"
+	ps -Ao pid=,ppid= 2>/dev/null | while read -r pid ppid; do
+		[ "$ppid" = "$root" ] && pid_tree "$pid"
+	done
+}
+
+# Send $1 (a signal name) to $2 and every descendant it has *right now*. Called
+# twice (TERM, then KILL after a grace period) so it re-walks the tree fresh
+# each time rather than trusting a snapshot taken before the first signal.
+kill_tree() {
+	local sig="$1" root="$2" p
+	for p in $(pid_tree "$root"); do
+		kill -"$sig" "$p" 2>/dev/null || true
+	done
+}
 
 # Run one generator, from a given working directory, and prove it actually
 # wrote to its output tree.
@@ -154,8 +188,117 @@ run_generator() {
 
 	MARKER="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-marker.XXXXXX")"
 
-	say "$label: running (in $workdir): $*"
-	if ! (cd "$workdir" && "$@"); then
+	# A bounded, process-tree-aware deadline (GH #511 follow-up). Without
+	# this, a generator -- or a child it spawns, which matters because pnpm
+	# spawns its own children -- that stalls means this script cannot return,
+	# and `make gen` hangs indefinitely. That is exactly the shape this
+	# project's working agreement calls out: never wait on a process with an
+	# unbounded loop.
+	#
+	# This is implemented directly in shell rather than shelled out to
+	# `timeout(1)`: that binary is not installed on every machine this script
+	# runs on (notably not on macOS by default), and a `timeout`-wrapped
+	# command that silently fails to resolve reads as a pass, which is the
+	# exact failure this file exists to prevent. `command -v timeout` was
+	# checked and came back empty here, so the deadline below uses only
+	# `sleep`, `kill` and `ps`, which are assumed present the same way the
+	# rest of the script already assumes `find`/`mktemp`/`cat`.
+	#
+	# An earlier version of this tried to get the child a fresh process group
+	# via job control (`set -m`) and signal `-$pgid`. That is the obvious
+	# answer and it is wrong here: job control needs a controlling terminal,
+	# and `set -m` inside a pipe or `$(...)` -- with no tty -- does not
+	# reliably return. It hung this exact script when driven from the test
+	# suite's `OUT="$(... bash gen-openapi.sh ...)"`, and `ci.yml`'s
+	# `codegen-drift` job invokes this script the same way (piped, no tty), so
+	# the hang was not a test-harness artifact, it would have hung CI. The
+	# watchdog below instead walks `ps`'s parent-pid links (`pid_tree` /
+	# `kill_tree`, defined above) to find every real descendant of the
+	# generator and signals each by pid. TERM first, then KILL after a short
+	# grace period, in case something in the tree traps or ignores TERM.
+	#
+	# Default: 120s. `time make gen` regenerates both trees, together, in
+	# 3.3-4.3s warm. 120s is roughly 30-35x that for a single generator's
+	# share of the work, which comfortably covers a cold CI cache (go module
+	# download, pnpm install) while still turning a real hang into a bounded,
+	# actionable failure within two minutes instead of never returning.
+	# Overridable via GEN_OPENAPI_DEADLINE, which is how the test suite
+	# proves this in seconds rather than minutes.
+	local deadline="${GEN_OPENAPI_DEADLINE:-120}"
+
+	say "$label: running (in $workdir, ${deadline}s deadline): $*"
+
+	# stdin is explicitly /dev/null, not inherited. A backgrounded child that
+	# keeps the invoking shell's controlling terminal as its stdin can stall
+	# indefinitely under that terminal's job-control arbitration even though
+	# it never reads from stdin -- reproduced directly while building this:
+	# the identical command hung until the deadline killed it with stdin
+	# inherited, and returned in under a second with stdin as /dev/null.
+	# Neither generator needs interactive input, so this is also just
+	# correct for a background, deadline-guarded process.
+	(cd "$workdir" && exec "$@") </dev/null &
+	local pid=$!
+
+	TIMEOUT_FLAG="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-timeout.XXXXXX")"
+	rm -f "$TIMEOUT_FLAG"
+
+	(
+		sleep "$deadline"
+		if kill -0 "$pid" 2>/dev/null; then
+			(: >"$TIMEOUT_FLAG") 2>/dev/null || true
+			kill_tree TERM "$pid"
+			sleep 2
+			kill_tree KILL "$pid"
+		fi
+	) &
+	local watchdog=$!
+
+	# Deliberately `if wait; then ... else status=$?; fi`, not `if ! wait;
+	# then status=$?; fi`: with `!`, the `$?` seen inside the `then` branch is
+	# the *negated* status bash assigns to the `!`-prefixed pipeline, not
+	# wait's own exit code, so it silently records the wrong value on every
+	# failure. Caught by the go-fail case below, which expects to see "go/ogen
+	# generator failed" and instead got the wrong branch entirely.
+	local status=0
+	if wait "$pid"; then
+		status=0
+	else
+		status=$?
+	fi
+
+	# The job finished (or was killed) either way; stop the watchdog if it is
+	# still sleeping so a fast, successful run does not wait out the deadline.
+	# `kill "$watchdog"` alone is not enough: the watchdog is a subshell
+	# blocked inside its own `sleep "$deadline"`, and signalling the subshell
+	# terminates the subshell without touching the `sleep` process it is
+	# waiting on -- that leaves `sleep` orphaned (reparented to pid 1) but
+	# still running for the rest of the deadline, still holding this script's
+	# inherited stdout/stderr open. Any caller reading this script's output
+	# through a pipe -- exactly how `scripts/gen-openapi_test.sh` captures it,
+	# and exactly how a caller doing `out=$(... scripts/gen-openapi.sh ...)`
+	# would too -- then blocks reading for EOF that never comes until that
+	# orphaned `sleep` finally finishes. Reproduced directly while building
+	# this: the happy-path case hung past its default 120s deadline with
+	# plain `kill`, and returned immediately once this used `kill_tree`.
+	kill_tree TERM "$watchdog"
+	wait "$watchdog" 2>/dev/null || true
+
+	if [ -f "$TIMEOUT_FLAG" ]; then
+		rm -f "$TIMEOUT_FLAG"
+		TIMEOUT_FLAG=""
+		die "$label generator exceeded its ${deadline}s deadline and was killed, along with
+    every descendant process it had at the time.
+    Working directory: $workdir
+    Command: $*
+    This is the unbounded-wait failure mode: the generator, or a child it
+    spawned, stalled and never returned. Override GEN_OPENAPI_DEADLINE if
+    $label is legitimately this slow; otherwise treat this as a hang in
+    $label and investigate it directly."
+	fi
+	rm -f "$TIMEOUT_FLAG"
+	TIMEOUT_FLAG=""
+
+	if [ "$status" -ne 0 ]; then
 		die "$label generator failed (see its output above).
     Working directory: $workdir
     Command: $*"
