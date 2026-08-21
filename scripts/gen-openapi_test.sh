@@ -404,6 +404,106 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# PR #512 review, finding 1: pid_tree/kill_tree rely on `ps -Ao pid=,ppid=`
+# succeeding with output it can parse. If `ps` is broken, kill_tree still
+# returns success after walking zero descendants -- the watchdog's kill would
+# silently do nothing. run_generator must refuse to start a generator it
+# cannot safely deadline-kill, not proceed and hope. Two failure shapes, since
+# the reviewer named them separately: outright failure, and exit 0 with
+# unusable output (a status-only check would wrongly accept the latter).
+printf '\ncase: ps exits non-zero -- must refuse to start, not proceed\n'
+T="$(make_tree ps_broken)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+printf '#!/bin/sh\nprintf "ps: simulated failure\\n" >&2\nexit 1\n' >"$T/bin/ps"
+chmod +x "$T/bin/ps"
+run_case "$T" "$T"
+expect_status "ps-broken" 1
+expect_output "ps-broken" "'ps -Ao pid=,ppid=' failed"
+
+printf '\ncase: ps exits 0 but returns no usable PID/PPID pairs -- must refuse to start\n'
+T="$(make_tree ps_unusable)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/ps"
+chmod +x "$T/bin/ps"
+run_case "$T" "$T"
+expect_status "ps-unusable" 1
+expect_output "ps-unusable" "no usable PID/PPID pairs"
+
+# Over-fire control: a working `ps` (the real one, from BASE_PATH -- every
+# other case above already runs with it) must not be blocked by this
+# preflight. The `happy` case already proves this; restated here so the
+# ps-broken/ps-unusable pair has an explicit positive counterpart beside it.
+printf '\ncase: ps works normally -- preflight must not block a real run\n'
+T="$(make_tree ps_ok)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+run_case "$T" "$T"
+expect_status "ps-ok" 0
+expect_output "ps-ok" "OK: both trees regenerated"
+
+# ---------------------------------------------------------------------------
+# PR #512 review, finding 2: GEN_OPENAPI_DEADLINE is used unvalidated. A
+# non-numeric value makes `sleep` error/return immediately, the watchdog then
+# finds the generator still alive at once, and kills a healthy generator
+# while reporting a deadline breach -- a false accusation indistinguishable
+# from a real one. `0` has the same effect. Both must be refused, naming the
+# offending value.
+printf '\ncase: GEN_OPENAPI_DEADLINE is non-numeric -- must be refused, naming it\n'
+T="$(make_tree deadline_nan)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+OUT="$(GEN_OPENAPI_DEADLINE=soon PATH="$T/bin:$BASE_PATH" bash "$UNDER_TEST" "$T" 2>&1)"
+STATUS=$?
+expect_status "deadline-nan" 1
+expect_output "deadline-nan" "GEN_OPENAPI_DEADLINE must be a positive integer"
+expect_output "deadline-nan" "got: 'soon'"
+
+printf '\ncase: GEN_OPENAPI_DEADLINE=0 -- must be refused, naming it\n'
+T="$(make_tree deadline_zero)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+OUT="$(GEN_OPENAPI_DEADLINE=0 PATH="$T/bin:$BASE_PATH" bash "$UNDER_TEST" "$T" 2>&1)"
+STATUS=$?
+expect_status "deadline-zero" 1
+expect_output "deadline-zero" "GEN_OPENAPI_DEADLINE must be greater than 0"
+expect_output "deadline-zero" "got: '0'"
+
+# Over-fire control: a valid, positive-integer deadline must still run
+# normally. The `hang` case above (GEN_OPENAPI_DEADLINE=2) already proves a
+# valid override is accepted and enforced; this proves a valid override still
+# lets a healthy run succeed rather than merely being parsed.
+printf '\ncase: GEN_OPENAPI_DEADLINE is a valid positive integer -- must run normally\n'
+T="$(make_tree deadline_valid)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+OUT="$(GEN_OPENAPI_DEADLINE=30 PATH="$T/bin:$BASE_PATH" bash "$UNDER_TEST" "$T" 2>&1)"
+STATUS=$?
+expect_status "deadline-valid" 0
+expect_output "deadline-valid" "OK: both trees regenerated"
+
+# ---------------------------------------------------------------------------
+# PR #512 review, finding 3: a back-dated MARKER (tried, then reverted) fixed
+# the clock-tie flake but broke the thing this whole script exists to catch --
+# on a real checkout, a pre-existing file already has a recent mtime from
+# `git checkout`, not the test's year-2020 seed stamp, so it would look
+# "newer than 2020" whether or not the generator wrote anything this run. The
+# other no-op cases above (go-noop, ts-noop) do not catch this: their seed
+# files are backdated to 2020 by make_tree, which happened to also satisfy
+# the (wrong) back-dated-marker fix. This case seeds the file at "now",
+# like a real checkout, so it is the one that would have gone wrongly green
+# under that fix.
+printf '\ncase: go writes nothing, pre-existing file has a fresh (checkout-like) mtime -- must still fail\n'
+T="$(make_tree go_noop_fresh)"
+write_shim "$T" go nothing
+write_shim "$T" pnpm write
+touch "$T/apps/api/internal/api/gen/oas_schemas_gen.go"
+run_case "$T" "$T"
+expect_status "go-noop-fresh" 1
+expect_output "go-noop-fresh" "exited 0 but wrote nothing"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 printf 'gen-openapi_test: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then

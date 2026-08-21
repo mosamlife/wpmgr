@@ -185,21 +185,20 @@ kill_tree() {
 run_generator() {
 	local label="$1" out="$2" workdir="$3"
 	shift 3
+	local ps_probe ps_probe_status ps_usable ps_pid ps_ppid
 
 	MARKER="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-marker.XXXXXX")"
-	# Back-dated years into the past, not left at its mktemp-assigned "now":
-	# the write-detection check below is `find -newer "$MARKER"`, a *strict*
-	# newer-than comparison, and a marker created microseconds before a fast
-	# shim's write can tie with it on a coarse-grained filesystem clock. That
-	# tie reads as "wrote nothing" even though the write happened -- caught as
-	# a real, intermittent GH #511-follow-up CI flake (the same commit passed
-	# on one Linux runner and failed on another two seconds later; the failing
-	# run's own output showed the shim ran and printed normally, immediately
-	# followed by "exited 0 but wrote nothing"). Reusing the exact stale
-	# timestamp `make_tree` already seeds output files with removes any chance
-	# of a tie: a live write is unambiguously newer than 2020 regardless of
-	# clock resolution.
-	touch -t 202001010000 "$MARKER"
+	# Left at its mktemp-assigned "now", deliberately NOT back-dated. An
+	# earlier version of this back-dated MARKER to a fixed 2020 timestamp to
+	# fix a real, reproduced CI flake (a live write tying with the marker's
+	# creation on a coarse-grained filesystem clock, read by strict `-newer`
+	# as "wrote nothing"). That "fix" was itself wrong and was reverted (PR
+	# #512 review): on a real checkout, the committed tree's files already
+	# have a recent mtime from `git checkout`, not 2020, so *any* pre-existing
+	# file would look "newer than 2020" whether or not this run's generator
+	# wrote anything -- silently reintroducing the exact GH #511 defect this
+	# script exists to catch. See the retry below for how the clock-tie flake
+	# is actually handled without that regression.
 
 	# A bounded, process-tree-aware deadline (GH #511 follow-up). Without
 	# this, a generator -- or a child it spawns, which matters because pnpm
@@ -238,6 +237,67 @@ run_generator() {
 	# Overridable via GEN_OPENAPI_DEADLINE, which is how the test suite
 	# proves this in seconds rather than minutes.
 	local deadline="${GEN_OPENAPI_DEADLINE:-120}"
+
+	# Validated before use: this feeds straight into `sleep "$deadline"`
+	# below. A non-numeric value makes `sleep` error or return immediately,
+	# the watchdog then finds the generator still alive at once, and kills a
+	# perfectly healthy generator while reporting a deadline breach -- a
+	# false accusation indistinguishable from a real one. `0` has the same
+	# effect (`sleep 0` returns immediately too). Reject both, naming what
+	# was actually passed.
+	case "$deadline" in
+	'' | *[!0-9]*)
+		die "GEN_OPENAPI_DEADLINE must be a positive integer number of seconds, got: '$deadline'" ;;
+	esac
+	case "$deadline" in
+	*[1-9]*) : ;;
+	*) die "GEN_OPENAPI_DEADLINE must be greater than 0, got: '$deadline'" ;;
+	esac
+
+	# `sleep` backs the deadline itself (the watchdog's very first command).
+	# If it is missing, the watchdog subshell dies on that line before it can
+	# ever check on the generator, silently disabling the deadline rather
+	# than enforcing it -- the exact unbounded-wait failure this file exists
+	# to prevent, just reached through a missing dependency instead of a
+	# stalled process.
+	if ! command -v sleep >/dev/null 2>&1; then
+		die "'sleep' was not found on PATH, so the ${deadline}s deadline for
+    $label cannot be enforced. Refusing to start $label rather than run it
+    with no enforceable deadline."
+	fi
+
+	# `ps -Ao pid=,ppid=` must both succeed and return data pid_tree can
+	# actually parse, checked before the generator starts, not discovered
+	# when the watchdog needs it. A status-only check is not enough: `ps` can
+	# exit 0 and print nothing (or something that is not "PID PPID" pairs),
+	# and pid_tree/kill_tree would then silently walk zero descendants --
+	# kill_tree still returns success in that case, so a stalled generator's
+	# children, and the watchdog's own `sleep`, would survive a "kill" that
+	# never reached them. That is the exact hang already fixed once in this
+	# file (see kill_tree's own comment above), reachable again by a
+	# different route: a broken `ps` instead of a broken job-control model.
+	ps_probe="$(ps -Ao pid=,ppid= 2>&1)" && ps_probe_status=0 || ps_probe_status=$?
+	if [ "$ps_probe_status" -ne 0 ]; then
+		die "'ps -Ao pid=,ppid=' failed (exit $ps_probe_status), so the deadline
+    watchdog cannot find or signal a stalled generator's descendants.
+    Refusing to start $label rather than start something this script could
+    not safely kill.
+    Output: $ps_probe"
+	fi
+	ps_usable=0
+	while read -r ps_pid ps_ppid; do
+		case "$ps_pid" in '' | *[!0-9]*) continue ;; esac
+		case "$ps_ppid" in '' | *[!0-9]*) continue ;; esac
+		ps_usable=1
+		break
+	done <<<"$ps_probe"
+	if [ "$ps_usable" -ne 1 ]; then
+		die "'ps -Ao pid=,ppid=' exited 0 but returned no usable PID/PPID pairs,
+    so the deadline watchdog cannot find or signal a stalled generator's
+    descendants. Refusing to start $label rather than start something this
+    script could not safely kill.
+    Output: $ps_probe"
+	fi
 
 	say "$label: running (in $workdir, ${deadline}s deadline): $*"
 
@@ -318,11 +378,24 @@ run_generator() {
 	fi
 
 	if [ -z "$(find "$out" -type f -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
-		die "$label generator exited 0 but wrote nothing under:
+		# Ambiguous, not yet a failure: either the generator genuinely wrote
+		# nothing (the GH #511 defect), or it wrote something in the same
+		# filesystem-clock tick as $MARKER's creation, which strict `-newer`
+		# cannot tell apart from "nothing" -- a real, reproduced flake. Wait
+		# out one tick and check exactly once more: a real write, even one
+		# that landed on the same tick as the marker, is unambiguously newer
+		# by then; a genuine no-op still shows nothing. This only costs the
+		# extra second on the rare ambiguous path or the (already-failing)
+		# no-op path -- the common "wrote something, clearly" case never
+		# reaches here.
+		sleep 1
+		if [ -z "$(find "$out" -type f -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
+			die "$label generator exited 0 but wrote nothing under:
       $out
     That is the GH #511 failure: a codegen command that reports success and
     regenerates nothing, leaving a stale tree that looks freshly generated.
     Command: $*"
+		fi
 	fi
 
 	rm -f "$MARKER"
