@@ -6,6 +6,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.144] - 2026-08-22
+
+### Added
+
+- An API key can now be granted least privilege instead of a whole role. Keys previously carried a single rank-ordered role, so granting an assistant permission to read files transitively granted managing members, minting further API keys, reading the audit log, and logging into sites as a user. A key now carries an explicit capability set, and can additionally be restricted to named sites (GH #510). Existing keys are unchanged and keep exactly the access they have today. The site restriction is enforced in the application, not in the database; the migration says so in place, and database-level scoping is a separate change that has not shipped.
+
+### Fixed
+
+- The API contract no longer declares nullability with a keyword the spec version it claims does not have. `packages/openapi/openapi.yaml` declares OpenAPI 3.1.0, which removed `nullable`, and used it in 163 places. The TypeScript generator ignored the keyword outright, so those fields were published to consumers of the generated client as always present when the control plane genuinely sends JSON null. All of them now use the forms 3.1 does have: the union `type: [x, "null"]` for scalars, and an `anyOf` with a null branch for the `$ref` and `allOf` shapes the union form cannot reach. Anyone generating a client from this spec was being told a value would always exist when it might not (GH #479).
+- `make gen` regenerates both client trees or fails loudly (GH #511). It previously printed a message about being wired in a later phase and exited 0 without generating anything, so editing the spec and running the documented command left a stale generated tree that looked correct. Each generator is now proved to have written, each is bounded by a deadline, and a new CI job fails when the committed trees do not match a fresh generation. Affects contributors to this repository, not the running system.
+- The plugin now declares compatibility with WordPress 7.1 (GH #514). The listing said 7.0, which wordpress.org treats as grounds for excluding a plugin from search results. This is listing metadata only: no plugin code changed and the agent version does not move. The declaration reaches the public listing when the plugin is next published to wordpress.org, which this release does not do.
+
 ## [0.61.143] - 2026-08-20
 
 ### Fixed
