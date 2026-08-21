@@ -229,7 +229,9 @@ func (s *Service) GetAlertConfig(ctx context.Context, tenantID uuid.UUID) (Alert
 // queries. For org-scoped principals it returns all tenant site IDs; for
 // site-scoped principals it returns p.AllowedSiteIDs.
 func (s *Service) FleetSiteIDs(ctx context.Context, tenantID uuid.UUID, p domain.Principal) ([]uuid.UUID, error) {
-	if p.Scope == domain.ScopeSite {
+	// IsSiteConstrained, not a bare Scope compare — see the identical note on
+	// backup.Service.FleetSiteIDs and domain.Principal.IsSiteConstrained.
+	if p.IsSiteConstrained() {
 		return p.AllowedSiteIDs, nil
 	}
 	return s.verifier.ListSiteIDs(ctx, tenantID)
