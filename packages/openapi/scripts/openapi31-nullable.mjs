@@ -165,27 +165,59 @@ for (const c of ordered) {
   const ind = " ".repeat(indentOf(c.typeSib.line));
   lines[c.typeSib.i] = `${ind}type: [${c.typeVal}, "null"]`;
 
+  // Drop the keyword line FIRST, then patch the enum against indices that
+  // already account for the removal. The other order was a live bug: patching
+  // a block enum sitting above `nullable: true` inserted a member, pushed the
+  // keyword down one, and made this splice delete an innocent neighbour - the
+  // type union line itself, or the `- null` just inserted - while the report
+  // still printed a clean "converted" count over the wreckage.
+  lines.splice(c.nullableLine, 1);
+
   // A union that admits null must also admit null in its enum, or the value
   // fails enum validation the moment the type union starts permitting it.
   if (c.enumSib) {
-    const patched = patchEnum(c.enumSib.i);
+    const enumIdx =
+      c.enumSib.i > c.nullableLine ? c.enumSib.i - 1 : c.enumSib.i;
+    const patched = patchEnum(enumIdx);
     if (patched) enumsPatched++;
   }
-
-  lines.splice(c.nullableLine, 1);
 }
 
-/** Append `null` to an enum, whether it is inline flow, multi-line flow, or a block sequence. */
+/**
+ * Append `null` to an enum, whether it is inline flow (`enum: [a, b]`),
+ * multi-line flow (`enum:` then `[` on a following line), or a block sequence
+ * (`enum:` then `- a` lines). Returns true when it added a member, false when
+ * `null` was already one.
+ *
+ * Throws rather than returning quietly when the enum matches none of those
+ * shapes. A silent no-op here is not harmless: the caller has already widened
+ * the type to admit null, so declining to touch the enum ships a schema whose
+ * type permits null and whose enum rejects it.
+ */
 function patchEnum(start) {
-  const first = lines[start];
-  const after = first.split(":").slice(1).join(":").trim();
+  const ind = indentOf(lines[start]);
+  const after = lines[start].split(":").slice(1).join(":").trim();
 
-  if (after.startsWith("[")) {
+  // Where does a flow sequence open? On the `enum:` line itself, or - equally
+  // legal YAML, and the shape this spec actually uses - on a line indented
+  // beneath it. Only checking the `enum:` line misread the second shape as a
+  // block sequence, found no `- ` members, and silently gave up.
+  let flowStart = after.startsWith("[") ? start : -1;
+  if (flowStart === -1 && after === "") {
+    for (let i = start + 1; i < lines.length; i++) {
+      if (isBlank(lines[i]) || isComment(lines[i])) continue;
+      if (indentOf(lines[i]) <= ind) break;
+      if (lines[i].trimStart().startsWith("[")) flowStart = i;
+      break;
+    }
+  }
+
+  if (flowStart !== -1) {
     // Flow sequence, possibly spanning several lines. Find its closing bracket.
-    let end = start;
+    let end = flowStart;
     let depth = 0;
     let done = false;
-    for (let i = start; i < lines.length && !done; i++) {
+    for (let i = flowStart; i < lines.length && !done; i++) {
       for (const ch of lines[i]) {
         if (ch === "[") depth++;
         else if (ch === "]") {
@@ -198,7 +230,12 @@ function patchEnum(start) {
         }
       }
     }
-    const joined = lines.slice(start, end + 1).join("\n");
+    if (!done) {
+      throw new Error(
+        `${file}:${start + 1}: enum flow sequence never closes; refusing to guess`,
+      );
+    }
+    const joined = lines.slice(flowStart, end + 1).join("\n");
     if (/(^|[\s[,])null([\s\],])/.test(joined)) return false; // already there
     const idx = lines[end].lastIndexOf("]");
     lines[end] = `${lines[end].slice(0, idx)}, null${lines[end].slice(idx)}`;
@@ -206,7 +243,6 @@ function patchEnum(start) {
   }
 
   // Block sequence: `enum:` then `- value` lines at a deeper indent.
-  const ind = indentOf(first);
   let last = start;
   for (let i = start + 1; i < lines.length; i++) {
     if (isBlank(lines[i]) || isComment(lines[i])) continue;
@@ -216,7 +252,14 @@ function patchEnum(start) {
       last = i;
     }
   }
-  if (last === start) return false;
+  if (last === start) {
+    throw new Error(
+      `${file}:${start + 1}: enum is neither a flow sequence nor a block ` +
+        `sequence with members, so nothing was added to it - but the type has ` +
+        `already been widened to admit null, which the enum would then ` +
+        `reject. Fix this enum by hand.`,
+    );
+  }
   const itemInd = " ".repeat(indentOf(lines[last]));
   lines.splice(last + 1, 0, `${itemInd}- null`);
   return true;
