@@ -31,8 +31,11 @@ func RequireSiteAccess(siteIDParam string) gin.HandlerFunc {
 			return
 		}
 
-		// Org-scoped (or legacy zero-value) principals: no site allowlist check.
-		if p.Scope != domain.ScopeSite {
+		// Unconstrained principals (org members, tenant-wide keys, legacy
+		// zero-value scope) pass: no allowlist to check. IsSiteConstrained is
+		// the shared predicate — see its doc comment for why a bare "no scope"
+		// is not treated as a restriction and why a populated allowlist is.
+		if !p.IsSiteConstrained() {
 			c.Next()
 			return
 		}
@@ -73,7 +76,15 @@ func RequireOrgScope() gin.HandlerFunc {
 			abort(c, domain.Unauthorized("unauthenticated", "authentication required"))
 			return
 		}
-		if p.Scope == domain.ScopeSite {
+		// IsSiteConstrained, not a bare Scope compare: this middleware IS the
+		// whole boundary for the fleet rollups that carry it (the email fleet
+		// group, /vulnerabilities, /perf/db/fleet-health, /perf/rum/fleet,
+		// /fleet/agents), none of which filter per site in the handler because
+		// none of them can — they aggregate the tenant. A principal that is
+		// constrained by an allowlist but whose scope label is missing would
+		// have walked straight through the old compare into a tenant-wide
+		// aggregate.
+		if p.IsSiteConstrained() {
 			abort(c, domain.Forbidden("org_scope_required", "this resource is not available to site-scoped access"))
 			return
 		}

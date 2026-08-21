@@ -122,16 +122,53 @@ func (p Principal) GetTenantID() uuid.UUID { return p.TenantID }
 // It satisfies the db.Pool.RunTenantTx principal interface.
 func (p Principal) GetAllowedSiteIDs() []uuid.UUID { return p.AllowedSiteIDs }
 
+// IsSiteConstrained reports whether this principal's site access is limited to
+// an explicit allowlist rather than being tenant-wide. It is the SINGLE
+// predicate behind every site gate — CanAccessSite, authz.RequireSiteAccess,
+// authz.AuthorizeSites and db.RunTenantTx's dispatch all ask this one question,
+// so a principal cannot be constrained by one gate and tenant-wide at the next.
+//
+// Two disjuncts, and the second is the fail-closed backstop:
+//
+//   - Scope == ScopeSite is authoritative and is the ONLY condition that can
+//     fire for a principal loaded from the database. m120's
+//     api_keys_site_scope_check pins site_scope to 'org' | 'site', and
+//     api_keys_site_scope_allowlist_check forbids the half-state (site_scope
+//     'org' carrying a populated allowed_site_ids). site_scope, not the
+//     emptiness of the list, is what says "restricted", because "restricted to
+//     zero sites" is a legitimate fail-CLOSED state that must stay expressible.
+//
+//   - A non-empty AllowedSiteIDs constrains regardless of the Scope label. For
+//     any principal built by apikey.PrincipalFor or by the session path this
+//     disjunct is UNREACHABLE — PrincipalFor copies the allowlist only when
+//     Scope == ScopeSite, and the DB CHECK makes the stored half-state
+//     impossible — so it changes no existing behaviour by one bit. It exists so
+//     that a hand-built Principal, or a future constructor that populates the
+//     allowlist and forgets the label, fails CLOSED instead of silently
+//     widening to the whole tenant.
+//
+// Note what is deliberately NOT here: a bare "no scope set" does not constrain.
+// The zero-value Scope means org, and org-scoped user principals are legitimately
+// tenant-wide today. Refusing them would break real access for real members,
+// which is why the predicate keys on an expressed restriction, not on silence.
+func (p Principal) IsSiteConstrained() bool {
+	return p.Scope == ScopeSite || len(p.AllowedSiteIDs) > 0
+}
+
 // CanAccessSite reports whether this principal may access the given site.
-// Org-scoped (and API-key) principals are tenant-wide, so RLS + the tenant
-// filter already constrain them — this returns true. Site-scoped principals
-// (outside collaborators) are constrained to their explicit allowlist. This is
-// the canonical app-layer gate for by-id resource routes whose site is only
-// known after the resource is loaded (the path-based RequireSiteAccess
-// middleware cannot cover those); call it after resolving the resource's
-// site_id and 403/404 when it returns false.
+// Unconstrained principals (org members, tenant-wide API keys) are bounded by
+// the tenant filter and RLS, so this returns true for them. Constrained
+// principals are held to their explicit allowlist — including the empty
+// allowlist, which admits nothing.
+//
+// This is the canonical app-layer gate for a by-id resource whose site is only
+// known after the row is loaded, which the path-based RequireSiteAccess
+// middleware cannot cover. Call it after resolving the resource's site_id and
+// 404 when it returns false. For a route that fans out over MANY sites, use
+// authz.AuthorizeSites instead: it returns a token that carries the filtered
+// set, so the fan-out cannot proceed on an unfiltered list.
 func (p Principal) CanAccessSite(siteID uuid.UUID) bool {
-	if p.Scope != ScopeSite {
+	if !p.IsSiteConstrained() {
 		return true
 	}
 	for _, allowed := range p.AllowedSiteIDs {

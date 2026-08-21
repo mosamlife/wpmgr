@@ -636,7 +636,16 @@ func (p *Pool) RunTenantTx(ctx context.Context, principal ScopedPrincipal, fn fu
 	tenantID := principal.GetTenantID()
 	userID := principal.GetUserID()
 
-	if scope == "site" {
+	// This condition is domain.Principal.IsSiteConstrained, restated. db cannot
+	// import domain (domain imports db), so the predicate is duplicated here
+	// rather than shared, and TestRunTenantTxDispatchMatchesDomainPredicate in
+	// internal/authz cross-checks the two over a table of cases so they cannot
+	// drift apart. The second disjunct is the fail-closed backstop: a principal
+	// carrying an allowlist must reach InScopedTenantTx — which is what sets
+	// app.site_scope and app.allowed_site_ids — even if its scope label is
+	// missing, because falling through would run the whole transaction
+	// tenant-wide with the site-scope GUCs unset.
+	if scope == "site" || len(principal.GetAllowedSiteIDs()) > 0 {
 		return p.InScopedTenantTx(ctx, tenantID, userID, principal.GetAllowedSiteIDs(), fn)
 	}
 	// "org" or "" (backward compat for existing flows that never set Scope)
