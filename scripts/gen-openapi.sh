@@ -186,7 +186,7 @@ run_generator() {
 	local label="$1" out="$2" workdir="$3"
 	shift 3
 	local ps_probe ps_probe_status ps_usable ps_pid ps_ppid
-	local tick_probe tick_advanced tick_attempt
+	local tick_probe tick_advanced tick_budget tick_deadline tick_now
 
 	MARKER="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-marker.XXXXXX")"
 	# Left at its mktemp-assigned "now", deliberately NOT back-dated. An
@@ -213,24 +213,57 @@ run_generator() {
 	# against MARKER with the same `find -newer` the real check below uses.
 	# Once a probe write is observably newer than MARKER, every subsequent
 	# write -- including the generator's -- is guaranteed strictly newer too,
-	# on any clock granularity. Bounded to a fixed number of attempts, not an
-	# unbounded loop: if the clock cannot be observed to advance at all, that
-	# is a hard stop, not a silent hang.
+	# on any clock granularity.
+	#
+	# A third attempt bounded this loop by a fixed attempt count (2000
+	# undelayed touch+find pairs), not by elapsed time, and that was also
+	# wrong (PR #512 review, gen-openapi.sh:227): on a fast host with coarse
+	# (e.g. whole-second) mtime granularity, all 2000 attempts can complete
+	# well inside a single tick with no sleep between them, so the clock
+	# never advances, the count is exhausted, and a perfectly healthy run
+	# fails before the generator is even invoked. That is the mirror image
+	# of the original GH #511-follow-up defect: a wait bounded in the wrong
+	# unit is the same shape as a wait with no bound at all. Bounded by
+	# wall-clock time instead, via `date +%s` (whole seconds only -- `%N`
+	# subsecond formatting is a GNU date extension this script cannot rely
+	# on portably), with a short sleep between attempts so the loop yields
+	# instead of spinning through however many attempts it takes without
+	# ever giving the clock a chance to move. Fractional `sleep` was checked
+	# rather than assumed: both this machine's BSD `sleep` (`Intervals can be
+	# written in any form allowed by strtod(3)`, confirmed with `sleep 0.1`)
+	# and GNU coreutils `sleep` support sub-second intervals, so 0.05s here
+	# is safe on both platforms this script runs on. GEN_OPENAPI_TICK_WAIT
+	# overrides the budget; this is a debug/test knob, not a documented
+	# public interface the way GEN_OPENAPI_DEADLINE is, so it is not
+	# separately validated -- a bad value fails loudly via bash's own
+	# arithmetic error rather than silently.
 	tick_probe="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-tick.XXXXXX")"
+	tick_budget="${GEN_OPENAPI_TICK_WAIT:-5}"
 	tick_advanced=0
-	for ((tick_attempt = 1; tick_attempt <= 2000; tick_attempt++)); do
+	tick_deadline=$(($(date +%s) + tick_budget))
+	while :; do
 		touch "$tick_probe" 2>/dev/null || true
 		if [ -n "$(find "$tick_probe" -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
 			tick_advanced=1
 			break
 		fi
+		tick_now="$(date +%s)"
+		if [ "$tick_now" -ge "$tick_deadline" ]; then
+			break
+		fi
+		sleep 0.05
 	done
 	rm -f "$tick_probe"
 	if [ "$tick_advanced" -ne 1 ]; then
 		die "the filesystem clock did not observably advance past the
-    write-detection marker after 2000 attempts, so $label cannot be started
-    with a write-detection check this script can trust.
-    Marker: $MARKER"
+    write-detection marker within ${tick_budget}s, so $label cannot be
+    started with a write-detection check this script can trust.
+    Marker: $MARKER
+    Probe:  $tick_probe (already removed)
+    This filesystem's mtime granularity is coarser than this script's
+    ${tick_budget}s budget for observing it advance -- a real condition
+    worth investigating directly, not a generic failure. Override
+    GEN_OPENAPI_TICK_WAIT for a longer budget if that is expected here."
 	fi
 
 	# A bounded, process-tree-aware deadline (GH #511 follow-up). Without

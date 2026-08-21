@@ -53,11 +53,12 @@ BASE_BIN="$WORKROOT/basebin"
 mkdir -p "$BASE_BIN"
 
 # bash runs the script under test; the rest are what the script itself calls
-# (mktemp/find/rm/touch for the marker, cat for the drift message, git for
+# (mktemp/find/rm/touch for the marker and the wall-clock-bounded tick-advance
+# wait, date for that wait's budget, cat for the drift message, git for
 # --check, ps/sleep/kill for the run_generator deadline watchdog -- kill is a
-# bash builtin so it needs no PATH entry, but ps, sleep and touch are
+# bash builtin so it needs no PATH entry, but ps, sleep, touch and date are
 # external).
-for tool in bash mktemp find rm cat git ps sleep touch; do
+for tool in bash mktemp find rm cat git ps sleep touch date; do
 	resolved="$(command -v "$tool" 2>/dev/null || true)"
 	if [ -z "$resolved" ]; then
 		printf 'gen-openapi_test: FATAL: required utility %s not found on PATH.\n' "$tool" >&2
@@ -559,6 +560,43 @@ else
 			not_ok "tie-wait-before" "write after the wait was still not detected as newer"
 		fi
 	fi
+fi
+
+# ---------------------------------------------------------------------------
+# PR #512 review, gen-openapi.sh:227: the wait-before loop was bounded by a
+# fixed attempt count (2000 undelayed touch+find pairs), not by elapsed time.
+# On a fast host with coarse mtime granularity, all 2000 attempts can finish
+# inside a single tick with no sleep between them, so the clock never
+# advances, the count exhausts, and a perfectly healthy run fails before the
+# generator is even invoked -- the mirror image of the original unbounded-wait
+# defect: a wait bounded in the wrong unit. Simulated here by shimming `find`
+# to always report nothing (as if nothing is ever newer than anything, the
+# permanent-tie condition), which no attempt count can ever get past. If the
+# loop is genuinely bounded by wall-clock time, it must fail at approximately
+# GEN_OPENAPI_TICK_WAIT seconds regardless of how many attempts that allowed,
+# not run some huge, timing-dependent number of undelayed iterations first.
+printf '\ncase: clock never observably advances -- must fail within the wall-clock budget, not after N spins\n'
+T="$(make_tree tick_never_advances)"
+write_shim "$T" go write
+write_shim "$T" pnpm write
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/find"
+chmod +x "$T/bin/find"
+TICK_START="$(date +%s)"
+OUT="$(GEN_OPENAPI_TICK_WAIT=2 PATH="$T/bin:$BASE_PATH" bash "$UNDER_TEST" "$T" 2>&1)"
+STATUS=$?
+TICK_ELAPSED=$(($(date +%s) - TICK_START))
+expect_status "tick-never-advances" 1
+expect_output "tick-never-advances" "did not observably advance"
+expect_output "tick-never-advances" "within 2s"
+expect_output "tick-never-advances" "go/ogen"
+# Bounded by the 2s budget, not instant (which would mean no real wait
+# happened) and not far beyond it (which would mean it is still spinning on
+# attempt count under the hood). A few seconds of slack for process overhead.
+if [ "$TICK_ELAPSED" -ge 1 ] && [ "$TICK_ELAPSED" -le 10 ]; then
+	ok "tick-never-advances: failed at ${TICK_ELAPSED}s, bounded by the 2s wall-clock budget"
+else
+	not_ok "tick-never-advances: took ${TICK_ELAPSED}s, expected close to the 2s budget" "output was:
+$OUT"
 fi
 
 # ---------------------------------------------------------------------------
