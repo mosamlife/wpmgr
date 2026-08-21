@@ -239,6 +239,13 @@ if (!only && accounted !== total) {
   );
   process.exit(1);
 }
+if (only && conversions.length + flowConversions.length === 0) {
+  console.error(
+    `\nFATAL: --only=${only} matched no convertible declaration in ${file}. ` +
+      `Nothing to convert - refusing to write.`,
+  );
+  process.exit(1);
+}
 if (skipped.length) {
   console.log("\n--- SKIPPED (need a human decision, not the union form) ---");
   for (const s of skipped) {
