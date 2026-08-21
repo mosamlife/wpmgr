@@ -22304,8 +22304,13 @@ components:
           enum:
             [mirrored, current, unchanged, rate_limited, refused,
              foreign_channel, upstream_unavailable, storage_error,
-             not_configured]
+             not_configured, null]
           description: >
+            Null until a mirror run has executed at least once, which is the
+            state of every install before its first attempt: the control
+            plane sends a real JSON null there, exactly as it does for
+            last_success_outcome and last_attempt_trigger.
+
             "rate_limited" is NOT a failure: the mirror keeps a minimum gap
             between upstream requests, and skipping is expected and must
             never be presented as an error. "refused" means upstream was

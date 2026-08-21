@@ -1358,8 +1358,8 @@ export function ObjectCachePanel({
         {isConfigured ? (
           <StatusHeader
             oc_state={oc_state}
-            oc_latency_ms={cfg.oc_latency_ms ?? 0}
-            oc_used_memory_bytes={cfg.oc_used_memory_bytes ?? 0}
+            oc_latency_ms={cfg.oc_latency_ms}
+            oc_used_memory_bytes={cfg.oc_used_memory_bytes}
             oc_hit_ratio_pct={cfg.oc_hit_ratio_pct}
             oc_last_error_class={cfg.oc_last_error_class}
             enabled={cfg.enabled}

@@ -14,19 +14,18 @@ import { describeReferenceCheck } from "./agent-reference-check";
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
-// packages/openapi/openapi.yaml is OpenAPI 3.1, where `nullable: true` is
-// not a valid keyword, so the generated AgentMirrorStatus types every
-// "never recorded" field as a non-nullable string even though the control
-// plane sends a genuine JSON null for it (see agentrelease/handler.go's
-// formatMirrorTime/nonEmptyMirrorString). This fixture builder casts at the
-// boundary so tests can express the real wire shape, including real nulls,
-// the same way features/sites/agent-reference-check.ts's module doc
-// documents for the production code that reads it.
-function mirror(overrides: Partial<Record<string, unknown>> = {}): AgentMirrorStatus {
+// Every "never recorded" field is nullable in the generated AgentMirrorStatus,
+// so this builder needs no cast: the fixture below IS the wire shape the
+// control plane sends (agentrelease/handler.go's formatMirrorTime and
+// nonEmptyMirrorString both return a real JSON null before the first mirror
+// run). If a null here ever stops typechecking, the spec has drifted from the
+// handler and the spec is what to fix, not this file.
+function mirror(overrides: Partial<AgentMirrorStatus> = {}): AgentMirrorStatus {
   return {
     enabled: true,
     status: "ok",
     stale_after_seconds: 46_800,
+    can_check_now: false,
     last_success_at: hoursAgo(3),
     last_success_outcome: "unchanged",
     last_success_version: "0.61.112",
@@ -37,7 +36,7 @@ function mirror(overrides: Partial<Record<string, unknown>> = {}): AgentMirrorSt
     last_mirrored_at: null,
     last_mirrored_version: null,
     ...overrides,
-  } as unknown as AgentMirrorStatus;
+  };
 }
 
 describe("describeReferenceCheck", () => {

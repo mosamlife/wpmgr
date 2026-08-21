@@ -6881,12 +6881,14 @@ type AgentMirrorStatus struct {
 	// When a mirror run last executed, whatever the result. Null when none ever has. Never render an age
 	// from this field.
 	LastAttemptAt NilDateTime `json:"last_attempt_at"`
-	// "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and
-	// skipping is expected and must never be presented as an error. "refused" means upstream was reached
-	// and the release was deliberately not published (not newer, or the versions cannot be ordered).
-	// "foreign_channel" means this install publishes its own agent releases and the mirror will never
-	// overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was
-	// tried and it broke.
+	// Null until a mirror run has executed at least once, which is the state of every install before its
+	// first attempt: the control plane sends a real JSON null there, exactly as it does for
+	// last_success_outcome and last_attempt_trigger. "rate_limited" is NOT a failure: the mirror keeps a
+	// minimum gap between upstream requests, and skipping is expected and must never be presented as an
+	// error. "refused" means upstream was reached and the release was deliberately not published (not
+	// newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own
+	// agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error"
+	// are the real failures: something was tried and it broke.
 	LastAttemptOutcome NilAgentMirrorStatusLastAttemptOutcome `json:"last_attempt_outcome"`
 	// Short non-secret reason for the last attempt, composed by the control plane and capped at 200
 	// characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.
@@ -7029,12 +7031,14 @@ func (s *AgentMirrorStatus) SetLastMirroredVersion(val NilString) {
 	s.LastMirroredVersion = val
 }
 
-// "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and
-// skipping is expected and must never be presented as an error. "refused" means upstream was reached
-// and the release was deliberately not published (not newer, or the versions cannot be ordered).
-// "foreign_channel" means this install publishes its own agent releases and the mirror will never
-// overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was
-// tried and it broke.
+// Null until a mirror run has executed at least once, which is the state of every install before its
+// first attempt: the control plane sends a real JSON null there, exactly as it does for
+// last_success_outcome and last_attempt_trigger. "rate_limited" is NOT a failure: the mirror keeps a
+// minimum gap between upstream requests, and skipping is expected and must never be presented as an
+// error. "refused" means upstream was reached and the release was deliberately not published (not
+// newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own
+// agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error"
+// are the real failures: something was tried and it broke.
 type AgentMirrorStatusLastAttemptOutcome string
 
 const (

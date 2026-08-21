@@ -30,19 +30,13 @@ import { relativeTime } from "@/lib/utils";
 // client agrees) and trusted verbatim here. This module never re-derives
 // staleness or the roll-up from raw timestamps.
 //
-// NOTE ON NULLS (GH #479): the spec now expresses nullability in the 3.1
-// union form, so the generated AgentMirrorStatus types tell the truth for
-// last_success_at, last_success_version, last_attempt_at and
-// last_attempt_detail, and this module reads them directly.
-//
-// One field is still mis-declared: `last_attempt_outcome` generates as a
-// non-nullable enum, but agentrelease/handler.go:232 declares it
-// `*string` with no omitempty and :342 fills it via nonEmptyMirrorString,
-// which returns nil for the empty string, so the wire really does carry
-// `"last_attempt_outcome": null` before the first attempt. Its two siblings
-// from the same helper (last_success_outcome:339, last_attempt_trigger:344)
-// are declared nullable and generate correctly. Until the spec is corrected,
-// `nullableString` below keeps that one guard honest.
+// NOTE ON NULLS (GH #479, GH #508): the spec expresses nullability in the 3.1
+// union form, so the generated AgentMirrorStatus tells the truth for every
+// "never recorded" field, `last_attempt_outcome` included, and this module
+// reads all of them directly with no cast and no shim. Each one is filled by
+// agentrelease/handler.go's formatMirrorTime or nonEmptyMirrorString, both of
+// which return nil for "never happened", so the wire genuinely carries null
+// there before the first mirror run.
 
 export type ReferenceCheckTone = "info" | "warn";
 
@@ -66,14 +60,6 @@ function ago(iso: string | null): string {
   return relativeTime(iso) ?? "recently";
 }
 
-/** See the NOTE ON NULLS above: `last_attempt_outcome` is the one field whose
- *  generated type still claims it is never null while the wire sends a real
- *  null for "never attempted". */
-function nullableString<T extends string>(value: T): T | null {
-  const raw: unknown = value;
-  return raw as T | null;
-}
-
 const SIX_HOUR_CYCLE_NOTE =
   "That is longer than the usual 6 hour cycle, so a newer release may exist and WPMgr would not know.";
 
@@ -82,7 +68,7 @@ function describeEnabledMirrorState(
   hasPublishedReference: boolean,
 ): ReferenceCheckMessage {
   const lastAttemptAt = mirror.last_attempt_at;
-  const lastAttemptOutcome = nullableString(mirror.last_attempt_outcome);
+  const lastAttemptOutcome = mirror.last_attempt_outcome;
   const lastAttemptDetail = mirror.last_attempt_detail;
   const lastSuccessAt = mirror.last_success_at;
   const lastSuccessVersion = mirror.last_success_version ?? "an earlier release";

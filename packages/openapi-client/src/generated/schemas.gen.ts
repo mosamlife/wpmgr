@@ -12797,9 +12797,10 @@ export const AgentMirrorStatusSchema = {
         "upstream_unavailable",
         "storage_error",
         "not_configured",
+        null,
       ],
       description:
-        '"rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.\n',
+        'Null until a mirror run has executed at least once, which is the state of every install before its first attempt: the control plane sends a real JSON null there, exactly as it does for last_success_outcome and last_attempt_trigger.\n"rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.\n',
     },
     last_attempt_detail: {
       type: ["string", "null"],

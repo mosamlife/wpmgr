@@ -7421,6 +7421,7 @@ export type AgentMirrorStatus = {
    */
   last_attempt_at: string | null;
   /**
+   * Null until a mirror run has executed at least once, which is the state of every install before its first attempt: the control plane sends a real JSON null there, exactly as it does for last_success_outcome and last_attempt_trigger.
    * "rate_limited" is NOT a failure: the mirror keeps a minimum gap between upstream requests, and skipping is expected and must never be presented as an error. "refused" means upstream was reached and the release was deliberately not published (not newer, or the versions cannot be ordered). "foreign_channel" means this install publishes its own agent releases and the mirror will never overwrite them. "upstream_unavailable" and "storage_error" are the real failures: something was tried and it broke.
    *
    */
@@ -7433,7 +7434,8 @@ export type AgentMirrorStatus = {
     | "foreign_channel"
     | "upstream_unavailable"
     | "storage_error"
-    | "not_configured";
+    | "not_configured"
+    | null;
   /**
    * Short non-secret reason for the last attempt, composed by the control plane and capped at 200 characters. Never a raw wrapped error, so it can never carry a presigned URL or any credential.
    *
