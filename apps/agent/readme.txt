@@ -2,7 +2,7 @@
 Contributors: mosamlife
 Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 8.1
 Stable tag: 0.61.139
 License: GPLv2 or later
