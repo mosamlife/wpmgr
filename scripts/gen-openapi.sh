@@ -186,6 +186,7 @@ run_generator() {
 	local label="$1" out="$2" workdir="$3"
 	shift 3
 	local ps_probe ps_probe_status ps_usable ps_pid ps_ppid
+	local tick_probe tick_advanced tick_attempt
 
 	MARKER="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-marker.XXXXXX")"
 	# Left at its mktemp-assigned "now", deliberately NOT back-dated. An
@@ -197,8 +198,40 @@ run_generator() {
 	# have a recent mtime from `git checkout`, not 2020, so *any* pre-existing
 	# file would look "newer than 2020" whether or not this run's generator
 	# wrote anything -- silently reintroducing the exact GH #511 defect this
-	# script exists to catch. See the retry below for how the clock-tie flake
-	# is actually handled without that regression.
+	# script exists to catch.
+	#
+	# A second attempt at the clock-tie flake -- sleeping one second *after*
+	# an ambiguous (empty) `-newer` result, then re-checking -- was also
+	# wrong and was reverted (PR #512 review, gen-openapi.sh:398). Sleeping
+	# after the fact changes neither MARKER's mtime nor the write's mtime:
+	# both already happened, so the second check compares the exact same two
+	# unchanged values and returns the exact same (empty) answer. A tie
+	# cannot be detected after it has already occurred; it can only be
+	# prevented from occurring. So: prove, not assume, that the filesystem
+	# clock has advanced past MARKER's own mtime before the generator is
+	# allowed to start, by touching a throwaway probe file and checking it
+	# against MARKER with the same `find -newer` the real check below uses.
+	# Once a probe write is observably newer than MARKER, every subsequent
+	# write -- including the generator's -- is guaranteed strictly newer too,
+	# on any clock granularity. Bounded to a fixed number of attempts, not an
+	# unbounded loop: if the clock cannot be observed to advance at all, that
+	# is a hard stop, not a silent hang.
+	tick_probe="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-tick.XXXXXX")"
+	tick_advanced=0
+	for ((tick_attempt = 1; tick_attempt <= 2000; tick_attempt++)); do
+		touch "$tick_probe" 2>/dev/null || true
+		if [ -n "$(find "$tick_probe" -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
+			tick_advanced=1
+			break
+		fi
+	done
+	rm -f "$tick_probe"
+	if [ "$tick_advanced" -ne 1 ]; then
+		die "the filesystem clock did not observably advance past the
+    write-detection marker after 2000 attempts, so $label cannot be started
+    with a write-detection check this script can trust.
+    Marker: $MARKER"
+	fi
 
 	# A bounded, process-tree-aware deadline (GH #511 follow-up). Without
 	# this, a generator -- or a child it spawns, which matters because pnpm
@@ -377,25 +410,16 @@ run_generator() {
     Command: $*"
 	fi
 
+	# No retry needed here: the clock-advance wait above already guarantees
+	# MARKER is strictly older than anything written from this point on, so
+	# a single strict `-newer` check is unambiguous -- empty means the
+	# generator genuinely wrote nothing.
 	if [ -z "$(find "$out" -type f -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
-		# Ambiguous, not yet a failure: either the generator genuinely wrote
-		# nothing (the GH #511 defect), or it wrote something in the same
-		# filesystem-clock tick as $MARKER's creation, which strict `-newer`
-		# cannot tell apart from "nothing" -- a real, reproduced flake. Wait
-		# out one tick and check exactly once more: a real write, even one
-		# that landed on the same tick as the marker, is unambiguously newer
-		# by then; a genuine no-op still shows nothing. This only costs the
-		# extra second on the rare ambiguous path or the (already-failing)
-		# no-op path -- the common "wrote something, clearly" case never
-		# reaches here.
-		sleep 1
-		if [ -z "$(find "$out" -type f -newer "$MARKER" -print -quit 2>/dev/null)" ]; then
-			die "$label generator exited 0 but wrote nothing under:
+		die "$label generator exited 0 but wrote nothing under:
       $out
     That is the GH #511 failure: a codegen command that reports success and
     regenerates nothing, leaving a stale tree that looks freshly generated.
     Command: $*"
-		fi
 	fi
 
 	rm -f "$MARKER"

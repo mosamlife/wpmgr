@@ -504,6 +504,64 @@ expect_status "go-noop-fresh" 1
 expect_output "go-noop-fresh" "exited 0 but wrote nothing"
 
 # ---------------------------------------------------------------------------
+# PR #512 review, gen-openapi.sh:398: a marker/write timestamp TIE, deliberately
+# constructed with `touch -r`, exactly as this suite's own comment on
+# write_shim's write/write-b split already warns is fragile if left to real
+# timing ("both runs landed in the same second"). The finding was that
+# sleeping *after* the tie is detected changes neither timestamp, so it
+# cannot resolve one -- the write and the marker both already exist. This
+# case proves that directly: the OLD approach (sleep after an ambiguous
+# result) leaves the tie unresolved; the NEW approach (this script's actual
+# mechanism: wait for an observable clock advance BEFORE the write can
+# happen) resolves it. It is a mechanism proof, not a run through
+# run_generator: a real coarse-grained filesystem clock cannot be forced onto
+# this machine to make run_generator hit a tie honestly, and the earlier
+# version of this suite already learned that lesson the hard way (the
+# write/write-b split above exists because a *different* timing assumption
+# failed silently in the same spot).
+printf '\ncase: a deliberately tied marker/write -- sleep-after does not resolve it, wait-before does\n'
+TIE_DIR="$WORKROOT/tie_mechanism"
+mkdir -p "$TIE_DIR"
+TIE_MARKER="$TIE_DIR/marker"
+touch "$TIE_MARKER"
+TIE_WRITE="$TIE_DIR/write"
+touch -r "$TIE_MARKER" "$TIE_WRITE" # force an exact tie with the marker
+
+if [ -n "$(find "$TIE_WRITE" -newer "$TIE_MARKER" -print -quit 2>/dev/null)" ]; then
+	not_ok "tie-setup" "touch -r did not produce a tie; this case cannot test anything"
+else
+	sleep 1
+	if [ -n "$(find "$TIE_WRITE" -newer "$TIE_MARKER" -print -quit 2>/dev/null)" ]; then
+		not_ok "tie-sleep-after" "sleep-after resolved the tie; expected it not to (this was the bug)"
+	else
+		ok "tie-sleep-after: sleep after the tie leaves it unresolved, as gen-openapi.sh:398 found"
+	fi
+
+	TIE_MARKER2="$TIE_DIR/marker2"
+	touch "$TIE_MARKER2"
+	TIE_PROBE="$TIE_DIR/probe"
+	TIE_ADVANCED=0
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		touch "$TIE_PROBE"
+		if [ -n "$(find "$TIE_PROBE" -newer "$TIE_MARKER2" -print -quit 2>/dev/null)" ]; then
+			TIE_ADVANCED=1
+			break
+		fi
+	done
+	if [ "$TIE_ADVANCED" -ne 1 ]; then
+		not_ok "tie-wait-before" "clock never observably advanced in 10 attempts on this machine"
+	else
+		TIE_WRITE_AFTER="$TIE_DIR/write_after"
+		touch "$TIE_WRITE_AFTER" # the "generator" writes only after the wait
+		if [ -n "$(find "$TIE_WRITE_AFTER" -newer "$TIE_MARKER2" -print -quit 2>/dev/null)" ]; then
+			ok "tie-wait-before: waiting for an observable advance before the write resolves the tie"
+		else
+			not_ok "tie-wait-before" "write after the wait was still not detected as newer"
+		fi
+	fi
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n'
 printf 'gen-openapi_test: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then
