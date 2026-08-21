@@ -115,18 +115,26 @@ make_tree() {
 	printf '%s' "$root"
 }
 
-# Install a shim. $1=tree root, $2=name (go|pnpm|git), $3=behaviour:
+# Install a shim. $1=tree root, $2=name (go|pnpm|git), $3=behaviour, $4=extra
+# (only used by `hang`, see below):
 #   write    -- exit 0 after writing "generation A" into the output tree
 #   write-b  -- exit 0 after writing "generation B", i.e. different bytes
 #   nothing  -- exit 0 and touch nothing
 #   fail     -- exit 3 with a message
+#   hang     -- never returns: ignores SIGTERM itself, spawns a grandchild
+#               that also ignores SIGTERM, writes the grandchild's pid to
+#               $4, then blocks forever. This is the GH #511-follow-up
+#               shape: a stalled generator with a stalled child, and one
+#               that does not die on the deadline's first (TERM) signal, so
+#               reaching it proves the deadline's SIGKILL escalation and not
+#               just its happy path.
 #
 # `write` and `write-b` differ by content, not by a timestamp. An earlier
 # version of this file wrote `$(date)` and expected two runs to differ; both
 # runs landed in the same second, the bytes matched, and the drift case passed
 # by accident in the wrong direction.
 write_shim() {
-	local root="$1" name="$2" behaviour="$3" target="" shim="$1/bin/$2"
+	local root="$1" name="$2" behaviour="$3" extra="${4:-}" target="" shim="$1/bin/$2"
 	case "$name" in
 	go) target="$root/apps/api/internal/api/gen/oas_schemas_gen.go" ;;
 	pnpm) target="$root/packages/openapi-client/src/generated/types.gen.ts" ;;
@@ -139,6 +147,12 @@ write_shim() {
 		write-b) printf 'printf "generation B, from a changed spec\\n" > "%s"\nexit 0\n' "$target" ;;
 		nothing) printf 'exit 0\n' ;;
 		fail) printf 'printf "shim %s: boom\\n" >&2\nexit 3\n' "$name" ;;
+		hang)
+			printf 'trap "" TERM\n'
+			printf '( trap "" TERM; sleep 9999 ) &\n'
+			printf 'printf "%%s\\n" "$!" > "%s"\n' "$extra"
+			printf 'wait\n'
+			;;
 		esac
 	} >"$shim"
 	chmod +x "$shim"
@@ -311,6 +325,64 @@ run_case "$T" --check "$T"
 expect_status "check-drift" 1
 expect_output "check-drift" "do not match a fresh"
 expect_output "check-drift" "make gen"
+
+# ---------------------------------------------------------------------------
+# GH #511 follow-up: run_generator must not wait forever on a stalled
+# generator, or on a child it spawned. The `go` shim here ignores SIGTERM and
+# spawns a grandchild that also ignores SIGTERM, so reaching a failure here
+# proves the deadline's SIGKILL escalation, not just its TERM happy path.
+# GEN_OPENAPI_DEADLINE overrides the production default (120s) so this proves
+# the mechanism in a few seconds instead of two minutes.
+printf '\ncase: generator hangs -- must fail within the deadline, not hang\n'
+T="$(make_tree hang)"
+GRANDCHILD_PID_FILE="$WORKROOT/hang.grandchild.pid"
+rm -f "$GRANDCHILD_PID_FILE"
+write_shim "$T" go hang "$GRANDCHILD_PID_FILE"
+write_shim "$T" pnpm write
+START="$(date +%s)"
+OUT="$(GEN_OPENAPI_DEADLINE=2 PATH="$T/bin:$BASE_PATH" bash "$UNDER_TEST" "$T" 2>&1)"
+STATUS=$?
+ELAPSED=$(($(date +%s) - START))
+expect_status "hang" 1
+expect_output "hang" "exceeded its 2s deadline"
+expect_output "hang" "go/ogen"
+# Grace period in run_generator's watchdog is 2s (TERM, wait, then KILL), so
+# with a 2s deadline this must return in single-digit seconds, not the 9999s
+# the shim would otherwise sleep for.
+if [ "$ELAPSED" -le 20 ]; then
+	ok "hang: returned in ${ELAPSED}s, not hung (2s deadline, ignored SIGTERM)"
+else
+	not_ok "hang: took ${ELAPSED}s to return, expected well under 20s" "output was:
+$OUT"
+fi
+
+# Process-tree cleanup: the grandchild the hung shim spawned -- which also
+# ignores SIGTERM, forcing the SIGKILL escalation -- must not survive. This is
+# the concrete proof that the kill reaches the whole descendant tree, not just
+# the direct go/pnpm invocation. Demonstrated portably with plain `kill -0`
+# polling (works on both the BSD ps/kill this suite otherwise assumes and on
+# Linux); it is not a process-group proof, because run_generator deliberately
+# does not use process groups (see the comment in run_generator on why job
+# control hung this exact script when piped, which is how this suite invokes
+# it).
+if [ ! -s "$GRANDCHILD_PID_FILE" ]; then
+	not_ok "hang: grandchild pid file was never written" "the hang shim did not run as expected"
+else
+	GC_PID="$(cat "$GRANDCHILD_PID_FILE")"
+	GONE=0
+	for _ in 1 2 3 4 5 6 7 8; do
+		if ! kill -0 "$GC_PID" 2>/dev/null; then
+			GONE=1
+			break
+		fi
+		sleep 1
+	done
+	if [ "$GONE" -eq 1 ]; then
+		ok "hang: grandchild pid $GC_PID did not survive the deadline (descendant-tree kill)"
+	else
+		not_ok "hang: grandchild pid $GC_PID is still alive after the deadline" "descendant-tree kill did not reach it"
+	fi
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n'
