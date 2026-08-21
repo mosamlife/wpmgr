@@ -3754,6 +3754,7 @@ export const BulkDeleteBackupsResultItemSchema = {
         "snapshot_locked",
         "chain_has_dependents",
         "restore_in_progress",
+        null,
       ],
       description: "Null when outcome=deleted; the skip reason otherwise.",
     },
@@ -5763,12 +5764,14 @@ export const ActivityVerifyResultSchema = {
       description: "Total number of events folded during verification.",
     },
     break: {
-      nullable: true,
       description:
         "Null when the chain is intact. Describes the first broken link with\nenough detail for an operator to understand and act on the failure.\n",
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/ChainBreak",
+        },
+        {
+          type: "null",
         },
       ],
     },
@@ -10533,8 +10536,15 @@ export const PortalSummarySchema = {
       },
     },
     latest_report: {
-      $ref: "#/components/schemas/PortalSummaryLatestReport",
-      nullable: true,
+      anyOf: [
+        {
+          $ref: "#/components/schemas/PortalSummaryLatestReport",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description: "Null until a report has been generated for this portal.",
     },
     recent_work: {
       type: "array",
@@ -10667,12 +10677,14 @@ export const ObjectCacheConfigSchema = {
       format: "date-time",
     },
     last_test_result: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/ObjectCacheTestResult",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
       description:
         "The stored result of the most recent connection test, including the server capability report, so the dashboard can show requirements without re-running a test.",
     },

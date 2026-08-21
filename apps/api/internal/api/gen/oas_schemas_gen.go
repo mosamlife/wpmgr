@@ -22270,16 +22270,17 @@ type GetDbOrphansReportUnauthorized Error
 func (*GetDbOrphansReportUnauthorized) getDbOrphansReportRes() {}
 
 type GetDbScanResultOK struct {
-	Result OptDbScanResult `json:"result"`
+	// Null until a scan has produced a result.
+	Result OptNilDbScanResult `json:"result"`
 }
 
 // GetResult returns the value of Result.
-func (s *GetDbScanResultOK) GetResult() OptDbScanResult {
+func (s *GetDbScanResultOK) GetResult() OptNilDbScanResult {
 	return s.Result
 }
 
 // SetResult sets the value of Result.
-func (s *GetDbScanResultOK) SetResult(val OptDbScanResult) {
+func (s *GetDbScanResultOK) SetResult(val OptNilDbScanResult) {
 	s.Result = val
 }
 
@@ -29634,52 +29635,6 @@ func (o OptDateTime) Or(d time.Time) time.Time {
 	return d
 }
 
-// NewOptDbScanResult returns new OptDbScanResult with value set to v.
-func NewOptDbScanResult(v DbScanResult) OptDbScanResult {
-	return OptDbScanResult{
-		Value: v,
-		Set:   true,
-	}
-}
-
-// OptDbScanResult is optional DbScanResult.
-type OptDbScanResult struct {
-	Value DbScanResult
-	Set   bool
-}
-
-// IsSet returns true if OptDbScanResult was set.
-func (o OptDbScanResult) IsSet() bool { return o.Set }
-
-// Reset unsets value.
-func (o *OptDbScanResult) Reset() {
-	var v DbScanResult
-	o.Value = v
-	o.Set = false
-}
-
-// SetTo sets value to v.
-func (o *OptDbScanResult) SetTo(v DbScanResult) {
-	o.Set = true
-	o.Value = v
-}
-
-// Get returns value and boolean that denotes whether value was set.
-func (o OptDbScanResult) Get() (v DbScanResult, ok bool) {
-	if !o.Set {
-		return v, false
-	}
-	return o.Value, true
-}
-
-// Or returns value if set, or given parameter if does not.
-func (o OptDbScanResult) Or(d DbScanResult) DbScanResult {
-	if v, ok := o.Get(); ok {
-		return v
-	}
-	return d
-}
-
 // NewOptDbScanResultCategories returns new OptDbScanResultCategories with value set to v.
 func NewOptDbScanResultCategories(v DbScanResultCategories) OptDbScanResultCategories {
 	return OptDbScanResultCategories{
@@ -32432,6 +32387,74 @@ func (o OptNilDateTime) Or(d time.Time) time.Time {
 	return d
 }
 
+// NewOptNilDbScanResult returns new OptNilDbScanResult with value set to v.
+func NewOptNilDbScanResult(v DbScanResult) OptNilDbScanResult {
+	return OptNilDbScanResult{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilDbScanResult is optional nullable DbScanResult.
+type OptNilDbScanResult struct {
+	Value DbScanResult
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilDbScanResult was set.
+func (o OptNilDbScanResult) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilDbScanResult) Reset() {
+	var v DbScanResult
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilDbScanResult) SetTo(v DbScanResult) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilDbScanResult) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilDbScanResult) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v DbScanResult
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilDbScanResult) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilDbScanResult) Get() (v DbScanResult, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilDbScanResult) Or(d DbScanResult) DbScanResult {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilFloat32 returns new OptNilFloat32 with value set to v.
 func NewOptNilFloat32(v float32) OptNilFloat32 {
 	return OptNilFloat32{
@@ -32834,6 +32857,74 @@ func (o OptNilObjectCacheTestResult) Get() (v ObjectCacheTestResult, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilObjectCacheTestResult) Or(d ObjectCacheTestResult) ObjectCacheTestResult {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilPortalSummaryLatestReport returns new OptNilPortalSummaryLatestReport with value set to v.
+func NewOptNilPortalSummaryLatestReport(v PortalSummaryLatestReport) OptNilPortalSummaryLatestReport {
+	return OptNilPortalSummaryLatestReport{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilPortalSummaryLatestReport is optional nullable PortalSummaryLatestReport.
+type OptNilPortalSummaryLatestReport struct {
+	Value PortalSummaryLatestReport
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilPortalSummaryLatestReport was set.
+func (o OptNilPortalSummaryLatestReport) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilPortalSummaryLatestReport) Reset() {
+	var v PortalSummaryLatestReport
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilPortalSummaryLatestReport) SetTo(v PortalSummaryLatestReport) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilPortalSummaryLatestReport) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilPortalSummaryLatestReport) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v PortalSummaryLatestReport
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilPortalSummaryLatestReport) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilPortalSummaryLatestReport) Get() (v PortalSummaryLatestReport, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilPortalSummaryLatestReport) Or(d PortalSummaryLatestReport) PortalSummaryLatestReport {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -33904,52 +33995,6 @@ func (o OptPairingCodeCreate) Get() (v PairingCodeCreate, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptPairingCodeCreate) Or(d PairingCodeCreate) PairingCodeCreate {
-	if v, ok := o.Get(); ok {
-		return v
-	}
-	return d
-}
-
-// NewOptPortalSummaryLatestReport returns new OptPortalSummaryLatestReport with value set to v.
-func NewOptPortalSummaryLatestReport(v PortalSummaryLatestReport) OptPortalSummaryLatestReport {
-	return OptPortalSummaryLatestReport{
-		Value: v,
-		Set:   true,
-	}
-}
-
-// OptPortalSummaryLatestReport is optional PortalSummaryLatestReport.
-type OptPortalSummaryLatestReport struct {
-	Value PortalSummaryLatestReport
-	Set   bool
-}
-
-// IsSet returns true if OptPortalSummaryLatestReport was set.
-func (o OptPortalSummaryLatestReport) IsSet() bool { return o.Set }
-
-// Reset unsets value.
-func (o *OptPortalSummaryLatestReport) Reset() {
-	var v PortalSummaryLatestReport
-	o.Value = v
-	o.Set = false
-}
-
-// SetTo sets value to v.
-func (o *OptPortalSummaryLatestReport) SetTo(v PortalSummaryLatestReport) {
-	o.Set = true
-	o.Value = v
-}
-
-// Get returns value and boolean that denotes whether value was set.
-func (o OptPortalSummaryLatestReport) Get() (v PortalSummaryLatestReport, ok bool) {
-	if !o.Set {
-		return v, false
-	}
-	return o.Value, true
-}
-
-// Or returns value if set, or given parameter if does not.
-func (o OptPortalSummaryLatestReport) Or(d PortalSummaryLatestReport) PortalSummaryLatestReport {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -37449,9 +37494,10 @@ type PortalSummary struct {
 	VitalsOverall      OptNilPortalSummaryVitalsOverall `json:"vitals_overall"`
 	VitalsDistribution OptPortalVitalsDistribution      `json:"vitals_distribution"`
 	// Fleet day-wise average across sites with data.
-	UptimeDaily  []PortalUptimeDay            `json:"uptime_daily"`
-	Sites        []PortalSummarySite          `json:"sites"`
-	LatestReport OptPortalSummaryLatestReport `json:"latest_report"`
+	UptimeDaily []PortalUptimeDay   `json:"uptime_daily"`
+	Sites       []PortalSummarySite `json:"sites"`
+	// Null until a report has been generated for this portal.
+	LatestReport OptNilPortalSummaryLatestReport `json:"latest_report"`
 	// Up to 20 most recent successful updates and backups, descending by time.
 	RecentWork []PortalRecentWorkItem `json:"recent_work"`
 }
@@ -37502,7 +37548,7 @@ func (s *PortalSummary) GetSites() []PortalSummarySite {
 }
 
 // GetLatestReport returns the value of LatestReport.
-func (s *PortalSummary) GetLatestReport() OptPortalSummaryLatestReport {
+func (s *PortalSummary) GetLatestReport() OptNilPortalSummaryLatestReport {
 	return s.LatestReport
 }
 
@@ -37557,7 +37603,7 @@ func (s *PortalSummary) SetSites(val []PortalSummarySite) {
 }
 
 // SetLatestReport sets the value of LatestReport.
-func (s *PortalSummary) SetLatestReport(val OptPortalSummaryLatestReport) {
+func (s *PortalSummary) SetLatestReport(val OptNilPortalSummaryLatestReport) {
 	s.LatestReport = val
 }
 

@@ -2128,7 +2128,8 @@ export type BulkDeleteBackupsResultItem = {
     | "snapshot_in_progress"
     | "snapshot_locked"
     | "chain_has_dependents"
-    | "restore_in_progress";
+    | "restore_in_progress"
+    | null;
   /**
    * Human-readable explanation of code; null when outcome=deleted.
    */
@@ -3404,7 +3405,7 @@ export type ActivityVerifyResult = {
    * enough detail for an operator to understand and act on the failure.
    *
    */
-  break?: ChainBreak;
+  break?: ChainBreak | null;
 };
 
 export type ChainBreak = {
@@ -6153,7 +6154,10 @@ export type PortalSummary = {
    */
   uptime_daily: Array<PortalUptimeDay>;
   sites: Array<PortalSummarySite>;
-  latest_report?: PortalSummaryLatestReport;
+  /**
+   * Null until a report has been generated for this portal.
+   */
+  latest_report?: PortalSummaryLatestReport | null;
   /**
    * Up to 20 most recent successful updates and backups, descending by time.
    */
@@ -6207,7 +6211,7 @@ export type ObjectCacheConfig = {
   /**
    * The stored result of the most recent connection test, including the server capability report, so the dashboard can show requirements without re-running a test.
    */
-  last_test_result?: ObjectCacheTestResult;
+  last_test_result?: ObjectCacheTestResult | null;
   /**
    * Live connectivity state from the last heartbeat: '' (unknown/no config), 'disabled', 'connected', 'degraded', or 'down'.
    */
@@ -17004,7 +17008,10 @@ export type GetDbScanResultResponses = {
    * Latest scan result (null when none)
    */
   200: {
-    result?: DbScanResult;
+    /**
+     * Null until a scan has produced a result.
+     */
+    result?: DbScanResult | null;
   };
 };
 

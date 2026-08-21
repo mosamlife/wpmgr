@@ -9113,8 +9113,10 @@ paths:
                 type: object
                 properties:
                   result:
-                    nullable: true
-                    $ref: "#/components/schemas/DbScanResult"
+                    anyOf:
+                      - $ref: "#/components/schemas/DbScanResult"
+                      - type: "null"
+                    description: Null until a scan has produced a result.
   /api/v1/sites/{siteId}/perf/db/health:
     get:
       operationId: getDbHealth
@@ -15828,6 +15830,7 @@ components:
               snapshot_locked,
               chain_has_dependents,
               restore_in_progress,
+              null,
             ]
           description: Null when outcome=deleted; the skip reason otherwise.
         message:
@@ -17412,12 +17415,12 @@ components:
           type: integer
           description: Total number of events folded during verification.
         break:
-          nullable: true
           description: |
             Null when the chain is intact. Describes the first broken link with
             enough detail for an operator to understand and act on the failure.
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/ChainBreak"
+            - type: "null"
     ChainBreak:
       type: object
       required:
@@ -20755,8 +20758,10 @@ components:
           items:
             $ref: "#/components/schemas/PortalSummarySite"
         latest_report:
-          $ref: "#/components/schemas/PortalSummaryLatestReport"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/PortalSummaryLatestReport"
+            - type: "null"
+          description: Null until a report has been generated for this portal.
         recent_work:
           type: array
           description: "Up to 20 most recent successful updates and backups, descending by time."
@@ -20831,9 +20836,9 @@ components:
           type: [string, "null"]
           format: date-time
         last_test_result:
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/ObjectCacheTestResult"
-          nullable: true
+            - type: "null"
           description: >-
             The stored result of the most recent connection test, including the
             server capability report, so the dashboard can show requirements
