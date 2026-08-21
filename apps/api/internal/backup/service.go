@@ -650,7 +650,12 @@ func (s *Service) ListSnapshots(ctx context.Context, tenantID, siteID uuid.UUID,
 // fleet queries. For org-scoped principals it returns all site IDs in the
 // tenant; for site-scoped principals it returns p.AllowedSiteIDs.
 func (s *Service) FleetSiteIDs(ctx context.Context, tenantID uuid.UUID, p domain.Principal) ([]uuid.UUID, error) {
-	if p.Scope == domain.ScopeSite {
+	// IsSiteConstrained, not a bare Scope compare: this function IS the
+	// "which sites may this principal touch?" question for the fleet routes,
+	// which have no :siteId for RequireSiteAccess to read. A principal carrying
+	// an allowlist whose scope label was missing would fall through to the full
+	// tenant site list here. See domain.Principal.IsSiteConstrained.
+	if p.IsSiteConstrained() {
 		return p.AllowedSiteIDs, nil
 	}
 	return s.sites.ListSiteIDs(ctx, tenantID)
@@ -671,8 +676,8 @@ func (s *Service) FleetListSnapshots(ctx context.Context, p domain.Principal, te
 	if tenantID == uuid.Nil {
 		return FleetSnapshotPage{}, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
-	// Fail-closed: site-scoped principal with zero accessible sites → empty page.
-	if p.Scope == domain.ScopeSite && len(f.SiteIDs) == 0 {
+	// Fail-closed: constrained principal with zero accessible sites → empty page.
+	if p.IsSiteConstrained() && len(f.SiteIDs) == 0 {
 		return FleetSnapshotPage{Items: []Snapshot{}}, nil
 	}
 	const (
@@ -701,8 +706,8 @@ func (s *Service) FleetBackupHealth(ctx context.Context, p domain.Principal, ten
 	if tenantID == uuid.Nil {
 		return nil, domain.Forbidden("tenant_required", "a tenant context is required")
 	}
-	// Fail-closed: site-scoped principal with zero accessible sites → empty list.
-	if p.Scope == domain.ScopeSite && len(siteIDs) == 0 {
+	// Fail-closed: constrained principal with zero accessible sites → empty list.
+	if p.IsSiteConstrained() && len(siteIDs) == 0 {
 		return []FleetBackupHealthItem{}, nil
 	}
 	if len(siteIDs) == 0 {

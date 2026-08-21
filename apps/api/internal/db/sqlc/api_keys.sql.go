@@ -12,19 +12,38 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (tenant_id, name, prefix, key_hash, role)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at
+INSERT INTO api_keys (
+    tenant_id, name, prefix, key_hash, role,
+    kind, auth_model, capabilities, site_scope, allowed_site_ids
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at, kind, auth_model, capabilities, site_scope, allowed_site_ids
 `
 
 type CreateAPIKeyParams struct {
-	TenantID uuid.UUID `json:"tenant_id"`
-	Name     string    `json:"name"`
-	Prefix   string    `json:"prefix"`
-	KeyHash  string    `json:"key_hash"`
-	Role     string    `json:"role"`
+	TenantID       uuid.UUID   `json:"tenant_id"`
+	Name           string      `json:"name"`
+	Prefix         string      `json:"prefix"`
+	KeyHash        string      `json:"key_hash"`
+	Role           string      `json:"role"`
+	Kind           string      `json:"kind"`
+	AuthModel      string      `json:"auth_model"`
+	Capabilities   []string    `json:"capabilities"`
+	SiteScope      string      `json:"site_scope"`
+	AllowedSiteIds []uuid.UUID `json:"allowed_site_ids"`
 }
 
+// CreateAPIKey is the ONLY INSERT path for api_keys, deliberately. m120 (#510)
+// extended it in place rather than adding a second capability-aware INSERT
+// alongside it: two INSERT statements over a table whose CHECK constraints
+// encode an authorization contract is one statement that can forget a column,
+// and the column it forgets defaults to the permissive legacy value.
+//
+// Callers pass auth_model='role' + capabilities=NULL for a legacy role key, or
+// auth_model='capability' + a non-NULL (possibly empty) set for a least-
+// privilege key. api_keys_auth_model_capabilities_check refuses every other
+// combination, so an inconsistent pair fails 23514 here rather than
+// authenticating with surprise authority later.
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
 	row := q.db.QueryRow(ctx, createAPIKey,
 		arg.TenantID,
@@ -32,6 +51,11 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		arg.Prefix,
 		arg.KeyHash,
 		arg.Role,
+		arg.Kind,
+		arg.AuthModel,
+		arg.Capabilities,
+		arg.SiteScope,
+		arg.AllowedSiteIds,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -44,12 +68,17 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.Kind,
+		&i.AuthModel,
+		&i.Capabilities,
+		&i.SiteScope,
+		&i.AllowedSiteIds,
 	)
 	return i, err
 }
 
 const getAPIKey = `-- name: GetAPIKey :one
-SELECT id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at FROM api_keys
+SELECT id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at, kind, auth_model, capabilities, site_scope, allowed_site_ids FROM api_keys
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -71,12 +100,17 @@ func (q *Queries) GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, e
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.Kind,
+		&i.AuthModel,
+		&i.Capabilities,
+		&i.SiteScope,
+		&i.AllowedSiteIds,
 	)
 	return i, err
 }
 
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
-SELECT api_keys.id, api_keys.tenant_id, api_keys.name, api_keys.prefix, api_keys.key_hash, api_keys.role, api_keys.created_at, api_keys.last_used_at, api_keys.revoked_at FROM api_keys
+SELECT api_keys.id, api_keys.tenant_id, api_keys.name, api_keys.prefix, api_keys.key_hash, api_keys.role, api_keys.created_at, api_keys.last_used_at, api_keys.revoked_at, api_keys.kind, api_keys.auth_model, api_keys.capabilities, api_keys.site_scope, api_keys.allowed_site_ids FROM api_keys
 JOIN tenants t ON t.id = api_keys.tenant_id
 WHERE api_keys.prefix = $1 AND t.deleted_at IS NULL
 `
@@ -105,12 +139,17 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.Kind,
+		&i.AuthModel,
+		&i.Capabilities,
+		&i.SiteScope,
+		&i.AllowedSiteIds,
 	)
 	return i, err
 }
 
 const listAPIKeys = `-- name: ListAPIKeys :many
-SELECT id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at FROM api_keys
+SELECT id, tenant_id, name, prefix, key_hash, role, created_at, last_used_at, revoked_at, kind, auth_model, capabilities, site_scope, allowed_site_ids FROM api_keys
 WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -141,6 +180,11 @@ func (q *Queries) ListAPIKeys(ctx context.Context, arg ListAPIKeysParams) ([]Api
 			&i.CreatedAt,
 			&i.LastUsedAt,
 			&i.RevokedAt,
+			&i.Kind,
+			&i.AuthModel,
+			&i.Capabilities,
+			&i.SiteScope,
+			&i.AllowedSiteIds,
 		); err != nil {
 			return nil, err
 		}

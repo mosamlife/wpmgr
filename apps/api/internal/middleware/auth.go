@@ -92,13 +92,13 @@ func (a *Authenticator) Authenticate() gin.HandlerFunc {
 			// write leaves a key untraced, and a hard tenant purge cascades
 			// audit_log away with the tenant. An unknown/invalid stored role
 			// fails closed on its own: rank 0 fails every AtLeast.
-			p := domain.Principal{
-				Type:     domain.PrincipalAPIKey,
-				APIKeyID: key.ID,
-				TenantID: key.TenantID,
-				Role:     string(key.Role),
-				Scope:    domain.ScopeOrg,
-			}
+			// m120 (#510): built by apikey.PrincipalFor so auth_model, the
+			// capability set, site_scope and the allowlist all reach the
+			// principal from one place. A key minted before m120 carries kind
+			// 'integration', auth_model 'role', capabilities NULL and
+			// site_scope 'org', so PrincipalFor reproduces exactly the literal
+			// this replaced and such a key's authority is bit-identical.
+			p := apikey.PrincipalFor(key)
 			c.Request = c.Request.WithContext(domain.WithPrincipal(ctx, p))
 			c.Next()
 			return

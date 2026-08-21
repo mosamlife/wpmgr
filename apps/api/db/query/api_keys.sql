@@ -1,6 +1,20 @@
+-- CreateAPIKey is the ONLY INSERT path for api_keys, deliberately. m120 (#510)
+-- extended it in place rather than adding a second capability-aware INSERT
+-- alongside it: two INSERT statements over a table whose CHECK constraints
+-- encode an authorization contract is one statement that can forget a column,
+-- and the column it forgets defaults to the permissive legacy value.
+--
+-- Callers pass auth_model='role' + capabilities=NULL for a legacy role key, or
+-- auth_model='capability' + a non-NULL (possibly empty) set for a least-
+-- privilege key. api_keys_auth_model_capabilities_check refuses every other
+-- combination, so an inconsistent pair fails 23514 here rather than
+-- authenticating with surprise authority later.
 -- name: CreateAPIKey :one
-INSERT INTO api_keys (tenant_id, name, prefix, key_hash, role)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO api_keys (
+    tenant_id, name, prefix, key_hash, role,
+    kind, auth_model, capabilities, site_scope, allowed_site_ids
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetAPIKey :one
