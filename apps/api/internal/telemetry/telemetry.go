@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -32,6 +34,43 @@ type Provider struct {
 	tracerProvider *sdktrace.TracerProvider
 }
 
+// defaultTracesPath is the OTLP/HTTP path for the traces signal. The exporter
+// applies it to a host:port endpoint but takes a URL's path verbatim, so for a
+// URL we have to apply it ourselves.
+const defaultTracesPath = "/v1/traces"
+
+// resolveTracesEndpointURL returns the URL the OTLP/HTTP trace exporter should
+// POST to, given an operator-configured endpoint.
+//
+// otlptracehttp.WithEndpointURL uses the configured URL's path as-is. An
+// endpoint carrying no meaningful path — "http://collector:4318", the shape
+// infra/docker-compose.yml ships — therefore resolves to the collector's root,
+// where nothing accepts trace payloads. The exporter reports no error and the
+// spans are simply dropped, so the failure is silent. (Older exporter releases
+// left URLPath empty here and a later default-filling step substituted
+// /v1/traces; newer ones pin it to "/" so that step no longer fires. Resolving
+// the path ourselves makes the behaviour the same on either.)
+//
+// Appending the default path unconditionally is the opposite bug: an operator
+// who configured ".../v1/traces" would get ".../v1/traces/v1/traces". So the
+// default is applied only when the URL carries no path of its own, and an
+// explicitly-configured path — including a custom one — is left untouched.
+func resolveTracesEndpointURL(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		// Not a URL we can reason about (unparseable, scheme-relative, or an
+		// opaque form like "collector:4318"). Hand it back unchanged so the
+		// exporter's own validation and error reporting apply, rather than
+		// inventing a URL the operator did not configure.
+		return endpoint
+	}
+	if p := strings.TrimSpace(u.Path); p == "" || p == "/" {
+		u.Path = defaultTracesPath
+		return u.String()
+	}
+	return endpoint
+}
+
 // Init configures the global tracer provider and propagators. The returned
 // Provider's Shutdown must be called on exit to flush spans.
 func Init(ctx context.Context, cfg Config) (*Provider, error) {
@@ -51,7 +90,8 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 
 	if cfg.OTLPEndpoint != "" {
-		exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(cfg.OTLPEndpoint))
+		endpoint := resolveTracesEndpointURL(cfg.OTLPEndpoint)
+		exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
 		if err != nil {
 			return nil, fmt.Errorf("create otlp exporter: %w", err)
 		}
