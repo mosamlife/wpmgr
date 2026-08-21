@@ -187,6 +187,19 @@ run_generator() {
 	shift 3
 
 	MARKER="$(mktemp "${TMPDIR:-/tmp}/gen-openapi-marker.XXXXXX")"
+	# Back-dated years into the past, not left at its mktemp-assigned "now":
+	# the write-detection check below is `find -newer "$MARKER"`, a *strict*
+	# newer-than comparison, and a marker created microseconds before a fast
+	# shim's write can tie with it on a coarse-grained filesystem clock. That
+	# tie reads as "wrote nothing" even though the write happened -- caught as
+	# a real, intermittent GH #511-follow-up CI flake (the same commit passed
+	# on one Linux runner and failed on another two seconds later; the failing
+	# run's own output showed the shim ran and printed normally, immediately
+	# followed by "exited 0 but wrote nothing"). Reusing the exact stale
+	# timestamp `make_tree` already seeds output files with removes any chance
+	# of a tie: a live write is unambiguously newer than 2020 regardless of
+	# clock resolution.
+	touch -t 202001010000 "$MARKER"
 
 	# A bounded, process-tree-aware deadline (GH #511 follow-up). Without
 	# this, a generator -- or a child it spawns, which matters because pnpm
