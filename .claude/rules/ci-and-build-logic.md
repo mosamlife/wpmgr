@@ -38,9 +38,17 @@ declaration.
 Seven workflows: `ci.yml`, `api-integration.yml`, `e2e-agent.yml`,
 `plugincheck.yml`, `release.yml`, `security.yml`, `wporg-deploy.yml`.
 
-`ci.yml` is the gate and has seven jobs: `go`, `js`, `commit-hygiene`,
-`marketing`, `security`, `nginx-routing`, `php`. Green before and after every
-merge. Run the same command CI runs, locally, not an approximation.
+`ci.yml` is the gate and has eight jobs: `go`, `js`, `codegen-drift`,
+`commit-hygiene`, `marketing`, `security`, `nginx-routing`, `php`. Green before
+and after every merge. Run the same command CI runs, locally, not an
+approximation.
+
+`codegen-drift` regenerates both OpenAPI-derived trees
+(`apps/api/internal/api/gen`, `packages/openapi-client/src/generated`) and
+fails if what is committed differs from what `packages/openapi/openapi.yaml`
+now produces. It runs `scripts/gen-openapi_test.sh` first, then
+`scripts/gen-openapi.sh --check` — the same script `make gen` runs, so the
+developer command and the CI command cannot drift apart.
 
 `release.yml` is build-only; its image matrix is `api`, `web`, `media-encoder`
 to ghcr.io, and it never builds marketing. The marketing image ships only
