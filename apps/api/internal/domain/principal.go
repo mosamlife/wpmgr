@@ -19,6 +19,18 @@ const (
 // ScopeOrg is the scope value for a full org member (existing behaviour).
 const ScopeOrg = "org"
 
+// AuthModelRole is the legacy authorization model: permissions are derived from
+// the principal's role through the totally ordered role hierarchy. It is the
+// meaning of the zero value, so a Principal built by code that predates m120
+// (#510) behaves exactly as it did before.
+const AuthModelRole = "role"
+
+// AuthModelCapability is the least-privilege authorization model: the explicit
+// capability set is authoritative and the role is NEVER consulted, not even as
+// a fallback when the set is empty. These strings match the api_keys.auth_model
+// column values exactly (see migration m120).
+const AuthModelCapability = "capability"
+
 // ScopeSite is the scope value for an outside collaborator who has been granted
 // access to one or more specific sites via site_shares, but has no membership
 // row in the active tenant.
@@ -45,10 +57,44 @@ type Principal struct {
 	// auth time from non-expired site_shares rows. It is empty for Scope=="org".
 	AllowedSiteIDs []uuid.UUID
 
+	// AuthModel selects how this principal's permissions are computed:
+	// AuthModelRole (the default, and the zero value's meaning) consults Role
+	// through the totally ordered hierarchy; AuthModelCapability consults
+	// Capabilities ONLY and never falls back to Role.
+	//
+	// This field is deliberately redundant with `Capabilities != nil`, and it
+	// is the reason the collapse below is not a fail-open. The database column
+	// capabilities is nullable and sqlc generates it as a plain []string with
+	// no validity flag, so SQL NULL and '{}' both arrive here as a zero-length
+	// slice: len(Capabilities) == 0 cannot distinguish "no capability set, use
+	// the role" from "a real capability set containing nothing, allow nothing".
+	// Reading AuthModel instead of the slice length is what keeps a
+	// zero-capability key at zero authority rather than handing it its role.
+	//
+	// The empty string means AuthModelRole, so every principal built before
+	// m120 (#510) — and every session principal, which has no key row at all —
+	// keeps exactly the authority it had.
+	AuthModel string
+
+	// Capabilities is the explicit permission set for an AuthModelCapability
+	// principal. Each element is an authz.Permission string validated against
+	// the vocabulary at mint time. Empty (or nil) means zero authority when
+	// AuthModel == AuthModelCapability; it is meaningless and ignored when
+	// AuthModel is AuthModelRole.
+	Capabilities []string
+
 	// ClientIDs holds the client UUIDs the principal belongs to as a portal
 	// member. Populated only when Role == "client" (resolved via client_members).
 	// Empty for every non-portal principal.
 	ClientIDs []uuid.UUID
+}
+
+// IsCapabilityScoped reports whether this principal's authority comes from an
+// explicit capability set rather than from its role rank. Call this instead of
+// testing len(Capabilities) — see the AuthModel doc comment for why the slice
+// length is not a safe discriminator.
+func (p Principal) IsCapabilityScoped() bool {
+	return p.AuthModel == AuthModelCapability
 }
 
 // ActorID returns the stable identifier of the principal for audit logging.

@@ -164,7 +164,10 @@ func RequirePermission(perm Permission) gin.HandlerFunc {
 				return
 			}
 		}
-		if !Allows(Role(p.Role), perm) {
+		// m120 (#510): PrincipalAllows, not Allows. For a capability principal
+		// the explicit set is authoritative and the role is never consulted;
+		// for every other principal this is identical to Allows(Role, perm).
+		if !PrincipalAllows(p, perm) {
 			abort(c, domain.Forbidden("insufficient_permission", "your role does not permit this action"))
 			return
 		}
