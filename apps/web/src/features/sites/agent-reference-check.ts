@@ -30,17 +30,19 @@ import { relativeTime } from "@/lib/utils";
 // client agrees) and trusted verbatim here. This module never re-derives
 // staleness or the roll-up from raw timestamps.
 //
-// NOTE ON NULLS: packages/openapi/openapi.yaml is OpenAPI 3.1, where
-// `nullable: true` is not a valid keyword; the generator therefore emits
-// every nullable AgentMirrorStatus field (last_success_at,
-// last_success_version, last_attempt_at, last_attempt_outcome,
-// last_attempt_detail, last_mirrored_at, last_mirrored_version, ...) as a
-// plain non-optional `string`/enum type even though the control plane sends
-// a genuine JSON `null` for "never recorded" (see
-// agentrelease/handler.go's formatMirrorTime/nonEmptyMirrorString). The
-// `nullableString` helper below undoes that generated optimism explicitly
-// rather than trust the generated type where the wire truth disagrees with
-// it.
+// NOTE ON NULLS (GH #479): the spec now expresses nullability in the 3.1
+// union form, so the generated AgentMirrorStatus types tell the truth for
+// last_success_at, last_success_version, last_attempt_at and
+// last_attempt_detail, and this module reads them directly.
+//
+// One field is still mis-declared: `last_attempt_outcome` generates as a
+// non-nullable enum, but agentrelease/handler.go:232 declares it
+// `*string` with no omitempty and :342 fills it via nonEmptyMirrorString,
+// which returns nil for the empty string, so the wire really does carry
+// `"last_attempt_outcome": null` before the first attempt. Its two siblings
+// from the same helper (last_success_outcome:339, last_attempt_trigger:344)
+// are declared nullable and generate correctly. Until the spec is corrected,
+// `nullableString` below keeps that one guard honest.
 
 export type ReferenceCheckTone = "info" | "warn";
 
@@ -64,9 +66,9 @@ function ago(iso: string | null): string {
   return relativeTime(iso) ?? "recently";
 }
 
-/** See the NOTE ON NULLS above: the generated type claims these string
- *  fields are never null, but the wire sends a real null for "never
- *  recorded". */
+/** See the NOTE ON NULLS above: `last_attempt_outcome` is the one field whose
+ *  generated type still claims it is never null while the wire sends a real
+ *  null for "never attempted". */
 function nullableString<T extends string>(value: T): T | null {
   const raw: unknown = value;
   return raw as T | null;
@@ -79,11 +81,11 @@ function describeEnabledMirrorState(
   mirror: AgentMirrorStatus,
   hasPublishedReference: boolean,
 ): ReferenceCheckMessage {
-  const lastAttemptAt = nullableString(mirror.last_attempt_at);
+  const lastAttemptAt = mirror.last_attempt_at;
   const lastAttemptOutcome = nullableString(mirror.last_attempt_outcome);
-  const lastAttemptDetail = nullableString(mirror.last_attempt_detail);
-  const lastSuccessAt = nullableString(mirror.last_success_at);
-  const lastSuccessVersion = nullableString(mirror.last_success_version) ?? "an earlier release";
+  const lastAttemptDetail = mirror.last_attempt_detail;
+  const lastSuccessAt = mirror.last_success_at;
+  const lastSuccessVersion = mirror.last_success_version ?? "an earlier release";
 
   // The mirror could not run at all (object storage/HTTP client not wired).
   // Never self-heals, so this warns immediately regardless of staleness.

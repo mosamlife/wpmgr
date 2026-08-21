@@ -15,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageError } from "@/components/feedback";
 import { TooltipProvider, Tooltip } from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/utils";
-import type { SiteEmailLogEntry } from "@wpmgr/api";
+import type { EmailLogDetail } from "@wpmgr/api";
 import { useEmailLogDetail, useResendEmail, BodyNotStoredError } from "./use-email";
 import { EmailStatusBadge } from "./email-status-badge";
 import { SafeEmailPreview } from "./safe-email-preview";
@@ -142,7 +142,10 @@ function hasRemoteImages(body: string): boolean {
 
 interface LogDetailBodyProps {
   siteId: string;
-  entry: { entry: SiteEmailLogEntry; prev_id?: string; next_id?: string };
+  // The generated type, not a hand-written copy of it: the local shape had
+  // drifted to non-nullable prev_id/next_id, which the wire sends as a real
+  // null at the ends of the list.
+  entry: EmailLogDetail;
   prevId: string | null;
   nextId: string | null;
   onNavigate: (id: string) => void;
