@@ -5,39 +5,20 @@ package gen
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/go-faster/errors"
-	"github.com/ogen-go/ogen/ogenerrors"
 )
 
-// SecurityHandler is handler for security parameters.
-type SecurityHandler interface {
-	// HandleAgentSignature handles AgentSignature security.
-	// Ed25519 signed-request authentication for agent->control-plane calls. The
-	// agent sends four headers: X-WPMgr-Agent-Key (its base64 Ed25519 public
-	// key, identifying the enrolled site), X-WPMgr-Timestamp (Unix seconds),
-	// X-WPMgr-Nonce (a unique per-request token), and X-WPMgr-Signature (the
-	// base64 Ed25519 signature over the canonical message
-	// "METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(sha256(body))"). The control plane
-	// rejects stale timestamps and replayed nonces. (apiKey type is the closest
-	// OpenAPI 3.1 primitive for this header-carried signature scheme.).
-	HandleAgentSignature(ctx context.Context, operationName OperationName, t AgentSignature) (context.Context, error)
-}
-
-func findAuthorization(h http.Header, prefix string) (string, bool) {
-	v, ok := h["Authorization"]
-	if !ok {
-		return "", false
-	}
-	for _, vv := range v {
-		scheme, value, ok := strings.Cut(vv, " ")
-		if !ok || !strings.EqualFold(scheme, prefix) {
-			continue
-		}
-		return value, true
-	}
-	return "", false
+// SecuritySource is provider of security values (tokens, passwords, etc.).
+type SecuritySource interface {
+	// AgentSignature provides AgentSignature security value.
+	// Ed25519 signed-request authentication for agent->control-plane calls. The agent sends four headers:
+	// X-WPMgr-Agent-Key (its base64 Ed25519 public key, identifying the enrolled site), X-WPMgr-Timestamp
+	// (Unix seconds), X-WPMgr-Nonce (a unique per-request token), and X-WPMgr-Signature (the base64
+	// Ed25519 signature over the canonical message "METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(sha256(body))").
+	// The control plane rejects stale timestamps and replayed nonces. (apiKey type is the closest OpenAPI
+	// 3.1 primitive for this header-carried signature scheme.).
+	AgentSignature(ctx context.Context, operationName OperationName) (AgentSignature, error)
 }
 
 // operationRolesAgentSignature is a private map storing roles per operation.
@@ -92,38 +73,6 @@ func GetRolesForAgentSignature(operation string) []string {
 	result := make([]string, len(roles))
 	copy(result, roles)
 	return result
-}
-
-func (s *Server) securityAgentSignature(ctx context.Context, operationName OperationName, req *http.Request) (context.Context, bool, error) {
-	var t AgentSignature
-	const parameterName = "X-WPMgr-Signature"
-	value := req.Header.Get(parameterName)
-	if value == "" {
-		return ctx, false, nil
-	}
-	t.APIKey = value
-	t.Roles = operationRolesAgentSignature[operationName]
-	rctx, err := s.sec.HandleAgentSignature(ctx, operationName, t)
-	if errors.Is(err, ogenerrors.ErrSkipServerSecurity) {
-		return nil, false, nil
-	} else if err != nil {
-		return nil, false, err
-	}
-	return rctx, true, err
-}
-
-// SecuritySource is provider of security values (tokens, passwords, etc.).
-type SecuritySource interface {
-	// AgentSignature provides AgentSignature security value.
-	// Ed25519 signed-request authentication for agent->control-plane calls. The
-	// agent sends four headers: X-WPMgr-Agent-Key (its base64 Ed25519 public
-	// key, identifying the enrolled site), X-WPMgr-Timestamp (Unix seconds),
-	// X-WPMgr-Nonce (a unique per-request token), and X-WPMgr-Signature (the
-	// base64 Ed25519 signature over the canonical message
-	// "METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(sha256(body))"). The control plane
-	// rejects stale timestamps and replayed nonces. (apiKey type is the closest
-	// OpenAPI 3.1 primitive for this header-carried signature scheme.).
-	AgentSignature(ctx context.Context, operationName OperationName) (AgentSignature, error)
 }
 
 func (s *Client) securityAgentSignature(ctx context.Context, operationName OperationName, req *http.Request) error {

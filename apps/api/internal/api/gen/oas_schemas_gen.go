@@ -3,14 +3,20 @@
 package gen
 
 import (
+	"context"
 	"io"
+	"iter"
+	"net/http"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/go-faster/jx"
 	"github.com/google/uuid"
 	ht "github.com/ogen-go/ogen/http"
+	"github.com/ogen-go/ogen/sse"
 )
 
 type AcceptInvitationBadRequest Error
@@ -25,13 +31,12 @@ func (*AcceptInvitationForbidden) acceptInvitationRes() {}
 type AcceptInvitationRequest struct {
 	// The raw token from the accept link (?token=…).
 	Token string `json:"token"`
-	// Must match the email the invitation was addressed to (prevents
-	// identity swap and enumeration).
+	// Must match the email the invitation was addressed to (prevents identity swap and enumeration).
 	Email string `json:"email"`
 	// Display name to set when a new user account is created.
 	Name OptString `json:"name"`
-	// Password to set when a new user account is created. Required only
-	// when the invited email has no existing account.
+	// Password to set when a new user account is created. Required only when the invited email has no
+	// existing account.
 	Password OptString `json:"password"`
 }
 
@@ -79,8 +84,7 @@ func (s *AcceptInvitationRequest) SetPassword(val OptString) {
 type AcceptInvitationResponse struct {
 	// The organisation the invitation belonged to.
 	TenantID uuid.UUID `json:"tenant_id"`
-	// "org" when a full membership was granted; "site" when a site-scoped
-	// share was created.
+	// "org" when a full membership was granted; "site" when a site-scoped share was created.
 	Scope AcceptInvitationResponseScope `json:"scope"`
 	// Set when scope="site"; the specific site the user now has access to.
 	SiteID OptUUID `json:"site_id"`
@@ -118,8 +122,7 @@ func (s *AcceptInvitationResponse) SetSiteID(val OptUUID) {
 
 func (*AcceptInvitationResponse) acceptInvitationRes() {}
 
-// "org" when a full membership was granted; "site" when a site-scoped
-// share was created.
+// "org" when a full membership was granted; "site" when a site-scoped share was created.
 type AcceptInvitationResponseScope string
 
 const (
@@ -202,13 +205,13 @@ func (*ActivateOrgUnauthorized) activateOrgRes() {}
 type ActivityVerifyResult struct {
 	// True when the entire chain re-verifies intact.
 	Valid bool `json:"valid"`
-	// The seq of the first broken link, or null when the chain is intact.
-	// Kept for backward compatibility; equals break.seq when broken.
+	// The seq of the first broken link, or null when the chain is intact. Kept for backward compatibility;
+	// equals break.seq when broken.
 	BreakAtSeq OptNilInt64 `json:"break_at_seq"`
 	// Total number of events folded during verification.
 	Total int `json:"total"`
-	// Null when the chain is intact. Describes the first broken link with
-	// enough detail for an operator to understand and act on the failure.
+	// Null when the chain is intact. Describes the first broken link with enough detail for an operator to
+	// understand and act on the failure.
 	Break OptNilChainBreak `json:"break"`
 }
 
@@ -296,8 +299,8 @@ func (*AddSiteEmailSuppressionUnauthorized) addSiteEmailSuppressionRes() {}
 type AddSuppressionRequest struct {
 	// Email address to suppress.
 	Email string `json:"email"`
-	// Must be `manual` or `unsubscribe`. Hard_bounce and complaint entries
-	// are created automatically via provider webhooks.
+	// Must be `manual` or `unsubscribe`. Hard_bounce and complaint entries are created automatically via
+	// provider webhooks.
 	Reason OptString `json:"reason"`
 }
 
@@ -624,8 +627,8 @@ func (s *AdminAccountDetailPlanStatus) UnmarshalText(data []byte) error {
 	}
 }
 
-// Display-only reference values for the account-detail "what this plan includes" rows — not
-// enforced anywhere.
+// Display-only reference values for the account-detail "what this plan includes" rows — not enforced
+// anywhere.
 // Ref: #/components/schemas/AdminAccountEntitlementValues
 type AdminAccountEntitlementValues struct {
 	ProbeIntervalFloorSec     int  `json:"probe_interval_floor_sec"`
@@ -1137,8 +1140,8 @@ type AdminAccountSubscription struct {
 	Provider               OptString `json:"provider"`
 	ProviderCustomerID     OptString `json:"provider_customer_id"`
 	ProviderSubscriptionID OptString `json:"provider_subscription_id"`
-	// A Stripe-dashboard deep link. Empty when the provider is not Stripe, or there is no subscription
-	// id yet.
+	// A Stripe-dashboard deep link. Empty when the provider is not Stripe, or there is no subscription id
+	// yet.
 	DashboardURL       OptString   `json:"dashboard_url"`
 	CurrentPeriodEnd   OptDateTime `json:"current_period_end"`
 	CancelAtPeriodEnd  bool        `json:"cancel_at_period_end"`
@@ -1299,8 +1302,8 @@ func (s *AdminAccountTiles) SetAccountsTotal(val int64) {
 	s.AccountsTotal = val
 }
 
-// One merged row in the account-detail timeline (billing_events + audit_log admin.billing.*/billing.
-// * actions), newest first.
+// One merged row in the account-detail timeline (billing_events + audit_log admin.billing./billing.
+// actions), newest first.
 // Ref: #/components/schemas/AdminAccountTimelineEntry
 type AdminAccountTimelineEntry struct {
 	Source     AdminAccountTimelineEntrySource `json:"source"`
@@ -2580,9 +2583,7 @@ func (s *AdminRevenueTiles) SetCanceledThisMonth(val int64) {
 }
 
 // Each of sites/storage_gb/seats is a signed delta on top of the tenant's current plan's ladder base.
-//
-//	An omitted key leaves that limit untouched; `null` (or `0`) clears it.
-//
+// An omitted key leaves that limit untouched; `null` (or `0`) clears it.
 // Ref: #/components/schemas/AdminSetOverridesRequest
 type AdminSetOverridesRequest struct {
 	Sites     OptNilInt `json:"sites"`
@@ -3240,8 +3241,8 @@ type AdminVulnFeedStatus struct {
 	RecordCount int                       `json:"record_count"`
 	LastSynced  OptDateTime               `json:"last_synced"`
 	LastError   OptString                 `json:"last_error"`
-	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
-	// of feed_ok (which tracks Scanner-driven detection freshness).
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of
+	// feed_ok (which tracks Scanner-driven detection freshness).
 	EnrichmentAvailable bool        `json:"enrichment_available"`
 	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
@@ -3948,8 +3949,8 @@ type AgentCacheStatsReport struct {
 	CacheHitCount              OptInt64   `json:"cache_hit_count"`
 	CacheMissCount             OptInt64   `json:"cache_miss_count"`
 	WooThemeFragmentsSupported OptNilBool `json:"woo_theme_fragments_supported"`
-	// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when
-	// the Object Cache feature is not wired.
+	// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when the
+	// Object Cache feature is not wired.
 	ObjectCache OptAgentCacheStatsReportObjectCache `json:"object_cache"`
 }
 
@@ -4063,8 +4064,8 @@ func (s *AgentCacheStatsReport) SetObjectCache(val OptAgentCacheStatsReportObjec
 	s.ObjectCache = val
 }
 
-// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when
-// the Object Cache feature is not wired.
+// Optional M68 object-cache heartbeat + stats-delta block; silently dropped when malformed or when the
+// Object Cache feature is not wired.
 type AgentCacheStatsReportObjectCache struct {
 	State             OptAgentCacheStatsReportObjectCacheState `json:"state"`
 	LatencyMs         OptFloat64                               `json:"latency_ms"`
@@ -5167,10 +5168,9 @@ type AgentGetUpdateManifestUnauthorized Error
 
 func (*AgentGetUpdateManifestUnauthorized) agentGetUpdateManifestRes() {}
 
-// M21 / ADR-039 — the light 60s heartbeat body the WordPress agent sends.
-// All fields are optional and accepted best-effort: the beat is about
-// liveness, not the payload. Forward-compatible (additive) so a future CP
-// can render drift without a separate metadata pull.
+// M21 / ADR-039 — the light 60s heartbeat body the WordPress agent sends. All fields are optional
+// and accepted best-effort: the beat is about liveness, not the payload. Forward-compatible (additive)
+// so a future CP can render drift without a separate metadata pull.
 // Ref: #/components/schemas/AgentHeartbeat
 type AgentHeartbeat struct {
 	// The enrolled site UUID (echoed for convenience; auth binds the real identity).
@@ -5292,10 +5292,9 @@ type AgentHeartbeatResult struct {
 	Ok bool `json:"ok"`
 	// Pending agent instructions, e.g. ["revoke"].
 	Instructions []string `json:"instructions"`
-	// Present with a `["revoke"]` instruction: a short-lived signed Ed25519
-	// JWT (aud=site_id, cmd="revoke") the agent MUST verify with the CP
-	// public key before any self-teardown (ADR-040 addendum). Fail-closed, an absent/invalid token must
-	// be a no-op.
+	// Present with a `["revoke"]` instruction: a short-lived signed Ed25519 JWT (aud=site_id,
+	// cmd="revoke") the agent MUST verify with the CP public key before any self-teardown (ADR-040
+	// addendum). Fail-closed, an absent/invalid token must be a no-op.
 	RevokeToken OptString `json:"revoke_token"`
 }
 
@@ -5653,12 +5652,11 @@ func (s *AgentManifestEntry) SetChunks(val []AgentChunkRef) {
 	s.Chunks = val
 }
 
-// ADR-043 — the agent's `delete_attachment` hook fired: a WP attachment was
-// deleted (wp-admin, programmatic, WP-CLI, or REST). The agent has already
-// removed its own untracked originals from disk (the *.wpmgr-original.<ext>
-// archive in replace mode, the original-ext twin in coexist mode); this
-// signals the CP to reconcile the site_media_assets row. Best-effort from
-// the agent — the sync sweep is the backstop.
+// ADR-043 — the agent's `delete_attachment` hook fired: a WP attachment was deleted (wp-admin,
+// programmatic, WP-CLI, or REST). The agent has already removed its own untracked originals from disk
+// (the *.wpmgr-original. archive in replace mode, the original-ext twin in coexist mode); this signals
+// the CP to reconcile the site_media_assets row. Best-effort from the agent — the sync sweep is the
+// backstop.
 // Ref: #/components/schemas/AgentMediaAssetDeleted
 type AgentMediaAssetDeleted struct {
 	WpAttachmentID int64 `json:"wp_attachment_id"`
@@ -6062,10 +6060,10 @@ func (s *AgentMediaRestoreStatusOK) SetOk(val OptBool) {
 
 func (*AgentMediaRestoreStatusOK) agentMediaRestoreStatusRes() {}
 
-// ADR-043 — one page (≤200) of enumerated media attachments. Every page
-// also carries the sync `job_id` so the CP can scope the enumeration and so
-// the matching `/agent/v1/media/sync-finalize` call (sent only after a clean
-// full enumeration) can reconcile offline deletions against this run's pages.
+// ADR-043 — one page (≤200) of enumerated media attachments. Every page also carries the sync
+// `job_id` so the CP can scope the enumeration and so the matching `/agent/v1/media/sync-finalize`
+// call (sent only after a clean full enumeration) can reconcile offline deletions against this run's
+// pages.
 // Ref: #/components/schemas/AgentMediaSyncBatch
 type AgentMediaSyncBatch struct {
 	JobID       OptString                            `json:"job_id"`
@@ -6223,10 +6221,9 @@ func (s *AgentMediaSyncBatchOK) SetUpsertedCount(val OptInt) {
 
 func (*AgentMediaSyncBatchOK) agentMediaSyncBatchRes() {}
 
-// ADR-043 — a FULL paged media enumeration completed cleanly. Sent ONLY
-// after every sync-batch page succeeded (a partial/errored run must NOT
-// finalize — the blast-radius guard against a transiently-empty WP wiping
-// the asset list). The CP marks any site_media_assets row NOT seen in this
+// ADR-043 — a FULL paged media enumeration completed cleanly. Sent ONLY after every sync-batch page
+// succeeded (a partial/errored run must NOT finalize — the blast-radius guard against a
+// transiently-empty WP wiping the asset list). The CP marks any site_media_assets row NOT seen in this
 // job's pages as deleted (offline-deletion reconciliation).
 // Ref: #/components/schemas/AgentMediaSyncFinalize
 type AgentMediaSyncFinalize struct {
@@ -6259,9 +6256,8 @@ func (s *AgentMediaSyncFinalizeOK) SetOk(val OptBool) {
 
 func (*AgentMediaSyncFinalizeOK) agentMediaSyncFinalizeRes() {}
 
-// The agent's metadata push. Every field is optional and tolerantly
-// decoded (booleans and numbers are accepted as strings), so an older
-// agent that omits any of them still syncs successfully.
+// The agent's metadata push. Every field is optional and tolerantly decoded (booleans and numbers are
+// accepted as strings), so an older agent that omits any of them still syncs successfully.
 // Ref: #/components/schemas/AgentMetadata
 type AgentMetadata struct {
 	WpVersion   OptString `json:"wp_version"`
@@ -6271,32 +6267,29 @@ type AgentMetadata struct {
 	ActiveTheme OptString `json:"active_theme"`
 	// The WPMgr agent plugin version.
 	AgentVersion OptString `json:"agent_version"`
-	// The agent's per-site age PUBLIC recipient ("age1..."), stored so
-	// backups can be triggered without a separate registration call.
-	// Empty or missing leaves the stored recipient unchanged.
+	// The agent's per-site age PUBLIC recipient ("age1..."), stored so backups can be triggered without a
+	// separate registration call. Empty or missing leaves the stored recipient unchanged.
 	AgeRecipient OptString `json:"age_recipient"`
 	UserCount    OptInt    `json:"user_count"`
 	AdminCount   OptInt    `json:"admin_count"`
-	// The WordPress roles that exist on the site, read from the site's own
-	// unfiltered role registry. This is what lets the security policy
-	// editor offer roles such as WooCommerce's `shop_manager` instead of
+	// The WordPress roles that exist on the site, read from the site's own unfiltered role registry. This
+	// is what lets the security policy editor offer roles such as WooCommerce's `shop_manager` instead of
 	// only the five WordPress defaults.
-	// Optional and additive: an agent older than 0.61.127 omits it, and
-	// the control plane then reports the site's roles as "not reported"
-	// rather than guessing them. Bounded to 200 entries by the agent and
+	//
+	// Optional and additive: an agent older than 0.61.127 omits it, and the control plane then reports the
+	// site's roles as "not reported" rather than guessing them. Bounded to 200 entries by the agent and
 	// again by the control plane.
 	Roles []AgentMetadataRolesItem `json:"roles"`
 	// Present only when WordPress core has an update available.
 	CoreUpdate OptNilAgentMetadataCoreUpdate `json:"core_update"`
 	// The agent's defined()-based hosting fingerprint.
 	HostFlags OptNilAgentMetadataHostFlags `json:"host_flags"`
-	// Sampled disk usage in bytes. The wp-content and uploads walks are
-	// time-capped, so a field may be absent on a very large tree.
+	// Sampled disk usage in bytes. The wp-content and uploads walks are time-capped, so a field may be
+	// absent on a very large tree.
 	Disk OptNilAgentMetadataDisk `json:"disk"`
-	// The outcome of the agent's last self-update apply, replayed on the
-	// next metadata push. This is the only channel by which a FAILED
-	// apply reaches the control plane: the apply runs inside a cron
-	// request with no response to ride on.
+	// The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
+	// only channel by which a FAILED apply reaches the control plane: the apply runs inside a cron request
+	// with no response to ride on.
 	AgentSelfUpdate OptNilAgentMetadataAgentSelfUpdate `json:"agent_self_update"`
 	Plugins         []SiteComponent                    `json:"plugins"`
 	Themes          []SiteComponent                    `json:"themes"`
@@ -6462,10 +6455,9 @@ func (s *AgentMetadata) SetThemes(val []SiteComponent) {
 	s.Themes = val
 }
 
-// The outcome of the agent's last self-update apply, replayed on the
-// next metadata push. This is the only channel by which a FAILED
-// apply reaches the control plane: the apply runs inside a cron
-// request with no response to ride on.
+// The outcome of the agent's last self-update apply, replayed on the next metadata push. This is the
+// only channel by which a FAILED apply reaches the control plane: the apply runs inside a cron request
+// with no response to ride on.
 type AgentMetadataAgentSelfUpdate struct {
 	Status      OptString `json:"status"`
 	FromVersion OptString `json:"from_version"`
@@ -6473,21 +6465,16 @@ type AgentMetadataAgentSelfUpdate struct {
 	Detail      OptString `json:"detail"`
 	// Unix timestamp the agent stamped the record with.
 	At OptInt64 `json:"at"`
-	// Opaque per-apply identifier the agent mints when it takes its
-	// apply and stamps into this record. Additive: absent from every
-	// agent that predates it. The control plane compares it whole
-	// against the apply id it carried on the arm command it sent, so
-	// a version movement can only be credited to the run that caused
-	// it rather than to some other event that happened to move the
-	// site's version.
+	// Opaque per-apply identifier the agent mints when it takes its apply and stamps into this record.
+	// Additive: absent from every agent that predates it. The control plane compares it whole against the
+	// apply id it carried on the arm command it sent, so a version movement can only be credited to the
+	// run that caused it rather than to some other event that happened to move the site's version.
 	ApplyID OptString `json:"apply_id"`
-	// Connection-release rung the apply actually ran on: fpm or
-	// litespeed released the response before the swap, the portable
-	// fallback held the caller's connection for its whole duration.
-	// Diagnostic only, it gates nothing. It exists so a fleet-wide
-	// read can tell which sites upgrade on an attached connection,
-	// which is what keeps that decision evidence-based. Absent from
-	// every agent before 0.61.110.
+	// Connection-release rung the apply actually ran on: fpm or litespeed released the response before the
+	// swap, the portable fallback held the caller's connection for its whole duration. Diagnostic only, it
+	// gates nothing. It exists so a fleet-wide read can tell which sites upgrade on an attached
+	// connection, which is what keeps that decision evidence-based. Absent from every agent before
+	// 0.61.110.
 	Rung OptString `json:"rung"`
 }
 
@@ -6587,8 +6574,8 @@ func (s *AgentMetadataCoreUpdate) SetCurrentVersion(val OptString) {
 	s.CurrentVersion = val
 }
 
-// Sampled disk usage in bytes. The wp-content and uploads walks are
-// time-capped, so a field may be absent on a very large tree.
+// Sampled disk usage in bytes. The wp-content and uploads walks are time-capped, so a field may be
+// absent on a very large tree.
 type AgentMetadataDisk struct {
 	WpContentBytes OptInt64 `json:"wp_content_bytes"`
 	UploadsBytes   OptInt64 `json:"uploads_bytes"`
@@ -6720,8 +6707,8 @@ func (s *AgentMetadataHostFlags) SetIsCloudways(val OptBool) {
 type AgentMetadataRolesItem struct {
 	// WordPress role slug, e.g. shop_manager.
 	Slug OptString `json:"slug"`
-	// Display name in the site's own locale, resolved exactly as
-	// WordPress resolves it for its own role dropdown.
+	// Display name in the site's own locale, resolved exactly as WordPress resolves it for its own role
+	// dropdown.
 	Name OptString `json:"name"`
 }
 
@@ -6755,8 +6742,8 @@ func (*AgentMetadataUnprocessableEntity) agentMetadataRes() {}
 
 // Ref: #/components/schemas/AgentMirrorCheckQueued
 type AgentMirrorCheckQueued struct {
-	// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up
-	// to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
+	// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up to
+	// date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
 	// outcome.
 	Status   AgentMirrorCheckQueuedStatus `json:"status"`
 	QueuedAt time.Time                    `json:"queued_at"`
@@ -6795,8 +6782,8 @@ func (s *AgentMirrorCheckQueued) SetMessage(val string) {
 
 func (*AgentMirrorCheckQueued) checkAgentMirrorNowRes() {}
 
-// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up
-// to date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
+// Always "queued". The run has NOT executed yet. Callers must not present this as "checked" or "up to
+// date"; poll GET /api/v1/fleet/agents and read agent_mirror.last_attempt_outcome for the real
 // outcome.
 type AgentMirrorCheckQueuedStatus string
 
@@ -6835,16 +6822,14 @@ func (s *AgentMirrorCheckQueuedStatus) UnmarshalText(data []byte) error {
 // Freshness of the UPSTREAM AGENT-RELEASE MIRROR (internal/agentupstream,
 // WPMGR_UPDATE_AGENT_MIRROR_ENABLED), which on a self-hosted install is what keeps
 // agent-releases/latest.json, and therefore latest_version, up to date (GH #322), together with one
-// capability: whether the CALLING VIEWER may trigger a check on that mirror right now
-// (can_check_now).
-// Every field except can_check_now describes the MIRROR JOB, never the reference version itself.
-// When reference_source is "fleet" or "none" there is no published reference, and these timestamps
-// say nothing about latest_version. When enabled is false there is no mirror at all: on the hosted
-// service the release pipeline writes the manifest directly, so every timestamp here is null, no
-// freshness age should be shown to a user, and can_check_now is false for everyone.
-// can_check_now is the one field that is a property of the CALLER rather than of the install, so it
-// is not cacheable across users: two people looking at the same fleet can legitimately receive
-// different values.
+// capability: whether the CALLING VIEWER may trigger a check on that mirror right now (can_check_now).
+// Every field except can_check_now describes the MIRROR JOB, never the reference version itself. When
+// reference_source is "fleet" or "none" there is no published reference, and these timestamps say
+// nothing about latest_version. When enabled is false there is no mirror at all: on the hosted service
+// the release pipeline writes the manifest directly, so every timestamp here is null, no freshness age
+// should be shown to a user, and can_check_now is false for everyone. can_check_now is the one field
+// that is a property of the CALLER rather than of the install, so it is not cacheable across users:
+// two people looking at the same fleet can legitimately receive different values.
 // Ref: #/components/schemas/AgentMirrorStatus
 type AgentMirrorStatus struct {
 	// Whether this install runs the upstream mirror (WPMGR_UPDATE_AGENT_MIRROR_ENABLED). False on the
@@ -6860,40 +6845,38 @@ type AgentMirrorStatus struct {
 	// recently.
 	Status AgentMirrorStatusStatus `json:"status"`
 	// The staleness threshold behind status="stale", in seconds (46800, i.e. 13 hours). Emitted so a
-	// client can phrase the warning without duplicating the constant. It is two nominal 6h30m cycles
-	// (the 6h schedule plus up to 30m jitter) and clears the roughly 12h30m gap a single control-plane
-	// restart can legitimately produce (River's periodic-job scheduler recomputes its next run as "now
-	// plus the interval" on restart rather than resuming a prior clock), so reaching it means at least
-	// two consecutive scheduled runs failed to confirm anything.
+	// client can phrase the warning without duplicating the constant. It is two nominal 6h30m cycles (the
+	// 6h schedule plus up to 30m jitter) and clears the roughly 12h30m gap a single control-plane restart
+	// can legitimately produce (River's periodic-job scheduler recomputes its next run as "now plus the
+	// interval" on restart rather than resuming a prior clock), so reaching it means at least two
+	// consecutive scheduled runs failed to confirm anything.
 	StaleAfterSeconds int32 `json:"stale_after_seconds"`
 	// Whether the CALLING VIEWER may trigger a mirror check on this install right now, i.e. whether POST
 	// /api/v1/admin/agent-mirror/check would admit this caller rather than answer 403. The dashboard
-	// renders its "Check now" action in the Sites page Agent column popover exactly when this is true,
-	// so an operator is never offered a button that refuses them, and the operator who may act is never
-	// left without one.
-	// The control plane computes this from the SAME decision the endpoint's own gate runs, not a second
-	// copy of the rule: superadmin (users.is_superadmin), OR the owner of the only live organisation on
-	// this install (GH #322, the single-tenant self-hosted case, where the multi-tenant protection the
-	// gate exists for has no other tenant to protect). An API-key principal is always false, since this
-	// is an install-level action against a shared upstream request budget and the audit record wants a
-	// human.
-	// False whenever enabled is false: no caller may trigger a run that does not exist. False for every
-	// non-superadmin on an install with more than one live organisation, which leaves the hosted,
-	// multi-tenant case exactly as it was. A second organisation appearing closes the path again on the
-	// very next request, because nothing about this answer is cached.
+	// renders its "Check now" action in the Sites page Agent column popover exactly when this is true, so
+	// an operator is never offered a button that refuses them, and the operator who may act is never left
+	// without one. The control plane computes this from the SAME decision the endpoint's own gate runs,
+	// not a second copy of the rule: superadmin (users.is_superadmin), OR the owner of the only live
+	// organisation on this install (GH #322, the single-tenant self-hosted case, where the multi-tenant
+	// protection the gate exists for has no other tenant to protect). An API-key principal is always
+	// false, since this is an install-level action against a shared upstream request budget and the audit
+	// record wants a human. False whenever enabled is false: no caller may trigger a run that does not
+	// exist. False for every non-superadmin on an install with more than one live organisation, which
+	// leaves the hosted, multi-tenant case exactly as it was. A second organisation appearing closes the
+	// path again on the very next request, because nothing about this answer is cached.
 	CanCheckNow bool `json:"can_check_now"`
 	// When this install last CONFIRMED what upstream publishes: the last attempt whose outcome was
-	// mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null
-	// when it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten
-	// minutes ago must never be reported as "checked ten minutes ago".
+	// mirrored, current, or unchanged. This is the ONLY field an age may ever be rendered from. Null when
+	// it has never happened. Deliberately distinct from last_attempt_at: a run that failed ten minutes ago
+	// must never be reported as "checked ten minutes ago".
 	LastSuccessAt NilDateTime `json:"last_success_at"`
 	// Which kind of confirmation last_success_at was. "mirrored": a new release was published here.
 	// "current": upstream examined and this install already publishes exactly it. "unchanged": upstream
-	// answered 304, which is a genuine confirmation because the conditional request is only sent while
-	// the published pointer is unchanged too.
+	// answered 304, which is a genuine confirmation because the conditional request is only sent while the
+	// published pointer is unchanged too.
 	LastSuccessOutcome NilAgentMirrorStatusLastSuccessOutcome `json:"last_success_outcome"`
-	// The agent version that confirmation established. Carried forward across an "unchanged" (304)
-	// result, which by definition names the same release.
+	// The agent version that confirmation established. Carried forward across an "unchanged" (304) result,
+	// which by definition names the same release.
 	LastSuccessVersion NilString `json:"last_success_version"`
 	// When a mirror run last executed, whatever the result. Null when none ever has. Never render an age
 	// from this field.
@@ -7186,8 +7169,8 @@ func (s *AgentMirrorStatusLastAttemptTrigger) UnmarshalText(data []byte) error {
 
 // Which kind of confirmation last_success_at was. "mirrored": a new release was published here.
 // "current": upstream examined and this install already publishes exactly it. "unchanged": upstream
-// answered 304, which is a genuine confirmation because the conditional request is only sent while
-// the published pointer is unchanged too.
+// answered 304, which is a genuine confirmation because the conditional request is only sent while the
+// published pointer is unchanged too.
 type AgentMirrorStatusLastSuccessOutcome string
 
 const (
@@ -7319,8 +7302,8 @@ type AgentPerfConfigAck struct {
 	DropinInstalled    bool   `json:"dropin_installed"`
 	WpCacheConstantSet bool   `json:"wp_cache_constant_set"`
 	HtaccessManaged    bool   `json:"htaccess_managed"`
-	// GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when
-	// a pre-#174 agent does not report it.
+	// GH #174 — whether the agent currently holds a non-empty rum_beacon_key. Absent (not false) when a
+	// pre-#174 agent does not report it.
 	RumBeaconPresent OptNilBool `json:"rum_beacon_present"`
 }
 
@@ -8055,9 +8038,8 @@ func (s *AgentSuppressionDeltaPageEntriesItem) SetCreatedAt(val time.Time) {
 	s.CreatedAt = val
 }
 
-// A tenant's alert channel, shared by uptime downtime/recovery,
-// high-severity security events, and vulnerability alerting (GH #247).
-// The webhook secret is write-only and is never returned;
+// A tenant's alert channel, shared by uptime downtime/recovery, high-severity security events, and
+// vulnerability alerting (GH #247). The webhook secret is write-only and is never returned;
 // webhook_configured indicates whether a webhook URL is set.
 // Ref: #/components/schemas/AlertConfig
 type AlertConfig struct {
@@ -8065,27 +8047,21 @@ type AlertConfig struct {
 	WebhookURL        OptString `json:"webhook_url"`
 	WebhookConfigured bool      `json:"webhook_configured"`
 	Enabled           bool      `json:"enabled"`
-	// Routes high-severity activity-log security events into this same
-	// channel (email + webhook).
+	// Routes high-severity activity-log security events into this same channel (email + webhook).
 	NotifySecurity bool `json:"notify_security"`
-	// Routes new vulnerability findings into this same channel (email +
-	// webhook). Opt-in; default false.
+	// Routes new vulnerability findings into this same channel (email + webhook). Opt-in; default false.
 	NotifyVulns bool `json:"notify_vulns"`
-	// The minimum severity that triggers a vulnerability alert. A
-	// finding with unknown severity (no CVSS data yet) always alerts
-	// regardless of this threshold.
+	// The minimum severity that triggers a vulnerability alert. A finding with unknown severity (no CVSS
+	// data yet) always alerts regardless of this threshold.
 	VulnMinSeverity AlertConfigVulnMinSeverity `json:"vuln_min_severity"`
-	// Whether open vulnerabilities appear in the periodic email digest
-	// (see EmailNotifySettings). Default true.
+	// Whether open vulnerabilities appear in the periodic email digest (see EmailNotifySettings). Default
+	// true.
 	VulnIncludeInDigest bool `json:"vuln_include_in_digest"`
-	// Whether the application-health alert kind (GH #291 Phase 3) is
-	// allowed to dispatch for this tenant, independent of `enabled`
-	// (the reachability channel) - a tenant that already has downtime
-	// alerts on does not silently start receiving app-health alerts
-	// too. Defaults to false on any deployment that already had sites
-	// when app-health alerting shipped, and true on a fresh install -
-	// decided once, deterministically, by migration (never re-decided
-	// at runtime).
+	// Whether the application-health alert kind (GH #291 Phase 3) is allowed to dispatch for this tenant,
+	// independent of `enabled` (the reachability channel) - a tenant that already has downtime alerts on
+	// does not silently start receiving app-health alerts too. Defaults to false on any deployment that
+	// already had sites when app-health alerting shipped, and true on a fresh install - decided once,
+	// deterministically, by migration (never re-decided at runtime).
 	AppAlertsEnabled bool `json:"app_alerts_enabled"`
 }
 
@@ -8189,8 +8165,8 @@ type AlertConfigUpdate struct {
 	// Write-only HMAC signing secret for the webhook payload.
 	WebhookSecret OptString `json:"webhook_secret"`
 	Enabled       OptBool   `json:"enabled"`
-	// Omitted preserves the tenant's currently-stored value (all fields
-	// in this update body are optional and independently preservable).
+	// Omitted preserves the tenant's currently-stored value (all fields in this update body are optional
+	// and independently preservable).
 	NotifySecurity OptBool `json:"notify_security"`
 	// Omitted preserves the tenant's currently-stored value.
 	NotifyVulns OptBool `json:"notify_vulns"`
@@ -8198,9 +8174,8 @@ type AlertConfigUpdate struct {
 	VulnMinSeverity OptAlertConfigUpdateVulnMinSeverity `json:"vuln_min_severity"`
 	// Omitted preserves the tenant's currently-stored value.
 	VulnIncludeInDigest OptBool `json:"vuln_include_in_digest"`
-	// Omitted preserves the tenant's currently-stored value (or, for a
-	// tenant with no alert config saved yet, the deployment's rollout
-	// default - see AlertConfig.app_alerts_enabled).
+	// Omitted preserves the tenant's currently-stored value (or, for a tenant with no alert config saved
+	// yet, the deployment's rollout default - see AlertConfig.app_alerts_enabled).
 	AppAlertsEnabled OptBool `json:"app_alerts_enabled"`
 }
 
@@ -8350,9 +8325,8 @@ func (s *AlertConfigUpdateVulnMinSeverity) UnmarshalText(data []byte) error {
 	}
 }
 
-// The minimum severity that triggers a vulnerability alert. A
-// finding with unknown severity (no CVSS data yet) always alerts
-// regardless of this threshold.
+// The minimum severity that triggers a vulnerability alert. A finding with unknown severity (no CVSS
+// data yet) always alerts regardless of this threshold.
 type AlertConfigVulnMinSeverity string
 
 const (
@@ -8572,25 +8546,19 @@ func (s *ApiKeyList) SetItems(val []ApiKey) {
 
 func (*ApiKeyList) listApiKeysRes() {}
 
-// A site's application-health settings (GH #291 Phase 3): the B3
-// override path for the application-health probe, and a per-site
-// switch to disable app-health ALERTING for this site without
-// disabling the probe itself (the dashboard stays accurate either
-// way).
+// A site's application-health settings (GH #291 Phase 3): the B3 override path for the
+// application-health probe, and a per-site switch to disable app-health ALERTING for this site without
+// disabling the probe itself (the dashboard stays accurate either way).
 // Ref: #/components/schemas/AppHealthSettings
 type AppHealthSettings struct {
-	// A site-relative path (must start with `/`; no scheme, no host,
-	// no `..` traversal) the application-health probe requests instead
-	// of auto-detecting `/wp-json/` (falling back to
-	// `/?rest_route=/`). Empty means auto-detect. Set this when the
-	// default probe reports `unknown` for this site (e.g. a WAF blocks
-	// the default REST route but a different health-check path is
-	// reachable).
+	// A site-relative path (must start with `/`; no scheme, no host, no `..` traversal) the
+	// application-health probe requests instead of auto-detecting `/wp-json/` (falling back to
+	// `/?rest_route=/`). Empty means auto-detect. Set this when the default probe reports `unknown` for
+	// this site (e.g. a WAF blocks the default REST route but a different health-check path is reachable).
 	AppProbePath string `json:"app_probe_path"`
-	// When true, this site is excluded from app-health alerting
-	// entirely (both the individual per-site alert and the fleet
-	// circuit breaker's eligible-site count) while the probe keeps
-	// running and the dashboard stays accurate.
+	// When true, this site is excluded from app-health alerting entirely (both the individual per-site
+	// alert and the fleet circuit breaker's eligible-site count) while the probe keeps running and the
+	// dashboard stays accurate.
 	AppAlertsDisabled bool `json:"app_alerts_disabled"`
 }
 
@@ -8873,14 +8841,12 @@ type AuditEntry struct {
 	TenantID  uuid.UUID `json:"tenant_id"`
 	ActorType string    `json:"actor_type"`
 	ActorID   string    `json:"actor_id"`
-	// Display name of the acting user (users.name), or the API key's
-	// label (api_keys.name) when the actor is an api_key, resolved
-	// server-side. Null for system events and for any actor row that no
-	// longer exists.
-	ActorName OptNilString `json:"actor_name"`
-	// Email of the acting user, resolved server-side. Null for
-	// api_key/system actors and for any actor row that no longer
+	// Display name of the acting user (users.name), or the API key's label (api_keys.name) when the actor
+	// is an api_key, resolved server-side. Null for system events and for any actor row that no longer
 	// exists.
+	ActorName OptNilString `json:"actor_name"`
+	// Email of the acting user, resolved server-side. Null for api_key/system actors and for any actor row
+	// that no longer exists.
 	ActorEmail OptNilString          `json:"actor_email"`
 	Action     string                `json:"action"`
 	TargetType string                `json:"target_type"`
@@ -9052,7 +9018,7 @@ func (*AuditList) listAuditRes() {}
 // Ref: #/components/schemas/AuditRebaselineRequest
 type AuditRebaselineRequest struct {
 	// The `broken_at` id from a prior `verifyAudit` ok=false response that this re-baseline acknowledges.
-	//  Optional — recorded in the `audit.integrity.rebaselined` event's metadata for forensic context
+	// Optional — recorded in the `audit.integrity.rebaselined` event's metadata for forensic context
 	// only; it is never used to locate or alter any row.
 	BrokenAt OptUUID `json:"broken_at"`
 }
@@ -9100,13 +9066,11 @@ func (*AuditVerify) verifyAuditRes()              {}
 type AutologinConsumeRequest struct {
 	// The base64url-no-pad nonce id from the JWT's `jti` claim. Single-use.
 	Nonce string `json:"nonce"`
-	// The agent's claimed site_id. MUST equal the site_id derived from
-	// the agent's verified Ed25519 identity, else the request is
-	// rejected (`site_mismatch`).
+	// The agent's claimed site_id. MUST equal the site_id derived from the agent's verified Ed25519
+	// identity, else the request is rejected (`site_mismatch`).
 	SiteID uuid.UUID `json:"site_id"`
-	// The IP that initiated the consume (typically the operator's
-	// browser as seen by the agent). Optional; the control plane falls
-	// back to the request peer IP when absent.
+	// The IP that initiated the consume (typically the operator's browser as seen by the agent). Optional;
+	// the control plane falls back to the request peer IP when absent.
 	ConsumedFromIP OptString `json:"consumed_from_ip"`
 }
 
@@ -9143,16 +9107,14 @@ func (s *AutologinConsumeRequest) SetConsumedFromIP(val OptString) {
 // Ref: #/components/schemas/AutologinConsumeResponse
 type AutologinConsumeResponse struct {
 	Ok bool `json:"ok"`
-	// The WP login the agent should establish a session as. Empty means
-	// the agent should pick the first administrator (the policy still
-	// constrains which roles are admissible).
+	// The WP login the agent should establish a session as. Empty means the agent should pick the first
+	// administrator (the policy still constrains which roles are admissible).
 	TargetWpUserLogin string `json:"target_wp_user_login"`
-	// The WP roles the agent is permitted to log the operator in as
-	// (from `autologin_policies.allowed_wp_roles`; defaults to
-	// ["administrator"] when no policy row exists).
+	// The WP roles the agent is permitted to log the operator in as (from
+	// `autologin_policies.allowed_wp_roles`; defaults to ["administrator"] when no policy row exists).
 	AllowedWpRoles []string `json:"allowed_wp_roles"`
-	// The audit entry id recorded for the consume; the agent may surface
-	// it for correlation but it has no security significance.
+	// The audit entry id recorded for the consume; the agent may surface it for correlation but it has no
+	// security significance.
 	AuditID uuid.UUID `json:"audit_id"`
 }
 
@@ -9198,18 +9160,16 @@ func (s *AutologinConsumeResponse) SetAuditID(val uuid.UUID) {
 
 func (*AutologinConsumeResponse) agentAutologinConsumeRes() {}
 
-// Optional inputs for minting an autologin URL. Both fields default to
-// empty: an absent `target_wp_user_login` means "agent picks the first
-// administrator", and an absent `redirect_to` lands the operator on the
-// wp-admin home.
+// Optional inputs for minting an autologin URL. Both fields default to empty: an absent
+// `target_wp_user_login` means "agent picks the first administrator", and an absent `redirect_to`
+// lands the operator on the wp-admin home.
 // Ref: #/components/schemas/AutologinCreate
 type AutologinCreate struct {
-	// The WordPress username the agent should log the operator in as.
-	// Empty -> the agent picks the first administrator on the site.
+	// The WordPress username the agent should log the operator in as. Empty -> the agent picks the first
+	// administrator on the site.
 	TargetWpUserLogin OptString `json:"target_wp_user_login"`
-	// Optional URL the agent forwards the operator's browser to after
-	// establishing the wp-admin session. The agent may rewrite it to a
-	// same-origin URL.
+	// Optional URL the agent forwards the operator's browser to after establishing the wp-admin session.
+	// The agent may rewrite it to a same-origin URL.
 	RedirectTo OptString `json:"redirect_to"`
 }
 
@@ -9310,11 +9270,9 @@ func (s *AutologinRateLimitedCode) UnmarshalText(data []byte) error {
 // Ref: #/components/schemas/AutologinResponse
 type AutologinResponse struct {
 	// The URL the operator's browser should follow. Shape:
-	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`.
-	// The embedded `token` is a single-use Ed25519 JWT bound to the
-	// target site (`aud` = site UUID, `cmd` = "autologin") with a
-	// ~60-second TTL. NEVER log or persist this URL — the token is a
-	// credential.
+	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`. The embedded `token`
+	// is a single-use Ed25519 JWT bound to the target site (`aud` = site UUID, `cmd` = "autologin") with a
+	// ~60-second TTL. NEVER log or persist this URL — the token is a credential.
 	RedirectURL string `json:"redirect_url"`
 	// When the JWT/nonce expires (~60s from mint).
 	ExpiresAt time.Time `json:"expires_at"`
@@ -9402,6 +9360,226 @@ func (s *BackupCreateKind) UnmarshalText(data []byte) error {
 		return nil
 	case BackupCreateKindFull:
 		*s = BackupCreateKindFull
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// One snapshot-progress transition streamed over SSE. Status mirrors the parent snapshot's status at
+// publish time so a subscriber can detect a terminal state (completed/failed) and close the
+// EventSource. Phase values come from the closed `allowedProgressPhases` set on the CP.
+// Ref: #/components/schemas/BackupEvent
+type BackupEvent struct {
+	SnapshotID uuid.UUID        `json:"snapshot_id"`
+	Phase      BackupEventPhase `json:"phase"`
+	// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+	PhaseDetail OptBackupEventPhaseDetail `json:"phase_detail"`
+	Status      BackupEventStatus         `json:"status"`
+	Ts          time.Time                 `json:"ts"`
+}
+
+// GetSnapshotID returns the value of SnapshotID.
+func (s *BackupEvent) GetSnapshotID() uuid.UUID {
+	return s.SnapshotID
+}
+
+// GetPhase returns the value of Phase.
+func (s *BackupEvent) GetPhase() BackupEventPhase {
+	return s.Phase
+}
+
+// GetPhaseDetail returns the value of PhaseDetail.
+func (s *BackupEvent) GetPhaseDetail() OptBackupEventPhaseDetail {
+	return s.PhaseDetail
+}
+
+// GetStatus returns the value of Status.
+func (s *BackupEvent) GetStatus() BackupEventStatus {
+	return s.Status
+}
+
+// GetTs returns the value of Ts.
+func (s *BackupEvent) GetTs() time.Time {
+	return s.Ts
+}
+
+// SetSnapshotID sets the value of SnapshotID.
+func (s *BackupEvent) SetSnapshotID(val uuid.UUID) {
+	s.SnapshotID = val
+}
+
+// SetPhase sets the value of Phase.
+func (s *BackupEvent) SetPhase(val BackupEventPhase) {
+	s.Phase = val
+}
+
+// SetPhaseDetail sets the value of PhaseDetail.
+func (s *BackupEvent) SetPhaseDetail(val OptBackupEventPhaseDetail) {
+	s.PhaseDetail = val
+}
+
+// SetStatus sets the value of Status.
+func (s *BackupEvent) SetStatus(val BackupEventStatus) {
+	s.Status = val
+}
+
+// SetTs sets the value of Ts.
+func (s *BackupEvent) SetTs(val time.Time) {
+	s.Ts = val
+}
+
+type BackupEventPhase string
+
+const (
+	BackupEventPhaseQueued              BackupEventPhase = "queued"
+	BackupEventPhaseDumpingDb           BackupEventPhase = "dumping_db"
+	BackupEventPhaseArchivingFiles      BackupEventPhase = "archiving_files"
+	BackupEventPhaseEncryptingUploading BackupEventPhase = "encrypting_uploading"
+	BackupEventPhaseSubmittingManifest  BackupEventPhase = "submitting_manifest"
+	BackupEventPhaseCompleted           BackupEventPhase = "completed"
+	BackupEventPhaseFailed              BackupEventPhase = "failed"
+	BackupEventPhaseStalled             BackupEventPhase = "stalled"
+	BackupEventPhaseResumed             BackupEventPhase = "resumed"
+)
+
+// AllValues returns all BackupEventPhase values.
+func (BackupEventPhase) AllValues() []BackupEventPhase {
+	return []BackupEventPhase{
+		BackupEventPhaseQueued,
+		BackupEventPhaseDumpingDb,
+		BackupEventPhaseArchivingFiles,
+		BackupEventPhaseEncryptingUploading,
+		BackupEventPhaseSubmittingManifest,
+		BackupEventPhaseCompleted,
+		BackupEventPhaseFailed,
+		BackupEventPhaseStalled,
+		BackupEventPhaseResumed,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupEventPhase) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupEventPhaseQueued:
+		return []byte(s), nil
+	case BackupEventPhaseDumpingDb:
+		return []byte(s), nil
+	case BackupEventPhaseArchivingFiles:
+		return []byte(s), nil
+	case BackupEventPhaseEncryptingUploading:
+		return []byte(s), nil
+	case BackupEventPhaseSubmittingManifest:
+		return []byte(s), nil
+	case BackupEventPhaseCompleted:
+		return []byte(s), nil
+	case BackupEventPhaseFailed:
+		return []byte(s), nil
+	case BackupEventPhaseStalled:
+		return []byte(s), nil
+	case BackupEventPhaseResumed:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupEventPhase) UnmarshalText(data []byte) error {
+	switch BackupEventPhase(data) {
+	case BackupEventPhaseQueued:
+		*s = BackupEventPhaseQueued
+		return nil
+	case BackupEventPhaseDumpingDb:
+		*s = BackupEventPhaseDumpingDb
+		return nil
+	case BackupEventPhaseArchivingFiles:
+		*s = BackupEventPhaseArchivingFiles
+		return nil
+	case BackupEventPhaseEncryptingUploading:
+		*s = BackupEventPhaseEncryptingUploading
+		return nil
+	case BackupEventPhaseSubmittingManifest:
+		*s = BackupEventPhaseSubmittingManifest
+		return nil
+	case BackupEventPhaseCompleted:
+		*s = BackupEventPhaseCompleted
+		return nil
+	case BackupEventPhaseFailed:
+		*s = BackupEventPhaseFailed
+		return nil
+	case BackupEventPhaseStalled:
+		*s = BackupEventPhaseStalled
+		return nil
+	case BackupEventPhaseResumed:
+		*s = BackupEventPhaseResumed
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Pass-through of the agent's POST /progress payload (e.g. chunk counters).
+type BackupEventPhaseDetail map[string]jx.Raw
+
+func (s *BackupEventPhaseDetail) init() BackupEventPhaseDetail {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+type BackupEventStatus string
+
+const (
+	BackupEventStatusPending   BackupEventStatus = "pending"
+	BackupEventStatusRunning   BackupEventStatus = "running"
+	BackupEventStatusCompleted BackupEventStatus = "completed"
+	BackupEventStatusFailed    BackupEventStatus = "failed"
+)
+
+// AllValues returns all BackupEventStatus values.
+func (BackupEventStatus) AllValues() []BackupEventStatus {
+	return []BackupEventStatus{
+		BackupEventStatusPending,
+		BackupEventStatusRunning,
+		BackupEventStatusCompleted,
+		BackupEventStatusFailed,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s BackupEventStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case BackupEventStatusPending:
+		return []byte(s), nil
+	case BackupEventStatusRunning:
+		return []byte(s), nil
+	case BackupEventStatusCompleted:
+		return []byte(s), nil
+	case BackupEventStatusFailed:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *BackupEventStatus) UnmarshalText(data []byte) error {
+	switch BackupEventStatus(data) {
+	case BackupEventStatusPending:
+		*s = BackupEventStatusPending
+		return nil
+	case BackupEventStatusRunning:
+		*s = BackupEventStatusRunning
+		return nil
+	case BackupEventStatusCompleted:
+		*s = BackupEventStatusCompleted
+		return nil
+	case BackupEventStatusFailed:
+		*s = BackupEventStatusFailed
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -10430,38 +10608,35 @@ type BackupSnapshot struct {
 	CreatedBy OptUUID              `json:"created_by"`
 	Kind      BackupSnapshotKind   `json:"kind"`
 	Status    BackupSnapshotStatus `json:"status"`
-	// The age PUBLIC recipient the chunks were encrypted to (provenance).
-	// NEVER a private key; the control plane cannot decrypt backups.
+	// The age PUBLIC recipient the chunks were encrypted to (provenance). NEVER a private key; the control
+	// plane cannot decrypt backups.
 	AgeRecipient OptString `json:"age_recipient"`
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
 	Archived OptBool   `json:"archived"`
 	Error    OptString `json:"error"`
-	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
-	// its first phase. Shape:
-	// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
-	// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
+	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
+	// closed set (see backup.allowedProgressPhases on the CP).
 	Progress OptBackupSnapshotProgress `json:"progress"`
-	// Server timestamp of the last progress POST from the runner. Used by
-	// the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
-	// stall fails the run) and by the frontend to detect a silent runner.
+	// Server timestamp of the last progress POST from the runner. Used by the CP's two-tier watchdog (soft
+	// stall stamps stalled_at below; hard stall fails the run) and by the frontend to detect a silent
+	// runner.
 	ProgressUpdatedAt OptDateTime `json:"progress_updated_at"`
-	// Set by the CP watchdog when a running backup has gone quiet past the
-	// soft threshold but is not yet failed. Cleared on the next proof of
-	// life (a presign, manifest submit, or progress POST). Drives the
+	// Set by the CP watchdog when a running backup has gone quiet past the soft threshold but is not yet
+	// failed. Cleared on the next proof of life (a presign, manifest submit, or progress POST). Drives the
 	// "taking longer than expected" hint; null means healthy.
 	StalledAt  OptDateTime `json:"stalled_at"`
 	StartedAt  OptDateTime `json:"started_at"`
 	FinishedAt OptDateTime `json:"finished_at"`
 	CreatedAt  time.Time   `json:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at"`
-	// ADR-048 incremental backup. True if this snapshot only stores files
-	// changed since its parent; false for full-base snapshots and all
-	// pre-m44 rows.
+	// ADR-048 incremental backup. True if this snapshot only stores files changed since its parent; false
+	// for full-base snapshots and all pre-m44 rows.
 	IsIncremental OptBool `json:"is_incremental"`
-	// Position of this snapshot within its incremental chain. 0 is the
-	// full base; 1+ are successive incrementals.
+	// Position of this snapshot within its incremental chain. 0 is the full base; 1+ are successive
+	// incrementals.
 	Generation OptInt `json:"generation"`
 	// Groups a full base and its incrementals into one chain. Null for legacy/full-base rows.
 	ChainID OptUUID `json:"chain_id"`
@@ -10469,9 +10644,8 @@ type BackupSnapshot struct {
 	ParentSnapshotID OptUUID `json:"parent_snapshot_id"`
 	// The full-base snapshot at the root of this chain. Null for legacy/full-base rows.
 	BaseSnapshotID OptUUID `json:"base_snapshot_id"`
-	// Track C (m49). When true the retention GC will never auto-prune this
-	// snapshot. Unlock via DELETE /backups/{snapshotId}/lock to restore
-	// normal GC eligibility.
+	// Track C (m49). When true the retention GC will never auto-prune this snapshot. Unlock via DELETE
+	// /backups/{snapshotId}/lock to restore normal GC eligibility.
 	Locked OptBool `json:"locked"`
 }
 
@@ -10811,10 +10985,9 @@ func (s *BackupSnapshotList) SetItems(val []BackupSnapshot) {
 	s.Items = val
 }
 
-// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
-// its first phase. Shape:
-// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
-// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
+// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
+// closed set (see backup.allowedProgressPhases on the CP).
 type BackupSnapshotProgress map[string]jx.Raw
 
 func (s *BackupSnapshotProgress) init() BackupSnapshotProgress {
@@ -11446,15 +11619,13 @@ func (s *BulkDeleteBackupsCounts) SetSkipped(val int64) {
 	s.Skipped = val
 }
 
-// Chain-aware bulk delete request (issue #115). Every requested id is
-// processed independently — a locked, in-flight, dependent, or
-// actively-restoring snapshot in the batch is reported as a skipped
+// Chain-aware bulk delete request (issue #115). Every requested id is processed independently — a
+// locked, in-flight, dependent, or actively-restoring snapshot in the batch is reported as a skipped
 // result row rather than aborting the whole request.
 // Ref: #/components/schemas/BulkDeleteBackupsRequest
 type BulkDeleteBackupsRequest struct {
-	// Snapshot IDs to delete. 1-100 unique ids per call; duplicates are
-	// silently deduplicated before the count is checked. Empty (after
-	// dedup) or over 100 is rejected with 400.
+	// Snapshot IDs to delete. 1-100 unique ids per call; duplicates are silently deduplicated before the
+	// count is checked. Empty (after dedup) or over 100 is rejected with 400.
 	Ids []uuid.UUID `json:"ids"`
 	// When true, compute the plan but write nothing (no deletes, no GC, no audit).
 	DryRun OptBool `json:"dry_run"`
@@ -11485,9 +11656,8 @@ type BulkDeleteBackupsResponse struct {
 	DryRun  bool                          `json:"dry_run"`
 	Counts  BulkDeleteBackupsCounts       `json:"counts"`
 	Results []BulkDeleteBackupsResultItem `json:"results"`
-	// Sum of total_size over deleted (or, in dry_run, would-be-deleted)
-	// rows. An estimate only — actual space is freed asynchronously by
-	// the next retention GC sweep.
+	// Sum of total_size over deleted (or, in dry_run, would-be-deleted) rows. An estimate only — actual
+	// space is freed asynchronously by the next retention GC sweep.
 	ReclaimedBytesEstimate int64 `json:"reclaimed_bytes_estimate"`
 }
 
@@ -11536,8 +11706,8 @@ func (*BulkDeleteBackupsResponse) bulkDeleteBackupsRes() {}
 // Ref: #/components/schemas/BulkDeleteBackupsResultItem
 type BulkDeleteBackupsResultItem struct {
 	ID uuid.UUID `json:"id"`
-	// "deleted" — the snapshot was removed (or, in dry_run, WOULD be
-	// removed). "skipped" — the snapshot was left in place; see code.
+	// "deleted" — the snapshot was removed (or, in dry_run, WOULD be removed). "skipped" — the
+	// snapshot was left in place; see code.
 	Outcome BulkDeleteBackupsResultItemOutcome `json:"outcome"`
 	// Null when outcome=deleted; the skip reason otherwise.
 	Code OptNilBulkDeleteBackupsResultItemCode `json:"code"`
@@ -11648,8 +11818,8 @@ func (s *BulkDeleteBackupsResultItemCode) UnmarshalText(data []byte) error {
 	}
 }
 
-// "deleted" — the snapshot was removed (or, in dry_run, WOULD be
-// removed). "skipped" — the snapshot was left in place; see code.
+// "deleted" — the snapshot was removed (or, in dry_run, WOULD be removed). "skipped" — the
+// snapshot was left in place; see code.
 type BulkDeleteBackupsResultItemOutcome string
 
 const (
@@ -12178,8 +12348,8 @@ type CancelScheduledUpdateRunNotFound Error
 
 func (*CancelScheduledUpdateRunNotFound) cancelScheduledUpdateRunRes() {}
 
-// Write-only CDN credentials. Accepted on PUT /perf/config and NEVER
-// returned by GET (the control plane decrypts server-side only).
+// Write-only CDN credentials. Accepted on PUT /perf/config and NEVER returned by GET (the control
+// plane decrypts server-side only).
 // Ref: #/components/schemas/CdnCredentials
 type CdnCredentials struct {
 	APIToken string    `json:"api_token"`
@@ -12222,20 +12392,21 @@ type ChainBreak struct {
 	// The seq of the event where verification failed.
 	Seq int64 `json:"seq"`
 	// Classifies the break:
-	// - missing_events: one or more seq numbers are absent (log cleanup / retention / deletion).
-	// - link_mismatch: contiguous seq but prev_hash broken (insertion/removal/reorder/prior alteration).
-	// - content_modified: prev link intact but recomputed hash diverges (content edited after recording).
-	// - chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain
-	// reset).
+	//
+	//  - missing_events: one or more seq numbers are absent (log cleanup / retention / deletion).
+	//  - link_mismatch: contiguous seq but prev_hash broken (insertion/removal/reorder/prior alteration).
+	//  - content_modified: prev link intact but recomputed hash diverges (content edited after recording).
+	//  - chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain
+	//    reset).
 	Kind ChainBreakKind `json:"kind"`
-	// The seq of the last successfully-verified row. Null when the break is
-	// at the first/genesis row and no prior row was verified.
+	// The seq of the last successfully-verified row. Null when the break is at the first/genesis row and
+	// no prior row was verified.
 	PriorSeq OptNilInt64 `json:"prior_seq"`
-	// Number of missing sequence numbers between prior_seq and seq.
-	// 0 when contiguous or when there is no prior row.
+	// Number of missing sequence numbers between prior_seq and seq. 0 when contiguous or when there is no
+	// prior row.
 	SeqGap int64 `json:"seq_gap"`
-	// The verified chain head before this row: the prior row's this_hash,
-	// or GenesisPrevHash (64 zero hex chars) if this is the first row.
+	// The verified chain head before this row: the prior row's this_hash, or GenesisPrevHash (64 zero hex
+	// chars) if this is the first row.
 	ExpectedPrevHash string `json:"expected_prev_hash"`
 	// The row's own prev_hash as stored.
 	StoredPrevHash string `json:"stored_prev_hash"`
@@ -12386,11 +12557,12 @@ func (s *ChainBreakEvent) SetOccurredAt(val time.Time) {
 }
 
 // Classifies the break:
-// - missing_events: one or more seq numbers are absent (log cleanup / retention / deletion).
-// - link_mismatch: contiguous seq but prev_hash broken (insertion/removal/reorder/prior alteration).
-// - content_modified: prev link intact but recomputed hash diverges (content edited after recording).
-// - chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain
-// reset).
+//
+//   - missing_events: one or more seq numbers are absent (log cleanup / retention / deletion).
+//   - link_mismatch: contiguous seq but prev_hash broken (insertion/removal/reorder/prior alteration).
+//   - content_modified: prev link intact but recomputed hash diverges (content edited after recording).
+//   - chain_start_missing: first stored event does not chain from genesis (oldest events gone / chain
+//     reset).
 type ChainBreakKind string
 
 const (
@@ -12802,11 +12974,10 @@ func (s *ClientMemberCreateRequest) SetEmail(val string) {
 // Ref: #/components/schemas/ClientMemberInviteResult
 type ClientMemberInviteResult struct {
 	Email string `json:"email"`
-	// True when an invitation was created (unknown email); false when an existing user was added
-	// directly.
+	// True when an invitation was created (unknown email); false when an existing user was added directly.
 	Invited OptBool `json:"invited"`
-	// True when the invitation email was successfully enqueued and SMTP is configured. False when SMTP
-	// is unconfigured or enqueue failed — the accept_link is always returned as the copy-link fallback.
+	// True when the invitation email was successfully enqueued and SMTP is configured. False when SMTP is
+	// unconfigured or enqueue failed — the accept_link is always returned as the copy-link fallback.
 	EmailSent bool `json:"email_sent"`
 	// Present when invited=false (the user already existed).
 	UserID OptUUID `json:"user_id"`
@@ -12935,8 +13106,8 @@ type ClientReport struct {
 	// Pre-signed URL for the HTML report (valid 7 days). Present only when status is "completed" and
 	// object storage is configured.
 	HTMLURL OptURI `json:"html_url"`
-	// Pre-signed URL for the PDF report (valid 7 days). Present only when status is "completed" and
-	// object storage is configured.
+	// Pre-signed URL for the PDF report (valid 7 days). Present only when status is "completed" and object
+	// storage is configured.
 	PdfURL    OptURI    `json:"pdf_url"`
 	CreatedAt time.Time `json:"created_at"`
 	// When the generation job finished (success or failure).
@@ -13059,8 +13230,8 @@ func (*ClientReport) getClientReportRes()      {}
 // Ref: #/components/schemas/ClientReportList
 type ClientReportList struct {
 	Items []ClientReport `json:"items"`
-	// Opaque keyset cursor. Pass as `cursor` in the next request to fetch the next page. Absent when
-	// there are no more pages.
+	// Opaque keyset cursor. Pass as `cursor` in the next request to fetch the next page. Absent when there
+	// are no more pages.
 	NextCursor OptString `json:"next_cursor"`
 }
 
@@ -13092,8 +13263,8 @@ type ClientReportSchedule struct {
 	ClientID uuid.UUID `json:"client_id"`
 	// Whether scheduled sending is active.
 	Enabled bool `json:"enabled"`
-	// How often to send. "monthly" sends on the Nth day of the month; "weekly" sends on the Nth day of
-	// the week (0=Sunday).
+	// How often to send. "monthly" sends on the Nth day of the month; "weekly" sends on the Nth day of the
+	// week (0=Sunday).
 	Cadence ClientReportScheduleCadence `json:"cadence"`
 	// For monthly: day-of-month (1–28). For weekly: day-of-week (0=Sunday … 6=Saturday).
 	SendDay int `json:"send_day"`
@@ -13115,8 +13286,8 @@ type ClientReportSchedule struct {
 	NextRunAt OptDateTime `json:"next_run_at"`
 	// Most recent execution time. Absent when never run.
 	LastRunAt OptDateTime `json:"last_run_at"`
-	// Whether the instance-level SMTP mailer is configured. When false, recipients will not receive
-	// emails even if the schedule is enabled.
+	// Whether the instance-level SMTP mailer is configured. When false, recipients will not receive emails
+	// even if the schedule is enabled.
 	InstanceMailerConfigured bool `json:"instance_mailer_configured"`
 }
 
@@ -13263,8 +13434,8 @@ func (s *ClientReportSchedule) SetInstanceMailerConfigured(val bool) {
 func (*ClientReportSchedule) getClientReportScheduleRes() {}
 func (*ClientReportSchedule) putClientReportScheduleRes() {}
 
-// How often to send. "monthly" sends on the Nth day of the month; "weekly" sends on the Nth day of
-// the week (0=Sunday).
+// How often to send. "monthly" sends on the Nth day of the month; "weekly" sends on the Nth day of the
+// week (0=Sunday).
 type ClientReportScheduleCadence string
 
 const (
@@ -13707,8 +13878,8 @@ func (*ConfirmTotpEnrollmentUnprocessableEntity) confirmTotpEnrollmentRes() {}
 // How the authenticated account can be signed in to.
 // Ref: #/components/schemas/ConnectedAccounts
 type ConnectedAccounts struct {
-	// Whether a password is set. False means the account is social-only and can add one via `POST
-	// /auth/me/password/set`.
+	// Whether a password is set. False means the account is social-only and can add one via
+	// `POST /auth/me/password/set`.
 	HasPassword bool `json:"has_password"`
 	// Whether removing one identity would still leave a way in, which is true when a password is set or
 	// more than one identity is connected. A display hint mirroring the server's rule, never the
@@ -14027,38 +14198,35 @@ type CreateRestoreAccepted struct {
 	CreatedBy OptUUID                     `json:"created_by"`
 	Kind      CreateRestoreAcceptedKind   `json:"kind"`
 	Status    CreateRestoreAcceptedStatus `json:"status"`
-	// The age PUBLIC recipient the chunks were encrypted to (provenance).
-	// NEVER a private key; the control plane cannot decrypt backups.
+	// The age PUBLIC recipient the chunks were encrypted to (provenance). NEVER a private key; the control
+	// plane cannot decrypt backups.
 	AgeRecipient OptString `json:"age_recipient"`
 	TotalSize    OptInt64  `json:"total_size"`
 	ChunkCount   OptInt64  `json:"chunk_count"`
 	// Kept by the monthly-archive retention rule.
 	Archived OptBool   `json:"archived"`
 	Error    OptString `json:"error"`
-	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
-	// its first phase. Shape:
-	// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
-	// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+	// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
+	// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
+	// closed set (see backup.allowedProgressPhases on the CP).
 	Progress OptCreateRestoreAcceptedProgress `json:"progress"`
-	// Server timestamp of the last progress POST from the runner. Used by
-	// the CP's two-tier watchdog (soft stall stamps stalled_at below; hard
-	// stall fails the run) and by the frontend to detect a silent runner.
+	// Server timestamp of the last progress POST from the runner. Used by the CP's two-tier watchdog (soft
+	// stall stamps stalled_at below; hard stall fails the run) and by the frontend to detect a silent
+	// runner.
 	ProgressUpdatedAt OptDateTime `json:"progress_updated_at"`
-	// Set by the CP watchdog when a running backup has gone quiet past the
-	// soft threshold but is not yet failed. Cleared on the next proof of
-	// life (a presign, manifest submit, or progress POST). Drives the
+	// Set by the CP watchdog when a running backup has gone quiet past the soft threshold but is not yet
+	// failed. Cleared on the next proof of life (a presign, manifest submit, or progress POST). Drives the
 	// "taking longer than expected" hint; null means healthy.
 	StalledAt  OptDateTime `json:"stalled_at"`
 	StartedAt  OptDateTime `json:"started_at"`
 	FinishedAt OptDateTime `json:"finished_at"`
 	CreatedAt  time.Time   `json:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at"`
-	// ADR-048 incremental backup. True if this snapshot only stores files
-	// changed since its parent; false for full-base snapshots and all
-	// pre-m44 rows.
+	// ADR-048 incremental backup. True if this snapshot only stores files changed since its parent; false
+	// for full-base snapshots and all pre-m44 rows.
 	IsIncremental OptBool `json:"is_incremental"`
-	// Position of this snapshot within its incremental chain. 0 is the
-	// full base; 1+ are successive incrementals.
+	// Position of this snapshot within its incremental chain. 0 is the full base; 1+ are successive
+	// incrementals.
 	Generation OptInt `json:"generation"`
 	// Groups a full base and its incrementals into one chain. Null for legacy/full-base rows.
 	ChainID OptUUID `json:"chain_id"`
@@ -14066,9 +14234,8 @@ type CreateRestoreAccepted struct {
 	ParentSnapshotID OptUUID `json:"parent_snapshot_id"`
 	// The full-base snapshot at the root of this chain. Null for legacy/full-base rows.
 	BaseSnapshotID OptUUID `json:"base_snapshot_id"`
-	// Track C (m49). When true the retention GC will never auto-prune this
-	// snapshot. Unlock via DELETE /backups/{snapshotId}/lock to restore
-	// normal GC eligibility.
+	// Track C (m49). When true the retention GC will never auto-prune this snapshot. Unlock via DELETE
+	// /backups/{snapshotId}/lock to restore normal GC eligibility.
 	Locked OptBool `json:"locked"`
 	// The restore_run row ID created for this restore attempt. Use it to correlate SSE progress events.
 	// Absent when the restore-run store is not wired on this control plane.
@@ -14375,10 +14542,9 @@ func (s *CreateRestoreAcceptedKind) UnmarshalText(data []byte) error {
 	}
 }
 
-// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts
-// its first phase. Shape:
-// { "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} }
-// Phases form a closed set (see backup.allowedProgressPhases on the CP).
+// M5.6 / ADR-032 phpbu runner progress. Empty `{}` until the runner posts its first phase. Shape: {
+// "phase": "uploading", "phase_detail": {"chunks_done": 17, "chunks_total": 42, ...} } Phases form a
+// closed set (see backup.allowedProgressPhases on the CP).
 type CreateRestoreAcceptedProgress map[string]jx.Raw
 
 func (s *CreateRestoreAcceptedProgress) init() CreateRestoreAcceptedProgress {
@@ -14722,12 +14888,11 @@ func (*CreateSiteShareForbidden) createSiteShareRes() {}
 
 // Ref: #/components/schemas/CreateSiteShareRequest
 type CreateSiteShareRequest struct {
-	// Email of the collaborator to invite. If a user with this email exists
-	// the share is created immediately; otherwise an invitation is emailed/linked.
+	// Email of the collaborator to invite. If a user with this email exists the share is created
+	// immediately; otherwise an invitation is emailed/linked.
 	Email string        `json:"email"`
 	Role  SiteShareRole `json:"role"`
-	// Optional expiry (RFC3339). Null / omitted = durable grant. Use for
-	// time-limited support access.
+	// Optional expiry (RFC3339). Null / omitted = durable grant. Use for time-limited support access.
 	ExpiresAt OptDateTime `json:"expires_at"`
 }
 
@@ -15484,18 +15649,17 @@ func (s *DbOrphansReportCounts) SetDeletable(val int) {
 	s.Deletable = val
 }
 
-// The latest db_scan result for a site, as stored by the control plane
-// after the agent's synchronous ACK. Includes both the per-category
-// counts/bytes preview and the full per-table inventory (Phase 2.1).
+// The latest db_scan result for a site, as stored by the control plane after the agent's synchronous
+// ACK. Includes both the per-category counts/bytes preview and the full per-table inventory (Phase
+// 2.1).
 // Ref: #/components/schemas/DbScanResult
 type DbScanResult struct {
 	// Correlation ID for this scan run.
 	JobID string `json:"job_id"`
 	// Per-category count/bytes map (keyed by category id).
 	Categories OptDbScanResultCategories `json:"categories"`
-	// Full per-table inventory. Sorted by size_bytes DESC (largest first)
-	// when returned from the agent. Client-side pagination (25 rows/page)
-	// and filtering (All / WP Core / Plugins / Themes / Orphans) are
+	// Full per-table inventory. Sorted by size_bytes DESC (largest first) when returned from the agent.
+	// Client-side pagination (25 rows/page) and filtering (All / WP Core / Plugins / Themes / Orphans) are
 	// applied in the browser.
 	Tables []DbScanTableInventoryRow `json:"tables"`
 	// Total database size in bytes at scan time.
@@ -15590,16 +15754,15 @@ func (s *DbScanResultCategories) init() DbScanResultCategories {
 	return m
 }
 
-// One row in the per-table inventory returned by the db_scan agent command
-// (Phase 2.1). Ownership is classified locally on the agent using the WP
-// core table list + active plugin/theme slugs; no cloud lookup is performed.
+// One row in the per-table inventory returned by the db_scan agent command (Phase 2.1). Ownership is
+// classified locally on the agent using the WP core table list + active plugin/theme slugs; no cloud
+// lookup is performed.
 // Ref: #/components/schemas/DbScanTableInventoryRow
 type DbScanTableInventoryRow struct {
 	// Full table name including the wp_ prefix (e.g. "wp_posts").
 	Name string `json:"name"`
-	// TABLE_ROWS from information_schema. An estimate for InnoDB tables
-	// (can be 40-50% off); exact for MyISAM/ARIA. Rendered with a "~"
-	// prefix in the UI to signal InnoDB estimate.
+	// TABLE_ROWS from information_schema. An estimate for InnoDB tables (can be 40-50% off); exact for
+	// MyISAM/ARIA. Rendered with a "~" prefix in the UI to signal InnoDB estimate.
 	Rows int64 `json:"rows"`
 	// DATA_LENGTH + INDEX_LENGTH in bytes.
 	SizeBytes int64 `json:"size_bytes"`
@@ -15607,13 +15770,11 @@ type DbScanTableInventoryRow struct {
 	Engine string `json:"engine"`
 	// DATA_FREE in bytes (reclaimable fragmented space; often 0 for InnoDB).
 	OverheadBytes int64 `json:"overhead_bytes"`
-	// Human-readable ownership label: "WordPress core", an active plugin
-	// display name (e.g. "WooCommerce"), an active theme display name
-	// (e.g. "Astra"), or "Orphan".
+	// Human-readable ownership label: "WordPress core", an active plugin display name (e.g.
+	// "WooCommerce"), an active theme display name (e.g. "Astra"), or "Orphan".
 	BelongsTo string `json:"belongs_to"`
-	// Machine-readable ownership category used for client-side filtering.
-	// "unknown" is reserved for forward-compat and should not appear in
-	// Phase 2.1 results.
+	// Machine-readable ownership category used for client-side filtering. "unknown" is reserved for
+	// forward-compat and should not appear in Phase 2.1 results.
 	OwnerType DbScanTableInventoryRowOwnerType `json:"owner_type"`
 }
 
@@ -15687,9 +15848,8 @@ func (s *DbScanTableInventoryRow) SetOwnerType(val DbScanTableInventoryRowOwnerT
 	s.OwnerType = val
 }
 
-// Machine-readable ownership category used for client-side filtering.
-// "unknown" is reserved for forward-compat and should not appear in
-// Phase 2.1 results.
+// Machine-readable ownership category used for client-side filtering. "unknown" is reserved for
+// forward-compat and should not appear in Phase 2.1 results.
 type DbScanTableInventoryRowOwnerType string
 
 const (
@@ -15821,7 +15981,7 @@ func (s *DbSnapshotCreateResult) SetDetail(val OptString) {
 // One local database snapshot entry.
 // Ref: #/components/schemas/DbSnapshotEntry
 type DbSnapshotEntry struct {
-	// Unique snapshot identifier (snap_<hex>).
+	// Unique snapshot identifier (snap_).
 	ID string `json:"id"`
 	// Operator-supplied label; may be empty.
 	Label string `json:"label"`
@@ -15921,14 +16081,13 @@ func (s *DbSnapshotList) SetDetail(val OptString) {
 	s.Detail = val
 }
 
-// Request body for the DESTRUCTIVE revert operation.
-// `confirm` MUST equal `"REVERT"` exactly.
+// Request body for the DESTRUCTIVE revert operation. `confirm` MUST equal `"REVERT"` exactly.
 // Ref: #/components/schemas/DbSnapshotRevert
 type DbSnapshotRevert struct {
 	// Must be the exact string "REVERT".
 	Confirm string `json:"confirm"`
-	// When true, suppresses the automatic safety snapshot taken before
-	// the import. Defaults to false (safety snapshot is taken).
+	// When true, suppresses the automatic safety snapshot taken before the import. Defaults to false
+	// (safety snapshot is taken).
 	SkipSafetySnapshot OptBool `json:"skip_safety_snapshot"`
 }
 
@@ -15957,8 +16116,8 @@ type DbSnapshotRevertResult struct {
 	Ok bool `json:"ok"`
 	// Human-readable outcome.
 	Detail OptString `json:"detail"`
-	// ID of the auto-safety snapshot taken before the import.
-	// Empty string when the safety snapshot was skipped or failed.
+	// ID of the auto-safety snapshot taken before the import. Empty string when the safety snapshot was
+	// skipped or failed.
 	SafetyID OptString `json:"safety_id"`
 }
 
@@ -16381,8 +16540,8 @@ func (s *DeleteOrgReq) SetConfirmName(val string) {
 // Ref: #/components/schemas/DeleteOrgResponse
 type DeleteOrgResponse struct {
 	ID uuid.UUID `json:"id"`
-	// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and
-	// is recoverable until the grace-window purge worker runs.
+	// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and is
+	// recoverable until the grace-window purge worker runs.
 	Lane DeleteOrgResponseLane `json:"lane"`
 	// The caller's session active tenant AFTER this delete. Absent when it drops to no-org onboarding
 	// (this was their last live org).
@@ -16421,8 +16580,8 @@ func (s *DeleteOrgResponse) SetActiveTenantID(val OptUUID) {
 
 func (*DeleteOrgResponse) deleteOrgRes() {}
 
-// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and
-// is recoverable until the grace-window purge worker runs.
+// `hard` — an empty org was deleted immediately. `soft` — a populated org was soft-deleted and is
+// recoverable until the grace-window purge worker runs.
 type DeleteOrgResponseLane string
 
 const (
@@ -16764,8 +16923,8 @@ func (s *EmailAttachmentMeta) SetSizeBytes(val int64) {
 	s.SizeBytes = val
 }
 
-// A named provider connection belonging to a site's email config (m62+). The provider secret is
-// never returned — only `secret_set` indicates whether a credential is stored.
+// A named provider connection belonging to a site's email config (m62+). The provider secret is never
+// returned — only `secret_set` indicates whether a credential is stored.
 // Ref: #/components/schemas/EmailConnection
 type EmailConnection struct {
 	// Surrogate primary key.
@@ -17238,8 +17397,8 @@ func (s *EmailNotifySettingsDigestCadence) UnmarshalText(data []byte) error {
 // WPMgr does not route. A site that is neither routed nor on a new enough agent cannot trigger a
 // per-failure alert no matter how the settings above are configured.
 type EmailNotifySettingsFailureDetection struct {
-	// Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected,
-	// revoked and archived sites).
+	// Number of the tenant's currently-connected sites (excludes pending, degraded, disconnected, revoked
+	// and archived sites).
 	SitesTotal int `json:"sites_total"`
 	// Of sites_total, how many can have a delivery failure detected and alerted on — because WPMgr
 	// routes their mail, because their agent_version is at or above min_agent_version_unrouted, or both.
@@ -17700,9 +17859,8 @@ func (s *EmailStatsByProvider) SetFailedCount(val int64) {
 	s.FailedCount = val
 }
 
-// A single suppression entry. `email` is the plaintext address (present
-// when `store_plaintext=true` at create time). `email_hash` is always
-// present (SHA-256 of the lower-cased address, hex-encoded) for
+// A single suppression entry. `email` is the plaintext address (present when `store_plaintext=true` at
+// create time). `email_hash` is always present (SHA-256 of the lower-cased address, hex-encoded) for
 // privacy-preserving checks without storing the full address.
 // Ref: #/components/schemas/EmailSuppressionEntry
 type EmailSuppressionEntry struct {
@@ -17909,8 +18067,8 @@ func (s *EmailTestRequest) SetBody(val OptString) {
 	s.Body = val
 }
 
-// Result of a test-send dispatch. `ok` may be false when the agent returns an error or when the
-// agent does not yet implement the command (Phase 1 expected behaviour — see endpoint description).
+// Result of a test-send dispatch. `ok` may be false when the agent returns an error or when the agent
+// does not yet implement the command (Phase 1 expected behaviour — see endpoint description).
 // Ref: #/components/schemas/EmailTestResult
 type EmailTestResult struct {
 	// True when the agent confirmed the email was dispatched.
@@ -17954,8 +18112,8 @@ func (s *EmailTestResult) SetMessageID(val OptNilString) {
 func (*EmailTestResult) sendTestEmailRes()       {}
 func (*EmailTestResult) syncSiteEmailConfigRes() {}
 
-// Response for PUT webhook-config. Always returns the updated masked config fields. When
-// rotate_token was true, also includes webhook_route_token (plain token, shown once).
+// Response for PUT webhook-config. Always returns the updated masked config fields. When rotate_token
+// was true, also includes webhook_route_token (plain token, shown once).
 // Ref: #/components/schemas/EmailWebhookConfigResponse
 type EmailWebhookConfigResponse struct {
 	// The full inbound webhook URL including the (possibly new) token. Present whenever a token exists
@@ -17965,8 +18123,8 @@ type EmailWebhookConfigResponse struct {
 	WebhookSigningKeySet bool `json:"webhook_signing_key_set"`
 	// Current SNS TopicArn allowlist (may be empty).
 	SesTopicArns []string `json:"ses_topic_arns"`
-	// Plain route token, returned once when rotate_token was true. Store it immediately -- it will not
-	// be shown again.
+	// Plain route token, returned once when rotate_token was true. Store it immediately -- it will not be
+	// shown again.
 	WebhookRouteToken OptNilString `json:"webhook_route_token"`
 }
 
@@ -18103,8 +18261,8 @@ func (s *EnrollRequest) SetTags(val []string) {
 type EnrollResponse struct {
 	SiteID   uuid.UUID `json:"site_id"`
 	TenantID uuid.UUID `json:"tenant_id"`
-	// The control plane's Ed25519 PUBLIC signing key (base64 std). The agent
-	// uses it to verify control-plane->agent commands.
+	// The control plane's Ed25519 PUBLIC signing key (base64 std). The agent uses it to verify
+	// control-plane->agent commands.
 	ControlPlanePublicKey string `json:"control_plane_public_key"`
 }
 
@@ -18187,75 +18345,78 @@ func (s *Error) SetDetails(val OptErrorDetails) {
 	s.Details = val
 }
 
-func (*Error) agentDisconnectRes()                {}
-func (*Error) agentFetchSuppressionDeltasRes()    {}
-func (*Error) agentHeartbeatRes()                 {}
-func (*Error) agentMediaAssetDeletedRes()         {}
-func (*Error) agentMediaEncodeReadyRes()          {}
-func (*Error) agentMediaJobStatusRes()            {}
-func (*Error) agentMediaPresignRes()              {}
-func (*Error) agentMediaRestoreStatusRes()        {}
-func (*Error) agentMediaSyncBatchRes()            {}
-func (*Error) agentMediaSyncFinalizeRes()         {}
-func (*Error) archiveSiteRes()                    {}
-func (*Error) beginReEnrollmentRes()              {}
-func (*Error) beginTotpEnrollmentRes()            {}
-func (*Error) beginWebAuthnEnrollmentRes()        {}
-func (*Error) bulkApplyTagsRes()                  {}
-func (*Error) bulkConfigCacheRes()                {}
-func (*Error) bulkDeleteBackupsRes()              {}
-func (*Error) createBackupRes()                   {}
-func (*Error) createPairingCodeRes()              {}
-func (*Error) createRestoreRes()                  {}
-func (*Error) createSiteRes()                     {}
-func (*Error) createUpdateRunRes()                {}
-func (*Error) deleteSiteRes()                     {}
-func (*Error) deleteTagRes()                      {}
-func (*Error) enableObjectCacheRes()              {}
-func (*Error) getBackupRes()                      {}
-func (*Error) getBackupScheduleRes()              {}
-func (*Error) getBackupSettingsContentsRes()      {}
-func (*Error) getBackupSettingsNotificationsRes() {}
-func (*Error) getBackupSqlInspectionRes()         {}
-func (*Error) getMeRes()                          {}
-func (*Error) getSiteAppHealthSettingsRes()       {}
-func (*Error) getSiteAvailableUpdatesRes()        {}
-func (*Error) getSiteDiagnosticsRes()             {}
-func (*Error) getSiteErrorConfigRes()             {}
-func (*Error) getSiteRes()                        {}
-func (*Error) getSiteUptimeRes()                  {}
-func (*Error) getTenantRes()                      {}
-func (*Error) getTwoFactorStatusRes()             {}
-func (*Error) getUpdateRunRes()                   {}
-func (*Error) listMyIdentitiesRes()               {}
-func (*Error) listOrgsRes()                       {}
-func (*Error) listRestoreRunsRes()                {}
-func (*Error) listScheduleRunsRes()               {}
-func (*Error) listSharedWithMeRes()               {}
-func (*Error) listSitesRes()                      {}
-func (*Error) listTrustedDevicesRes()             {}
-func (*Error) listWebAuthnCredentialsRes()        {}
-func (*Error) logoutRes()                         {}
-func (*Error) oidcLoginRes()                      {}
-func (*Error) pauseSiteMonitoringRes()            {}
-func (*Error) purgeCacheRes()                     {}
-func (*Error) putAlertConfigRes()                 {}
-func (*Error) putBackupScheduleRes()              {}
-func (*Error) putBackupSettingsContentsRes()      {}
-func (*Error) putBackupSettingsNotificationsRes() {}
-func (*Error) putObjectCacheConfigRes()           {}
-func (*Error) putPerfConfigRes()                  {}
-func (*Error) putSiteLoginBrandRes()              {}
-func (*Error) putSiteLoginProtectionRes()         {}
-func (*Error) refreshSiteDiagnosticsRes()         {}
-func (*Error) restoreSiteRes()                    {}
-func (*Error) resumeSiteMonitoringRes()           {}
-func (*Error) revokeAllTrustedDevicesRes()        {}
-func (*Error) revokeSiteRes()                     {}
-func (*Error) setSiteTagsRes()                    {}
-func (*Error) silenceSitePHPErrorRes()            {}
-func (*Error) unlockBackupRes()                   {}
-func (*Error) verifyEmailRes()                    {}
+func (*Error) agentDisconnectRes()                           {}
+func (*Error) agentFetchSuppressionDeltasRes()               {}
+func (*Error) agentHeartbeatRes()                            {}
+func (*Error) agentMediaAssetDeletedRes()                    {}
+func (*Error) agentMediaEncodeReadyRes()                     {}
+func (*Error) agentMediaJobStatusRes()                       {}
+func (*Error) agentMediaPresignRes()                         {}
+func (*Error) agentMediaRestoreStatusRes()                   {}
+func (*Error) agentMediaSyncBatchRes()                       {}
+func (*Error) agentMediaSyncFinalizeRes()                    {}
+func (*Error) archiveSiteRes()                               {}
+func (*Error) beginReEnrollmentRes()                         {}
+func (*Error) beginTotpEnrollmentRes()                       {}
+func (*Error) beginWebAuthnEnrollmentRes()                   {}
+func (*Error) bulkApplyTagsRes()                             {}
+func (*Error) bulkConfigCacheRes()                           {}
+func (*Error) bulkDeleteBackupsRes()                         {}
+func (*Error) createBackupRes()                              {}
+func (*Error) createPairingCodeRes()                         {}
+func (*Error) createRestoreRes()                             {}
+func (*Error) createSiteRes()                                {}
+func (*Error) createUpdateRunRes()                           {}
+func (*Error) deleteSiteRes()                                {}
+func (*Error) deleteTagRes()                                 {}
+func (*Error) enableObjectCacheRes()                         {}
+func (*Error) getBackupRes()                                 {}
+func (*Error) getBackupScheduleRes()                         {}
+func (*Error) getBackupSettingsContentsRes()                 {}
+func (*Error) getBackupSettingsNotificationsRes()            {}
+func (*Error) getBackupSqlInspectionRes()                    {}
+func (*Error) getMeRes()                                     {}
+func (*Error) getSiteAppHealthSettingsRes()                  {}
+func (*Error) getSiteAvailableUpdatesRes()                   {}
+func (*Error) getSiteDiagnosticsRes()                        {}
+func (*Error) getSiteErrorConfigRes()                        {}
+func (*Error) getSiteRes()                                   {}
+func (*Error) getSiteUptimeRes()                             {}
+func (*Error) getTenantRes()                                 {}
+func (*Error) getTwoFactorStatusRes()                        {}
+func (*Error) getUpdateRunRes()                              {}
+func (*Error) initSSEStream(sseConnectFunc, sseClientConfig) {}
+func (*Error) listMyIdentitiesRes()                          {}
+func (*Error) listOrgsRes()                                  {}
+func (*Error) listRestoreRunsRes()                           {}
+func (*Error) listScheduleRunsRes()                          {}
+func (*Error) listSharedWithMeRes()                          {}
+func (*Error) listSitesRes()                                 {}
+func (*Error) listTrustedDevicesRes()                        {}
+func (*Error) listWebAuthnCredentialsRes()                   {}
+func (*Error) logoutRes()                                    {}
+func (*Error) oidcLoginRes()                                 {}
+func (*Error) pauseSiteMonitoringRes()                       {}
+func (*Error) purgeCacheRes()                                {}
+func (*Error) putAlertConfigRes()                            {}
+func (*Error) putBackupScheduleRes()                         {}
+func (*Error) putBackupSettingsContentsRes()                 {}
+func (*Error) putBackupSettingsNotificationsRes()            {}
+func (*Error) putObjectCacheConfigRes()                      {}
+func (*Error) putPerfConfigRes()                             {}
+func (*Error) putSiteLoginBrandRes()                         {}
+func (*Error) putSiteLoginProtectionRes()                    {}
+func (*Error) refreshSiteDiagnosticsRes()                    {}
+func (*Error) restoreSiteRes()                               {}
+func (*Error) resumeSiteMonitoringRes()                      {}
+func (*Error) revokeAllTrustedDevicesRes()                   {}
+func (*Error) revokeSiteRes()                                {}
+func (*Error) setSiteTagsRes()                               {}
+func (*Error) silenceSitePHPErrorRes()                       {}
+func (*Error) streamBackupSnapshotEventsRes()                {}
+func (*Error) streamUpdateRunEventsRes()                     {}
+func (*Error) unlockBackupRes()                              {}
+func (*Error) verifyEmailRes()                               {}
 
 type ErrorDetails map[string]jx.Raw
 
@@ -18412,14 +18573,14 @@ func (*FetchScanFindingFileUnauthorized) fetchScanFindingFileRes() {}
 // Request body for `POST /sites/{siteId}/files/archive`.
 // Ref: #/components/schemas/FileArchiveCreateRequest
 type FileArchiveCreateRequest struct {
-	// Site-relative paths to include in the archive. The agent runs each through the containment guard;
-	// at least one path is required.
+	// Site-relative paths to include in the archive. The agent runs each through the containment guard; at
+	// least one path is required.
 	Paths []string `json:"paths"`
 	// Must be `true` when any path in `paths` matches the sensitive-file deny-list (wp-config.php, .env*,
-	//  *.pem, …). Requires owner permission (`site.files.read_sensitive`). A non-owner caller or a
-	// caller that omits this flag when a sensitive path is present is rejected at the CP (agent never
-	// called) and the denial is audited at elevated severity. The agent independently re-checks and
-	// returns `sensitive_denied` when absent / false.
+	// *.pem, …). Requires owner permission (`site.files.read_sensitive`). A non-owner caller or a caller
+	// that omits this flag when a sensitive path is present is rejected at the CP (agent never called) and
+	// the denial is audited at elevated severity. The agent independently re-checks and returns
+	// `sensitive_denied` when absent / false.
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 
@@ -18449,8 +18610,8 @@ type FileArchiveCreateResult struct {
 	Ok bool `json:"ok"`
 	// CP-assigned transfer ID (for audit correlation).
 	TransferID uuid.UUID `json:"transfer_id"`
-	// Presigned GET URL for the browser to download the staged archive directly from object storage.
-	// Valid for at most 5 minutes. Never log this URL.
+	// Presigned GET URL for the browser to download the staged archive directly from object storage. Valid
+	// for at most 5 minutes. Never log this URL.
 	DownloadURL url.URL `json:"download_url"`
 	// Total archive size in bytes.
 	SizeBytes int64 `json:"size_bytes"`
@@ -18587,8 +18748,8 @@ func (*FileChmodResult) chmodSiteFileRes() {}
 type FileDeleteRequest struct {
 	// Site-relative path to delete.
 	Path string `json:"path"`
-	// When `true`, recursively delete a non-empty directory and all its contents. When `false`, the
-	// agent refuses to delete a non-empty directory (returns `400 not_directory`).
+	// When `true`, recursively delete a non-empty directory and all its contents. When `false`, the agent
+	// refuses to delete a non-empty directory (returns `400 not_directory`).
 	Recursive OptBool `json:"recursive"`
 	// Typed confirmation token — must be the string `"DELETE"` exactly. Missing or wrong value returns
 	// `400 confirm_required` without issuing the delete command to the agent.
@@ -18852,8 +19013,8 @@ type FileExtractRequest struct {
 	// htaccess, …). Requires owner permission (`site.files.write_code`). A non-owner passing this is
 	// rejected at the CP (agent never called) and the denial is audited at elevated severity.
 	ConfirmExecutableWrite OptBool `json:"confirm_executable_write"`
-	// Must be `true` when any archive entry would resolve to a sensitive path (wp-config.php, .env*, *.
-	// pem, …). Same owner gate as `confirm_executable_write`.
+	// Must be `true` when any archive entry would resolve to a sensitive path (wp-config.php, .env*,
+	// *.pem, …). Same owner gate as `confirm_executable_write`.
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 
@@ -19001,10 +19162,9 @@ type FileManagerSettings struct {
 	// Whether the file manager read mode is enabled for this site. Defaults to `false` (off by default,
 	// explicit opt-in required).
 	Enabled bool `json:"enabled"`
-	// Whether the file manager write mode is enabled for this site (P2). Separate opt-in from `enabled`
-	// so read and write can be toggled independently. Defaults to `false`. Both `enabled` AND
-	// `write_enabled` must be `true` before any write/delete/chmod/ mkdir/rename/upload command will be
-	// signed.
+	// Whether the file manager write mode is enabled for this site (P2). Separate opt-in from `enabled` so
+	// read and write can be toggled independently. Defaults to `false`. Both `enabled` AND `write_enabled`
+	// must be `true` before any write/delete/chmod/ mkdir/rename/upload command will be signed.
 	WriteEnabled bool `json:"write_enabled"`
 	// The filesystem root the agent restricts all file operations to. Always `""` in P1/P2 — the agent
 	// defaults to the site's `ABSPATH`. Reserved for future P3 configuration.
@@ -19095,8 +19255,8 @@ type FileReadResult struct {
 	Encoding FileReadResultEncoding `json:"encoding"`
 	// Base64-encoded file content (up to 256 KiB).
 	ContentBase64 string `json:"content_base64"`
-	// True when the file was larger than the byte cap (256 KiB). Use the download endpoint to retrieve
-	// the full file.
+	// True when the file was larger than the byte cap (256 KiB). Use the download endpoint to retrieve the
+	// full file.
 	Truncated bool `json:"truncated"`
 }
 
@@ -19214,11 +19374,11 @@ type FileRenameRequest struct {
 	Src string `json:"src"`
 	// Site-relative destination path.
 	Dst string `json:"dst"`
-	// Required when `dst` matches the executable-extension deny-list. Requires owner permission (`site.
-	// files.write_code`).
+	// Required when `dst` matches the executable-extension deny-list. Requires owner permission
+	// (`site.files.write_code`).
 	ConfirmExecutableWrite OptBool `json:"confirm_executable_write"`
-	// Required when either `src` or `dst` is a sensitive path. Requires owner permission (`site.files.
-	// write_code`).
+	// Required when either `src` or `dst` is a sensitive path. Requires owner permission
+	// (`site.files.write_code`).
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 
@@ -19306,8 +19466,8 @@ type FileSearchMatch struct {
 	IsDir bool `json:"is_dir"`
 	// Line number of the match within the file (`content` mode only; absent for `name` mode).
 	Line OptInt `json:"line"`
-	// Surrounding text context for the match (`content` mode only; absent for `name` mode). Never
-	// contains content from sensitive paths.
+	// Surrounding text context for the match (`content` mode only; absent for `name` mode). Never contains
+	// content from sensitive paths.
 	Snippet OptString `json:"snippet"`
 }
 
@@ -19482,14 +19642,14 @@ func (s *FileVersion) SetCreatedAt(val int64) {
 type FileVersionRestoreRequest struct {
 	// Site-relative path of the file to restore.
 	Path string `json:"path"`
-	// Opaque version identifier returned by `GET /files/versions?path=…`. Returns `404
-	// no_such_version` when the ID does not exist for the path.
+	// Opaque version identifier returned by `GET /files/versions?path=…`. Returns `404 no_such_version`
+	// when the ID does not exist for the path.
 	VersionID string `json:"version_id"`
 	// Must be `true` when `path` matches the sensitive-file deny-list (wp-config.php, .env*, *.pem, …).
-	//  Requires owner permission (`site.files.write_code`). A non-owner caller or a caller that omits
-	// this flag when the path is sensitive is rejected at the CP (agent never called) and the denial is
-	// audited at elevated severity. The agent independently re-checks and returns `sensitive_denied`
-	// when absent / false.
+	// Requires owner permission (`site.files.write_code`). A non-owner caller or a caller that omits this
+	// flag when the path is sensitive is rejected at the CP (agent never called) and the denial is audited
+	// at elevated severity. The agent independently re-checks and returns `sensitive_denied` when absent /
+	// false.
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 
@@ -19581,8 +19741,8 @@ func (*FileVersionRestoreResult) restoreSiteFileVersionRes() {}
 // Version history for a file, ordered newest-first, from a `file_versions_list` agent command.
 // Ref: #/components/schemas/FileVersionsResult
 type FileVersionsResult struct {
-	// List of versions ordered newest-first. Empty when the agent has no history for the path (no
-	// version system configured or no prior writes).
+	// List of versions ordered newest-first. Empty when the agent has no history for the path (no version
+	// system configured or no prior writes).
 	Versions []FileVersion `json:"versions"`
 }
 
@@ -19852,23 +20012,22 @@ type FleetAgentVersions struct {
 	// Where latest_version came from. "published": the release channel pointer manifest
 	// (agent-releases/latest.json), so "current" means the site runs the newest agent that exists.
 	// "fleet": the manifest could not be read, so the newest well-formed agent version present in this
-	// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen
-	// in this fleet. A self-hosted install has its own object storage and never receives the release
-	// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against,
-	// so every site is "unknown". That arises two ways, and they are deliberately not distinguished in
-	// this field: an install that has never read a manifest and has no well-formed agent version
-	// anywhere in its fleet, or an install whose manifest WAS readable but has been unreadable for
-	// longer than the staleness bound. The second case does not fall back to "fleet", because "this
-	// install has a channel and it is currently unreachable" must not be answered with fleet-derived
-	// data.
+	// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen in
+	// this fleet. A self-hosted install has its own object storage and never receives the release
+	// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against, so
+	// every site is "unknown". That arises two ways, and they are deliberately not distinguished in this
+	// field: an install that has never read a manifest and has no well-formed agent version anywhere in
+	// its fleet, or an install whose manifest WAS readable but has been unreadable for longer than the
+	// staleness bound. The second case does not fall back to "fleet", because "this install has a channel
+	// and it is currently unreachable" must not be answered with fleet-derived data.
 	ReferenceSource FleetAgentVersionsReferenceSource `json:"reference_source"`
 	Counts          FleetAgentCounts                  `json:"counts"`
 	Sites           []FleetAgentSite                  `json:"sites"`
 	// Whether the control plane's agent self-update channel (the fleet-wide
-	// WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance.
-	// Absent or false while the channel ships dark. The frontend uses this, together with the operator's
-	// role, to decide whether the "Update WPMgr agent" bulk action is shown at all, rather than let an
-	// operator arm a run the control plane will only refuse.
+	// WPMGR_UPDATE_AGENT_SELF_UPDATE_ENABLED kill switch) is currently turned on for this instance. Absent
+	// or false while the channel ships dark. The frontend uses this, together with the operator's role, to
+	// decide whether the "Update WPMgr agent" bulk action is shown at all, rather than let an operator arm
+	// a run the control plane will only refuse.
 	SelfUpdateEnabled OptBool           `json:"self_update_enabled"`
 	AgentMirror       AgentMirrorStatus `json:"agent_mirror"`
 }
@@ -19938,15 +20097,14 @@ func (*FleetAgentVersions) getFleetAgentVersionsRes() {}
 // Where latest_version came from. "published": the release channel pointer manifest
 // (agent-releases/latest.json), so "current" means the site runs the newest agent that exists.
 // "fleet": the manifest could not be read, so the newest well-formed agent version present in this
-// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen
-// in this fleet. A self-hosted install has its own object storage and never receives the release
-// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against,
-// so every site is "unknown". That arises two ways, and they are deliberately not distinguished in
-// this field: an install that has never read a manifest and has no well-formed agent version
-// anywhere in its fleet, or an install whose manifest WAS readable but has been unreadable for
-// longer than the staleness bound. The second case does not fall back to "fleet", because "this
-// install has a channel and it is currently unreachable" must not be answered with fleet-derived
-// data.
+// tenant's own fleet was used instead; "current" then means only that no newer agent has been seen in
+// this fleet. A self-hosted install has its own object storage and never receives the release
+// pipeline's manifest, so this is its normal steady state. "none": nothing safe to compare against, so
+// every site is "unknown". That arises two ways, and they are deliberately not distinguished in this
+// field: an install that has never read a manifest and has no well-formed agent version anywhere in
+// its fleet, or an install whose manifest WAS readable but has been unreadable for longer than the
+// staleness bound. The second case does not fall back to "fleet", because "this install has a channel
+// and it is currently unreachable" must not be answered with fleet-derived data.
 type FleetAgentVersionsReferenceSource string
 
 const (
@@ -20213,10 +20371,9 @@ func (s *FleetIncidentDetailProbesItem) SetError(val OptString) {
 	s.Error = val
 }
 
-// An open or recently-closed incident. NOTE: site_alert_state stores only
-// current transition memory; full historical incident logs are not persisted.
-// ended_at / duration_seconds are estimated from updated_at for closed
-// incidents, not from a true incident-close record.
+// An open or recently-closed incident. NOTE: site_alert_state stores only current transition memory;
+// full historical incident logs are not persisted. ended_at / duration_seconds are estimated from
+// updated_at for closed incidents, not from a true incident-close record.
 // Ref: #/components/schemas/FleetIncidentItem
 type FleetIncidentItem struct {
 	SiteID          uuid.UUID   `json:"site_id"`
@@ -20636,21 +20793,17 @@ func (s *FleetUptimeCounts) SetUnknown(val int) {
 // One UTC day of measured availability for one site.
 // Ref: #/components/schemas/FleetUptimeDay
 type FleetUptimeDay struct {
-	// The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed
-	// on UTC days, so re-bucketing per viewer timezone would split one
-	// stored day across two rendered cells.
+	// The UTC calendar day, YYYY-MM-DD. Always UTC: the rollup is keyed on UTC days, so re-bucketing per
+	// viewer timezone would split one stored day across two rendered cells.
 	Date time.Time `json:"date"`
-	// Up_checks/total_checks*100 for the day, or null when the day has
-	// NO stored measurement. Null is not zero — see the endpoint
-	// description. Never interpolated from a neighbouring day.
+	// Up_checks/total_checks*100 for the day, or null when the day has NO stored measurement. Null is not
+	// zero — see the endpoint description. Never interpolated from a neighbouring day.
 	UptimePct NilFloat64 `json:"uptime_pct"`
-	// Probes recorded that day; 0 exactly when uptime_pct is null.
-	// Carried so a confidently-measured day is distinguishable from one
-	// with a single probe, and so "no data" is falsifiable rather than
+	// Probes recorded that day; 0 exactly when uptime_pct is null. Carried so a confidently-measured day
+	// is distinguishable from one with a single probe, and so "no data" is falsifiable rather than
 	// something the client infers from a null alone.
 	Checks int64 `json:"checks"`
-	// Mean response time over SUCCESSFUL probes with a non-zero reading,
-	// null when the day had none.
+	// Mean response time over SUCCESSFUL probes with a non-zero reading, null when the day had none.
 	AvgLatencyMs NilFloat64 `json:"avg_latency_ms"`
 }
 
@@ -20761,11 +20914,9 @@ type FleetUptimeHistoryItem struct {
 	SiteID uuid.UUID `json:"site_id"`
 	Name   string    `json:"name"`
 	URL    string    `json:"url"`
-	// Always exactly the window's day count, oldest first, with no gaps:
-	// the server densifies across every UTC day in the window, so a
-	// client can index positionally without re-deriving dates and every
-	// unmeasured day is explicitly present with a null uptime_pct
-	// rather than silently missing.
+	// Always exactly the window's day count, oldest first, with no gaps: the server densifies across every
+	// UTC day in the window, so a client can index positionally without re-deriving dates and every
+	// unmeasured day is explicitly present with a null uptime_pct rather than silently missing.
 	Days []FleetUptimeDay `json:"days"`
 	// How many entries in days carry a measurement.
 	MeasuredDays int `json:"measured_days"`
@@ -20901,17 +21052,14 @@ type FleetUptimeStatusItem struct {
 	SiteName string                      `json:"site_name"`
 	SiteURL  string                      `json:"site_url"`
 	Status   FleetUptimeStatusItemStatus `json:"status"`
-	// Short machine-readable explanation for status, populated when
-	// status=degraded (agent_unreachable, agent_degraded, app_down, or
-	// slow_response). Empty/absent when the status needs no further
+	// Short machine-readable explanation for status, populated when status=degraded (agent_unreachable,
+	// agent_degraded, app_down, or slow_response). Empty/absent when the status needs no further
 	// explanation.
 	StatusReason OptString `json:"status_reason"`
-	// 7-day uptime percentage, or null when the site has NO measurement
-	// in the window — never probed, monitoring never enabled, or its
-	// whole history aged past the 90-day probe retention. Null is not
-	// zero: 0 means "measured, and down for the whole window", and a
-	// client that renders null as 0 paints a never-probed site as a
-	// total outage (GH #460). Treat null as "no data" and say so.
+	// 7-day uptime percentage, or null when the site has NO measurement in the window — never probed,
+	// monitoring never enabled, or its whole history aged past the 90-day probe retention. Null is not
+	// zero: 0 means "measured, and down for the whole window", and a client that renders null as 0 paints
+	// a never-probed site as a total outage (GH #460). Treat null as "no data" and say so.
 	UptimePct7d     NilFloat64  `json:"uptime_pct_7d"`
 	AvgLatencyMs7d  float64     `json:"avg_latency_ms_7d"`
 	LatestTotalMs   OptFloat64  `json:"latest_total_ms"`
@@ -20920,19 +21068,15 @@ type FleetUptimeStatusItem struct {
 	InIncident      bool        `json:"in_incident"`
 	ConnectionState string      `json:"connection_state"`
 	HealthStatus    string      `json:"health_status"`
-	// GH #291 Phase 2 application-health verdict from the most recent
-	// app probe: true (WordPress responded), false (conclusively
-	// down), or absent/null (never probed, or the most recent probe
-	// was inconclusive; see app_probe_reason). Independent of `up`
-	// (the reachability signal, unchanged forever): a cached 200
-	// (up=true) can coexist with app_up=false when a page cache is
-	// masking a dead PHP backend.
+	// GH #291 Phase 2 application-health verdict from the most recent app probe: true (WordPress
+	// responded), false (conclusively down), or absent/null (never probed, or the most recent probe was
+	// inconclusive; see app_probe_reason). Independent of `up` (the reachability signal, unchanged
+	// forever): a cached 200 (up=true) can coexist with app_up=false when a page cache is masking a dead
+	// PHP backend.
 	AppUp OptNilBool `json:"app_up"`
-	// Machine-readable reason for the most recent app-health verdict
-	// (agent_fresh, rest_ok, rest_5xx, wp_fatal_error, cache_hit,
-	// rest_forbidden, rest_absent, rest_4xx, rest_non_json,
-	// unreachable, rest_unexpected). Empty when no app probe has run
-	// yet.
+	// Machine-readable reason for the most recent app-health verdict (agent_fresh, rest_ok, rest_5xx,
+	// wp_fatal_error, cache_hit, rest_forbidden, rest_absent, rest_4xx, rest_non_json, unreachable,
+	// rest_unexpected). Empty when no app probe has run yet.
 	AppProbeReason OptString `json:"app_probe_reason"`
 }
 
@@ -21155,8 +21299,8 @@ type FleetVulnerabilitiesResponse struct {
 	Attribution VulnAttribution                         `json:"attribution"`
 	FeedOk      bool                                    `json:"feed_ok"`
 	FeedSynced  OptDateTime                             `json:"feed_synced"`
-	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
-	// of feed_ok (which tracks Scanner-driven detection freshness).
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of
+	// feed_ok (which tracks Scanner-driven detection freshness).
 	EnrichmentAvailable bool        `json:"enrichment_available"`
 	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
@@ -22153,12 +22297,9 @@ func (*GetFleetAgentVersionsUnauthorized) getFleetAgentVersionsRes() {}
 
 // Fleet DB health aggregate (shape matches FleetDbHealth Go model).
 type GetFleetDbHealthOK struct {
-	// Every scanned site with at least one orphan candidate
-	// (orphaned wp_options rows or WP-Cron events) — NOT
-	// capped, unlike top_sites (which is capped at 10 and
-	// ordered by DB size, so a small flagged site can be
-	// absent from it). Sorted by orphan count descending,
-	// then by site name.
+	// Every scanned site with at least one orphan candidate (orphaned wp_options rows or WP-Cron events)
+	// — NOT capped, unlike top_sites (which is capped at 10 and ordered by DB size, so a small flagged
+	// site can be absent from it). Sorted by orphan count descending, then by site name.
 	SitesNeedingReview []GetFleetDbHealthOKSitesNeedingReviewItem `json:"sites_needing_review"`
 }
 
@@ -23986,16 +24127,16 @@ type Me struct {
 	Scope  OptMeScope       `json:"scope"`
 	Role   OptPrincipalRole `json:"role"`
 	Portal OptMePortal      `json:"portal"`
-	// Whether this instance runs with hosted-billing entitlements (WPMGR_HOSTED) turned on. False on
-	// every self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The
-	// frontend uses this to gate billing/plan UI.
+	// Whether this instance runs with hosted-billing entitlements (WPMGR_HOSTED) turned on. False on every
+	// self-hosted deployment and on any hosted instance before M16 Phase B billing ships. The frontend
+	// uses this to gate billing/plan UI.
 	Hosted OptBool `json:"hosted"`
 	// Whether the active tenant's plan currently permits routing a NEW backup to CP-managed storage (M16
-	// Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every
-	// paid plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe
-	// display signal for the operator-facing /destinations page (which any operator can view, unlike the
-	// owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints
-	// enforce the real check server-side and return 402 byo_destination_required when denied.
+	// Phase B). Always true on a self-hosted or hosted-billing-disabled instance, and true for every paid
+	// plan; false only for a free-plan tenant under WPMGR_HOSTED. This is a coarse, role-safe display
+	// signal for the operator-facing /destinations page (which any operator can view, unlike the
+	// owner-only /billing summary) — it is NOT the authoritative gate; the backup-run endpoints enforce
+	// the real check server-side and return 402 byo_destination_required when denied.
 	// Restoring/downloading an existing backup is never gated by this or any other check.
 	ManagedStorageAllowed OptBool `json:"managed_storage_allowed"`
 	// The M16 Phase 0 "sign up into a plan" hint captured at registration (RegisterRequest.plan),
@@ -24828,8 +24969,8 @@ func (s *MediaCleanDeleteResult) SetDetail(val OptString) {
 
 // Ref: #/components/schemas/MediaCleanIsolateRequest
 type MediaCleanIsolateRequest struct {
-	// Client-minted UUID v4 for idempotency. The agent echoes it in the response for correlation.
-	// Generate a new UUID per request.
+	// Client-minted UUID v4 for idempotency. The agent echoes it in the response for correlation. Generate
+	// a new UUID per request.
 	JobID string `json:"job_id"`
 	// Attachment IDs to move to quarantine. Maximum 200 per call. Must be attachments that appeared in a
 	// recent scan result.
@@ -25135,11 +25276,11 @@ func (s *MediaCleanRestoreResult) SetDetail(val OptString) {
 // Ref: #/components/schemas/MediaCleanScanResult
 type MediaCleanScanResult struct {
 	Ok bool `json:"ok"`
-	// Full unused-candidate count (capped at SCAN_MAX=500). Use this value to drive client-side
-	// pagination of the candidates array.
+	// Full unused-candidate count (capped at SCAN_MAX=500). Use this value to drive client-side pagination
+	// of the candidates array.
 	Total int `json:"total"`
-	// Unused attachment candidates sliced by the requested offset/limit. The client should fetch once
-	// with offset=0 and limit=SCAN_MAX and paginate the returned array client-side.
+	// Unused attachment candidates sliced by the requested offset/limit. The client should fetch once with
+	// offset=0 and limit=SCAN_MAX and paginate the returned array client-side.
 	Candidates []MediaCleanCandidate `json:"candidates"`
 	// True when the library has more unused attachments than SCAN_MAX. The returned candidates and total
 	// are capped at SCAN_MAX.
@@ -26336,8 +26477,7 @@ type MonitoringResult struct {
 	SiteID string `json:"site_id"`
 	// The site was accepted and is now in the requested state.
 	Ok bool `json:"ok"`
-	// THIS request moved the site. False for an accepted retry
-	// (`already_paused` / `already_active`).
+	// THIS request moved the site. False for an accepted retry (`already_paused` / `already_active`).
 	Changed bool `json:"changed"`
 	// Stable machine-readable outcome, not prose.
 	Detail                 MonitoringResultDetail `json:"detail"`
@@ -26972,8 +27112,8 @@ type ObjectCacheConfig struct {
 	// Non-empty after a passing test; cleared when connection fields change.
 	LastTestConfigHash OptNilString   `json:"last_test_config_hash"`
 	LastTestedAt       OptNilDateTime `json:"last_tested_at"`
-	// The stored result of the most recent connection test, including the server capability report, so
-	// the dashboard can show requirements without re-running a test.
+	// The stored result of the most recent connection test, including the server capability report, so the
+	// dashboard can show requirements without re-running a test.
 	LastTestResult OptNilObjectCacheTestResult `json:"last_test_result"`
 	// Live connectivity state from the last heartbeat: '' (unknown/no config), 'disabled', 'connected',
 	// 'degraded', or 'down'.
@@ -28978,6 +29118,52 @@ func (o OptBackupCreateKind) Get() (v BackupCreateKind, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptBackupCreateKind) Or(d BackupCreateKind) BackupCreateKind {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptBackupEventPhaseDetail returns new OptBackupEventPhaseDetail with value set to v.
+func NewOptBackupEventPhaseDetail(v BackupEventPhaseDetail) OptBackupEventPhaseDetail {
+	return OptBackupEventPhaseDetail{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptBackupEventPhaseDetail is optional BackupEventPhaseDetail.
+type OptBackupEventPhaseDetail struct {
+	Value BackupEventPhaseDetail
+	Set   bool
+}
+
+// IsSet returns true if OptBackupEventPhaseDetail was set.
+func (o OptBackupEventPhaseDetail) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptBackupEventPhaseDetail) Reset() {
+	var v BackupEventPhaseDetail
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptBackupEventPhaseDetail) SetTo(v BackupEventPhaseDetail) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptBackupEventPhaseDetail) Get() (v BackupEventPhaseDetail, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptBackupEventPhaseDetail) Or(d BackupEventPhaseDetail) BackupEventPhaseDetail {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -31742,6 +31928,11 @@ func (o *OptNilAgentMetadataAgentSelfUpdate) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataAgentSelfUpdate) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilAgentMetadataAgentSelfUpdate) Get() (v AgentMetadataAgentSelfUpdate, ok bool) {
 	if o.Null {
@@ -31803,6 +31994,11 @@ func (o *OptNilAgentMetadataCoreUpdate) SetToNull() {
 	o.Null = true
 	var v AgentMetadataCoreUpdate
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataCoreUpdate) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -31868,6 +32064,11 @@ func (o *OptNilAgentMetadataDisk) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataDisk) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilAgentMetadataDisk) Get() (v AgentMetadataDisk, ok bool) {
 	if o.Null {
@@ -31929,6 +32130,11 @@ func (o *OptNilAgentMetadataHostFlags) SetToNull() {
 	o.Null = true
 	var v AgentMetadataHostFlags
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentMetadataHostFlags) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -31994,6 +32200,11 @@ func (o *OptNilBool) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilBool) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilBool) Get() (v bool, ok bool) {
 	if o.Null {
@@ -32055,6 +32266,11 @@ func (o *OptNilBulkDeleteBackupsResultItemCode) SetToNull() {
 	o.Null = true
 	var v BulkDeleteBackupsResultItemCode
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilBulkDeleteBackupsResultItemCode) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32120,6 +32336,11 @@ func (o *OptNilChainBreak) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilChainBreak) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilChainBreak) Get() (v ChainBreak, ok bool) {
 	if o.Null {
@@ -32181,6 +32402,11 @@ func (o *OptNilDateTime) SetToNull() {
 	o.Null = true
 	var v time.Time
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilDateTime) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32246,6 +32472,11 @@ func (o *OptNilFloat32) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilFloat32) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilFloat32) Get() (v float32, ok bool) {
 	if o.Null {
@@ -32307,6 +32538,11 @@ func (o *OptNilFloat64) SetToNull() {
 	o.Null = true
 	var v float64
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilFloat64) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32372,6 +32608,11 @@ func (o *OptNilInt) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilInt) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilInt) Get() (v int, ok bool) {
 	if o.Null {
@@ -32433,6 +32674,11 @@ func (o *OptNilInt32) SetToNull() {
 	o.Null = true
 	var v int32
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilInt32) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32498,6 +32744,11 @@ func (o *OptNilInt64) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilInt64) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilInt64) Get() (v int64, ok bool) {
 	if o.Null {
@@ -32559,6 +32810,11 @@ func (o *OptNilObjectCacheTestResult) SetToNull() {
 	o.Null = true
 	var v ObjectCacheTestResult
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilObjectCacheTestResult) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32624,6 +32880,11 @@ func (o *OptNilPortalSummarySiteVitalsRating) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilPortalSummarySiteVitalsRating) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilPortalSummarySiteVitalsRating) Get() (v PortalSummarySiteVitalsRating, ok bool) {
 	if o.Null {
@@ -32685,6 +32946,11 @@ func (o *OptNilPortalSummaryVitalsOverall) SetToNull() {
 	o.Null = true
 	var v PortalSummaryVitalsOverall
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilPortalSummaryVitalsOverall) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32750,6 +33016,11 @@ func (o *OptNilSiteAvailableUpdatesCoreUpdate) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSiteAvailableUpdatesCoreUpdate) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilSiteAvailableUpdatesCoreUpdate) Get() (v SiteAvailableUpdatesCoreUpdate, ok bool) {
 	if o.Null {
@@ -32811,6 +33082,11 @@ func (o *OptNilSiteBackupSettingsContentsBackupComponentsItemArray) SetToNull() 
 	o.Null = true
 	var v []SiteBackupSettingsContentsBackupComponentsItem
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSiteBackupSettingsContentsBackupComponentsItemArray) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -32876,6 +33152,11 @@ func (o *OptNilSiteBackupSettingsContentsUpdateBackupComponentsItemArray) SetToN
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSiteBackupSettingsContentsUpdateBackupComponentsItemArray) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilSiteBackupSettingsContentsUpdateBackupComponentsItemArray) Get() (v []SiteBackupSettingsContentsUpdateBackupComponentsItem, ok bool) {
 	if o.Null {
@@ -32937,6 +33218,11 @@ func (o *OptNilSiteComponentAvailableUpdate) SetToNull() {
 	o.Null = true
 	var v SiteComponentAvailableUpdate
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSiteComponentAvailableUpdate) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -33002,6 +33288,11 @@ func (o *OptNilSiteComponentsCoreUpdate) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSiteComponentsCoreUpdate) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilSiteComponentsCoreUpdate) Get() (v SiteComponentsCoreUpdate, ok bool) {
 	if o.Null {
@@ -33063,6 +33354,11 @@ func (o *OptNilString) SetToNull() {
 	o.Null = true
 	var v string
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilString) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -33128,6 +33424,11 @@ func (o *OptNilStringArray) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilStringArray) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilStringArray) Get() (v []string, ok bool) {
 	if o.Null {
@@ -33191,6 +33492,11 @@ func (o *OptNilURI) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilURI) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilURI) Get() (v url.URL, ok bool) {
 	if o.Null {
@@ -33252,6 +33558,11 @@ func (o *OptNilUUID) SetToNull() {
 	o.Null = true
 	var v uuid.UUID
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilUUID) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -35283,8 +35594,8 @@ type PHPError struct {
 	LastSeenAt      time.Time `json:"last_seen_at"`
 	OccurrenceCount int64     `json:"occurrence_count"`
 	Silenced        bool      `json:"silenced"`
-	// Up to 10 stack frames captured at the error site, most-recent-call-first. Always present; may be
-	// an empty array for errors captured before S1.1 or when the agent could not produce a trace.
+	// Up to 10 stack frames captured at the error site, most-recent-call-first. Always present; may be an
+	// empty array for errors captured before S1.1 or when the agent could not produce a trace.
 	Backtrace []PHPErrorFrame `json:"backtrace"`
 }
 
@@ -35655,10 +35966,8 @@ type PauseMonitoringRequest struct {
 	SiteIds []uuid.UUID `json:"site_ids"`
 	// Free-text note stored on every site this request pauses.
 	Reason OptString `json:"reason"`
-	// Optional instant a later phase's sweep will auto-resume at. Must
-	// be in the future; a past instant is rejected with
-	// `resume_at_in_past` rather than stored as a pause that instantly
-	// un-pauses.
+	// Optional instant a later phase's sweep will auto-resume at. Must be in the future; a past instant is
+	// rejected with `resume_at_in_past` rather than stored as a pause that instantly un-pauses.
 	ResumeAt OptNilDateTime `json:"resume_at"`
 }
 
@@ -35692,9 +36001,8 @@ func (s *PauseMonitoringRequest) SetResumeAt(val OptNilDateTime) {
 	s.ResumeAt = val
 }
 
-// The `{ok, detail}` acknowledgement returned by the cache action
-// endpoints (purge / preload / enable / disable). `ok` is false when the
-// agent rejected the action (still HTTP 200).
+// The `{ok, detail}` acknowledgement returned by the cache action endpoints (purge / preload / enable
+// / disable). `ok` is false when the agent rejected the action (still HTTP 200).
 // Ref: #/components/schemas/PerfActionResult
 type PerfActionResult struct {
 	Ok      bool      `json:"ok"`
@@ -35735,11 +36043,9 @@ func (s *PerfActionResult) SetPurgeID(val OptUUID) {
 func (*PerfActionResult) enableObjectCacheRes() {}
 func (*PerfActionResult) purgeCacheRes()        {}
 
-// The full per-site performance configuration. `cdn_credentials` is
-// write-only (see CdnCredentials); `cdn_has_credentials` and the
-// install-state fields (`server_software`, `dropin_installed`,
-// `wp_cache_constant_set`, `htaccess_managed`) are read-only / server- or
-// agent-derived.
+// The full per-site performance configuration. `cdn_credentials` is write-only (see CdnCredentials);
+// `cdn_has_credentials` and the install-state fields (`server_software`, `dropin_installed`,
+// `wp_cache_constant_set`, `htaccess_managed`) are read-only / server- or agent-derived.
 // Ref: #/components/schemas/PerfConfig
 type PerfConfig struct {
 	CacheEnabled              OptBool    `json:"cache_enabled"`
@@ -35772,8 +36078,8 @@ type PerfConfig struct {
 	// requests transcode jobs from the CP; the CP enqueues a font_transcode River job which produces the
 	// WOFF2 in object storage. Default false.
 	FontsTranscodeWoff2 OptBool `json:"fonts_transcode_woff2"`
-	// Enable subset-WOFF2 production (Phase 2, experimental). When true the media-encoder also produces
-	// a subset WOFF2 restricted to the unicode range specified by fonts_subset_range. Default false
+	// Enable subset-WOFF2 production (Phase 2, experimental). When true the media-encoder also produces a
+	// subset WOFF2 restricted to the unicode range specified by fonts_subset_range. Default false
 	// (opt-in).
 	FontsSubset OptBool `json:"fonts_subset"`
 	// Subsetting strategy. "range" (fixed unicode-range block) is the only supported mode in v1. Stored
@@ -35814,22 +36120,17 @@ type PerfConfig struct {
 	DropinInstalled           OptBool           `json:"dropin_installed"`
 	WpCacheConstantSet        OptBool           `json:"wp_cache_constant_set"`
 	HtaccessManaged           OptBool           `json:"htaccess_managed"`
-	// When true the agent will cache the WooCommerce catalog shell for
-	// anonymous shoppers who have an active cart. The agent additionally
-	// hard-gates on its own theme probe (`woo_theme_fragments_supported`)
-	// before serving cached pages to cart-holding visitors, providing a
-	// defense-in-depth layer independent of this flag.
-	// The API accepts `woo_cacheable_session: true` even when
-	// `woo_theme_fragments_supported` is false — the agent will not act on
-	// it until its own probe passes. This allows operators to pre-enable the
-	// flag before the agent performs its first probe.
+	// When true the agent will cache the WooCommerce catalog shell for anonymous shoppers who have an
+	// active cart. The agent additionally hard-gates on its own theme probe
+	// (`woo_theme_fragments_supported`) before serving cached pages to cart-holding visitors, providing a
+	// defense-in-depth layer independent of this flag. The API accepts `woo_cacheable_session: true` even
+	// when `woo_theme_fragments_supported` is false — the agent will not act on it until its own probe
+	// passes. This allows operators to pre-enable the flag before the agent performs its first probe.
 	WooCacheableSession OptBool `json:"woo_cacheable_session"`
-	// Agent-reported (read-only). Tri-state: null = never probed, false =
-	// probed and the active theme does not expose the standard WooCommerce
-	// cart-fragments hook, true = probed and supported. The CP stores this
-	// value but never lets an operator write it via PUT. Null is the
-	// correct initial state (M67); the agent stamps true/false only after
-	// running a genuine front-end probe.
+	// Agent-reported (read-only). Tri-state: null = never probed, false = probed and the active theme does
+	// not expose the standard WooCommerce cart-fragments hook, true = probed and supported. The CP stores
+	// this value but never lets an operator write it via PUT. Null is the correct initial state (M67); the
+	// agent stamps true/false only after running a genuine front-end probe.
 	WooThemeFragmentsSupported OptNilBool `json:"woo_theme_fragments_supported"`
 	// RFC3339 timestamp of the last agent probe. Null when never probed.
 	WooFragmentsProbedAt OptNilDateTime `json:"woo_fragments_probed_at"`
@@ -35837,22 +36138,17 @@ type PerfConfig struct {
 	RumEnabled OptBool `json:"rum_enabled"`
 	// Fraction of page views that emit a RUM beacon (0 to 1).
 	RumSampleRate OptFloat32 `json:"rum_sample_rate"`
-	// Suppression floor: any RUM slice with fewer samples than this is
-	// reported as suppressed rather than shown, so a handful of visits
-	// cannot masquerade as a trend.
+	// Suppression floor: any RUM slice with fewer samples than this is reported as suppressed rather than
+	// shown, so a handful of visits cannot masquerade as a trend.
 	MinSampleCount OptInt `json:"min_sample_count"`
-	// Cap on the number of distinct countries kept in the per-country RUM
-	// breakdown.
+	// Cap on the number of distinct countries kept in the per-country RUM breakdown.
 	MaxDistinctCountries OptInt `json:"max_distinct_countries"`
-	// Whether a RUM beacon key is provisioned. The plaintext key is never
-	// returned; this boolean is how a client tells whether RUM is fully
-	// provisioned. Ignored on write.
+	// Whether a RUM beacon key is provisioned. The plaintext key is never returned; this boolean is how a
+	// client tells whether RUM is fully provisioned. Ignored on write.
 	BeaconKeySet OptBool `json:"beacon_key_set"`
-	// Whether the agent's most recent config-ack confirmed it holds the
-	// beacon key. beacon_key_set true with this false means RUM is
-	// provisioned control-plane side but the agent has not confirmed
-	// receipt yet; the control plane retries automatically. Ignored on
-	// write.
+	// Whether the agent's most recent config-ack confirmed it holds the beacon key. beacon_key_set true
+	// with this false means RUM is provisioned control-plane side but the agent has not confirmed receipt
+	// yet; the control plane retries automatically. Ignored on write.
 	BeaconKeyAckedPresent OptBool     `json:"beacon_key_acked_present"`
 	ConfigVersion         OptInt      `json:"config_version"`
 	UpdatedAt             OptDateTime `json:"updated_at"`
@@ -37804,9 +38100,9 @@ func (*PortalUptimeSummary) getPortalSiteUptimeRes() {}
 type PortalVitalMetric struct {
 	Metric PortalVitalMetricMetric `json:"metric"`
 	// 75th percentile, in MILLI-UNITS for every metric. Timing metrics (lcp, inp) are therefore
-	// milliseconds. CLS is thousandths of a unit, so a CLS of 0.1 is sent as 100 and a client must
-	// divide by 1000 before display. This field carried no unit for a long time and a consumer rendered
-	// CLS undivided, showing a good score of 0.1 to an end client as "100.000".
+	// milliseconds. CLS is thousandths of a unit, so a CLS of 0.1 is sent as 100 and a client must divide
+	// by 1000 before display. This field carried no unit for a long time and a consumer rendered CLS
+	// undivided, showing a good score of 0.1 to an end client as "100.000".
 	P75     float32                 `json:"p75"`
 	Rating  PortalVitalMetricRating `json:"rating"`
 	Samples int64                   `json:"samples"`
@@ -38128,14 +38424,14 @@ func (s *PrepareUploadPresignedPut) SetURL(val string) {
 type PrepareUploadRequest struct {
 	// Site-relative target path for the uploaded file.
 	Path string `json:"path"`
-	// Number of chunks the browser will PUT. Each chunk corresponds to one presigned S3 PUT URL. Use 1
-	// for files ≤ 5 MiB; increase for larger files (max 32 × 5 MiB = 160 MiB total).
+	// Number of chunks the browser will PUT. Each chunk corresponds to one presigned S3 PUT URL. Use 1 for
+	// files ≤ 5 MiB; increase for larger files (max 32 × 5 MiB = 160 MiB total).
 	PartCount OptInt `json:"part_count"`
-	// Required when `path` matches the executable-extension deny-list. Requires owner permission (`site.
-	// files.write_code`).
+	// Required when `path` matches the executable-extension deny-list. Requires owner permission
+	// (`site.files.write_code`).
 	ConfirmExecutableWrite OptBool `json:"confirm_executable_write"`
-	// Required when `path` matches the sensitive-file deny-list. Requires owner permission (`site.files.
-	// write_code`).
+	// Required when `path` matches the sensitive-file deny-list. Requires owner permission
+	// (`site.files.write_code`).
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 
@@ -38185,8 +38481,8 @@ type PrepareUploadResult struct {
 	Ok bool `json:"ok"`
 	// Opaque transfer ID — pass to `applySiteFileUpload` for audit.
 	TransferID uuid.UUID `json:"transfer_id"`
-	// S3 key prefix for the staged chunks. Pass to `applySiteFileUpload` so the CP can mint presigned
-	// GETs for the agent.
+	// S3 key prefix for the staged chunks. Pass to `applySiteFileUpload` so the CP can mint presigned GETs
+	// for the agent.
 	ObjectKey     string                      `json:"object_key"`
 	PresignedPuts []PrepareUploadPresignedPut `json:"presigned_puts"`
 	// Unix epoch seconds when the presigned URLs expire (≤ 5 min from now).
@@ -38284,9 +38580,9 @@ func (s *PriceQuote) SetInterval(val string) {
 	s.Interval = val
 }
 
-// Effective role of the authenticated principal. Extends the member Role enum with "client" for
-// portal principals. The existing Role enum (owner/admin/operator/viewer) is unchanged; this
-// standalone enum is used only in Me responses.
+// Effective role of the authenticated principal. Extends the member Role enum with "client" for portal
+// principals. The existing Role enum (owner/admin/operator/viewer) is unchanged; this standalone enum
+// is used only in Me responses.
 // Ref: #/components/schemas/PrincipalRole
 type PrincipalRole string
 
@@ -38385,8 +38681,8 @@ func (s *PublicPricing) SetTiers(val []PublicPricingTiersItem) {
 
 func (*PublicPricing) getPublicPricingRes() {}
 
-// A free tier renders flat `{id,amount,currency,interval}` fields; a paid tier renders `{id,usd?,
-// inr?}` — only the provider/currency pairs this instance actually resolved a price for.
+// A free tier renders flat `{id,amount,currency,interval}` fields; a paid tier renders
+// `{id,usd?,inr?}` — only the provider/currency pairs this instance actually resolved a price for.
 type PublicPricingTiersItem struct {
 	ID       string        `json:"id"`
 	Amount   OptInt64      `json:"amount"`
@@ -38465,8 +38761,8 @@ type PurgeRequest struct {
 	URL OptString `json:"url"`
 	// Additional URLs to purge.
 	Urls []string `json:"urls"`
-	// With `scope: all`, also clears every cached artifact. Requires the
-	// `site.cache.delete-everything` permission.
+	// With `scope: all`, also clears every cached artifact. Requires the `site.cache.delete-everything`
+	// permission.
 	DeleteEverything OptBool `json:"delete_everything"`
 }
 
@@ -38568,9 +38864,9 @@ type PutClientReportScheduleUnauthorized Error
 
 func (*PutClientReportScheduleUnauthorized) putClientReportScheduleRes() {}
 
-// Request body for PUT /email/org-config and PUT /sites/{siteId}/email/config. All fields are
-// optional — omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting
-// `secret` preserves the existing stored credential (nil-sentinel pattern).
+// Request body for PUT /email/org-config and PUT /sites/{siteId}/email/config. All fields are optional
+// — omitted fields are unchanged (PATCH semantics within a PUT envelope). Omitting `secret`
+// preserves the existing stored credential (nil-sentinel pattern).
 // Ref: #/components/schemas/PutEmailConfigRequest
 type PutEmailConfigRequest struct {
 	// Provider slug (smtp | ses | sendgrid | mailgun | postmark).
@@ -38867,9 +39163,9 @@ type PutEmailNotifySettingsForbidden Error
 
 func (*PutEmailNotifySettingsForbidden) putEmailNotifySettingsRes() {}
 
-// Request body for PUT /email/notify-settings. This is a full replace (not a PATCH) — every field
-// is required. digest_cadence/digest_day/ digest_hour/timezone are only validated when
-// digest_enabled is true.
+// Request body for PUT /email/notify-settings. This is a full replace (not a PATCH) — every field is
+// required. digest_cadence/digest_day/ digest_hour/timezone are only validated when digest_enabled is
+// true.
 // Ref: #/components/schemas/PutEmailNotifySettingsRequest
 type PutEmailNotifySettingsRequest struct {
 	Enabled bool `json:"enabled"`
@@ -39040,18 +39336,16 @@ type PutEmailNotifySettingsUnprocessableEntity Error
 func (*PutEmailNotifySettingsUnprocessableEntity) putEmailNotifySettingsRes() {}
 
 // Request body for PUT /email/org-config/webhook-config and PUT /sites/{siteId}/email/webhook-config.
-//
-//	All fields are optional. Omit webhook_signing_key to preserve the stored key (nil-sentinel). Send
-//
-// null to clear it. rotate_token: true generates a new route token and returns webhook_route_token
-// in the response (shown once).
+// All fields are optional. Omit webhook_signing_key to preserve the stored key (nil-sentinel). Send
+// null to clear it. rotate_token: true generates a new route token and returns webhook_route_token in
+// the response (shown once).
 // Ref: #/components/schemas/PutEmailWebhookConfigRequest
 type PutEmailWebhookConfigRequest struct {
 	// When true, a new route token is generated (invalidating the old URL) and returned once in
 	// webhook_route_token.
 	RotateToken OptBool `json:"rotate_token"`
-	// HMAC signing key for verifying provider webhook payloads. Write-only. Omit to preserve the
-	// existing key. Send null to clear.
+	// HMAC signing key for verifying provider webhook payloads. Write-only. Omit to preserve the existing
+	// key. Send null to clear.
 	WebhookSigningKey OptNilString `json:"webhook_signing_key"`
 	// SES only. Replace the SNS TopicArn allowlist. null preserves the existing list. Empty array clears
 	// the list (no filter).
@@ -39605,11 +39899,10 @@ type RegisterRequest struct {
 	TenantName OptString `json:"tenant_name"`
 	TenantSlug OptString `json:"tenant_slug"`
 	// OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary
-	// free-tier signup. Persisted against the email-verification token and surfaced back as Me.
-	// desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
-	// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a
-	// real paid tier, is silently treated as no intent — this field can never fail registration on its
-	// own.
+	// free-tier signup. Persisted against the email-verification token and surfaced back as
+	// Me.desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
+	// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a real
+	// paid tier, is silently treated as no intent — this field can never fail registration on its own.
 	Plan OptRegisterRequestPlan `json:"plan"`
 }
 
@@ -39674,11 +39967,10 @@ func (s *RegisterRequest) SetPlan(val OptRegisterRequestPlan) {
 }
 
 // OPTIONAL "sign up into a plan" hint (M16 Phase 0, hosted billing only). Omit for an ordinary
-// free-tier signup. Persisted against the email-verification token and surfaced back as Me.
-// desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
-// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a
-// real paid tier, is silently treated as no intent — this field can never fail registration on its
-// own.
+// free-tier signup. Persisted against the email-verification token and surfaced back as
+// Me.desired_plan once the account is verified (or immediately, on the first-run bootstrap path), so
+// the frontend can auto-start checkout. A self-hosted instance, or any value that does not name a real
+// paid tier, is silently treated as no intent — this field can never fail registration on its own.
 type RegisterRequestPlan string
 
 const (
@@ -39894,10 +40186,9 @@ type ResendEmailLogUnauthorized Error
 
 func (*ResendEmailLogUnauthorized) resendEmailLogRes() {}
 
-// Result of a resend_email agent command. `ok=true` means the agent
-// confirmed the email was re-dispatched. `ok=false` means the agent was
-// unavailable or returned an error — check `detail` for the reason.
-// HTTP 200 is returned in both cases (matches test-send pattern).
+// Result of a resend_email agent command. `ok=true` means the agent confirmed the email was
+// re-dispatched. `ok=false` means the agent was unavailable or returned an error — check `detail`
+// for the reason. HTTP 200 is returned in both cases (matches test-send pattern).
 // Ref: #/components/schemas/ResendEmailResult
 type ResendEmailResult struct {
 	Ok bool `json:"ok"`
@@ -40036,10 +40327,9 @@ type RestoreAdminAccountUnprocessableEntity Error
 
 func (*RestoreAdminAccountUnprocessableEntity) restoreAdminAccountRes() {}
 
-// Restore selection. Omit both arrays (or set full=true) for a full
-// restore; provide paths for partial file restore, or db_tables for partial
-// db restore. `components` further restricts the operation to specific
-// backup components ("files" and/or "db"); see field doc below.
+// Restore selection. Omit both arrays (or set full=true) for a full restore; provide paths for partial
+// file restore, or db_tables for partial db restore. `components` further restricts the operation to
+// specific backup components ("files" and/or "db"); see field doc below.
 // Ref: #/components/schemas/RestoreCreate
 type RestoreCreate struct {
 	Full OptBool `json:"full"`
@@ -40049,29 +40339,29 @@ type RestoreCreate struct {
 	DbTables []string `json:"db_tables"`
 	// Which backup components to restore. When omitted, restores all components in the snapshot. Valid
 	// values:
-	// - "files"      — broad-strokes alias for ALL file components
-	// (plugin + theme + upload + wp-content). Use
-	// this for "restore everything except the DB".
-	// - "db"         — the database dump.
-	// - "plugin"     — wp-content/plugins/* only (Track 5).
-	// - "theme"      — wp-content/themes/* only (Track 5).
-	// - "upload"     — wp-content/uploads/* only (Track 5).
-	// - "wp-content" — everything ELSE under wp-content (mu-plugins,
-	// languages, drop-ins, custom dirs — NOT
-	// plugins/themes/uploads) (Track 5).
+	//
+	//  - "files" — broad-strokes alias for ALL file components (plugin + theme + upload + wp-content).
+	//    Use this for "restore everything except the DB".
+	//  - "db" — the database dump.
+	//  - "plugin" — wp-content/plugins/* only (Track 5).
+	//  - "theme" — wp-content/themes/* only (Track 5).
+	//  - "upload" — wp-content/uploads/* only (Track 5).
+	//  - "wp-content" — everything ELSE under wp-content (mu-plugins, languages, drop-ins, custom dirs
+	//    — NOT plugins/themes/uploads) (Track 5).
+	//
 	// Examples — to restore only the database, pass ["db"]. To restore only files, pass ["files"]. To
 	// restore both, pass ["files","db"] or omit. To restore only plugins, pass ["plugin"]. To restore
 	// plugins + uploads, pass ["plugin","upload"].
 	Components []RestoreCreateComponentsItem `json:"components"`
-	// When true, the agent keeps the pre-restore wp-content tree at .wpmgr-old-files-<id>/ for 24 hours
-	// as a manual rollback affordance. When false (default), the agent cleans it up immediately after a
+	// When true, the agent keeps the pre-restore wp-content tree at .wpmgr-old-files-/ for 24 hours as a
+	// manual rollback affordance. When false (default), the agent cleans it up immediately after a
 	// successful restore.
 	KeepOldFiles OptBool `json:"keep_old_files"`
-	// When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs
-	// to this target. When unset, the agent uses the current site's URL (no-op when restoring to the
-	// same environment). Required for cross-environment restores (dev->prod, staging->prod). The control
-	// plane derives this from the destination Site.URL when the restore is dispatched, so callers
-	// typically don't need to set it.
+	// When set, the agent will rewrite `siteurl` and `home` references from the snapshot's source URLs to
+	// this target. When unset, the agent uses the current site's URL (no-op when restoring to the same
+	// environment). Required for cross-environment restores (dev->prod, staging->prod). The control plane
+	// derives this from the destination Site.URL when the restore is dispatched, so callers typically
+	// don't need to set it.
 	TargetSiteURL OptNilURI `json:"target_site_url"`
 }
 
@@ -40220,12 +40510,10 @@ type RestoreOrgUnauthorized Error
 
 func (*RestoreOrgUnauthorized) restoreOrgRes() {}
 
-// A single restore attempt, created when the operator calls
-// `POST /backups/{snapshotId}/restore`. The run advances through
-// phases as the agent executes the restore; `current_phase` reflects
-// the latest phase received from the agent. `triggered_by_email` and
-// `triggered_by_name` are resolved from the tenant user directory
-// when the actor is a known user; they are `null` for API-key or
+// A single restore attempt, created when the operator calls `POST /backups/{snapshotId}/restore`. The
+// run advances through phases as the agent executes the restore; `current_phase` reflects the latest
+// phase received from the agent. `triggered_by_email` and `triggered_by_name` are resolved from the
+// tenant user directory when the actor is a known user; they are `null` for API-key or
 // system-triggered restores.
 // Ref: #/components/schemas/RestoreRun
 type RestoreRun struct {
@@ -40235,8 +40523,7 @@ type RestoreRun struct {
 	SiteID uuid.UUID `json:"site_id"`
 	// ID of the backup snapshot used as the restore source.
 	SnapshotID uuid.UUID `json:"snapshot_id"`
-	// Restore mode. `full` means all components were requested;
-	// `partial` means a subset was specified.
+	// Restore mode. `full` means all components were requested; `partial` means a subset was specified.
 	Mode RestoreRunMode `json:"mode"`
 	// Which backup components were restored (e.g. `files`, `db`).
 	Components []RestoreRunComponentsItem `json:"components"`
@@ -40591,8 +40878,7 @@ func (s *RestoreRunList) SetItems(val []RestoreRun) {
 
 func (*RestoreRunList) listRestoreRunsRes() {}
 
-// Restore mode. `full` means all components were requested;
-// `partial` means a subset was specified.
+// Restore mode. `full` means all components were requested; `partial` means a subset was specified.
 type RestoreRunMode string
 
 const (
@@ -41046,7 +41332,7 @@ type RumBeacon struct {
 	// Raw metric value. Milliseconds for timing metrics; milli-units (value*1000) for CLS.
 	Value  int32              `json:"value"`
 	Device OptRumBeaconDevice `json:"device"`
-	// ISO-3166-1 alpha-2 code. Falls back to "__other__" when absent/invalid.
+	// ISO-3166-1 alpha-2 code. Falls back to "other" when absent/invalid.
 	Country OptString        `json:"country"`
 	Conn    OptRumBeaconConn `json:"conn"`
 }
@@ -41300,10 +41586,9 @@ func (s *RumBeaconMetric) UnmarshalText(data []byte) error {
 	}
 }
 
-// The response to POST .../perf/rum/rotate-key (GH #174). Confirms the
-// beacon key was rotated and pushed to the agent. The plaintext key is
-// NEVER returned here, logged, or exposed by any other endpoint — only
-// this confirmation boolean.
+// The response to POST .../perf/rum/rotate-key (GH #174). Confirms the beacon key was rotated and
+// pushed to the agent. The plaintext key is NEVER returned here, logged, or exposed by any other
+// endpoint — only this confirmation boolean.
 // Ref: #/components/schemas/RumBeaconRotateResult
 type RumBeaconRotateResult struct {
 	Ok           bool `json:"ok"`
@@ -41333,8 +41618,8 @@ func (s *RumBeaconRotateResult) SetBeaconKeySet(val bool) {
 // RumIngestPreflightNoContent is response for RumIngestPreflight operation.
 type RumIngestPreflightNoContent struct{}
 
-// P75 summary for one (metric, device, country) slice over the requested window. suppressed=true
-// when the sample count is below the site's min_sample_count floor; p75_ms is 0 in that case and the
+// P75 summary for one (metric, device, country) slice over the requested window. suppressed=true when
+// the sample count is below the site's min_sample_count floor; p75_ms is 0 in that case and the
 // dashboard must render "insufficient samples (sample_count of min_sample_count)".
 // Ref: #/components/schemas/RumMetricSummary
 type RumMetricSummary struct {
@@ -41342,17 +41627,17 @@ type RumMetricSummary struct {
 	Metric OptRumMetricSummaryMetric `json:"metric"`
 	// Device class derived from the user agent.
 	Device OptRumMetricSummaryDevice `json:"device"`
-	// ISO-3166-1 alpha-2 country code or "__other__".
+	// ISO-3166-1 alpha-2 country code or "other".
 	Country OptString `json:"country"`
 	// Interpolated 75th-percentile value in milliseconds (0 when suppressed).
 	P75Ms OptFloat64 `json:"p75_ms"`
 	// Raw (pre-scale) sample count used for this estimate.
 	SampleCount OptInt64 `json:"sample_count"`
-	// CWV standard rating band per the official web-vitals thresholds. Empty when suppressed=true or
-	// when the metric has no threshold.
+	// CWV standard rating band per the official web-vitals thresholds. Empty when suppressed=true or when
+	// the metric has no threshold.
 	Rating OptRumMetricSummaryRating `json:"rating"`
-	// True when sample_count < min_sample_count. Dashboard must render "insufficient samples" rather
-	// than a p75.
+	// True when sample_count < min_sample_count. Dashboard must render "insufficient samples" rather than
+	// a p75.
 	Suppressed OptBool `json:"suppressed"`
 }
 
@@ -41538,8 +41823,8 @@ func (s *RumMetricSummaryMetric) UnmarshalText(data []byte) error {
 	}
 }
 
-// CWV standard rating band per the official web-vitals thresholds. Empty when suppressed=true or
-// when the metric has no threshold.
+// CWV standard rating band per the official web-vitals thresholds. Empty when suppressed=true or when
+// the metric has no threshold.
 type RumMetricSummaryRating string
 
 const (
@@ -41596,7 +41881,7 @@ type RumResult struct {
 	URLPattern OptString          `json:"url_pattern"`
 	Metric     OptRumResultMetric `json:"metric"`
 	Device     OptRumResultDevice `json:"device"`
-	// ISO-3166-1 alpha-2 country code or "__other__".
+	// ISO-3166-1 alpha-2 country code or "other".
 	Country OptString `json:"country"`
 	// Interpolated 75th-percentile value in milliseconds (0 when suppressed).
 	P75Ms       OptFloat64         `json:"p75_ms"`
@@ -42430,13 +42715,11 @@ func (s *ScanRunFindingCounts) init() ScanRunFindingCounts {
 	return m
 }
 
-// A single scheduled-backup fire. Pre-inserted as `scheduled` before
-// the run window opens, then advanced to `queued` (dispatched to River),
-// `running` (agent executing), and finally a terminal status
-// (`completed`, `failed`, `skipped`, or `canceled`).
-// `triggered_by_email` and `triggered_by_name` are resolved from the
-// tenant user directory when the actor is a known user (schedule-fired
-// runs carry `triggered_by="schedule"` and leave these null).
+// A single scheduled-backup fire. Pre-inserted as `scheduled` before the run window opens, then
+// advanced to `queued` (dispatched to River), `running` (agent executing), and finally a terminal
+// status (`completed`, `failed`, `skipped`, or `canceled`). `triggered_by_email` and
+// `triggered_by_name` are resolved from the tenant user directory when the actor is a known user
+// (schedule-fired runs carry `triggered_by="schedule"` and leave these null).
 // Ref: #/components/schemas/ScheduleRun
 type ScheduleRun struct {
 	// Unique schedule run ID.
@@ -42653,9 +42936,8 @@ func (s *ScheduleRunKind) UnmarshalText(data []byte) error {
 	}
 }
 
-// Split view of schedule runs for a site. `upcoming` contains
-// non-terminal runs (bounded to 10); `past` contains terminal runs
-// (paginated). One or both lists may be empty.
+// Split view of schedule runs for a site. `upcoming` contains non-terminal runs (bounded to 10);
+// `past` contains terminal runs (paginated). One or both lists may be empty.
 // Ref: #/components/schemas/ScheduleRunList
 type ScheduleRunList struct {
 	// Non-terminal schedule runs (scheduled/queued/running), newest-fire-time first.
@@ -42763,21 +43045,20 @@ func (s *ScheduleRunStatus) UnmarshalText(data []byte) error {
 	}
 }
 
-// Request body for the serialization-safe database search-replace command.
-// Call with `dry_run: true` first to preview affected rows before applying.
+// Request body for the serialization-safe database search-replace command. Call with `dry_run: true`
+// first to preview affected rows before applying.
 // Ref: #/components/schemas/SearchReplaceRequest
 type SearchReplaceRequest struct {
-	// Exact string to find in the database. Minimum 3 bytes. Treated as a
-	// literal (no regex, no wildcards).
+	// Exact string to find in the database. Minimum 3 bytes. Treated as a literal (no regex, no
+	// wildcards).
 	Search string `json:"search"`
 	// Replacement string. May be empty to remove occurrences.
 	Replace string `json:"replace"`
-	// When `true` (required for the preview step) the agent scans and
-	// counts matching rows but writes nothing. `rows_changed` will be 0.
+	// When `true` (required for the preview step) the agent scans and counts matching rows but writes
+	// nothing. `rows_changed` will be 0.
 	DryRun bool `json:"dry_run"`
-	// Optional allowlist of full table names to scan (including the wp_
-	// prefix, e.g. `wp_options`). When absent every eligible table is
-	// scanned.
+	// Optional allowlist of full table names to scan (including the wp_ prefix, e.g. `wp_options`). When
+	// absent every eligible table is scanned.
 	Tables []string `json:"tables"`
 }
 
@@ -42830,13 +43111,13 @@ type SearchReplaceResult struct {
 	DryRun bool `json:"dry_run"`
 	// Number of tables the agent walked (after denylist filtering).
 	TablesScanned int `json:"tables_scanned"`
-	// Rows where at least one column value would change (or did change on
-	// a live run). This is the preview count shown before applying.
+	// Rows where at least one column value would change (or did change on a live run). This is the preview
+	// count shown before applying.
 	RowsMatched int `json:"rows_matched"`
 	// Rows actually written. Always 0 when `dry_run` was true.
 	RowsChanged int `json:"rows_changed"`
-	// Non-empty when no recent backup was found and `dry_run` was false.
-	// Advisory only — the replace still ran.
+	// Non-empty when no recent backup was found and `dry_run` was false. Advisory only — the replace
+	// still ran.
 	BackupWarning OptString `json:"backup_warning"`
 	// Human-readable reason on failure (ok=false).
 	Detail OptString `json:"detail"`
@@ -43302,10 +43583,9 @@ type Site struct {
 	WpVersion    string           `json:"wp_version"`
 	PhpVersion   string           `json:"php_version"`
 	HealthStatus SiteHealthStatus `json:"health_status"`
-	// M21 / ADR-041 — the single source of truth for the agent connection
-	// lifecycle. Surfaced live on the /api/v1/sites/events SSE `site`
-	// payload; surfacing it on this strict REST Site shape is a Phase 4
-	// follow-up (the legacy status/health_status remain in sync meanwhile).
+	// M21 / ADR-041 — the single source of truth for the agent connection lifecycle. Surfaced live on
+	// the /api/v1/sites/events SSE `site` payload; surfacing it on this strict REST Site shape is a Phase
+	// 4 follow-up (the legacy status/health_status remain in sync meanwhile).
 	ConnectionState OptSiteConnectionState `json:"connection_state"`
 	// M21 — bumps on each re-enrollment under the same site_id.
 	ConnectionGeneration OptInt32 `json:"connection_generation"`
@@ -43324,15 +43604,15 @@ type Site struct {
 	// re-syncs on a newer agent.
 	AgentVersion OptString `json:"agent_version"`
 	// Inferred hosting/infrastructure provider (e.g. DigitalOcean, Hetzner, AWS), derived
-	// control-plane-side from the agent's observed public egress IP via an offline ASN lookup.
-	// Best-effort hint shown only when no managed-host flag matched. Empty/absent until inferred.
+	// control-plane-side from the agent's observed public egress IP via an offline ASN lookup. Best-effort
+	// hint shown only when no managed-host flag matched. Empty/absent until inferred.
 	HostProvider OptString `json:"host_provider"`
 	// Raw Autonomous System organization for the inferred network (e.g. "Hetzner Online GmbH"). Display
 	// fallback when host_provider (the canonical name) is empty but the network is known. Empty/absent
 	// until inferred.
 	HostProviderOrg OptString `json:"host_provider_org"`
-	// The public egress IP the host inference used (the agent's observed or reported IP). Surfaced to
-	// the site's own operators for debugging. Empty/absent until inferred.
+	// The public egress IP the host inference used (the agent's observed or reported IP). Surfaced to the
+	// site's own operators for debugging. Empty/absent until inferred.
 	HostProviderIP OptString `json:"host_provider_ip"`
 	// Count of plugins + themes + core with an available update (last-synced).
 	UpdatesAvailable OptInt32 `json:"updates_available"`
@@ -43347,19 +43627,16 @@ type Site struct {
 	// client.
 	ClientName OptString `json:"client_name"`
 	// M72 — Presigned GCS GET URL for the site's 1x WebP screenshot thumbnail (640×400 effective).
-	// Absent/null when the screenshot has never been captured or is pending.
-	// The URL is time-bounded (1 h); clients must NOT cache it past the TTL and should
-	// refetch on reconnect. NEVER put the raw WordPress site URL here; this is always a
-	// CP-presigned storage URL.
+	// Absent/null when the screenshot has never been captured or is pending. The URL is time-bounded (1
+	// h); clients must NOT cache it past the TTL and should refetch on reconnect. NEVER put the raw
+	// WordPress site URL here; this is always a CP-presigned storage URL.
 	ScreenshotURL OptURI `json:"screenshot_url"`
 	// M72 — Presigned GCS GET URL for the site's 2x WebP screenshot thumbnail (1280×800 effective).
 	// Absent/null when not captured or pending.
 	ScreenshotURL2x OptURI `json:"screenshot_url_2x"`
 	// M72 — Current screenshot capture status. Absent/null means "never captured" (treat as no
-	// screenshot).
-	// pending = capture job is enqueued or running.
-	// ready   = last capture completed; screenshot_url is valid.
-	// failed  = last capture failed; screenshot_failed_reason explains why.
+	// screenshot). pending = capture job is enqueued or running. ready = last capture completed;
+	// screenshot_url is valid. failed = last capture failed; screenshot_failed_reason explains why.
 	ScreenshotStatus OptSiteScreenshotStatus `json:"screenshot_status"`
 	// M72 — When the current screenshot was captured. Absent/null when pending or never captured.
 	ScreenshotCapturedAt OptDateTime `json:"screenshot_captured_at"`
@@ -43368,61 +43645,57 @@ type Site struct {
 	// Current up/down from the most-recent uptime probe. Absent/null when the site has never been probed.
 	// true = last probe received a non-error 2xx response; false = last probe failed or timed out.
 	Up OptBool `json:"up"`
-	// Uptime percentage over the trailing 30 days, rounded to 2 decimal places (e.g. 99.98).
-	// Absent/null when the site has no probes in the 30-day window.
+	// Uptime percentage over the trailing 30 days, rounded to 2 decimal places (e.g. 99.98). Absent/null
+	// when the site has no probes in the 30-day window.
 	UptimePct OptFloat64 `json:"uptime_pct"`
-	// Average total response latency in milliseconds over successful (up=true) probes in the
-	// trailing 30 days, rounded to the nearest millisecond.
-	// Absent/null when there are no successful probes in the window.
+	// Average total response latency in milliseconds over successful (up=true) probes in the trailing 30
+	// days, rounded to the nearest millisecond. Absent/null when there are no successful probes in the
+	// window.
 	AvgLatencyMs OptInt32 `json:"avg_latency_ms"`
 	// RFC 3339 timestamp of the TLS certificate expiry captured on the most-recent uptime probe.
 	// Absent/null when the site is non-HTTPS or has never been probed.
 	TLSExpiresAt OptDateTime `json:"tls_expires_at"`
-	// GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled),
-	// not an inference from an installed-plugin slug (the feature ships as a
-	// drop-in, not a plugin, so no such slug can ever exist). false both when
-	// caching is off AND when the site has no performance config yet.
+	// GH #243 — the real Page Cache drop-in state (site_perf_config.cache_enabled), not an inference
+	// from an installed-plugin slug (the feature ships as a drop-in, not a plugin, so no such slug can
+	// ever exist). false both when caching is off AND when the site has no performance config yet.
 	PageCacheEnabled bool `json:"page_cache_enabled"`
-	// GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled),
-	// not an inference from an installed-plugin slug (the feature ships as a
-	// drop-in, not a plugin, so no such slug can ever exist). false both when
-	// object caching is off AND when the site has no object cache config yet.
+	// GH #243 — the real Object Cache drop-in state (site_object_cache_config.enabled), not an inference
+	// from an installed-plugin slug (the feature ships as a drop-in, not a plugin, so no such slug can
+	// ever exist). false both when object caching is off AND when the site has no object cache config yet.
 	ObjectCacheEnabled bool `json:"object_cache_enabled"`
-	// GH #414 — RFC 3339 timestamp of when monitoring was paused for this site.
-	// Absent/null means monitoring is ACTIVE; the flag and the since-when are one
-	// column (sites.monitoring_paused_at) so they cannot disagree.
-	// Pause means "do not tell me", never "lie to me". It suppresses scheduled
-	// monitoring (uptime probes and their alerts) and nothing else: backups, the
-	// cron kick, the connection sweep, RUM ingestion, retention and everything a
-	// person clicks all keep running for a paused site.
+	// GH #414 — RFC 3339 timestamp of when monitoring was paused for this site. Absent/null means
+	// monitoring is ACTIVE; the flag and the since-when are one column (sites.monitoring_paused_at) so
+	// they cannot disagree.
+	//
+	// Pause means "do not tell me", never "lie to me". It suppresses scheduled monitoring (uptime probes
+	// and their alerts) and nothing else: backups, the cron kick, the connection sweep, RUM ingestion,
+	// retention and everything a person clicks all keep running for a paused site.
 	MonitoringPausedAt OptDateTime `json:"monitoring_paused_at"`
-	// GH #414 — the user who paused monitoring. Absent when monitoring is active,
-	// and also absent for a paused site whose pausing user has since been deleted
-	// (the FK is ON DELETE SET NULL, so a pause outlives its author).
+	// GH #414 — the user who paused monitoring. Absent when monitoring is active, and also absent for a
+	// paused site whose pausing user has since been deleted (the FK is ON DELETE SET NULL, so a pause
+	// outlives its author).
 	MonitoringPausedBy OptUUID `json:"monitoring_paused_by"`
-	// GH #414 — the operator's free-text note for why monitoring is paused.
-	// Empty/absent when monitoring is active or when no reason was given.
+	// GH #414 — the operator's free-text note for why monitoring is paused. Empty/absent when monitoring
+	// is active or when no reason was given.
 	MonitoringPausedReason OptString `json:"monitoring_paused_reason"`
-	// GH #414 — the scheduled auto-resume instant. Absent means "paused until
-	// someone resumes it". Never present without monitoring_paused_at (enforced
-	// by sites_monitoring_resume_requires_pause_check).
+	// GH #414 — the scheduled auto-resume instant. Absent means "paused until someone resumes it". Never
+	// present without monitoring_paused_at (enforced by sites_monitoring_resume_requires_pause_check).
 	MonitoringResumeAt OptDateTime `json:"monitoring_resume_at"`
-	// GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran
-	// against this site (site_uptime_status.last_probed_at), i.e. the "as of" for
-	// `health_status`. Absent when the site has never been probed.
-	// Read this WITH `health_status`, never instead of it. The uptime prober is
-	// what refreshes `health_status`, and pausing monitoring stops the prober — so
-	// a paused site's `health_status` freezes at its last value while this stamp
-	// stops advancing. A paused site whose server died an hour ago therefore still
-	// reports `health_status: healthy`, and this field is the only thing that says
-	// how old that verdict is. Render it as "as of <time>" rather than implying now.
+	// GH #414 — RFC 3339 timestamp of the last uptime probe that actually ran against this site
+	// (site_uptime_status.last_probed_at), i.e. the "as of" for `health_status`. Absent when the site has
+	// never been probed.
+	//
+	// Read this WITH `health_status`, never instead of it. The uptime prober is what refreshes
+	// `health_status`, and pausing monitoring stops the prober — so a paused site's `health_status`
+	// freezes at its last value while this stamp stops advancing. A paused site whose server died an hour
+	// ago therefore still reports `health_status: healthy`, and this field is the only thing that says how
+	// old that verdict is. Render it as "as of " rather than implying now.
 	HealthCheckedAt OptDateTime `json:"health_checked_at"`
 	CreatedAt       time.Time   `json:"created_at"`
-	// The site row's mtime: bumped by heartbeats, agent metadata pushes and
-	// health_status changes. Deliberately NOT bumped by monitoring pause/resume
-	// writes (GH #414 Phase 1), so pausing a site does not make its inventory look
-	// freshly synced. It is the inventory freshness stamp, not the health one —
-	// use health_checked_at for health_status.
+	// The site row's mtime: bumped by heartbeats, agent metadata pushes and health_status changes.
+	// Deliberately NOT bumped by monitoring pause/resume writes (GH #414 Phase 1), so pausing a site does
+	// not make its inventory look freshly synced. It is the inventory freshness stamp, not the health one
+	// — use health_checked_at for health_status.
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -43915,9 +44188,8 @@ type SiteActivityEvent struct {
 	PrevHash string `json:"prev_hash"`
 	// Sha256 over the canonical event preimage.
 	ThisHash string `json:"this_hash"`
-	// Server-verified at ingest. False marks a tampered/broken link: the
-	// CP-recomputed hash did not match the shipped this_hash, or the
-	// shipped prev_hash did not match the prior stored row.
+	// Server-verified at ingest. False marks a tampered/broken link: the CP-recomputed hash did not match
+	// the shipped this_hash, or the shipped prev_hash did not match the prior stored row.
 	ChainValid bool      `json:"chain_valid"`
 	OccurredAt time.Time `json:"occurred_at"`
 	ReceivedAt time.Time `json:"received_at"`
@@ -44183,13 +44455,12 @@ func (s *SiteActivityList) SetNextCursor(val OptString) {
 type SiteAutologinPolicy struct {
 	// Whether one-click login is allowed for this site.
 	Enabled bool `json:"enabled"`
-	// The WordPress login the mint endpoint injects when an operator's
-	// mint request omits `target_wp_user_login`. Empty means the agent
-	// picks the first administrator (the pre-existing fallback).
+	// The WordPress login the mint endpoint injects when an operator's mint request omits
+	// `target_wp_user_login`. Empty means the agent picks the first administrator (the pre-existing
+	// fallback).
 	DefaultWpUserLogin string `json:"default_wp_user_login"`
-	// READ-ONLY. The WP roles the agent is permitted to log the
-	// operator in as. Not writable via the PUT body; the ceiling can
-	// only be changed by a manual database operation.
+	// READ-ONLY. The WP roles the agent is permitted to log the operator in as. Not writable via the PUT
+	// body; the ceiling can only be changed by a manual database operation.
 	AllowedWpRoles []string `json:"allowed_wp_roles"`
 	// When the policy was last saved. Absent for the built-in default.
 	UpdatedAt OptDateTime `json:"updated_at"`
@@ -44242,9 +44513,9 @@ func (*SiteAutologinPolicy) putSiteAutologinPolicyRes() {}
 type SiteAutologinPolicyUpdate struct {
 	// Whether one-click login is allowed for this site.
 	Enabled bool `json:"enabled"`
-	// The WordPress login the mint endpoint injects when an operator's
-	// mint request omits `target_wp_user_login`, or `""` to clear the
-	// default and revert to the agent's first-administrator fallback.
+	// The WordPress login the mint endpoint injects when an operator's mint request omits
+	// `target_wp_user_login`, or `""` to clear the default and revert to the agent's first-administrator
+	// fallback.
 	DefaultWpUserLogin string `json:"default_wp_user_login"`
 }
 
@@ -44487,16 +44758,15 @@ func (s *SiteAvailableUpdatesItemsItemType) UnmarshalText(data []byte) error {
 	}
 }
 
-// Track-A backup scope/exclusion settings for a site (m50). A 404 means
-// no settings row exists — safe defaults apply (all components, no exclusions).
+// Track-A backup scope/exclusion settings for a site (m50). A 404 means no settings row exists —
+// safe defaults apply (all components, no exclusions).
 // Ref: #/components/schemas/SiteBackupSettingsContents
 type SiteBackupSettingsContents struct {
 	SiteID uuid.UUID `json:"site_id"`
-	// Subset of archive components to include. Null/absent means all components (full backup).
-	// Singular vocabulary matching manifest entry_kind:
-	// "plugin" (wp-content/plugins/*), "theme" (wp-content/themes/*),
-	// "upload" (wp-content/uploads/*), "wp-content" (catch-all), "db" (database dump),
-	// "core" (ABSPATH: wp-admin, wp-includes, root PHP files).
+	// Subset of archive components to include. Null/absent means all components (full backup). Singular
+	// vocabulary matching manifest entry_kind: "plugin" (wp-content/plugins/), "theme"
+	// (wp-content/themes/), "upload" (wp-content/uploads/*), "wp-content" (catch-all), "db" (database
+	// dump), "core" (ABSPATH: wp-admin, wp-includes, root PHP files).
 	BackupComponents OptNilSiteBackupSettingsContentsBackupComponentsItemArray `json:"backup_components"`
 	// When true, the WordPress core source root (ABSPATH) is archived.
 	IncludeCore OptBool `json:"include_core"`
@@ -44793,15 +45063,13 @@ func (s *SiteBackupSettingsContentsUpdateBackupComponentsItem) UnmarshalText(dat
 	}
 }
 
-// Track-B notification settings for a site (m50). A 404 means no settings
-// row exists — safe defaults apply (never/empty). Fires for BOTH manual
-// and scheduled backup completions/failures.
+// Track-B notification settings for a site (m50). A 404 means no settings row exists — safe defaults
+// apply (never/empty). Fires for BOTH manual and scheduled backup completions/failures.
 // Ref: #/components/schemas/SiteBackupSettingsNotifications
 type SiteBackupSettingsNotifications struct {
 	SiteID uuid.UUID `json:"site_id"`
-	// When to send a backup-event email. Fires for both manual and
-	// scheduled runs. "always" = every completion or failure;
-	// "on_failure" = only on failure; "never" = no email (default).
+	// When to send a backup-event email. Fires for both manual and scheduled runs. "always" = every
+	// completion or failure; "on_failure" = only on failure; "never" = no email (default).
 	NotifyOnCompletion SiteBackupSettingsNotificationsNotifyOnCompletion `json:"notify_on_completion"`
 	// Email addresses to notify. Max 20.
 	NotifyRecipients []string    `json:"notify_recipients"`
@@ -44862,9 +45130,8 @@ func (s *SiteBackupSettingsNotifications) SetUpdatedAt(val time.Time) {
 func (*SiteBackupSettingsNotifications) getBackupSettingsNotificationsRes() {}
 func (*SiteBackupSettingsNotifications) putBackupSettingsNotificationsRes() {}
 
-// When to send a backup-event email. Fires for both manual and
-// scheduled runs. "always" = every completion or failure;
-// "on_failure" = only on failure; "never" = no email (default).
+// When to send a backup-event email. Fires for both manual and scheduled runs. "always" = every
+// completion or failure; "on_failure" = only on failure; "never" = no email (default).
 type SiteBackupSettingsNotificationsNotifyOnCompletion string
 
 const (
@@ -45293,10 +45560,9 @@ func (s *SiteComponentsCoreUpdate) SetCurrentVersion(val string) {
 	s.CurrentVersion = val
 }
 
-// M21 / ADR-041 — the single source of truth for the agent connection
-// lifecycle. Surfaced live on the /api/v1/sites/events SSE `site`
-// payload; surfacing it on this strict REST Site shape is a Phase 4
-// follow-up (the legacy status/health_status remain in sync meanwhile).
+// M21 / ADR-041 — the single source of truth for the agent connection lifecycle. Surfaced live on
+// the /api/v1/sites/events SSE `site` payload; surfacing it on this strict REST Site shape is a Phase
+// 4 follow-up (the legacy status/health_status remain in sync meanwhile).
 type SiteConnectionState string
 
 const (
@@ -45492,11 +45758,9 @@ func (s *SiteCreateStatus) UnmarshalText(data []byte) error {
 	}
 }
 
-// Per-site deliverability aggregate for the GET /email/deliverability
-// dashboard. `bounce_rate` and `complaint_rate` are expressed as a
-// percentage (0–100). Frontend reputation thresholds:
-// bounce_rate: warn ≥2%, danger ≥5%
-// complaint_rate: warn ≥0.05%, danger ≥0.1%.
+// Per-site deliverability aggregate for the GET /email/deliverability dashboard. `bounce_rate` and
+// `complaint_rate` are expressed as a percentage (0–100). Frontend reputation thresholds:
+// bounce_rate: warn ≥2%, danger ≥5% complaint_rate: warn ≥0.05%, danger ≥0.1%.
 // Ref: #/components/schemas/SiteDeliveryItem
 type SiteDeliveryItem struct {
 	SiteID   uuid.UUID `json:"site_id"`
@@ -45661,9 +45925,8 @@ type SiteDestination struct {
 	Bucket      string              `json:"bucket"`
 	PathPrefix  string              `json:"path_prefix"`
 	AccessKeyID string              `json:"access_key_id"`
-	// True iff a secret key is stored. The encrypted bytes never cross
-	// the wire; the UI uses this to render a "Re-enter to save changes"
-	// hint on the secret_key field.
+	// True iff a secret key is stored. The encrypted bytes never cross the wire; the UI uses this to
+	// render a "Re-enter to save changes" hint on the secret_key field.
 	HasSecret      bool      `json:"has_secret"`
 	ForcePathStyle bool      `json:"force_path_style"`
 	IsDefault      bool      `json:"is_default"`
@@ -45834,8 +46097,8 @@ type SiteDestinationCreate struct {
 	Bucket      OptString           `json:"bucket"`
 	PathPrefix  OptString           `json:"path_prefix"`
 	AccessKeyID OptString           `json:"access_key_id"`
-	// PLAINTEXT secret. The CP age-encrypts it at rest before persisting;
-	// it is NEVER stored in clear nor read back over the API.
+	// PLAINTEXT secret. The CP age-encrypts it at rest before persisting; it is NEVER stored in clear nor
+	// read back over the API.
 	SecretKey      OptString `json:"secret_key"`
 	ForcePathStyle OptBool   `json:"force_path_style"`
 	IsDefault      OptBool   `json:"is_default"`
@@ -45941,9 +46204,9 @@ func (s *SiteDestinationCreate) SetIsDefault(val OptBool) {
 	s.IsDefault = val
 }
 
-// ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket,
-// `local` writes to wp-content/wpmgr-backups on the agent host, and
-// `s3_compat` targets a customer-owned S3-compatible bucket.
+// ADR-036 P1 destination backend type. `cp` is the WPMgr-managed bucket, `local` writes to
+// wp-content/wpmgr-backups on the agent host, and `s3_compat` targets a customer-owned S3-compatible
+// bucket.
 // Ref: #/components/schemas/SiteDestinationKind
 type SiteDestinationKind string
 
@@ -46236,28 +46499,22 @@ func (s *SiteDestinationUpdate) SetIsDefault(val OptBool) {
 
 // Ref: #/components/schemas/SiteDiagnosticsCard
 type SiteDiagnosticsCard struct {
-	// One of: identity, php, mysql, filesystem, http, cron, themes,
-	// plugins, users, security, https, mail, performance, hosting,
-	// wp_native. The first 14 are the WPMgr-extra leapfrog collector
-	// (the 9-card legacy grid + the ribbon-summary entries); the 15th
-	// `wp_native` carries the verbatim WP_Debug_Data::debug_data()
-	// dump (full Site Health > Info parity) and is rendered as four
-	// additional cards: Directory Sizes, Media Handling, Filesystem
-	// Permissions, WordPress Constants.
+	// One of: identity, php, mysql, filesystem, http, cron, themes, plugins, users, security, https, mail,
+	// performance, hosting, wp_native. The first 14 are the WPMgr-extra leapfrog collector (the 9-card
+	// legacy grid + the ribbon-summary entries); the 15th `wp_native` carries the verbatim
+	// WP_Debug_Data::debug_data() dump (full Site Health > Info parity) and is rendered as four additional
+	// cards: Directory Sizes, Media Handling, Filesystem Permissions, WordPress Constants.
 	Category string `json:"category"`
-	// The raw JSON sub-blob the agent shipped for this category, or
-	// null when the agent has never shipped a payload for it yet.
-	// Shape is category-specific and deliberately tolerant — the UI
-	// parses it lazily so the agent can evolve the shape without a
-	// wire schema change.
+	// The raw JSON sub-blob the agent shipped for this category, or null when the agent has never shipped
+	// a payload for it yet. Shape is category-specific and deliberately tolerant — the UI parses it
+	// lazily so the agent can evolve the shape without a wire schema change.
 	Payload jx.Raw `json:"payload"`
 	// Agent-side collection timestamp (UTC).
 	CollectedAt OptDateTime `json:"collected_at"`
 	// CP-side ingestion timestamp (UTC).
 	ReceivedAt OptDateTime `json:"received_at"`
-	// True when the agent's `collected_at` is within the freshness
-	// tolerance (24h + 2h slack). Card UIs render a stale warning
-	// badge when false.
+	// True when the agent's `collected_at` is within the freshness tolerance (24h + 2h slack). Card UIs
+	// render a stale warning badge when false.
 	Fresh bool `json:"fresh"`
 }
 
@@ -46359,8 +46616,8 @@ type SiteEmailConfig struct {
 	// indistinguishable from a per-site one. When it is true, `secret_set` describes the ORG credential,
 	// not one belonging to this site.
 	Inherited OptBool `json:"inherited"`
-	// Slug of the connection to use for regular mail (for providers that support multiple connections, e.
-	// g. SMTP-Multi — Phase 2+).
+	// Slug of the connection to use for regular mail (for providers that support multiple connections,
+	// e.g. SMTP-Multi — Phase 2+).
 	DefaultConnection OptNilString `json:"default_connection"`
 	// Slug of the fallback connection (Phase 2+).
 	FallbackConnection OptNilString `json:"fallback_connection"`
@@ -46377,9 +46634,9 @@ type SiteEmailConfig struct {
 	// Named provider connections for this config (multi-connection, m62+). Empty array when no named
 	// connections have been created.
 	Connections []EmailConnection `json:"connections"`
-	// The full inbound webhook URL for this config row, e.g. https://manage.wpmgr.
-	// app/webhooks/email/{provider}/{token}. Shows a placeholder token segment when a token is stored
-	// but not freshly rotated. Absent when no token has been generated yet.
+	// The full inbound webhook URL for this config row, e.g.
+	// https://manage.wpmgr.app/webhooks/email/{provider}/{token}. Shows a placeholder token segment when a
+	// token is stored but not freshly rotated. Absent when no token has been generated yet.
 	WebhookURL OptNilString `json:"webhook_url"`
 	// True when an HMAC signing key is stored for this row. The key itself is never returned.
 	WebhookSigningKeySet OptBool `json:"webhook_signing_key_set"`
@@ -46692,8 +46949,8 @@ type SiteEmailLogEntry struct {
 	// Full email body. Present only in the detail response and only when body_stored is true. Never
 	// returned in list or export responses.
 	Body OptNilString `json:"body"`
-	// Named connection slug that sent this email (m62+). Empty string when the primary config was used
-	// (no named connection).
+	// Named connection slug that sent this email (m62+). Empty string when the primary config was used (no
+	// named connection).
 	ConnectionKey OptString `json:"connection_key"`
 	// Number of attachments on this email (m62+). Zero when none.
 	AttachmentCount OptInt `json:"attachment_count"`
@@ -46927,9 +47184,8 @@ func (s *SiteEmailLogEntryResponse) init() SiteEmailLogEntryResponse {
 	return m
 }
 
-// M21 — the once-shown enrollment code returned by the site-first create
-// and the begin-re-enrollment endpoints. The plaintext code is never
-// retrievable again.
+// M21 — the once-shown enrollment code returned by the site-first create and the begin-re-enrollment
+// endpoints. The plaintext code is never retrievable again.
 // Ref: #/components/schemas/SiteEnrollmentCode
 type SiteEnrollmentCode struct {
 	SiteID uuid.UUID `json:"site_id"`
@@ -46975,12 +47231,11 @@ func (*SiteEnrollmentCode) createSiteRes()        {}
 type SiteErrorConfig struct {
 	// Whether PHP-error capture is active for this site.
 	Enabled OptBool `json:"enabled"`
-	// PHP E_* bitmask the agent applies to wp_debug_log collection.
-	// Default 6143 = E_ALL & ~E_STRICT (WordPress default).
+	// PHP E_* bitmask the agent applies to wp_debug_log collection. Default 6143 = E_ALL & ~E_STRICT
+	// (WordPress default).
 	ErrorLevel int32 `json:"error_level"`
-	// Ordered list of 32-character lowercase hex md5 fingerprints
-	// (md5(code:file:line:message)) the agent must suppress without
-	// counting or reporting. An empty list clears all suppression.
+	// Ordered list of 32-character lowercase hex md5 fingerprints (md5(code:file:line:message)) the agent
+	// must suppress without counting or reporting. An empty list clears all suppression.
 	IgnoreMd5s []string `json:"ignore_md5s"`
 }
 
@@ -47019,16 +47274,15 @@ func (*SiteErrorConfig) patchSiteErrorConfigRes() {}
 
 // Ref: #/components/schemas/SiteErrorConfigUpdate
 type SiteErrorConfigUpdate struct {
-	// Turns PHP-error capture on or off. OMITTING this field is treated as
-	// true: a client that does not know about the flag can never
-	// accidentally disable the mu-plugin trap, but that also means an
-	// update sent without it re-enables capture on a site where it was
-	// switched off. Send false explicitly to keep capture disabled.
+	// Turns PHP-error capture on or off. OMITTING this field is treated as true: a client that does not
+	// know about the flag can never accidentally disable the mu-plugin trap, but that also means an update
+	// sent without it re-enables capture on a site where it was switched off. Send false explicitly to
+	// keep capture disabled.
 	Enabled OptBool `json:"enabled"`
 	// PHP E_* bitmask to apply. Must be >0 and fit in int32.
 	ErrorLevel int32 `json:"error_level"`
-	// Full canonical ignore-list (replaces the stored list atomically).
-	// Each entry must be exactly 32 lowercase hex characters.
+	// Full canonical ignore-list (replaces the stored list atomically). Each entry must be exactly 32
+	// lowercase hex characters.
 	IgnoreMd5s []string `json:"ignore_md5s"`
 }
 
@@ -47507,14 +47761,14 @@ func (*SiteList) listSitesRes() {}
 
 // Ref: #/components/schemas/SiteLoginBrand
 type SiteLoginBrand struct {
-	// Full URL of the image shown on the WP login page. Empty string
-	// means no override (WordPress default logo is used).
+	// Full URL of the image shown on the WP login page. Empty string means no override (WordPress default
+	// logo is used).
 	LogoURL string `json:"logo_url"`
-	// URL the logo links to on the login page. Empty string means no
-	// override (WordPress default link is used).
+	// URL the logo links to on the login page. Empty string means no override (WordPress default link is
+	// used).
 	LogoLink string `json:"logo_link"`
-	// Text shown below the logo on the login page. Empty string means
-	// no custom message. Maximum 2000 characters.
+	// Text shown below the logo on the login page. Empty string means no custom message. Maximum 2000
+	// characters.
 	Message string `json:"message"`
 	// When the config was last saved. Absent for the built-in default.
 	UpdatedAt OptDateTime `json:"updated_at"`
@@ -47748,13 +48002,14 @@ func (SiteLoginEventStatus) AllValues() []SiteLoginEventStatus {
 // Ref: #/components/schemas/SiteLoginProtectionConfig
 type SiteLoginProtectionConfig struct {
 	// Login protection mode:
-	// - `disabled` — no login protection active.
-	// - `audit` — record events but do not block.
-	// - `protect` — record events AND block based on thresholds.
+	//
+	//  - `disabled` — no login protection active.
+	//  - `audit` — record events but do not block.
+	//  - `protect` — record events AND block based on thresholds.
 	Mode       SiteLoginProtectionConfigMode `json:"mode"`
 	Thresholds SecurityThresholds            `json:"thresholds"`
-	// HTTP header the agent reads to extract the real client IP (e.g.
-	// `REMOTE_ADDR`, `HTTP_X_FORWARDED_FOR`).
+	// HTTP header the agent reads to extract the real client IP (e.g. `REMOTE_ADDR`,
+	// `HTTP_X_FORWARDED_FOR`).
 	IPHeader string `json:"ip_header"`
 	// CIDRs that always bypass all checks (IPv4 or IPv6, with prefix length).
 	AllowCidrs []string `json:"allow_cidrs"`
@@ -47827,9 +48082,10 @@ func (s *SiteLoginProtectionConfig) SetUpdatedAt(val OptDateTime) {
 func (*SiteLoginProtectionConfig) putSiteLoginProtectionRes() {}
 
 // Login protection mode:
-// - `disabled` — no login protection active.
-// - `audit` — record events but do not block.
-// - `protect` — record events AND block based on thresholds.
+//
+//   - `disabled` — no login protection active.
+//   - `audit` — record events but do not block.
+//   - `protect` — record events AND block based on thresholds.
 type SiteLoginProtectionConfigMode string
 
 const (
@@ -47885,8 +48141,8 @@ type SiteLoginProtectionConfigUpdate struct {
 	Thresholds SecurityThresholds                  `json:"thresholds"`
 	// HTTP header the agent reads for the real client IP.
 	IPHeader string `json:"ip_header"`
-	// CIDRs always allowed. Empty = no static allowlist. When mode=protect
-	// and this list is empty the CP auto-adds the operator's IP (/32 or /128).
+	// CIDRs always allowed. Empty = no static allowlist. When mode=protect and this list is empty the CP
+	// auto-adds the operator's IP (/32 or /128).
 	AllowCidrs []string `json:"allow_cidrs"`
 	// CIDRs always denied before threshold evaluation. Empty = none.
 	DenyCidrs []string `json:"deny_cidrs"`
@@ -48076,10 +48332,9 @@ func (s *SitePolicyGroup) SetCreatedAt(val OptDateTime) {
 
 func (*SitePolicyGroup) putSitePolicyGroupRes() {}
 
-// One WordPress role that exists on the site. `slug` is what the policy
-// stores and what the agent enforces against; `name` is what the site
-// itself displays for that role, already localized (an Italian site
-// reports "Amministratore" for the `administrator` slug).
+// One WordPress role that exists on the site. `slug` is what the policy stores and what the agent
+// enforces against; `name` is what the site itself displays for that role, already localized (an
+// Italian site reports "Amministratore" for the `administrator` slug).
 // Ref: #/components/schemas/SiteRole
 type SiteRole struct {
 	// WordPress role slug, e.g. shop_manager.
@@ -48109,10 +48364,8 @@ func (s *SiteRole) SetName(val string) {
 }
 
 // M72 — Current screenshot capture status. Absent/null means "never captured" (treat as no
-// screenshot).
-// pending = capture job is enqueued or running.
-// ready   = last capture completed; screenshot_url is valid.
-// failed  = last capture failed; screenshot_failed_reason explains why.
+// screenshot). pending = capture job is enqueued or running. ready = last capture completed;
+// screenshot_url is valid. failed = last capture failed; screenshot_failed_reason explains why.
 type SiteScreenshotStatus string
 
 const (
@@ -48545,8 +48798,8 @@ type SiteShare struct {
 	Role   SiteShareRole `json:"role"`
 	// UUID of the org member who created the share.
 	GrantedBy OptUUID `json:"granted_by"`
-	// When the share expires (null = durable). After this time the
-	// RESTRICTIVE RLS policy treats the grant as absent.
+	// When the share expires (null = durable). After this time the RESTRICTIVE RLS policy treats the grant
+	// as absent.
 	ExpiresAt OptDateTime `json:"expires_at"`
 	CreatedAt time.Time   `json:"created_at"`
 }
@@ -48625,12 +48878,11 @@ func (s *SiteShare) SetCreatedAt(val time.Time) {
 type SiteShareGrantResponse struct {
 	// Present when the user already existed and the share is immediate.
 	Share OptSiteShare `json:"share"`
-	// True when an invitation was created because the email is not a known
-	// user; false when the share was applied directly.
+	// True when an invitation was created because the email is not a known user; false when the share was
+	// applied directly.
 	Invited bool `json:"invited"`
-	// The raw invitation accept URL (shown once, like an API key). Present
-	// when invited=true AND the notification SMTP is not configured — the
-	// inviter must copy and share this link manually.
+	// The raw invitation accept URL (shown once, like an API key). Present when invited=true AND the
+	// notification SMTP is not configured — the inviter must copy and share this link manually.
 	AcceptLink OptString `json:"accept_link"`
 }
 
@@ -48787,9 +49039,8 @@ func (s *SiteStatus) UnmarshalText(data []byte) error {
 	}
 }
 
-// A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns
-// existence/color/canonical name; sites.tags (the site's own text[])
-// remains the assignment store.
+// A tenant-level tag registry entry (GH #230 "rich tags", m100). Owns existence/color/canonical name;
+// sites.tags (the site's own text[]) remains the assignment store.
 // Ref: #/components/schemas/SiteTag
 type SiteTag struct {
 	ID   uuid.UUID `json:"id"`
@@ -48903,9 +49154,8 @@ type SiteTagUpdate struct {
 	Name OptString `json:"name"`
 	// When present, sets the tag's color ("" resets to auto).
 	Color OptString `json:"color"`
-	// When the new `name` collides with an existing tag, merge the
-	// source tag INTO that existing survivor instead of returning 409
-	// tag_name_exists.
+	// When the new `name` collides with an existing tag, merge the source tag INTO that existing survivor
+	// instead of returning 409 tag_name_exists.
 	Merge OptBool `json:"merge"`
 }
 
@@ -48960,8 +49210,8 @@ type SiteVulnerabilitiesResponse struct {
 	Attribution VulnAttribution `json:"attribution"`
 	FeedOk      bool            `json:"feed_ok"`
 	FeedSynced  OptDateTime     `json:"feed_synced"`
-	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent
-	// of feed_ok (which tracks Scanner-driven detection freshness).
+	// True when the Production feed has successfully enriched findings with CVSS/CVE data, independent of
+	// feed_ok (which tracks Scanner-driven detection freshness).
 	EnrichmentAvailable bool        `json:"enrichment_available"`
 	LastEnrichmentAt    OptDateTime `json:"last_enrichment_at"`
 }
@@ -49340,11 +49590,10 @@ func (s *SocialStartProvider) UnmarshalText(data []byte) error {
 	}
 }
 
-// Structured projection of a backup snapshot's SQL dump. Produced either
-// by the agent at backup time (preferred; "source": "agent") or by the
-// control plane's legacy streaming parser (fallback; "source":
-// "cp-legacy"). `truncated: true` indicates the parser hit its CPU/time
-// budget; tables/totals may be incomplete.
+// Structured projection of a backup snapshot's SQL dump. Produced either by the agent at backup time
+// (preferred; "source": "agent") or by the control plane's legacy streaming parser (fallback;
+// "source": "cp-legacy"). `truncated: true` indicates the parser hit its CPU/time budget;
+// tables/totals may be incomplete.
 // Ref: #/components/schemas/SqlInspection
 type SqlInspection struct {
 	// Report wire-shape version; bump when the JSON shape changes.
@@ -49355,8 +49604,8 @@ type SqlInspection struct {
 	Charset OptString `json:"charset"`
 	// Default collation declared in CREATE TABLE trailers, if any.
 	Collation OptString `json:"collation"`
-	// Most common table-name prefix (chars up to the first underscore);
-	// empty when no consistent prefix could be determined.
+	// Most common table-name prefix (chars up to the first underscore); empty when no consistent prefix
+	// could be determined.
 	TablePrefix OptString `json:"table_prefix"`
 	// WordPress db_version from wp_options, when detectable.
 	WpVersion OptNilString `json:"wp_version"`
@@ -49368,9 +49617,8 @@ type SqlInspection struct {
 	IsWordpress bool `json:"is_wordpress"`
 	// True when the parser hit its budget before finishing.
 	Truncated OptBool `json:"truncated"`
-	// "agent" — the JSON was produced by the agent at backup time and
-	// stored as a snapshot artifact. "cp-legacy" — the CP streamed the
-	// dump artifact through its own parser as a fallback.
+	// "agent" — the JSON was produced by the agent at backup time and stored as a snapshot artifact.
+	// "cp-legacy" — the CP streamed the dump artifact through its own parser as a fallback.
 	Source SqlInspectionSource `json:"source"`
 	// Non-fatal scanner warnings (oversized rows, regex anomalies).
 	ParserWarnings []string `json:"parser_warnings"`
@@ -49522,9 +49770,8 @@ func (s *SqlInspection) SetGeneratedAt(val time.Time) {
 
 func (*SqlInspection) getBackupSqlInspectionRes() {}
 
-// "agent" — the JSON was produced by the agent at backup time and
-// stored as a snapshot artifact. "cp-legacy" — the CP streamed the
-// dump artifact through its own parser as a fallback.
+// "agent" — the JSON was produced by the agent at backup time and stored as a snapshot artifact.
+// "cp-legacy" — the CP streamed the dump artifact through its own parser as a fallback.
 type SqlInspectionSource string
 
 const (
@@ -49657,6 +49904,285 @@ type StartScanRunUnauthorized Error
 
 func (*StartScanRunUnauthorized) startScanRunRes() {}
 
+// StreamBackupSnapshotEventsOKClient reads events from the StreamBackupSnapshotEventsOK SSE stream.
+type StreamBackupSnapshotEventsOKClient interface {
+	sse.Client[StreamBackupSnapshotEventsOKEvent]
+}
+
+// StreamBackupSnapshotEventsOK is a Server-Sent Events response stream.
+type StreamBackupSnapshotEventsOK struct {
+	resp      *http.Response
+	decoder   *sse.Decoder
+	connect   sseConnectFunc
+	options   sseClientConfig
+	stateMu   sync.RWMutex
+	state     sse.State
+	latestErr error
+	closed    atomic.Bool
+	closeCh   chan struct{}
+	closeOnce sync.Once
+}
+
+func (s *StreamBackupSnapshotEventsOK) initSSEStream(
+	connect sseConnectFunc,
+	options sseClientConfig,
+) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.resp != nil {
+		s.decoder = newSSEResponseDecoder(s.resp, options)
+	}
+	s.connect = connect
+	s.options = options
+	s.state = sse.StateOpen
+	s.latestErr = nil
+	s.closeCh = make(chan struct{})
+}
+
+// State returns the current stream state and the latest terminal or current reconnect error.
+func (s *StreamBackupSnapshotEventsOK) State() (state sse.State, latestErr error) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state, s.latestErr
+}
+
+func (s *StreamBackupSnapshotEventsOK) setState(state sse.State, latestErr error) {
+	s.stateMu.Lock()
+	s.state = state
+	s.latestErr = latestErr
+	s.stateMu.Unlock()
+}
+
+func (s *StreamBackupSnapshotEventsOK) withCloseContext(ctx context.Context,
+) (context.Context, context.CancelFunc) {
+	reconnectCtx, cancel := context.WithCancel(ctx)
+	if s.closed.Load() {
+		cancel()
+		return reconnectCtx, func() {}
+	}
+	if s.closeCh == nil {
+		return reconnectCtx, cancel
+	}
+
+	go func() {
+		select {
+		case <-s.closeCh:
+			cancel()
+		case <-reconnectCtx.Done():
+		}
+	}()
+	return reconnectCtx, cancel
+}
+
+// Close closes the current stream and stops further reconnect attempts.
+func (s *StreamBackupSnapshotEventsOK) Close() error {
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.stateMu.Lock()
+	resp := s.resp
+	s.resp = nil
+	s.decoder = nil
+	closeCh := s.closeCh
+	s.state = sse.StateClosed
+	s.latestErr = sse.ErrStreamClosed
+	s.stateMu.Unlock()
+
+	if closeCh != nil {
+		s.closeOnce.Do(func() {
+			close(closeCh)
+		})
+	}
+
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	return resp.Body.Close()
+}
+
+// Next returns the next event from the stream, reconnecting when needed.
+func (s *StreamBackupSnapshotEventsOK) Next(ctx context.Context,
+) (StreamBackupSnapshotEventsOKEvent, error) {
+	for {
+		s.stateMu.RLock()
+		resp, decoder, connect, options, latestErr := s.resp, s.decoder, s.connect, s.options, s.latestErr
+		s.stateMu.RUnlock()
+		if s.closed.Load() {
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+		if decoder == nil {
+			// No decoder means the stream is already terminal.
+			if latestErr == nil {
+				latestErr = sse.ErrStreamClosed
+			}
+			s.setState(sse.StateClosed, latestErr)
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, latestErr
+		}
+		raw, err := decoder.Decode()
+		if err == nil {
+			s.setState(sse.StateOpen, nil)
+			return s.decodeEvent(raw)
+		}
+		// Special case, on ErrEventTooLarge the current event is drained
+		// without closing the stream.
+		if errors.Is(err, sse.ErrEventTooLarge) {
+			s.setState(sse.StateOpen, err)
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, err
+		}
+		if !sse.IsReconnectableError(err) {
+			s.setState(sse.StateClosed, err)
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, err
+		}
+		if connect == nil {
+			// Without a reconnect function, a reconnectable read error
+			// becomes terminal.
+			s.setState(sse.StateClosed, sse.ErrStreamClosed)
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+
+		s.setState(sse.StateConnecting, err)
+		reconnectCtx, cancel := s.withCloseContext(ctx)
+		nextResp, nextDecoder, err := reconnectSSE(reconnectCtx, resp, decoder, connect, options, s)
+		cancel()
+		if s.closed.Load() {
+			if nextResp != nil && nextResp.Body != nil {
+				_ = nextResp.Body.Close()
+			}
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+		if err != nil {
+			s.stateMu.Lock()
+			s.resp = nil
+			s.decoder = nil
+			s.stateMu.Unlock()
+			s.setState(sse.StateClosed, err)
+			var event StreamBackupSnapshotEventsOKEvent
+			return event, err
+		}
+		s.stateMu.Lock()
+		s.resp = nextResp
+		s.decoder = nextDecoder
+		s.stateMu.Unlock()
+		s.setState(sse.StateOpen, nil)
+	}
+}
+
+// All iterates over stream events until the stream is closed, reconnecting when needed.
+func (s *StreamBackupSnapshotEventsOK) All(ctx context.Context,
+) iter.Seq2[StreamBackupSnapshotEventsOKEvent, error] {
+	return func(yield func(StreamBackupSnapshotEventsOKEvent, error) bool) {
+		for {
+			event, err := s.Next(ctx)
+			if err != nil {
+				if !sse.IsReconnectableError(err) {
+					return
+				}
+				var zero StreamBackupSnapshotEventsOKEvent
+				if !yield(zero, err) {
+					return
+				}
+				continue
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (s *StreamBackupSnapshotEventsOK) decodeEvent(raw sse.Event,
+) (StreamBackupSnapshotEventsOKEvent, error) {
+	var data BackupEvent
+	buf := []byte(raw.Data)
+	d := jx.DecodeBytes(buf)
+	if err := func() error {
+		if err := data.Decode(d); err != nil {
+			return err
+		}
+		if err := d.Skip(); err != io.EOF {
+			return errors.New("unexpected trailing data")
+		}
+		return nil
+	}(); err != nil {
+		var event StreamBackupSnapshotEventsOKEvent
+		return event, err
+	}
+	if err := func() error {
+		if err := data.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		var event StreamBackupSnapshotEventsOKEvent
+		return event, errors.Wrap(err, "validate")
+	}
+	event := StreamBackupSnapshotEventsOKEvent{
+		ID:   raw.ID,
+		Type: raw.Type,
+		Data: data,
+	}
+	if raw.Retry != nil {
+		event.Retry.SetTo(int((*raw.Retry) / time.Millisecond))
+	}
+	return event, nil
+}
+
+func (*StreamBackupSnapshotEventsOK) streamBackupSnapshotEventsRes() {}
+
+// StreamBackupSnapshotEventsOKEvent is a parsed Server-Sent Event.
+type StreamBackupSnapshotEventsOKEvent struct {
+	ID    string      `json:"id"`
+	Type  string      `json:"event"`
+	Data  BackupEvent `json:"data"`
+	Retry OptInt      `json:"retry"`
+}
+
+// GetID returns the value of ID.
+func (s *StreamBackupSnapshotEventsOKEvent) GetID() string {
+	return s.ID
+}
+
+// GetType returns the value of Type.
+func (s *StreamBackupSnapshotEventsOKEvent) GetType() string {
+	return s.Type
+}
+
+// GetData returns the value of Data.
+func (s *StreamBackupSnapshotEventsOKEvent) GetData() BackupEvent {
+	return s.Data
+}
+
+// GetRetry returns the value of Retry.
+func (s *StreamBackupSnapshotEventsOKEvent) GetRetry() OptInt {
+	return s.Retry
+}
+
+// SetID sets the value of ID.
+func (s *StreamBackupSnapshotEventsOKEvent) SetID(val string) {
+	s.ID = val
+}
+
+// SetType sets the value of Type.
+func (s *StreamBackupSnapshotEventsOKEvent) SetType(val string) {
+	s.Type = val
+}
+
+// SetData sets the value of Data.
+func (s *StreamBackupSnapshotEventsOKEvent) SetData(val BackupEvent) {
+	s.Data = val
+}
+
+// SetRetry sets the value of Retry.
+func (s *StreamBackupSnapshotEventsOKEvent) SetRetry(val OptInt) {
+	s.Retry = val
+}
+
 type StreamSiteEventsOK struct {
 	Data io.Reader
 }
@@ -49669,6 +50195,285 @@ func (s StreamSiteEventsOK) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 	return s.Data.Read(p)
+}
+
+// StreamUpdateRunEventsOKClient reads events from the StreamUpdateRunEventsOK SSE stream.
+type StreamUpdateRunEventsOKClient interface {
+	sse.Client[StreamUpdateRunEventsOKEvent]
+}
+
+// StreamUpdateRunEventsOK is a Server-Sent Events response stream.
+type StreamUpdateRunEventsOK struct {
+	resp      *http.Response
+	decoder   *sse.Decoder
+	connect   sseConnectFunc
+	options   sseClientConfig
+	stateMu   sync.RWMutex
+	state     sse.State
+	latestErr error
+	closed    atomic.Bool
+	closeCh   chan struct{}
+	closeOnce sync.Once
+}
+
+func (s *StreamUpdateRunEventsOK) initSSEStream(
+	connect sseConnectFunc,
+	options sseClientConfig,
+) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.resp != nil {
+		s.decoder = newSSEResponseDecoder(s.resp, options)
+	}
+	s.connect = connect
+	s.options = options
+	s.state = sse.StateOpen
+	s.latestErr = nil
+	s.closeCh = make(chan struct{})
+}
+
+// State returns the current stream state and the latest terminal or current reconnect error.
+func (s *StreamUpdateRunEventsOK) State() (state sse.State, latestErr error) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state, s.latestErr
+}
+
+func (s *StreamUpdateRunEventsOK) setState(state sse.State, latestErr error) {
+	s.stateMu.Lock()
+	s.state = state
+	s.latestErr = latestErr
+	s.stateMu.Unlock()
+}
+
+func (s *StreamUpdateRunEventsOK) withCloseContext(ctx context.Context,
+) (context.Context, context.CancelFunc) {
+	reconnectCtx, cancel := context.WithCancel(ctx)
+	if s.closed.Load() {
+		cancel()
+		return reconnectCtx, func() {}
+	}
+	if s.closeCh == nil {
+		return reconnectCtx, cancel
+	}
+
+	go func() {
+		select {
+		case <-s.closeCh:
+			cancel()
+		case <-reconnectCtx.Done():
+		}
+	}()
+	return reconnectCtx, cancel
+}
+
+// Close closes the current stream and stops further reconnect attempts.
+func (s *StreamUpdateRunEventsOK) Close() error {
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.stateMu.Lock()
+	resp := s.resp
+	s.resp = nil
+	s.decoder = nil
+	closeCh := s.closeCh
+	s.state = sse.StateClosed
+	s.latestErr = sse.ErrStreamClosed
+	s.stateMu.Unlock()
+
+	if closeCh != nil {
+		s.closeOnce.Do(func() {
+			close(closeCh)
+		})
+	}
+
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	return resp.Body.Close()
+}
+
+// Next returns the next event from the stream, reconnecting when needed.
+func (s *StreamUpdateRunEventsOK) Next(ctx context.Context,
+) (StreamUpdateRunEventsOKEvent, error) {
+	for {
+		s.stateMu.RLock()
+		resp, decoder, connect, options, latestErr := s.resp, s.decoder, s.connect, s.options, s.latestErr
+		s.stateMu.RUnlock()
+		if s.closed.Load() {
+			var event StreamUpdateRunEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+		if decoder == nil {
+			// No decoder means the stream is already terminal.
+			if latestErr == nil {
+				latestErr = sse.ErrStreamClosed
+			}
+			s.setState(sse.StateClosed, latestErr)
+			var event StreamUpdateRunEventsOKEvent
+			return event, latestErr
+		}
+		raw, err := decoder.Decode()
+		if err == nil {
+			s.setState(sse.StateOpen, nil)
+			return s.decodeEvent(raw)
+		}
+		// Special case, on ErrEventTooLarge the current event is drained
+		// without closing the stream.
+		if errors.Is(err, sse.ErrEventTooLarge) {
+			s.setState(sse.StateOpen, err)
+			var event StreamUpdateRunEventsOKEvent
+			return event, err
+		}
+		if !sse.IsReconnectableError(err) {
+			s.setState(sse.StateClosed, err)
+			var event StreamUpdateRunEventsOKEvent
+			return event, err
+		}
+		if connect == nil {
+			// Without a reconnect function, a reconnectable read error
+			// becomes terminal.
+			s.setState(sse.StateClosed, sse.ErrStreamClosed)
+			var event StreamUpdateRunEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+
+		s.setState(sse.StateConnecting, err)
+		reconnectCtx, cancel := s.withCloseContext(ctx)
+		nextResp, nextDecoder, err := reconnectSSE(reconnectCtx, resp, decoder, connect, options, s)
+		cancel()
+		if s.closed.Load() {
+			if nextResp != nil && nextResp.Body != nil {
+				_ = nextResp.Body.Close()
+			}
+			var event StreamUpdateRunEventsOKEvent
+			return event, sse.ErrStreamClosed
+		}
+		if err != nil {
+			s.stateMu.Lock()
+			s.resp = nil
+			s.decoder = nil
+			s.stateMu.Unlock()
+			s.setState(sse.StateClosed, err)
+			var event StreamUpdateRunEventsOKEvent
+			return event, err
+		}
+		s.stateMu.Lock()
+		s.resp = nextResp
+		s.decoder = nextDecoder
+		s.stateMu.Unlock()
+		s.setState(sse.StateOpen, nil)
+	}
+}
+
+// All iterates over stream events until the stream is closed, reconnecting when needed.
+func (s *StreamUpdateRunEventsOK) All(ctx context.Context,
+) iter.Seq2[StreamUpdateRunEventsOKEvent, error] {
+	return func(yield func(StreamUpdateRunEventsOKEvent, error) bool) {
+		for {
+			event, err := s.Next(ctx)
+			if err != nil {
+				if !sse.IsReconnectableError(err) {
+					return
+				}
+				var zero StreamUpdateRunEventsOKEvent
+				if !yield(zero, err) {
+					return
+				}
+				continue
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (s *StreamUpdateRunEventsOK) decodeEvent(raw sse.Event,
+) (StreamUpdateRunEventsOKEvent, error) {
+	var data UpdateEvent
+	buf := []byte(raw.Data)
+	d := jx.DecodeBytes(buf)
+	if err := func() error {
+		if err := data.Decode(d); err != nil {
+			return err
+		}
+		if err := d.Skip(); err != io.EOF {
+			return errors.New("unexpected trailing data")
+		}
+		return nil
+	}(); err != nil {
+		var event StreamUpdateRunEventsOKEvent
+		return event, err
+	}
+	if err := func() error {
+		if err := data.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		var event StreamUpdateRunEventsOKEvent
+		return event, errors.Wrap(err, "validate")
+	}
+	event := StreamUpdateRunEventsOKEvent{
+		ID:   raw.ID,
+		Type: raw.Type,
+		Data: data,
+	}
+	if raw.Retry != nil {
+		event.Retry.SetTo(int((*raw.Retry) / time.Millisecond))
+	}
+	return event, nil
+}
+
+func (*StreamUpdateRunEventsOK) streamUpdateRunEventsRes() {}
+
+// StreamUpdateRunEventsOKEvent is a parsed Server-Sent Event.
+type StreamUpdateRunEventsOKEvent struct {
+	ID    string      `json:"id"`
+	Type  string      `json:"event"`
+	Data  UpdateEvent `json:"data"`
+	Retry OptInt      `json:"retry"`
+}
+
+// GetID returns the value of ID.
+func (s *StreamUpdateRunEventsOKEvent) GetID() string {
+	return s.ID
+}
+
+// GetType returns the value of Type.
+func (s *StreamUpdateRunEventsOKEvent) GetType() string {
+	return s.Type
+}
+
+// GetData returns the value of Data.
+func (s *StreamUpdateRunEventsOKEvent) GetData() UpdateEvent {
+	return s.Data
+}
+
+// GetRetry returns the value of Retry.
+func (s *StreamUpdateRunEventsOKEvent) GetRetry() OptInt {
+	return s.Retry
+}
+
+// SetID sets the value of ID.
+func (s *StreamUpdateRunEventsOKEvent) SetID(val string) {
+	s.ID = val
+}
+
+// SetType sets the value of Type.
+func (s *StreamUpdateRunEventsOKEvent) SetType(val string) {
+	s.Type = val
+}
+
+// SetData sets the value of Data.
+func (s *StreamUpdateRunEventsOKEvent) SetData(val UpdateEvent) {
+	s.Data = val
+}
+
+// SetRetry sets the value of Retry.
+func (s *StreamUpdateRunEventsOKEvent) SetRetry(val OptInt) {
+	s.Retry = val
 }
 
 type SuspendAdminAccountForbidden Error
@@ -50409,6 +51214,307 @@ type UpdateClientUnauthorized Error
 
 func (*UpdateClientUnauthorized) updateClientRes() {}
 
+// One task-status transition streamed over SSE.
+// Ref: #/components/schemas/UpdateEvent
+type UpdateEvent struct {
+	RunID       uuid.UUID             `json:"run_id"`
+	TaskID      uuid.UUID             `json:"task_id"`
+	SiteID      uuid.UUID             `json:"site_id"`
+	TargetType  UpdateEventTargetType `json:"target_type"`
+	TargetSlug  string                `json:"target_slug"`
+	Status      UpdateEventStatus     `json:"status"`
+	FromVersion OptString             `json:"from_version"`
+	ToVersion   OptString             `json:"to_version"`
+	Detail      OptString             `json:"detail"`
+	RunStatus   UpdateEventRunStatus  `json:"run_status"`
+}
+
+// GetRunID returns the value of RunID.
+func (s *UpdateEvent) GetRunID() uuid.UUID {
+	return s.RunID
+}
+
+// GetTaskID returns the value of TaskID.
+func (s *UpdateEvent) GetTaskID() uuid.UUID {
+	return s.TaskID
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *UpdateEvent) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetTargetType returns the value of TargetType.
+func (s *UpdateEvent) GetTargetType() UpdateEventTargetType {
+	return s.TargetType
+}
+
+// GetTargetSlug returns the value of TargetSlug.
+func (s *UpdateEvent) GetTargetSlug() string {
+	return s.TargetSlug
+}
+
+// GetStatus returns the value of Status.
+func (s *UpdateEvent) GetStatus() UpdateEventStatus {
+	return s.Status
+}
+
+// GetFromVersion returns the value of FromVersion.
+func (s *UpdateEvent) GetFromVersion() OptString {
+	return s.FromVersion
+}
+
+// GetToVersion returns the value of ToVersion.
+func (s *UpdateEvent) GetToVersion() OptString {
+	return s.ToVersion
+}
+
+// GetDetail returns the value of Detail.
+func (s *UpdateEvent) GetDetail() OptString {
+	return s.Detail
+}
+
+// GetRunStatus returns the value of RunStatus.
+func (s *UpdateEvent) GetRunStatus() UpdateEventRunStatus {
+	return s.RunStatus
+}
+
+// SetRunID sets the value of RunID.
+func (s *UpdateEvent) SetRunID(val uuid.UUID) {
+	s.RunID = val
+}
+
+// SetTaskID sets the value of TaskID.
+func (s *UpdateEvent) SetTaskID(val uuid.UUID) {
+	s.TaskID = val
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *UpdateEvent) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetTargetType sets the value of TargetType.
+func (s *UpdateEvent) SetTargetType(val UpdateEventTargetType) {
+	s.TargetType = val
+}
+
+// SetTargetSlug sets the value of TargetSlug.
+func (s *UpdateEvent) SetTargetSlug(val string) {
+	s.TargetSlug = val
+}
+
+// SetStatus sets the value of Status.
+func (s *UpdateEvent) SetStatus(val UpdateEventStatus) {
+	s.Status = val
+}
+
+// SetFromVersion sets the value of FromVersion.
+func (s *UpdateEvent) SetFromVersion(val OptString) {
+	s.FromVersion = val
+}
+
+// SetToVersion sets the value of ToVersion.
+func (s *UpdateEvent) SetToVersion(val OptString) {
+	s.ToVersion = val
+}
+
+// SetDetail sets the value of Detail.
+func (s *UpdateEvent) SetDetail(val OptString) {
+	s.Detail = val
+}
+
+// SetRunStatus sets the value of RunStatus.
+func (s *UpdateEvent) SetRunStatus(val UpdateEventRunStatus) {
+	s.RunStatus = val
+}
+
+type UpdateEventRunStatus string
+
+const (
+	UpdateEventRunStatusPending   UpdateEventRunStatus = "pending"
+	UpdateEventRunStatusRunning   UpdateEventRunStatus = "running"
+	UpdateEventRunStatusCompleted UpdateEventRunStatus = "completed"
+	UpdateEventRunStatusHalted    UpdateEventRunStatus = "halted"
+)
+
+// AllValues returns all UpdateEventRunStatus values.
+func (UpdateEventRunStatus) AllValues() []UpdateEventRunStatus {
+	return []UpdateEventRunStatus{
+		UpdateEventRunStatusPending,
+		UpdateEventRunStatusRunning,
+		UpdateEventRunStatusCompleted,
+		UpdateEventRunStatusHalted,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateEventRunStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateEventRunStatusPending:
+		return []byte(s), nil
+	case UpdateEventRunStatusRunning:
+		return []byte(s), nil
+	case UpdateEventRunStatusCompleted:
+		return []byte(s), nil
+	case UpdateEventRunStatusHalted:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateEventRunStatus) UnmarshalText(data []byte) error {
+	switch UpdateEventRunStatus(data) {
+	case UpdateEventRunStatusPending:
+		*s = UpdateEventRunStatusPending
+		return nil
+	case UpdateEventRunStatusRunning:
+		*s = UpdateEventRunStatusRunning
+		return nil
+	case UpdateEventRunStatusCompleted:
+		*s = UpdateEventRunStatusCompleted
+		return nil
+	case UpdateEventRunStatusHalted:
+		*s = UpdateEventRunStatusHalted
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type UpdateEventStatus string
+
+const (
+	UpdateEventStatusPending    UpdateEventStatus = "pending"
+	UpdateEventStatusRunning    UpdateEventStatus = "running"
+	UpdateEventStatusSucceeded  UpdateEventStatus = "succeeded"
+	UpdateEventStatusFailed     UpdateEventStatus = "failed"
+	UpdateEventStatusRolledBack UpdateEventStatus = "rolled_back"
+	UpdateEventStatusSkipped    UpdateEventStatus = "skipped"
+	UpdateEventStatusCancelled  UpdateEventStatus = "cancelled"
+)
+
+// AllValues returns all UpdateEventStatus values.
+func (UpdateEventStatus) AllValues() []UpdateEventStatus {
+	return []UpdateEventStatus{
+		UpdateEventStatusPending,
+		UpdateEventStatusRunning,
+		UpdateEventStatusSucceeded,
+		UpdateEventStatusFailed,
+		UpdateEventStatusRolledBack,
+		UpdateEventStatusSkipped,
+		UpdateEventStatusCancelled,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateEventStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateEventStatusPending:
+		return []byte(s), nil
+	case UpdateEventStatusRunning:
+		return []byte(s), nil
+	case UpdateEventStatusSucceeded:
+		return []byte(s), nil
+	case UpdateEventStatusFailed:
+		return []byte(s), nil
+	case UpdateEventStatusRolledBack:
+		return []byte(s), nil
+	case UpdateEventStatusSkipped:
+		return []byte(s), nil
+	case UpdateEventStatusCancelled:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateEventStatus) UnmarshalText(data []byte) error {
+	switch UpdateEventStatus(data) {
+	case UpdateEventStatusPending:
+		*s = UpdateEventStatusPending
+		return nil
+	case UpdateEventStatusRunning:
+		*s = UpdateEventStatusRunning
+		return nil
+	case UpdateEventStatusSucceeded:
+		*s = UpdateEventStatusSucceeded
+		return nil
+	case UpdateEventStatusFailed:
+		*s = UpdateEventStatusFailed
+		return nil
+	case UpdateEventStatusRolledBack:
+		*s = UpdateEventStatusRolledBack
+		return nil
+	case UpdateEventStatusSkipped:
+		*s = UpdateEventStatusSkipped
+		return nil
+	case UpdateEventStatusCancelled:
+		*s = UpdateEventStatusCancelled
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type UpdateEventTargetType string
+
+const (
+	UpdateEventTargetTypePlugin UpdateEventTargetType = "plugin"
+	UpdateEventTargetTypeTheme  UpdateEventTargetType = "theme"
+	UpdateEventTargetTypeCore   UpdateEventTargetType = "core"
+	UpdateEventTargetTypeAgent  UpdateEventTargetType = "agent"
+)
+
+// AllValues returns all UpdateEventTargetType values.
+func (UpdateEventTargetType) AllValues() []UpdateEventTargetType {
+	return []UpdateEventTargetType{
+		UpdateEventTargetTypePlugin,
+		UpdateEventTargetTypeTheme,
+		UpdateEventTargetTypeCore,
+		UpdateEventTargetTypeAgent,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s UpdateEventTargetType) MarshalText() ([]byte, error) {
+	switch s {
+	case UpdateEventTargetTypePlugin:
+		return []byte(s), nil
+	case UpdateEventTargetTypeTheme:
+		return []byte(s), nil
+	case UpdateEventTargetTypeCore:
+		return []byte(s), nil
+	case UpdateEventTargetTypeAgent:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *UpdateEventTargetType) UnmarshalText(data []byte) error {
+	switch UpdateEventTargetType(data) {
+	case UpdateEventTargetTypePlugin:
+		*s = UpdateEventTargetTypePlugin
+		return nil
+	case UpdateEventTargetTypeTheme:
+		*s = UpdateEventTargetTypeTheme
+		return nil
+	case UpdateEventTargetTypeCore:
+		*s = UpdateEventTargetTypeCore
+		return nil
+	case UpdateEventTargetTypeAgent:
+		*s = UpdateEventTargetTypeAgent
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Request body for `PUT /sites/{siteId}/files/settings`.
 // Ref: #/components/schemas/UpdateFileManagerSettingsRequest
 type UpdateFileManagerSettingsRequest struct {
@@ -50442,20 +51548,16 @@ func (s *UpdateFileManagerSettingsRequest) SetWriteEnabled(val OptBool) {
 // One thing to update on a site.
 // Ref: #/components/schemas/UpdateItem
 type UpdateItem struct {
-	// What to update. `agent` upgrades the WPMgr agent itself over its own
-	// dedicated signed channel and behaves differently from the others: it
-	// must be the ONLY item in its run (its staged-wave rollout is defined
-	// over the whole run), it takes no slug and no version pin, and it has
-	// no dry run. Success is established only when the upgraded agent
-	// reports its new version back; a scheduled acknowledgement is not
-	// success. The channel is off unless the control plane enables it.
+	// What to update. `agent` upgrades the WPMgr agent itself over its own dedicated signed channel and
+	// behaves differently from the others: it must be the ONLY item in its run (its staged-wave rollout is
+	// defined over the whole run), it takes no slug and no version pin, and it has no dry run. Success is
+	// established only when the upgraded agent reports its new version back; a scheduled acknowledgement
+	// is not success. The channel is off unless the control plane enables it.
 	Type UpdateItemType `json:"type"`
-	// Plugin/theme slug. Ignored (forced to "core") when type is core; must be omitted when type is
-	// agent.
+	// Plugin/theme slug. Ignored (forced to "core") when type is core; must be omitted when type is agent.
 	Slug OptString `json:"slug"`
-	// Desired version, "latest" or an explicit pin. Defaults to latest.
-	// A pin is REJECTED when type is agent: the agent's release manifest
-	// only ever points at the published build and the agent refuses to
+	// Desired version, "latest" or an explicit pin. Defaults to latest. A pin is REJECTED when type is
+	// agent: the agent's release manifest only ever points at the published build and the agent refuses to
 	// install an older one, so a pin could not be honoured.
 	Version OptString `json:"version"`
 }
@@ -50490,13 +51592,11 @@ func (s *UpdateItem) SetVersion(val OptString) {
 	s.Version = val
 }
 
-// What to update. `agent` upgrades the WPMgr agent itself over its own
-// dedicated signed channel and behaves differently from the others: it
-// must be the ONLY item in its run (its staged-wave rollout is defined
-// over the whole run), it takes no slug and no version pin, and it has
-// no dry run. Success is established only when the upgraded agent
-// reports its new version back; a scheduled acknowledgement is not
-// success. The channel is off unless the control plane enables it.
+// What to update. `agent` upgrades the WPMgr agent itself over its own dedicated signed channel and
+// behaves differently from the others: it must be the ONLY item in its run (its staged-wave rollout is
+// defined over the whole run), it takes no slug and no version pin, and it has no dry run. Success is
+// established only when the upgraded agent reports its new version back; a scheduled acknowledgement
+// is not success. The channel is off unless the control plane enables it.
 type UpdateItemType string
 
 const (
@@ -50591,27 +51691,22 @@ type UpdateRun struct {
 	ID        uuid.UUID `json:"id"`
 	TenantID  uuid.UUID `json:"tenant_id"`
 	CreatedBy OptUUID   `json:"created_by"`
-	// `halted` is terminal and specific to an agent self-update run: a
-	// staged-rollout wave failed to prove itself, so every task the run
-	// had not already dispatched was cancelled. It is distinct from
+	// `halted` is terminal and specific to an agent self-update run: a staged-rollout wave failed to prove
+	// itself, so every task the run had not already dispatched was cancelled. It is distinct from
 	// `completed`, which would hide the fact that the run was stopped.
-	// The last three belong to the deferred-dispatch lifecycle (#463), and
-	// a run only ever enters them when it was created with a future
-	// `scheduled_at`:
-	// - `scheduled` — waiting for `scheduled_at`. **No site has been
-	// contacted.** The run's tasks are `scheduled` too, which
-	// deliberately keeps them out of the in-flight dedup index, so the
-	// same plugin on the same site can still be updated immediately in
-	// the meantime. Cancellable.
-	// - `dispatching` — transient, held only for the moment the dispatcher
-	// is enqueueing the run's tasks. A client that sees it should
-	// re-read; it is not a state a run rests in.
-	// - `expired` — terminal. The run came due while the control plane was
-	// unavailable and stayed due past the grace window, so running it
-	// now is no longer what the operator asked for. **No site was
-	// contacted**, and its tasks are `expired` too. Distinct from
-	// `halted` (an agent rollout that stopped itself mid-flight) and
-	// from `completed`.
+	//
+	// The last three belong to the deferred-dispatch lifecycle (#463), and a run only ever enters them
+	// when it was created with a future `scheduled_at`:
+	//
+	//  - `scheduled` — waiting for `scheduled_at`. No site has been contacted. The run's tasks are
+	//    `scheduled` too, which deliberately keeps them out of the in-flight dedup index, so the same
+	//    plugin on the same site can still be updated immediately in the meantime. Cancellable.
+	//  - `dispatching` — transient, held only for the moment the dispatcher is enqueueing the run's
+	//    tasks. A client that sees it should re-read; it is not a state a run rests in.
+	//  - `expired` — terminal. The run came due while the control plane was unavailable and stayed due
+	//    past the grace window, so running it now is no longer what the operator asked for. No site was
+	//    contacted, and its tasks are `expired` too. Distinct from `halted` (an agent rollout that stopped
+	//    itself mid-flight) and from `completed`.
 	Status      UpdateRunStatus `json:"status"`
 	DryRun      bool            `json:"dry_run"`
 	ScheduledAt OptDateTime     `json:"scheduled_at"`
@@ -50762,17 +51857,14 @@ func (s *UpdateRun) SetTasks(val []UpdateTask) {
 func (*UpdateRun) createUpdateRunRes() {}
 func (*UpdateRun) getUpdateRunRes()    {}
 
-// The outcome of cancelling a scheduled run (#463). Reaching this response
-// at all means the run was `scheduled` and is now terminal, and that
-// nothing was ever sent to any site.
+// The outcome of cancelling a scheduled run (#463). Reaching this response at all means the run was
+// `scheduled` and is now terminal, and that nothing was ever sent to any site.
 // Ref: #/components/schemas/UpdateRunCancelResult
 type UpdateRunCancelResult struct {
 	Run UpdateRun `json:"run"`
-	// How many tasks were terminalized as `cancelled` alongside the run,
-	// in the same transaction. Zero is legitimate and is not an error: a
-	// run whose tasks had already left `scheduled` cancels with none, and
-	// the count is reported so a client can say "3 site updates called
-	// back" rather than guessing.
+	// How many tasks were terminalized as `cancelled` alongside the run, in the same transaction. Zero is
+	// legitimate and is not an error: a run whose tasks had already left `scheduled` cancels with none,
+	// and the count is reported so a client can say "3 site updates called back" rather than guessing.
 	CancelledTasks int64 `json:"cancelled_tasks"`
 }
 
@@ -50798,8 +51890,8 @@ func (s *UpdateRunCancelResult) SetCancelledTasks(val int64) {
 
 func (*UpdateRunCancelResult) cancelScheduledUpdateRunRes() {}
 
-// Request to start a bulk update run. Provide EITHER site_ids OR tag to
-// select target sites (not both).
+// Request to start a bulk update run. Provide EITHER site_ids OR tag to select target sites (not
+// both).
 // Ref: #/components/schemas/UpdateRunCreate
 type UpdateRunCreate struct {
 	// Explicit target site IDs.
@@ -50883,25 +51975,22 @@ func (s *UpdateRunList) SetItems(val []UpdateRun) {
 type UpdateRunRetryExclusion struct {
 	TaskID uuid.UUID `json:"task_id"`
 	// The machine value, stable and safe to group or count on.
-	// * `not_in_run` - the id is not a task of this run.
-	// * `not_retryable` - the task succeeded, or has not finished yet.
-	// * `site_not_found` - the site no longer resolves.
-	// * `site_not_enrolled` - the site is no longer enrolled, so no signed
-	// command can be delivered to it.
-	// * `agent_current` - the site already runs the published agent build.
-	// This is what fires when the release was reverted mid-incident.
-	// * `agent_ineligible` - the site runs the plugin-directory build,
-	// which has no self-updater.
-	// * `agent_version_unknown` - a version could not be compared, and an
-	// unreadable version must never become an upgrade.
-	// * `target_in_flight` - this (site, target) already has a pending or
-	// running task in another run.
-	// * `duplicate_target` - another selected task already retries the
-	// same (site, target).
+	//
+	//  - `not_in_run` - the id is not a task of this run.
+	//  - `not_retryable` - the task succeeded, or has not finished yet.
+	//  - `site_not_found` - the site no longer resolves.
+	//  - `site_not_enrolled` - the site is no longer enrolled, so no signed command can be delivered to
+	//    it.
+	//  - `agent_current` - the site already runs the published agent build. This is what fires when the
+	//    release was reverted mid-incident.
+	//  - `agent_ineligible` - the site runs the plugin-directory build, which has no self-updater.
+	//  - `agent_version_unknown` - a version could not be compared, and an unreadable version must never
+	//    become an upgrade.
+	//  - `target_in_flight` - this (site, target) already has a pending or running task in another run.
+	//  - `duplicate_target` - another selected task already retries the same (site, target).
 	Reason UpdateRunRetryExclusionReason `json:"reason"`
-	// The server-authored sentence for this exclusion, including the
-	// specifics (which versions, which status). Rendered as-is; a client
-	// does not need its own copy table to explain an exclusion.
+	// The server-authored sentence for this exclusion, including the specifics (which versions, which
+	// status). Rendered as-is; a client does not need its own copy table to explain an exclusion.
 	Message string `json:"message"`
 }
 
@@ -50936,21 +52025,19 @@ func (s *UpdateRunRetryExclusion) SetMessage(val string) {
 }
 
 // The machine value, stable and safe to group or count on.
-// * `not_in_run` - the id is not a task of this run.
-// * `not_retryable` - the task succeeded, or has not finished yet.
-// * `site_not_found` - the site no longer resolves.
-// * `site_not_enrolled` - the site is no longer enrolled, so no signed
-// command can be delivered to it.
-// * `agent_current` - the site already runs the published agent build.
-// This is what fires when the release was reverted mid-incident.
-// * `agent_ineligible` - the site runs the plugin-directory build,
-// which has no self-updater.
-// * `agent_version_unknown` - a version could not be compared, and an
-// unreadable version must never become an upgrade.
-// * `target_in_flight` - this (site, target) already has a pending or
-// running task in another run.
-// * `duplicate_target` - another selected task already retries the
-// same (site, target).
+//
+//   - `not_in_run` - the id is not a task of this run.
+//   - `not_retryable` - the task succeeded, or has not finished yet.
+//   - `site_not_found` - the site no longer resolves.
+//   - `site_not_enrolled` - the site is no longer enrolled, so no signed command can be delivered to
+//     it.
+//   - `agent_current` - the site already runs the published agent build. This is what fires when the
+//     release was reverted mid-incident.
+//   - `agent_ineligible` - the site runs the plugin-directory build, which has no self-updater.
+//   - `agent_version_unknown` - a version could not be compared, and an unreadable version must never
+//     become an upgrade.
+//   - `target_in_flight` - this (site, target) already has a pending or running task in another run.
+//   - `duplicate_target` - another selected task already retries the same (site, target).
 type UpdateRunRetryExclusionReason string
 
 const (
@@ -51041,16 +52128,14 @@ func (s *UpdateRunRetryExclusionReason) UnmarshalText(data []byte) error {
 	}
 }
 
-// The tasks to retry, named explicitly. There is no implicit server-side
-// default set: the client already knows every task's `retry_class` from
-// the run detail response, so it names the ones it means. A second policy
-// on the server could disagree with the checkboxes the operator saw.
+// The tasks to retry, named explicitly. There is no implicit server-side default set: the client
+// already knows every task's `retry_class` from the run detail response, so it names the ones it
+// means. A second policy on the server could disagree with the checkboxes the operator saw.
 // Ref: #/components/schemas/UpdateRunRetryRequest
 type UpdateRunRetryRequest struct {
-	// Task ids from the run being retried. Repeats are collapsed, so
-	// `requested` in the response counts DISTINCT ids. An id that is not a
-	// task of this run is reported in `excluded` rather than rejecting the
-	// whole request.
+	// Task ids from the run being retried. Repeats are collapsed, so `requested` in the response counts
+	// DISTINCT ids. An id that is not a task of this run is reported in `excluded` rather than rejecting
+	// the whole request.
 	TaskIds []uuid.UUID `json:"task_ids"`
 }
 
@@ -51064,15 +52149,14 @@ func (s *UpdateRunRetryRequest) SetTaskIds(val []uuid.UUID) {
 	s.TaskIds = val
 }
 
-// Accounts for every requested task: `created` + `len(excluded)` always
-// equals `requested`. If `created` is lower than `requested`, the
-// difference is fully itemised in `excluded` and MUST be surfaced to the
-// operator; a partial commit that looks like a complete one is the failure
-// mode this shape exists to prevent.
+// Accounts for every requested task: `created` + `len(excluded)` always equals `requested`. If
+// `created` is lower than `requested`, the difference is fully itemised in `excluded` and MUST be
+// surfaced to the operator; a partial commit that looks like a complete one is the failure mode this
+// shape exists to prevent.
 // Ref: #/components/schemas/UpdateRunRetryResult
 type UpdateRunRetryResult struct {
-	// The NEW run. Absent when nothing was created (every requested task
-	// was excluded), which is a legitimate outcome and not an error.
+	// The NEW run. Absent when nothing was created (every requested task was excluded), which is a
+	// legitimate outcome and not an error.
 	RunID OptUUID `json:"run_id"`
 	// Number of DISTINCT task ids in the request.
 	Requested int `json:"requested"`
@@ -51080,11 +52164,10 @@ type UpdateRunRetryResult struct {
 	Created int `json:"created"`
 	// Every requested task that produced no task in the new run.
 	Excluded []UpdateRunRetryExclusion `json:"excluded"`
-	// Set when the run exists but a best-effort step after the commit did
-	// not go to plan (today: a background job could not be scheduled, so
-	// some tasks sit pending until the reaper terminalises them). The run
-	// and its tasks are real and visible; surface this alongside them
-	// rather than treating the retry as failed.
+	// Set when the run exists but a best-effort step after the commit did not go to plan (today: a
+	// background job could not be scheduled, so some tasks sit pending until the reaper terminalises
+	// them). The run and its tasks are real and visible; surface this alongside them rather than treating
+	// the retry as failed.
 	Warning OptString `json:"warning"`
 }
 
@@ -51140,27 +52223,22 @@ func (s *UpdateRunRetryResult) SetWarning(val OptString) {
 
 func (*UpdateRunRetryResult) retryUpdateRunRes() {}
 
-// `halted` is terminal and specific to an agent self-update run: a
-// staged-rollout wave failed to prove itself, so every task the run
-// had not already dispatched was cancelled. It is distinct from
+// `halted` is terminal and specific to an agent self-update run: a staged-rollout wave failed to prove
+// itself, so every task the run had not already dispatched was cancelled. It is distinct from
 // `completed`, which would hide the fact that the run was stopped.
-// The last three belong to the deferred-dispatch lifecycle (#463), and
-// a run only ever enters them when it was created with a future
-// `scheduled_at`:
-// - `scheduled` — waiting for `scheduled_at`. **No site has been
-// contacted.** The run's tasks are `scheduled` too, which
-// deliberately keeps them out of the in-flight dedup index, so the
-// same plugin on the same site can still be updated immediately in
-// the meantime. Cancellable.
-// - `dispatching` — transient, held only for the moment the dispatcher
-// is enqueueing the run's tasks. A client that sees it should
-// re-read; it is not a state a run rests in.
-// - `expired` — terminal. The run came due while the control plane was
-// unavailable and stayed due past the grace window, so running it
-// now is no longer what the operator asked for. **No site was
-// contacted**, and its tasks are `expired` too. Distinct from
-// `halted` (an agent rollout that stopped itself mid-flight) and
-// from `completed`.
+//
+// The last three belong to the deferred-dispatch lifecycle (#463), and a run only ever enters them
+// when it was created with a future `scheduled_at`:
+//
+//   - `scheduled` — waiting for `scheduled_at`. No site has been contacted. The run's tasks are
+//     `scheduled` too, which deliberately keeps them out of the in-flight dedup index, so the same
+//     plugin on the same site can still be updated immediately in the meantime. Cancellable.
+//   - `dispatching` — transient, held only for the moment the dispatcher is enqueueing the run's
+//     tasks. A client that sees it should re-read; it is not a state a run rests in.
+//   - `expired` — terminal. The run came due while the control plane was unavailable and stayed due
+//     past the grace window, so running it now is no longer what the operator asked for. No site was
+//     contacted, and its tasks are `expired` too. Distinct from `halted` (an agent rollout that stopped
+//     itself mid-flight) and from `completed`.
 type UpdateRunStatus string
 
 const (
@@ -51291,68 +52369,58 @@ type UpdateTask struct {
 	RunID    uuid.UUID `json:"run_id"`
 	TenantID uuid.UUID `json:"tenant_id"`
 	SiteID   uuid.UUID `json:"site_id"`
-	// The site's display name, resolved by the server on the run DETAIL
-	// read (GET /api/v1/updates/{runId}). Present so a client never has to
-	// join a task list against a separately-fetched site list to say which
-	// site a task belongs to: every site list in this API is paginated, so
-	// that join silently loses site identity on any run wider than one
-	// page, for display AND for selection. Empty only if the site row
-	// could not be read.
+	// The site's display name, resolved by the server on the run DETAIL read (GET
+	// /api/v1/updates/{runId}). Present so a client never has to join a task list against a
+	// separately-fetched site list to say which site a task belongs to: every site list in this API is
+	// paginated, so that join silently loses site identity on any run wider than one page, for display AND
+	// for selection. Empty only if the site row could not be read.
 	SiteName       OptString            `json:"site_name"`
 	TargetType     UpdateTaskTargetType `json:"target_type"`
 	TargetSlug     string               `json:"target_slug"`
 	DesiredVersion OptString            `json:"desired_version"`
 	FromVersion    OptString            `json:"from_version"`
 	ToVersion      OptString            `json:"to_version"`
-	// `cancelled` means the task was never dispatched because its run was
-	// halted first, or because an operator cancelled the scheduled run
-	// before it fired; nothing was sent to the site. Only agent
+	// `cancelled` means the task was never dispatched because its run was halted first, or because an
+	// operator cancelled the scheduled run before it fired; nothing was sent to the site. Only agent
 	// self-update runs can halt.
+	//
 	// The last two belong to the deferred-dispatch lifecycle (#463):
-	// - `scheduled` — the parent run has not reached its `scheduled_at`.
-	// Not yet eligible for dispatch, and deliberately outside the
-	// in-flight set, so it neither reserves its (site, target) slot
-	// against an immediate update nor is swept by the stale-task reaper.
-	// - `expired` — terminal. The parent run expired without dispatching,
-	// so this task was never attempted. Distinct from `cancelled`, which
-	// records a decision somebody made, and from `skipped`, which
-	// records that the target was busy at dispatch time.
-	// A task may also reach `skipped` from `scheduled`: its (site, target)
-	// was in flight from another run at the moment the schedule fired. The
-	// run is not failed by this; the other tasks proceed.
+	//
+	//  - `scheduled` — the parent run has not reached its `scheduled_at`. Not yet eligible for dispatch,
+	//    and deliberately outside the in-flight set, so it neither reserves its (site, target) slot
+	//    against an immediate update nor is swept by the stale-task reaper.
+	//  - `expired` — terminal. The parent run expired without dispatching, so this task was never
+	//    attempted. Distinct from `cancelled`, which records a decision somebody made, and from `skipped`,
+	//    which records that the target was busy at dispatch time.
+	//
+	// A task may also reach `skipped` from `scheduled`: its (site, target) was in flight from another run
+	// at the moment the schedule fired. The run is not failed by this; the other tasks proceed.
 	Status UpdateTaskStatus `json:"status"`
-	// Whether this task may be named in a retry request
-	// (POST /api/v1/updates/runs/{id}/retry). Computed by the server from
-	// the task's own terminal-state predicate, so the affordance a client
-	// offers and the decision the server makes cannot disagree. A client
-	// MUST NOT infer this from `detail` or `error`: those carry
-	// agent-authored prose that no client contract covers.
+	// Whether this task may be named in a retry request (POST /api/v1/updates/runs/{id}/retry). Computed
+	// by the server from the task's own terminal-state predicate, so the affordance a client offers and
+	// the decision the server makes cannot disagree. A client MUST NOT infer this from `detail` or
+	// `error`: those carry agent-authored prose that no client contract covers.
 	Retryable bool `json:"retryable"`
-	// What happened to this task, on the axis a retry decision turns on.
-	// The server computes it; the client renders it.
-	// * `never_ran` - terminal, but nothing was ever sent to the site.
-	// Two statuses reach it, differing only in why nothing was sent:
-	// `cancelled` (a decision — its run halted, or an operator stopped
-	// it) and `expired` (a missed window — the run came due while the
-	// control plane was unavailable and stayed due past the grace
-	// window). Nothing on the site changed in either case, so this is
-	// the lowest-risk task to retry.
-	// * `failed` - the site was contacted and the update did not succeed.
-	// * `reverted` - the update applied and was then rolled back, so a
-	// retry walks the identical path and may reproduce the identical
-	// break.
-	// * `skipped` - the control plane declined this target (already up to
-	// date, site busy, agent build not upgradeable by this channel).
-	// Usually correct, but a stale WordPress transient can report
-	// "already current" wrongly, so it stays selectable.
-	// * `not_applicable` - `succeeded` (retrying re-touches a working
-	// site for nothing) or not finished yet
-	// (`pending`/`running`/`scheduled`).
-	// The intended client default selection is `failed` + `never_ran`:
-	// both mean "this never succeeded", and `never_ran` additionally means
-	// "and nothing was attempted". `reverted` and `skipped` are
-	// selectable but never default-on. `not_applicable` is never
-	// selectable.
+	// What happened to this task, on the axis a retry decision turns on. The server computes it; the
+	// client renders it.
+	//
+	//  - `never_ran` - terminal, but nothing was ever sent to the site. Two statuses reach it, differing
+	//    only in why nothing was sent: `cancelled` (a decision — its run halted, or an operator stopped
+	//    it) and `expired` (a missed window — the run came due while the control plane was unavailable
+	//    and stayed due past the grace window). Nothing on the site changed in either case, so this is the
+	//    lowest-risk task to retry.
+	//  - `failed` - the site was contacted and the update did not succeed.
+	//  - `reverted` - the update applied and was then rolled back, so a retry walks the identical path and
+	//    may reproduce the identical break.
+	//  - `skipped` - the control plane declined this target (already up to date, site busy, agent build
+	//    not upgradeable by this channel). Usually correct, but a stale WordPress transient can report
+	//    "already current" wrongly, so it stays selectable.
+	//  - `not_applicable` - `succeeded` (retrying re-touches a working site for nothing) or not finished
+	//    yet (`pending`/`running`/`scheduled`).
+	//
+	// The intended client default selection is `failed` + `never_ran`: both mean "this never succeeded",
+	// and `never_ran` additionally means "and nothing was attempted". `reverted` and `skipped` are
+	// selectable but never default-on. `not_applicable` is never selectable.
 	RetryClass UpdateTaskRetryClass `json:"retry_class"`
 	Detail     OptString            `json:"detail"`
 	Error      OptString            `json:"error"`
@@ -51552,31 +52620,26 @@ func (s *UpdateTask) SetUpdatedAt(val time.Time) {
 	s.UpdatedAt = val
 }
 
-// What happened to this task, on the axis a retry decision turns on.
-// The server computes it; the client renders it.
-// * `never_ran` - terminal, but nothing was ever sent to the site.
-// Two statuses reach it, differing only in why nothing was sent:
-// `cancelled` (a decision — its run halted, or an operator stopped
-// it) and `expired` (a missed window — the run came due while the
-// control plane was unavailable and stayed due past the grace
-// window). Nothing on the site changed in either case, so this is
-// the lowest-risk task to retry.
-// * `failed` - the site was contacted and the update did not succeed.
-// * `reverted` - the update applied and was then rolled back, so a
-// retry walks the identical path and may reproduce the identical
-// break.
-// * `skipped` - the control plane declined this target (already up to
-// date, site busy, agent build not upgradeable by this channel).
-// Usually correct, but a stale WordPress transient can report
-// "already current" wrongly, so it stays selectable.
-// * `not_applicable` - `succeeded` (retrying re-touches a working
-// site for nothing) or not finished yet
-// (`pending`/`running`/`scheduled`).
-// The intended client default selection is `failed` + `never_ran`:
-// both mean "this never succeeded", and `never_ran` additionally means
-// "and nothing was attempted". `reverted` and `skipped` are
-// selectable but never default-on. `not_applicable` is never
-// selectable.
+// What happened to this task, on the axis a retry decision turns on. The server computes it; the
+// client renders it.
+//
+//   - `never_ran` - terminal, but nothing was ever sent to the site. Two statuses reach it, differing
+//     only in why nothing was sent: `cancelled` (a decision — its run halted, or an operator stopped
+//     it) and `expired` (a missed window — the run came due while the control plane was unavailable
+//     and stayed due past the grace window). Nothing on the site changed in either case, so this is the
+//     lowest-risk task to retry.
+//   - `failed` - the site was contacted and the update did not succeed.
+//   - `reverted` - the update applied and was then rolled back, so a retry walks the identical path and
+//     may reproduce the identical break.
+//   - `skipped` - the control plane declined this target (already up to date, site busy, agent build
+//     not upgradeable by this channel). Usually correct, but a stale WordPress transient can report
+//     "already current" wrongly, so it stays selectable.
+//   - `not_applicable` - `succeeded` (retrying re-touches a working site for nothing) or not finished
+//     yet (`pending`/`running`/`scheduled`).
+//
+// The intended client default selection is `failed` + `never_ran`: both mean "this never succeeded",
+// and `never_ran` additionally means "and nothing was attempted". `reverted` and `skipped` are
+// selectable but never default-on. `not_applicable` is never selectable.
 type UpdateTaskRetryClass string
 
 const (
@@ -51639,22 +52702,21 @@ func (s *UpdateTaskRetryClass) UnmarshalText(data []byte) error {
 	}
 }
 
-// `cancelled` means the task was never dispatched because its run was
-// halted first, or because an operator cancelled the scheduled run
-// before it fired; nothing was sent to the site. Only agent
+// `cancelled` means the task was never dispatched because its run was halted first, or because an
+// operator cancelled the scheduled run before it fired; nothing was sent to the site. Only agent
 // self-update runs can halt.
+//
 // The last two belong to the deferred-dispatch lifecycle (#463):
-// - `scheduled` — the parent run has not reached its `scheduled_at`.
-// Not yet eligible for dispatch, and deliberately outside the
-// in-flight set, so it neither reserves its (site, target) slot
-// against an immediate update nor is swept by the stale-task reaper.
-// - `expired` — terminal. The parent run expired without dispatching,
-// so this task was never attempted. Distinct from `cancelled`, which
-// records a decision somebody made, and from `skipped`, which
-// records that the target was busy at dispatch time.
-// A task may also reach `skipped` from `scheduled`: its (site, target)
-// was in flight from another run at the moment the schedule fired. The
-// run is not failed by this; the other tasks proceed.
+//
+//   - `scheduled` — the parent run has not reached its `scheduled_at`. Not yet eligible for dispatch,
+//     and deliberately outside the in-flight set, so it neither reserves its (site, target) slot
+//     against an immediate update nor is swept by the stale-task reaper.
+//   - `expired` — terminal. The parent run expired without dispatching, so this task was never
+//     attempted. Distinct from `cancelled`, which records a decision somebody made, and from `skipped`,
+//     which records that the target was busy at dispatch time.
+//
+// A task may also reach `skipped` from `scheduled`: its (site, target) was in flight from another run
+// at the moment the schedule fired. The run is not failed by this; the other tasks proceed.
 type UpdateTaskStatus string
 
 const (
@@ -52263,8 +53325,8 @@ func (s *VerifyEmailReq) SetToken(val string) {
 	s.Token = val
 }
 
-// Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that
-// shows a CVE.
+// Vulnerability-feed attribution notices, rendered in the UI footer and on any finding row that shows
+// a CVE.
 // Ref: #/components/schemas/VulnAttribution
 type VulnAttribution struct {
 	DefiantNotice  string `json:"defiant_notice"`
@@ -52566,12 +53628,12 @@ type WriteFileContentRequest struct {
 	Path string `json:"path"`
 	// Base64-encoded file content (≤ 256 KiB).
 	ContentBase64 string `json:"content_base64"`
-	// Must be `true` when the target path matches the executable-extension deny-list (`.php`, `.phar`, `.
-	// htaccess`, etc.) or is inside a PHP-executable web directory. Requires owner permission (`site.
-	// files.write_code`). Absence causes a `403 executable_write_denied` from the agent.
+	// Must be `true` when the target path matches the executable-extension deny-list (`.php`, `.phar`,
+	// `.htaccess`, etc.) or is inside a PHP-executable web directory. Requires owner permission
+	// (`site.files.write_code`). Absence causes a `403 executable_write_denied` from the agent.
 	ConfirmExecutableWrite OptBool `json:"confirm_executable_write"`
 	// Must be `true` when the target path matches the sensitive-file deny-list (`wp-config.php`, `.env*`,
-	//  `*.pem`, etc.). Requires owner permission (`site.files.write_code`).
+	// `*.pem`, etc.). Requires owner permission (`site.files.write_code`).
 	ConfirmSensitive OptBool `json:"confirm_sensitive"`
 }
 

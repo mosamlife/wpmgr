@@ -4,6 +4,9 @@ package gen
 
 import (
 	"context"
+	"io"
+	"mime"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -13,13 +16,171 @@ import (
 	ht "github.com/ogen-go/ogen/http"
 	"github.com/ogen-go/ogen/ogenerrors"
 	"github.com/ogen-go/ogen/otelogen"
+	"github.com/ogen-go/ogen/sse"
 	"github.com/ogen-go/ogen/uri"
+	"github.com/ogen-go/ogen/validate"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+type sseClientConfig struct {
+	LastEventID       string
+	Retry             *time.Duration
+	MaxRetries        int
+	InitialBufferCap  int
+	MaxEventSize      int
+	RetryErrorHandler sse.RetryErrorHandler
+}
+
+type SSEClientOption func(*sseClientConfig)
+
+func newSSEClientConfig(opts ...SSEClientOption) sseClientConfig {
+	var cfg sseClientConfig
+	cfg.apply(opts...)
+	return cfg
+}
+
+func (c *sseClientConfig) apply(opts ...SSEClientOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+}
+
+// WithSSELastEventID sets the initial lastEventID value for the stream.
+func WithSSELastEventID(lastEventID string) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.LastEventID = lastEventID
+	}
+}
+
+// WithSSERetry sets the initial SSE reconnect delay.
+func WithSSERetry(delay time.Duration) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.Retry = &delay
+	}
+}
+
+// WithSSEMaxRetries sets the maximum number of reconnect attempts.
+//
+// Zero sets unlimited reconnect attempts.
+func WithSSEMaxRetries(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.MaxRetries = n
+	}
+}
+
+// WithSSEInitialBufferCap sets the initial decoder line buffer capacity.
+func WithSSEInitialBufferCap(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.InitialBufferCap = n
+	}
+}
+
+// WithSSEMaxEventSize sets the maximum parsable SSE event size in bytes.
+//
+// Zero disables the limit.
+func WithSSEMaxEventSize(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.MaxEventSize = n
+	}
+}
+
+// WithSSERetryErrorHandler sets the callback invoked after a reconnect attempt fails.
+func WithSSERetryErrorHandler(h sse.RetryErrorHandler) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.RetryErrorHandler = h
+	}
+}
+
+// sseConnectFunc reconnects an SSE stream using the lastEventID value.
+type sseConnectFunc func(ctx context.Context, lastEventID string) (*http.Response, error)
+
+func newSSEResponseDecoder(resp *http.Response, options sseClientConfig) *sse.Decoder {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	return sse.NewDecoder(resp.Body,
+		options.InitialBufferCap,
+		options.MaxEventSize,
+		options.LastEventID,
+		options.Retry,
+	)
+}
+
+func reconnectSSE(ctx context.Context,
+	resp *http.Response,
+	decoder *sse.Decoder,
+	connect sseConnectFunc,
+	options sseClientConfig,
+	stateUpdater interface{ setState(sse.State, error) },
+) (*http.Response, *sse.Decoder, error) {
+	if resp != nil && resp.Body != nil {
+		if err := resp.Body.Close(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	retry := sse.DefaultRetry
+	if decoder != nil {
+		retry = decoder.Retry()
+	} else if options.Retry != nil {
+		retry = *options.Retry
+	}
+
+	lastEventID := options.LastEventID
+	if decoder != nil {
+		lastEventID = decoder.LastEventID()
+	}
+
+	if err := waitSSERetry(ctx, retry); err != nil {
+		if stateUpdater != nil {
+			stateUpdater.setState(sse.StateConnecting, err)
+		}
+		return nil, nil, err
+	}
+
+	var attempts int
+	for {
+		nextResp, err := connect(ctx, lastEventID)
+		if err == nil {
+			options.LastEventID = lastEventID
+			options.Retry = &retry
+			return nextResp, newSSEResponseDecoder(nextResp, options), nil
+		}
+
+		attempts++
+		stateUpdater.setState(sse.StateConnecting, err)
+		if options.RetryErrorHandler != nil {
+			options.RetryErrorHandler(ctx, err)
+		}
+		if options.MaxRetries > 0 && attempts >= options.MaxRetries {
+			return nil, nil, errors.Wrap(sse.ErrMaxRetriesExceeded, err.Error())
+		}
+		if err := waitSSERetry(ctx, retry); err != nil {
+			if stateUpdater != nil {
+				stateUpdater.setState(sse.StateConnecting, err)
+			}
+			return nil, nil, err
+		}
+	}
+}
+
+func waitSSERetry(ctx context.Context, retry time.Duration) error {
+	timer := time.NewTimer(retry)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 func trimTrailingSlashes(u *url.URL) {
 	u.Path = strings.TrimRight(u.Path, "/")
@@ -30,17 +191,15 @@ func trimTrailingSlashes(u *url.URL) {
 type Invoker interface {
 	// AcceptInvitation invokes acceptInvitation operation.
 	//
-	// The caller proves who they are in one of two ways. Anonymously, with the
-	// password of the account the invitation names (or a new password, which
-	// creates that account). Or, when already signed in as exactly that
-	// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
-	// is what an account created through Google or GitHub uses because it has
-	// no password to send.
-	// The header is required for the session route and carries no secret: a
-	// session cookie travels on requests the person did not initiate, and this
-	// API sets no CORS policy, so a header is something only a script on this
-	// install's own page can add. Without it the request is treated as
-	// anonymous and a password is required, exactly as before.
+	// The caller proves who they are in one of two ways. Anonymously, with the password of the account the
+	// invitation names (or a new password, which creates that account). Or, when already signed in as
+	// exactly that account, with the session plus the `X-WPMgr-Invite-Accept` header, which is what an
+	// account created through Google or GitHub uses because it has no password to send.
+	//
+	// The header is required for the session route and carries no secret: a session cookie travels on
+	// requests the person did not initiate, and this API sets no CORS policy, so a header is something
+	// only a script on this install's own page can add. Without it the request is treated as anonymous and
+	// a password is required, exactly as before.
 	//
 	// POST /api/v1/invitations/accept
 	AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest, params AcceptInvitationParams) (AcceptInvitationRes, error)
@@ -61,19 +220,20 @@ type Invoker interface {
 	AddClientMember(ctx context.Context, request *ClientMemberCreateRequest, params AddClientMemberParams) (AddClientMemberRes, error)
 	// AddFleetEmailSuppression invokes addFleetEmailSuppression operation.
 	//
-	// Adds a suppression entry with `site_id=null`, applying to all sites
-	// in the tenant. Useful for globally suppressing an address that generates
-	// bounces across multiple sites. `reason` must be `manual` or `unsubscribe`.
+	// Adds a suppression entry with `site_id=null`, applying to all sites in the tenant. Useful for
+	// globally suppressing an address that generates bounces across multiple sites. `reason` must be
+	// `manual` or `unsubscribe`.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// POST /api/v1/email/suppression
 	AddFleetEmailSuppression(ctx context.Context, request *AddSuppressionRequest) (AddFleetEmailSuppressionRes, error)
 	// AddSiteEmailSuppression invokes addSiteEmailSuppression operation.
 	//
-	// Manually suppresses an email address for this site. `reason` must be
-	// `manual` or `unsubscribe` — hard_bounce and complaint entries are
-	// created automatically via provider webhooks and cannot be added manually
-	// (to prevent accidental data loss for transient bounces).
+	// Manually suppresses an email address for this site. `reason` must be `manual` or `unsubscribe` —
+	// hard_bounce and complaint entries are created automatically via provider webhooks and cannot be
+	// added manually (to prevent accidental data loss for transient bounces).
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/email/suppression
@@ -86,239 +246,213 @@ type Invoker interface {
 	AgentAckPerfConfig(ctx context.Context, request *AgentPerfConfigAck) (AgentAckPerfConfigRes, error)
 	// AgentAutologinConsume invokes agentAutologinConsume operation.
 	//
-	// Called by the WordPress agent after it has verified the operator's
-	// JWT, to atomically consume the nonce and learn the WP login + the
-	// allowed WP roles. The control plane consults Redis (GETDEL) first as
-	// the sub-millisecond hot path and falls back to a single
-	// `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
-	// agent wins the race per nonce.
-	// The agent is authenticated by the M2 Ed25519 signed-request scheme
-	// (see AgentSignature); the verified site identity is compared to the
-	// body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
-	// that never existed, was already consumed, or has expired returns 410
-	// `nonce_unavailable` (the three cases are intentionally indistinguishable
-	// so the table cannot be probed).
+	// Called by the WordPress agent after it has verified the operator's JWT, to atomically consume the
+	// nonce and learn the WP login + the allowed WP roles. The control plane consults Redis (GETDEL) first
+	// as the sub-millisecond hot path and falls back to a single `UPDATE autologin_tokens ... RETURNING`
+	// in Postgres. Exactly one agent wins the race per nonce.
+	//
+	// The agent is authenticated by the M2 Ed25519 signed-request scheme (see AgentSignature); the
+	// verified site identity is compared to the body's `site_id` — a mismatch returns 403
+	// `site_mismatch`. A nonce that never existed, was already consumed, or has expired returns 410
+	// `nonce_unavailable` (the three cases are intentionally indistinguishable so the table cannot be
+	// probed).
 	//
 	// POST /agent/v1/autologin/consume
 	AgentAutologinConsume(ctx context.Context, request *AutologinConsumeRequest) (AgentAutologinConsumeRes, error)
 	// AgentDisconnect invokes agentDisconnect operation.
 	//
-	// M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress
-	// deactivation/uninstall hooks (best-effort, 3s timeout). Authenticated via
-	// the SAME Ed25519 signed-request scheme as every agent route: the
-	// signature is verified and bound to the calling site BEFORE any write, so
-	// possession of a site_id alone cannot disconnect a site. Transitions the
-	// site connected/degraded → `disconnected` with the supplied reason. Does
-	// NOT archive (archive stays an explicit operator action).
+	// M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress deactivation/uninstall hooks
+	// (best-effort, 3s timeout). Authenticated via the SAME Ed25519 signed-request scheme as every agent
+	// route: the signature is verified and bound to the calling site BEFORE any write, so possession of a
+	// site_id alone cannot disconnect a site. Transitions the site connected/degraded → `disconnected`
+	// with the supplied reason. Does NOT archive (archive stays an explicit operator action).
 	//
 	// POST /agent/v1/disconnect
 	AgentDisconnect(ctx context.Context, request OptAgentDisconnect) (AgentDisconnectRes, error)
 	// AgentDownloadUpdatePackage invokes agentDownloadUpdatePackage operation.
 	//
-	// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
-	// from THIS install's own object storage, so a site never needs a
-	// per-site package-host override in `wp-config.php`.
-	// Mounted on the root engine and NOT behind the agent signed-request
-	// middleware: the agent downloads its package with a bare request that
-	// carries no `Authorization` header and does not follow redirects, so
-	// this route answers `200` with the bytes directly. The short-lived
-	// `token` query parameter is the entire authorisation. It is minted by
-	// the control plane's own Ed25519 signing key, in the same compact EdDSA
-	// JWS every CP command token uses, and binds the download to one site
-	// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
-	// pinned to `update_package` so no other command token can be redeemed
-	// here.
-	// The token is issued only inside the signed manifest returned by
-	// `GET /agent/v1/update/manifest` (as its `package_url`), with the same
-	// lifetime the presigned object-storage URL previously had. Nothing the
-	// caller supplies reaches the object key: the key is rebuilt from the
-	// version in the published manifest, and a token naming any other version
-	// or site is refused.
+	// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object from THIS install's own
+	// object storage, so a site never needs a per-site package-host override in `wp-config.php`.
+	//
+	// Mounted on the root engine and NOT behind the agent signed-request middleware: the agent downloads
+	// its package with a bare request that carries no `Authorization` header and does not follow
+	// redirects, so this route answers `200` with the bytes directly. The short-lived `token` query
+	// parameter is the entire authorisation. It is minted by the control plane's own Ed25519 signing key,
+	// in the same compact EdDSA JWS every CP command token uses, and binds the download to one site
+	// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd` pinned to `update_package`
+	// so no other command token can be redeemed here.
+	//
+	// The token is issued only inside the signed manifest returned by `GET /agent/v1/update/manifest` (as
+	// its `package_url`), with the same lifetime the presigned object-storage URL previously had. Nothing
+	// the caller supplies reaches the object key: the key is rebuilt from the version in the published
+	// manifest, and a token naming any other version or site is refused.
 	//
 	// GET /agent/v1/update/package/{siteId}
 	AgentDownloadUpdatePackage(ctx context.Context, params AgentDownloadUpdatePackageParams) (AgentDownloadUpdatePackageRes, error)
 	// AgentFetchSuppressionDeltas invokes agentFetchSuppressionDeltas operation.
 	//
-	// Returns org-wide + this-site suppression deltas so the agent can
-	// cache them locally and check before sending. Ascending keyset cursor
-	// on `(created_at, id)`; the agent stores `next_cursor` and passes it
-	// back as `since` on the next call. Omit `since` to fetch every
-	// suppression entry for this tenant+site.
+	// Returns org-wide + this-site suppression deltas so the agent can cache them locally and check before
+	// sending. Ascending keyset cursor on `(created_at, id)`; the agent stores `next_cursor` and passes it
+	// back as `since` on the next call. Omit `since` to fetch every suppression entry for this
+	// tenant+site.
 	//
 	// GET /agent/v1/email/suppression
 	AgentFetchSuppressionDeltas(ctx context.Context, params AgentFetchSuppressionDeltasParams) (AgentFetchSuppressionDeltasRes, error)
 	// AgentFontsResults invokes agentFontsResults operation.
 	//
-	// Font Results Catalog (M55 / Phase 2) — the agent POSTs after
-	// transcoding or subsetting completes (or permanently fails) for one or
-	// more self-hosted fonts. The CP upserts the font_results catalog row for
-	// each item and derives savings_pct from the reported sizes.
-	// **Security:** tenant_id + site_id ALWAYS come from the VERIFIED agent
-	// identity (Ed25519 signed-request middleware), NEVER from the body.
-	// source_hash items that are not valid 64-char lowercase hex BLAKE3
+	// Font Results Catalog (M55 / Phase 2) — the agent POSTs after transcoding or subsetting completes
+	// (or permanently fails) for one or more self-hosted fonts. The CP upserts the font_results catalog
+	// row for each item and derives savings_pct from the reported sizes.
+	//
+	// Security: tenant_id + site_id ALWAYS come from the VERIFIED agent identity (Ed25519 signed-request
+	// middleware), NEVER from the body. source_hash items that are not valid 64-char lowercase hex BLAKE3
 	// digests are skipped (not rejected) so a bad item never blocks the batch.
-	// **Response:** `{"ok": true, "stored": N, "skipped": M}` where N is the
-	// count of successfully upserted rows and M is the count of skipped items
-	// (invalid hash or transient DB error).
+	//
+	// Response: `{"ok": true, "stored": N, "skipped": M}` where N is the count of successfully upserted
+	// rows and M is the count of skipped items (invalid hash or transient DB error).
 	//
 	// POST /agent/v1/fonts/results
 	AgentFontsResults(ctx context.Context, request *AgentFontResultsRequest) (AgentFontsResultsRes, error)
 	// AgentGetHibpRange invokes agentGetHibpRange operation.
 	//
-	// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the
-	// agent performs the suffix match locally and never sends the full
-	// password or full hash to the CP. The response is the raw
-	// `SUFFIX:COUNT` text body from the HIBP range API (possibly with
-	// Add-Padding decoy lines). An empty body means either a clean prefix
-	// or a fail-open (HIBP unreachable) — the agent treats both identically
-	// (password not breached).
+	// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the agent performs the suffix match
+	// locally and never sends the full password or full hash to the CP. The response is the raw
+	// `SUFFIX:COUNT` text body from the HIBP range API (possibly with Add-Padding decoy lines). An empty
+	// body means either a clean prefix or a fail-open (HIBP unreachable) — the agent treats both
+	// identically (password not breached).
 	//
 	// GET /agent/v1/security/hibp/range/{prefix}
 	AgentGetHibpRange(ctx context.Context, params AgentGetHibpRangeParams) (AgentGetHibpRangeRes, error)
 	// AgentGetUpdateManifest invokes agentGetUpdateManifest operation.
 	//
-	// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a
-	// short-lived presigned package download URL plus its sha256 + size.
-	// `manifest` is the base64url-encoded EXACT signed bytes; the agent
-	// decodes it, verifies `signature` over those bytes, then JSON-decodes.
-	// `204` (no body) means no release has been published yet.
+	// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a short-lived presigned package
+	// download URL plus its sha256 + size. `manifest` is the base64url-encoded EXACT signed bytes; the
+	// agent decodes it, verifies `signature` over those bytes, then JSON-decodes. `204` (no body) means no
+	// release has been published yet.
 	//
 	// GET /agent/v1/update/manifest
 	AgentGetUpdateManifest(ctx context.Context) (AgentGetUpdateManifestRes, error)
 	// AgentHeartbeat invokes agentHeartbeat operation.
 	//
-	// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519
-	// signed-request scheme; refreshes last_seen_at for the resolved site,
-	// recovers a degraded/disconnected site to `connected`, and returns any
-	// pending agent instructions (e.g. `["revoke"]` for a revoked site). The
-	// body may carry light metadata (status, versions, pending-update count);
-	// it is accepted best-effort. Pre-M21 control planes return 204 with no
-	// body.
+	// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519 signed-request scheme; refreshes
+	// last_seen_at for the resolved site, recovers a degraded/disconnected site to `connected`, and
+	// returns any pending agent instructions (e.g. `["revoke"]` for a revoked site). The body may carry
+	// light metadata (status, versions, pending-update count); it is accepted best-effort. Pre-M21 control
+	// planes return 204 with no body.
 	//
 	// POST /agent/v1/heartbeat
 	AgentHeartbeat(ctx context.Context, request OptAgentHeartbeat) (AgentHeartbeatRes, error)
 	// AgentIngestRucss invokes agentIngestRucss operation.
 	//
-	// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`,
-	// `structure_hash` required, `safelist` optional), `html` (required,
-	// max 10 MiB), and one-or-more `css` parts (optional, max 5 MiB total).
-	// Hard overall request ceiling 16 MiB. On a cache HIT the response body
-	// IS the used-CSS content (not a key), `Content-Encoding: gzip`, with
-	// `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes` headers. On a cache
-	// MISS or degraded/unavailable state, `202` with `{"status":"processing",
-	// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full
-	// CSS this render and never blocks.
+	// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`, `structure_hash` required,
+	// `safelist` optional), `html` (required, max 10 MiB), and one-or-more `css` parts (optional, max 5
+	// MiB total). Hard overall request ceiling 16 MiB. On a cache HIT the response body IS the used-CSS
+	// content (not a key), `Content-Encoding: gzip`, with `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes`
+	// headers. On a cache MISS or degraded/unavailable state, `202` with `{"status":"processing",
+	// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full CSS this render and never
+	// blocks.
 	//
 	// POST /agent/v1/rucss
 	AgentIngestRucss(ctx context.Context, request *AgentIngestRucssReq) (AgentIngestRucssRes, error)
 	// AgentMediaAssetDeleted invokes agentMediaAssetDeleted operation.
 	//
-	// Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on
-	// any deletion path (wp-admin, programmatic, WP-CLI, REST). The agent has
-	// already removed its own untracked originals from disk; this notifies the
-	// CP to reconcile the site_media_assets row. Best-effort from the agent;
+	// Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on any deletion path
+	// (wp-admin, programmatic, WP-CLI, REST). The agent has already removed its own untracked originals
+	// from disk; this notifies the CP to reconcile the site_media_assets row. Best-effort from the agent;
 	// the periodic sync sweep is the backstop.
 	//
 	// POST /agent/v1/media/asset-deleted
 	AgentMediaAssetDeleted(ctx context.Context, request *AgentMediaAssetDeleted) (AgentMediaAssetDeletedRes, error)
 	// AgentMediaAutoOptimize invokes agentMediaAutoOptimize operation.
 	//
-	// The agent sends full attachment metadata so the CP can upsert rows
-	// before gating and optimizing (fixes the fresh-upload skip). An empty
-	// `attachments` array is a valid no-op.
+	// The agent sends full attachment metadata so the CP can upsert rows before gating and optimizing
+	// (fixes the fresh-upload skip). An empty `attachments` array is a valid no-op.
 	//
 	// POST /agent/v1/media/auto-optimize
 	AgentMediaAutoOptimize(ctx context.Context, request *AgentAutoOptimizeRequest) (AgentMediaAutoOptimizeRes, error)
 	// AgentMediaEncodeReady invokes agentMediaEncodeReady operation.
 	//
-	// Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting
-	// the source variants so the CP enqueues the encode jobs.
+	// Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting the source variants so
+	// the CP enqueues the encode jobs.
 	//
 	// POST /agent/v1/media/encode-ready
 	AgentMediaEncodeReady(ctx context.Context, request *AgentMediaPresign) (AgentMediaEncodeReadyRes, error)
 	// AgentMediaJobStatus invokes agentMediaJobStatus operation.
 	//
-	// Media Optimizer (ADR-043) — after `media_apply` or `media_delete_originals`,
-	// the agent reports the applied variants, byte sizes, compression level,
-	// target format, and DB-rewrite row counts so the CP can upsert the mirror
-	// row (site_media_assets).
+	// Media Optimizer (ADR-043) — after `media_apply` or `media_delete_originals`, the agent reports the
+	// applied variants, byte sizes, compression level, target format, and DB-rewrite row counts so the CP
+	// can upsert the mirror row (site_media_assets).
 	//
 	// POST /agent/v1/media/job-status
 	AgentMediaJobStatus(ctx context.Context, request *AgentMediaJobStatus) (AgentMediaJobStatusRes, error)
 	// AgentMediaPresign invokes agentMediaPresign operation.
 	//
-	// Media Optimizer (ADR-043) — the agent's `media_optimize` command requests
-	// presigned PUT URLs (one per variant, ≤10) so it can upload source bytes to
-	// media/<tenant>/<site>/<job>/src/<name>. No image bytes pass through the CP.
+	// Media Optimizer (ADR-043) — the agent's `media_optimize` command requests presigned PUT URLs (one
+	// per variant, ≤10) so it can upload source bytes to media////src/. No image bytes pass through the
+	// CP.
 	//
 	// POST /agent/v1/media/presign
 	AgentMediaPresign(ctx context.Context, request *AgentMediaPresign) (AgentMediaPresignRes, error)
 	// AgentMediaRestoreStatus invokes agentMediaRestoreStatus operation.
 	//
-	// Media Optimizer (ADR-043) — after `media_restore`, the agent reports
-	// whether the attachment was reverted to its pre-optimization state.
+	// Media Optimizer (ADR-043) — after `media_restore`, the agent reports whether the attachment was
+	// reverted to its pre-optimization state.
 	//
 	// POST /agent/v1/media/restore-status
 	AgentMediaRestoreStatus(ctx context.Context, request *AgentMediaRestoreStatus) (AgentMediaRestoreStatusRes, error)
 	// AgentMediaSyncBatch invokes agentMediaSyncBatch operation.
 	//
-	// Media Optimizer (ADR-043) — the agent's `media_sync` command pushes pages
-	// of ≤200 attachments here. Authenticated via the Ed25519 signed-request
-	// scheme; the tenant+site come from the verified identity, never a header.
+	// Media Optimizer (ADR-043) — the agent's `media_sync` command pushes pages of ≤200 attachments
+	// here. Authenticated via the Ed25519 signed-request scheme; the tenant+site come from the verified
+	// identity, never a header.
 	//
 	// POST /agent/v1/media/sync-batch
 	AgentMediaSyncBatch(ctx context.Context, request *AgentMediaSyncBatch) (AgentMediaSyncBatchRes, error)
 	// AgentMediaSyncFinalize invokes agentMediaSyncFinalize operation.
 	//
-	// Media Optimizer (ADR-043) — the agent calls this once a FULL paged media
-	// enumeration completed cleanly (every sync-batch page succeeded) so the CP
-	// reconciles offline deletions (marks any site_media_assets row not seen in
-	// this job's pages as deleted). NEVER sent on a partial/errored run — the
-	// blast-radius guard against a transiently-empty WP wiping the asset list.
+	// Media Optimizer (ADR-043) — the agent calls this once a FULL paged media enumeration completed
+	// cleanly (every sync-batch page succeeded) so the CP reconciles offline deletions (marks any
+	// site_media_assets row not seen in this job's pages as deleted). NEVER sent on a partial/errored run
+	// — the blast-radius guard against a transiently-empty WP wiping the asset list.
 	//
 	// POST /agent/v1/media/sync-finalize
 	AgentMediaSyncFinalize(ctx context.Context, request *AgentMediaSyncFinalize) (AgentMediaSyncFinalizeRes, error)
 	// AgentMetadata invokes agentMetadata operation.
 	//
-	// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
-	// security scheme). The site + tenant are resolved from the verified agent
-	// identity, never from a header. Updates last_seen_at and marks the site
-	// healthy.
+	// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature security scheme). The
+	// site + tenant are resolved from the verified agent identity, never from a header. Updates
+	// last_seen_at and marks the site healthy.
 	//
 	// POST /agent/v1/metadata
 	AgentMetadata(ctx context.Context, request *AgentMetadata) (AgentMetadataRes, error)
 	// AgentPresignBackupChunks invokes agentPresignBackupChunks operation.
 	//
-	// Incremental dedup: hashes already stored for the tenant are omitted
-	// from `uploads` and the agent skips uploading them. Content-addressed,
-	// tenant-namespaced object keys mean a presign can never target another
-	// tenant's chunk prefix. The snapshot is re-verified to belong to the
-	// calling site before any presign is minted.
+	// Incremental dedup: hashes already stored for the tenant are omitted from `uploads` and the agent
+	// skips uploading them. Content-addressed, tenant-namespaced object keys mean a presign can never
+	// target another tenant's chunk prefix. The snapshot is re-verified to belong to the calling site
+	// before any presign is minted.
 	//
 	// POST /agent/v1/backups/{snapshotId}/presign
 	AgentPresignBackupChunks(ctx context.Context, request *AgentPresignChunksRequest, params AgentPresignBackupChunksParams) (AgentPresignBackupChunksRes, error)
 	// AgentPushActivity invokes agentPushActivity operation.
 	//
-	// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and
-	// flags any tamper as `chain_valid:false` on the affected row rather
-	// than rejecting the batch.
+	// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and flags any tamper as
+	// `chain_valid:false` on the affected row rather than rejecting the batch.
 	//
 	// POST /agent/v1/activity
 	AgentPushActivity(ctx context.Context, request *AgentActivityIngestRequest) (AgentPushActivityRes, error)
 	// AgentPushDiagnostics invokes agentPushDiagnostics operation.
 	//
-	// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload
-	// (freeform per category). Also drives best-effort hosting-provider
-	// inference from the request's source IP.
+	// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload (freeform per category). Also
+	// drives best-effort hosting-provider inference from the request's source IP.
 	//
 	// POST /agent/v1/diagnostics
 	AgentPushDiagnostics(ctx context.Context, request *AgentPushDiagnosticsReq) (AgentPushDiagnosticsRes, error)
 	// AgentPushEmailLog invokes agentPushEmailLog operation.
 	//
-	// Tolerant ingest: a malformed `response`/`created_at`/`attachments`
-	// sub-field never fails the whole batch — each is coerced to a safe
-	// default independently. Emits a throttled SSE `email.log_ingested`
-	// notification (at most once per site per throttle window).
+	// Tolerant ingest: a malformed `response`/`created_at`/`attachments` sub-field never fails the whole
+	// batch — each is coerced to a safe default independently. Emits a throttled SSE
+	// `email.log_ingested` notification (at most once per site per throttle window).
 	//
 	// POST /agent/v1/email/log
 	AgentPushEmailLog(ctx context.Context, request *AgentEmailLogIngestRequest) (AgentPushEmailLogRes, error)
@@ -336,9 +470,8 @@ type Invoker interface {
 	AgentPushLoginEvents(ctx context.Context, request *AgentLoginEventBatch) (AgentPushLoginEventsRes, error)
 	// AgentReportBackupProgress invokes agentReportBackupProgress operation.
 	//
-	// Fired on every stage transition, and per-chunk during the custom
-	// presigned-S3 sync. `snapshot_id` comes strictly from the URL path,
-	// never the body — a compromised agent cannot target another
+	// Fired on every stage transition, and per-chunk during the custom presigned-S3 sync. `snapshot_id`
+	// comes strictly from the URL path, never the body — a compromised agent cannot target another
 	// snapshot by spoofing it in the JSON body.
 	//
 	// POST /agent/v1/backups/{snapshotId}/progress
@@ -351,56 +484,53 @@ type Invoker interface {
 	AgentReportCacheStats(ctx context.Context, request *AgentCacheStatsReport) (AgentReportCacheStatsRes, error)
 	// AgentReportDbCleanProgress invokes agentReportDbCleanProgress operation.
 	//
-	// The frozen contract: an unknown `job_id` (CP restarted mid-job) is
-	// still processed, never 404s; the agent must tolerate a non-2xx
-	// response without halting its cleanup loop. `done:true` on the final
-	// push for the job triggers `db.clean.completed` and advances the next
-	// scheduled run.
+	// The frozen contract: an unknown `job_id` (CP restarted mid-job) is still processed, never 404s; the
+	// agent must tolerate a non-2xx response without halting its cleanup loop. `done:true` on the final
+	// push for the job triggers `db.clean.completed` and advances the next scheduled run.
 	//
 	// POST /agent/v1/db-clean/progress
 	AgentReportDbCleanProgress(ctx context.Context, request *AgentDbCleanProgress) (AgentReportDbCleanProgressRes, error)
 	// AgentReportDbOrphanDeleteProgress invokes agentReportDbOrphanDeleteProgress operation.
 	//
-	// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an
-	// unknown `job_id` is still processed, and a non-2xx response must not
-	// halt the agent's delete loop.
+	// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an unknown `job_id` is still
+	// processed, and a non-2xx response must not halt the agent's delete loop.
 	//
 	// POST /agent/v1/db-orphan-delete/progress
 	AgentReportDbOrphanDeleteProgress(ctx context.Context, request *AgentDbOrphanDeleteProgress) (AgentReportDbOrphanDeleteProgressRes, error)
 	// AgentSubmitBackupManifest invokes agentSubmitBackupManifest operation.
 	//
-	// ADR-051: an archive-delta increment submits the SAME request shape as
-	// a full backup (its zip parts, DB dump, files-list, and optional
-	// tombstones are all `ManifestEntry` rows); per-cycle telemetry
-	// counters ride as optional top-level fields. Upserts not-yet-stored
-	// chunks, increments refcounts for every reference, inserts manifest
-	// entries, and completes the snapshot.
+	// ADR-051: an archive-delta increment submits the SAME request shape as a full backup (its zip parts,
+	// DB dump, files-list, and optional tombstones are all `ManifestEntry` rows); per-cycle telemetry
+	// counters ride as optional top-level fields. Upserts not-yet-stored chunks, increments refcounts for
+	// every reference, inserts manifest entries, and completes the snapshot.
 	//
 	// POST /agent/v1/backups/{snapshotId}/manifest
 	AgentSubmitBackupManifest(ctx context.Context, request *AgentSubmitManifestRequest, params AgentSubmitBackupManifestParams) (AgentSubmitBackupManifestRes, error)
 	// ApplySiteFileUpload invokes applySiteFileUpload operation.
 	//
-	// Step 2 of 2 for browser file upload. After the browser has PUT all
-	// chunks to the presigned S3 URLs returned by `prepareSiteFileUpload`,
-	// this endpoint:
+	// Step 2 of 2 for browser file upload. After the browser has PUT all chunks to the presigned S3 URLs
+	// returned by `prepareSiteFileUpload`, this endpoint:
+	//
 	// 1. Mints presigned S3 GET URLs for each staged chunk.
-	// 2. Issues `file_upload_apply` to the agent, which fetches all chunks,
-	// reassembles them in order, validates the SHA-256 digest, and
-	// atomic-swaps the assembled file into the target path (same
-	// FilesRestorer swap primitive used by restore).
-	// The agent returns `400 write_failed` when the SHA-256 digest does not
-	// match. The caller should retry the full upload in that case.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-	// **Executable/sensitive gate:** Same as `prepareSiteFileUpload`.
+	// 2. Issues `file_upload_apply` to the agent, which fetches all chunks, reassembles them in order,
+	//    validates the SHA-256 digest, and atomic-swaps the assembled file into the target path (same
+	//    FilesRestorer swap primitive used by restore).
+	//
+	// The agent returns `400 write_failed` when the SHA-256 digest does not match. The caller should retry
+	// the full upload in that case.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+	//
+	// Executable/sensitive gate: Same as `prepareSiteFileUpload`.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/upload/apply
 	ApplySiteFileUpload(ctx context.Context, request *ApplyUploadRequest, params ApplySiteFileUploadParams) (ApplySiteFileUploadRes, error)
 	// ArchiveSite invokes archiveSite operation.
 	//
-	// M21 / ADR-041 — operator action. Transitions the site to `archived`
-	// (terminal soft-delete); hidden from the default sites list. History is
-	// preserved. Requires operator+.
+	// M21 / ADR-041 — operator action. Transitions the site to `archived` (terminal soft-delete); hidden
+	// from the default sites list. History is preserved. Requires operator+.
 	//
 	// POST /api/v1/sites/{siteId}/archive
 	ArchiveSite(ctx context.Context, request OptSiteLifecycleReason, params ArchiveSiteParams) (ArchiveSiteRes, error)
@@ -412,123 +542,114 @@ type Invoker interface {
 	AssignSitesToClient(ctx context.Context, request *AssignSitesRequest) (AssignSitesToClientRes, error)
 	// BeginReEnrollment invokes beginReEnrollment operation.
 	//
-	// M21 / ADR-041 — moves an existing revoked/disconnected/archived site back
-	// to `pending_enrollment` (bumping connection_generation) and mints a fresh
-	// site-bound enrollment code under the SAME site_id (preserving backup/scan
-	// history). Returns the once-shown code. Requires operator+.
+	// M21 / ADR-041 — moves an existing revoked/disconnected/archived site back to `pending_enrollment`
+	// (bumping connection_generation) and mints a fresh site-bound enrollment code under the SAME site_id
+	// (preserving backup/scan history). Returns the once-shown code. Requires operator+.
 	//
 	// POST /api/v1/sites/{siteId}/enrollment-codes
 	BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error)
 	// BeginTotpEnrollment invokes beginTotpEnrollment operation.
 	//
-	// Returns the `otpauth://` URI and the base32 secret for the enrollment
-	// wizard (e.g. to render a QR code). This is the ONLY response that ever
-	// returns the raw secret.
+	// Returns the `otpauth://` URI and the base32 secret for the enrollment wizard (e.g. to render a QR
+	// code). This is the ONLY response that ever returns the raw secret.
 	//
 	// POST /auth/2fa/totp/begin
 	BeginTotpEnrollment(ctx context.Context) (BeginTotpEnrollmentRes, error)
 	// BeginWebAuthnChallenge invokes beginWebAuthnChallenge operation.
 	//
-	// Returns the raw `CredentialAssertion` options JSON so the browser can
-	// pass them directly to `navigator.credentials.get()`.
+	// Returns the raw `CredentialAssertion` options JSON so the browser can pass them directly to
+	// `navigator.credentials.get()`.
 	//
 	// POST /auth/2fa/webauthn/begin
 	BeginWebAuthnChallenge(ctx context.Context, request *BeginWebAuthnChallengeReq) (BeginWebAuthnChallengeRes, error)
 	// BeginWebAuthnEnrollment invokes beginWebAuthnEnrollment operation.
 	//
-	// Returns the raw `CredentialCreation` options JSON so the browser can
-	// pass them directly to `navigator.credentials.create()`.
+	// Returns the raw `CredentialCreation` options JSON so the browser can pass them directly to
+	// `navigator.credentials.create()`.
 	//
 	// POST /auth/2fa/webauthn/begin-registration
 	BeginWebAuthnEnrollment(ctx context.Context) (BeginWebAuthnEnrollmentRes, error)
 	// BulkApplyTags invokes bulkApplyTags operation.
 	//
-	// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
-	// site id is checked against the caller's collaborator allowlist
-	// independently; sites the caller cannot access (or that don't exist in
-	// this tenant) are returned with `ok: false` rather than failing the
-	// whole call. `add` names are registered into the tag registry in the
-	// same transaction. Requires the `site.write` permission.
+	// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each site id is checked against the
+	// caller's collaborator allowlist independently; sites the caller cannot access (or that don't exist
+	// in this tenant) are returned with `ok: false` rather than failing the whole call. `add` names are
+	// registered into the tag registry in the same transaction. Requires the `site.write` permission.
 	//
 	// POST /api/v1/tags/bulk-apply
 	BulkApplyTags(ctx context.Context, request *BulkTagApplyRequest) (BulkApplyTagsRes, error)
 	// BulkConfigCache invokes bulkConfigCache operation.
 	//
-	// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto
-	// each site's existing config without clobbering its per-site include or
-	// bypass lists. Each site id is checked against the caller's allowlist
-	// independently. Requires the `site.perf.config` permission.
+	// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto each site's existing config
+	// without clobbering its per-site include or bypass lists. Each site id is checked against the
+	// caller's allowlist independently. Requires the `site.perf.config` permission.
 	//
 	// PUT /api/v1/cache/bulk-config
 	BulkConfigCache(ctx context.Context, request *BulkConfigRequest) (BulkConfigCacheRes, error)
 	// BulkDeleteBackups invokes bulkDeleteBackups operation.
 	//
-	// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
-	// that is not found (or belongs to another site/tenant), still
-	// running/pending, locked, mid-chain with dependent later increments, or
-	// currently targeted by an active restore is reported as a "skipped"
-	// result row (see BulkDeleteBackupsResultItem) rather than aborting the
-	// whole request — this endpoint always returns 200, even when every id
-	// is skipped.
-	// Within an incremental chain, deletable snapshots are removed
-	// newest-generation-first so a partial batch never strands an
-	// unrestorable mid-chain gap. An active restore anchored on ANY member
-	// of a chain causes EVERY requested id in that chain to be skipped
-	// (restore_in_progress) — a restore reads the whole chain, not just the
-	// snapshot it was launched against.
-	// Set dry_run=true to compute the identical plan (same outcomes, same
-	// reclaimed_bytes_estimate) without deleting anything: no row deletes,
-	// no manifest-index deletes, no retention GC, no audit log entries.
+	// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id that is not found (or belongs
+	// to another site/tenant), still running/pending, locked, mid-chain with dependent later increments,
+	// or currently targeted by an active restore is reported as a "skipped" result row (see
+	// BulkDeleteBackupsResultItem) rather than aborting the whole request — this endpoint always returns
+	// 200, even when every id is skipped.
+	//
+	// Within an incremental chain, deletable snapshots are removed newest-generation-first so a partial
+	// batch never strands an unrestorable mid-chain gap. An active restore anchored on ANY member of a
+	// chain causes EVERY requested id in that chain to be skipped (restore_in_progress) — a restore
+	// reads the whole chain, not just the snapshot it was launched against.
+	//
+	// Set dry_run=true to compute the identical plan (same outcomes, same reclaimed_bytes_estimate)
+	// without deleting anything: no row deletes, no manifest-index deletes, no retention GC, no audit log
+	// entries.
+	//
 	// Requires operator+ (site.write).
 	//
 	// POST /api/v1/sites/{siteId}/backups/bulk-delete
 	BulkDeleteBackups(ctx context.Context, request *BulkDeleteBackupsRequest, params BulkDeleteBackupsParams) (BulkDeleteBackupsRes, error)
 	// BulkDeleteEmailLog invokes bulkDeleteEmailLog operation.
 	//
-	// Deletes a list of email log entries by id, carried in the request
-	// body (there is no `logId` path segment on this route — it operates on
-	// a caller-supplied id list, not a single entry). RLS ensures only
-	// entries belonging to the operator's tenant are deleted regardless of
-	// the id list. Maximum 500 ids per request.
+	// Deletes a list of email log entries by id, carried in the request body (there is no `logId` path
+	// segment on this route — it operates on a caller-supplied id list, not a single entry). RLS ensures
+	// only entries belonging to the operator's tenant are deleted regardless of the id list. Maximum 500
+	// ids per request.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// DELETE /api/v1/sites/{siteId}/email/log
 	BulkDeleteEmailLog(ctx context.Context, request *BulkDeleteLogsRequest, params BulkDeleteEmailLogParams) (BulkDeleteEmailLogRes, error)
 	// BulkPurgeCache invokes bulkPurgeCache operation.
 	//
-	// Purges the whole cache for each site in `site_ids`. Each site id is
-	// checked against the caller's collaborator allowlist independently; sites
-	// the caller cannot access (or that fail) are returned with `ok: false`
-	// and a `detail` rather than failing the whole call. Requires the
-	// `site.cache.purge` permission.
+	// Purges the whole cache for each site in `site_ids`. Each site id is checked against the caller's
+	// collaborator allowlist independently; sites the caller cannot access (or that fail) are returned
+	// with `ok: false` and a `detail` rather than failing the whole call. Requires the `site.cache.purge`
+	// permission.
 	//
 	// POST /api/v1/cache/bulk-purge
 	BulkPurgeCache(ctx context.Context, request *BulkPurgeRequest) (*BulkResultList, error)
 	// BulkResendEmailLog invokes bulkResendEmailLog operation.
 	//
-	// Dispatches `resend_email` for multiple log entries. Each entry is
-	// processed independently. Entries without body_stored are skipped with
-	// `ok=false` in the per-entry result array (no overall 4xx). Registered
-	// before `/email/log/{logId}` so Gin does not parse the literal segment
-	// `resend` as a `logId` UUID.
+	// Dispatches `resend_email` for multiple log entries. Each entry is processed independently. Entries
+	// without body_stored are skipped with `ok=false` in the per-entry result array (no overall 4xx).
+	// Registered before `/email/log/{logId}` so Gin does not parse the literal segment `resend` as a
+	// `logId` UUID.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/email/log/resend
 	BulkResendEmailLog(ctx context.Context, request *BulkResendRequest, params BulkResendEmailLogParams) (BulkResendEmailLogRes, error)
 	// CancelBackup invokes cancelBackup operation.
 	//
-	// Stops an in-flight backup by marking the snapshot failed
-	// ("cancelled by operator"). After cancel the snapshot is deletable and a
-	// late agent manifest submit is rejected. A snapshot that is already
-	// terminal (completed/failed) is refused with 409 (snapshot_not_cancelable).
-	// Requires operator+.
+	// Stops an in-flight backup by marking the snapshot failed ("cancelled by operator"). After cancel the
+	// snapshot is deletable and a late agent manifest submit is rejected. A snapshot that is already
+	// terminal (completed/failed) is refused with 409 (snapshot_not_cancelable). Requires operator+.
 	//
 	// POST /api/v1/backups/{snapshotId}/cancel
 	CancelBackup(ctx context.Context, params CancelBackupParams) (CancelBackupRes, error)
 	// CancelBillingSubscription invokes cancelBillingSubscription operation.
 	//
 	// The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-	//  Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
+	// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
 	// change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
 	// this response to carry the new plan state.
 	//
@@ -536,19 +657,19 @@ type Invoker interface {
 	CancelBillingSubscription(ctx context.Context) (CancelBillingSubscriptionRes, error)
 	// CancelEnrollment invokes cancelEnrollment operation.
 	//
-	// Hard-deletes a site that is in `pending_enrollment` AND has **never
-	// connected** (`enrolled_at` is NULL and `agent_public_key` is absent).
-	// This is the "Cancel" action in the enrollment modal — it frees the URL
-	// so the operator can immediately re-add the same site.
+	// Hard-deletes a site that is in `pending_enrollment` AND has never connected (`enrolled_at` is NULL
+	// and `agent_public_key` is absent). This is the "Cancel" action in the enrollment modal — it frees
+	// the URL so the operator can immediately re-add the same site.
+	//
 	// The never-connected guard is enforced server-side (NOT by the caller):
-	// `connection_state == pending_enrollment` AND `enrolled_at IS NULL` AND
-	// `agent_public_key == ""` must all hold. If the site has ever connected
-	// (enrolled at least once) the request is rejected with
+	// `connection_state == pending_enrollment` AND `enrolled_at IS NULL` AND `agent_public_key == ""` must
+	// all hold. If the site has ever connected (enrolled at least once) the request is rejected with
 	// `code: "not_cancellable"` — use `archive` or `revoke` instead.
-	// On success a `site.deleted` SSE event is published to the tenant stream
-	// so open dashboards can remove the row without a poll.
-	// Requires `site:write` + org scope + site access (same chain as
-	// `archive`/`revoke`).
+	//
+	// On success a `site.deleted` SSE event is published to the tenant stream so open dashboards can
+	// remove the row without a poll.
+	//
+	// Requires `site:write` + org scope + site access (same chain as `archive`/`revoke`).
 	//
 	// POST /api/v1/sites/{siteId}/cancel
 	CancelEnrollment(ctx context.Context, params CancelEnrollmentParams) (CancelEnrollmentRes, error)
@@ -560,86 +681,79 @@ type Invoker interface {
 	CancelMedia(ctx context.Context, params CancelMediaParams) (*CancelMediaOK, error)
 	// CancelScheduledUpdateRun invokes cancelScheduledUpdateRun operation.
 	//
-	// Calls back a deferred run (#463) that has not yet started. The run
-	// becomes `halted` and every one of its tasks becomes `cancelled`, in one
-	// transaction.
-	// **Valid ONLY from `scheduled`.** That is the safety property, not a
-	// convenience: it guarantees the cancel can never race a dispatch into a
-	// half-cancelled state. Once the dispatcher has claimed the run
-	// (`dispatching`) or the work is out (`running`), this returns 409 and the
-	// operator must use the halt path instead — a different operation with
-	// different consequences, because halting a running run leaves commands
-	// already in flight on real sites. Cancelling a scheduled run promises
-	// that **nothing was ever sent to any site**, and the precondition is what
-	// makes that promise true.
-	// Tasks become `cancelled` rather than `expired`. Both mean the task was
-	// never attempted, and the distinction is which one to tell the operator:
-	// `cancelled` records a decision somebody made, `expired` records that the
-	// dispatch window closed while the control plane was unavailable.
-	// Idempotent in the way that matters: a second cancel of an
-	// already-cancelled run returns 409 `run_not_cancellable`, never a
-	// spurious success. Requires operator+.
+	// Calls back a deferred run (#463) that has not yet started. The run becomes `halted` and every one of
+	// its tasks becomes `cancelled`, in one transaction.
+	//
+	// Valid ONLY from `scheduled`. That is the safety property, not a convenience: it guarantees the
+	// cancel can never race a dispatch into a half-cancelled state. Once the dispatcher has claimed the
+	// run (`dispatching`) or the work is out (`running`), this returns 409 and the operator must use the
+	// halt path instead — a different operation with different consequences, because halting a running
+	// run leaves commands already in flight on real sites. Cancelling a scheduled run promises that
+	// nothing was ever sent to any site, and the precondition is what makes that promise true.
+	//
+	// Tasks become `cancelled` rather than `expired`. Both mean the task was never attempted, and the
+	// distinction is which one to tell the operator: `cancelled` records a decision somebody made,
+	// `expired` records that the dispatch window closed while the control plane was unavailable.
+	//
+	// Idempotent in the way that matters: a second cancel of an already-cancelled run returns 409
+	// `run_not_cancellable`, never a spurious success. Requires operator+.
 	//
 	// POST /api/v1/updates/runs/{id}/cancel
 	CancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (CancelScheduledUpdateRunRes, error)
 	// ChangeMyPassword invokes changeMyPassword operation.
 	//
-	// Verifies `current_password`, then sets `new_password`. This session
-	// stays alive (its `auth_at` is refreshed so it does not predate the new
-	// `password_changed_at`); every other session for this user is invalidated.
+	// Verifies `current_password`, then sets `new_password`. This session stays alive (its `auth_at` is
+	// refreshed so it does not predate the new `password_changed_at`); every other session for this user
+	// is invalidated.
 	//
 	// POST /auth/me/password
 	ChangeMyPassword(ctx context.Context, request *ChangeMyPasswordReq) (ChangeMyPasswordRes, error)
 	// CheckAgentMirrorNow invokes checkAgentMirrorNow operation.
 	//
-	// Queues one immediate run of the upstream agent-release mirror
-	// (internal/agentupstream), instead of waiting up to six hours for the
-	// next scheduled run (GH #322).
-	// Deliberately NOT under /api/v1/fleet. The mirror is ONE PER INSTALL:
-	// it fetches one public GitHub release and writes one pair of objects
-	// into one bucket. A tenant-scoped trigger would let any org admin on a
-	// shared install spend the install's shared unauthenticated GitHub
-	// request budget (60 per hour per IP) and rewrite the install's shared
-	// release pointer.
-	// Who may call it: a superadmin (is_superadmin=true), OR the owner of the
-	// only organisation on this install. The second arm exists because the
-	// first arm's whole purpose is to stop one tenant spending another
-	// tenant's share of that budget, and on an install with exactly one
-	// organisation there is no other tenant for it to protect. It requires
-	// the memberships role 'owner' exactly, on the one organisation whose
-	// tenants.deleted_at is null; admin, operator and viewer are refused, as
-	// is an API-key principal. The count is read on every request and never
-	// cached, so a second organisation appearing closes this path again on
-	// the very next call, and the owner never becomes a superadmin: nothing
-	// else on /api/v1/admin admits them. Multi-organisation installs are
-	// unchanged and stay superadmin-only. Compare
-	// POST /api/v1/admin/vuln-feed/sync, which remains superadmin-only.
-	// A 202 means the run was QUEUED, not that anything was checked. The
-	// run may still end rate limited, refused or unavailable; the real
-	// outcome appears as agent_mirror.last_attempt_outcome on
-	// GET /api/v1/fleet/agents.
-	// No request body and no force parameter: bypassing the request
-	// spacing would spend the install's shared upstream budget for no new
-	// information.
+	// Queues one immediate run of the upstream agent-release mirror (internal/agentupstream), instead of
+	// waiting up to six hours for the next scheduled run (GH #322).
+	//
+	// Deliberately NOT under /api/v1/fleet. The mirror is ONE PER INSTALL: it fetches one public GitHub
+	// release and writes one pair of objects into one bucket. A tenant-scoped trigger would let any org
+	// admin on a shared install spend the install's shared unauthenticated GitHub request budget (60 per
+	// hour per IP) and rewrite the install's shared release pointer.
+	//
+	// Who may call it: a superadmin (is_superadmin=true), OR the owner of the only organisation on this
+	// install. The second arm exists because the first arm's whole purpose is to stop one tenant spending
+	// another tenant's share of that budget, and on an install with exactly one organisation there is no
+	// other tenant for it to protect. It requires the memberships role 'owner' exactly, on the one
+	// organisation whose tenants.deleted_at is null; admin, operator and viewer are refused, as is an
+	// API-key principal. The count is read on every request and never cached, so a second organisation
+	// appearing closes this path again on the very next call, and the owner never becomes a superadmin:
+	// nothing else on /api/v1/admin admits them. Multi-organisation installs are unchanged and stay
+	// superadmin-only. Compare POST /api/v1/admin/vuln-feed/sync, which remains superadmin-only.
+	//
+	// A 202 means the run was QUEUED, not that anything was checked. The run may still end rate limited,
+	// refused or unavailable; the real outcome appears as agent_mirror.last_attempt_outcome on GET
+	// /api/v1/fleet/agents.
+	//
+	// No request body and no force parameter: bypassing the request spacing would spend the install's
+	// shared upstream budget for no new information.
 	//
 	// POST /api/v1/admin/agent-mirror/check
 	CheckAgentMirrorNow(ctx context.Context) (CheckAgentMirrorNowRes, error)
 	// ChmodSiteFile invokes chmodSiteFile operation.
 	//
-	// Issues a `file_chmod` command to the site's agent. The agent validates
-	// the mode against a safe allowlist — no setuid (4xxx), no setgid (2xxx),
-	// no world-write; returns `400 mode_denied` for unsafe modes.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
+	// Issues a `file_chmod` command to the site's agent. The agent validates the mode against a safe
+	// allowlist — no setuid (4xxx), no setgid (2xxx), no world-write; returns `400 mode_denied` for
+	// unsafe modes.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/chmod
 	ChmodSiteFile(ctx context.Context, request *FileChmodRequest, params ChmodSiteFileParams) (ChmodSiteFileRes, error)
 	// CleanDatabase invokes cleanDatabase operation.
 	//
-	// Runs the site's configured database cleanup (revisions, auto-drafts,
-	// trashed posts, spam/trashed comments, expired transients, table
-	// optimization) immediately. Returns an `{ok, detail, rows_cleaned}` ack.
-	// Requires the `site.cache.manage` permission.
+	// Runs the site's configured database cleanup (revisions, auto-drafts, trashed posts, spam/trashed
+	// comments, expired transients, table optimization) immediately. Returns an
+	// `{ok, detail, rows_cleaned}` ack. Requires the `site.cache.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/clean
 	CleanDatabase(ctx context.Context, params CleanDatabaseParams) (*DbCleanResult, error)
@@ -651,16 +765,15 @@ type Invoker interface {
 	ClearAdminVulnFeedKey(ctx context.Context) (ClearAdminVulnFeedKeyRes, error)
 	// ClearRucss invokes clearRucss operation.
 	//
-	// Clears every cached RUCSS result for the site. Returns the number
-	// cleared. Requires the `site.perf.config` permission.
+	// Clears every cached RUCSS result for the site. Returns the number cleared. Requires the
+	// `site.perf.config` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/clear
 	ClearRucss(ctx context.Context, params ClearRucssParams) (*RucssClearResult, error)
 	// CompAdminAccount invokes compAdminAccount operation.
 	//
-	// Sets plan_status=comped and plan=tier, bypassing the payment provider
-	// entirely. A comped tenant is immune to webhook-driven plan mutation.
-	// Requires is_superadmin=true.
+	// Sets plan_status=comped and plan=tier, bypassing the payment provider entirely. A comped tenant is
+	// immune to webhook-driven plan mutation. Requires is_superadmin=true.
 	//
 	// POST /api/v1/admin/accounts/{id}/comp
 	CompAdminAccount(ctx context.Context, request *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error)
@@ -672,29 +785,25 @@ type Invoker interface {
 	CompleteRecoveryChallenge(ctx context.Context, request *TwoFactorChallengeCompleteRequest) (CompleteRecoveryChallengeRes, error)
 	// CompleteTotpChallenge invokes completeTotpChallenge operation.
 	//
-	// Verifies `code` against the active challenge minted at login (the
-	// `challenge` nonce returned by `POST /auth/login`'s 202 response) and,
-	// on success, issues a full session. `remember_device` optionally issues
-	// a trusted-device cookie so future logins skip the challenge.
+	// Verifies `code` against the active challenge minted at login (the `challenge` nonce returned by
+	// `POST /auth/login`'s 202 response) and, on success, issues a full session. `remember_device`
+	// optionally issues a trusted-device cookie so future logins skip the challenge.
 	//
 	// POST /auth/2fa/totp
 	CompleteTotpChallenge(ctx context.Context, request *TwoFactorChallengeCompleteRequest) (CompleteTotpChallengeRes, error)
 	// ComputeRucss invokes computeRucss operation.
 	//
-	// Triggers the agent to compute Used-CSS for the given URLs (or the home
-	// page when omitted). The agent self-fetches each URL out-of-band so the
-	// optimizer runs the RUCSS stage and posts the page to the control plane,
-	// enqueuing a compute job. The queued → computing → completed lifecycle is
-	// streamed via the `rucss.*` SSE events. Requires the `site.perf.config`
-	// permission.
+	// Triggers the agent to compute Used-CSS for the given URLs (or the home page when omitted). The agent
+	// self-fetches each URL out-of-band so the optimizer runs the RUCSS stage and posts the page to the
+	// control plane, enqueuing a compute job. The queued → computing → completed lifecycle is streamed
+	// via the `rucss.*` SSE events. Requires the `site.perf.config` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/rucss/compute
 	ComputeRucss(ctx context.Context, request OptComputeRucssReq, params ComputeRucssParams) (*PerfActionResult, error)
 	// ConfirmTotpEnrollment invokes confirmTotpEnrollment operation.
 	//
-	// Validates `code` against the provisional secret from
-	// `POST /auth/2fa/totp/begin`, persists the confirmed secret, and
-	// returns 10 recovery codes shown exactly once.
+	// Validates `code` against the provisional secret from `POST /auth/2fa/totp/begin`, persists the
+	// confirmed secret, and returns 10 recovery codes shown exactly once.
 	//
 	// POST /auth/2fa/totp/confirm
 	ConfirmTotpEnrollment(ctx context.Context, request *ConfirmTotpEnrollmentReq) (ConfirmTotpEnrollmentRes, error)
@@ -706,36 +815,34 @@ type Invoker interface {
 	CreateApiKey(ctx context.Context, request *ApiKeyCreate) (CreateApiKeyRes, error)
 	// CreateAutologin invokes createAutologin operation.
 	//
-	// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
-	// returns a redirect URL of the form
-	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
-	// the operator's browser should follow. The WordPress agent verifies the
-	// JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
-	// consume the nonce, then establishes a wp-admin session as the requested
-	// user (or the first administrator when `target_wp_user_login` is empty).
-	// Authorization: requires the `site:autologin` permission (owner+admin).
-	// Operator and viewer roles are explicitly denied.
-	// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
-	// `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
-	// body and a `Retry-After` header in seconds.
-	// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
-	// the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
-	// and the per-site `require_2fa_step_up` policy are true AND a future
-	// 2FA enrollment system is in place.
-	// The minted JWT is NEVER returned in the response body apart from
-	// being embedded in `redirect_url`; it is NEVER recorded in the audit
-	// trail — the audit row stores only the nonce id and outcome.
+	// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and returns a redirect URL of the form
+	// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>` the operator's browser
+	// should follow. The WordPress agent verifies the JWT and POSTs back to `/agent/v1/autologin/consume`
+	// to atomically consume the nonce, then establishes a wp-admin session as the requested user (or the
+	// first administrator when `target_wp_user_login` is empty).
+	//
+	// Authorization: requires the `site:autologin` permission (owner+admin). Operator and viewer roles are
+	// explicitly denied.
+	//
+	// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per `site_id` (30/min). A 429 response
+	// carries `retry_after_seconds` in the body and a `Retry-After` header in seconds.
+	//
+	// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0; the 409 path is unreachable
+	// until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP` and the per-site `require_2fa_step_up` policy are
+	// true AND a future 2FA enrollment system is in place.
+	//
+	// The minted JWT is NEVER returned in the response body apart from being embedded in `redirect_url`;
+	// it is NEVER recorded in the audit trail — the audit row stores only the nonce id and outcome.
 	//
 	// POST /api/v1/sites/{siteId}/autologin
 	CreateAutologin(ctx context.Context, request OptAutologinCreate, params CreateAutologinParams) (CreateAutologinRes, error)
 	// CreateBackup invokes createBackup operation.
 	//
-	// Records a pending backup snapshot for the site and enqueues a background
-	// job that dispatches a signed `backup` command to the site's agent. The
-	// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
-	// and uploads ciphertext directly to object storage via presigned URLs,
-	// then submits the manifest. Incremental: a chunk whose content hash is
-	// already stored is not re-uploaded. Requires operator+.
+	// Records a pending backup snapshot for the site and enqueues a background job that dispatches a
+	// signed `backup` command to the site's agent. The agent chunks, encrypts (client-side, age, to the
+	// site's PUBLIC recipient) and uploads ciphertext directly to object storage via presigned URLs, then
+	// submits the manifest. Incremental: a chunk whose content hash is already stored is not re-uploaded.
+	// Requires operator+.
 	//
 	// POST /api/v1/sites/{siteId}/backups
 	CreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (CreateBackupRes, error)
@@ -763,11 +870,12 @@ type Invoker interface {
 	CreateClient(ctx context.Context, request *CreateAgencyClientRequest) (CreateClientRes, error)
 	// CreateDbSnapshot invokes createDbSnapshot operation.
 	//
-	// Dumps the site's database to a local `.sql.gz` file on the WP server
-	// filesystem and records it in the snapshot manifest. This is a fast
-	// local safety-net — not an encrypted off-site backup.
-	// After the operation the oldest snapshots are pruned so the total count
-	// does not exceed the configured retention (default 5, max 20).
+	// Dumps the site's database to a local `.sql.gz` file on the WP server filesystem and records it in
+	// the snapshot manifest. This is a fast local safety-net — not an encrypted off-site backup.
+	//
+	// After the operation the oldest snapshots are pruned so the total count does not exceed the
+	// configured retention (default 5, max 20).
+	//
 	// Requires the `site:write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/snapshots
@@ -780,37 +888,33 @@ type Invoker interface {
 	CreateOrg(ctx context.Context, request *CreateOrgRequest) (CreateOrgRes, error)
 	// CreatePairingCode invokes createPairingCode operation.
 	//
-	// Generates a short-lived, single-use, high-entropy pairing code for the
-	// current tenant. The plaintext code is returned ONCE in this response and
-	// is never retrievable again. An agent presents it to POST /enroll. Requires
-	// operator+.
+	// Generates a short-lived, single-use, high-entropy pairing code for the current tenant. The plaintext
+	// code is returned ONCE in this response and is never retrievable again. An agent presents it to POST
+	// /enroll. Requires operator+.
 	//
 	// POST /api/v1/sites/pairing-codes
 	CreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (CreatePairingCodeRes, error)
 	// CreateRestore invokes createRestore operation.
 	//
-	// Enqueues a restore job. The control plane resolves the (possibly partial)
-	// selection into ordered chunks, issues presigned GET URLs, and dispatches
-	// a signed `restore` command. The agent downloads ciphertext, verifies the
-	// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
-	// reassembles. Supports full, by-path, and by-db-table partial restore.
-	// Requires operator+.
+	// Enqueues a restore job. The control plane resolves the (possibly partial) selection into ordered
+	// chunks, issues presigned GET URLs, and dispatches a signed `restore` command. The agent downloads
+	// ciphertext, verifies the BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+	// reassembles. Supports full, by-path, and by-db-table partial restore. Requires operator+.
 	//
 	// POST /api/v1/backups/{snapshotId}/restore
 	CreateRestore(ctx context.Context, request *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error)
 	// CreateSite invokes createSite operation.
 	//
-	// M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a
-	// site row in `pending_enrollment` AND mints a single-use, site-bound
-	// enrollment code in one call. The response carries the new `site_id` plus
-	// the once-shown `enrollment_code` and its `expires_at` so the dashboard
-	// can immediately show the install modal and subscribe to the
-	// `/api/v1/sites/events` SSE stream for this site_id.
-	// BREAKING CHANGE vs. pre-M21: the 201 body is now
-	// `SiteEnrollmentCode` ({site_id, enrollment_code, expires_at}) instead of
-	// a bare `Site`. When the connection-lifecycle service is disabled (dev
-	// builds with no SSE bus) the control plane falls back to the legacy
-	// create that returns a bare `Site`. Requires operator+.
+	// M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a site row in
+	// `pending_enrollment` AND mints a single-use, site-bound enrollment code in one call. The response
+	// carries the new `site_id` plus the once-shown `enrollment_code` and its `expires_at` so the
+	// dashboard can immediately show the install modal and subscribe to the `/api/v1/sites/events` SSE
+	// stream for this site_id.
+	//
+	// BREAKING CHANGE vs. pre-M21: the 201 body is now `SiteEnrollmentCode` ({site_id, enrollment_code,
+	// expires_at}) instead of a bare `Site`. When the connection-lifecycle service is disabled (dev builds
+	// with no SSE bus) the control plane falls back to the legacy create that returns a bare `Site`.
+	// Requires operator+.
 	//
 	// POST /api/v1/sites
 	CreateSite(ctx context.Context, request *SiteCreate) (CreateSiteRes, error)
@@ -829,40 +933,41 @@ type Invoker interface {
 	// CreateSiteDirectory invokes createSiteDirectory operation.
 	//
 	// Issues a `file_mkdir` command to the site's agent.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-	// Returns `403 files_write_not_enabled` when write mode is off.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true. Returns
+	// `403 files_write_not_enabled` when write mode is off.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/mkdir
 	CreateSiteDirectory(ctx context.Context, request *FileMkdirRequest, params CreateSiteDirectoryParams) (CreateSiteDirectoryRes, error)
 	// CreateSiteFileArchive invokes createSiteFileArchive operation.
 	//
-	// Issues a `file_archive_create` command to the site's agent. The agent
-	// zips the specified paths (all containment-checked within the jail) and
-	// uploads the archive directly to a CP-minted S3 staging area. The CP
-	// then mints a short-lived presigned GET URL for the browser to download
-	// the archive.
-	// This is a **read** operation — it does not require write mode.
-	// **Sensitive-path gate (F1):** If any path in `paths` matches the
-	// sensitive-file deny-list (wp-config.php, .env*, *.pem, …), the caller
-	// must set `confirm_sensitive=true` AND hold `site.files.read_sensitive`
-	// (owner). Both checks must pass — a missing flag or insufficient
-	// permission returns `403`. The denial is audited at elevated severity.
-	// The agent independently re-checks every path and returns
-	// `sensitive_denied` when the flag is absent. The CP audit carries the
-	// full path list.
+	// Issues a `file_archive_create` command to the site's agent. The agent zips the specified paths (all
+	// containment-checked within the jail) and uploads the archive directly to a CP-minted S3 staging
+	// area. The CP then mints a short-lived presigned GET URL for the browser to download the archive.
+	//
+	// This is a read operation — it does not require write mode.
+	//
+	// Sensitive-path gate (F1): If any path in `paths` matches the sensitive-file deny-list
+	// (wp-config.php, .env*, *.pem, …), the caller must set `confirm_sensitive=true` AND hold
+	// `site.files.read_sensitive` (owner). Both checks must pass — a missing flag or insufficient
+	// permission returns `403`. The denial is audited at elevated severity. The agent independently
+	// re-checks every path and returns `sensitive_denied` when the flag is absent. The CP audit carries
+	// the full path list.
+	//
 	// Returns `503 storage_not_configured` on deployments without object storage.
-	// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-	// when not opted in.
+	//
+	// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+	//
 	// Requires `site.files.read` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/archive
 	CreateSiteFileArchive(ctx context.Context, request *FileArchiveCreateRequest, params CreateSiteFileArchiveParams) (CreateSiteFileArchiveRes, error)
 	// CreateSiteShare invokes createSiteShare operation.
 	//
-	// Grant site access to an email (admin+; org-scope only). If the email
-	// matches a known user the share is immediate (201); otherwise an invitation
-	// is created and the accept link is returned (202).
+	// Grant site access to an email (admin+; org-scope only). If the email matches a known user the share
+	// is immediate (201); otherwise an invitation is created and the accept link is returned (202).
 	//
 	// POST /api/v1/sites/{siteId}/shares
 	CreateSiteShare(ctx context.Context, request *CreateSiteShareRequest, params CreateSiteShareParams) (CreateSiteShareRes, error)
@@ -880,40 +985,35 @@ type Invoker interface {
 	CreateTenant(ctx context.Context, request *TenantCreate) (CreateTenantRes, error)
 	// CreateUpdateRun invokes createUpdateRun operation.
 	//
-	// Creates an update run targeting a selection of sites (by site_ids OR by
-	// tag) and a set of items (plugins/themes/core, each with a desired version
-	// or "latest"). One task is created per (site, item) and a background job is
-	// enqueued per task (respecting a per-tenant parallelism limit). When
-	// dry_run is true the agent is asked what WOULD change and the site is not
-	// mutated. Requires operator+.
+	// Creates an update run targeting a selection of sites (by site_ids OR by tag) and a set of items
+	// (plugins/themes/core, each with a desired version or "latest"). One task is created per (site, item)
+	// and a background job is enqueued per task (respecting a per-tenant parallelism limit). When dry_run
+	// is true the agent is asked what WOULD change and the site is not mutated. Requires operator+.
 	//
 	// POST /api/v1/updates
 	CreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (CreateUpdateRunRes, error)
 	// DeleteAdminUser invokes deleteAdminUser operation.
 	//
-	// Hard-deletes the user. Any organisation the user solely owned with
-	// zero sites is deleted along with them; an organisation with sites (or
-	// other members) is kept, listed in `kept_orgs_with_sites`.
+	// Hard-deletes the user. Any organisation the user solely owned with zero sites is deleted along with
+	// them; an organisation with sites (or other members) is kept, listed in `kept_orgs_with_sites`.
 	//
 	// DELETE /api/v1/admin/users/{userId}
 	DeleteAdminUser(ctx context.Context, params DeleteAdminUserParams) (DeleteAdminUserRes, error)
 	// DeleteBackup invokes deleteBackup operation.
 	//
-	// Deletes a completed or failed snapshot and reclaims any now-unreferenced
-	// chunks via the reachability-based retention GC over the surviving
-	// snapshots — a chunk a surviving snapshot still needs is never deleted.
-	// CHAIN-SAFE: deleting a base or mid-chain increment that still has
-	// dependent later-generation increments is refused with 422
-	// (chain_has_dependents); delete the newer increments first. A
-	// running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first. Requires
-	// operator+.
+	// Deletes a completed or failed snapshot and reclaims any now-unreferenced chunks via the
+	// reachability-based retention GC over the surviving snapshots — a chunk a surviving snapshot still
+	// needs is never deleted. CHAIN-SAFE: deleting a base or mid-chain increment that still has dependent
+	// later-generation increments is refused with 422 (chain_has_dependents); delete the newer increments
+	// first. A running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first.
+	// Requires operator+.
 	//
 	// DELETE /api/v1/backups/{snapshotId}
 	DeleteBackup(ctx context.Context, params DeleteBackupParams) (DeleteBackupRes, error)
 	// DeleteClient invokes deleteClient operation.
 	//
-	// Permanently deletes the client. Sites assigned to the client are unassigned (ON DELETE SET NULL)
-	// but not deleted.
+	// Permanently deletes the client. Sites assigned to the client are unassigned (ON DELETE SET NULL) but
+	// not deleted.
 	//
 	// DELETE /api/v1/clients/{clientId}
 	DeleteClient(ctx context.Context, params DeleteClientParams) (DeleteClientRes, error)
@@ -925,48 +1025,49 @@ type Invoker interface {
 	DeleteClientReport(ctx context.Context, params DeleteClientReportParams) (DeleteClientReportRes, error)
 	// DeleteDbOrphans invokes deleteDbOrphans operation.
 	//
-	// Deletes only options / cron entries / tables from UNINSTALLED plugins
-	// that the P3.5 report classified as safely deletable. The CP
-	// re-classifies every item and drops anything no longer eligible before
-	// signing the agent command; the agent independently re-verifies each
-	// item live before deleting. Requires `site.cache.manage` at the route
-	// level AND `site.cache.delete-all` (admin+) in the handler body.
+	// Deletes only options / cron entries / tables from UNINSTALLED plugins that the P3.5 report
+	// classified as safely deletable. The CP re-classifies every item and drops anything no longer
+	// eligible before signing the agent command; the agent independently re-verifies each item live before
+	// deleting. Requires `site.cache.manage` at the route level AND `site.cache.delete-all` (admin+) in
+	// the handler body.
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/orphan-delete
 	DeleteDbOrphans(ctx context.Context, request *DbOrphanDeleteRequest, params DeleteDbOrphansParams) (DeleteDbOrphansRes, error)
 	// DeleteDbSnapshot invokes deleteDbSnapshot operation.
 	//
-	// Removes a snapshot from the WP server's local store. This is
-	// irreversible. Requires the `site:write` permission (operator+).
+	// Removes a snapshot from the WP server's local store. This is irreversible. Requires the `site:write`
+	// permission (operator+).
 	//
 	// DELETE /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}
 	DeleteDbSnapshot(ctx context.Context, params DeleteDbSnapshotParams) (*DeleteDbSnapshotOK, error)
 	// DeleteEmailConnection invokes deleteEmailConnection operation.
 	//
-	// Permanently deletes the named connection. Returns 404 when the key does
-	// not exist. Returns 409 when the key is referenced as `default_connection`
-	// or `fallback_connection` on the site's config row (remove the reference
-	// first).
+	// Permanently deletes the named connection. Returns 404 when the key does not exist. Returns 409 when
+	// the key is referenced as `default_connection` or `fallback_connection` on the site's config row
+	// (remove the reference first).
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// DELETE /api/v1/sites/{siteId}/email/connections/{connKey}
 	DeleteEmailConnection(ctx context.Context, params DeleteEmailConnectionParams) (DeleteEmailConnectionRes, error)
 	// DeleteFleetEmailSuppression invokes deleteFleetEmailSuppression operation.
 	//
-	// Removes a fleet-wide suppression entry (site_id IS NULL). If the entry
-	// belongs to a specific site, use the per-site delete route instead.
+	// Removes a fleet-wide suppression entry (site_id IS NULL). If the entry belongs to a specific site,
+	// use the per-site delete route instead.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// DELETE /api/v1/email/suppression/{suppressionId}
 	DeleteFleetEmailSuppression(ctx context.Context, params DeleteFleetEmailSuppressionParams) (DeleteFleetEmailSuppressionRes, error)
 	// DeleteIsolatedMedia invokes deleteIsolatedMedia operation.
 	//
-	// Permanently removes quarantined attachment files from disk and deletes
-	// the corresponding WordPress attachment posts. **This cannot be undone.**
-	// Only items already in the quarantine directory (isolated via the isolate
-	// endpoint) can be deleted through this path. A `confirm` token of
-	// `"DELETE"` must be included in the request body; the agent enforces this
-	// independently.
+	// Permanently removes quarantined attachment files from disk and deletes the corresponding WordPress
+	// attachment posts. This cannot be undone.
+	//
+	// Only items already in the quarantine directory (isolated via the isolate endpoint) can be deleted
+	// through this path. A `confirm` token of `"DELETE"` must be included in the request body; the agent
+	// enforces this independently.
+	//
 	// Requires the `site.media.clean.write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/delete
@@ -985,17 +1086,14 @@ type Invoker interface {
 	DeleteMember(ctx context.Context, params DeleteMemberParams) (DeleteMemberRes, error)
 	// DeleteOrg invokes deleteOrg operation.
 	//
-	// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other
-	// members) is hard-deleted immediately (`lane=hard`). A populated org is
-	// soft-deleted (`lane=soft`): it becomes invisible everywhere instantly
-	// and is recoverable via `POST /orgs/{orgId}/restore` until the
-	// grace-window purge worker runs. `confirm_name` must exactly match the
-	// organisation's current name. When this is the caller's active org,
-	// their session is reassigned to another live membership, or cleared
-	// entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response
-	// reflects the post-delete state.
-	// On a hosted instance an active paid subscription must be
-	// cancelled/downgraded first (`billing_active` 409).
+	// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other members) is hard-deleted
+	// immediately (`lane=hard`). A populated org is soft-deleted (`lane=soft`): it becomes invisible
+	// everywhere instantly and is recoverable via `POST /orgs/{orgId}/restore` until the grace-window
+	// purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
+	// the caller's active org, their session is reassigned to another live membership, or cleared entirely
+	// (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
+	// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
+	// first (`billing_active` 409).
 	//
 	// DELETE /api/v1/orgs/{orgId}
 	DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error)
@@ -1019,26 +1117,28 @@ type Invoker interface {
 	DeleteSiteDestination(ctx context.Context, params DeleteSiteDestinationParams) (DeleteSiteDestinationRes, error)
 	// DeleteSiteEmailSuppression invokes deleteSiteEmailSuppression operation.
 	//
-	// Removes a suppression entry by id. The operator is responsible for
-	// ensuring the removal is appropriate (e.g. the email address has
-	// unsubscribed from a suppression request rather than a hard bounce).
+	// Removes a suppression entry by id. The operator is responsible for ensuring the removal is
+	// appropriate (e.g. the email address has unsubscribed from a suppression request rather than a hard
+	// bounce).
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// DELETE /api/v1/sites/{siteId}/email/suppression/{suppressionId}
 	DeleteSiteEmailSuppression(ctx context.Context, params DeleteSiteEmailSuppressionParams) (DeleteSiteEmailSuppressionRes, error)
 	// DeleteSiteFile invokes deleteSiteFile operation.
 	//
-	// Issues a `file_delete` command to the site's agent after verifying
-	// three layered gates (T12/T13):
-	// 1. **PermSiteFilesWrite** (admin+) — inherited from route middleware.
-	// 2. **PermSiteFilesDelete** (owner) — checked in the handler; denial is
-	// audited with action `site.files.delete.denied`.
-	// 3. **Typed confirm token** — `confirm` in the request body must be the
-	// string `"DELETE"` exactly. Missing or wrong value returns
-	// `400 confirm_required`.
-	// The agent independently enforces its protected-root guard (`wp-admin`,
-	// `wp-includes`).
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
+	// Issues a `file_delete` command to the site's agent after verifying three layered gates (T12/T13):
+	//
+	// 1. PermSiteFilesWrite (admin+) — inherited from route middleware.
+	// 2. PermSiteFilesDelete (owner) — checked in the handler; denial is audited with action
+	//    `site.files.delete.denied`.
+	// 3. Typed confirm token — `confirm` in the request body must be the string `"DELETE"` exactly.
+	//    Missing or wrong value returns `400 confirm_required`.
+	//
+	// The agent independently enforces its protected-root guard (`wp-admin`, `wp-includes`).
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+	//
 	// Requires `site.files.write` + `site.files.delete` (owner only).
 	//
 	// POST /api/v1/sites/{siteId}/files/delete
@@ -1057,9 +1157,8 @@ type Invoker interface {
 	DeleteSiteShare(ctx context.Context, params DeleteSiteShareParams) (DeleteSiteShareRes, error)
 	// DeleteTag invokes deleteTag operation.
 	//
-	// Removes the tag from the registry AND from every site (and every
-	// unexpired, unredeemed pairing code) currently carrying it, in one
-	// transaction.
+	// Removes the tag from the registry AND from every site (and every unexpired, unredeemed pairing code)
+	// currently carrying it, in one transaction.
 	//
 	// DELETE /api/v1/tags/{tagId}
 	DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error)
@@ -1071,24 +1170,23 @@ type Invoker interface {
 	DeleteWebAuthnCredential(ctx context.Context, request *DeleteWebAuthnCredentialReq, params DeleteWebAuthnCredentialParams) (DeleteWebAuthnCredentialRes, error)
 	// DisableCache invokes disableCache operation.
 	//
-	// Turns off agent-side page caching. Returns an `{ok, detail}` ack.
-	// Requires the `site.cache.manage` permission.
+	// Turns off agent-side page caching. Returns an `{ok, detail}` ack. Requires the `site.cache.manage`
+	// permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/cache/disable
 	DisableCache(ctx context.Context, params DisableCacheParams) (*PerfActionResult, error)
 	// DisableObjectCache invokes disableObjectCache operation.
 	//
-	// Removes the WP object-cache drop-in and flushes. Sends an
-	// `objectcache.disable` signed command. Requires `site.cache.manage`
-	// permission.
+	// Removes the WP object-cache drop-in and flushes. Sends an `objectcache.disable` signed command.
+	// Requires `site.cache.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/disable
 	DisableObjectCache(ctx context.Context, params DisableObjectCacheParams) (*PerfActionResult, error)
 	// DisableTotp invokes disableTotp operation.
 	//
-	// Requires `current_password` re-authentication. On success: clears
-	// TOTP, recomputes `two_factor_enabled`, revokes every trusted device
-	// for this user, and clears the trusted-device cookie on this response.
+	// Requires `current_password` re-authentication. On success: clears TOTP, recomputes
+	// `two_factor_enabled`, revokes every trusted device for this user, and clears the trusted-device
+	// cookie on this response.
 	//
 	// POST /auth/2fa/totp/disable
 	DisableTotp(ctx context.Context, request *DisableTotpReq) (DisableTotpRes, error)
@@ -1100,87 +1198,86 @@ type Invoker interface {
 	DismissSiteVulnerability(ctx context.Context, params DismissSiteVulnerabilityParams) (DismissSiteVulnerabilityRes, error)
 	// DownloadPortalReport invokes downloadPortalReport operation.
 	//
-	// Returns a presigned URL for the HTML or PDF version of a completed report. The report must belong
-	// to one of the principal's clients; otherwise 404 is returned (not 403, to avoid confirming report
+	// Returns a presigned URL for the HTML or PDF version of a completed report. The report must belong to
+	// one of the principal's clients; otherwise 404 is returned (not 403, to avoid confirming report
 	// existence).
 	//
 	// GET /api/v1/portal/reports/{reportId}/download
 	DownloadPortalReport(ctx context.Context, params DownloadPortalReportParams) (DownloadPortalReportRes, error)
 	// EnableCache invokes enableCache operation.
 	//
-	// Turns on agent-side page caching. Returns an `{ok, detail}` ack;
-	// the authoritative install state re-reads via the config query on the
-	// `cache.enabled` SSE event. Requires the `site.cache.manage` permission.
+	// Turns on agent-side page caching. Returns an `{ok, detail}` ack; the authoritative install state
+	// re-reads via the config query on the `cache.enabled` SSE event. Requires the `site.cache.manage`
+	// permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/cache/enable
 	EnableCache(ctx context.Context, params EnableCacheParams) (*PerfActionResult, error)
 	// EnableObjectCache invokes enableObjectCache operation.
 	//
-	// Installs the WP object-cache drop-in on the site. Rejected with 400
-	// `objectcache_test_required` when no passing test result exists for the
-	// current configuration (handshake gate). Sends an `objectcache.enable`
-	// signed command. Requires `site.cache.manage` permission.
+	// Installs the WP object-cache drop-in on the site. Rejected with 400 `objectcache_test_required` when
+	// no passing test result exists for the current configuration (handshake gate). Sends an
+	// `objectcache.enable` signed command. Requires `site.cache.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/enable
 	EnableObjectCache(ctx context.Context, params EnableObjectCacheParams) (EnableObjectCacheRes, error)
 	// Enroll invokes enroll operation.
 	//
-	// Called by an agent (NOT an authenticated control-plane user) to enroll a
-	// site using a pairing code. The tenant is derived entirely from the code.
-	// On success the site is created (or, if the URL already exists for the
-	// tenant, its agent key is rotated) and the control-plane PUBLIC signing
-	// key is returned so the agent can verify CP->agent commands. The code is
-	// consumed (single-use).
+	// Called by an agent (NOT an authenticated control-plane user) to enroll a site using a pairing code.
+	// The tenant is derived entirely from the code. On success the site is created (or, if the URL already
+	// exists for the tenant, its agent key is rotated) and the control-plane PUBLIC signing key is
+	// returned so the agent can verify CP->agent commands. The code is consumed (single-use).
 	//
 	// POST /enroll
 	Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error)
 	// ExportSiteEmailLog invokes exportSiteEmailLog operation.
 	//
-	// Streams up to 10,000 filtered log entries as CSV (default) or JSON.
-	// Body content is excluded from the export regardless of `body_stored`
-	// (privacy-by-default). Pass `format=json` for JSON output.
+	// Streams up to 10,000 filtered log entries as CSV (default) or JSON. Body content is excluded from
+	// the export regardless of `body_stored` (privacy-by-default). Pass `format=json` for JSON output.
+	//
 	// Requires `site.email.manage` permission and site access.
 	//
 	// GET /api/v1/sites/{siteId}/email/log/export
 	ExportSiteEmailLog(ctx context.Context, params ExportSiteEmailLogParams) (ExportSiteEmailLogRes, error)
 	// ExtendAdminAccountGrace invokes extendAdminAccountGrace operation.
 	//
-	// Sets tenants.grace_until, clamped to at most 90 days out from now and
-	// forward-only (a new grace_until must extend further out than the
-	// current one). Requires is_superadmin=true.
+	// Sets tenants.grace_until, clamped to at most 90 days out from now and forward-only (a new
+	// grace_until must extend further out than the current one). Requires is_superadmin=true.
 	//
 	// POST /api/v1/admin/accounts/{id}/grace
 	ExtendAdminAccountGrace(ctx context.Context, request *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error)
 	// ExtractSiteFileArchive invokes extractSiteFileArchive operation.
 	//
-	// Issues a `file_extract` command to the site's agent. The agent opens
-	// the archive at `archive_path`, validates every entry against the
-	// containment guard (zip-slip / zip-bomb / symlink / absolute-path
+	// Issues a `file_extract` command to the site's agent. The agent opens the archive at `archive_path`,
+	// validates every entry against the containment guard (zip-slip / zip-bomb / symlink / absolute-path
 	// guards all enforced agent-side), and extracts into `dest_path`.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be
-	// `true`. Returns `403 files_write_not_enabled` when write mode is off.
-	// **Zip-slip / zip-bomb (422):** If any archive entry would resolve
-	// outside `dest_path` or the archive exceeds the uncompressed-size /
-	// entry-count guard, the agent returns `zip_slip` or `zip_bomb`
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be `true`. Returns
+	// `403 files_write_not_enabled` when write mode is off.
+	//
+	// Zip-slip / zip-bomb (422): If any archive entry would resolve outside `dest_path` or the archive
+	// exceeds the uncompressed-size / entry-count guard, the agent returns `zip_slip` or `zip_bomb`
 	// respectively. The CP maps these to `422 Unprocessable Entity`.
-	// **Bad/unknown archive (400):** `bad_archive` (file is corrupted) and
-	// `not_archive` (path is not a recognised archive) map to `400`.
-	// **Executable/sensitive gate (T1/T6):** When `confirm_executable_write`
-	// or `confirm_sensitive` is set in the request body:
-	// - The caller must additionally hold `site.files.write_code` (owner).
-	// - A non-owner caller is rejected at the CP handler — the agent is
-	// **never called** — and the denial is audited at elevated severity.
-	// - The agent independently enforces its executable deny-list and
-	// sensitive-path deny-list regardless of the confirm flags.
+	//
+	// Bad/unknown archive (400): `bad_archive` (file is corrupted) and `not_archive` (path is not a
+	// recognised archive) map to `400`.
+	//
+	// Executable/sensitive gate (T1/T6): When `confirm_executable_write` or `confirm_sensitive` is set in
+	// the request body:
+	//
+	//  - The caller must additionally hold `site.files.write_code` (owner).
+	//  - A non-owner caller is rejected at the CP handler — the agent is never called — and the denial
+	//    is audited at elevated severity.
+	//  - The agent independently enforces its executable deny-list and sensitive-path deny-list regardless
+	//    of the confirm flags.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/extract
 	ExtractSiteFileArchive(ctx context.Context, request *FileExtractRequest, params ExtractSiteFileArchiveParams) (ExtractSiteFileArchiveRes, error)
 	// FetchScanFindingFile invokes fetchScanFindingFile operation.
 	//
-	// Dispatches a synchronous read to the site's agent and returns the
-	// file content base64-encoded. Requires the `site.write` permission
-	// (this reaches out to the live site).
+	// Dispatches a synchronous read to the site's agent and returns the file content base64-encoded.
+	// Requires the `site.write` permission (this reaches out to the live site).
 	//
 	// POST /api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file
 	FetchScanFindingFile(ctx context.Context, params FetchScanFindingFileParams) (FetchScanFindingFileRes, error)
@@ -1198,50 +1295,46 @@ type Invoker interface {
 	FinishWebAuthnEnrollment(ctx context.Context, request *FinishWebAuthnEnrollmentReq) (FinishWebAuthnEnrollmentRes, error)
 	// FlushObjectCache invokes flushObjectCache operation.
 	//
-	// Flushes the Redis/cache store for this site. The `scope` field
-	// controls what is flushed: `all` (default), `site` (prefix-scoped),
-	// or `group` (requires `group` field). Sends an `objectcache.flush`
-	// command and publishes an `objectcache.flushed` SSE event. Requires
-	// `site.cache.purge` permission.
+	// Flushes the Redis/cache store for this site. The `scope` field controls what is flushed: `all`
+	// (default), `site` (prefix-scoped), or `group` (requires `group` field). Sends an `objectcache.flush`
+	// command and publishes an `objectcache.flushed` SSE event. Requires `site.cache.purge` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/flush
 	FlushObjectCache(ctx context.Context, request OptFlushObjectCacheReq, params FlushObjectCacheParams) (*PerfActionResult, error)
 	// ForceAdminAccountState invokes forceAdminAccountState operation.
 	//
-	// The manual escape hatch for payment-provider webhook drift: sets
-	// plan and plan_status directly and clears grace_until. Never use this
-	// to grant service for free — use the comp endpoint instead. Requires
-	// is_superadmin=true.
+	// The manual escape hatch for payment-provider webhook drift: sets plan and plan_status directly and
+	// clears grace_until. Never use this to grant service for free — use the comp endpoint instead.
+	// Requires is_superadmin=true.
 	//
 	// POST /api/v1/admin/accounts/{id}/state
 	ForceAdminAccountState(ctx context.Context, request *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error)
 	// ForgotPassword invokes forgotPassword operation.
 	//
-	// Always returns 200 {ok: true} whether or not the email maps to an
-	// account (enumeration-safe). A reset-link email is sent when the account
-	// exists and is active.
+	// Always returns 200 {ok: true} whether or not the email maps to an account (enumeration-safe). A
+	// reset-link email is sent when the account exists and is active.
 	//
 	// POST /auth/password/forgot
 	ForgotPassword(ctx context.Context, request *ForgotPasswordReq) (*ForgotPasswordOK, error)
 	// GenerateClientReport invokes generateClientReport operation.
 	//
-	// Enqueues a report generation job. Returns 202 Accepted immediately; poll GET /reports/{reportId}
-	// for status. When notify=true and the schedule has recipients, an email is sent on completion.
+	// Enqueues a report generation job. Returns 202 Accepted immediately; poll GET /reports/{reportId} for
+	// status. When notify=true and the schedule has recipients, an email is sent on completion.
 	//
 	// POST /api/v1/clients/{clientId}/reports
 	GenerateClientReport(ctx context.Context, request OptGenerateClientReportRequest, params GenerateClientReportParams) (GenerateClientReportRes, error)
 	// GetAdminAccount invokes getAdminAccount operation.
 	//
-	// Returns the account header, usage-vs-entitlement meters, subscription
-	// card, a merged billing_events+audit_log timeline (newest first), the
-	// member roster, and a compact site list. Requires is_superadmin=true.
+	// Returns the account header, usage-vs-entitlement meters, subscription card, a merged
+	// billing_events+audit_log timeline (newest first), the member roster, and a compact site list.
+	// Requires is_superadmin=true.
 	//
 	// GET /api/v1/admin/accounts/{id}
 	GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error)
 	// GetAdminAccountsTenancy invokes getAdminAccountsTenancy operation.
 	//
-	// Diagnostic for account/org splits (e.g. a superadmin stranded in the
-	// wrong org while site data lives in a different org). No mutation.
+	// Diagnostic for account/org splits (e.g. a superadmin stranded in the wrong org while site data lives
+	// in a different org). No mutation.
 	//
 	// GET /api/v1/admin/accounts-tenancy
 	GetAdminAccountsTenancy(ctx context.Context, params GetAdminAccountsTenancyParams) (GetAdminAccountsTenancyRes, error)
@@ -1254,9 +1347,8 @@ type Invoker interface {
 	GetAdminRevenue(ctx context.Context) (GetAdminRevenueRes, error)
 	// GetAdminSiteTenancy invokes getAdminSiteTenancy operation.
 	//
-	// Compares where a site and its perf data (rucss results / cache stats
-	// / config) live against the calling superadmin's own org memberships.
-	// No mutation.
+	// Compares where a site and its perf data (rucss results / cache stats / config) live against the
+	// calling superadmin's own org memberships. No mutation.
 	//
 	// GET /api/v1/admin/sites/{siteId}/tenancy
 	GetAdminSiteTenancy(ctx context.Context, params GetAdminSiteTenancyParams) (GetAdminSiteTenancyRes, error)
@@ -1268,17 +1360,15 @@ type Invoker interface {
 	GetAdminStats(ctx context.Context) (GetAdminStatsRes, error)
 	// GetAdminSystemAudit invokes getAdminSystemAudit operation.
 	//
-	// Reads system_audit_log, which holds the events no single organisation's
-	// own audit log can show: actions whose subject organisation is being
-	// deleted, and authentication events for accounts that belong to no
-	// organisation at all (a new social account, a site collaborator, a portal
-	// user, anyone inside the org delete grace window). Newest first.
-	// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
-	// the log grows at its head while it is being read, so a numbered page
-	// boundary is already stale when it is handed out and the rows that moved
-	// past it come back twice. Send the previous response's `next_cursor` to
-	// get the rows that follow the last one you saw. `next_cursor` is absent
-	// on the last page.
+	// Reads system_audit_log, which holds the events no single organisation's own audit log can show:
+	// actions whose subject organisation is being deleted, and authentication events for accounts that
+	// belong to no organisation at all (a new social account, a site collaborator, a portal user, anyone
+	// inside the org delete grace window). Newest first.
+	//
+	// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset: the log grows at its head
+	// while it is being read, so a numbered page boundary is already stale when it is handed out and the
+	// rows that moved past it come back twice. Send the previous response's `next_cursor` to get the rows
+	// that follow the last one you saw. `next_cursor` is absent on the last page.
 	//
 	// GET /api/v1/admin/system-audit
 	GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error)
@@ -1290,20 +1380,17 @@ type Invoker interface {
 	GetAdminVulnFeedStatus(ctx context.Context) (GetAdminVulnFeedStatusRes, error)
 	// GetAgentLatestVersion invokes getAgentLatestVersion operation.
 	//
-	// Reads the published agent-releases/latest.json pointer manifest (the
-	// same object internal/agent/update_handler.go serves to agents)
-	// through a cached, best-effort reader. version is "unknown" when no
-	// release has ever been published, object storage is not configured,
-	// or the manifest cannot currently be read; this never surfaces as an
-	// error.
+	// Reads the published agent-releases/latest.json pointer manifest (the same object
+	// internal/agent/update_handler.go serves to agents) through a cached, best-effort reader. version is
+	// "unknown" when no release has ever been published, object storage is not configured, or the manifest
+	// cannot currently be read; this never surfaces as an error.
 	//
 	// GET /api/v1/agent/latest
 	GetAgentLatestVersion(ctx context.Context) (GetAgentLatestVersionRes, error)
 	// GetAlertConfig invokes getAlertConfig operation.
 	//
-	// Returns the tenant's downtime/recovery alert channel: email recipients,
-	// whether a webhook is configured, and the enabled flag. The webhook secret
-	// is never returned. Requires admin+.
+	// Returns the tenant's downtime/recovery alert channel: email recipients, whether a webhook is
+	// configured, and the enabled flag. The webhook secret is never returned. Requires admin+.
 	//
 	// GET /api/v1/alert-config
 	GetAlertConfig(ctx context.Context) (*AlertConfig, error)
@@ -1315,12 +1402,11 @@ type Invoker interface {
 	GetBackup(ctx context.Context, params GetBackupParams) (GetBackupRes, error)
 	// GetBackupEnvironment invokes getBackupEnvironment operation.
 	//
-	// Returns the raw JSON the agent shipped as the synthetic `environment.json`
-	// manifest entry for a snapshot (PHP version, WordPress version, active
-	// plugins, server software, etc.). Returns 404 with code `env_not_recorded`
-	// for snapshots that pre-date the environment-fingerprint feature (agent
-	// v0.9.10+). Returns 503 when the environment reader is not wired on this
-	// control plane. Requires viewer+.
+	// Returns the raw JSON the agent shipped as the synthetic `environment.json` manifest entry for a
+	// snapshot (PHP version, WordPress version, active plugins, server software, etc.). Returns 404 with
+	// code `env_not_recorded` for snapshots that pre-date the environment-fingerprint feature (agent
+	// v0.9.10+). Returns 503 when the environment reader is not wired on this control plane. Requires
+	// viewer+.
 	//
 	// GET /api/v1/backups/{snapshotId}/environment
 	GetBackupEnvironment(ctx context.Context, params GetBackupEnvironmentParams) (GetBackupEnvironmentRes, error)
@@ -1344,25 +1430,23 @@ type Invoker interface {
 	GetBackupSettingsNotifications(ctx context.Context, params GetBackupSettingsNotificationsParams) (GetBackupSettingsNotificationsRes, error)
 	// GetBackupSqlInspection invokes getBackupSqlInspection operation.
 	//
-	// Returns a structured report on the SQL dump artifact of a backup
-	// snapshot: table inventory, row/byte estimates, charset, table prefix,
-	// and (when the dump looks like a WordPress install) the canonical
+	// Returns a structured report on the SQL dump artifact of a backup snapshot: table inventory, row/byte
+	// estimates, charset, table prefix, and (when the dump looks like a WordPress install) the canonical
 	// siteurl/home/db_version probed from wp_options. Resolution order:
-	// 1. If the snapshot manifest carries an agent-generated inspection
-	// artifact, that JSON is returned (source="agent"). This is the cheap,
-	// always-correct path because the agent has the SQL plaintext locally.
-	// 2. Otherwise the control plane streams the dump artifact, parses it
-	// with the legacy scanner, and caches the result for subsequent calls
-	// (source="cp-legacy"). The first request returns 202 Accepted while
-	// the inspection job runs; the client polls until it gets 200.
-	// Requires viewer+.
+	//
+	// 1. If the snapshot manifest carries an agent-generated inspection artifact, that JSON is returned
+	//    (source="agent"). This is the cheap, always-correct path because the agent has the SQL plaintext
+	//    locally.
+	// 2. Otherwise the control plane streams the dump artifact, parses it with the legacy scanner, and
+	//    caches the result for subsequent calls (source="cp-legacy"). The first request returns 202
+	//    Accepted while the inspection job runs; the client polls until it gets 200. Requires viewer+.
 	//
 	// GET /api/v1/backups/{snapshotId}/sql-inspection
 	GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (GetBackupSqlInspectionRes, error)
 	// GetBilling invokes getBilling operation.
 	//
-	// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
-	// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+	// Returns the tenant's current plan, payment-provider subscription status, and site-count meter. Only
+	// mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
 	// self-hosted or unhosted instance 404s this path (and the two below it) entirely.
 	//
 	// GET /api/v1/billing
@@ -1375,9 +1459,8 @@ type Invoker interface {
 	GetCacheHealth(ctx context.Context, params GetCacheHealthParams) (GetCacheHealthRes, error)
 	// GetCacheStats invokes getCacheStats operation.
 	//
-	// Returns the most recent cache gauges the agent reported (cached page
-	// count, on-disk cache size, last purge/preload timestamps, preload
-	// progress). Requires the `site:read` permission.
+	// Returns the most recent cache gauges the agent reported (cached page count, on-disk cache size, last
+	// purge/preload timestamps, preload progress). Requires the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/cache/stats
 	GetCacheStats(ctx context.Context, params GetCacheStatsParams) (*CacheStats, error)
@@ -1403,10 +1486,9 @@ type Invoker interface {
 	GetClientReportSchedule(ctx context.Context, params GetClientReportScheduleParams) (GetClientReportScheduleRes, error)
 	// GetDbCleanStatus invokes getDbCleanStatus operation.
 	//
-	// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` /
-	// `active_job_id` / `active_started_at` reflect the in-flight-job
-	// watchdog columns, letting the web show/hide the spinner on page load
-	// without relying on SSE delivery.
+	// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` / `active_job_id` /
+	// `active_started_at` reflect the in-flight-job watchdog columns, letting the web show/hide the
+	// spinner on page load without relying on SSE delivery.
 	//
 	// GET /api/v1/sites/{siteId}/perf/db/clean
 	GetDbCleanStatus(ctx context.Context, params GetDbCleanStatusParams) (GetDbCleanStatusRes, error)
@@ -1418,169 +1500,158 @@ type Invoker interface {
 	GetDbHealth(ctx context.Context, params GetDbHealthParams) (GetDbHealthRes, error)
 	// GetDbOrphansReport invokes getDbOrphansReport operation.
 	//
-	// Classifies the orphaned options/cron entries/tables stored in the
-	// latest `db_scan` result against the live corpus knowledge base. No
-	// destructive action is performed here — see
+	// Classifies the orphaned options/cron entries/tables stored in the latest `db_scan` result against
+	// the live corpus knowledge base. No destructive action is performed here — see
 	// `POST /perf/db/orphan-delete`.
 	//
 	// GET /api/v1/sites/{siteId}/perf/db/orphans
 	GetDbOrphansReport(ctx context.Context, params GetDbOrphansReportParams) (GetDbOrphansReportRes, error)
 	// GetDbScanResult invokes getDbScanResult operation.
 	//
-	// Returns the most recently persisted db_scan result including the
-	// per-category counts and the full per-table inventory (Phase 2.1).
-	// Returns `{"result": null}` when no scan has been run yet.
-	// Requires the `site:read` permission.
+	// Returns the most recently persisted db_scan result including the per-category counts and the full
+	// per-table inventory (Phase 2.1). Returns `{"result": null}` when no scan has been run yet. Requires
+	// the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/db/scan
 	GetDbScanResult(ctx context.Context, params GetDbScanResultParams) (*GetDbScanResultOK, error)
 	// GetEmailNotifySettings invokes getEmailNotifySettings operation.
 	//
-	// Returns the tenant-level email alert and digest notification settings.
-	// Always returns 200 with sensible defaults when no settings row exists
-	// yet (enabled=false, digest_enabled=false).
-	// Also returns `instance_mailer_configured` — when false, alerts and
-	// digests cannot be delivered even if enabled.
+	// Returns the tenant-level email alert and digest notification settings. Always returns 200 with
+	// sensible defaults when no settings row exists yet (enabled=false, digest_enabled=false).
+	//
+	// Also returns `instance_mailer_configured` — when false, alerts and digests cannot be delivered
+	// even if enabled.
+	//
 	// Org-level route. Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/email/notify-settings
 	GetEmailNotifySettings(ctx context.Context) (GetEmailNotifySettingsRes, error)
 	// GetFleetAgentVersions invokes getFleetAgentVersions operation.
 	//
-	// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
-	// counts, classified against a single reference version. That reference
-	// is the published agent version when the release manifest can be read,
-	// and otherwise the newest well-formed agent version present in this
-	// tenant's own fleet, which is what a self-hosted install (whose object
-	// storage never receives the release pipeline's manifest) gets.
-	// reference_source names which of the two, or "none" when neither was
-	// available. status is one of current | outdated | unknown | ineligible.
-	// "unknown" covers a site that has never reported agent_version, a
-	// malformed/unparseable version on either side of the comparison, or a
-	// reference_source of "none"; never a false
-	// "outdated". "ineligible" is a site that cannot self-update at all:
-	// today that is the public plugin-directory build, which ships without
-	// the self-updater and is upgraded by the plugin directory instead.
-	// Such a site is identified from its own plugin inventory and is
-	// reported "ineligible" whatever its version, because comparing it
-	// against a release channel it cannot consume would be a permanent
-	// false "outdated". Org-scoped only
-	// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
-	// a site-scoped collaborator has no cross-site rollup.
-	// agent_mirror (GH #322) reports the freshness of the upstream release
-	// mirror, which on a self-hosted install is what keeps latest_version
-	// up to date. It describes the mirror job, not the reference version:
-	// when reference_source is "fleet" or "none", or when
-	// agent_mirror.enabled is false, its timestamps say nothing about
-	// latest_version and no freshness age should be shown.
+	// Per-site {site_id, site_name, agent_version, status} plus fleet-wide counts, classified against a
+	// single reference version. That reference is the published agent version when the release manifest
+	// can be read, and otherwise the newest well-formed agent version present in this tenant's own fleet,
+	// which is what a self-hosted install (whose object storage never receives the release pipeline's
+	// manifest) gets. reference_source names which of the two, or "none" when neither was available.
+	// status is one of current | outdated | unknown | ineligible. "unknown" covers a site that has never
+	// reported agent_version, a malformed/unparseable version on either side of the comparison, or a
+	// reference_source of "none"; never a false "outdated". "ineligible" is a site that cannot self-update
+	// at all: today that is the public plugin-directory build, which ships without the self-updater and is
+	// upgraded by the plugin directory instead. Such a site is identified from its own plugin inventory
+	// and is reported "ineligible" whatever its version, because comparing it against a release channel it
+	// cannot consume would be a permanent false "outdated". Org-scoped only (RequireOrgScope), mirroring
+	// the vulnerability-scanner fleet rollup: a site-scoped collaborator has no cross-site rollup.
+	//
+	// agent_mirror (GH #322) reports the freshness of the upstream release mirror, which on a self-hosted
+	// install is what keeps latest_version up to date. It describes the mirror job, not the reference
+	// version: when reference_source is "fleet" or "none", or when agent_mirror.enabled is false, its
+	// timestamps say nothing about latest_version and no freshness age should be shown.
 	//
 	// GET /api/v1/fleet/agents
 	GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error)
 	// GetFleetBackupHealth invokes getFleetBackupHealth operation.
 	//
-	// Returns one health item per requested site with a server-derived status:
-	// unprotected, failed, stale, in_flight, or protected. Requires viewer+.
+	// Returns one health item per requested site with a server-derived status: unprotected, failed, stale,
+	// in_flight, or protected. Requires viewer+.
 	//
 	// GET /api/v1/backups/health
 	GetFleetBackupHealth(ctx context.Context, params GetFleetBackupHealthParams) (*BackupHealthList, error)
 	// GetFleetDbHealth invokes getFleetDbHealth operation.
 	//
-	// Returns an aggregate of database health metrics across all tenant sites
-	// that have at least one completed DB scan within the lookback window.
-	// Includes total DB size, orphaned option/cron counts, and the top-N sites
-	// by DB size. Org-scope only. Requires viewer+.
+	// Returns an aggregate of database health metrics across all tenant sites that have at least one
+	// completed DB scan within the lookback window. Includes total DB size, orphaned option/cron counts,
+	// and the top-N sites by DB size. Org-scope only. Requires viewer+.
 	//
 	// GET /api/v1/perf/db/fleet-health
 	GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (*GetFleetDbHealthOK, error)
 	// GetFleetEmailDeliverability invokes getFleetEmailDeliverability operation.
 	//
-	// Returns per-site deliverability aggregates for a rolling window.
-	// Items are sorted by bounce_rate DESC then total DESC (riskiest first).
-	// The `window` query parameter controls the look-back period in days
-	// (default 30, clamped to [1, 365]).
-	// Org-scope only (site-collaborators are blocked).
-	// Requires `site.email.manage` permission.
-	// **Reputation thresholds (for frontend colouring):**
-	// - `bounce_rate` warn ≥2%, danger ≥5%
-	// - `complaint_rate` warn ≥0.05%, danger ≥0.1%.
+	// Returns per-site deliverability aggregates for a rolling window. Items are sorted by bounce_rate
+	// DESC then total DESC (riskiest first).
+	//
+	// The `window` query parameter controls the look-back period in days (default 30, clamped to [1,
+	// 365]).
+	//
+	// Org-scope only (site-collaborators are blocked). Requires `site.email.manage` permission.
+	//
+	// Reputation thresholds (for frontend colouring):
+	//
+	//  - `bounce_rate` warn ≥2%, danger ≥5%
+	//  - `complaint_rate` warn ≥0.05%, danger ≥0.1%
 	//
 	// GET /api/v1/email/deliverability
 	GetFleetEmailDeliverability(ctx context.Context, params GetFleetEmailDeliverabilityParams) (GetFleetEmailDeliverabilityRes, error)
 	// GetFleetEmailStats invokes getFleetEmailStats operation.
 	//
-	// Returns tenant-wide summary counts and a per-day time-series for the
-	// given date range. Org-scope only.
+	// Returns tenant-wide summary counts and a per-day time-series for the given date range. Org-scope
+	// only.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/email/stats
 	GetFleetEmailStats(ctx context.Context, params GetFleetEmailStatsParams) (GetFleetEmailStatsRes, error)
 	// GetFleetIncidentDetail invokes getFleetIncidentDetail operation.
 	//
-	// A site-scoped collaborator without access to the incident's own site
-	// gets `404 incident_not_found` (never a distinguishing signal).
+	// A site-scoped collaborator without access to the incident's own site gets `404 incident_not_found`
+	// (never a distinguishing signal).
 	//
 	// GET /api/v1/fleet/incidents/{incidentId}
 	GetFleetIncidentDetail(ctx context.Context, params GetFleetIncidentDetailParams) (GetFleetIncidentDetailRes, error)
 	// GetFleetIncidents invokes getFleetIncidents operation.
 	//
-	// Returns open incidents (in_incident=true) and recently-alerted sites
-	// (last_alert_at >= since). Full historical incident reconstruction is NOT
-	// possible from site_alert_state, which stores only current transition
-	// memory. ended_at/duration_seconds are estimated from updated_at for
-	// closed incidents, not from a true incident-close record. Requires viewer+.
+	// Returns open incidents (in_incident=true) and recently-alerted sites (last_alert_at >= since). Full
+	// historical incident reconstruction is NOT possible from site_alert_state, which stores only current
+	// transition memory. ended_at/duration_seconds are estimated from updated_at for closed incidents, not
+	// from a true incident-close record. Requires viewer+.
 	//
 	// GET /api/v1/fleet/incidents
 	GetFleetIncidents(ctx context.Context, params GetFleetIncidentsParams) (*FleetIncidentList, error)
 	// GetFleetRumAggregate invokes getFleetRumAggregate operation.
 	//
-	// Returns a fleet-level CWV aggregate across all tenant sites reporting RUM
-	// data in the window. Includes summary counts, per-metric p75/rating/
-	// distribution, fleet pass %, and worst offenders. Org-scope only;
-	// site-scoped collaborators should use the per-site /perf/rum/summary.
-	// Requires viewer+.
+	// Returns a fleet-level CWV aggregate across all tenant sites reporting RUM data in the window.
+	// Includes summary counts, per-metric p75/rating/ distribution, fleet pass %, and worst offenders.
+	// Org-scope only; site-scoped collaborators should use the per-site /perf/rum/summary. Requires
+	// viewer+.
 	//
 	// GET /api/v1/perf/rum/fleet
 	GetFleetRumAggregate(ctx context.Context, params GetFleetRumAggregateParams) (*FleetRumAggregate, error)
 	// GetFleetUptimeHistory invokes getFleetUptimeHistory operation.
 	//
-	// Returns, for every site the principal can see, one entry per UTC day
-	// across the requested window — oldest first, densified, with no gaps in
-	// the date sequence.
-	// Every entry is either a stored measurement or an explicit null. There
-	// is no interpolation, no carry-forward and no default: `uptime_pct` is
-	// null on any day with no recorded probes (the site did not exist yet,
-	// monitoring was off, the probe worker did not run, or the day has aged
-	// past the 90-day probe retention). Null is NOT zero — zero means the
-	// site was measured and was down for every probe of that day. Rendering
-	// null as 0% tells an operator their site was down when we simply never
-	// looked (GH #460).
-	// `measured_days` is how many of the entries carry a measurement, so a
-	// young site can be shown as "28 of 90 days measured" rather than
-	// implying 90 days of history.
+	// Returns, for every site the principal can see, one entry per UTC day across the requested window —
+	// oldest first, densified, with no gaps in the date sequence.
+	//
+	// Every entry is either a stored measurement or an explicit null. There is no interpolation, no
+	// carry-forward and no default: `uptime_pct` is null on any day with no recorded probes (the site did
+	// not exist yet, monitoring was off, the probe worker did not run, or the day has aged past the 90-day
+	// probe retention). Null is NOT zero — zero means the site was measured and was down for every probe
+	// of that day. Rendering null as 0% tells an operator their site was down when we simply never looked
+	// (GH #460).
+	//
+	// `measured_days` is how many of the entries carry a measurement, so a young site can be shown as "28
+	// of 90 days measured" rather than implying 90 days of history.
+	//
 	// Site-scoped principals see only their granted sites. Requires viewer+.
 	//
 	// GET /api/v1/fleet/uptime-history
 	GetFleetUptimeHistory(ctx context.Context, params GetFleetUptimeHistoryParams) (GetFleetUptimeHistoryRes, error)
 	// GetFleetUptimeStatus invokes getFleetUptimeStatus operation.
 	//
-	// Returns summary counts {up, degraded, down, unknown} and a per-site list
-	// with the latest probe result, 7-day uptime %, and in-incident flag.
-	// Status derivation: down=latest probe up=false; degraded=up but latency
-	// >2000ms, or connection_state=degraded (status_reason=agent_degraded),
-	// or connection_state=disconnected (status_reason=agent_unreachable, GH
-	// #291: a cached response can stay up=true while the agent side already
-	// proved the site unreachable); up=probe up+fast; unknown=no probe.
-	// connection_state=revoked/archived does not affect status derivation
-	// (the operator deliberately stopped managing the site). Requires
-	// viewer+.
+	// Returns summary counts {up, degraded, down, unknown} and a per-site list with the latest probe
+	// result, 7-day uptime %, and in-incident flag. Status derivation: down=latest probe up=false;
+	// degraded=up but latency
+	//
+	// 	2000ms, or connection_state=degraded (status_reason=agent_degraded), or
+	// 	connection_state=disconnected (status_reason=agent_unreachable, GH #291: a cached response can stay
+	// 	up=true while the agent side already proved the site unreachable); up=probe up+fast; unknown=no
+	// 	probe. connection_state=revoked/archived does not affect status derivation (the operator
+	// 	deliberately stopped managing the site). Requires viewer+.
 	//
 	// GET /api/v1/fleet/status
 	GetFleetUptimeStatus(ctx context.Context) (*FleetUptimeStatus, error)
 	// GetFleetVulnerabilities invokes getFleetVulnerabilities operation.
 	//
-	// Cross-site counts by severity plus a prioritized finding list.
-	// Org-scoped only (`RequireOrgScope`); a site-scoped collaborator uses
-	// the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
+	// Cross-site counts by severity plus a prioritized finding list. Org-scoped only (`RequireOrgScope`);
+	// a site-scoped collaborator uses the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
 	//
 	// GET /api/v1/vulnerabilities
 	GetFleetVulnerabilities(ctx context.Context, params GetFleetVulnerabilitiesParams) (GetFleetVulnerabilitiesRes, error)
@@ -1610,38 +1681,34 @@ type Invoker interface {
 	GetMediaSettings(ctx context.Context, params GetMediaSettingsParams) (GetMediaSettingsRes, error)
 	// GetObjectCacheConfig invokes getObjectCacheConfig operation.
 	//
-	// Returns the stored object cache configuration for the site. The password
-	// is never returned; `has_password` indicates whether one is stored.
-	// Live status fields (`oc_state`, `oc_latency_ms`, etc.) reflect the last
-	// heartbeat from the agent.
+	// Returns the stored object cache configuration for the site. The password is never returned;
+	// `has_password` indicates whether one is stored. Live status fields (`oc_state`, `oc_latency_ms`,
+	// etc.) reflect the last heartbeat from the agent.
 	//
 	// GET /api/v1/sites/{siteId}/perf/object-cache/config
 	GetObjectCacheConfig(ctx context.Context, params GetObjectCacheConfigParams) (*ObjectCacheConfig, error)
 	// GetObjectCacheStatsHistory invokes getObjectCacheStatsHistory operation.
 	//
-	// Returns daily-aggregated object cache stats (hit/miss ratio, memory
-	// usage, eviction count) for up to 365 days. Default window is 90 days.
-	// Requires `site.read` permission.
+	// Returns daily-aggregated object cache stats (hit/miss ratio, memory usage, eviction count) for up to
+	// 365 days. Default window is 90 days. Requires `site.read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/object-cache/stats-history
 	GetObjectCacheStatsHistory(ctx context.Context, params GetObjectCacheStatsHistoryParams) (*ObjectCacheStatsHistory, error)
 	// GetOrgEmailConfig invokes getOrgEmailConfig operation.
 	//
-	// Returns the org-wide default email configuration. Sites with no per-site
-	// config inherit this row. Includes `secret_set: bool` — the actual
-	// provider secret is never returned.
+	// Returns the org-wide default email configuration. Sites with no per-site config inherit this row.
+	// Includes `secret_set: bool` — the actual provider secret is never returned.
+	//
 	// Org-level route. Requires `site.email.manage` permission (operator+).
 	//
 	// GET /api/v1/email/org-config
 	GetOrgEmailConfig(ctx context.Context) (GetOrgEmailConfigRes, error)
 	// GetPerfConfig invokes getPerfConfig operation.
 	//
-	// Returns the full per-site performance config. CDN credentials are
-	// WRITE-ONLY and are never returned; `cdn_has_credentials` is the
-	// read-only "a credential is set" flag. The `server_software`,
-	// `dropin_installed`, `wp_cache_constant_set`, and `htaccess_managed`
-	// fields are agent-reported install state.
-	// Requires the `site.perf.config` permission.
+	// Returns the full per-site performance config. CDN credentials are WRITE-ONLY and are never returned;
+	// `cdn_has_credentials` is the read-only "a credential is set" flag. The `server_software`,
+	// `dropin_installed`, `wp_cache_constant_set`, and `htaccess_managed` fields are agent-reported
+	// install state. Requires the `site.perf.config` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/config
 	GetPerfConfig(ctx context.Context, params GetPerfConfigParams) (*PerfConfig, error)
@@ -1665,22 +1732,20 @@ type Invoker interface {
 	GetPortalSiteVitals(ctx context.Context, params GetPortalSiteVitalsParams) (GetPortalSiteVitalsRes, error)
 	// GetPortalSummary invokes getPortalSummary operation.
 	//
-	// Returns the full portal dashboard payload: KPI totals, per-site uptime and vitals, recent work
-	// feed, and latest report reference. Data is derived from report.BuildReportData with the email
-	// source disabled. Only sites in the principal's AllowedSiteIDs are returned. The ?range parameter
-	// accepts 7d, 30d, or 90d; other values are clamped to 30d. In v2 only 30d is fully supported.
+	// Returns the full portal dashboard payload: KPI totals, per-site uptime and vitals, recent work feed,
+	// and latest report reference. Data is derived from report.BuildReportData with the email source
+	// disabled. Only sites in the principal's AllowedSiteIDs are returned. The ?range parameter accepts
+	// 7d, 30d, or 90d; other values are clamped to 30d. In v2 only 30d is fully supported.
 	//
 	// GET /api/v1/portal/summary
 	GetPortalSummary(ctx context.Context, params GetPortalSummaryParams) (GetPortalSummaryRes, error)
 	// GetPublicPricing invokes getPublicPricing operation.
 	//
-	// Mounted directly on the root engine (no session, no tenant gate)
-	// despite sharing the `/api/v1` path prefix — the marketing site's
-	// price source. Registered only when hosted billing is enabled;
-	// self-host installs 404 here. Response is `Cache-Control:
-	// public, max-age=3600` and resolves from a warm cache when possible,
-	// falling back to a static in-Go price table when no payment provider
-	// is configured.
+	// Mounted directly on the root engine (no session, no tenant gate) despite sharing the `/api/v1` path
+	// prefix — the marketing site's price source. Registered only when hosted billing is enabled;
+	// self-host installs 404 here. Response is `Cache-Control: public, max-age=3600` and resolves from a
+	// warm cache when possible, falling back to a static in-Go price table when no payment provider is
+	// configured.
 	//
 	// GET /api/v1/pricing
 	GetPublicPricing(ctx context.Context) (GetPublicPricingRes, error)
@@ -1692,49 +1757,44 @@ type Invoker interface {
 	GetReadyz(ctx context.Context) (GetReadyzRes, error)
 	// GetRestoreRun invokes getRestoreRun operation.
 	//
-	// Returns the restore run record by its UUID. Authorization is enforced
-	// by resolving the run's `site_id` and applying the caller's
-	// `PermSiteRead` grant on that site (the same by-id pattern as
+	// Returns the restore run record by its UUID. Authorization is enforced by resolving the run's
+	// `site_id` and applying the caller's `PermSiteRead` grant on that site (the same by-id pattern as
 	// `GET /backups/{snapshotId}`). Requires viewer+.
 	//
 	// GET /api/v1/restores/{restoreId}
 	GetRestoreRun(ctx context.Context, params GetRestoreRunParams) (GetRestoreRunRes, error)
 	// GetRumSummary invokes getRumSummary operation.
 	//
-	// Returns site-level Core Web Vitals p75 estimates (LCP, INP, CLS, FCP,
-	// TTFB) over a configurable window (default 28 days, matching CrUX/GSC),
-	// with good/needs-improvement/poor ratings per the official web-vitals
-	// thresholds. Any (metric, device, country) slice whose scaled sample
-	// count is below the site's min_sample_count floor is returned with
-	// suppressed=true and p75_ms=0; the dashboard must render
-	// "insufficient samples (N of M needed)" for those rows.
+	// Returns site-level Core Web Vitals p75 estimates (LCP, INP, CLS, FCP, TTFB) over a configurable
+	// window (default 28 days, matching CrUX/GSC), with good/needs-improvement/poor ratings per the
+	// official web-vitals thresholds. Any (metric, device, country) slice whose scaled sample count is
+	// below the site's min_sample_count floor is returned with suppressed=true and p75_ms=0; the dashboard
+	// must render "insufficient samples (N of M needed)" for those rows.
+	//
 	// Requires the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/rum/summary
 	GetRumSummary(ctx context.Context, params GetRumSummaryParams) (*RumSummary, error)
 	// GetRumTrend invokes getRumTrend operation.
 	//
-	// Returns a per-metric daily p75 trend series over `window_days` days
-	// (default 28, clamped to [1,90]). Days with zero rollup rows are
-	// omitted; days below the configured `min_sample_count` floor appear
-	// with `suppressed:true` and `p75_ms:0` so the client can render a gap
-	// rather than a misleading zero. An optional `device` filter restricts
-	// the aggregation to one device class.
+	// Returns a per-metric daily p75 trend series over `window_days` days (default 28, clamped to [1,90]).
+	// Days with zero rollup rows are omitted; days below the configured `min_sample_count` floor appear
+	// with `suppressed:true` and `p75_ms:0` so the client can render a gap rather than a misleading zero.
+	// An optional `device` filter restricts the aggregation to one device class.
 	//
 	// GET /api/v1/sites/{siteId}/perf/rum/trend
 	GetRumTrend(ctx context.Context, params GetRumTrendParams) (GetRumTrendRes, error)
 	// GetScanRun invokes getScanRun operation.
 	//
-	// The run is resolved by id (tenant-scoped); a site-scoped collaborator
-	// without access to the run's own site is rejected with 403.
+	// The run is resolved by id (tenant-scoped); a site-scoped collaborator without access to the run's
+	// own site is rejected with 403.
 	//
 	// GET /api/v1/sites/{siteId}/scans/{runId}
 	GetScanRun(ctx context.Context, params GetScanRunParams) (GetScanRunRes, error)
 	// GetScheduleRun invokes getScheduleRun operation.
 	//
-	// Returns the schedule run record by its UUID. Authorization is enforced
-	// by resolving the run's `site_id` and applying the caller's
-	// `PermSiteRead` grant on that site. Requires viewer+.
+	// Returns the schedule run record by its UUID. Authorization is enforced by resolving the run's
+	// `site_id` and applying the caller's `PermSiteRead` grant on that site. Requires viewer+.
 	//
 	// GET /api/v1/schedule-runs/{runId}
 	GetScheduleRun(ctx context.Context, params GetScheduleRunParams) (GetScheduleRunRes, error)
@@ -1746,35 +1806,32 @@ type Invoker interface {
 	GetSite(ctx context.Context, params GetSiteParams) (GetSiteRes, error)
 	// GetSiteAppHealthSettings invokes getSiteAppHealthSettings operation.
 	//
-	// Returns the per-site application-health settings (GH #291 Phase 3):
-	// the B3 override path for the application-health probe, and the
-	// per-site app-health alerting opt-out. Every site has these settings
-	// (empty path / alerts not disabled are the defaults) - this never
-	// auto-creates a row, it reads the `sites` columns directly.
+	// Returns the per-site application-health settings (GH #291 Phase 3): the B3 override path for the
+	// application-health probe, and the per-site app-health alerting opt-out. Every site has these
+	// settings (empty path / alerts not disabled are the defaults) - this never auto-creates a row, it
+	// reads the `sites` columns directly.
 	//
 	// GET /api/v1/sites/{siteId}/app-health-settings
 	GetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRes, error)
 	// GetSiteAutologinPolicy invokes getSiteAutologinPolicy operation.
 	//
-	// Returns the per-site autologin policy (GH #286), auto-creating the
-	// default row on first read when none exists yet (mirrors the mint
-	// endpoint's own auto-create behaviour, so GET and mint never disagree
-	// about what "no policy yet" means).
-	// `allowed_wp_roles` is READ-ONLY and informational; it is reported
-	// here but is never accepted on the PUT body. The role ceiling can only
-	// be widened by a manual database operation.
-	// Authorization: requires the `site:autologin` permission (owner+admin,
-	// the same floor as minting a login URL). Operator and viewer roles are
-	// denied.
+	// Returns the per-site autologin policy (GH #286), auto-creating the default row on first read when
+	// none exists yet (mirrors the mint endpoint's own auto-create behaviour, so GET and mint never
+	// disagree about what "no policy yet" means).
+	//
+	// `allowed_wp_roles` is READ-ONLY and informational; it is reported here but is never accepted on the
+	// PUT body. The role ceiling can only be widened by a manual database operation.
+	//
+	// Authorization: requires the `site:autologin` permission (owner+admin, the same floor as minting a
+	// login URL). Operator and viewer roles are denied.
 	//
 	// GET /api/v1/sites/{siteId}/autologin-policy
 	GetSiteAutologinPolicy(ctx context.Context, params GetSiteAutologinPolicyParams) (GetSiteAutologinPolicyRes, error)
 	// GetSiteAvailableUpdates invokes getSiteAvailableUpdates operation.
 	//
-	// Returns the cached list of plugins/themes (and core) that have an update
-	// available, derived from the agent's last metadata sync. Items are sorted
-	// core -> plugins -> themes, with active before inactive. `as_of` is the
-	// site's last update timestamp. Requires viewer+.
+	// Returns the cached list of plugins/themes (and core) that have an update available, derived from the
+	// agent's last metadata sync. Items are sorted core -> plugins -> themes, with active before inactive.
+	// `as_of` is the site's last update timestamp. Requires viewer+.
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
@@ -1786,57 +1843,57 @@ type Invoker interface {
 	GetSiteDestination(ctx context.Context, params GetSiteDestinationParams) (GetSiteDestinationRes, error)
 	// GetSiteDiagnostics invokes getSiteDiagnostics operation.
 	//
-	// Returns one card per category (14 total) carrying the latest payload
-	// the agent shipped + the collection/freshness timestamps. Categories the
-	// agent has never reported for are returned with a null payload so the UI
-	// can render an "awaiting first sync" placeholder.
+	// Returns one card per category (14 total) carrying the latest payload the agent shipped + the
+	// collection/freshness timestamps. Categories the agent has never reported for are returned with a
+	// null payload so the UI can render an "awaiting first sync" placeholder.
 	//
 	// GET /api/v1/sites/{siteId}/diagnostics
 	GetSiteDiagnostics(ctx context.Context, params GetSiteDiagnosticsParams) (GetSiteDiagnosticsRes, error)
 	// GetSiteEmailConfig invokes getSiteEmailConfig operation.
 	//
-	// Returns the email config for a site. If no per-site row exists the
-	// org-wide default is returned (with `site_id` set to the queried site so
-	// the frontend knows the row was inherited). Includes `secret_set: bool`;
-	// the actual provider secret is never returned.
+	// Returns the email config for a site. If no per-site row exists the org-wide default is returned
+	// (with `site_id` set to the queried site so the frontend knows the row was inherited). Includes
+	// `secret_set: bool`; the actual provider secret is never returned.
+	//
 	// Requires `site.email.manage` permission (operator+) and site access.
 	//
 	// GET /api/v1/sites/{siteId}/email/config
 	GetSiteEmailConfig(ctx context.Context, params GetSiteEmailConfigParams) (GetSiteEmailConfigRes, error)
 	// GetSiteEmailLogEntry invokes getSiteEmailLogEntry operation.
 	//
-	// Returns a single email log entry. When `body_stored` is true and a
-	// body was captured at send time, it is included in this response.
-	// Also returns `prev_id` and `next_id` for in-detail navigation.
+	// Returns a single email log entry. When `body_stored` is true and a body was captured at send time,
+	// it is included in this response. Also returns `prev_id` and `next_id` for in-detail navigation.
+	//
 	// Requires `site.email.manage` permission and site access.
 	//
 	// GET /api/v1/sites/{siteId}/email/log/{logId}
 	GetSiteEmailLogEntry(ctx context.Context, params GetSiteEmailLogEntryParams) (GetSiteEmailLogEntryRes, error)
 	// GetSiteEmailStats invokes getSiteEmailStats operation.
 	//
-	// Returns summary counts (total, sent, failed, provider count),
-	// a per-day time-series, and a per-provider breakdown for the given
-	// date range. Date range defaults to the last 30 days when omitted.
+	// Returns summary counts (total, sent, failed, provider count), a per-day time-series, and a
+	// per-provider breakdown for the given date range. Date range defaults to the last 30 days when
+	// omitted.
+	//
 	// Requires `site.email.manage` permission and site access.
 	//
 	// GET /api/v1/sites/{siteId}/email/stats
 	GetSiteEmailStats(ctx context.Context, params GetSiteEmailStatsParams) (GetSiteEmailStatsRes, error)
 	// GetSiteErrorConfig invokes getSiteErrorConfig operation.
 	//
-	// Returns the site's PHP error-level mask and md5 ignore-list. When no
-	// config row has been saved yet the defaults are returned: error_level=6143
-	// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
-	// The config is pushed to the agent on each PATCH; this GET only reads
-	// the CP-side stored value.
+	// Returns the site's PHP error-level mask and md5 ignore-list. When no config row has been saved yet
+	// the defaults are returned: error_level=6143 (WordPress default E_ALL & ~E_STRICT) and an empty
+	// ignore_md5s list. The config is pushed to the agent on each PATCH; this GET only reads the CP-side
+	// stored value.
 	//
 	// GET /api/v1/sites/{siteId}/errors/config
 	GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error)
 	// GetSiteFilesSettings invokes getSiteFilesSettings operation.
 	//
-	// Returns the current file manager settings for a site, including whether
-	// the feature is enabled.
-	// Any site member (viewer+) may call this endpoint so the UI can render
-	// the correct enable/disable state without an extra permission check.
+	// Returns the current file manager settings for a site, including whether the feature is enabled.
+	//
+	// Any site member (viewer+) may call this endpoint so the UI can render the correct enable/disable
+	// state without an extra permission check.
+	//
 	// No permission beyond `RequireSiteAccess` is required.
 	//
 	// GET /api/v1/sites/{siteId}/files/settings
@@ -1849,48 +1906,44 @@ type Invoker interface {
 	GetSiteHardeningConfig(ctx context.Context, params GetSiteHardeningConfigParams) (GetSiteHardeningConfigRes, error)
 	// GetSiteLoginBrand invokes getSiteLoginBrand operation.
 	//
-	// Returns the current login brand config (logo URL, logo link, message)
-	// for the site. When no config has been saved yet, returns the all-empty
-	// default (all string fields are `""`), which the agent interprets as
-	// "no override" (WordPress built-in login logo / no custom message).
+	// Returns the current login brand config (logo URL, logo link, message) for the site. When no config
+	// has been saved yet, returns the all-empty default (all string fields are `""`), which the agent
+	// interprets as "no override" (WordPress built-in login logo / no custom message).
 	//
 	// GET /api/v1/sites/{siteId}/login-brand
 	GetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (*SiteLoginBrand, error)
 	// GetSiteLoginProtection invokes getSiteLoginProtection operation.
 	//
-	// Returns the current login-protection mode, brute-force thresholds, IP
-	// header selection, and CIDR allow/deny lists for the site. When no config
-	// has been saved yet, returns the built-in defaults (mode=protect, standard
-	// thresholds, REMOTE_ADDR, empty CIDR lists).
+	// Returns the current login-protection mode, brute-force thresholds, IP header selection, and CIDR
+	// allow/deny lists for the site. When no config has been saved yet, returns the built-in defaults
+	// (mode=protect, standard thresholds, REMOTE_ADDR, empty CIDR lists).
 	//
 	// GET /api/v1/sites/{siteId}/security/login-protection
 	GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error)
 	// GetSiteSecurityPolicy invokes getSiteSecurityPolicy operation.
 	//
-	// Site-user auth policy governs 2FA and password requirements for the
-	// WordPress users of this site (distinct from dashboard operator 2FA,
-	// which is per-CP-user — see the two-factor-auth tag).
-	// The response also carries `site_roles`, the WordPress roles that
-	// actually exist on the site, so the policy editor can offer roles such
-	// as WooCommerce's `shop_manager` instead of only the five defaults.
+	// Site-user auth policy governs 2FA and password requirements for the WordPress users of this site
+	// (distinct from dashboard operator 2FA, which is per-CP-user — see the two-factor-auth tag).
+	//
+	// The response also carries `site_roles`, the WordPress roles that actually exist on the site, so the
+	// policy editor can offer roles such as WooCommerce's `shop_manager` instead of only the five
+	// defaults.
 	//
 	// GET /api/v1/sites/{siteId}/security/policy
 	GetSiteSecurityPolicy(ctx context.Context, params GetSiteSecurityPolicyParams) (GetSiteSecurityPolicyRes, error)
 	// GetSiteUptime invokes getSiteUptime operation.
 	//
-	// Returns the uptime % and average latency for a site over the requested
-	// window (7d/30d/90d), the current up/down state, the last check time, the
-	// TLS certificate expiry, and a downsampled recent check series. Metrics
-	// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
-	// site's tenant ownership is verified in Postgres first (a foreign site is
-	// a 404). Requires viewer+.
+	// Returns the uptime % and average latency for a site over the requested window (7d/30d/90d), the
+	// current up/down state, the last check time, the TLS certificate expiry, and a downsampled recent
+	// check series. Metrics come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+	// site's tenant ownership is verified in Postgres first (a foreign site is a 404). Requires viewer+.
 	//
 	// GET /api/v1/sites/{siteId}/uptime
 	GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error)
 	// GetSmtpSettings invokes getSmtpSettings operation.
 	//
-	// Org-scoped (blocks site-scoped collaborators). Reads require admin+;
-	// the stored password/secret is never returned in plaintext.
+	// Org-scoped (blocks site-scoped collaborators). Reads require admin+; the stored password/secret is
+	// never returned in plaintext.
 	//
 	// GET /api/v1/settings/smtp
 	GetSmtpSettings(ctx context.Context) (GetSmtpSettingsRes, error)
@@ -1914,51 +1967,45 @@ type Invoker interface {
 	GetUpdateRun(ctx context.Context, params GetUpdateRunParams) (GetUpdateRunRes, error)
 	// GetUptimeSummary invokes getUptimeSummary operation.
 	//
-	// Returns the current up/down status and last check for every site in the
-	// tenant (from the latest recorded probe). Requires viewer+.
+	// Returns the current up/down status and last check for every site in the tenant (from the latest
+	// recorded probe). Requires viewer+.
 	//
 	// GET /api/v1/uptime/summary
 	GetUptimeSummary(ctx context.Context) (*UptimeSummary, error)
 	// GrantAdminSelfMembership invokes grantAdminSelfMembership operation.
 	//
-	// Idempotent recovery primitive for a recovery-induced org split. Only
-	// ever adds the CALLER (never an arbitrary user) to the SITE's own org
-	// (never an arbitrary tenant).
+	// Idempotent recovery primitive for a recovery-induced org split. Only ever adds the CALLER (never an
+	// arbitrary user) to the SITE's own org (never an arbitrary tenant).
 	//
 	// POST /api/v1/admin/sites/{siteId}/grant-self-membership
 	GrantAdminSelfMembership(ctx context.Context, params GrantAdminSelfMembershipParams) (GrantAdminSelfMembershipRes, error)
 	// HandleBillingProviderWebhook invokes handleBillingProviderWebhook operation.
 	//
-	// Mounted on the root engine — no session, no tenant gate. The
-	// provider's own request signature (verified inside
-	// `Service.ProcessWebhook`) is the entire authentication boundary. An
-	// unrecognised `provider` value 404s.
+	// Mounted on the root engine — no session, no tenant gate. The provider's own request signature
+	// (verified inside `Service.ProcessWebhook`) is the entire authentication boundary. An unrecognised
+	// `provider` value 404s.
 	//
 	// POST /webhooks/billing/{provider}
 	HandleBillingProviderWebhook(ctx context.Context, request *HandleBillingProviderWebhookReq, params HandleBillingProviderWebhookParams) (HandleBillingProviderWebhookRes, error)
 	// HandleEmailProviderWebhook invokes handleEmailProviderWebhook operation.
 	//
-	// Mounted on the root engine — no session, no tenant gate. `routeToken`
-	// is a per-config-row opaque random value; its SHA-256 hash resolves
-	// the owning tenant + site, and the corresponding per-row signing key
-	// (not an instance-wide key) verifies the provider's signature.
-	// `provider` is one of `ses`, `sendgrid`, `mailgun`, `postmark`. An
-	// unknown `routeToken` or `provider` responds `404` with no body (no
-	// existence leak). The request body shape is entirely provider-defined
-	// (SNS notification envelope, SendGrid event array, Mailgun form POST,
-	// or Postmark JSON) so it is not modeled as a fixed schema here.
+	// Mounted on the root engine — no session, no tenant gate. `routeToken` is a per-config-row opaque
+	// random value; its SHA-256 hash resolves the owning tenant + site, and the corresponding per-row
+	// signing key (not an instance-wide key) verifies the provider's signature. `provider` is one of
+	// `ses`, `sendgrid`, `mailgun`, `postmark`. An unknown `routeToken` or `provider` responds `404` with
+	// no body (no existence leak). The request body shape is entirely provider-defined (SNS notification
+	// envelope, SendGrid event array, Mailgun form POST, or Postmark JSON) so it is not modeled as a fixed
+	// schema here.
 	//
 	// POST /webhooks/email/{provider}/{routeToken}
 	HandleEmailProviderWebhook(ctx context.Context, request *HandleEmailProviderWebhookReq, params HandleEmailProviderWebhookParams) (HandleEmailProviderWebhookRes, error)
 	// IngestRumBeacon invokes ingestRumBeacon operation.
 	//
-	// Mounted on the root engine — no session, no tenant gate. The
-	// `key` field (a per-site beacon key) is the sole access credential.
-	// Every failure mode (unknown key, RUM disabled, sampled out, rate
-	// limited, a storage write failure) responds `204 No Content` so a
-	// `navigator.sendBeacon()` call — which never reads the response — never
-	// surfaces a distinguishing status to the page. Only a malformed body
-	// yields `400`, and only an oversized body yields `413`.
+	// Mounted on the root engine — no session, no tenant gate. The `key` field (a per-site beacon key)
+	// is the sole access credential. Every failure mode (unknown key, RUM disabled, sampled out, rate
+	// limited, a storage write failure) responds `204 No Content` so a `navigator.sendBeacon()` call —
+	// which never reads the response — never surfaces a distinguishing status to the page. Only a
+	// malformed body yields `400`, and only an oversized body yields `413`.
 	//
 	// POST /rum/ingest
 	IngestRumBeacon(ctx context.Context, request *RumBeacon) (IngestRumBeaconRes, error)
@@ -1970,25 +2017,24 @@ type Invoker interface {
 	InviteMember(ctx context.Context, request *InviteRequest) (InviteMemberRes, error)
 	// IsolateUnusedMedia invokes isolateUnusedMedia operation.
 	//
-	// Instructs the agent to move the original file and all generated thumbnail
-	// sizes for the specified attachment IDs into the quarantine directory
-	// (`wp-content/wpmgr-quarantine/media/`). The attachment post rows are left
-	// intact so the Restore operation can undo the move cleanly.
-	// **This operation is reversible** — use the restore endpoint to undo.
-	// The attachment IDs must have appeared in a recent scan result.
+	// Instructs the agent to move the original file and all generated thumbnail sizes for the specified
+	// attachment IDs into the quarantine directory (`wp-content/wpmgr-quarantine/media/`). The attachment
+	// post rows are left intact so the Restore operation can undo the move cleanly.
+	//
+	// This operation is reversible — use the restore endpoint to undo. The attachment IDs must have
+	// appeared in a recent scan result.
+	//
 	// Requires the `site.media.clean.write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/isolate
 	IsolateUnusedMedia(ctx context.Context, request *MediaCleanIsolateRequest, params IsolateUnusedMediaParams) (*MediaCleanIsolateResult, error)
 	// ListAdminAccounts invokes listAdminAccounts operation.
 	//
-	// Superadmin-only accounts console: instance-wide header tiles (always
-	// unfiltered by the current query, so they read as a stable instance
-	// census) plus a filtered, sorted, paginated list of every tenant.
-	// Default order is a server-computed "needs attention" ranking:
-	// suspended first, then past_due (soonest-to-expire grace first), then
-	// active (MRR desc), then everything else (newest first). Requires
-	// is_superadmin=true.
+	// Superadmin-only accounts console: instance-wide header tiles (always unfiltered by the current
+	// query, so they read as a stable instance census) plus a filtered, sorted, paginated list of every
+	// tenant. Default order is a server-computed "needs attention" ranking: suspended first, then past_due
+	// (soonest-to-expire grace first), then active (MRR desc), then everything else (newest first).
+	// Requires is_superadmin=true.
 	//
 	// GET /api/v1/admin/accounts
 	ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error)
@@ -2050,75 +2096,75 @@ type Invoker interface {
 	ListClients(ctx context.Context, params ListClientsParams) (ListClientsRes, error)
 	// ListDbSnapshots invokes listDbSnapshots operation.
 	//
-	// Returns the manifest of local database snapshots stored on the WP server.
-	// Snapshots are a fast local safety-net (not encrypted off-site backups).
-	// Requires the `site:read` permission.
+	// Returns the manifest of local database snapshots stored on the WP server. Snapshots are a fast local
+	// safety-net (not encrypted off-site backups). Requires the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/db/snapshots
 	ListDbSnapshots(ctx context.Context, params ListDbSnapshotsParams) (*DbSnapshotList, error)
 	// ListEmailConnections invokes listEmailConnections operation.
 	//
-	// Returns all named provider connections that belong to the site's email
-	// config. Empty array when no named connections exist.
+	// Returns all named provider connections that belong to the site's email config. Empty array when no
+	// named connections exist.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/sites/{siteId}/email/connections
 	ListEmailConnections(ctx context.Context, params ListEmailConnectionsParams) (ListEmailConnectionsRes, error)
 	// ListEmailProviders invokes listEmailProviders operation.
 	//
-	// Returns the static v1 provider catalog: Generic SMTP, Amazon SES,
-	// SendGrid, Mailgun, and Postmark. Each entry includes the provider slug,
-	// display label, and the field schema (non-secret and secret fields, types,
-	// required flags, options).
-	// Org-level route — requires RequireOrgScope (org members only, not
-	// site-collaborators). Requires the `site.email.manage` permission.
+	// Returns the static v1 provider catalog: Generic SMTP, Amazon SES, SendGrid, Mailgun, and Postmark.
+	// Each entry includes the provider slug, display label, and the field schema (non-secret and secret
+	// fields, types, required flags, options).
+	//
+	// Org-level route — requires RequireOrgScope (org members only, not site-collaborators). Requires
+	// the `site.email.manage` permission.
 	//
 	// GET /api/v1/email/providers
 	ListEmailProviders(ctx context.Context) (ListEmailProvidersRes, error)
 	// ListFleetBackups invokes listFleetBackups operation.
 	//
-	// Returns a filtered, paginated list of backup snapshots across the caller's
-	// accessible sites. Org-scoped principals see all tenant sites; site-scoped
-	// collaborators see only their granted sites. Requires viewer+.
+	// Returns a filtered, paginated list of backup snapshots across the caller's accessible sites.
+	// Org-scoped principals see all tenant sites; site-scoped collaborators see only their granted sites.
+	// Requires viewer+.
 	//
 	// GET /api/v1/backups/fleet
 	ListFleetBackups(ctx context.Context, params ListFleetBackupsParams) (*BackupFleetList, error)
 	// ListFleetEmailLog invokes listFleetEmailLog operation.
 	//
-	// Returns a keyset-paginated cross-site email log for the tenant.
-	// Org-scope only (site-collaborators are blocked).
-	// Body is never included in the list.
-	// **Collaborator note**: collaborators who can read specific sites see
-	// those sites' data through the per-site `/sites/{siteId}/email/log`
-	// route. This fleet-level route is for full org members only.
+	// Returns a keyset-paginated cross-site email log for the tenant. Org-scope only (site-collaborators
+	// are blocked). Body is never included in the list.
+	//
+	// Collaborator note: collaborators who can read specific sites see those sites' data through the
+	// per-site `/sites/{siteId}/email/log` route. This fleet-level route is for full org members only.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/email/log
 	ListFleetEmailLog(ctx context.Context, params ListFleetEmailLogParams) (ListFleetEmailLogRes, error)
 	// ListFleetEmailSuppression invokes listFleetEmailSuppression operation.
 	//
-	// Returns all suppression entries across the tenant fleet. Org-scope only.
-	// Entries with `site_id=null` are fleet-wide suppressions that apply to
-	// every site in the tenant.
+	// Returns all suppression entries across the tenant fleet. Org-scope only. Entries with `site_id=null`
+	// are fleet-wide suppressions that apply to every site in the tenant.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/email/suppression
 	ListFleetEmailSuppression(ctx context.Context, params ListFleetEmailSuppressionParams) (ListFleetEmailSuppressionRes, error)
 	// ListFontResults invokes listFontResults operation.
 	//
-	// Returns a page of the site's font_results catalog rows — the per-site
-	// dashboard view of every self-hosted font that has been discovered and
-	// processed (or is pending processing). Each row includes the source hash,
-	// font family, sizes, state (pending|ready|subset|negative), and the
+	// Returns a page of the site's font_results catalog rows — the per-site dashboard view of every
+	// self-hosted font that has been discovered and processed (or is pending processing). Each row
+	// includes the source hash, font family, sizes, state (pending|ready|subset|negative), and the
 	// CP-derived savings_pct.
+	//
 	// Requires the `site:read` permission. Ordered by updated_at DESC, id DESC.
 	//
 	// GET /api/v1/sites/{siteId}/perf/fonts
 	ListFontResults(ctx context.Context, params ListFontResultsParams) (*FontResultList, error)
 	// ListMediaAssets invokes listMediaAssets operation.
 	//
-	// Cursor-paginated media library mirror with a summary rollup. Gated on
-	// site:read + per-site access. DTOs are hand-rolled (c.JSON), not ogen.
+	// Cursor-paginated media library mirror with a summary rollup. Gated on site:read + per-site access.
+	// DTOs are hand-rolled (c.JSON), not ogen.
 	//
 	// GET /api/v1/sites/{siteId}/media/assets
 	ListMediaAssets(ctx context.Context, params ListMediaAssetsParams) (*MediaAssetList, error)
@@ -2136,13 +2182,13 @@ type Invoker interface {
 	ListMembers(ctx context.Context, params ListMembersParams) (ListMembersRes, error)
 	// ListMyIdentities invokes listMyIdentities operation.
 	//
-	// Powers the connected accounts card at settings/security. Acts on the
-	// caller's own account only: no user id appears anywhere in this route.
-	// `has_password` and `can_unlink` describe the account as a whole.
-	// `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
-	// will give, so the page can avoid offering a button that would only be
-	// refused. It is a display hint and never the enforcement: the server
-	// re-decides on every delete.
+	// Powers the connected accounts card at settings/security. Acts on the caller's own account only: no
+	// user id appears anywhere in this route.
+	//
+	// `has_password` and `can_unlink` describe the account as a whole. `can_unlink` is the same answer
+	// `DELETE /auth/me/identities/{provider}` will give, so the page can avoid offering a button that
+	// would only be refused. It is a display hint and never the enforcement: the server re-decides on
+	// every delete.
 	//
 	// GET /auth/me/identities
 	ListMyIdentities(ctx context.Context) (ListMyIdentitiesRes, error)
@@ -2179,51 +2225,46 @@ type Invoker interface {
 	ListPortalSites(ctx context.Context) (ListPortalSitesRes, error)
 	// ListQuarantinedMedia invokes listQuarantinedMedia operation.
 	//
-	// Returns all quarantine manifests currently held on the site. Each manifest
-	// was created by a prior isolate call and describes the set of attachment
-	// files that were moved to the quarantine directory. This endpoint is
-	// read-only — it does not modify any files or attachment posts.
+	// Returns all quarantine manifests currently held on the site. Each manifest was created by a prior
+	// isolate call and describes the set of attachment files that were moved to the quarantine directory.
+	// This endpoint is read-only — it does not modify any files or attachment posts.
+	//
 	// Requires the `site.media.clean.scan` permission (viewer+).
 	//
 	// GET /api/v1/sites/{siteId}/media/clean/quarantine
 	ListQuarantinedMedia(ctx context.Context, params ListQuarantinedMediaParams) (*MediaCleanQuarantineList, error)
 	// ListRestoreRunEvents invokes listRestoreRunEvents operation.
 	//
-	// Returns the ordered phase log for a restore run, ascending by event
-	// ID. Supports incremental polling via `?after=<id>`: pass the highest
-	// `id` from the previous response to receive only newer events.
-	// Authorization mirrors `GET /restores/{restoreId}` — the run's site
-	// is resolved and the caller's `PermSiteRead` is enforced on it.
-	// Requires viewer+.
+	// Returns the ordered phase log for a restore run, ascending by event ID. Supports incremental polling
+	// via `?after=<id>`: pass the highest `id` from the previous response to receive only newer events.
+	// Authorization mirrors `GET /restores/{restoreId}` — the run's site is resolved and the caller's
+	// `PermSiteRead` is enforced on it. Requires viewer+.
 	//
 	// GET /api/v1/restores/{restoreId}/events
 	ListRestoreRunEvents(ctx context.Context, params ListRestoreRunEventsParams) (ListRestoreRunEventsRes, error)
 	// ListRestoreRuns invokes listRestoreRuns operation.
 	//
-	// Returns restore runs for the site, ordered newest-first. Each run
-	// records a single restore attempt triggered via
-	// `POST /backups/{snapshotId}/restore`. The `triggered_by_email` and
-	// `triggered_by_name` fields are populated when the actor is a known
-	// user in the tenant directory (API-key or system actors leave them
-	// null). Requires viewer+.
+	// Returns restore runs for the site, ordered newest-first. Each run records a single restore attempt
+	// triggered via `POST /backups/{snapshotId}/restore`. The `triggered_by_email` and `triggered_by_name`
+	// fields are populated when the actor is a known user in the tenant directory (API-key or system
+	// actors leave them null). Requires viewer+.
 	//
 	// GET /api/v1/sites/{siteId}/restores
 	ListRestoreRuns(ctx context.Context, params ListRestoreRunsParams) (ListRestoreRunsRes, error)
 	// ListRucssResults invokes listRucssResults operation.
 	//
-	// Returns a page of the site's cached Remove-Unused-CSS results (one row
-	// per page structure hash, with original/used byte sizes and the
-	// reduction percentage). Requires the `site:read` permission.
+	// Returns a page of the site's cached Remove-Unused-CSS results (one row per page structure hash, with
+	// original/used byte sizes and the reduction percentage). Requires the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/rucss/results
 	ListRucssResults(ctx context.Context, params ListRucssResultsParams) (*RucssResultList, error)
 	// ListRumResults invokes listRumResults operation.
 	//
-	// Returns per-URL/metric/device/country p75 breakdown rows for the
-	// dashboard table. Each row includes the url_pattern, metric, device,
-	// country, p75_ms, sample_count, the CWV rating band, and a suppressed
-	// flag. Rows below the site's min_sample_count floor have suppressed=true
-	// and p75_ms=0; the dashboard renders "insufficient samples" for those.
+	// Returns per-URL/metric/device/country p75 breakdown rows for the dashboard table. Each row includes
+	// the url_pattern, metric, device, country, p75_ms, sample_count, the CWV rating band, and a
+	// suppressed flag. Rows below the site's min_sample_count floor have suppressed=true and p75_ms=0; the
+	// dashboard renders "insufficient samples" for those.
+	//
 	// Requires the `site:read` permission.
 	//
 	// GET /api/v1/sites/{siteId}/perf/rum
@@ -2242,11 +2283,10 @@ type Invoker interface {
 	ListScanRuns(ctx context.Context, params ListScanRunsParams) (ListScanRunsRes, error)
 	// ListScheduleRuns invokes listScheduleRuns operation.
 	//
-	// Returns a split view of schedule runs for the site: `upcoming`
-	// (non-terminal: scheduled/queued/running, bounded to 10) and `past`
-	// (terminal: completed/failed/skipped/canceled, paginated via
-	// `limit`/`offset`). Filter to one set with `?status=upcoming` or
-	// `?status=past`. Requires viewer+.
+	// Returns a split view of schedule runs for the site: `upcoming` (non-terminal:
+	// scheduled/queued/running, bounded to 10) and `past` (terminal: completed/failed/skipped/canceled,
+	// paginated via `limit`/`offset`). Filter to one set with `?status=upcoming` or `?status=past`.
+	// Requires viewer+.
 	//
 	// GET /api/v1/sites/{siteId}/schedule-runs
 	ListScheduleRuns(ctx context.Context, params ListScheduleRunsParams) (ListScheduleRunsRes, error)
@@ -2258,12 +2298,11 @@ type Invoker interface {
 	ListSharedWithMe(ctx context.Context) (ListSharedWithMeRes, error)
 	// ListSiteActivity invokes listSiteActivity operation.
 	//
-	// Returns the agent-captured WordPress activity events for the site,
-	// newest first. Each event carries the hash-chain fields (prev_hash,
-	// this_hash) and a server-verified chain_valid flag: the CP recomputes
-	// every event's hash at ingest and flags any tamper (a mutated, inserted,
-	// or deleted historical row) as chain_valid=false. Filter by event_type,
-	// object_type, actor_login, severity, and an occurred-at time range.
+	// Returns the agent-captured WordPress activity events for the site, newest first. Each event carries
+	// the hash-chain fields (prev_hash, this_hash) and a server-verified chain_valid flag: the CP
+	// recomputes every event's hash at ingest and flags any tamper (a mutated, inserted, or deleted
+	// historical row) as chain_valid=false. Filter by event_type, object_type, actor_login, severity, and
+	// an occurred-at time range.
 	//
 	// GET /api/v1/sites/{siteId}/activity
 	ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (*SiteActivityList, error)
@@ -2275,89 +2314,90 @@ type Invoker interface {
 	ListSiteBans(ctx context.Context, params ListSiteBansParams) (ListSiteBansRes, error)
 	// ListSiteDestinations invokes listSiteDestinations operation.
 	//
-	// ADR-036 P1 storage adapter. Returns every destination configured on the
-	// site (`cp` / `local` / `s3_compat`). The encrypted S3 secret is NEVER
-	// returned; `has_secret` reports whether one is stored.
+	// ADR-036 P1 storage adapter. Returns every destination configured on the site (`cp` / `local` /
+	// `s3_compat`). The encrypted S3 secret is NEVER returned; `has_secret` reports whether one is stored.
 	//
 	// GET /api/v1/sites/{siteId}/destinations
 	ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (ListSiteDestinationsRes, error)
 	// ListSiteEmailLog invokes listSiteEmailLog operation.
 	//
-	// Returns a keyset-paginated list of outgoing email log entries for a
-	// site, ordered by `created_at DESC, id DESC`. The composite cursor
-	// predicate `(created_at, id)` ensures no rows are skipped when multiple
-	// sends share the same timestamp (batch sends).
-	// **Body privacy**: `body` is never returned in the list response,
-	// regardless of `body_stored`. Use `GET /email/log/{logId}` to retrieve
-	// the full detail including body.
+	// Returns a keyset-paginated list of outgoing email log entries for a site, ordered by
+	// `created_at DESC, id DESC`. The composite cursor predicate `(created_at, id)` ensures no rows are
+	// skipped when multiple sends share the same timestamp (batch sends).
+	//
+	// Body privacy: `body` is never returned in the list response, regardless of `body_stored`. Use
+	// `GET /email/log/{logId}` to retrieve the full detail including body.
+	//
 	// Requires `site.email.manage` permission and site access.
 	//
 	// GET /api/v1/sites/{siteId}/email/log
 	ListSiteEmailLog(ctx context.Context, params ListSiteEmailLogParams) (ListSiteEmailLogRes, error)
 	// ListSiteEmailSuppression invokes listSiteEmailSuppression operation.
 	//
-	// Returns a keyset-paginated list of suppression entries for this site
-	// (including fleet-wide entries). Each entry was created either by a
-	// provider webhook (hard_bounce / complaint) or manually added by an
-	// operator (manual / unsubscribe).
+	// Returns a keyset-paginated list of suppression entries for this site (including fleet-wide entries).
+	// Each entry was created either by a provider webhook (hard_bounce / complaint) or manually added by
+	// an operator (manual / unsubscribe).
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// GET /api/v1/sites/{siteId}/email/suppression
 	ListSiteEmailSuppression(ctx context.Context, params ListSiteEmailSuppressionParams) (ListSiteEmailSuppressionRes, error)
 	// ListSiteFileVersions invokes listSiteFileVersions operation.
 	//
-	// Issues a `file_versions_list` command to the site's agent. Returns the
-	// version history for a single file, ordered newest-first. Each version
-	// carries an opaque `version_id` that can be passed to
+	// Issues a `file_versions_list` command to the site's agent. Returns the version history for a single
+	// file, ordered newest-first. Each version carries an opaque `version_id` that can be passed to
 	// `POST /files/versions/restore` to restore that version.
-	// **Sensitive-path gate (F3):** If `path` matches the sensitive-file
-	// deny-list (wp-config.php, .env*, *.pem, …), the caller must hold
-	// `site.files.read_sensitive` (owner). A non-owner is denied `403` and
-	// the denial is audited at elevated severity. This prevents leaking that
-	// sensitive backups exist to non-owner collaborators.
-	// Version history availability depends on the agent-side implementation
-	// (e.g. the host's filesystem snapshot, the pre-write backup mechanism,
-	// or WP's own revision system). When no history is available for a path,
-	// the agent returns an empty `versions` list.
-	// This is a **read** operation.
-	// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-	// when not opted in.
+	//
+	// Sensitive-path gate (F3): If `path` matches the sensitive-file deny-list (wp-config.php, .env*,
+	// *.pem, …), the caller must hold `site.files.read_sensitive` (owner). A non-owner is denied `403`
+	// and the denial is audited at elevated severity. This prevents leaking that sensitive backups exist
+	// to non-owner collaborators.
+	//
+	// Version history availability depends on the agent-side implementation (e.g. the host's filesystem
+	// snapshot, the pre-write backup mechanism, or WP's own revision system). When no history is available
+	// for a path, the agent returns an empty `versions` list.
+	//
+	// This is a read operation.
+	//
+	// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+	//
 	// Requires `site.files.read` permission (admin+).
 	//
 	// GET /api/v1/sites/{siteId}/files/versions
 	ListSiteFileVersions(ctx context.Context, params ListSiteFileVersionsParams) (ListSiteFileVersionsRes, error)
 	// ListSiteFiles invokes listSiteFiles operation.
 	//
-	// Issues a `file_list` command to the site's agent and returns one page
-	// of directory entries for the given path.
-	// The feature must be **explicitly enabled per site** (off by default).
-	// Returns `403 files_not_enabled` when the site has not opted in.
+	// Issues a `file_list` command to the site's agent and returns one page of directory entries for the
+	// given path.
+	//
+	// The feature must be explicitly enabled per site (off by default). Returns `403 files_not_enabled`
+	// when the site has not opted in.
+	//
 	// Requires the `site.files.read` permission (admin+).
-	// Pagination is cursor-based: when `truncated=true` the response carries
-	// an opaque `cursor` that the caller passes on the next request.
+	//
+	// Pagination is cursor-based: when `truncated=true` the response carries an opaque `cursor` that the
+	// caller passes on the next request.
 	//
 	// GET /api/v1/sites/{siteId}/files
 	ListSiteFiles(ctx context.Context, params ListSiteFilesParams) (ListSiteFilesRes, error)
 	// ListSiteInvitations invokes listSiteInvitations operation.
 	//
-	// Requires the `member.manage` permission and full org membership — a
-	// site-scoped collaborator cannot manage shares.
+	// Requires the `member.manage` permission and full org membership — a site-scoped collaborator
+	// cannot manage shares.
 	//
 	// GET /api/v1/sites/{siteId}/invitations
 	ListSiteInvitations(ctx context.Context, params ListSiteInvitationsParams) (ListSiteInvitationsRes, error)
 	// ListSiteLoginEvents invokes listSiteLoginEvents operation.
 	//
-	// Returns the agent-ingested login events for the site, ordered by
-	// `occurred_at` descending (newest first). Filter by `status` (1=failure,
-	// 2=success, 3=blocked). Default limit is 100; max 500.
+	// Returns the agent-ingested login events for the site, ordered by `occurred_at` descending (newest
+	// first). Filter by `status` (1=failure, 2=success, 3=blocked). Default limit is 100; max 500.
 	//
 	// GET /api/v1/sites/{siteId}/security/login-events
 	ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (*SiteLoginEventList, error)
 	// ListSitePHPErrors invokes listSitePHPErrors operation.
 	//
-	// Returns the agent-captured PHP errors for the site, grouped by md5
-	// fingerprint. Each row carries the occurrence count, first/last seen
-	// timestamps, and the silenced flag.
+	// Returns the agent-captured PHP errors for the site, grouped by md5 fingerprint. Each row carries the
+	// occurrence count, first/last seen timestamps, and the silenced flag.
 	//
 	// GET /api/v1/sites/{siteId}/errors
 	ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (*PHPErrorList, error)
@@ -2381,27 +2421,25 @@ type Invoker interface {
 	ListSiteVulnerabilities(ctx context.Context, params ListSiteVulnerabilitiesParams) (ListSiteVulnerabilitiesRes, error)
 	// ListSites invokes listSites operation.
 	//
-	// Lists the tenant's sites. By default (ADR-041) archived sites are hidden.
-	// Pass `?state=<connection_state>` to filter to exactly one state (e.g.
-	// `?state=archived` for the archived chip), or `?include_archived=true` as
-	// a convenience alias that returns only the archived sites.
-	// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
-	// DATABASE, before `limit`/`offset`. That is the point of them: a client
-	// that fetches one page and filters it locally is searching only that
-	// page, so an agency with more sites than the page size gets "no results"
-	// for a site it owns. With `q` on the server, the rows returned are the
-	// best matches in the requested order rather than the newest page filtered
-	// afterwards.
-	// `q` and `sort` compose with every other parameter here (`tags`,
-	// `tags_match`, `state`, `include_archived`, `clientId`) rather than
-	// replacing any of them.
+	// Lists the tenant's sites. By default (ADR-041) archived sites are hidden. Pass
+	// `?state=<connection_state>` to filter to exactly one state (e.g. `?state=archived` for the archived
+	// chip), or `?include_archived=true` as a convenience alias that returns only the archived sites.
+	//
+	// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the DATABASE, before
+	// `limit`/`offset`. That is the point of them: a client that fetches one page and filters it locally
+	// is searching only that page, so an agency with more sites than the page size gets "no results" for a
+	// site it owns. With `q` on the server, the rows returned are the best matches in the requested order
+	// rather than the newest page filtered afterwards.
+	//
+	// `q` and `sort` compose with every other parameter here (`tags`, `tags_match`, `state`,
+	// `include_archived`, `clientId`) rather than replacing any of them.
 	//
 	// GET /api/v1/sites
 	ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error)
 	// ListSocialProviders invokes listSocialProviders operation.
 	//
-	// Returns the provider keys that are configured and will work. The sign-in page renders exactly
-	// these, so an unconfigured provider never shows a button that leads to a provider error page.
+	// Returns the provider keys that are configured and will work. The sign-in page renders exactly these,
+	// so an unconfigured provider never shows a button that leads to a provider error page.
 	// Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
 	// buttons the operator chose to enable.
 	//
@@ -2409,9 +2447,8 @@ type Invoker interface {
 	ListSocialProviders(ctx context.Context) (*ListSocialProvidersOK, error)
 	// ListTags invokes listTags operation.
 	//
-	// Lists every tag in the tenant's registry (m100), sorted
-	// case-insensitively by name, with a live `usage_count` (the number of
-	// sites currently carrying it — unused tags with usage_count 0 are
+	// Lists every tag in the tenant's registry (m100), sorted case-insensitively by name, with a live
+	// `usage_count` (the number of sites currently carrying it — unused tags with usage_count 0 are
 	// legitimate). No pagination: a tenant's tag vocabulary is small.
 	//
 	// GET /api/v1/tags
@@ -2442,10 +2479,9 @@ type Invoker interface {
 	ListWebAuthnCredentials(ctx context.Context) (ListWebAuthnCredentialsRes, error)
 	// LockBackup invokes lockBackup operation.
 	//
-	// Sets `locked=true` on a completed snapshot. Locked snapshots are never
-	// auto-pruned by the retention GC regardless of age or count rules.
-	// The operator must explicitly DELETE the lock before the GC can reclaim it.
-	// Track C (m49). Requires operator+.
+	// Sets `locked=true` on a completed snapshot. Locked snapshots are never auto-pruned by the retention
+	// GC regardless of age or count rules. The operator must explicitly DELETE the lock before the GC can
+	// reclaim it. Track C (m49). Requires operator+.
 	//
 	// PATCH /api/v1/backups/{snapshotId}/lock
 	LockBackup(ctx context.Context, params LockBackupParams) (LockBackupRes, error)
@@ -2487,106 +2523,110 @@ type Invoker interface {
 	PatchMember(ctx context.Context, request *PatchMemberRequest, params PatchMemberParams) (PatchMemberRes, error)
 	// PatchSiteErrorConfig invokes patchSiteErrorConfig operation.
 	//
-	// Stores the PHP error-level mask and md5 ignore-list for the site, then
-	// pushes the new config to the agent via a signed `sync_error_config`
-	// command. Returns the stored config on success.
+	// Stores the PHP error-level mask and md5 ignore-list for the site, then pushes the new config to the
+	// agent via a signed `sync_error_config` command. Returns the stored config on success.
+	//
 	// Validation:
-	// - `error_level` must be a positive integer that fits in int32 (>0,
-	// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
-	// 0x7FFFFFFF (all flags set).
-	// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
-	// characters (the md5(code:file:line:message) fingerprint produced
-	// by the agent).
-	// If the agent push fails after the config is successfully stored the
-	// response is still HTTP 200 with the stored config; an
-	// `X-Agent-Push-Warning` response header carries the push error message
-	// so the UI can surface it as a non-blocking warning.
+	//
+	//  - `error_level` must be a positive integer that fits in int32 (>0, ≤2147483647). Typical values:
+	//    6143 (WP default), 32767 (E_ALL), 0x7FFFFFFF (all flags set).
+	//  - Each entry in `ignore_md5s` must be exactly 32 lowercase hex characters (the
+	//    md5(code:file:line:message) fingerprint produced by the agent).
+	//
+	// If the agent push fails after the config is successfully stored the response is still HTTP 200 with
+	// the stored config; an `X-Agent-Push-Warning` response header carries the push error message so the
+	// UI can surface it as a non-blocking warning.
 	//
 	// PATCH /api/v1/sites/{siteId}/errors/config
 	PatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error)
 	// PauseSiteMonitoring invokes pauseSiteMonitoring operation.
 	//
-	// GH #414 phase 1. Records the operator's intent to pause scheduled
-	// monitoring on each site in `site_ids`. Requires the `site.write`
-	// permission.
-	// Idempotent: pausing a site that is already paused succeeds and
-	// changes nothing — in particular it does NOT overwrite the existing
-	// `reason` or paused-at instant — and comes back with `changed: false`.
-	// Per-site, not all-or-nothing: ids the caller cannot access, or that
-	// do not exist in this tenant, come back with `ok: false` rather than
-	// failing the whole call. `changed` is true only for the sites this
-	// request actually moved.
-	// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
-	// beacon ingestion, retention jobs and every operator-initiated action
-	// continue to run on a paused site.
+	// GH #414 phase 1. Records the operator's intent to pause scheduled monitoring on each site in
+	// `site_ids`. Requires the `site.write` permission.
+	//
+	// Idempotent: pausing a site that is already paused succeeds and changes nothing — in particular it
+	// does NOT overwrite the existing `reason` or paused-at instant — and comes back with
+	// `changed: false`.
+	//
+	// Per-site, not all-or-nothing: ids the caller cannot access, or that do not exist in this tenant,
+	// come back with `ok: false` rather than failing the whole call. `changed` is true only for the sites
+	// this request actually moved.
+	//
+	// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM beacon ingestion, retention jobs
+	// and every operator-initiated action continue to run on a paused site.
 	//
 	// POST /api/v1/sites/monitoring/pause
 	PauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (PauseSiteMonitoringRes, error)
 	// PreloadCache invokes preloadCache operation.
 	//
-	// Triggers the agent to begin warming the page cache. Returns an
-	// `{ok, detail}` ack; preload progress lands via the `cache.preload.*`
-	// SSE events. Requires the `site.cache.purge` permission.
+	// Triggers the agent to begin warming the page cache. Returns an `{ok, detail}` ack; preload progress
+	// lands via the `cache.preload.*` SSE events. Requires the `site.cache.purge` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/cache/preload
 	PreloadCache(ctx context.Context, params PreloadCacheParams) (*PerfActionResult, error)
 	// PrepareSiteFileDownload invokes prepareSiteFileDownload operation.
 	//
 	// Prepares a file for large-file download in three steps:
+	//
 	// 1. CP mints presigned S3 PUT URLs in a tenant-namespaced staging area.
-	// 2. CP issues `file_download_prepare` to the agent, which uploads the
-	// file in chunks directly to S3 (never through the CP).
-	// 3. CP mints a short-lived presigned GET URL (≤ 5 min TTL) for the
-	// browser to fetch the staged file directly from object storage.
-	// Large files bypass the CP's response path entirely — only the
-	// presigned URL is returned in the 200 body.
+	// 2. CP issues `file_download_prepare` to the agent, which uploads the file in chunks directly to S3
+	//    (never through the CP).
+	// 3. CP mints a short-lived presigned GET URL (≤ 5 min TTL) for the browser to fetch the staged file
+	//    directly from object storage.
+	//
+	// Large files bypass the CP's response path entirely — only the presigned URL is returned in the 200
+	// body.
+	//
 	// A `file_transfers` row is persisted for audit and GC tracking.
-	// **Sensitive-path gate (T6):** same rules as `readSiteFileContent`, owner-level permission required;
-	//  the attempt is always audited.
-	// Returns `503 storage_not_configured` when object storage is not
-	// configured (self-hosted deployments without S3).
-	// The feature must be explicitly enabled per site. Returns
-	// `403 files_not_enabled` when not opted in.
-	// Requires the `site.files.read` permission (admin+). Sensitive-path
-	// downloads additionally require `site.files.read_sensitive` (owner only).
+	//
+	// Sensitive-path gate (T6): same rules as `readSiteFileContent`, owner-level permission required; the
+	// attempt is always audited.
+	//
+	// Returns `503 storage_not_configured` when object storage is not configured (self-hosted deployments
+	// without S3).
+	//
+	// The feature must be explicitly enabled per site. Returns `403 files_not_enabled` when not opted in.
+	//
+	// Requires the `site.files.read` permission (admin+). Sensitive-path downloads additionally require
+	// `site.files.read_sensitive` (owner only).
 	//
 	// POST /api/v1/sites/{siteId}/files/download
 	PrepareSiteFileDownload(ctx context.Context, request *FileDownloadRequest, params PrepareSiteFileDownloadParams) (PrepareSiteFileDownloadRes, error)
 	// PrepareSiteFileUpload invokes prepareSiteFileUpload operation.
 	//
-	// Step 1 of 2 for browser file upload. The CP mints short-lived presigned
-	// S3 PUT URLs in the tenant-namespaced staging area and returns them to
-	// the browser. The browser PUTs each chunk directly to S3 (never through
-	// the CP). After all chunks are staged, the caller invokes
-	// `POST /files/upload/apply` to have the agent fetch, reassemble,
-	// validate (SHA-256), and atomic-swap the file into place.
-	// Presigned PUT URLs are **never logged** (T8). TTL is ≤ 5 minutes.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-	// **Executable/sensitive gate:** Same as `writeSiteFileContent` — if
-	// `confirm_executable_write` or `confirm_sensitive` is set, owner
-	// permission (`site.files.write_code`) is required.
-	// Returns `503 storage_not_configured` on self-hosted deployments without
-	// object storage.
+	// Step 1 of 2 for browser file upload. The CP mints short-lived presigned S3 PUT URLs in the
+	// tenant-namespaced staging area and returns them to the browser. The browser PUTs each chunk directly
+	// to S3 (never through the CP). After all chunks are staged, the caller invokes
+	// `POST /files/upload/apply` to have the agent fetch, reassemble, validate (SHA-256), and atomic-swap
+	// the file into place.
+	//
+	// Presigned PUT URLs are never logged (T8). TTL is ≤ 5 minutes.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+	//
+	// Executable/sensitive gate: Same as `writeSiteFileContent` — if `confirm_executable_write` or
+	// `confirm_sensitive` is set, owner permission (`site.files.write_code`) is required.
+	//
+	// Returns `503 storage_not_configured` on self-hosted deployments without object storage.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/upload
 	PrepareSiteFileUpload(ctx context.Context, request *PrepareUploadRequest, params PrepareSiteFileUploadParams) (PrepareSiteFileUploadRes, error)
 	// PurgeCache invokes purgeCache operation.
 	//
-	// Purges the whole cache (`scope: all`), a single URL (`scope: url` with
-	// `url`), or a list of URLs (`urls`). Setting `delete_everything: true`
-	// with `scope: all` additionally clears every cached artifact and requires
-	// the higher `site.cache.delete-everything` permission. The normal purge
-	// requires `site.cache.purge`. An agent rejection is returned as HTTP 200
-	// with `ok: false` and a `detail`.
+	// Purges the whole cache (`scope: all`), a single URL (`scope: url` with `url`), or a list of URLs
+	// (`urls`). Setting `delete_everything: true` with `scope: all` additionally clears every cached
+	// artifact and requires the higher `site.cache.delete-everything` permission. The normal purge
+	// requires `site.cache.purge`. An agent rejection is returned as HTTP 200 with `ok: false` and a
+	// `detail`.
 	//
 	// POST /api/v1/sites/{siteId}/perf/cache/purge
 	PurgeCache(ctx context.Context, request *PurgeRequest, params PurgeCacheParams) (PurgeCacheRes, error)
 	// PutAlertConfig invokes putAlertConfig operation.
 	//
-	// Sets the email recipients, webhook URL + signing secret, and enabled flag
-	// for downtime/recovery alerts. The webhook secret is write-only. Requires
-	// admin+.
+	// Sets the email recipients, webhook URL + signing secret, and enabled flag for downtime/recovery
+	// alerts. The webhook secret is write-only. Requires admin+.
 	//
 	// PUT /api/v1/alert-config
 	PutAlertConfig(ctx context.Context, request *AlertConfigUpdate) (PutAlertConfigRes, error)
@@ -2616,162 +2656,156 @@ type Invoker interface {
 	PutClientReportSchedule(ctx context.Context, request *ClientReportScheduleUpdate, params PutClientReportScheduleParams) (PutClientReportScheduleRes, error)
 	// PutEmailConnection invokes putEmailConnection operation.
 	//
-	// Creates or updates the named connection identified by `connKey` for the
-	// site's email config. The key must match `^[a-z0-9][a-z0-9_-]{0,31}$`;
-	// the value `default` is reserved and returns 400.
-	// Omit `secret` to preserve the existing stored credential. Provide an
-	// empty string to clear it.
+	// Creates or updates the named connection identified by `connKey` for the site's email config. The key
+	// must match `^[a-z0-9][a-z0-9_-]{0,31}$`; the value `default` is reserved and returns 400.
+	//
+	// Omit `secret` to preserve the existing stored credential. Provide an empty string to clear it.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// PUT /api/v1/sites/{siteId}/email/connections/{connKey}
 	PutEmailConnection(ctx context.Context, request *PutEmailConnectionRequest, params PutEmailConnectionParams) (PutEmailConnectionRes, error)
 	// PutEmailNotifySettings invokes putEmailNotifySettings operation.
 	//
-	// Creates or updates the tenant-level email notification settings.
-	// This is a full replace, not a partial patch — every field is required
-	// and the request body fully overwrites the stored row.
-	// `digest_cadence`/`digest_day`/`digest_hour`/`timezone` are only
-	// enforced when `digest_enabled` is true; when the digest is disabled
-	// they may be sent as zero values (a save that only touches the
+	// Creates or updates the tenant-level email notification settings. This is a full replace, not a
+	// partial patch — every field is required and the request body fully overwrites the stored row.
+	//
+	// `digest_cadence`/`digest_day`/`digest_hour`/`timezone` are only enforced when `digest_enabled` is
+	// true; when the digest is disabled they may be sent as zero values (a save that only touches the
 	// per-failure-alerts section must not be blocked by digest fields).
+	//
 	// Org-level route. Requires `site.email.manage` permission.
 	//
 	// PUT /api/v1/email/notify-settings
 	PutEmailNotifySettings(ctx context.Context, request *PutEmailNotifySettingsRequest) (PutEmailNotifySettingsRes, error)
 	// PutObjectCacheConfig invokes putObjectCacheConfig operation.
 	//
-	// Stores the object cache configuration. An empty `password` field
-	// preserves the stored password (nil-sentinel). If connection-critical
-	// fields change (host, port, scheme, database, username, prefix, or
-	// password), the stored test hash is cleared and a new test is required
-	// before re-enabling. The agent receives the new config via an
-	// `objectcache.apply_config` signed command (best-effort: a push failure
-	// returns 200 with an `X-Agent-Push-Warning` header). Requires
-	// `site.perf.config` permission.
+	// Stores the object cache configuration. An empty `password` field preserves the stored password
+	// (nil-sentinel). If connection-critical fields change (host, port, scheme, database, username,
+	// prefix, or password), the stored test hash is cleared and a new test is required before re-enabling.
+	// The agent receives the new config via an `objectcache.apply_config` signed command (best-effort: a
+	// push failure returns 200 with an `X-Agent-Push-Warning` header). Requires `site.perf.config`
+	// permission.
 	//
 	// PUT /api/v1/sites/{siteId}/perf/object-cache/config
 	PutObjectCacheConfig(ctx context.Context, request *ObjectCacheConfigPut, params PutObjectCacheConfigParams) (PutObjectCacheConfigRes, error)
 	// PutOrgEmailConfig invokes putOrgEmailConfig operation.
 	//
-	// Creates or updates the org-wide default email configuration. This row is
-	// inherited by any site that has no per-site override. Provide `secret` in
-	// the body to store a new provider secret (age-encrypted at rest); omit
-	// `secret` to preserve the existing stored credential.
+	// Creates or updates the org-wide default email configuration. This row is inherited by any site that
+	// has no per-site override. Provide `secret` in the body to store a new provider secret (age-encrypted
+	// at rest); omit `secret` to preserve the existing stored credential.
+	//
 	// Org-level route. Requires `site.email.manage` permission (operator+).
 	//
 	// PUT /api/v1/email/org-config
 	PutOrgEmailConfig(ctx context.Context, request *PutEmailConfigRequest) (PutOrgEmailConfigRes, error)
 	// PutOrgEmailWebhookConfig invokes putOrgEmailWebhookConfig operation.
 	//
-	// Updates the inbound webhook route token and/or signing key for the
-	// org-wide email config. When rotate_token is true a new route token is
-	// generated (the old URL is immediately invalid) and the plain token is
-	// returned once in webhook_route_token.
+	// Updates the inbound webhook route token and/or signing key for the org-wide email config. When
+	// rotate_token is true a new route token is generated (the old URL is immediately invalid) and the
+	// plain token is returned once in webhook_route_token.
+	//
 	// Org-level route. Requires `site.email.manage` permission (operator+).
 	//
 	// PUT /api/v1/email/org-config/webhook-config
 	PutOrgEmailWebhookConfig(ctx context.Context, request *PutEmailWebhookConfigRequest) (PutOrgEmailWebhookConfigRes, error)
 	// PutPerfConfig invokes putPerfConfig operation.
 	//
-	// Stores the new performance config and pushes it to the agent. If the
-	// agent push fails after a successful store, HTTP 200 is still returned
-	// with the stored config and the push error is surfaced in the
-	// `X-Agent-Push-Warning` response header. `cdn_credentials`, when present,
-	// is encrypted server-side and never echoed back. Requires the
-	// `site.perf.config` permission.
+	// Stores the new performance config and pushes it to the agent. If the agent push fails after a
+	// successful store, HTTP 200 is still returned with the stored config and the push error is surfaced
+	// in the `X-Agent-Push-Warning` response header. `cdn_credentials`, when present, is encrypted
+	// server-side and never echoed back. Requires the `site.perf.config` permission.
 	//
 	// PUT /api/v1/sites/{siteId}/perf/config
 	PutPerfConfig(ctx context.Context, request *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error)
 	// PutSiteAppHealthSettings invokes putSiteAppHealthSettings operation.
 	//
-	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
-	// Phase 3). `app_probe_path` must be a site-relative path (starts with
-	// `/`, no scheme, no host, no `..` traversal) - validation failures
-	// return 422. An empty `app_probe_path` clears the override back to
-	// auto-detect. `app_alerts_disabled` excludes the site from app-health
-	// alerting entirely (both the individual alert and the fleet circuit
-	// breaker's eligible-site count) while the probe keeps running.
+	// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291 Phase 3). `app_probe_path` must
+	// be a site-relative path (starts with `/`, no scheme, no host, no `..` traversal) - validation
+	// failures return 422. An empty `app_probe_path` clears the override back to auto-detect.
+	// `app_alerts_disabled` excludes the site from app-health alerting entirely (both the individual alert
+	// and the fleet circuit breaker's eligible-site count) while the probe keeps running.
 	//
 	// PUT /api/v1/sites/{siteId}/app-health-settings
 	PutSiteAppHealthSettings(ctx context.Context, request *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (PutSiteAppHealthSettingsRes, error)
 	// PutSiteAutologinPolicy invokes putSiteAutologinPolicy operation.
 	//
-	// Stores `{enabled, default_wp_user_login}` for the site (GH #286).
-	// `default_wp_user_login` is the WordPress login the mint endpoint
-	// injects when an operator's mint request omits `target_wp_user_login`;
-	// an explicit choice on mint always overrides it. An empty string
-	// clears the default, reverting to the agent's built-in "first
-	// administrator" fallback.
-	// `allowed_wp_roles` is NOT accepted on this body; it is read-only via
-	// the API. Unknown fields (including an attempt to send
-	// `allowed_wp_roles`) are rejected with 422 rather than silently
+	// Stores `{enabled, default_wp_user_login}` for the site (GH #286). `default_wp_user_login` is the
+	// WordPress login the mint endpoint injects when an operator's mint request omits
+	// `target_wp_user_login`; an explicit choice on mint always overrides it. An empty string clears the
+	// default, reverting to the agent's built-in "first administrator" fallback.
+	//
+	// `allowed_wp_roles` is NOT accepted on this body; it is read-only via the API. Unknown fields
+	// (including an attempt to send `allowed_wp_roles`) are rejected with 422 rather than silently
 	// ignored.
-	// **Validation**:
-	// - `default_wp_user_login` must be at most 60 characters (WordPress's
-	// `users.user_login` column is `varchar(60)`).
-	// - `default_wp_user_login` may contain only letters, numbers, and
-	// the characters `_ . - @` (WordPress usernames may be an email
-	// address).
-	// Authorization: requires the `site:autologin` permission (owner+admin).
-	// Operator and viewer roles are explicitly denied.
+	//
+	// Validation:
+	//
+	//  - `default_wp_user_login` must be at most 60 characters (WordPress's `users.user_login` column is
+	//    `varchar(60)`).
+	//  - `default_wp_user_login` may contain only letters, numbers, and the characters `_ . - @`
+	//    (WordPress usernames may be an email address).
+	//
+	// Authorization: requires the `site:autologin` permission (owner+admin). Operator and viewer roles are
+	// explicitly denied.
 	//
 	// PUT /api/v1/sites/{siteId}/autologin-policy
 	PutSiteAutologinPolicy(ctx context.Context, request *SiteAutologinPolicyUpdate, params PutSiteAutologinPolicyParams) (PutSiteAutologinPolicyRes, error)
 	// PutSiteEmailConfig invokes putSiteEmailConfig operation.
 	//
-	// Creates or updates the per-site email configuration. Provide `secret` in
-	// the body to store a new provider secret (age-encrypted at rest); omit
-	// `secret` to preserve the existing stored credential (nil-sentinel pattern).
+	// Creates or updates the per-site email configuration. Provide `secret` in the body to store a new
+	// provider secret (age-encrypted at rest); omit `secret` to preserve the existing stored credential
+	// (nil-sentinel pattern).
+	//
 	// Requires `site.email.manage` permission (operator+) and site access.
 	//
 	// PUT /api/v1/sites/{siteId}/email/config
 	PutSiteEmailConfig(ctx context.Context, request *PutEmailConfigRequest, params PutSiteEmailConfigParams) (PutSiteEmailConfigRes, error)
 	// PutSiteEmailWebhookConfig invokes putSiteEmailWebhookConfig operation.
 	//
-	// Updates the inbound webhook route token and/or signing key for the
-	// per-site email config. When rotate_token is true a new route token is
-	// generated (the old URL is immediately invalid) and the plain token is
-	// returned once in webhook_route_token.
+	// Updates the inbound webhook route token and/or signing key for the per-site email config. When
+	// rotate_token is true a new route token is generated (the old URL is immediately invalid) and the
+	// plain token is returned once in webhook_route_token.
+	//
 	// Requires `site.email.manage` permission (operator+) and site access.
 	//
 	// PUT /api/v1/sites/{siteId}/email/webhook-config
 	PutSiteEmailWebhookConfig(ctx context.Context, request *PutEmailWebhookConfigRequest, params PutSiteEmailWebhookConfigParams) (PutSiteEmailWebhookConfigRes, error)
 	// PutSiteHardeningConfig invokes putSiteHardeningConfig operation.
 	//
-	// Requires the `site.security.manage` permission. On a successful store
-	// but failed agent push, returns `200` with the stored config and an
-	// `X-Agent-Push-Warning` header (never a 5xx — the config is durably
-	// saved and will be re-pushed on the next reconcile).
+	// Requires the `site.security.manage` permission. On a successful store but failed agent push, returns
+	// `200` with the stored config and an `X-Agent-Push-Warning` header (never a 5xx — the config is
+	// durably saved and will be re-pushed on the next reconcile).
 	//
 	// PUT /api/v1/sites/{siteId}/security/hardening
 	PutSiteHardeningConfig(ctx context.Context, request *SiteHardeningConfig, params PutSiteHardeningConfigParams) (PutSiteHardeningConfigRes, error)
 	// PutSiteLoginBrand invokes putSiteLoginBrand operation.
 	//
-	// Stores the new login brand config and pushes it to the agent via the
-	// signed `sync_login_brand` command. If the agent push fails after a
-	// successful store, HTTP 200 is still returned with the stored config;
-	// the push error is surfaced in the `X-Agent-Push-Warning` response
-	// header so callers can surface it as a non-blocking warning.
-	// **Validation**:
-	// - `logo_url` and `logo_link` must be empty (`""`) or a valid
-	// `http`/`https` URL (other schemes are rejected with 422).
-	// - `message` must be at most 2000 characters.
-	// - All fields are optional; omitted or `""` fields mean "no override".
+	// Stores the new login brand config and pushes it to the agent via the signed `sync_login_brand`
+	// command. If the agent push fails after a successful store, HTTP 200 is still returned with the
+	// stored config; the push error is surfaced in the `X-Agent-Push-Warning` response header so callers
+	// can surface it as a non-blocking warning.
+	//
+	// Validation:
+	//
+	//  - `logo_url` and `logo_link` must be empty (`""`) or a valid `http`/`https` URL (other schemes are
+	//    rejected with 422).
+	//  - `message` must be at most 2000 characters.
+	//  - All fields are optional; omitted or `""` fields mean "no override".
 	//
 	// PUT /api/v1/sites/{siteId}/login-brand
 	PutSiteLoginBrand(ctx context.Context, request *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (PutSiteLoginBrandRes, error)
 	// PutSiteLoginProtection invokes putSiteLoginProtection operation.
 	//
-	// Stores the new config and pushes it to the agent via the signed
-	// `sync_security_config` command. If the agent push fails after a
-	// successful store, HTTP 200 is still returned with the stored config;
-	// the push error is surfaced in the `X-Agent-Push-Warning` response
-	// header so callers can surface it as a non-blocking warning.
-	// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
-	// the CP automatically adds the requesting operator's client IP (/32 for
-	// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
-	// operator from enabling protection and immediately locking themselves out.
-	// The auto-added CIDR is reflected in the returned config.
+	// Stores the new config and pushes it to the agent via the signed `sync_security_config` command. If
+	// the agent push fails after a successful store, HTTP 200 is still returned with the stored config;
+	// the push error is surfaced in the `X-Agent-Push-Warning` response header so callers can surface it
+	// as a non-blocking warning.
+	//
+	// Safety rail: when `mode` is `"protect"` and `allow_cidrs` is empty, the CP automatically adds the
+	// requesting operator's client IP (/32 for IPv4, /128 for IPv6) to `allow_cidrs` before storing. This
+	// prevents the operator from enabling protection and immediately locking themselves out. The
+	// auto-added CIDR is reflected in the returned config.
 	//
 	// PUT /api/v1/sites/{siteId}/security/login-protection
 	PutSiteLoginProtection(ctx context.Context, request *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error)
@@ -2783,92 +2817,85 @@ type Invoker interface {
 	PutSitePolicyGroup(ctx context.Context, request *SitePolicyGroup, params PutSitePolicyGroupParams) (PutSitePolicyGroupRes, error)
 	// PutSiteSecurityPolicy invokes putSiteSecurityPolicy operation.
 	//
-	// Requires the `site.security.manage` permission. On a successful store
-	// but failed agent push, returns `200` with the stored policy and an
-	// `X-Agent-Push-Warning` header.
+	// Requires the `site.security.manage` permission. On a successful store but failed agent push, returns
+	// `200` with the stored policy and an `X-Agent-Push-Warning` header.
 	//
 	// PUT /api/v1/sites/{siteId}/security/policy
 	PutSiteSecurityPolicy(ctx context.Context, request *SiteSecurityPolicy, params PutSiteSecurityPolicyParams) (PutSiteSecurityPolicyRes, error)
 	// ReadSiteFileContent invokes readSiteFileContent operation.
 	//
-	// Issues a `file_read` command to the site's agent and returns the
-	// base64-encoded content of a file up to 256 KiB. When the file is
-	// larger than the cap, `truncated=true` is returned; use the download
+	// Issues a `file_read` command to the site's agent and returns the base64-encoded content of a file up
+	// to 256 KiB. When the file is larger than the cap, `truncated=true` is returned; use the download
 	// endpoint for the full file.
-	// **Sensitive-path gate (T6):** paths matching `wp-config.php`, `.env*`,
-	// `*.pem`, `*.key`, `id_rsa*`, `.git/`, `.htpasswd`, or `auth.json`
-	// require **both**:
-	// - `confirm_sensitive=true` query parameter, and
-	// - Owner-level permission (`site.files.read_sensitive`).
-	// Both the successful read AND any denied attempt are recorded in the
-	// tamper-evident audit log with the full path.
-	// The feature must be explicitly enabled per site. Returns
-	// `403 files_not_enabled` when not opted in.
-	// Requires the `site.files.read` permission (admin+). Sensitive-path
-	// reads additionally require `site.files.read_sensitive` (owner only).
+	//
+	// Sensitive-path gate (T6): paths matching `wp-config.php`, `.env*`, `*.pem`, `*.key`, `id_rsa*`,
+	// `.git/`, `.htpasswd`, or `auth.json` require both:
+	//
+	//  - `confirm_sensitive=true` query parameter, and
+	//  - Owner-level permission (`site.files.read_sensitive`).
+	//
+	// Both the successful read AND any denied attempt are recorded in the tamper-evident audit log with
+	// the full path.
+	//
+	// The feature must be explicitly enabled per site. Returns `403 files_not_enabled` when not opted in.
+	//
+	// Requires the `site.files.read` permission (admin+). Sensitive-path reads additionally require
+	// `site.files.read_sensitive` (owner only).
 	//
 	// GET /api/v1/sites/{siteId}/files/content
 	ReadSiteFileContent(ctx context.Context, params ReadSiteFileContentParams) (ReadSiteFileContentRes, error)
 	// RebaselineAuditIntegrity invokes rebaselineAuditIntegrity operation.
 	//
-	// Moves the tenant's audit-integrity verification anchor to the CURRENT
-	// chain head, so `verifyAudit` treats everything up to and including
-	// that point as trusted and only walks entries written after it going
-	// forward. This exists because `audit_log` is append-only and hash-
-	// chained: a historical break caused by a race that pre-dates the
-	// per-tenant serialization in the append path can never be repaired in
-	// place, so without this endpoint an operator would see a permanent
-	// "chain break" badge with no way to acknowledge it.
-	// This endpoint NEVER alters or deletes any `audit_log` row — the
-	// flagged rows (and everything else) remain exactly as written, for
-	// forensic review; re-baselining only moves where verification starts.
-	// It is itself recorded as a normal hash-chained audit entry (action
-	// `audit.integrity.rebaselined`), so the acknowledgment lives in the
-	// tamper-evident trail too. Any tampering that happens AFTER the
-	// baseline is still caught by `verifyAudit`. Owner-only
-	// (`audit:manage`) — the same trust bar as tenant/SMTP management.
+	// Moves the tenant's audit-integrity verification anchor to the CURRENT chain head, so `verifyAudit`
+	// treats everything up to and including that point as trusted and only walks entries written after it
+	// going forward. This exists because `audit_log` is append-only and hash- chained: a historical break
+	// caused by a race that pre-dates the per-tenant serialization in the append path can never be
+	// repaired in place, so without this endpoint an operator would see a permanent "chain break" badge
+	// with no way to acknowledge it.
+	//
+	// This endpoint NEVER alters or deletes any `audit_log` row — the flagged rows (and everything else)
+	// remain exactly as written, for forensic review; re-baselining only moves where verification starts.
+	// It is itself recorded as a normal hash-chained audit entry (action `audit.integrity.rebaselined`),
+	// so the acknowledgment lives in the tamper-evident trail too. Any tampering that happens AFTER the
+	// baseline is still caught by `verifyAudit`. Owner-only (`audit:manage`) — the same trust bar as
+	// tenant/SMTP management.
 	//
 	// POST /api/v1/audit/integrity/rebaseline
 	RebaselineAuditIntegrity(ctx context.Context, request OptAuditRebaselineRequest) (RebaselineAuditIntegrityRes, error)
 	// RecheckSite invokes recheckSite operation.
 	//
-	// Dispatches a synchronous `metadata` command to the site's agent,
-	// applies the returned metadata, and records a heartbeat (recovering
-	// the connection state to `connected` when it was `degraded` or
-	// `disconnected`). Rate-limited per (tenant, site). Requires
-	// `site.write` and site access; no org-scope requirement (a
-	// write-access collaborator may re-check).
+	// Dispatches a synchronous `metadata` command to the site's agent, applies the returned metadata, and
+	// records a heartbeat (recovering the connection state to `connected` when it was `degraded` or
+	// `disconnected`). Rate-limited per (tenant, site). Requires `site.write` and site access; no
+	// org-scope requirement (a write-access collaborator may re-check).
 	//
 	// POST /api/v1/sites/{siteId}/recheck
 	RecheckSite(ctx context.Context, params RecheckSiteParams) (RecheckSiteRes, error)
 	// RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 	//
-	// Enqueues a signed `diagnostics` command to the agent. The agent runs
-	// the 14-category collector immediately and pushes the result back to
-	// POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
-	// code `diagnostics_refresh_unwired` when the CP->agent commander has
-	// not yet been wired (V1).
+	// Enqueues a signed `diagnostics` command to the agent. The agent runs the 14-category collector
+	// immediately and pushes the result back to POST /agent/v1/diagnostics. Returns 202 on accept. Returns
+	// 503 with code `diagnostics_refresh_unwired` when the CP->agent commander has not yet been wired
+	// (V1).
 	//
 	// POST /api/v1/sites/{siteId}/diagnostics/refresh
 	RefreshSiteDiagnostics(ctx context.Context, params RefreshSiteDiagnosticsParams) (RefreshSiteDiagnosticsRes, error)
 	// RefreshSiteScreenshot invokes refreshSiteScreenshot operation.
 	//
-	// Marks the site's screenshot status as `pending` and enqueues a
-	// `site_screenshot_capture` job in the media-encoder queue. Returns 202
-	// immediately. The web client should poll the site GET / subscribe to SSE
-	// for `screenshot.updated` events to learn when the capture completes.
-	// Requires site:read (same gate as updates/refresh). Returns 409 when the
-	// site is not enrolled; 404 when the site is not in this tenant.
+	// Marks the site's screenshot status as `pending` and enqueues a `site_screenshot_capture` job in the
+	// media-encoder queue. Returns 202 immediately. The web client should poll the site GET / subscribe to
+	// SSE for `screenshot.updated` events to learn when the capture completes. Requires site:read (same
+	// gate as updates/refresh). Returns 409 when the site is not enrolled; 404 when the site is not in
+	// this tenant.
 	//
 	// POST /api/v1/sites/{siteId}/screenshot/refresh
 	RefreshSiteScreenshot(ctx context.Context, params RefreshSiteScreenshotParams) (RefreshSiteScreenshotRes, error)
 	// RefreshSiteUpdates invokes refreshSiteUpdates operation.
 	//
-	// Enqueues a CP->agent refresh-inventory command for the site. The agent
-	// re-reads its plugin/theme inventory and `update_*` transients and pushes
-	// them back over /agent/v1/metadata. Returns 202 immediately. Requires
-	// viewer+. Returns 409 when the site is offline or unreachable, or 404 if
-	// the site is not enrolled in this tenant.
+	// Enqueues a CP->agent refresh-inventory command for the site. The agent re-reads its plugin/theme
+	// inventory and `update_*` transients and pushes them back over /agent/v1/metadata. Returns 202
+	// immediately. Requires viewer+. Returns 409 when the site is offline or unreachable, or 404 if the
+	// site is not enrolled in this tenant.
 	//
 	// POST /api/v1/sites/{siteId}/updates/refresh
 	RefreshSiteUpdates(ctx context.Context, params RefreshSiteUpdatesParams) (RefreshSiteUpdatesRes, error)
@@ -2881,27 +2908,25 @@ type Invoker interface {
 	RegenerateClientInvitation(ctx context.Context, params RegenerateClientInvitationParams) (RegenerateClientInvitationRes, error)
 	// RegenerateRecoveryCodes invokes regenerateRecoveryCodes operation.
 	//
-	// Requires `current_password` re-authentication. Replaces the existing
-	// 10-code batch with 10 new ones, returned once.
+	// Requires `current_password` re-authentication. Replaces the existing 10-code batch with 10 new ones,
+	// returned once.
 	//
 	// POST /auth/2fa/recovery-codes/regenerate
 	RegenerateRecoveryCodes(ctx context.Context, request *RegenerateRecoveryCodesReq) (RegenerateRecoveryCodesRes, error)
 	// RegenerateSiteInvitation invokes regenerateSiteInvitation operation.
 	//
-	// Requires the `member.manage` permission and full org membership.
-	// Returns a fresh `accept_link` for the same pending invitation.
+	// Requires the `member.manage` permission and full org membership. Returns a fresh `accept_link` for
+	// the same pending invitation.
 	//
 	// POST /api/v1/sites/{siteId}/invitations/{invitationId}/regenerate
 	RegenerateSiteInvitation(ctx context.Context, params RegenerateSiteInvitationParams) (RegenerateSiteInvitationRes, error)
 	// Register invokes register operation.
 	//
-	// On first run (zero users in the database) this bootstraps the instance:
-	// creates the first user verified and active, creates their tenant, and
-	// establishes an immediate session (201 + Me). After the first user exists,
-	// registration is open self-serve: the account is created in a pending
-	// state, a verification email is sent, and the response is 200
-	// {ok: true, pending: true}. The user must verify their email via
-	// POST /auth/verify-email before they can log in.
+	// On first run (zero users in the database) this bootstraps the instance: creates the first user
+	// verified and active, creates their tenant, and establishes an immediate session (201 + Me). After
+	// the first user exists, registration is open self-serve: the account is created in a pending state, a
+	// verification email is sent, and the response is 200 {ok: true, pending: true}. The user must verify
+	// their email via POST /auth/verify-email before they can log in.
 	//
 	// POST /auth/register
 	Register(ctx context.Context, request *RegisterRequest) (RegisterRes, error)
@@ -2926,13 +2951,14 @@ type Invoker interface {
 	RenameOrg(ctx context.Context, request *RenameOrgReq, params RenameOrgParams) (RenameOrgRes, error)
 	// RenameSiteFile invokes renameSiteFile operation.
 	//
-	// Issues a `file_rename` command to the site's agent. Both `src` and `dst`
-	// are containment-checked by the agent; escaping the jail on either path
-	// returns `400 outside_root`.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-	// **Executable/sensitive gate:** Same as `writeSiteFileContent` — if
-	// `confirm_executable_write` or `confirm_sensitive` is set, owner
-	// permission (`site.files.write_code`) is required.
+	// Issues a `file_rename` command to the site's agent. Both `src` and `dst` are containment-checked by
+	// the agent; escaping the jail on either path returns `400 outside_root`.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+	//
+	// Executable/sensitive gate: Same as `writeSiteFileContent` — if `confirm_executable_write` or
+	// `confirm_sensitive` is set, owner permission (`site.files.write_code`) is required.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/rename
@@ -2951,49 +2977,46 @@ type Invoker interface {
 	ResendAdminUserVerification(ctx context.Context, params ResendAdminUserVerificationParams) (ResendAdminUserVerificationRes, error)
 	// ResendEmailLog invokes resendEmailLog operation.
 	//
-	// Dispatches the `resend_email` agent command for the given log entry.
-	// Only available when `body_stored=true` on the log entry — returns 409
-	// otherwise. The resend is best-effort: if the agent is offline or returns
-	// an error the response contains `ok=false` with the agent's detail message
-	// but HTTP 200 is returned (matching the test-email pattern).
-	// The `resent_count` counter is incremented before the agent dispatch so
-	// operators can see how many resend attempts were made even if the agent
-	// was unavailable.
+	// Dispatches the `resend_email` agent command for the given log entry. Only available when
+	// `body_stored=true` on the log entry — returns 409 otherwise. The resend is best-effort: if the
+	// agent is offline or returns an error the response contains `ok=false` with the agent's detail
+	// message but HTTP 200 is returned (matching the test-email pattern).
+	//
+	// The `resent_count` counter is incremented before the agent dispatch so operators can see how many
+	// resend attempts were made even if the agent was unavailable.
+	//
 	// Requires `site.email.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/email/log/{logId}/resend
 	ResendEmailLog(ctx context.Context, params ResendEmailLogParams) (ResendEmailLogRes, error)
 	// ResendVerification invokes resendVerification operation.
 	//
-	// Always returns 200 {ok: true} whether or not the email maps to a
-	// pending account (enumeration-safe). A new verification email is sent
-	// when the account exists and is still pending verification.
+	// Always returns 200 {ok: true} whether or not the email maps to a pending account (enumeration-safe).
+	// A new verification email is sent when the account exists and is still pending verification.
 	//
 	// POST /auth/verification/resend
 	ResendVerification(ctx context.Context, request *ResendVerificationReq) (*ResendVerificationOK, error)
 	// ResetPassword invokes resetPassword operation.
 	//
-	// Validates the one-time reset token and replaces the user's password.
-	// Does not establish a session; the user must log in separately. Returns
-	// 410 when the token is expired, already used, or not found.
+	// Validates the one-time reset token and replaces the user's password. Does not establish a session;
+	// the user must log in separately. Returns 410 when the token is expired, already used, or not found.
 	//
 	// POST /auth/password/reset
 	ResetPassword(ctx context.Context, request *ResetPasswordReq) (ResetPasswordRes, error)
 	// RestoreAdminAccount invokes restoreAdminAccount operation.
 	//
-	// Clears tenants.suspended_at/suspended_reason, returning the tenant to
-	// whatever its underlying plan/plan_status already was. A missing or
-	// empty request body is tolerated (treated as an empty reason, which
-	// then fails the reason-required validation below) rather than a hard
-	// 400 — every other manual control on this page rejects a malformed
-	// body outright. Requires is_superadmin=true.
+	// Clears tenants.suspended_at/suspended_reason, returning the tenant to whatever its underlying
+	// plan/plan_status already was. A missing or empty request body is tolerated (treated as an empty
+	// reason, which then fails the reason-required validation below) rather than a hard 400 — every
+	// other manual control on this page rejects a malformed body outright. Requires is_superadmin=true.
 	//
 	// POST /api/v1/admin/accounts/{id}/restore
 	RestoreAdminAccount(ctx context.Context, request OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error)
 	// RestoreIsolatedMedia invokes restoreIsolatedMedia operation.
 	//
-	// Moves quarantined attachment files back to the WordPress uploads directory
-	// using the quarantine manifest. The attachment posts are already intact.
+	// Moves quarantined attachment files back to the WordPress uploads directory using the quarantine
+	// manifest. The attachment posts are already intact.
+	//
 	// Requires the `site.media.clean.write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/media/clean/restore
@@ -3012,29 +3035,30 @@ type Invoker interface {
 	RestoreOrg(ctx context.Context, params RestoreOrgParams) (RestoreOrgRes, error)
 	// RestoreSite invokes restoreSite operation.
 	//
-	// M21 / ADR-041 — operator action. Un-archives a site back to
-	// `disconnected`. Only valid from `archived`. Requires operator+.
+	// M21 / ADR-041 — operator action. Un-archives a site back to `disconnected`. Only valid from
+	// `archived`. Requires operator+.
 	//
 	// POST /api/v1/sites/{siteId}/restore
 	RestoreSite(ctx context.Context, params RestoreSiteParams) (RestoreSiteRes, error)
 	// RestoreSiteFileVersion invokes restoreSiteFileVersion operation.
 	//
-	// Issues a `file_version_restore` command to the site's agent, which
-	// overwrites the file at `path` with the content of the specified
-	// `version_id`. The version identifier is opaque — retrieve valid IDs
-	// from `GET /files/versions?path=…`.
-	// Returns `404 no_such_version` when the version ID does not exist for
-	// the given path.
-	// **Write-enabled gate:** Both `enabled` and `write_enabled` must be
-	// `true`. Returns `403 files_write_not_enabled` when write mode is off.
-	// **Sensitive-path gate (F3):** If `path` matches the sensitive-file
-	// deny-list (wp-config.php, .env*, *.pem, …), the caller must set
-	// `confirm_sensitive=true` AND hold `site.files.write_code` (owner).
-	// Both checks must pass — a missing flag or insufficient permission
-	// returns `403`. The denial is audited at elevated severity. The agent
-	// independently re-checks and returns `sensitive_denied` when the flag
-	// is absent.
+	// Issues a `file_version_restore` command to the site's agent, which overwrites the file at `path`
+	// with the content of the specified `version_id`. The version identifier is opaque — retrieve valid
+	// IDs from `GET /files/versions?path=…`.
+	//
+	// Returns `404 no_such_version` when the version ID does not exist for the given path.
+	//
+	// Write-enabled gate: Both `enabled` and `write_enabled` must be `true`. Returns
+	// `403 files_write_not_enabled` when write mode is off.
+	//
+	// Sensitive-path gate (F3): If `path` matches the sensitive-file deny-list (wp-config.php, .env*,
+	// *.pem, …), the caller must set `confirm_sensitive=true` AND hold `site.files.write_code` (owner).
+	// Both checks must pass — a missing flag or insufficient permission returns `403`. The denial is
+	// audited at elevated severity. The agent independently re-checks and returns `sensitive_denied` when
+	// the flag is absent.
+	//
 	// Every restore is audited with the full `path` and `version_id`.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// POST /api/v1/sites/{siteId}/files/versions/restore
@@ -3047,57 +3071,60 @@ type Invoker interface {
 	RestoreSiteVulnerability(ctx context.Context, params RestoreSiteVulnerabilityParams) (RestoreSiteVulnerabilityRes, error)
 	// ResumeSiteMonitoring invokes resumeSiteMonitoring operation.
 	//
-	// GH #414 phase 1. Clears the monitoring pause on each site in
-	// `site_ids`. Requires the `site.write` permission.
-	// Idempotent: resuming a site that is already active succeeds with
-	// `changed: false`. Same per-site result contract as the pause route.
+	// GH #414 phase 1. Clears the monitoring pause on each site in `site_ids`. Requires the `site.write`
+	// permission.
+	//
+	// Idempotent: resuming a site that is already active succeeds with `changed: false`. Same per-site
+	// result contract as the pause route.
 	//
 	// POST /api/v1/sites/monitoring/resume
 	ResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error)
 	// RetryUpdateRun invokes retryUpdateRun operation.
 	//
-	// Creates a NEW update run repeating the named tasks of an existing one.
-	// The source run is never mutated: the failure it records stays exactly as
-	// it happened.
-	// The retry is planned from the TASK ROWS, so each new task targets the
-	// same (site, target) pair as the task it repeats, with the same desired
-	// version. It does not replay the original request's item selection, which
-	// would re-expand items across sites and re-intersect them against each
-	// site's current pending set.
-	// Two things are RE-RESOLVED rather than copied, because they are facts
-	// about now and not about the old run:
-	// * enrollment - a site unenrolled since the run is excluded;
-	// * the published agent version - for an agent rollout, each site is
-	// re-classified against the version published RIGHT NOW, so a release
-	// reverted mid-incident excludes the sites that are no longer behind
-	// instead of silently upgrading them to a target that moved.
-	// An agent retry re-runs the whole wave structure with a fresh canary:
-	// only the first wave is enqueued, and the claim-time wave gate is
-	// authoritative regardless, so a retry cannot dispatch a fleet at once and
-	// cannot bypass the gate.
-	// The response accounts for EVERY requested task: `created` +
-	// `len(excluded)` always equals `requested`. Requires operator+.
+	// Creates a NEW update run repeating the named tasks of an existing one. The source run is never
+	// mutated: the failure it records stays exactly as it happened.
+	//
+	// The retry is planned from the TASK ROWS, so each new task targets the same (site, target) pair as
+	// the task it repeats, with the same desired version. It does not replay the original request's item
+	// selection, which would re-expand items across sites and re-intersect them against each site's
+	// current pending set.
+	//
+	// Two things are RE-RESOLVED rather than copied, because they are facts about now and not about the
+	// old run:
+	//
+	//  - enrollment - a site unenrolled since the run is excluded;
+	//  - the published agent version - for an agent rollout, each site is re-classified against the
+	//    version published RIGHT NOW, so a release reverted mid-incident excludes the sites that are no
+	//    longer behind instead of silently upgrading them to a target that moved.
+	//
+	// An agent retry re-runs the whole wave structure with a fresh canary: only the first wave is
+	// enqueued, and the claim-time wave gate is authoritative regardless, so a retry cannot dispatch a
+	// fleet at once and cannot bypass the gate.
+	//
+	// The response accounts for EVERY requested task: `created` + `len(excluded)` always equals
+	// `requested`. Requires operator+.
 	//
 	// POST /api/v1/updates/runs/{id}/retry
 	RetryUpdateRun(ctx context.Context, request *UpdateRunRetryRequest, params RetryUpdateRunParams) (RetryUpdateRunRes, error)
 	// RevertDbSnapshot invokes revertDbSnapshot operation.
 	//
-	// Replaces the entire live database with the SQL captured in a local
-	// snapshot. **This is irreversible without another backup.**
-	// An automatic safety snapshot is taken immediately before the import
-	// so the pre-revert state is preserved locally (returned as `safety_id`).
-	// The `confirm` field in the request body MUST equal `"REVERT"` exactly.
-	// The agent enforces this independently — a request without the token is
-	// rejected.
+	// Replaces the entire live database with the SQL captured in a local snapshot. This is irreversible
+	// without another backup.
+	//
+	// An automatic safety snapshot is taken immediately before the import so the pre-revert state is
+	// preserved locally (returned as `safety_id`).
+	//
+	// The `confirm` field in the request body MUST equal `"REVERT"` exactly. The agent enforces this
+	// independently — a request without the token is rejected.
+	//
 	// Requires the `site:write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}/revert
 	RevertDbSnapshot(ctx context.Context, request *DbSnapshotRevert, params RevertDbSnapshotParams) (*DbSnapshotRevertResult, error)
 	// RevokeAdminAccountComp invokes revokeAdminAccountComp operation.
 	//
-	// Adopts the tenant's live payment-provider subscription if one exists,
-	// else falls back to plan=free/plan_status=none. Requires
-	// is_superadmin=true.
+	// Adopts the tenant's live payment-provider subscription if one exists, else falls back to
+	// plan=free/plan_status=none. Requires is_superadmin=true.
 	//
 	// DELETE /api/v1/admin/accounts/{id}/comp
 	RevokeAdminAccountComp(ctx context.Context, request *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error)
@@ -3121,14 +3148,12 @@ type Invoker interface {
 	RevokeClientInvitation(ctx context.Context, params RevokeClientInvitationParams) (RevokeClientInvitationRes, error)
 	// RevokeSite invokes revokeSite operation.
 	//
-	// M21 / ADR-041 — operator action. Transitions the site to `revoked` and
-	// queues a `revoke` instruction returned on the agent's next heartbeat,
-	// accompanied by a short-lived signed token (`revoke_token`) the agent
-	// verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
-	// The agent_public_key is KEPT (not nulled) so the agent can still
-	// authenticate the heartbeat that delivers the revoke; a later re-enroll
-	// overwrites the key on the same row (partial unique index). Requires
-	// operator+ and org scope (a site-scoped collaborator cannot revoke).
+	// M21 / ADR-041 — operator action. Transitions the site to `revoked` and queues a `revoke`
+	// instruction returned on the agent's next heartbeat, accompanied by a short-lived signed token
+	// (`revoke_token`) the agent verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
+	// The agent_public_key is KEPT (not nulled) so the agent can still authenticate the heartbeat that
+	// delivers the revoke; a later re-enroll overwrites the key on the same row (partial unique index).
+	// Requires operator+ and org scope (a site-scoped collaborator cannot revoke).
 	//
 	// POST /api/v1/sites/{siteId}/revoke
 	RevokeSite(ctx context.Context, request OptSiteLifecycleReason, params RevokeSiteParams) (RevokeSiteRes, error)
@@ -3146,18 +3171,17 @@ type Invoker interface {
 	RevokeTrustedDevice(ctx context.Context, params RevokeTrustedDeviceParams) (RevokeTrustedDeviceRes, error)
 	// RotateRumBeaconKey invokes rotateRumBeaconKey operation.
 	//
-	// Unconditionally mints a fresh RUM beacon key, rotates the previous
-	// hash into a grace-window column (in-flight beacons signed with the
-	// old key still resolve), and pushes the new plaintext key to the
-	// site's agent in this one request only — it is never returned in the
-	// response, logged, or exposed anywhere but the agent's local copy.
-	// This is the deterministic recovery path for GH #174: the one
-	// best-effort mint+push that happens on first RUM-enable can be lost
-	// (agent down/unreachable), permanently stranding the beacon key empty
-	// on the agent with zero RUM samples ever collected and no visible
-	// error. This endpoint lets an operator force a fresh mint+push on
-	// demand; the control plane also self-heals this automatically via an
+	// Unconditionally mints a fresh RUM beacon key, rotates the previous hash into a grace-window column
+	// (in-flight beacons signed with the old key still resolve), and pushes the new plaintext key to the
+	// site's agent in this one request only — it is never returned in the response, logged, or exposed
+	// anywhere but the agent's local copy.
+	//
+	// This is the deterministic recovery path for GH #174: the one best-effort mint+push that happens on
+	// first RUM-enable can be lost (agent down/unreachable), permanently stranding the beacon key empty on
+	// the agent with zero RUM samples ever collected and no visible error. This endpoint lets an operator
+	// force a fresh mint+push on demand; the control plane also self-heals this automatically via an
 	// ack-based reconcile job.
+	//
 	// Requires the `site.perf.config` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/rum/rotate-key
@@ -3170,90 +3194,91 @@ type Invoker interface {
 	RumIngestPreflight(ctx context.Context) error
 	// RunDbTableAction invokes runDbTableAction operation.
 	//
-	// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb`
-	// (non-destructive; `site.cache.manage`), or `drop`/`empty`
-	// (destructive; additionally requires `site.cache.delete-all`, admin+,
-	// and a type-to-confirm `confirm` token) against a list of tables. An
-	// advisory `X-Backup-Warning` header is set when no recent backup is
-	// found.
+	// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb` (non-destructive; `site.cache.manage`),
+	// or `drop`/`empty` (destructive; additionally requires `site.cache.delete-all`, admin+, and a
+	// type-to-confirm `confirm` token) against a list of tables. An advisory `X-Backup-Warning` header is
+	// set when no recent backup is found.
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/table-action
 	RunDbTableAction(ctx context.Context, request *DbTableActionRequest, params RunDbTableActionParams) (RunDbTableActionRes, error)
 	// RunSearchReplace invokes runSearchReplace operation.
 	//
-	// Dispatches a serialization-safe search-replace command to the site's
-	// agent. The command handles PHP-serialized blobs correctly by
-	// unserializing, walking the data structure, replacing only string leaves,
-	// and re-serializing (so `s:NN:` length prefixes are always recomputed).
-	// **Always call with `dry_run: true` first** to get a preview of how many
-	// rows would change before committing. The UI enforces this flow.
-	// When `dry_run: false` and no recent backup is found, the response
-	// includes an `X-Backup-Warning` header.
+	// Dispatches a serialization-safe search-replace command to the site's agent. The command handles
+	// PHP-serialized blobs correctly by unserializing, walking the data structure, replacing only string
+	// leaves, and re-serializing (so `s:NN:` length prefixes are always recomputed).
+	//
+	// Always call with `dry_run: true` first to get a preview of how many rows would change before
+	// committing. The UI enforces this flow.
+	//
+	// When `dry_run: false` and no recent backup is found, the response includes an `X-Backup-Warning`
+	// header.
+	//
 	// Requires the `site:write` permission (operator+).
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/search-replace
 	RunSearchReplace(ctx context.Context, request *SearchReplaceRequest, params RunSearchReplaceParams) (*SearchReplaceResultHeaders, error)
 	// ScanUnusedMedia invokes scanUnusedMedia operation.
 	//
-	// Dispatches a read-only scan to the site's agent. The agent walks the
-	// WordPress media library and checks every attachment against an exhaustive
-	// set of reference surfaces (post_content, postmeta, options, termmeta,
-	// usermeta, page-builder JSON blobs, ACF fields, WooCommerce galleries,
-	// nav menus, and more). Attachments for which no reference is found are
-	// returned as candidates.
-	// **Conservative rule**: when a check cannot run or the result is ambiguous
-	// the attachment is treated as referenced (safe). False negatives (calling a
-	// used image unused) are the dangerous failure; this implementation prefers
-	// false positives.
-	// Paginated by `offset`. Results are ordered by attachment ID ascending.
-	// Requires the `site.media.clean.scan` permission (viewer+).
+	// Dispatches a read-only scan to the site's agent. The agent walks the WordPress media library and
+	// checks every attachment against an exhaustive set of reference surfaces (post_content, postmeta,
+	// options, termmeta, usermeta, page-builder JSON blobs, ACF fields, WooCommerce galleries, nav menus,
+	// and more). Attachments for which no reference is found are returned as candidates.
+	//
+	// Conservative rule: when a check cannot run or the result is ambiguous the attachment is treated as
+	// referenced (safe). False negatives (calling a used image unused) are the dangerous failure; this
+	// implementation prefers false positives.
+	//
+	// Paginated by `offset`. Results are ordered by attachment ID ascending. Requires the
+	// `site.media.clean.scan` permission (viewer+).
 	//
 	// GET /api/v1/sites/{siteId}/media/clean/scan
 	ScanUnusedMedia(ctx context.Context, params ScanUnusedMediaParams) (*MediaCleanScanResult, error)
 	// SearchSiteFiles invokes searchSiteFiles operation.
 	//
 	// Issues a `file_search` command to the site's agent. Supports two modes:
-	// - `name` — match filenames against the query string.
-	// - `content` — grep file contents for the query string (line + snippet returned).
-	// Results are cursor-paginated: when `truncated=true` the response carries
-	// an opaque `cursor` for the next page.
-	// This is a **read** operation. The agent never exposes the content of
-	// sensitive paths (wp-config.php, .env*, *.pem, …) in search snippets.
-	// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-	// when not opted in.
+	//
+	//  - `name` — match filenames against the query string.
+	//  - `content` — grep file contents for the query string (line + snippet returned).
+	//
+	// Results are cursor-paginated: when `truncated=true` the response carries an opaque `cursor` for the
+	// next page.
+	//
+	// This is a read operation. The agent never exposes the content of sensitive paths (wp-config.php,
+	// .env*, *.pem, …) in search snippets.
+	//
+	// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+	//
 	// Requires `site.files.read` permission (admin+).
 	//
 	// GET /api/v1/sites/{siteId}/files/search
 	SearchSiteFiles(ctx context.Context, params SearchSiteFilesParams) (SearchSiteFilesRes, error)
 	// SendSmtpTestEmail invokes sendSmtpTestEmail operation.
 	//
-	// Requires the `smtp.manage` permission (owner-only). A send failure is
-	// returned as `200 {ok:false, message}` — the scrubbed reason string
-	// never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
-	// UI can show it inline.
+	// Requires the `smtp.manage` permission (owner-only). A send failure is returned as
+	// `200 {ok:false, message}` — the scrubbed reason string never contains internal IPs/hostnames —
+	// rather than a 4xx/5xx, so the UI can show it inline.
 	//
 	// POST /api/v1/settings/smtp/test
 	SendSmtpTestEmail(ctx context.Context, request *SendSmtpTestEmailReq) (SendSmtpTestEmailRes, error)
 	// SendTestEmail invokes sendTestEmail operation.
 	//
-	// Dispatches the signed `send_test_email` command to the site's agent.
-	// The agent uses its current email config (previously synced via
-	// sync_email_config) to send the test message.
-	// **Phase 1 note**: the agent does not yet implement this command (Phase 2
-	// will add the PHP handler). Until then the response will be
-	// `{ok: false, detail: "command not found"}`. This is expected and not an
-	// error state — wire the UI and handle the graceful failure.
+	// Dispatches the signed `send_test_email` command to the site's agent. The agent uses its current
+	// email config (previously synced via sync_email_config) to send the test message.
+	//
+	// Phase 1 note: the agent does not yet implement this command (Phase 2 will add the PHP handler).
+	// Until then the response will be `{ok: false, detail: "command not found"}`. This is expected and not
+	// an error state — wire the UI and handle the graceful failure.
+	//
 	// Requires `site.email.manage` permission (operator+) and site access.
 	//
 	// POST /api/v1/sites/{siteId}/email/test
 	SendTestEmail(ctx context.Context, request *EmailTestRequest, params SendTestEmailParams) (SendTestEmailRes, error)
 	// SetAdminAccountOverrides invokes setAdminAccountOverrides operation.
 	//
-	// Each field is a signed delta applied on top of the tenant's CURRENT
-	// plan's ladder base (not accumulated with any prior override for that
-	// key — a second PUT replaces the delta). Omitting a key leaves that
-	// limit untouched; sending it as `null` (or `0`) clears it back to the
-	// pure ladder base. Requires is_superadmin=true.
+	// Each field is a signed delta applied on top of the tenant's CURRENT plan's ladder base (not
+	// accumulated with any prior override for that key — a second PUT replaces the delta). Omitting a
+	// key leaves that limit untouched; sending it as `null` (or `0`) clears it back to the pure ladder
+	// base. Requires is_superadmin=true.
 	//
 	// PUT /api/v1/admin/accounts/{id}/overrides
 	SetAdminAccountOverrides(ctx context.Context, request *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error)
@@ -3265,27 +3290,27 @@ type Invoker interface {
 	SetAdminUserStatus(ctx context.Context, request *SetAdminUserStatusReq, params SetAdminUserStatusParams) (SetAdminUserStatusRes, error)
 	// SetAdminVulnFeedKey invokes setAdminVulnFeedKey operation.
 	//
-	// Plaintext key in the body over TLS. On success an immediate sync is
-	// triggered so the operator sees it connect without waiting an hour.
+	// Plaintext key in the body over TLS. On success an immediate sync is triggered so the operator sees
+	// it connect without waiting an hour.
 	//
 	// PUT /api/v1/admin/vuln-feed/key
 	SetAdminVulnFeedKey(ctx context.Context, request *SetAdminVulnFeedKeyReq) (SetAdminVulnFeedKeyRes, error)
 	// SetMyInitialPassword invokes setMyInitialPassword operation.
 	//
-	// For an account created through a social provider, which has no password
-	// at all. Adds one, so the account no longer depends on the provider.
-	// Separate from `POST /auth/me/password` on purpose. That endpoint changes
-	// an existing password and proves knowledge of the current one first; this
-	// one has no current password to ask for, so an authenticated session is
-	// the whole authorisation. Folding the two together would let a request
-	// with no `current_password` reach the stronger operation.
-	// This is also why password reset cannot do it: `POST
-	// /auth/password/forgot` deliberately sends nothing for an account with no
-	// password, because minting a set-password link for one would turn reset
-	// into account creation for anyone who knows the address.
-	// Refuses with 409 when a password already exists. The account address is
-	// notified, and every other session for this user is invalidated
-	// (`password_changed_at` moves); the calling session stays alive.
+	// For an account created through a social provider, which has no password at all. Adds one, so the
+	// account no longer depends on the provider.
+	//
+	// Separate from `POST /auth/me/password` on purpose. That endpoint changes an existing password and
+	// proves knowledge of the current one first; this one has no current password to ask for, so an
+	// authenticated session is the whole authorisation. Folding the two together would let a request with
+	// no `current_password` reach the stronger operation.
+	//
+	// This is also why password reset cannot do it: `POST /auth/password/forgot` deliberately sends
+	// nothing for an account with no password, because minting a set-password link for one would turn
+	// reset into account creation for anyone who knows the address.
+	//
+	// Refuses with 409 when a password already exists. The account address is notified, and every other
+	// session for this user is invalidated (`password_changed_at` moves); the calling session stays alive.
 	//
 	// POST /auth/me/password/set
 	SetMyInitialPassword(ctx context.Context, request *SetMyInitialPasswordReq) (SetMyInitialPasswordRes, error)
@@ -3297,9 +3322,8 @@ type Invoker interface {
 	SetSiteTags(ctx context.Context, request *SiteTags, params SetSiteTagsParams) (SetSiteTagsRes, error)
 	// SilenceSitePHPError invokes silenceSitePHPError operation.
 	//
-	// Toggles the silenced flag on a (site, md5) error row. The agent
-	// continues to count silently on its side; the CP UI hides silenced
-	// rows by default.
+	// Toggles the silenced flag on a (site, md5) error row. The agent continues to count silently on its
+	// side; the CP UI hides silenced rows by default.
 	//
 	// POST /api/v1/sites/{siteId}/errors/{md5}/silence
 	SilenceSitePHPError(ctx context.Context, request OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error)
@@ -3314,53 +3338,66 @@ type Invoker interface {
 	SocialCallback(ctx context.Context, params SocialCallbackParams) error
 	// SocialStart invokes socialStart operation.
 	//
-	// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
-	// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
-	// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
-	// with a `social_error` code exactly as the callback does.
-	// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
-	// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
-	// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
-	// unauthenticated way to fill the store that every live session shares.
+	// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never returns
+	// a JSON error body: the caller is a browser doing a full-page navigation, so a provider that is not
+	// configured, or an issuer that cannot be reached, sends it back to the sign-in page with a
+	// `social_error` code exactly as the callback does. The handshake (provider, state, nonce, PKCE
+	// verifier and the deep link) travels in a short-lived signed cookie that is host-only, HttpOnly,
+	// SameSite=Lax and Secure in production. NOTHING IS STORED SERVER-SIDE: this endpoint needs no
+	// credential, so a session record per call was an unauthenticated way to fill the store that every
+	// live session shares.
 	//
 	// GET /auth/social/{provider}/start
 	SocialStart(ctx context.Context, params SocialStartParams) error
 	// StartScanRun invokes startScanRun operation.
 	//
-	// Enqueues a scan against the site's WordPress core/plugin/theme files
-	// (checksum comparison). `kind` defaults to `core` when the body is
-	// omitted. Requires the `site.write` permission.
+	// Enqueues a scan against the site's WordPress core/plugin/theme files (checksum comparison). `kind`
+	// defaults to `core` when the body is omitted. Requires the `site.write` permission.
 	//
 	// POST /api/v1/sites/{siteId}/scans
 	StartScanRun(ctx context.Context, request OptStartScanRunReq, params StartScanRunParams) (StartScanRunRes, error)
+	// StreamBackupSnapshotEvents invokes streamBackupSnapshotEvents operation.
+	//
+	// Server-Sent Events stream (text/event-stream) of progress transitions for a backup snapshot, for
+	// live UI updates. Each frame is tagged `event: progress` with a JSON BackupEvent payload. The stream
+	// emits periodic heartbeat comment lines (":\n\n") every 15 seconds and has a 30-minute server-side
+	// safety timeout. The server does NOT close the stream on a terminal snapshot status — a completed
+	// snapshot can still receive restore phase events on the same channel. The client is responsible for
+	// closing its EventSource when it observes a terminal `phase` (completed/failed). Requires viewer+.
+	//
+	// GET /api/v1/backups/{snapshotId}/events
+	StreamBackupSnapshotEvents(ctx context.Context, params StreamBackupSnapshotEventsParams) (StreamBackupSnapshotEventsRes, error)
 	// StreamSiteEvents invokes streamSiteEvents operation.
 	//
-	// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of
-	// connection-lifecycle events (site.created, site.state_changed,
-	// site.revoked, site.disconnected, site.archived, site.restored). The
-	// client filters by site_id in the browser. Supports `?since=<event_id>`
-	// (or the `Last-Event-ID` header) to replay missed events from the durable
-	// journal (~5 min retention) on reconnect; each frame carries an `id:`
-	// (ULID) line. 15s keepalive comments; session-auth, requires site:read.
+	// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of connection-lifecycle events
+	// (site.created, site.state_changed, site.revoked, site.disconnected, site.archived, site.restored).
+	// The client filters by site_id in the browser. Supports `?since=<event_id>` (or the `Last-Event-ID`
+	// header) to replay missed events from the durable journal (~5 min retention) on reconnect; each frame
+	// carries an `id:` (ULID) line. 15s keepalive comments; session-auth, requires site:read.
 	//
 	// GET /api/v1/sites/events
 	StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (StreamSiteEventsOK, error)
+	// StreamUpdateRunEvents invokes streamUpdateRunEvents operation.
+	//
+	// Server-Sent Events stream (text/event-stream) of task status transitions for a run, for live
+	// progress. Each `data:` line is a JSON UpdateEvent. The stream emits periodic heartbeat comment lines
+	// (":\n") and ends when the run reaches a terminal state or the client disconnects. Requires viewer+.
+	//
+	// GET /api/v1/updates/{runId}/events
+	StreamUpdateRunEvents(ctx context.Context, params StreamUpdateRunEventsParams) (StreamUpdateRunEventsRes, error)
 	// SuspendAdminAccount invokes suspendAdminAccount operation.
 	//
-	// Sets tenants.suspended_at/suspended_reason — a field distinct from
-	// plan_status. Tenant data is never touched. Requires
-	// is_superadmin=true.
+	// Sets tenants.suspended_at/suspended_reason — a field distinct from plan_status. Tenant data is
+	// never touched. Requires is_superadmin=true.
 	//
 	// POST /api/v1/admin/accounts/{id}/suspend
 	SuspendAdminAccount(ctx context.Context, request *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error)
 	// SwitchOrg invokes switchOrg operation.
 	//
-	// Requires authentication but NOT an active tenant — this is how a user
-	// stranded without a valid active org (e.g. a former site-collaborator
-	// whose access was revoked) recovers. The membership gate runs under
-	// the caller's own row-level-security scope: a non-member of
-	// `tenant_id` gets 403, never a different signal that would confirm the
-	// tenant's existence.
+	// Requires authentication but NOT an active tenant — this is how a user stranded without a valid
+	// active org (e.g. a former site-collaborator whose access was revoked) recovers. The membership gate
+	// runs under the caller's own row-level-security scope: a non-member of `tenant_id` gets 403, never a
+	// different signal that would confirm the tenant's existence.
 	//
 	// POST /api/v1/orgs/switch
 	SwitchOrg(ctx context.Context, request *SwitchOrgReq) (SwitchOrgRes, error)
@@ -3378,86 +3415,79 @@ type Invoker interface {
 	SyncMedia(ctx context.Context, params SyncMediaParams) (*SyncMediaAccepted, error)
 	// SyncSiteEmailConfig invokes syncSiteEmailConfig operation.
 	//
-	// Dispatches the signed `sync_email_config` command so the agent has the
-	// current provider config and decrypted secret before the next send.
-	// Use this when the agent was offline at save time (the implicit sync on
-	// PUT /email/config was skipped), after rotating a secret, or when the
-	// operator explicitly wants to confirm the agent has the latest config.
-	// Unlike `sendTestEmail` there is no request body — the stored config is
-	// read from the CP and pushed as-is. The response is always 200; `ok`
-	// indicates whether the agent acknowledged the push.
+	// Dispatches the signed `sync_email_config` command so the agent has the current provider config and
+	// decrypted secret before the next send.
+	//
+	// Use this when the agent was offline at save time (the implicit sync on PUT /email/config was
+	// skipped), after rotating a secret, or when the operator explicitly wants to confirm the agent has
+	// the latest config.
+	//
+	// Unlike `sendTestEmail` there is no request body — the stored config is read from the CP and pushed
+	// as-is. The response is always 200; `ok` indicates whether the agent acknowledged the push.
+	//
 	// Requires `site.email.manage` permission (operator+) and site access.
 	//
 	// POST /api/v1/sites/{siteId}/email/sync
 	SyncSiteEmailConfig(ctx context.Context, params SyncSiteEmailConfigParams) (SyncSiteEmailConfigRes, error)
 	// TestObjectCache invokes testObjectCache operation.
 	//
-	// Sends an `objectcache.test` command to the agent using the stored
-	// configuration. An optional `password` in the body overrides the stored
-	// password for this call only (useful for testing before saving). On
-	// success the control plane stores the config hash as the enable-gate
-	// token; on failure the hash is NOT updated. The result is also published
-	// as an `objectcache.test_completed` SSE event. Requires
-	// `site.cache.manage` permission.
+	// Sends an `objectcache.test` command to the agent using the stored configuration. An optional
+	// `password` in the body overrides the stored password for this call only (useful for testing before
+	// saving). On success the control plane stores the config hash as the enable-gate token; on failure
+	// the hash is NOT updated. The result is also published as an `objectcache.test_completed` SSE event.
+	// Requires `site.cache.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/object-cache/test
 	TestObjectCache(ctx context.Context, request OptTestObjectCacheReq, params TestObjectCacheParams) (*ObjectCacheTestResult, error)
 	// TestSiteDestination invokes testSiteDestination operation.
 	//
-	// Returns 200 with `{ok, message}` regardless of success/failure so the
-	// UI can render the operator-readable diagnostic inline. S3-compat
-	// kinds run a HeadBucket + PutObject + DeleteObject probe against the
-	// target bucket; cp/local kinds return ok=true trivially.
+	// Returns 200 with `{ok, message}` regardless of success/failure so the UI can render the
+	// operator-readable diagnostic inline. S3-compat kinds run a HeadBucket + PutObject + DeleteObject
+	// probe against the target bucket; cp/local kinds return ok=true trivially.
 	//
 	// POST /api/v1/sites/{siteId}/destinations/test
 	TestSiteDestination(ctx context.Context, request *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error)
 	// ToggleScanFindingIgnore invokes toggleScanFindingIgnore operation.
 	//
-	// Global route (no `:siteId` path segment — a finding id is unique per
-	// tenant). The finding's own site is resolved server-side and checked
-	// against the caller's site allowlist. `ignored` defaults to `true`
-	// when omitted from the body.
+	// Global route (no `:siteId` path segment — a finding id is unique per tenant). The finding's own
+	// site is resolved server-side and checked against the caller's site allowlist. `ignored` defaults to
+	// `true` when omitted from the body.
 	//
 	// POST /api/v1/findings/{id}/ignore
 	ToggleScanFindingIgnore(ctx context.Context, request OptToggleScanFindingIgnoreReq, params ToggleScanFindingIgnoreParams) (ToggleScanFindingIgnoreRes, error)
 	// TriggerDbScan invokes triggerDbScan operation.
 	//
-	// Runs a synchronous read-only scan against the site's WordPress database
-	// via the agent. Returns the job_id. The full result (categories + per-table
-	// inventory) is pushed via the `db.scan.completed` SSE event and persisted
-	// for retrieval via the GET endpoint. Requires the `site.cache.manage`
-	// permission.
+	// Runs a synchronous read-only scan against the site's WordPress database via the agent. Returns the
+	// job_id. The full result (categories + per-table inventory) is pushed via the `db.scan.completed` SSE
+	// event and persisted for retrieval via the GET endpoint. Requires the `site.cache.manage` permission.
 	//
 	// POST /api/v1/sites/{siteId}/perf/db/scan
 	TriggerDbScan(ctx context.Context, request OptTriggerDbScanReq, params TriggerDbScanParams) (*TriggerDbScanOK, error)
 	// UnblockSiteIP invokes unblockSiteIP operation.
 	//
-	// Sends the signed `unblock_ip` command to the site's agent, removing any
-	// active block for the given IP. Returns `ok=true` on success; `ok=false`
-	// with a `detail` message when the agent rejects or cannot apply the
-	// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+	// Sends the signed `unblock_ip` command to the site's agent, removing any active block for the given
+	// IP. Returns `ok=true` on success; `ok=false` with a `detail` message when the agent rejects or
+	// cannot apply the unblock (still HTTP 200 — it is an application-level, not transport, failure).
 	//
 	// POST /api/v1/sites/{siteId}/security/unblock-ip
 	UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error)
 	// UnlinkMyIdentity invokes unlinkMyIdentity operation.
 	//
-	// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
-	// which is the case where this is the only connected provider and no
-	// password is set. That state is not recoverable: there would be no
-	// password to reset and no provider to sign in with, and password reset
-	// will not mint a set-password link for a passwordless account. The
-	// refusal names the next step, which is to add a password first via
-	// `POST /auth/me/password/set`.
-	// The check and the delete happen inside one locked transaction, so two
-	// requests disconnecting two different providers at the same moment cannot
-	// each conclude that one may go.
+	// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN, which is the case where
+	// this is the only connected provider and no password is set. That state is not recoverable: there
+	// would be no password to reset and no provider to sign in with, and password reset will not mint a
+	// set-password link for a passwordless account. The refusal names the next step, which is to add a
+	// password first via `POST /auth/me/password/set`.
+	//
+	// The check and the delete happen inside one locked transaction, so two requests disconnecting two
+	// different providers at the same moment cannot each conclude that one may go.
 	//
 	// DELETE /auth/me/identities/{provider}
 	UnlinkMyIdentity(ctx context.Context, params UnlinkMyIdentityParams) (UnlinkMyIdentityRes, error)
 	// UnlockBackup invokes unlockBackup operation.
 	//
-	// Clears the `locked` flag, making the snapshot eligible for normal
-	// retention GC again. Track C (m49). Requires operator+.
+	// Clears the `locked` flag, making the snapshot eligible for normal retention GC again. Track C (m49).
+	// Requires operator+.
 	//
 	// DELETE /api/v1/backups/{snapshotId}/lock
 	UnlockBackup(ctx context.Context, params UnlockBackupParams) (UnlockBackupRes, error)
@@ -3469,15 +3499,14 @@ type Invoker interface {
 	UpdateClient(ctx context.Context, request *UpdateAgencyClientRequest, params UpdateClientParams) (UpdateClientRes, error)
 	// UpdateMe invokes updateMe operation.
 	//
-	// Updates the caller's display name. Email is intentionally not
-	// editable here.
+	// Updates the caller's display name. Email is intentionally not editable here.
 	//
 	// PATCH /auth/me
 	UpdateMe(ctx context.Context, request *UpdateMeReq) (UpdateMeRes, error)
 	// UpdateMediaSettings invokes updateMediaSettings operation.
 	//
-	// On a successful store but failed agent push, returns `200` with the
-	// stored settings and an `X-Agent-Push-Warning` header.
+	// On a successful store but failed agent push, returns `200` with the stored settings and an
+	// `X-Agent-Push-Warning` header.
 	//
 	// PUT /api/v1/sites/{siteId}/media/settings
 	UpdateMediaSettings(ctx context.Context, request *MediaSettings, params UpdateMediaSettingsParams) (UpdateMediaSettingsRes, error)
@@ -3489,15 +3518,18 @@ type Invoker interface {
 	UpdateSiteDestination(ctx context.Context, request *SiteDestinationUpdate, params UpdateSiteDestinationParams) (UpdateSiteDestinationRes, error)
 	// UpdateSiteFilesSettings invokes updateSiteFilesSettings operation.
 	//
-	// Enables or disables the file manager feature for a site. The feature is
-	// **off by default** (migration m82); an explicit enable is required before
-	// any file browse/read/download endpoint will work.
-	// `root_jail` is read-only in P1 (always `""`) — the agent defaults to the
-	// site's `ABSPATH`. Any `root_jail` field in the request body is ignored.
-	// An audit entry (`site.files.settings.changed`) is recorded on every call,
-	// capturing the resulting `enabled` and `write_enabled` state.
-	// `root_jail` is read-only in P1/P2 (always `""`) — the agent defaults to
-	// the site's `ABSPATH`. Any `root_jail` field in the request body is ignored.
+	// Enables or disables the file manager feature for a site. The feature is off by default (migration
+	// m82); an explicit enable is required before any file browse/read/download endpoint will work.
+	//
+	// `root_jail` is read-only in P1 (always `""`) — the agent defaults to the site's `ABSPATH`. Any
+	// `root_jail` field in the request body is ignored.
+	//
+	// An audit entry (`site.files.settings.changed`) is recorded on every call, capturing the resulting
+	// `enabled` and `write_enabled` state.
+	//
+	// `root_jail` is read-only in P1/P2 (always `""`) — the agent defaults to the site's `ABSPATH`. Any
+	// `root_jail` field in the request body is ignored.
+	//
 	// Requires `site.files.manage` permission (admin+).
 	//
 	// PUT /api/v1/sites/{siteId}/files/settings
@@ -3510,14 +3542,12 @@ type Invoker interface {
 	UpdateSmtpSettings(ctx context.Context, request *SmtpSettingsUpdate) (UpdateSmtpSettingsRes, error)
 	// UpdateTag invokes updateTag operation.
 	//
-	// A color-only body just updates the color. A `name` change renames the
-	// tag and propagates the new name onto every site (and every unexpired,
-	// unredeemed pairing code) currently carrying the old name, in the same
-	// transaction. Renaming onto an existing name returns 409
-	// `tag_name_exists` unless `merge: true`, in which case the source tag
-	// is merged into the existing survivor (sites are rewritten to the
-	// survivor's name, deduplicated; the survivor's color is kept unless
-	// this request also sets `color`).
+	// A color-only body just updates the color. A `name` change renames the tag and propagates the new
+	// name onto every site (and every unexpired, unredeemed pairing code) currently carrying the old name,
+	// in the same transaction. Renaming onto an existing name returns 409 `tag_name_exists` unless
+	// `merge: true`, in which case the source tag is merged into the existing survivor (sites are
+	// rewritten to the survivor's name, deduplicated; the survivor's color is kept unless this request
+	// also sets `color`).
 	//
 	// PATCH /api/v1/tags/{tagId}
 	UpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error)
@@ -3537,40 +3567,38 @@ type Invoker interface {
 	VerifyBillingCheckoutCallback(ctx context.Context, request *VerifyBillingCheckoutCallbackReq) (VerifyBillingCheckoutCallbackRes, error)
 	// VerifyEmail invokes verifyEmail operation.
 	//
-	// Consumes the one-time verification token sent during self-serve
-	// registration, activates the account, and establishes a session so the
-	// user lands logged in. Returns 410 when the token is expired or already
-	// consumed.
+	// Consumes the one-time verification token sent during self-serve registration, activates the account,
+	// and establishes a session so the user lands logged in. Returns 410 when the token is expired or
+	// already consumed.
 	//
 	// POST /auth/verify-email
 	VerifyEmail(ctx context.Context, request *VerifyEmailReq) (VerifyEmailRes, error)
 	// VerifySiteActivity invokes verifySiteActivity operation.
 	//
-	// Recomputes the entire hash chain for the site server-side from genesis
-	// and reports whether it is intact. When a break is found, break_at_seq
-	// carries the seq of the first event whose recomputed hash (or prev_hash
-	// linkage) does not match — the tamper point. This is the integrity badge
-	// feeding the activity view.
+	// Recomputes the entire hash chain for the site server-side from genesis and reports whether it is
+	// intact. When a break is found, break_at_seq carries the seq of the first event whose recomputed hash
+	// (or prev_hash linkage) does not match — the tamper point. This is the integrity badge feeding the
+	// activity view.
 	//
 	// GET /api/v1/sites/{siteId}/activity/verify
 	VerifySiteActivity(ctx context.Context, params VerifySiteActivityParams) (*ActivityVerifyResult, error)
 	// WriteSiteFileContent invokes writeSiteFileContent operation.
 	//
-	// Issues a `file_write` command to the site's agent. The agent writes the
-	// content atomically (temp-write → rename swap) to the resolved path.
-	// **Write-enabled gate:** The site must have both `enabled=true` AND
-	// `write_enabled=true` in its file manager settings. Returns
-	// `403 files_write_not_enabled` when write mode is off.
-	// **Executable-write gate (T1):** When `confirm_executable_write=true` is
-	// set in the request body, the caller must additionally hold
-	// `site.files.write_code` (owner). If an admin-level caller passes
-	// `confirm_executable_write=true`, the request is rejected with
-	// `403 insufficient_permission` and the denial is audited at elevated
-	// severity. The agent independently enforces its executable deny-list
+	// Issues a `file_write` command to the site's agent. The agent writes the content atomically
+	// (temp-write → rename swap) to the resolved path.
+	//
+	// Write-enabled gate: The site must have both `enabled=true` AND `write_enabled=true` in its file
+	// manager settings. Returns `403 files_write_not_enabled` when write mode is off.
+	//
+	// Executable-write gate (T1): When `confirm_executable_write=true` is set in the request body, the
+	// caller must additionally hold `site.files.write_code` (owner). If an admin-level caller passes
+	// `confirm_executable_write=true`, the request is rejected with `403 insufficient_permission` and the
+	// denial is audited at elevated severity. The agent independently enforces its executable deny-list
 	// regardless.
-	// **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`, requires owner (`site.
-	// files.write_code`) and is audited at elevated
-	// severity on both success and denial.
+	//
+	// Sensitive-file gate (T6): Same as above for `confirm_sensitive=true`, requires owner
+	// (`site.files.write_code`) and is audited at elevated severity on both success and denial.
+	//
 	// Requires `site.files.write` permission (admin+).
 	//
 	// PUT /api/v1/sites/{siteId}/files/content
@@ -3620,17 +3648,15 @@ func (c *Client) requestURL(ctx context.Context) *url.URL {
 
 // AcceptInvitation invokes acceptInvitation operation.
 //
-// The caller proves who they are in one of two ways. Anonymously, with the
-// password of the account the invitation names (or a new password, which
-// creates that account). Or, when already signed in as exactly that
-// account, with the session plus the `X-WPMgr-Invite-Accept` header, which
-// is what an account created through Google or GitHub uses because it has
-// no password to send.
-// The header is required for the session route and carries no secret: a
-// session cookie travels on requests the person did not initiate, and this
-// API sets no CORS policy, so a header is something only a script on this
-// install's own page can add. Without it the request is treated as
-// anonymous and a password is required, exactly as before.
+// The caller proves who they are in one of two ways. Anonymously, with the password of the account the
+// invitation names (or a new password, which creates that account). Or, when already signed in as
+// exactly that account, with the session plus the `X-WPMgr-Invite-Accept` header, which is what an
+// account created through Google or GitHub uses because it has no password to send.
+//
+// The header is required for the session route and carries no secret: a session cookie travels on
+// requests the person did not initiate, and this API sets no CORS policy, so a header is something
+// only a script on this install's own page can add. Without it the request is treated as anonymous and
+// a password is required, exactly as before.
 //
 // POST /api/v1/invitations/accept
 func (c *Client) AcceptInvitation(ctx context.Context, request *AcceptInvitationRequest, params AcceptInvitationParams) (AcceptInvitationRes, error) {
@@ -3711,7 +3737,13 @@ func (c *Client) sendAcceptInvitation(ctx context.Context, request *AcceptInvita
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAcceptInvitationResponse(resp)
@@ -3804,7 +3836,13 @@ func (c *Client) sendActivateOrg(ctx context.Context, params ActivateOrgParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeActivateOrgResponse(resp)
@@ -3903,7 +3941,13 @@ func (c *Client) sendAddClientMember(ctx context.Context, request *ClientMemberC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAddClientMemberResponse(resp)
@@ -3916,9 +3960,10 @@ func (c *Client) sendAddClientMember(ctx context.Context, request *ClientMemberC
 
 // AddFleetEmailSuppression invokes addFleetEmailSuppression operation.
 //
-// Adds a suppression entry with `site_id=null`, applying to all sites
-// in the tenant. Useful for globally suppressing an address that generates
-// bounces across multiple sites. `reason` must be `manual` or `unsubscribe`.
+// Adds a suppression entry with `site_id=null`, applying to all sites in the tenant. Useful for
+// globally suppressing an address that generates bounces across multiple sites. `reason` must be
+// `manual` or `unsubscribe`.
+//
 // Requires `site.email.manage` permission.
 //
 // POST /api/v1/email/suppression
@@ -3983,7 +4028,13 @@ func (c *Client) sendAddFleetEmailSuppression(ctx context.Context, request *AddS
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAddFleetEmailSuppressionResponse(resp)
@@ -3996,10 +4047,10 @@ func (c *Client) sendAddFleetEmailSuppression(ctx context.Context, request *AddS
 
 // AddSiteEmailSuppression invokes addSiteEmailSuppression operation.
 //
-// Manually suppresses an email address for this site. `reason` must be
-// `manual` or `unsubscribe` — hard_bounce and complaint entries are
-// created automatically via provider webhooks and cannot be added manually
-// (to prevent accidental data loss for transient bounces).
+// Manually suppresses an email address for this site. `reason` must be `manual` or `unsubscribe` —
+// hard_bounce and complaint entries are created automatically via provider webhooks and cannot be
+// added manually (to prevent accidental data loss for transient bounces).
+//
 // Requires `site.email.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/email/suppression
@@ -4083,7 +4134,13 @@ func (c *Client) sendAddSiteEmailSuppression(ctx context.Context, request *AddSu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAddSiteEmailSuppressionResponse(resp)
@@ -4193,7 +4250,13 @@ func (c *Client) sendAgentAckPerfConfig(ctx context.Context, request *AgentPerfC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentAckPerfConfigResponse(resp)
@@ -4206,18 +4269,16 @@ func (c *Client) sendAgentAckPerfConfig(ctx context.Context, request *AgentPerfC
 
 // AgentAutologinConsume invokes agentAutologinConsume operation.
 //
-// Called by the WordPress agent after it has verified the operator's
-// JWT, to atomically consume the nonce and learn the WP login + the
-// allowed WP roles. The control plane consults Redis (GETDEL) first as
-// the sub-millisecond hot path and falls back to a single
-// `UPDATE autologin_tokens ... RETURNING` in Postgres. Exactly one
-// agent wins the race per nonce.
-// The agent is authenticated by the M2 Ed25519 signed-request scheme
-// (see AgentSignature); the verified site identity is compared to the
-// body's `site_id` — a mismatch returns 403 `site_mismatch`. A nonce
-// that never existed, was already consumed, or has expired returns 410
-// `nonce_unavailable` (the three cases are intentionally indistinguishable
-// so the table cannot be probed).
+// Called by the WordPress agent after it has verified the operator's JWT, to atomically consume the
+// nonce and learn the WP login + the allowed WP roles. The control plane consults Redis (GETDEL) first
+// as the sub-millisecond hot path and falls back to a single `UPDATE autologin_tokens ... RETURNING`
+// in Postgres. Exactly one agent wins the race per nonce.
+//
+// The agent is authenticated by the M2 Ed25519 signed-request scheme (see AgentSignature); the
+// verified site identity is compared to the body's `site_id` — a mismatch returns 403
+// `site_mismatch`. A nonce that never existed, was already consumed, or has expired returns 410
+// `nonce_unavailable` (the three cases are intentionally indistinguishable so the table cannot be
+// probed).
 //
 // POST /agent/v1/autologin/consume
 func (c *Client) AgentAutologinConsume(ctx context.Context, request *AutologinConsumeRequest) (AgentAutologinConsumeRes, error) {
@@ -4314,7 +4375,13 @@ func (c *Client) sendAgentAutologinConsume(ctx context.Context, request *Autolog
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentAutologinConsumeResponse(resp)
@@ -4327,13 +4394,11 @@ func (c *Client) sendAgentAutologinConsume(ctx context.Context, request *Autolog
 
 // AgentDisconnect invokes agentDisconnect operation.
 //
-// M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress
-// deactivation/uninstall hooks (best-effort, 3s timeout). Authenticated via
-// the SAME Ed25519 signed-request scheme as every agent route: the
-// signature is verified and bound to the calling site BEFORE any write, so
-// possession of a site_id alone cannot disconnect a site. Transitions the
-// site connected/degraded → `disconnected` with the supplied reason. Does
-// NOT archive (archive stays an explicit operator action).
+// M21 / ADR-040 — the agent's signed last-will. Fired by the WordPress deactivation/uninstall hooks
+// (best-effort, 3s timeout). Authenticated via the SAME Ed25519 signed-request scheme as every agent
+// route: the signature is verified and bound to the calling site BEFORE any write, so possession of a
+// site_id alone cannot disconnect a site. Transitions the site connected/degraded → `disconnected`
+// with the supplied reason. Does NOT archive (archive stays an explicit operator action).
 //
 // POST /agent/v1/disconnect
 func (c *Client) AgentDisconnect(ctx context.Context, request OptAgentDisconnect) (AgentDisconnectRes, error) {
@@ -4430,7 +4495,13 @@ func (c *Client) sendAgentDisconnect(ctx context.Context, request OptAgentDiscon
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentDisconnectResponse(resp)
@@ -4443,25 +4514,21 @@ func (c *Client) sendAgentDisconnect(ctx context.Context, request OptAgentDiscon
 
 // AgentDownloadUpdatePackage invokes agentDownloadUpdatePackage operation.
 //
-// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object
-// from THIS install's own object storage, so a site never needs a
-// per-site package-host override in `wp-config.php`.
-// Mounted on the root engine and NOT behind the agent signed-request
-// middleware: the agent downloads its package with a bare request that
-// carries no `Authorization` header and does not follow redirects, so
-// this route answers `200` with the bytes directly. The short-lived
-// `token` query parameter is the entire authorisation. It is minted by
-// the control plane's own Ed25519 signing key, in the same compact EdDSA
-// JWS every CP command token uses, and binds the download to one site
-// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd`
-// pinned to `update_package` so no other command token can be redeemed
-// here.
-// The token is issued only inside the signed manifest returned by
-// `GET /agent/v1/update/manifest` (as its `package_url`), with the same
-// lifetime the presigned object-storage URL previously had. Nothing the
-// caller supplies reaches the object key: the key is rebuilt from the
-// version in the published manifest, and a token naming any other version
-// or site is refused.
+// Streams the published `agent-releases/<version>/wpmgr-agent.zip` object from THIS install's own
+// object storage, so a site never needs a per-site package-host override in `wp-config.php`.
+//
+// Mounted on the root engine and NOT behind the agent signed-request middleware: the agent downloads
+// its package with a bare request that carries no `Authorization` header and does not follow
+// redirects, so this route answers `200` with the bytes directly. The short-lived `token` query
+// parameter is the entire authorisation. It is minted by the control plane's own Ed25519 signing key,
+// in the same compact EdDSA JWS every CP command token uses, and binds the download to one site
+// (`aud`), one release version (`ver`) and one expiry (`exp`), with `cmd` pinned to `update_package`
+// so no other command token can be redeemed here.
+//
+// The token is issued only inside the signed manifest returned by `GET /agent/v1/update/manifest` (as
+// its `package_url`), with the same lifetime the presigned object-storage URL previously had. Nothing
+// the caller supplies reaches the object key: the key is rebuilt from the version in the published
+// manifest, and a token naming any other version or site is refused.
 //
 // GET /agent/v1/update/package/{siteId}
 func (c *Client) AgentDownloadUpdatePackage(ctx context.Context, params AgentDownloadUpdatePackageParams) (AgentDownloadUpdatePackageRes, error) {
@@ -4558,7 +4625,13 @@ func (c *Client) sendAgentDownloadUpdatePackage(ctx context.Context, params Agen
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentDownloadUpdatePackageResponse(resp)
@@ -4571,11 +4644,10 @@ func (c *Client) sendAgentDownloadUpdatePackage(ctx context.Context, params Agen
 
 // AgentFetchSuppressionDeltas invokes agentFetchSuppressionDeltas operation.
 //
-// Returns org-wide + this-site suppression deltas so the agent can
-// cache them locally and check before sending. Ascending keyset cursor
-// on `(created_at, id)`; the agent stores `next_cursor` and passes it
-// back as `since` on the next call. Omit `since` to fetch every
-// suppression entry for this tenant+site.
+// Returns org-wide + this-site suppression deltas so the agent can cache them locally and check before
+// sending. Ascending keyset cursor on `(created_at, id)`; the agent stores `next_cursor` and passes it
+// back as `since` on the next call. Omit `since` to fetch every suppression entry for this
+// tenant+site.
 //
 // GET /agent/v1/email/suppression
 func (c *Client) AgentFetchSuppressionDeltas(ctx context.Context, params AgentFetchSuppressionDeltasParams) (AgentFetchSuppressionDeltasRes, error) {
@@ -4690,7 +4762,13 @@ func (c *Client) sendAgentFetchSuppressionDeltas(ctx context.Context, params Age
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentFetchSuppressionDeltasResponse(resp)
@@ -4703,17 +4781,16 @@ func (c *Client) sendAgentFetchSuppressionDeltas(ctx context.Context, params Age
 
 // AgentFontsResults invokes agentFontsResults operation.
 //
-// Font Results Catalog (M55 / Phase 2) — the agent POSTs after
-// transcoding or subsetting completes (or permanently fails) for one or
-// more self-hosted fonts. The CP upserts the font_results catalog row for
-// each item and derives savings_pct from the reported sizes.
-// **Security:** tenant_id + site_id ALWAYS come from the VERIFIED agent
-// identity (Ed25519 signed-request middleware), NEVER from the body.
-// source_hash items that are not valid 64-char lowercase hex BLAKE3
+// Font Results Catalog (M55 / Phase 2) — the agent POSTs after transcoding or subsetting completes
+// (or permanently fails) for one or more self-hosted fonts. The CP upserts the font_results catalog
+// row for each item and derives savings_pct from the reported sizes.
+//
+// Security: tenant_id + site_id ALWAYS come from the VERIFIED agent identity (Ed25519 signed-request
+// middleware), NEVER from the body. source_hash items that are not valid 64-char lowercase hex BLAKE3
 // digests are skipped (not rejected) so a bad item never blocks the batch.
-// **Response:** `{"ok": true, "stored": N, "skipped": M}` where N is the
-// count of successfully upserted rows and M is the count of skipped items
-// (invalid hash or transient DB error).
+//
+// Response: `{"ok": true, "stored": N, "skipped": M}` where N is the count of successfully upserted
+// rows and M is the count of skipped items (invalid hash or transient DB error).
 //
 // POST /agent/v1/fonts/results
 func (c *Client) AgentFontsResults(ctx context.Context, request *AgentFontResultsRequest) (AgentFontsResultsRes, error) {
@@ -4810,7 +4887,13 @@ func (c *Client) sendAgentFontsResults(ctx context.Context, request *AgentFontRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentFontsResultsResponse(resp)
@@ -4823,13 +4906,11 @@ func (c *Client) sendAgentFontsResults(ctx context.Context, request *AgentFontRe
 
 // AgentGetHibpRange invokes agentGetHibpRange operation.
 //
-// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the
-// agent performs the suffix match locally and never sends the full
-// password or full hash to the CP. The response is the raw
-// `SUFFIX:COUNT` text body from the HIBP range API (possibly with
-// Add-Padding decoy lines). An empty body means either a clean prefix
-// or a fail-open (HIBP unreachable) — the agent treats both identically
-// (password not breached).
+// ADR-059 Phase 3. Only the 5-char SHA-1 prefix is transmitted; the agent performs the suffix match
+// locally and never sends the full password or full hash to the CP. The response is the raw
+// `SUFFIX:COUNT` text body from the HIBP range API (possibly with Add-Padding decoy lines). An empty
+// body means either a clean prefix or a fail-open (HIBP unreachable) — the agent treats both
+// identically (password not breached).
 //
 // GET /agent/v1/security/hibp/range/{prefix}
 func (c *Client) AgentGetHibpRange(ctx context.Context, params AgentGetHibpRangeParams) (AgentGetHibpRangeRes, error) {
@@ -4941,7 +5022,13 @@ func (c *Client) sendAgentGetHibpRange(ctx context.Context, params AgentGetHibpR
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentGetHibpRangeResponse(resp)
@@ -4954,11 +5041,10 @@ func (c *Client) sendAgentGetHibpRange(ctx context.Context, params AgentGetHibpR
 
 // AgentGetUpdateManifest invokes agentGetUpdateManifest operation.
 //
-// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a
-// short-lived presigned package download URL plus its sha256 + size.
-// `manifest` is the base64url-encoded EXACT signed bytes; the agent
-// decodes it, verifies `signature` over those bytes, then JSON-decodes.
-// `204` (no body) means no release has been published yet.
+// Returns a detached-Ed25519-signed JSON blob (NOT a JWT) carrying a short-lived presigned package
+// download URL plus its sha256 + size. `manifest` is the base64url-encoded EXACT signed bytes; the
+// agent decodes it, verifies `signature` over those bytes, then JSON-decodes. `204` (no body) means no
+// release has been published yet.
 //
 // GET /agent/v1/update/manifest
 func (c *Client) AgentGetUpdateManifest(ctx context.Context) (AgentGetUpdateManifestRes, error) {
@@ -5052,7 +5138,13 @@ func (c *Client) sendAgentGetUpdateManifest(ctx context.Context) (res AgentGetUp
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentGetUpdateManifestResponse(resp)
@@ -5065,13 +5157,11 @@ func (c *Client) sendAgentGetUpdateManifest(ctx context.Context) (res AgentGetUp
 
 // AgentHeartbeat invokes agentHeartbeat operation.
 //
-// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519
-// signed-request scheme; refreshes last_seen_at for the resolved site,
-// recovers a degraded/disconnected site to `connected`, and returns any
-// pending agent instructions (e.g. `["revoke"]` for a revoked site). The
-// body may carry light metadata (status, versions, pending-update count);
-// it is accepted best-effort. Pre-M21 control planes return 204 with no
-// body.
+// The 60s agent heartbeat (ADR-039). Authenticated via the Ed25519 signed-request scheme; refreshes
+// last_seen_at for the resolved site, recovers a degraded/disconnected site to `connected`, and
+// returns any pending agent instructions (e.g. `["revoke"]` for a revoked site). The body may carry
+// light metadata (status, versions, pending-update count); it is accepted best-effort. Pre-M21 control
+// planes return 204 with no body.
 //
 // POST /agent/v1/heartbeat
 func (c *Client) AgentHeartbeat(ctx context.Context, request OptAgentHeartbeat) (AgentHeartbeatRes, error) {
@@ -5168,7 +5258,13 @@ func (c *Client) sendAgentHeartbeat(ctx context.Context, request OptAgentHeartbe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentHeartbeatResponse(resp)
@@ -5181,15 +5277,13 @@ func (c *Client) sendAgentHeartbeat(ctx context.Context, request OptAgentHeartbe
 
 // AgentIngestRucss invokes agentIngestRucss operation.
 //
-// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`,
-// `structure_hash` required, `safelist` optional), `html` (required,
-// max 10 MiB), and one-or-more `css` parts (optional, max 5 MiB total).
-// Hard overall request ceiling 16 MiB. On a cache HIT the response body
-// IS the used-CSS content (not a key), `Content-Encoding: gzip`, with
-// `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes` headers. On a cache
-// MISS or degraded/unavailable state, `202` with `{"status":"processing",
-// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full
-// CSS this render and never blocks.
+// `multipart/form-data` with parts `meta` (JSON: `site_id`, `url`, `structure_hash` required,
+// `safelist` optional), `html` (required, max 10 MiB), and one-or-more `css` parts (optional, max 5
+// MiB total). Hard overall request ceiling 16 MiB. On a cache HIT the response body IS the used-CSS
+// content (not a key), `Content-Encoding: gzip`, with `X-Rucss-Reduction-Pct` and `X-Rucss-Used-Bytes`
+// headers. On a cache MISS or degraded/unavailable state, `202` with `{"status":"processing",
+// "job_id":...}` or `{"status":"unavailable"}` — the agent serves full CSS this render and never
+// blocks.
 //
 // POST /agent/v1/rucss
 func (c *Client) AgentIngestRucss(ctx context.Context, request *AgentIngestRucssReq) (AgentIngestRucssRes, error) {
@@ -5286,7 +5380,13 @@ func (c *Client) sendAgentIngestRucss(ctx context.Context, request *AgentIngestR
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentIngestRucssResponse(resp)
@@ -5299,10 +5399,9 @@ func (c *Client) sendAgentIngestRucss(ctx context.Context, request *AgentIngestR
 
 // AgentMediaAssetDeleted invokes agentMediaAssetDeleted operation.
 //
-// Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on
-// any deletion path (wp-admin, programmatic, WP-CLI, REST). The agent has
-// already removed its own untracked originals from disk; this notifies the
-// CP to reconcile the site_media_assets row. Best-effort from the agent;
+// Media Optimizer (ADR-043) — the agent's `delete_attachment` hook fired on any deletion path
+// (wp-admin, programmatic, WP-CLI, REST). The agent has already removed its own untracked originals
+// from disk; this notifies the CP to reconcile the site_media_assets row. Best-effort from the agent;
 // the periodic sync sweep is the backstop.
 //
 // POST /agent/v1/media/asset-deleted
@@ -5400,7 +5499,13 @@ func (c *Client) sendAgentMediaAssetDeleted(ctx context.Context, request *AgentM
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaAssetDeletedResponse(resp)
@@ -5413,9 +5518,8 @@ func (c *Client) sendAgentMediaAssetDeleted(ctx context.Context, request *AgentM
 
 // AgentMediaAutoOptimize invokes agentMediaAutoOptimize operation.
 //
-// The agent sends full attachment metadata so the CP can upsert rows
-// before gating and optimizing (fixes the fresh-upload skip). An empty
-// `attachments` array is a valid no-op.
+// The agent sends full attachment metadata so the CP can upsert rows before gating and optimizing
+// (fixes the fresh-upload skip). An empty `attachments` array is a valid no-op.
 //
 // POST /agent/v1/media/auto-optimize
 func (c *Client) AgentMediaAutoOptimize(ctx context.Context, request *AgentAutoOptimizeRequest) (AgentMediaAutoOptimizeRes, error) {
@@ -5512,7 +5616,13 @@ func (c *Client) sendAgentMediaAutoOptimize(ctx context.Context, request *AgentA
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaAutoOptimizeResponse(resp)
@@ -5525,8 +5635,8 @@ func (c *Client) sendAgentMediaAutoOptimize(ctx context.Context, request *AgentA
 
 // AgentMediaEncodeReady invokes agentMediaEncodeReady operation.
 //
-// Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting
-// the source variants so the CP enqueues the encode jobs.
+// Media Optimizer (ADR-043) — the agent calls this after presigned-PUTting the source variants so
+// the CP enqueues the encode jobs.
 //
 // POST /agent/v1/media/encode-ready
 func (c *Client) AgentMediaEncodeReady(ctx context.Context, request *AgentMediaPresign) (AgentMediaEncodeReadyRes, error) {
@@ -5623,7 +5733,13 @@ func (c *Client) sendAgentMediaEncodeReady(ctx context.Context, request *AgentMe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaEncodeReadyResponse(resp)
@@ -5636,10 +5752,9 @@ func (c *Client) sendAgentMediaEncodeReady(ctx context.Context, request *AgentMe
 
 // AgentMediaJobStatus invokes agentMediaJobStatus operation.
 //
-// Media Optimizer (ADR-043) — after `media_apply` or `media_delete_originals`,
-// the agent reports the applied variants, byte sizes, compression level,
-// target format, and DB-rewrite row counts so the CP can upsert the mirror
-// row (site_media_assets).
+// Media Optimizer (ADR-043) — after `media_apply` or `media_delete_originals`, the agent reports the
+// applied variants, byte sizes, compression level, target format, and DB-rewrite row counts so the CP
+// can upsert the mirror row (site_media_assets).
 //
 // POST /agent/v1/media/job-status
 func (c *Client) AgentMediaJobStatus(ctx context.Context, request *AgentMediaJobStatus) (AgentMediaJobStatusRes, error) {
@@ -5736,7 +5851,13 @@ func (c *Client) sendAgentMediaJobStatus(ctx context.Context, request *AgentMedi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaJobStatusResponse(resp)
@@ -5749,9 +5870,9 @@ func (c *Client) sendAgentMediaJobStatus(ctx context.Context, request *AgentMedi
 
 // AgentMediaPresign invokes agentMediaPresign operation.
 //
-// Media Optimizer (ADR-043) — the agent's `media_optimize` command requests
-// presigned PUT URLs (one per variant, ≤10) so it can upload source bytes to
-// media/<tenant>/<site>/<job>/src/<name>. No image bytes pass through the CP.
+// Media Optimizer (ADR-043) — the agent's `media_optimize` command requests presigned PUT URLs (one
+// per variant, ≤10) so it can upload source bytes to media////src/. No image bytes pass through the
+// CP.
 //
 // POST /agent/v1/media/presign
 func (c *Client) AgentMediaPresign(ctx context.Context, request *AgentMediaPresign) (AgentMediaPresignRes, error) {
@@ -5848,7 +5969,13 @@ func (c *Client) sendAgentMediaPresign(ctx context.Context, request *AgentMediaP
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaPresignResponse(resp)
@@ -5861,8 +5988,8 @@ func (c *Client) sendAgentMediaPresign(ctx context.Context, request *AgentMediaP
 
 // AgentMediaRestoreStatus invokes agentMediaRestoreStatus operation.
 //
-// Media Optimizer (ADR-043) — after `media_restore`, the agent reports
-// whether the attachment was reverted to its pre-optimization state.
+// Media Optimizer (ADR-043) — after `media_restore`, the agent reports whether the attachment was
+// reverted to its pre-optimization state.
 //
 // POST /agent/v1/media/restore-status
 func (c *Client) AgentMediaRestoreStatus(ctx context.Context, request *AgentMediaRestoreStatus) (AgentMediaRestoreStatusRes, error) {
@@ -5959,7 +6086,13 @@ func (c *Client) sendAgentMediaRestoreStatus(ctx context.Context, request *Agent
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaRestoreStatusResponse(resp)
@@ -5972,9 +6105,9 @@ func (c *Client) sendAgentMediaRestoreStatus(ctx context.Context, request *Agent
 
 // AgentMediaSyncBatch invokes agentMediaSyncBatch operation.
 //
-// Media Optimizer (ADR-043) — the agent's `media_sync` command pushes pages
-// of ≤200 attachments here. Authenticated via the Ed25519 signed-request
-// scheme; the tenant+site come from the verified identity, never a header.
+// Media Optimizer (ADR-043) — the agent's `media_sync` command pushes pages of ≤200 attachments
+// here. Authenticated via the Ed25519 signed-request scheme; the tenant+site come from the verified
+// identity, never a header.
 //
 // POST /agent/v1/media/sync-batch
 func (c *Client) AgentMediaSyncBatch(ctx context.Context, request *AgentMediaSyncBatch) (AgentMediaSyncBatchRes, error) {
@@ -6071,7 +6204,13 @@ func (c *Client) sendAgentMediaSyncBatch(ctx context.Context, request *AgentMedi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaSyncBatchResponse(resp)
@@ -6084,11 +6223,10 @@ func (c *Client) sendAgentMediaSyncBatch(ctx context.Context, request *AgentMedi
 
 // AgentMediaSyncFinalize invokes agentMediaSyncFinalize operation.
 //
-// Media Optimizer (ADR-043) — the agent calls this once a FULL paged media
-// enumeration completed cleanly (every sync-batch page succeeded) so the CP
-// reconciles offline deletions (marks any site_media_assets row not seen in
-// this job's pages as deleted). NEVER sent on a partial/errored run — the
-// blast-radius guard against a transiently-empty WP wiping the asset list.
+// Media Optimizer (ADR-043) — the agent calls this once a FULL paged media enumeration completed
+// cleanly (every sync-batch page succeeded) so the CP reconciles offline deletions (marks any
+// site_media_assets row not seen in this job's pages as deleted). NEVER sent on a partial/errored run
+// — the blast-radius guard against a transiently-empty WP wiping the asset list.
 //
 // POST /agent/v1/media/sync-finalize
 func (c *Client) AgentMediaSyncFinalize(ctx context.Context, request *AgentMediaSyncFinalize) (AgentMediaSyncFinalizeRes, error) {
@@ -6185,7 +6323,13 @@ func (c *Client) sendAgentMediaSyncFinalize(ctx context.Context, request *AgentM
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMediaSyncFinalizeResponse(resp)
@@ -6198,10 +6342,9 @@ func (c *Client) sendAgentMediaSyncFinalize(ctx context.Context, request *AgentM
 
 // AgentMetadata invokes agentMetadata operation.
 //
-// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature
-// security scheme). The site + tenant are resolved from the verified agent
-// identity, never from a header. Updates last_seen_at and marks the site
-// healthy.
+// Authenticated via the Ed25519 signed-request scheme (see the AgentSignature security scheme). The
+// site + tenant are resolved from the verified agent identity, never from a header. Updates
+// last_seen_at and marks the site healthy.
 //
 // POST /agent/v1/metadata
 func (c *Client) AgentMetadata(ctx context.Context, request *AgentMetadata) (AgentMetadataRes, error) {
@@ -6298,7 +6441,13 @@ func (c *Client) sendAgentMetadata(ctx context.Context, request *AgentMetadata) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentMetadataResponse(resp)
@@ -6311,11 +6460,10 @@ func (c *Client) sendAgentMetadata(ctx context.Context, request *AgentMetadata) 
 
 // AgentPresignBackupChunks invokes agentPresignBackupChunks operation.
 //
-// Incremental dedup: hashes already stored for the tenant are omitted
-// from `uploads` and the agent skips uploading them. Content-addressed,
-// tenant-namespaced object keys mean a presign can never target another
-// tenant's chunk prefix. The snapshot is re-verified to belong to the
-// calling site before any presign is minted.
+// Incremental dedup: hashes already stored for the tenant are omitted from `uploads` and the agent
+// skips uploading them. Content-addressed, tenant-namespaced object keys mean a presign can never
+// target another tenant's chunk prefix. The snapshot is re-verified to belong to the calling site
+// before any presign is minted.
 //
 // POST /agent/v1/backups/{snapshotId}/presign
 func (c *Client) AgentPresignBackupChunks(ctx context.Context, request *AgentPresignChunksRequest, params AgentPresignBackupChunksParams) (AgentPresignBackupChunksRes, error) {
@@ -6431,7 +6579,13 @@ func (c *Client) sendAgentPresignBackupChunks(ctx context.Context, request *Agen
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPresignBackupChunksResponse(resp)
@@ -6444,9 +6598,8 @@ func (c *Client) sendAgentPresignBackupChunks(ctx context.Context, request *Agen
 
 // AgentPushActivity invokes agentPushActivity operation.
 //
-// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and
-// flags any tamper as `chain_valid:false` on the affected row rather
-// than rejecting the batch.
+// ADR-037 Sprint 3. The CP re-verifies the hash chain at ingest and flags any tamper as
+// `chain_valid:false` on the affected row rather than rejecting the batch.
 //
 // POST /agent/v1/activity
 func (c *Client) AgentPushActivity(ctx context.Context, request *AgentActivityIngestRequest) (AgentPushActivityRes, error) {
@@ -6543,7 +6696,13 @@ func (c *Client) sendAgentPushActivity(ctx context.Context, request *AgentActivi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPushActivityResponse(resp)
@@ -6556,9 +6715,8 @@ func (c *Client) sendAgentPushActivity(ctx context.Context, request *AgentActivi
 
 // AgentPushDiagnostics invokes agentPushDiagnostics operation.
 //
-// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload
-// (freeform per category). Also drives best-effort hosting-provider
-// inference from the request's source IP.
+// ADR-037 Sprint 2. Body is the raw 14-category diagnostics payload (freeform per category). Also
+// drives best-effort hosting-provider inference from the request's source IP.
 //
 // POST /agent/v1/diagnostics
 func (c *Client) AgentPushDiagnostics(ctx context.Context, request *AgentPushDiagnosticsReq) (AgentPushDiagnosticsRes, error) {
@@ -6655,7 +6813,13 @@ func (c *Client) sendAgentPushDiagnostics(ctx context.Context, request *AgentPus
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPushDiagnosticsResponse(resp)
@@ -6668,10 +6832,9 @@ func (c *Client) sendAgentPushDiagnostics(ctx context.Context, request *AgentPus
 
 // AgentPushEmailLog invokes agentPushEmailLog operation.
 //
-// Tolerant ingest: a malformed `response`/`created_at`/`attachments`
-// sub-field never fails the whole batch — each is coerced to a safe
-// default independently. Emits a throttled SSE `email.log_ingested`
-// notification (at most once per site per throttle window).
+// Tolerant ingest: a malformed `response`/`created_at`/`attachments` sub-field never fails the whole
+// batch — each is coerced to a safe default independently. Emits a throttled SSE
+// `email.log_ingested` notification (at most once per site per throttle window).
 //
 // POST /agent/v1/email/log
 func (c *Client) AgentPushEmailLog(ctx context.Context, request *AgentEmailLogIngestRequest) (AgentPushEmailLogRes, error) {
@@ -6768,7 +6931,13 @@ func (c *Client) sendAgentPushEmailLog(ctx context.Context, request *AgentEmailL
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPushEmailLogResponse(resp)
@@ -6878,7 +7047,13 @@ func (c *Client) sendAgentPushErrors(ctx context.Context, request *AgentErrorBat
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPushErrorsResponse(resp)
@@ -6988,7 +7163,13 @@ func (c *Client) sendAgentPushLoginEvents(ctx context.Context, request *AgentLog
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentPushLoginEventsResponse(resp)
@@ -7001,9 +7182,8 @@ func (c *Client) sendAgentPushLoginEvents(ctx context.Context, request *AgentLog
 
 // AgentReportBackupProgress invokes agentReportBackupProgress operation.
 //
-// Fired on every stage transition, and per-chunk during the custom
-// presigned-S3 sync. `snapshot_id` comes strictly from the URL path,
-// never the body — a compromised agent cannot target another
+// Fired on every stage transition, and per-chunk during the custom presigned-S3 sync. `snapshot_id`
+// comes strictly from the URL path, never the body — a compromised agent cannot target another
 // snapshot by spoofing it in the JSON body.
 //
 // POST /agent/v1/backups/{snapshotId}/progress
@@ -7120,7 +7300,13 @@ func (c *Client) sendAgentReportBackupProgress(ctx context.Context, request *Age
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentReportBackupProgressResponse(resp)
@@ -7230,7 +7416,13 @@ func (c *Client) sendAgentReportCacheStats(ctx context.Context, request *AgentCa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentReportCacheStatsResponse(resp)
@@ -7243,11 +7435,9 @@ func (c *Client) sendAgentReportCacheStats(ctx context.Context, request *AgentCa
 
 // AgentReportDbCleanProgress invokes agentReportDbCleanProgress operation.
 //
-// The frozen contract: an unknown `job_id` (CP restarted mid-job) is
-// still processed, never 404s; the agent must tolerate a non-2xx
-// response without halting its cleanup loop. `done:true` on the final
-// push for the job triggers `db.clean.completed` and advances the next
-// scheduled run.
+// The frozen contract: an unknown `job_id` (CP restarted mid-job) is still processed, never 404s; the
+// agent must tolerate a non-2xx response without halting its cleanup loop. `done:true` on the final
+// push for the job triggers `db.clean.completed` and advances the next scheduled run.
 //
 // POST /agent/v1/db-clean/progress
 func (c *Client) AgentReportDbCleanProgress(ctx context.Context, request *AgentDbCleanProgress) (AgentReportDbCleanProgressRes, error) {
@@ -7344,7 +7534,13 @@ func (c *Client) sendAgentReportDbCleanProgress(ctx context.Context, request *Ag
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentReportDbCleanProgressResponse(resp)
@@ -7357,9 +7553,8 @@ func (c *Client) sendAgentReportDbCleanProgress(ctx context.Context, request *Ag
 
 // AgentReportDbOrphanDeleteProgress invokes agentReportDbOrphanDeleteProgress operation.
 //
-// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an
-// unknown `job_id` is still processed, and a non-2xx response must not
-// halt the agent's delete loop.
+// Same frozen-contract tolerance as `/agent/v1/db-clean/progress`: an unknown `job_id` is still
+// processed, and a non-2xx response must not halt the agent's delete loop.
 //
 // POST /agent/v1/db-orphan-delete/progress
 func (c *Client) AgentReportDbOrphanDeleteProgress(ctx context.Context, request *AgentDbOrphanDeleteProgress) (AgentReportDbOrphanDeleteProgressRes, error) {
@@ -7456,7 +7651,13 @@ func (c *Client) sendAgentReportDbOrphanDeleteProgress(ctx context.Context, requ
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentReportDbOrphanDeleteProgressResponse(resp)
@@ -7469,12 +7670,10 @@ func (c *Client) sendAgentReportDbOrphanDeleteProgress(ctx context.Context, requ
 
 // AgentSubmitBackupManifest invokes agentSubmitBackupManifest operation.
 //
-// ADR-051: an archive-delta increment submits the SAME request shape as
-// a full backup (its zip parts, DB dump, files-list, and optional
-// tombstones are all `ManifestEntry` rows); per-cycle telemetry
-// counters ride as optional top-level fields. Upserts not-yet-stored
-// chunks, increments refcounts for every reference, inserts manifest
-// entries, and completes the snapshot.
+// ADR-051: an archive-delta increment submits the SAME request shape as a full backup (its zip parts,
+// DB dump, files-list, and optional tombstones are all `ManifestEntry` rows); per-cycle telemetry
+// counters ride as optional top-level fields. Upserts not-yet-stored chunks, increments refcounts for
+// every reference, inserts manifest entries, and completes the snapshot.
 //
 // POST /agent/v1/backups/{snapshotId}/manifest
 func (c *Client) AgentSubmitBackupManifest(ctx context.Context, request *AgentSubmitManifestRequest, params AgentSubmitBackupManifestParams) (AgentSubmitBackupManifestRes, error) {
@@ -7590,7 +7789,13 @@ func (c *Client) sendAgentSubmitBackupManifest(ctx context.Context, request *Age
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAgentSubmitBackupManifestResponse(resp)
@@ -7603,18 +7808,21 @@ func (c *Client) sendAgentSubmitBackupManifest(ctx context.Context, request *Age
 
 // ApplySiteFileUpload invokes applySiteFileUpload operation.
 //
-// Step 2 of 2 for browser file upload. After the browser has PUT all
-// chunks to the presigned S3 URLs returned by `prepareSiteFileUpload`,
-// this endpoint:
-// 1. Mints presigned S3 GET URLs for each staged chunk.
-// 2. Issues `file_upload_apply` to the agent, which fetches all chunks,
-// reassembles them in order, validates the SHA-256 digest, and
-// atomic-swaps the assembled file into the target path (same
-// FilesRestorer swap primitive used by restore).
-// The agent returns `400 write_failed` when the SHA-256 digest does not
-// match. The caller should retry the full upload in that case.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-// **Executable/sensitive gate:** Same as `prepareSiteFileUpload`.
+// Step 2 of 2 for browser file upload. After the browser has PUT all chunks to the presigned S3 URLs
+// returned by `prepareSiteFileUpload`, this endpoint:
+//
+//  1. Mints presigned S3 GET URLs for each staged chunk.
+//  2. Issues `file_upload_apply` to the agent, which fetches all chunks, reassembles them in order,
+//     validates the SHA-256 digest, and atomic-swaps the assembled file into the target path (same
+//     FilesRestorer swap primitive used by restore).
+//
+// The agent returns `400 write_failed` when the SHA-256 digest does not match. The caller should retry
+// the full upload in that case.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+//
+// Executable/sensitive gate: Same as `prepareSiteFileUpload`.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/upload/apply
@@ -7698,7 +7906,13 @@ func (c *Client) sendApplySiteFileUpload(ctx context.Context, request *ApplyUplo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeApplySiteFileUploadResponse(resp)
@@ -7711,9 +7925,8 @@ func (c *Client) sendApplySiteFileUpload(ctx context.Context, request *ApplyUplo
 
 // ArchiveSite invokes archiveSite operation.
 //
-// M21 / ADR-041 — operator action. Transitions the site to `archived`
-// (terminal soft-delete); hidden from the default sites list. History is
-// preserved. Requires operator+.
+// M21 / ADR-041 — operator action. Transitions the site to `archived` (terminal soft-delete); hidden
+// from the default sites list. History is preserved. Requires operator+.
 //
 // POST /api/v1/sites/{siteId}/archive
 func (c *Client) ArchiveSite(ctx context.Context, request OptSiteLifecycleReason, params ArchiveSiteParams) (ArchiveSiteRes, error) {
@@ -7796,7 +8009,13 @@ func (c *Client) sendArchiveSite(ctx context.Context, request OptSiteLifecycleRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeArchiveSiteResponse(resp)
@@ -7873,7 +8092,13 @@ func (c *Client) sendAssignSitesToClient(ctx context.Context, request *AssignSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeAssignSitesToClientResponse(resp)
@@ -7886,10 +8111,9 @@ func (c *Client) sendAssignSitesToClient(ctx context.Context, request *AssignSit
 
 // BeginReEnrollment invokes beginReEnrollment operation.
 //
-// M21 / ADR-041 — moves an existing revoked/disconnected/archived site back
-// to `pending_enrollment` (bumping connection_generation) and mints a fresh
-// site-bound enrollment code under the SAME site_id (preserving backup/scan
-// history). Returns the once-shown code. Requires operator+.
+// M21 / ADR-041 — moves an existing revoked/disconnected/archived site back to `pending_enrollment`
+// (bumping connection_generation) and mints a fresh site-bound enrollment code under the SAME site_id
+// (preserving backup/scan history). Returns the once-shown code. Requires operator+.
 //
 // POST /api/v1/sites/{siteId}/enrollment-codes
 func (c *Client) BeginReEnrollment(ctx context.Context, params BeginReEnrollmentParams) (BeginReEnrollmentRes, error) {
@@ -7969,7 +8193,13 @@ func (c *Client) sendBeginReEnrollment(ctx context.Context, params BeginReEnroll
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBeginReEnrollmentResponse(resp)
@@ -7982,9 +8212,8 @@ func (c *Client) sendBeginReEnrollment(ctx context.Context, params BeginReEnroll
 
 // BeginTotpEnrollment invokes beginTotpEnrollment operation.
 //
-// Returns the `otpauth://` URI and the base32 secret for the enrollment
-// wizard (e.g. to render a QR code). This is the ONLY response that ever
-// returns the raw secret.
+// Returns the `otpauth://` URI and the base32 secret for the enrollment wizard (e.g. to render a QR
+// code). This is the ONLY response that ever returns the raw secret.
 //
 // POST /auth/2fa/totp/begin
 func (c *Client) BeginTotpEnrollment(ctx context.Context) (BeginTotpEnrollmentRes, error) {
@@ -8045,7 +8274,13 @@ func (c *Client) sendBeginTotpEnrollment(ctx context.Context) (res BeginTotpEnro
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBeginTotpEnrollmentResponse(resp)
@@ -8058,8 +8293,8 @@ func (c *Client) sendBeginTotpEnrollment(ctx context.Context) (res BeginTotpEnro
 
 // BeginWebAuthnChallenge invokes beginWebAuthnChallenge operation.
 //
-// Returns the raw `CredentialAssertion` options JSON so the browser can
-// pass them directly to `navigator.credentials.get()`.
+// Returns the raw `CredentialAssertion` options JSON so the browser can pass them directly to
+// `navigator.credentials.get()`.
 //
 // POST /auth/2fa/webauthn/begin
 func (c *Client) BeginWebAuthnChallenge(ctx context.Context, request *BeginWebAuthnChallengeReq) (BeginWebAuthnChallengeRes, error) {
@@ -8123,7 +8358,13 @@ func (c *Client) sendBeginWebAuthnChallenge(ctx context.Context, request *BeginW
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBeginWebAuthnChallengeResponse(resp)
@@ -8136,8 +8377,8 @@ func (c *Client) sendBeginWebAuthnChallenge(ctx context.Context, request *BeginW
 
 // BeginWebAuthnEnrollment invokes beginWebAuthnEnrollment operation.
 //
-// Returns the raw `CredentialCreation` options JSON so the browser can
-// pass them directly to `navigator.credentials.create()`.
+// Returns the raw `CredentialCreation` options JSON so the browser can pass them directly to
+// `navigator.credentials.create()`.
 //
 // POST /auth/2fa/webauthn/begin-registration
 func (c *Client) BeginWebAuthnEnrollment(ctx context.Context) (BeginWebAuthnEnrollmentRes, error) {
@@ -8198,7 +8439,13 @@ func (c *Client) sendBeginWebAuthnEnrollment(ctx context.Context) (res BeginWebA
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBeginWebAuthnEnrollmentResponse(resp)
@@ -8211,12 +8458,10 @@ func (c *Client) sendBeginWebAuthnEnrollment(ctx context.Context) (res BeginWebA
 
 // BulkApplyTags invokes bulkApplyTags operation.
 //
-// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each
-// site id is checked against the caller's collaborator allowlist
-// independently; sites the caller cannot access (or that don't exist in
-// this tenant) are returned with `ok: false` rather than failing the
-// whole call. `add` names are registered into the tag registry in the
-// same transaction. Requires the `site.write` permission.
+// Applies `add`/`remove` tag deltas to each site in `site_ids`. Each site id is checked against the
+// caller's collaborator allowlist independently; sites the caller cannot access (or that don't exist
+// in this tenant) are returned with `ok: false` rather than failing the whole call. `add` names are
+// registered into the tag registry in the same transaction. Requires the `site.write` permission.
 //
 // POST /api/v1/tags/bulk-apply
 func (c *Client) BulkApplyTags(ctx context.Context, request *BulkTagApplyRequest) (BulkApplyTagsRes, error) {
@@ -8280,7 +8525,13 @@ func (c *Client) sendBulkApplyTags(ctx context.Context, request *BulkTagApplyReq
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkApplyTagsResponse(resp)
@@ -8293,10 +8544,9 @@ func (c *Client) sendBulkApplyTags(ctx context.Context, request *BulkTagApplyReq
 
 // BulkConfigCache invokes bulkConfigCache operation.
 //
-// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto
-// each site's existing config without clobbering its per-site include or
-// bypass lists. Each site id is checked against the caller's allowlist
-// independently. Requires the `site.perf.config` permission.
+// Spreads a preset's toggles (`safe`, `balanced`, or `aggressive`) onto each site's existing config
+// without clobbering its per-site include or bypass lists. Each site id is checked against the
+// caller's allowlist independently. Requires the `site.perf.config` permission.
 //
 // PUT /api/v1/cache/bulk-config
 func (c *Client) BulkConfigCache(ctx context.Context, request *BulkConfigRequest) (BulkConfigCacheRes, error) {
@@ -8360,7 +8610,13 @@ func (c *Client) sendBulkConfigCache(ctx context.Context, request *BulkConfigReq
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkConfigCacheResponse(resp)
@@ -8373,22 +8629,21 @@ func (c *Client) sendBulkConfigCache(ctx context.Context, request *BulkConfigReq
 
 // BulkDeleteBackups invokes bulkDeleteBackups operation.
 //
-// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id
-// that is not found (or belongs to another site/tenant), still
-// running/pending, locked, mid-chain with dependent later increments, or
-// currently targeted by an active restore is reported as a "skipped"
-// result row (see BulkDeleteBackupsResultItem) rather than aborting the
-// whole request — this endpoint always returns 200, even when every id
-// is skipped.
-// Within an incremental chain, deletable snapshots are removed
-// newest-generation-first so a partial batch never strands an
-// unrestorable mid-chain gap. An active restore anchored on ANY member
-// of a chain causes EVERY requested id in that chain to be skipped
-// (restore_in_progress) — a restore reads the whole chain, not just the
-// snapshot it was launched against.
-// Set dry_run=true to compute the identical plan (same outcomes, same
-// reclaimed_bytes_estimate) without deleting anything: no row deletes,
-// no manifest-index deletes, no retention GC, no audit log entries.
+// Deletes up to 100 snapshots in one call. ALWAYS partial-success: an id that is not found (or belongs
+// to another site/tenant), still running/pending, locked, mid-chain with dependent later increments,
+// or currently targeted by an active restore is reported as a "skipped" result row (see
+// BulkDeleteBackupsResultItem) rather than aborting the whole request — this endpoint always returns
+// 200, even when every id is skipped.
+//
+// Within an incremental chain, deletable snapshots are removed newest-generation-first so a partial
+// batch never strands an unrestorable mid-chain gap. An active restore anchored on ANY member of a
+// chain causes EVERY requested id in that chain to be skipped (restore_in_progress) — a restore
+// reads the whole chain, not just the snapshot it was launched against.
+//
+// Set dry_run=true to compute the identical plan (same outcomes, same reclaimed_bytes_estimate)
+// without deleting anything: no row deletes, no manifest-index deletes, no retention GC, no audit log
+// entries.
+//
 // Requires operator+ (site.write).
 //
 // POST /api/v1/sites/{siteId}/backups/bulk-delete
@@ -8472,7 +8727,13 @@ func (c *Client) sendBulkDeleteBackups(ctx context.Context, request *BulkDeleteB
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkDeleteBackupsResponse(resp)
@@ -8485,11 +8746,11 @@ func (c *Client) sendBulkDeleteBackups(ctx context.Context, request *BulkDeleteB
 
 // BulkDeleteEmailLog invokes bulkDeleteEmailLog operation.
 //
-// Deletes a list of email log entries by id, carried in the request
-// body (there is no `logId` path segment on this route — it operates on
-// a caller-supplied id list, not a single entry). RLS ensures only
-// entries belonging to the operator's tenant are deleted regardless of
-// the id list. Maximum 500 ids per request.
+// Deletes a list of email log entries by id, carried in the request body (there is no `logId` path
+// segment on this route — it operates on a caller-supplied id list, not a single entry). RLS ensures
+// only entries belonging to the operator's tenant are deleted regardless of the id list. Maximum 500
+// ids per request.
+//
 // Requires `site.email.manage` permission.
 //
 // DELETE /api/v1/sites/{siteId}/email/log
@@ -8573,7 +8834,13 @@ func (c *Client) sendBulkDeleteEmailLog(ctx context.Context, request *BulkDelete
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkDeleteEmailLogResponse(resp)
@@ -8586,11 +8853,10 @@ func (c *Client) sendBulkDeleteEmailLog(ctx context.Context, request *BulkDelete
 
 // BulkPurgeCache invokes bulkPurgeCache operation.
 //
-// Purges the whole cache for each site in `site_ids`. Each site id is
-// checked against the caller's collaborator allowlist independently; sites
-// the caller cannot access (or that fail) are returned with `ok: false`
-// and a `detail` rather than failing the whole call. Requires the
-// `site.cache.purge` permission.
+// Purges the whole cache for each site in `site_ids`. Each site id is checked against the caller's
+// collaborator allowlist independently; sites the caller cannot access (or that fail) are returned
+// with `ok: false` and a `detail` rather than failing the whole call. Requires the `site.cache.purge`
+// permission.
 //
 // POST /api/v1/cache/bulk-purge
 func (c *Client) BulkPurgeCache(ctx context.Context, request *BulkPurgeRequest) (*BulkResultList, error) {
@@ -8654,7 +8920,13 @@ func (c *Client) sendBulkPurgeCache(ctx context.Context, request *BulkPurgeReque
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkPurgeCacheResponse(resp)
@@ -8667,11 +8939,11 @@ func (c *Client) sendBulkPurgeCache(ctx context.Context, request *BulkPurgeReque
 
 // BulkResendEmailLog invokes bulkResendEmailLog operation.
 //
-// Dispatches `resend_email` for multiple log entries. Each entry is
-// processed independently. Entries without body_stored are skipped with
-// `ok=false` in the per-entry result array (no overall 4xx). Registered
-// before `/email/log/{logId}` so Gin does not parse the literal segment
-// `resend` as a `logId` UUID.
+// Dispatches `resend_email` for multiple log entries. Each entry is processed independently. Entries
+// without body_stored are skipped with `ok=false` in the per-entry result array (no overall 4xx).
+// Registered before `/email/log/{logId}` so Gin does not parse the literal segment `resend` as a
+// `logId` UUID.
+//
 // Requires `site.email.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/email/log/resend
@@ -8755,7 +9027,13 @@ func (c *Client) sendBulkResendEmailLog(ctx context.Context, request *BulkResend
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeBulkResendEmailLogResponse(resp)
@@ -8768,11 +9046,9 @@ func (c *Client) sendBulkResendEmailLog(ctx context.Context, request *BulkResend
 
 // CancelBackup invokes cancelBackup operation.
 //
-// Stops an in-flight backup by marking the snapshot failed
-// ("cancelled by operator"). After cancel the snapshot is deletable and a
-// late agent manifest submit is rejected. A snapshot that is already
-// terminal (completed/failed) is refused with 409 (snapshot_not_cancelable).
-// Requires operator+.
+// Stops an in-flight backup by marking the snapshot failed ("cancelled by operator"). After cancel the
+// snapshot is deletable and a late agent manifest submit is rejected. A snapshot that is already
+// terminal (completed/failed) is refused with 409 (snapshot_not_cancelable). Requires operator+.
 //
 // POST /api/v1/backups/{snapshotId}/cancel
 func (c *Client) CancelBackup(ctx context.Context, params CancelBackupParams) (CancelBackupRes, error) {
@@ -8852,7 +9128,13 @@ func (c *Client) sendCancelBackup(ctx context.Context, params CancelBackupParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelBackupResponse(resp)
@@ -8866,9 +9148,7 @@ func (c *Client) sendCancelBackup(ctx context.Context, params CancelBackupParams
 // CancelBillingSubscription invokes cancelBillingSubscription operation.
 //
 // The provider-agnostic cancellation path — the only one for a provider with no hosted portal (e.g.
-//
-//	Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
-//
+// Razorpay). Cancellation is scheduled for the end of the current billing period; the plan/status
 // change lands later via the provider's webhook. Poll `GET /billing` afterward rather than expecting
 // this response to carry the new plan state.
 //
@@ -8931,7 +9211,13 @@ func (c *Client) sendCancelBillingSubscription(ctx context.Context) (res CancelB
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelBillingSubscriptionResponse(resp)
@@ -8944,19 +9230,19 @@ func (c *Client) sendCancelBillingSubscription(ctx context.Context) (res CancelB
 
 // CancelEnrollment invokes cancelEnrollment operation.
 //
-// Hard-deletes a site that is in `pending_enrollment` AND has **never
-// connected** (`enrolled_at` is NULL and `agent_public_key` is absent).
-// This is the "Cancel" action in the enrollment modal — it frees the URL
-// so the operator can immediately re-add the same site.
+// Hard-deletes a site that is in `pending_enrollment` AND has never connected (`enrolled_at` is NULL
+// and `agent_public_key` is absent). This is the "Cancel" action in the enrollment modal — it frees
+// the URL so the operator can immediately re-add the same site.
+//
 // The never-connected guard is enforced server-side (NOT by the caller):
-// `connection_state == pending_enrollment` AND `enrolled_at IS NULL` AND
-// `agent_public_key == ""` must all hold. If the site has ever connected
-// (enrolled at least once) the request is rejected with
+// `connection_state == pending_enrollment` AND `enrolled_at IS NULL` AND `agent_public_key == ""` must
+// all hold. If the site has ever connected (enrolled at least once) the request is rejected with
 // `code: "not_cancellable"` — use `archive` or `revoke` instead.
-// On success a `site.deleted` SSE event is published to the tenant stream
-// so open dashboards can remove the row without a poll.
-// Requires `site:write` + org scope + site access (same chain as
-// `archive`/`revoke`).
+//
+// On success a `site.deleted` SSE event is published to the tenant stream so open dashboards can
+// remove the row without a poll.
+//
+// Requires `site:write` + org scope + site access (same chain as `archive`/`revoke`).
 //
 // POST /api/v1/sites/{siteId}/cancel
 func (c *Client) CancelEnrollment(ctx context.Context, params CancelEnrollmentParams) (CancelEnrollmentRes, error) {
@@ -9036,7 +9322,13 @@ func (c *Client) sendCancelEnrollment(ctx context.Context, params CancelEnrollme
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelEnrollmentResponse(resp)
@@ -9129,7 +9421,13 @@ func (c *Client) sendCancelMedia(ctx context.Context, params CancelMediaParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelMediaResponse(resp)
@@ -9142,25 +9440,22 @@ func (c *Client) sendCancelMedia(ctx context.Context, params CancelMediaParams) 
 
 // CancelScheduledUpdateRun invokes cancelScheduledUpdateRun operation.
 //
-// Calls back a deferred run (#463) that has not yet started. The run
-// becomes `halted` and every one of its tasks becomes `cancelled`, in one
-// transaction.
-// **Valid ONLY from `scheduled`.** That is the safety property, not a
-// convenience: it guarantees the cancel can never race a dispatch into a
-// half-cancelled state. Once the dispatcher has claimed the run
-// (`dispatching`) or the work is out (`running`), this returns 409 and the
-// operator must use the halt path instead — a different operation with
-// different consequences, because halting a running run leaves commands
-// already in flight on real sites. Cancelling a scheduled run promises
-// that **nothing was ever sent to any site**, and the precondition is what
-// makes that promise true.
-// Tasks become `cancelled` rather than `expired`. Both mean the task was
-// never attempted, and the distinction is which one to tell the operator:
-// `cancelled` records a decision somebody made, `expired` records that the
-// dispatch window closed while the control plane was unavailable.
-// Idempotent in the way that matters: a second cancel of an
-// already-cancelled run returns 409 `run_not_cancellable`, never a
-// spurious success. Requires operator+.
+// Calls back a deferred run (#463) that has not yet started. The run becomes `halted` and every one of
+// its tasks becomes `cancelled`, in one transaction.
+//
+// Valid ONLY from `scheduled`. That is the safety property, not a convenience: it guarantees the
+// cancel can never race a dispatch into a half-cancelled state. Once the dispatcher has claimed the
+// run (`dispatching`) or the work is out (`running`), this returns 409 and the operator must use the
+// halt path instead — a different operation with different consequences, because halting a running
+// run leaves commands already in flight on real sites. Cancelling a scheduled run promises that
+// nothing was ever sent to any site, and the precondition is what makes that promise true.
+//
+// Tasks become `cancelled` rather than `expired`. Both mean the task was never attempted, and the
+// distinction is which one to tell the operator: `cancelled` records a decision somebody made,
+// `expired` records that the dispatch window closed while the control plane was unavailable.
+//
+// Idempotent in the way that matters: a second cancel of an already-cancelled run returns 409
+// `run_not_cancellable`, never a spurious success. Requires operator+.
 //
 // POST /api/v1/updates/runs/{id}/cancel
 func (c *Client) CancelScheduledUpdateRun(ctx context.Context, params CancelScheduledUpdateRunParams) (CancelScheduledUpdateRunRes, error) {
@@ -9240,7 +9535,13 @@ func (c *Client) sendCancelScheduledUpdateRun(ctx context.Context, params Cancel
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCancelScheduledUpdateRunResponse(resp)
@@ -9253,9 +9554,9 @@ func (c *Client) sendCancelScheduledUpdateRun(ctx context.Context, params Cancel
 
 // ChangeMyPassword invokes changeMyPassword operation.
 //
-// Verifies `current_password`, then sets `new_password`. This session
-// stays alive (its `auth_at` is refreshed so it does not predate the new
-// `password_changed_at`); every other session for this user is invalidated.
+// Verifies `current_password`, then sets `new_password`. This session stays alive (its `auth_at` is
+// refreshed so it does not predate the new `password_changed_at`); every other session for this user
+// is invalidated.
 //
 // POST /auth/me/password
 func (c *Client) ChangeMyPassword(ctx context.Context, request *ChangeMyPasswordReq) (ChangeMyPasswordRes, error) {
@@ -9319,7 +9620,13 @@ func (c *Client) sendChangeMyPassword(ctx context.Context, request *ChangeMyPass
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeChangeMyPasswordResponse(resp)
@@ -9332,35 +9639,30 @@ func (c *Client) sendChangeMyPassword(ctx context.Context, request *ChangeMyPass
 
 // CheckAgentMirrorNow invokes checkAgentMirrorNow operation.
 //
-// Queues one immediate run of the upstream agent-release mirror
-// (internal/agentupstream), instead of waiting up to six hours for the
-// next scheduled run (GH #322).
-// Deliberately NOT under /api/v1/fleet. The mirror is ONE PER INSTALL:
-// it fetches one public GitHub release and writes one pair of objects
-// into one bucket. A tenant-scoped trigger would let any org admin on a
-// shared install spend the install's shared unauthenticated GitHub
-// request budget (60 per hour per IP) and rewrite the install's shared
-// release pointer.
-// Who may call it: a superadmin (is_superadmin=true), OR the owner of the
-// only organisation on this install. The second arm exists because the
-// first arm's whole purpose is to stop one tenant spending another
-// tenant's share of that budget, and on an install with exactly one
-// organisation there is no other tenant for it to protect. It requires
-// the memberships role 'owner' exactly, on the one organisation whose
-// tenants.deleted_at is null; admin, operator and viewer are refused, as
-// is an API-key principal. The count is read on every request and never
-// cached, so a second organisation appearing closes this path again on
-// the very next call, and the owner never becomes a superadmin: nothing
-// else on /api/v1/admin admits them. Multi-organisation installs are
-// unchanged and stay superadmin-only. Compare
-// POST /api/v1/admin/vuln-feed/sync, which remains superadmin-only.
-// A 202 means the run was QUEUED, not that anything was checked. The
-// run may still end rate limited, refused or unavailable; the real
-// outcome appears as agent_mirror.last_attempt_outcome on
-// GET /api/v1/fleet/agents.
-// No request body and no force parameter: bypassing the request
-// spacing would spend the install's shared upstream budget for no new
-// information.
+// Queues one immediate run of the upstream agent-release mirror (internal/agentupstream), instead of
+// waiting up to six hours for the next scheduled run (GH #322).
+//
+// Deliberately NOT under /api/v1/fleet. The mirror is ONE PER INSTALL: it fetches one public GitHub
+// release and writes one pair of objects into one bucket. A tenant-scoped trigger would let any org
+// admin on a shared install spend the install's shared unauthenticated GitHub request budget (60 per
+// hour per IP) and rewrite the install's shared release pointer.
+//
+// Who may call it: a superadmin (is_superadmin=true), OR the owner of the only organisation on this
+// install. The second arm exists because the first arm's whole purpose is to stop one tenant spending
+// another tenant's share of that budget, and on an install with exactly one organisation there is no
+// other tenant for it to protect. It requires the memberships role 'owner' exactly, on the one
+// organisation whose tenants.deleted_at is null; admin, operator and viewer are refused, as is an
+// API-key principal. The count is read on every request and never cached, so a second organisation
+// appearing closes this path again on the very next call, and the owner never becomes a superadmin:
+// nothing else on /api/v1/admin admits them. Multi-organisation installs are unchanged and stay
+// superadmin-only. Compare POST /api/v1/admin/vuln-feed/sync, which remains superadmin-only.
+//
+// A 202 means the run was QUEUED, not that anything was checked. The run may still end rate limited,
+// refused or unavailable; the real outcome appears as agent_mirror.last_attempt_outcome on GET
+// /api/v1/fleet/agents.
+//
+// No request body and no force parameter: bypassing the request spacing would spend the install's
+// shared upstream budget for no new information.
 //
 // POST /api/v1/admin/agent-mirror/check
 func (c *Client) CheckAgentMirrorNow(ctx context.Context) (CheckAgentMirrorNowRes, error) {
@@ -9421,7 +9723,13 @@ func (c *Client) sendCheckAgentMirrorNow(ctx context.Context) (res CheckAgentMir
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCheckAgentMirrorNowResponse(resp)
@@ -9434,10 +9742,12 @@ func (c *Client) sendCheckAgentMirrorNow(ctx context.Context) (res CheckAgentMir
 
 // ChmodSiteFile invokes chmodSiteFile operation.
 //
-// Issues a `file_chmod` command to the site's agent. The agent validates
-// the mode against a safe allowlist — no setuid (4xxx), no setgid (2xxx),
-// no world-write; returns `400 mode_denied` for unsafe modes.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
+// Issues a `file_chmod` command to the site's agent. The agent validates the mode against a safe
+// allowlist — no setuid (4xxx), no setgid (2xxx), no world-write; returns `400 mode_denied` for
+// unsafe modes.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/chmod
@@ -9521,7 +9831,13 @@ func (c *Client) sendChmodSiteFile(ctx context.Context, request *FileChmodReques
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeChmodSiteFileResponse(resp)
@@ -9534,10 +9850,9 @@ func (c *Client) sendChmodSiteFile(ctx context.Context, request *FileChmodReques
 
 // CleanDatabase invokes cleanDatabase operation.
 //
-// Runs the site's configured database cleanup (revisions, auto-drafts,
-// trashed posts, spam/trashed comments, expired transients, table
-// optimization) immediately. Returns an `{ok, detail, rows_cleaned}` ack.
-// Requires the `site.cache.manage` permission.
+// Runs the site's configured database cleanup (revisions, auto-drafts, trashed posts, spam/trashed
+// comments, expired transients, table optimization) immediately. Returns an
+// `{ok, detail, rows_cleaned}` ack. Requires the `site.cache.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/db/clean
 func (c *Client) CleanDatabase(ctx context.Context, params CleanDatabaseParams) (*DbCleanResult, error) {
@@ -9617,7 +9932,13 @@ func (c *Client) sendCleanDatabase(ctx context.Context, params CleanDatabasePara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCleanDatabaseResponse(resp)
@@ -9691,7 +10012,13 @@ func (c *Client) sendClearAdminVulnFeedKey(ctx context.Context) (res ClearAdminV
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeClearAdminVulnFeedKeyResponse(resp)
@@ -9704,8 +10031,8 @@ func (c *Client) sendClearAdminVulnFeedKey(ctx context.Context) (res ClearAdminV
 
 // ClearRucss invokes clearRucss operation.
 //
-// Clears every cached RUCSS result for the site. Returns the number
-// cleared. Requires the `site.perf.config` permission.
+// Clears every cached RUCSS result for the site. Returns the number cleared. Requires the
+// `site.perf.config` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/rucss/clear
 func (c *Client) ClearRucss(ctx context.Context, params ClearRucssParams) (*RucssClearResult, error) {
@@ -9785,7 +10112,13 @@ func (c *Client) sendClearRucss(ctx context.Context, params ClearRucssParams) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeClearRucssResponse(resp)
@@ -9798,9 +10131,8 @@ func (c *Client) sendClearRucss(ctx context.Context, params ClearRucssParams) (r
 
 // CompAdminAccount invokes compAdminAccount operation.
 //
-// Sets plan_status=comped and plan=tier, bypassing the payment provider
-// entirely. A comped tenant is immune to webhook-driven plan mutation.
-// Requires is_superadmin=true.
+// Sets plan_status=comped and plan=tier, bypassing the payment provider entirely. A comped tenant is
+// immune to webhook-driven plan mutation. Requires is_superadmin=true.
 //
 // POST /api/v1/admin/accounts/{id}/comp
 func (c *Client) CompAdminAccount(ctx context.Context, request *AdminCompAccountRequest, params CompAdminAccountParams) (CompAdminAccountRes, error) {
@@ -9883,7 +10215,13 @@ func (c *Client) sendCompAdminAccount(ctx context.Context, request *AdminCompAcc
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCompAdminAccountResponse(resp)
@@ -9960,7 +10298,13 @@ func (c *Client) sendCompleteRecoveryChallenge(ctx context.Context, request *Two
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCompleteRecoveryChallengeResponse(resp)
@@ -9973,10 +10317,9 @@ func (c *Client) sendCompleteRecoveryChallenge(ctx context.Context, request *Two
 
 // CompleteTotpChallenge invokes completeTotpChallenge operation.
 //
-// Verifies `code` against the active challenge minted at login (the
-// `challenge` nonce returned by `POST /auth/login`'s 202 response) and,
-// on success, issues a full session. `remember_device` optionally issues
-// a trusted-device cookie so future logins skip the challenge.
+// Verifies `code` against the active challenge minted at login (the `challenge` nonce returned by
+// `POST /auth/login`'s 202 response) and, on success, issues a full session. `remember_device`
+// optionally issues a trusted-device cookie so future logins skip the challenge.
 //
 // POST /auth/2fa/totp
 func (c *Client) CompleteTotpChallenge(ctx context.Context, request *TwoFactorChallengeCompleteRequest) (CompleteTotpChallengeRes, error) {
@@ -10040,7 +10383,13 @@ func (c *Client) sendCompleteTotpChallenge(ctx context.Context, request *TwoFact
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCompleteTotpChallengeResponse(resp)
@@ -10053,12 +10402,10 @@ func (c *Client) sendCompleteTotpChallenge(ctx context.Context, request *TwoFact
 
 // ComputeRucss invokes computeRucss operation.
 //
-// Triggers the agent to compute Used-CSS for the given URLs (or the home
-// page when omitted). The agent self-fetches each URL out-of-band so the
-// optimizer runs the RUCSS stage and posts the page to the control plane,
-// enqueuing a compute job. The queued → computing → completed lifecycle is
-// streamed via the `rucss.*` SSE events. Requires the `site.perf.config`
-// permission.
+// Triggers the agent to compute Used-CSS for the given URLs (or the home page when omitted). The agent
+// self-fetches each URL out-of-band so the optimizer runs the RUCSS stage and posts the page to the
+// control plane, enqueuing a compute job. The queued → computing → completed lifecycle is streamed
+// via the `rucss.*` SSE events. Requires the `site.perf.config` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/rucss/compute
 func (c *Client) ComputeRucss(ctx context.Context, request OptComputeRucssReq, params ComputeRucssParams) (*PerfActionResult, error) {
@@ -10141,7 +10488,13 @@ func (c *Client) sendComputeRucss(ctx context.Context, request OptComputeRucssRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeComputeRucssResponse(resp)
@@ -10154,9 +10507,8 @@ func (c *Client) sendComputeRucss(ctx context.Context, request OptComputeRucssRe
 
 // ConfirmTotpEnrollment invokes confirmTotpEnrollment operation.
 //
-// Validates `code` against the provisional secret from
-// `POST /auth/2fa/totp/begin`, persists the confirmed secret, and
-// returns 10 recovery codes shown exactly once.
+// Validates `code` against the provisional secret from `POST /auth/2fa/totp/begin`, persists the
+// confirmed secret, and returns 10 recovery codes shown exactly once.
 //
 // POST /auth/2fa/totp/confirm
 func (c *Client) ConfirmTotpEnrollment(ctx context.Context, request *ConfirmTotpEnrollmentReq) (ConfirmTotpEnrollmentRes, error) {
@@ -10220,7 +10572,13 @@ func (c *Client) sendConfirmTotpEnrollment(ctx context.Context, request *Confirm
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeConfirmTotpEnrollmentResponse(resp)
@@ -10297,7 +10655,13 @@ func (c *Client) sendCreateApiKey(ctx context.Context, request *ApiKeyCreate) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateApiKeyResponse(resp)
@@ -10310,25 +10674,24 @@ func (c *Client) sendCreateApiKey(ctx context.Context, request *ApiKeyCreate) (r
 
 // CreateAutologin invokes createAutologin operation.
 //
-// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and
-// returns a redirect URL of the form
-// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>`
-// the operator's browser should follow. The WordPress agent verifies the
-// JWT and POSTs back to `/agent/v1/autologin/consume` to atomically
-// consume the nonce, then establishes a wp-admin session as the requested
-// user (or the first administrator when `target_wp_user_login` is empty).
-// Authorization: requires the `site:autologin` permission (owner+admin).
-// Operator and viewer roles are explicitly denied.
-// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per
-// `site_id` (30/min). A 429 response carries `retry_after_seconds` in the
-// body and a `Retry-After` header in seconds.
-// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0;
-// the 409 path is unreachable until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP`
-// and the per-site `require_2fa_step_up` policy are true AND a future
-// 2FA enrollment system is in place.
-// The minted JWT is NEVER returned in the response body apart from
-// being embedded in `redirect_url`; it is NEVER recorded in the audit
-// trail — the audit row stores only the nonce id and outcome.
+// Mints a single-use, ~60-second nonce + Ed25519 JWT (ADR-031) and returns a redirect URL of the form
+// `{site.url}/wp-json/wpmgr/v1/autologin?token=<jwt>&redirect_to=<urlencoded>` the operator's browser
+// should follow. The WordPress agent verifies the JWT and POSTs back to `/agent/v1/autologin/consume`
+// to atomically consume the nonce, then establishes a wp-admin session as the requested user (or the
+// first administrator when `target_wp_user_login` is empty).
+//
+// Authorization: requires the `site:autologin` permission (owner+admin). Operator and viewer roles are
+// explicitly denied.
+//
+// Rate-limited per `(initiator_user_id, site_id)` (10/min) and per `site_id` (30/min). A 429 response
+// carries `retry_after_seconds` in the body and a `Retry-After` header in seconds.
+//
+// 2FA step-up (HTTP 409 `2fa_required`) is feature-flagged off in V0; the 409 path is unreachable
+// until both `WPMGR_AUTOLOGIN_REQUIRE_2FA_STEP_UP` and the per-site `require_2fa_step_up` policy are
+// true AND a future 2FA enrollment system is in place.
+//
+// The minted JWT is NEVER returned in the response body apart from being embedded in `redirect_url`;
+// it is NEVER recorded in the audit trail — the audit row stores only the nonce id and outcome.
 //
 // POST /api/v1/sites/{siteId}/autologin
 func (c *Client) CreateAutologin(ctx context.Context, request OptAutologinCreate, params CreateAutologinParams) (CreateAutologinRes, error) {
@@ -10411,7 +10774,13 @@ func (c *Client) sendCreateAutologin(ctx context.Context, request OptAutologinCr
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateAutologinResponse(resp)
@@ -10424,12 +10793,11 @@ func (c *Client) sendCreateAutologin(ctx context.Context, request OptAutologinCr
 
 // CreateBackup invokes createBackup operation.
 //
-// Records a pending backup snapshot for the site and enqueues a background
-// job that dispatches a signed `backup` command to the site's agent. The
-// agent chunks, encrypts (client-side, age, to the site's PUBLIC recipient)
-// and uploads ciphertext directly to object storage via presigned URLs,
-// then submits the manifest. Incremental: a chunk whose content hash is
-// already stored is not re-uploaded. Requires operator+.
+// Records a pending backup snapshot for the site and enqueues a background job that dispatches a
+// signed `backup` command to the site's agent. The agent chunks, encrypts (client-side, age, to the
+// site's PUBLIC recipient) and uploads ciphertext directly to object storage via presigned URLs, then
+// submits the manifest. Incremental: a chunk whose content hash is already stored is not re-uploaded.
+// Requires operator+.
 //
 // POST /api/v1/sites/{siteId}/backups
 func (c *Client) CreateBackup(ctx context.Context, request *BackupCreate, params CreateBackupParams) (CreateBackupRes, error) {
@@ -10512,7 +10880,13 @@ func (c *Client) sendCreateBackup(ctx context.Context, request *BackupCreate, pa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateBackupResponse(resp)
@@ -10591,7 +10965,13 @@ func (c *Client) sendCreateBillingCheckout(ctx context.Context, request *Billing
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateBillingCheckoutResponse(resp)
@@ -10667,7 +11047,13 @@ func (c *Client) sendCreateBillingPortal(ctx context.Context) (res CreateBilling
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateBillingPortalResponse(resp)
@@ -10744,7 +11130,13 @@ func (c *Client) sendCreateClient(ctx context.Context, request *CreateAgencyClie
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateClientResponse(resp)
@@ -10757,11 +11149,12 @@ func (c *Client) sendCreateClient(ctx context.Context, request *CreateAgencyClie
 
 // CreateDbSnapshot invokes createDbSnapshot operation.
 //
-// Dumps the site's database to a local `.sql.gz` file on the WP server
-// filesystem and records it in the snapshot manifest. This is a fast
-// local safety-net — not an encrypted off-site backup.
-// After the operation the oldest snapshots are pruned so the total count
-// does not exceed the configured retention (default 5, max 20).
+// Dumps the site's database to a local `.sql.gz` file on the WP server filesystem and records it in
+// the snapshot manifest. This is a fast local safety-net — not an encrypted off-site backup.
+//
+// After the operation the oldest snapshots are pruned so the total count does not exceed the
+// configured retention (default 5, max 20).
+//
 // Requires the `site:write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/perf/db/snapshots
@@ -10845,7 +11238,13 @@ func (c *Client) sendCreateDbSnapshot(ctx context.Context, request OptDbSnapshot
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateDbSnapshotResponse(resp)
@@ -10922,7 +11321,13 @@ func (c *Client) sendCreateOrg(ctx context.Context, request *CreateOrgRequest) (
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateOrgResponse(resp)
@@ -10935,10 +11340,9 @@ func (c *Client) sendCreateOrg(ctx context.Context, request *CreateOrgRequest) (
 
 // CreatePairingCode invokes createPairingCode operation.
 //
-// Generates a short-lived, single-use, high-entropy pairing code for the
-// current tenant. The plaintext code is returned ONCE in this response and
-// is never retrievable again. An agent presents it to POST /enroll. Requires
-// operator+.
+// Generates a short-lived, single-use, high-entropy pairing code for the current tenant. The plaintext
+// code is returned ONCE in this response and is never retrievable again. An agent presents it to POST
+// /enroll. Requires operator+.
 //
 // POST /api/v1/sites/pairing-codes
 func (c *Client) CreatePairingCode(ctx context.Context, request OptPairingCodeCreate) (CreatePairingCodeRes, error) {
@@ -11002,7 +11406,13 @@ func (c *Client) sendCreatePairingCode(ctx context.Context, request OptPairingCo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreatePairingCodeResponse(resp)
@@ -11015,12 +11425,10 @@ func (c *Client) sendCreatePairingCode(ctx context.Context, request OptPairingCo
 
 // CreateRestore invokes createRestore operation.
 //
-// Enqueues a restore job. The control plane resolves the (possibly partial)
-// selection into ordered chunks, issues presigned GET URLs, and dispatches
-// a signed `restore` command. The agent downloads ciphertext, verifies the
-// BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
-// reassembles. Supports full, by-path, and by-db-table partial restore.
-// Requires operator+.
+// Enqueues a restore job. The control plane resolves the (possibly partial) selection into ordered
+// chunks, issues presigned GET URLs, and dispatches a signed `restore` command. The agent downloads
+// ciphertext, verifies the BLAKE3 of each chunk, decrypts with the age identity it alone holds, and
+// reassembles. Supports full, by-path, and by-db-table partial restore. Requires operator+.
 //
 // POST /api/v1/backups/{snapshotId}/restore
 func (c *Client) CreateRestore(ctx context.Context, request *RestoreCreate, params CreateRestoreParams) (CreateRestoreRes, error) {
@@ -11103,7 +11511,13 @@ func (c *Client) sendCreateRestore(ctx context.Context, request *RestoreCreate, 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateRestoreResponse(resp)
@@ -11116,17 +11530,16 @@ func (c *Client) sendCreateRestore(ctx context.Context, request *RestoreCreate, 
 
 // CreateSite invokes createSite operation.
 //
-// M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a
-// site row in `pending_enrollment` AND mints a single-use, site-bound
-// enrollment code in one call. The response carries the new `site_id` plus
-// the once-shown `enrollment_code` and its `expires_at` so the dashboard
-// can immediately show the install modal and subscribe to the
-// `/api/v1/sites/events` SSE stream for this site_id.
-// BREAKING CHANGE vs. pre-M21: the 201 body is now
-// `SiteEnrollmentCode` ({site_id, enrollment_code, expires_at}) instead of
-// a bare `Site`. When the connection-lifecycle service is disabled (dev
-// builds with no SSE bus) the control plane falls back to the legacy
-// create that returns a bare `Site`. Requires operator+.
+// M21 / Phase 5.7 (ADR-041) — the site-first "Add site" flow. Creates a site row in
+// `pending_enrollment` AND mints a single-use, site-bound enrollment code in one call. The response
+// carries the new `site_id` plus the once-shown `enrollment_code` and its `expires_at` so the
+// dashboard can immediately show the install modal and subscribe to the `/api/v1/sites/events` SSE
+// stream for this site_id.
+//
+// BREAKING CHANGE vs. pre-M21: the 201 body is now `SiteEnrollmentCode` ({site_id, enrollment_code,
+// expires_at}) instead of a bare `Site`. When the connection-lifecycle service is disabled (dev builds
+// with no SSE bus) the control plane falls back to the legacy create that returns a bare `Site`.
+// Requires operator+.
 //
 // POST /api/v1/sites
 func (c *Client) CreateSite(ctx context.Context, request *SiteCreate) (CreateSiteRes, error) {
@@ -11190,7 +11603,13 @@ func (c *Client) sendCreateSite(ctx context.Context, request *SiteCreate) (res C
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteResponse(resp)
@@ -11286,7 +11705,13 @@ func (c *Client) sendCreateSiteBan(ctx context.Context, request *CreateSiteBanRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteBanResponse(resp)
@@ -11382,7 +11807,13 @@ func (c *Client) sendCreateSiteDestination(ctx context.Context, request *SiteDes
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteDestinationResponse(resp)
@@ -11396,8 +11827,10 @@ func (c *Client) sendCreateSiteDestination(ctx context.Context, request *SiteDes
 // CreateSiteDirectory invokes createSiteDirectory operation.
 //
 // Issues a `file_mkdir` command to the site's agent.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-// Returns `403 files_write_not_enabled` when write mode is off.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true. Returns
+// `403 files_write_not_enabled` when write mode is off.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/mkdir
@@ -11481,7 +11914,13 @@ func (c *Client) sendCreateSiteDirectory(ctx context.Context, request *FileMkdir
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteDirectoryResponse(resp)
@@ -11494,23 +11933,23 @@ func (c *Client) sendCreateSiteDirectory(ctx context.Context, request *FileMkdir
 
 // CreateSiteFileArchive invokes createSiteFileArchive operation.
 //
-// Issues a `file_archive_create` command to the site's agent. The agent
-// zips the specified paths (all containment-checked within the jail) and
-// uploads the archive directly to a CP-minted S3 staging area. The CP
-// then mints a short-lived presigned GET URL for the browser to download
-// the archive.
-// This is a **read** operation — it does not require write mode.
-// **Sensitive-path gate (F1):** If any path in `paths` matches the
-// sensitive-file deny-list (wp-config.php, .env*, *.pem, …), the caller
-// must set `confirm_sensitive=true` AND hold `site.files.read_sensitive`
-// (owner). Both checks must pass — a missing flag or insufficient
-// permission returns `403`. The denial is audited at elevated severity.
-// The agent independently re-checks every path and returns
-// `sensitive_denied` when the flag is absent. The CP audit carries the
-// full path list.
+// Issues a `file_archive_create` command to the site's agent. The agent zips the specified paths (all
+// containment-checked within the jail) and uploads the archive directly to a CP-minted S3 staging
+// area. The CP then mints a short-lived presigned GET URL for the browser to download the archive.
+//
+// This is a read operation — it does not require write mode.
+//
+// Sensitive-path gate (F1): If any path in `paths` matches the sensitive-file deny-list
+// (wp-config.php, .env*, *.pem, …), the caller must set `confirm_sensitive=true` AND hold
+// `site.files.read_sensitive` (owner). Both checks must pass — a missing flag or insufficient
+// permission returns `403`. The denial is audited at elevated severity. The agent independently
+// re-checks every path and returns `sensitive_denied` when the flag is absent. The CP audit carries
+// the full path list.
+//
 // Returns `503 storage_not_configured` on deployments without object storage.
-// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-// when not opted in.
+//
+// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+//
 // Requires `site.files.read` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/archive
@@ -11594,7 +12033,13 @@ func (c *Client) sendCreateSiteFileArchive(ctx context.Context, request *FileArc
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteFileArchiveResponse(resp)
@@ -11607,9 +12052,8 @@ func (c *Client) sendCreateSiteFileArchive(ctx context.Context, request *FileArc
 
 // CreateSiteShare invokes createSiteShare operation.
 //
-// Grant site access to an email (admin+; org-scope only). If the email
-// matches a known user the share is immediate (201); otherwise an invitation
-// is created and the accept link is returned (202).
+// Grant site access to an email (admin+; org-scope only). If the email matches a known user the share
+// is immediate (201); otherwise an invitation is created and the accept link is returned (202).
 //
 // POST /api/v1/sites/{siteId}/shares
 func (c *Client) CreateSiteShare(ctx context.Context, request *CreateSiteShareRequest, params CreateSiteShareParams) (CreateSiteShareRes, error) {
@@ -11692,7 +12136,13 @@ func (c *Client) sendCreateSiteShare(ctx context.Context, request *CreateSiteSha
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateSiteShareResponse(resp)
@@ -11769,7 +12219,13 @@ func (c *Client) sendCreateTag(ctx context.Context, request *SiteTagCreate) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateTagResponse(resp)
@@ -11846,7 +12302,13 @@ func (c *Client) sendCreateTenant(ctx context.Context, request *TenantCreate) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateTenantResponse(resp)
@@ -11859,12 +12321,10 @@ func (c *Client) sendCreateTenant(ctx context.Context, request *TenantCreate) (r
 
 // CreateUpdateRun invokes createUpdateRun operation.
 //
-// Creates an update run targeting a selection of sites (by site_ids OR by
-// tag) and a set of items (plugins/themes/core, each with a desired version
-// or "latest"). One task is created per (site, item) and a background job is
-// enqueued per task (respecting a per-tenant parallelism limit). When
-// dry_run is true the agent is asked what WOULD change and the site is not
-// mutated. Requires operator+.
+// Creates an update run targeting a selection of sites (by site_ids OR by tag) and a set of items
+// (plugins/themes/core, each with a desired version or "latest"). One task is created per (site, item)
+// and a background job is enqueued per task (respecting a per-tenant parallelism limit). When dry_run
+// is true the agent is asked what WOULD change and the site is not mutated. Requires operator+.
 //
 // POST /api/v1/updates
 func (c *Client) CreateUpdateRun(ctx context.Context, request *UpdateRunCreate) (CreateUpdateRunRes, error) {
@@ -11928,7 +12388,13 @@ func (c *Client) sendCreateUpdateRun(ctx context.Context, request *UpdateRunCrea
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeCreateUpdateRunResponse(resp)
@@ -11941,9 +12407,8 @@ func (c *Client) sendCreateUpdateRun(ctx context.Context, request *UpdateRunCrea
 
 // DeleteAdminUser invokes deleteAdminUser operation.
 //
-// Hard-deletes the user. Any organisation the user solely owned with
-// zero sites is deleted along with them; an organisation with sites (or
-// other members) is kept, listed in `kept_orgs_with_sites`.
+// Hard-deletes the user. Any organisation the user solely owned with zero sites is deleted along with
+// them; an organisation with sites (or other members) is kept, listed in `kept_orgs_with_sites`.
 //
 // DELETE /api/v1/admin/users/{userId}
 func (c *Client) DeleteAdminUser(ctx context.Context, params DeleteAdminUserParams) (DeleteAdminUserRes, error) {
@@ -12022,7 +12487,13 @@ func (c *Client) sendDeleteAdminUser(ctx context.Context, params DeleteAdminUser
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteAdminUserResponse(resp)
@@ -12035,14 +12506,12 @@ func (c *Client) sendDeleteAdminUser(ctx context.Context, params DeleteAdminUser
 
 // DeleteBackup invokes deleteBackup operation.
 //
-// Deletes a completed or failed snapshot and reclaims any now-unreferenced
-// chunks via the reachability-based retention GC over the surviving
-// snapshots — a chunk a surviving snapshot still needs is never deleted.
-// CHAIN-SAFE: deleting a base or mid-chain increment that still has
-// dependent later-generation increments is refused with 422
-// (chain_has_dependents); delete the newer increments first. A
-// running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first. Requires
-// operator+.
+// Deletes a completed or failed snapshot and reclaims any now-unreferenced chunks via the
+// reachability-based retention GC over the surviving snapshots — a chunk a surviving snapshot still
+// needs is never deleted. CHAIN-SAFE: deleting a base or mid-chain increment that still has dependent
+// later-generation increments is refused with 422 (chain_has_dependents); delete the newer increments
+// first. A running/pending snapshot is refused with 422 (snapshot_in_progress), cancel it first.
+// Requires operator+.
 //
 // DELETE /api/v1/backups/{snapshotId}
 func (c *Client) DeleteBackup(ctx context.Context, params DeleteBackupParams) (DeleteBackupRes, error) {
@@ -12121,7 +12590,13 @@ func (c *Client) sendDeleteBackup(ctx context.Context, params DeleteBackupParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteBackupResponse(resp)
@@ -12134,8 +12609,8 @@ func (c *Client) sendDeleteBackup(ctx context.Context, params DeleteBackupParams
 
 // DeleteClient invokes deleteClient operation.
 //
-// Permanently deletes the client. Sites assigned to the client are unassigned (ON DELETE SET NULL)
-// but not deleted.
+// Permanently deletes the client. Sites assigned to the client are unassigned (ON DELETE SET NULL) but
+// not deleted.
 //
 // DELETE /api/v1/clients/{clientId}
 func (c *Client) DeleteClient(ctx context.Context, params DeleteClientParams) (DeleteClientRes, error) {
@@ -12214,7 +12689,13 @@ func (c *Client) sendDeleteClient(ctx context.Context, params DeleteClientParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteClientResponse(resp)
@@ -12325,7 +12806,13 @@ func (c *Client) sendDeleteClientReport(ctx context.Context, params DeleteClient
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteClientReportResponse(resp)
@@ -12338,12 +12825,11 @@ func (c *Client) sendDeleteClientReport(ctx context.Context, params DeleteClient
 
 // DeleteDbOrphans invokes deleteDbOrphans operation.
 //
-// Deletes only options / cron entries / tables from UNINSTALLED plugins
-// that the P3.5 report classified as safely deletable. The CP
-// re-classifies every item and drops anything no longer eligible before
-// signing the agent command; the agent independently re-verifies each
-// item live before deleting. Requires `site.cache.manage` at the route
-// level AND `site.cache.delete-all` (admin+) in the handler body.
+// Deletes only options / cron entries / tables from UNINSTALLED plugins that the P3.5 report
+// classified as safely deletable. The CP re-classifies every item and drops anything no longer
+// eligible before signing the agent command; the agent independently re-verifies each item live before
+// deleting. Requires `site.cache.manage` at the route level AND `site.cache.delete-all` (admin+) in
+// the handler body.
 //
 // POST /api/v1/sites/{siteId}/perf/db/orphan-delete
 func (c *Client) DeleteDbOrphans(ctx context.Context, request *DbOrphanDeleteRequest, params DeleteDbOrphansParams) (DeleteDbOrphansRes, error) {
@@ -12426,7 +12912,13 @@ func (c *Client) sendDeleteDbOrphans(ctx context.Context, request *DbOrphanDelet
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteDbOrphansResponse(resp)
@@ -12439,8 +12931,8 @@ func (c *Client) sendDeleteDbOrphans(ctx context.Context, request *DbOrphanDelet
 
 // DeleteDbSnapshot invokes deleteDbSnapshot operation.
 //
-// Removes a snapshot from the WP server's local store. This is
-// irreversible. Requires the `site:write` permission (operator+).
+// Removes a snapshot from the WP server's local store. This is irreversible. Requires the `site:write`
+// permission (operator+).
 //
 // DELETE /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}
 func (c *Client) DeleteDbSnapshot(ctx context.Context, params DeleteDbSnapshotParams) (*DeleteDbSnapshotOK, error) {
@@ -12538,7 +13030,13 @@ func (c *Client) sendDeleteDbSnapshot(ctx context.Context, params DeleteDbSnapsh
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteDbSnapshotResponse(resp)
@@ -12551,10 +13049,10 @@ func (c *Client) sendDeleteDbSnapshot(ctx context.Context, params DeleteDbSnapsh
 
 // DeleteEmailConnection invokes deleteEmailConnection operation.
 //
-// Permanently deletes the named connection. Returns 404 when the key does
-// not exist. Returns 409 when the key is referenced as `default_connection`
-// or `fallback_connection` on the site's config row (remove the reference
-// first).
+// Permanently deletes the named connection. Returns 404 when the key does not exist. Returns 409 when
+// the key is referenced as `default_connection` or `fallback_connection` on the site's config row
+// (remove the reference first).
+//
 // Requires `site.email.manage` permission.
 //
 // DELETE /api/v1/sites/{siteId}/email/connections/{connKey}
@@ -12653,7 +13151,13 @@ func (c *Client) sendDeleteEmailConnection(ctx context.Context, params DeleteEma
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteEmailConnectionResponse(resp)
@@ -12666,8 +13170,9 @@ func (c *Client) sendDeleteEmailConnection(ctx context.Context, params DeleteEma
 
 // DeleteFleetEmailSuppression invokes deleteFleetEmailSuppression operation.
 //
-// Removes a fleet-wide suppression entry (site_id IS NULL). If the entry
-// belongs to a specific site, use the per-site delete route instead.
+// Removes a fleet-wide suppression entry (site_id IS NULL). If the entry belongs to a specific site,
+// use the per-site delete route instead.
+//
 // Requires `site.email.manage` permission.
 //
 // DELETE /api/v1/email/suppression/{suppressionId}
@@ -12747,7 +13252,13 @@ func (c *Client) sendDeleteFleetEmailSuppression(ctx context.Context, params Del
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteFleetEmailSuppressionResponse(resp)
@@ -12760,12 +13271,13 @@ func (c *Client) sendDeleteFleetEmailSuppression(ctx context.Context, params Del
 
 // DeleteIsolatedMedia invokes deleteIsolatedMedia operation.
 //
-// Permanently removes quarantined attachment files from disk and deletes
-// the corresponding WordPress attachment posts. **This cannot be undone.**
-// Only items already in the quarantine directory (isolated via the isolate
-// endpoint) can be deleted through this path. A `confirm` token of
-// `"DELETE"` must be included in the request body; the agent enforces this
-// independently.
+// Permanently removes quarantined attachment files from disk and deletes the corresponding WordPress
+// attachment posts. This cannot be undone.
+//
+// Only items already in the quarantine directory (isolated via the isolate endpoint) can be deleted
+// through this path. A `confirm` token of `"DELETE"` must be included in the request body; the agent
+// enforces this independently.
+//
 // Requires the `site.media.clean.write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/media/clean/delete
@@ -12849,7 +13361,13 @@ func (c *Client) sendDeleteIsolatedMedia(ctx context.Context, request *MediaClea
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteIsolatedMediaResponse(resp)
@@ -12945,7 +13463,13 @@ func (c *Client) sendDeleteMediaOriginals(ctx context.Context, request OptMediaA
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteMediaOriginalsResponse(resp)
@@ -13037,7 +13561,13 @@ func (c *Client) sendDeleteMember(ctx context.Context, params DeleteMemberParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteMemberResponse(resp)
@@ -13050,17 +13580,14 @@ func (c *Client) sendDeleteMember(ctx context.Context, params DeleteMemberParams
 
 // DeleteOrg invokes deleteOrg operation.
 //
-// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other
-// members) is hard-deleted immediately (`lane=hard`). A populated org is
-// soft-deleted (`lane=soft`): it becomes invisible everywhere instantly
-// and is recoverable via `POST /orgs/{orgId}/restore` until the
-// grace-window purge worker runs. `confirm_name` must exactly match the
-// organisation's current name. When this is the caller's active org,
-// their session is reassigned to another live membership, or cleared
-// entirely (dropping to onboarding) if it was their last org, `active_tenant_id` in the response
-// reflects the post-delete state.
-// On a hosted instance an active paid subscription must be
-// cancelled/downgraded first (`billing_active` 409).
+// Two-lane deletion (GH #152). An EMPTY org (zero sites, zero other members) is hard-deleted
+// immediately (`lane=hard`). A populated org is soft-deleted (`lane=soft`): it becomes invisible
+// everywhere instantly and is recoverable via `POST /orgs/{orgId}/restore` until the grace-window
+// purge worker runs. `confirm_name` must exactly match the organisation's current name. When this is
+// the caller's active org, their session is reassigned to another live membership, or cleared entirely
+// (dropping to onboarding) if it was their last org, `active_tenant_id` in the response reflects the
+// post-delete state. On a hosted instance an active paid subscription must be cancelled/downgraded
+// first (`billing_active` 409).
 //
 // DELETE /api/v1/orgs/{orgId}
 func (c *Client) DeleteOrg(ctx context.Context, request *DeleteOrgReq, params DeleteOrgParams) (DeleteOrgRes, error) {
@@ -13142,7 +13669,13 @@ func (c *Client) sendDeleteOrg(ctx context.Context, request *DeleteOrgReq, param
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteOrgResponse(resp)
@@ -13234,7 +13767,13 @@ func (c *Client) sendDeleteSite(ctx context.Context, params DeleteSiteParams) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteResponse(resp)
@@ -13345,7 +13884,13 @@ func (c *Client) sendDeleteSiteBan(ctx context.Context, params DeleteSiteBanPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteBanResponse(resp)
@@ -13456,7 +14001,13 @@ func (c *Client) sendDeleteSiteDestination(ctx context.Context, params DeleteSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteDestinationResponse(resp)
@@ -13469,9 +14020,10 @@ func (c *Client) sendDeleteSiteDestination(ctx context.Context, params DeleteSit
 
 // DeleteSiteEmailSuppression invokes deleteSiteEmailSuppression operation.
 //
-// Removes a suppression entry by id. The operator is responsible for
-// ensuring the removal is appropriate (e.g. the email address has
-// unsubscribed from a suppression request rather than a hard bounce).
+// Removes a suppression entry by id. The operator is responsible for ensuring the removal is
+// appropriate (e.g. the email address has unsubscribed from a suppression request rather than a hard
+// bounce).
+//
 // Requires `site.email.manage` permission.
 //
 // DELETE /api/v1/sites/{siteId}/email/suppression/{suppressionId}
@@ -13570,7 +14122,13 @@ func (c *Client) sendDeleteSiteEmailSuppression(ctx context.Context, params Dele
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteEmailSuppressionResponse(resp)
@@ -13583,17 +14141,18 @@ func (c *Client) sendDeleteSiteEmailSuppression(ctx context.Context, params Dele
 
 // DeleteSiteFile invokes deleteSiteFile operation.
 //
-// Issues a `file_delete` command to the site's agent after verifying
-// three layered gates (T12/T13):
-// 1. **PermSiteFilesWrite** (admin+) — inherited from route middleware.
-// 2. **PermSiteFilesDelete** (owner) — checked in the handler; denial is
-// audited with action `site.files.delete.denied`.
-// 3. **Typed confirm token** — `confirm` in the request body must be the
-// string `"DELETE"` exactly. Missing or wrong value returns
-// `400 confirm_required`.
-// The agent independently enforces its protected-root guard (`wp-admin`,
-// `wp-includes`).
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
+// Issues a `file_delete` command to the site's agent after verifying three layered gates (T12/T13):
+//
+//  1. PermSiteFilesWrite (admin+) — inherited from route middleware.
+//  2. PermSiteFilesDelete (owner) — checked in the handler; denial is audited with action
+//     `site.files.delete.denied`.
+//  3. Typed confirm token — `confirm` in the request body must be the string `"DELETE"` exactly.
+//     Missing or wrong value returns `400 confirm_required`.
+//
+// The agent independently enforces its protected-root guard (`wp-admin`, `wp-includes`).
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+//
 // Requires `site.files.write` + `site.files.delete` (owner only).
 //
 // POST /api/v1/sites/{siteId}/files/delete
@@ -13677,7 +14236,13 @@ func (c *Client) sendDeleteSiteFile(ctx context.Context, request *FileDeleteRequ
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteFileResponse(resp)
@@ -13788,7 +14353,13 @@ func (c *Client) sendDeleteSitePolicyGroup(ctx context.Context, params DeleteSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSitePolicyGroupResponse(resp)
@@ -13899,7 +14470,13 @@ func (c *Client) sendDeleteSiteShare(ctx context.Context, params DeleteSiteShare
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteSiteShareResponse(resp)
@@ -13912,9 +14489,8 @@ func (c *Client) sendDeleteSiteShare(ctx context.Context, params DeleteSiteShare
 
 // DeleteTag invokes deleteTag operation.
 //
-// Removes the tag from the registry AND from every site (and every
-// unexpired, unredeemed pairing code) currently carrying it, in one
-// transaction.
+// Removes the tag from the registry AND from every site (and every unexpired, unredeemed pairing code)
+// currently carrying it, in one transaction.
 //
 // DELETE /api/v1/tags/{tagId}
 func (c *Client) DeleteTag(ctx context.Context, params DeleteTagParams) (DeleteTagRes, error) {
@@ -13993,7 +14569,13 @@ func (c *Client) sendDeleteTag(ctx context.Context, params DeleteTagParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteTagResponse(resp)
@@ -14088,7 +14670,13 @@ func (c *Client) sendDeleteWebAuthnCredential(ctx context.Context, request *Dele
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDeleteWebAuthnCredentialResponse(resp)
@@ -14101,8 +14689,8 @@ func (c *Client) sendDeleteWebAuthnCredential(ctx context.Context, request *Dele
 
 // DisableCache invokes disableCache operation.
 //
-// Turns off agent-side page caching. Returns an `{ok, detail}` ack.
-// Requires the `site.cache.manage` permission.
+// Turns off agent-side page caching. Returns an `{ok, detail}` ack. Requires the `site.cache.manage`
+// permission.
 //
 // POST /api/v1/sites/{siteId}/perf/cache/disable
 func (c *Client) DisableCache(ctx context.Context, params DisableCacheParams) (*PerfActionResult, error) {
@@ -14182,7 +14770,13 @@ func (c *Client) sendDisableCache(ctx context.Context, params DisableCacheParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDisableCacheResponse(resp)
@@ -14195,9 +14789,8 @@ func (c *Client) sendDisableCache(ctx context.Context, params DisableCacheParams
 
 // DisableObjectCache invokes disableObjectCache operation.
 //
-// Removes the WP object-cache drop-in and flushes. Sends an
-// `objectcache.disable` signed command. Requires `site.cache.manage`
-// permission.
+// Removes the WP object-cache drop-in and flushes. Sends an `objectcache.disable` signed command.
+// Requires `site.cache.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/object-cache/disable
 func (c *Client) DisableObjectCache(ctx context.Context, params DisableObjectCacheParams) (*PerfActionResult, error) {
@@ -14277,7 +14870,13 @@ func (c *Client) sendDisableObjectCache(ctx context.Context, params DisableObjec
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDisableObjectCacheResponse(resp)
@@ -14290,9 +14889,9 @@ func (c *Client) sendDisableObjectCache(ctx context.Context, params DisableObjec
 
 // DisableTotp invokes disableTotp operation.
 //
-// Requires `current_password` re-authentication. On success: clears
-// TOTP, recomputes `two_factor_enabled`, revokes every trusted device
-// for this user, and clears the trusted-device cookie on this response.
+// Requires `current_password` re-authentication. On success: clears TOTP, recomputes
+// `two_factor_enabled`, revokes every trusted device for this user, and clears the trusted-device
+// cookie on this response.
 //
 // POST /auth/2fa/totp/disable
 func (c *Client) DisableTotp(ctx context.Context, request *DisableTotpReq) (DisableTotpRes, error) {
@@ -14356,7 +14955,13 @@ func (c *Client) sendDisableTotp(ctx context.Context, request *DisableTotpReq) (
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDisableTotpResponse(resp)
@@ -14468,7 +15073,13 @@ func (c *Client) sendDismissSiteVulnerability(ctx context.Context, params Dismis
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDismissSiteVulnerabilityResponse(resp)
@@ -14481,8 +15092,8 @@ func (c *Client) sendDismissSiteVulnerability(ctx context.Context, params Dismis
 
 // DownloadPortalReport invokes downloadPortalReport operation.
 //
-// Returns a presigned URL for the HTML or PDF version of a completed report. The report must belong
-// to one of the principal's clients; otherwise 404 is returned (not 403, to avoid confirming report
+// Returns a presigned URL for the HTML or PDF version of a completed report. The report must belong to
+// one of the principal's clients; otherwise 404 is returned (not 403, to avoid confirming report
 // existence).
 //
 // GET /api/v1/portal/reports/{reportId}/download
@@ -14581,7 +15192,13 @@ func (c *Client) sendDownloadPortalReport(ctx context.Context, params DownloadPo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeDownloadPortalReportResponse(resp)
@@ -14594,9 +15211,9 @@ func (c *Client) sendDownloadPortalReport(ctx context.Context, params DownloadPo
 
 // EnableCache invokes enableCache operation.
 //
-// Turns on agent-side page caching. Returns an `{ok, detail}` ack;
-// the authoritative install state re-reads via the config query on the
-// `cache.enabled` SSE event. Requires the `site.cache.manage` permission.
+// Turns on agent-side page caching. Returns an `{ok, detail}` ack; the authoritative install state
+// re-reads via the config query on the `cache.enabled` SSE event. Requires the `site.cache.manage`
+// permission.
 //
 // POST /api/v1/sites/{siteId}/perf/cache/enable
 func (c *Client) EnableCache(ctx context.Context, params EnableCacheParams) (*PerfActionResult, error) {
@@ -14676,7 +15293,13 @@ func (c *Client) sendEnableCache(ctx context.Context, params EnableCacheParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeEnableCacheResponse(resp)
@@ -14689,10 +15312,9 @@ func (c *Client) sendEnableCache(ctx context.Context, params EnableCacheParams) 
 
 // EnableObjectCache invokes enableObjectCache operation.
 //
-// Installs the WP object-cache drop-in on the site. Rejected with 400
-// `objectcache_test_required` when no passing test result exists for the
-// current configuration (handshake gate). Sends an `objectcache.enable`
-// signed command. Requires `site.cache.manage` permission.
+// Installs the WP object-cache drop-in on the site. Rejected with 400 `objectcache_test_required` when
+// no passing test result exists for the current configuration (handshake gate). Sends an
+// `objectcache.enable` signed command. Requires `site.cache.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/object-cache/enable
 func (c *Client) EnableObjectCache(ctx context.Context, params EnableObjectCacheParams) (EnableObjectCacheRes, error) {
@@ -14772,7 +15394,13 @@ func (c *Client) sendEnableObjectCache(ctx context.Context, params EnableObjectC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeEnableObjectCacheResponse(resp)
@@ -14785,12 +15413,10 @@ func (c *Client) sendEnableObjectCache(ctx context.Context, params EnableObjectC
 
 // Enroll invokes enroll operation.
 //
-// Called by an agent (NOT an authenticated control-plane user) to enroll a
-// site using a pairing code. The tenant is derived entirely from the code.
-// On success the site is created (or, if the URL already exists for the
-// tenant, its agent key is rotated) and the control-plane PUBLIC signing
-// key is returned so the agent can verify CP->agent commands. The code is
-// consumed (single-use).
+// Called by an agent (NOT an authenticated control-plane user) to enroll a site using a pairing code.
+// The tenant is derived entirely from the code. On success the site is created (or, if the URL already
+// exists for the tenant, its agent key is rotated) and the control-plane PUBLIC signing key is
+// returned so the agent can verify CP->agent commands. The code is consumed (single-use).
 //
 // POST /enroll
 func (c *Client) Enroll(ctx context.Context, request *EnrollRequest) (EnrollRes, error) {
@@ -14854,7 +15480,13 @@ func (c *Client) sendEnroll(ctx context.Context, request *EnrollRequest) (res En
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeEnrollResponse(resp)
@@ -14867,9 +15499,9 @@ func (c *Client) sendEnroll(ctx context.Context, request *EnrollRequest) (res En
 
 // ExportSiteEmailLog invokes exportSiteEmailLog operation.
 //
-// Streams up to 10,000 filtered log entries as CSV (default) or JSON.
-// Body content is excluded from the export regardless of `body_stored`
-// (privacy-by-default). Pass `format=json` for JSON output.
+// Streams up to 10,000 filtered log entries as CSV (default) or JSON. Body content is excluded from
+// the export regardless of `body_stored` (privacy-by-default). Pass `format=json` for JSON output.
+//
 // Requires `site.email.manage` permission and site access.
 //
 // GET /api/v1/sites/{siteId}/email/log/export
@@ -15039,7 +15671,13 @@ func (c *Client) sendExportSiteEmailLog(ctx context.Context, params ExportSiteEm
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeExportSiteEmailLogResponse(resp)
@@ -15052,9 +15690,8 @@ func (c *Client) sendExportSiteEmailLog(ctx context.Context, params ExportSiteEm
 
 // ExtendAdminAccountGrace invokes extendAdminAccountGrace operation.
 //
-// Sets tenants.grace_until, clamped to at most 90 days out from now and
-// forward-only (a new grace_until must extend further out than the
-// current one). Requires is_superadmin=true.
+// Sets tenants.grace_until, clamped to at most 90 days out from now and forward-only (a new
+// grace_until must extend further out than the current one). Requires is_superadmin=true.
 //
 // POST /api/v1/admin/accounts/{id}/grace
 func (c *Client) ExtendAdminAccountGrace(ctx context.Context, request *AdminExtendGraceRequest, params ExtendAdminAccountGraceParams) (ExtendAdminAccountGraceRes, error) {
@@ -15137,7 +15774,13 @@ func (c *Client) sendExtendAdminAccountGrace(ctx context.Context, request *Admin
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeExtendAdminAccountGraceResponse(resp)
@@ -15150,25 +15793,29 @@ func (c *Client) sendExtendAdminAccountGrace(ctx context.Context, request *Admin
 
 // ExtractSiteFileArchive invokes extractSiteFileArchive operation.
 //
-// Issues a `file_extract` command to the site's agent. The agent opens
-// the archive at `archive_path`, validates every entry against the
-// containment guard (zip-slip / zip-bomb / symlink / absolute-path
+// Issues a `file_extract` command to the site's agent. The agent opens the archive at `archive_path`,
+// validates every entry against the containment guard (zip-slip / zip-bomb / symlink / absolute-path
 // guards all enforced agent-side), and extracts into `dest_path`.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be
-// `true`. Returns `403 files_write_not_enabled` when write mode is off.
-// **Zip-slip / zip-bomb (422):** If any archive entry would resolve
-// outside `dest_path` or the archive exceeds the uncompressed-size /
-// entry-count guard, the agent returns `zip_slip` or `zip_bomb`
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be `true`. Returns
+// `403 files_write_not_enabled` when write mode is off.
+//
+// Zip-slip / zip-bomb (422): If any archive entry would resolve outside `dest_path` or the archive
+// exceeds the uncompressed-size / entry-count guard, the agent returns `zip_slip` or `zip_bomb`
 // respectively. The CP maps these to `422 Unprocessable Entity`.
-// **Bad/unknown archive (400):** `bad_archive` (file is corrupted) and
-// `not_archive` (path is not a recognised archive) map to `400`.
-// **Executable/sensitive gate (T1/T6):** When `confirm_executable_write`
-// or `confirm_sensitive` is set in the request body:
-// - The caller must additionally hold `site.files.write_code` (owner).
-// - A non-owner caller is rejected at the CP handler — the agent is
-// **never called** — and the denial is audited at elevated severity.
-// - The agent independently enforces its executable deny-list and
-// sensitive-path deny-list regardless of the confirm flags.
+//
+// Bad/unknown archive (400): `bad_archive` (file is corrupted) and `not_archive` (path is not a
+// recognised archive) map to `400`.
+//
+// Executable/sensitive gate (T1/T6): When `confirm_executable_write` or `confirm_sensitive` is set in
+// the request body:
+//
+//   - The caller must additionally hold `site.files.write_code` (owner).
+//   - A non-owner caller is rejected at the CP handler — the agent is never called — and the denial
+//     is audited at elevated severity.
+//   - The agent independently enforces its executable deny-list and sensitive-path deny-list regardless
+//     of the confirm flags.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/extract
@@ -15252,7 +15899,13 @@ func (c *Client) sendExtractSiteFileArchive(ctx context.Context, request *FileEx
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeExtractSiteFileArchiveResponse(resp)
@@ -15265,9 +15918,8 @@ func (c *Client) sendExtractSiteFileArchive(ctx context.Context, request *FileEx
 
 // FetchScanFindingFile invokes fetchScanFindingFile operation.
 //
-// Dispatches a synchronous read to the site's agent and returns the
-// file content base64-encoded. Requires the `site.write` permission
-// (this reaches out to the live site).
+// Dispatches a synchronous read to the site's agent and returns the file content base64-encoded.
+// Requires the `site.write` permission (this reaches out to the live site).
 //
 // POST /api/v1/sites/{siteId}/scans/{runId}/findings/{fid}/file
 func (c *Client) FetchScanFindingFile(ctx context.Context, params FetchScanFindingFileParams) (FetchScanFindingFileRes, error) {
@@ -15385,7 +16037,13 @@ func (c *Client) sendFetchScanFindingFile(ctx context.Context, params FetchScanF
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeFetchScanFindingFileResponse(resp)
@@ -15462,7 +16120,13 @@ func (c *Client) sendFinishWebAuthnChallenge(ctx context.Context, request *Finis
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeFinishWebAuthnChallengeResponse(resp)
@@ -15539,7 +16203,13 @@ func (c *Client) sendFinishWebAuthnEnrollment(ctx context.Context, request *Fini
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeFinishWebAuthnEnrollmentResponse(resp)
@@ -15552,11 +16222,9 @@ func (c *Client) sendFinishWebAuthnEnrollment(ctx context.Context, request *Fini
 
 // FlushObjectCache invokes flushObjectCache operation.
 //
-// Flushes the Redis/cache store for this site. The `scope` field
-// controls what is flushed: `all` (default), `site` (prefix-scoped),
-// or `group` (requires `group` field). Sends an `objectcache.flush`
-// command and publishes an `objectcache.flushed` SSE event. Requires
-// `site.cache.purge` permission.
+// Flushes the Redis/cache store for this site. The `scope` field controls what is flushed: `all`
+// (default), `site` (prefix-scoped), or `group` (requires `group` field). Sends an `objectcache.flush`
+// command and publishes an `objectcache.flushed` SSE event. Requires `site.cache.purge` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/object-cache/flush
 func (c *Client) FlushObjectCache(ctx context.Context, request OptFlushObjectCacheReq, params FlushObjectCacheParams) (*PerfActionResult, error) {
@@ -15639,7 +16307,13 @@ func (c *Client) sendFlushObjectCache(ctx context.Context, request OptFlushObjec
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeFlushObjectCacheResponse(resp)
@@ -15652,10 +16326,9 @@ func (c *Client) sendFlushObjectCache(ctx context.Context, request OptFlushObjec
 
 // ForceAdminAccountState invokes forceAdminAccountState operation.
 //
-// The manual escape hatch for payment-provider webhook drift: sets
-// plan and plan_status directly and clears grace_until. Never use this
-// to grant service for free — use the comp endpoint instead. Requires
-// is_superadmin=true.
+// The manual escape hatch for payment-provider webhook drift: sets plan and plan_status directly and
+// clears grace_until. Never use this to grant service for free — use the comp endpoint instead.
+// Requires is_superadmin=true.
 //
 // POST /api/v1/admin/accounts/{id}/state
 func (c *Client) ForceAdminAccountState(ctx context.Context, request *AdminForceStateRequest, params ForceAdminAccountStateParams) (ForceAdminAccountStateRes, error) {
@@ -15738,7 +16411,13 @@ func (c *Client) sendForceAdminAccountState(ctx context.Context, request *AdminF
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeForceAdminAccountStateResponse(resp)
@@ -15751,9 +16430,8 @@ func (c *Client) sendForceAdminAccountState(ctx context.Context, request *AdminF
 
 // ForgotPassword invokes forgotPassword operation.
 //
-// Always returns 200 {ok: true} whether or not the email maps to an
-// account (enumeration-safe). A reset-link email is sent when the account
-// exists and is active.
+// Always returns 200 {ok: true} whether or not the email maps to an account (enumeration-safe). A
+// reset-link email is sent when the account exists and is active.
 //
 // POST /auth/password/forgot
 func (c *Client) ForgotPassword(ctx context.Context, request *ForgotPasswordReq) (*ForgotPasswordOK, error) {
@@ -15817,7 +16495,13 @@ func (c *Client) sendForgotPassword(ctx context.Context, request *ForgotPassword
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeForgotPasswordResponse(resp)
@@ -15830,8 +16514,8 @@ func (c *Client) sendForgotPassword(ctx context.Context, request *ForgotPassword
 
 // GenerateClientReport invokes generateClientReport operation.
 //
-// Enqueues a report generation job. Returns 202 Accepted immediately; poll GET /reports/{reportId}
-// for status. When notify=true and the schedule has recipients, an email is sent on completion.
+// Enqueues a report generation job. Returns 202 Accepted immediately; poll GET /reports/{reportId} for
+// status. When notify=true and the schedule has recipients, an email is sent on completion.
 //
 // POST /api/v1/clients/{clientId}/reports
 func (c *Client) GenerateClientReport(ctx context.Context, request OptGenerateClientReportRequest, params GenerateClientReportParams) (GenerateClientReportRes, error) {
@@ -15914,7 +16598,13 @@ func (c *Client) sendGenerateClientReport(ctx context.Context, request OptGenera
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGenerateClientReportResponse(resp)
@@ -15927,9 +16617,9 @@ func (c *Client) sendGenerateClientReport(ctx context.Context, request OptGenera
 
 // GetAdminAccount invokes getAdminAccount operation.
 //
-// Returns the account header, usage-vs-entitlement meters, subscription
-// card, a merged billing_events+audit_log timeline (newest first), the
-// member roster, and a compact site list. Requires is_superadmin=true.
+// Returns the account header, usage-vs-entitlement meters, subscription card, a merged
+// billing_events+audit_log timeline (newest first), the member roster, and a compact site list.
+// Requires is_superadmin=true.
 //
 // GET /api/v1/admin/accounts/{id}
 func (c *Client) GetAdminAccount(ctx context.Context, params GetAdminAccountParams) (GetAdminAccountRes, error) {
@@ -16008,7 +16698,13 @@ func (c *Client) sendGetAdminAccount(ctx context.Context, params GetAdminAccount
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminAccountResponse(resp)
@@ -16021,8 +16717,8 @@ func (c *Client) sendGetAdminAccount(ctx context.Context, params GetAdminAccount
 
 // GetAdminAccountsTenancy invokes getAdminAccountsTenancy operation.
 //
-// Diagnostic for account/org splits (e.g. a superadmin stranded in the
-// wrong org while site data lives in a different org). No mutation.
+// Diagnostic for account/org splits (e.g. a superadmin stranded in the wrong org while site data lives
+// in a different org). No mutation.
 //
 // GET /api/v1/admin/accounts-tenancy
 func (c *Client) GetAdminAccountsTenancy(ctx context.Context, params GetAdminAccountsTenancyParams) (GetAdminAccountsTenancyRes, error) {
@@ -16104,7 +16800,13 @@ func (c *Client) sendGetAdminAccountsTenancy(ctx context.Context, params GetAdmi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminAccountsTenancyResponse(resp)
@@ -16179,7 +16881,13 @@ func (c *Client) sendGetAdminRevenue(ctx context.Context) (res GetAdminRevenueRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminRevenueResponse(resp)
@@ -16192,9 +16900,8 @@ func (c *Client) sendGetAdminRevenue(ctx context.Context) (res GetAdminRevenueRe
 
 // GetAdminSiteTenancy invokes getAdminSiteTenancy operation.
 //
-// Compares where a site and its perf data (rucss results / cache stats
-// / config) live against the calling superadmin's own org memberships.
-// No mutation.
+// Compares where a site and its perf data (rucss results / cache stats / config) live against the
+// calling superadmin's own org memberships. No mutation.
 //
 // GET /api/v1/admin/sites/{siteId}/tenancy
 func (c *Client) GetAdminSiteTenancy(ctx context.Context, params GetAdminSiteTenancyParams) (GetAdminSiteTenancyRes, error) {
@@ -16274,7 +16981,13 @@ func (c *Client) sendGetAdminSiteTenancy(ctx context.Context, params GetAdminSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminSiteTenancyResponse(resp)
@@ -16348,7 +17061,13 @@ func (c *Client) sendGetAdminStats(ctx context.Context) (res GetAdminStatsRes, e
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminStatsResponse(resp)
@@ -16361,17 +17080,15 @@ func (c *Client) sendGetAdminStats(ctx context.Context) (res GetAdminStatsRes, e
 
 // GetAdminSystemAudit invokes getAdminSystemAudit operation.
 //
-// Reads system_audit_log, which holds the events no single organisation's
-// own audit log can show: actions whose subject organisation is being
-// deleted, and authentication events for accounts that belong to no
-// organisation at all (a new social account, a site collaborator, a portal
-// user, anyone inside the org delete grace window). Newest first.
-// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset:
-// the log grows at its head while it is being read, so a numbered page
-// boundary is already stale when it is handed out and the rows that moved
-// past it come back twice. Send the previous response's `next_cursor` to
-// get the rows that follow the last one you saw. `next_cursor` is absent
-// on the last page.
+// Reads system_audit_log, which holds the events no single organisation's own audit log can show:
+// actions whose subject organisation is being deleted, and authentication events for accounts that
+// belong to no organisation at all (a new social account, a site collaborator, a portal user, anyone
+// inside the org delete grace window). Newest first.
+//
+// Paged by an opaque keyset cursor on `(occurred_at, id)`, not by offset: the log grows at its head
+// while it is being read, so a numbered page boundary is already stale when it is handed out and the
+// rows that moved past it come back twice. Send the previous response's `next_cursor` to get the rows
+// that follow the last one you saw. `next_cursor` is absent on the last page.
 //
 // GET /api/v1/admin/system-audit
 func (c *Client) GetAdminSystemAudit(ctx context.Context, params GetAdminSystemAuditParams) (GetAdminSystemAuditRes, error) {
@@ -16470,7 +17187,13 @@ func (c *Client) sendGetAdminSystemAudit(ctx context.Context, params GetAdminSys
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminSystemAuditResponse(resp)
@@ -16544,7 +17267,13 @@ func (c *Client) sendGetAdminVulnFeedStatus(ctx context.Context) (res GetAdminVu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAdminVulnFeedStatusResponse(resp)
@@ -16557,12 +17286,10 @@ func (c *Client) sendGetAdminVulnFeedStatus(ctx context.Context) (res GetAdminVu
 
 // GetAgentLatestVersion invokes getAgentLatestVersion operation.
 //
-// Reads the published agent-releases/latest.json pointer manifest (the
-// same object internal/agent/update_handler.go serves to agents)
-// through a cached, best-effort reader. version is "unknown" when no
-// release has ever been published, object storage is not configured,
-// or the manifest cannot currently be read; this never surfaces as an
-// error.
+// Reads the published agent-releases/latest.json pointer manifest (the same object
+// internal/agent/update_handler.go serves to agents) through a cached, best-effort reader. version is
+// "unknown" when no release has ever been published, object storage is not configured, or the manifest
+// cannot currently be read; this never surfaces as an error.
 //
 // GET /api/v1/agent/latest
 func (c *Client) GetAgentLatestVersion(ctx context.Context) (GetAgentLatestVersionRes, error) {
@@ -16623,7 +17350,13 @@ func (c *Client) sendGetAgentLatestVersion(ctx context.Context) (res GetAgentLat
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAgentLatestVersionResponse(resp)
@@ -16636,9 +17369,8 @@ func (c *Client) sendGetAgentLatestVersion(ctx context.Context) (res GetAgentLat
 
 // GetAlertConfig invokes getAlertConfig operation.
 //
-// Returns the tenant's downtime/recovery alert channel: email recipients,
-// whether a webhook is configured, and the enabled flag. The webhook secret
-// is never returned. Requires admin+.
+// Returns the tenant's downtime/recovery alert channel: email recipients, whether a webhook is
+// configured, and the enabled flag. The webhook secret is never returned. Requires admin+.
 //
 // GET /api/v1/alert-config
 func (c *Client) GetAlertConfig(ctx context.Context) (*AlertConfig, error) {
@@ -16699,7 +17431,13 @@ func (c *Client) sendGetAlertConfig(ctx context.Context) (res *AlertConfig, err 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetAlertConfigResponse(resp)
@@ -16791,7 +17529,13 @@ func (c *Client) sendGetBackup(ctx context.Context, params GetBackupParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupResponse(resp)
@@ -16804,12 +17548,11 @@ func (c *Client) sendGetBackup(ctx context.Context, params GetBackupParams) (res
 
 // GetBackupEnvironment invokes getBackupEnvironment operation.
 //
-// Returns the raw JSON the agent shipped as the synthetic `environment.json`
-// manifest entry for a snapshot (PHP version, WordPress version, active
-// plugins, server software, etc.). Returns 404 with code `env_not_recorded`
-// for snapshots that pre-date the environment-fingerprint feature (agent
-// v0.9.10+). Returns 503 when the environment reader is not wired on this
-// control plane. Requires viewer+.
+// Returns the raw JSON the agent shipped as the synthetic `environment.json` manifest entry for a
+// snapshot (PHP version, WordPress version, active plugins, server software, etc.). Returns 404 with
+// code `env_not_recorded` for snapshots that pre-date the environment-fingerprint feature (agent
+// v0.9.10+). Returns 503 when the environment reader is not wired on this control plane. Requires
+// viewer+.
 //
 // GET /api/v1/backups/{snapshotId}/environment
 func (c *Client) GetBackupEnvironment(ctx context.Context, params GetBackupEnvironmentParams) (GetBackupEnvironmentRes, error) {
@@ -16889,7 +17632,13 @@ func (c *Client) sendGetBackupEnvironment(ctx context.Context, params GetBackupE
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupEnvironmentResponse(resp)
@@ -16982,7 +17731,13 @@ func (c *Client) sendGetBackupSchedule(ctx context.Context, params GetBackupSche
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupScheduleResponse(resp)
@@ -17075,7 +17830,13 @@ func (c *Client) sendGetBackupSettingsContents(ctx context.Context, params GetBa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupSettingsContentsResponse(resp)
@@ -17168,7 +17929,13 @@ func (c *Client) sendGetBackupSettingsNotifications(ctx context.Context, params 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupSettingsNotificationsResponse(resp)
@@ -17181,18 +17948,16 @@ func (c *Client) sendGetBackupSettingsNotifications(ctx context.Context, params 
 
 // GetBackupSqlInspection invokes getBackupSqlInspection operation.
 //
-// Returns a structured report on the SQL dump artifact of a backup
-// snapshot: table inventory, row/byte estimates, charset, table prefix,
-// and (when the dump looks like a WordPress install) the canonical
+// Returns a structured report on the SQL dump artifact of a backup snapshot: table inventory, row/byte
+// estimates, charset, table prefix, and (when the dump looks like a WordPress install) the canonical
 // siteurl/home/db_version probed from wp_options. Resolution order:
-// 1. If the snapshot manifest carries an agent-generated inspection
-// artifact, that JSON is returned (source="agent"). This is the cheap,
-// always-correct path because the agent has the SQL plaintext locally.
-// 2. Otherwise the control plane streams the dump artifact, parses it
-// with the legacy scanner, and caches the result for subsequent calls
-// (source="cp-legacy"). The first request returns 202 Accepted while
-// the inspection job runs; the client polls until it gets 200.
-// Requires viewer+.
+//
+//  1. If the snapshot manifest carries an agent-generated inspection artifact, that JSON is returned
+//     (source="agent"). This is the cheap, always-correct path because the agent has the SQL plaintext
+//     locally.
+//  2. Otherwise the control plane streams the dump artifact, parses it with the legacy scanner, and
+//     caches the result for subsequent calls (source="cp-legacy"). The first request returns 202
+//     Accepted while the inspection job runs; the client polls until it gets 200. Requires viewer+.
 //
 // GET /api/v1/backups/{snapshotId}/sql-inspection
 func (c *Client) GetBackupSqlInspection(ctx context.Context, params GetBackupSqlInspectionParams) (GetBackupSqlInspectionRes, error) {
@@ -17272,7 +18037,13 @@ func (c *Client) sendGetBackupSqlInspection(ctx context.Context, params GetBacku
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBackupSqlInspectionResponse(resp)
@@ -17285,8 +18056,8 @@ func (c *Client) sendGetBackupSqlInspection(ctx context.Context, params GetBacku
 
 // GetBilling invokes getBilling operation.
 //
-// Returns the tenant's current plan, payment-provider subscription status, and site-count meter.
-// Only mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
+// Returns the tenant's current plan, payment-provider subscription status, and site-count meter. Only
+// mounted when the control plane is running with hosted billing enabled (`WPMGR_HOSTED`) — a
 // self-hosted or unhosted instance 404s this path (and the two below it) entirely.
 //
 // GET /api/v1/billing
@@ -17348,7 +18119,13 @@ func (c *Client) sendGetBilling(ctx context.Context) (res GetBillingRes, err err
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetBillingResponse(resp)
@@ -17462,7 +18239,13 @@ func (c *Client) sendGetCacheHealth(ctx context.Context, params GetCacheHealthPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetCacheHealthResponse(resp)
@@ -17475,9 +18258,8 @@ func (c *Client) sendGetCacheHealth(ctx context.Context, params GetCacheHealthPa
 
 // GetCacheStats invokes getCacheStats operation.
 //
-// Returns the most recent cache gauges the agent reported (cached page
-// count, on-disk cache size, last purge/preload timestamps, preload
-// progress). Requires the `site:read` permission.
+// Returns the most recent cache gauges the agent reported (cached page count, on-disk cache size, last
+// purge/preload timestamps, preload progress). Requires the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/cache/stats
 func (c *Client) GetCacheStats(ctx context.Context, params GetCacheStatsParams) (*CacheStats, error) {
@@ -17557,7 +18339,13 @@ func (c *Client) sendGetCacheStats(ctx context.Context, params GetCacheStatsPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetCacheStatsResponse(resp)
@@ -17649,7 +18437,13 @@ func (c *Client) sendGetClient(ctx context.Context, params GetClientParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetClientResponse(resp)
@@ -17761,7 +18555,13 @@ func (c *Client) sendGetClientReport(ctx context.Context, params GetClientReport
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetClientReportResponse(resp)
@@ -17855,7 +18655,13 @@ func (c *Client) sendGetClientReportSchedule(ctx context.Context, params GetClie
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetClientReportScheduleResponse(resp)
@@ -17868,10 +18674,9 @@ func (c *Client) sendGetClientReportSchedule(ctx context.Context, params GetClie
 
 // GetDbCleanStatus invokes getDbCleanStatus operation.
 //
-// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` /
-// `active_job_id` / `active_started_at` reflect the in-flight-job
-// watchdog columns, letting the web show/hide the spinner on page load
-// without relying on SSE delivery.
+// Pull-truth endpoint: mirrors `GET /perf/db/scan` — `clean_active` / `active_job_id` /
+// `active_started_at` reflect the in-flight-job watchdog columns, letting the web show/hide the
+// spinner on page load without relying on SSE delivery.
 //
 // GET /api/v1/sites/{siteId}/perf/db/clean
 func (c *Client) GetDbCleanStatus(ctx context.Context, params GetDbCleanStatusParams) (GetDbCleanStatusRes, error) {
@@ -17951,7 +18756,13 @@ func (c *Client) sendGetDbCleanStatus(ctx context.Context, params GetDbCleanStat
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetDbCleanStatusResponse(resp)
@@ -18065,7 +18876,13 @@ func (c *Client) sendGetDbHealth(ctx context.Context, params GetDbHealthParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetDbHealthResponse(resp)
@@ -18078,9 +18895,8 @@ func (c *Client) sendGetDbHealth(ctx context.Context, params GetDbHealthParams) 
 
 // GetDbOrphansReport invokes getDbOrphansReport operation.
 //
-// Classifies the orphaned options/cron entries/tables stored in the
-// latest `db_scan` result against the live corpus knowledge base. No
-// destructive action is performed here — see
+// Classifies the orphaned options/cron entries/tables stored in the latest `db_scan` result against
+// the live corpus knowledge base. No destructive action is performed here — see
 // `POST /perf/db/orphan-delete`.
 //
 // GET /api/v1/sites/{siteId}/perf/db/orphans
@@ -18161,7 +18977,13 @@ func (c *Client) sendGetDbOrphansReport(ctx context.Context, params GetDbOrphans
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetDbOrphansReportResponse(resp)
@@ -18174,10 +18996,9 @@ func (c *Client) sendGetDbOrphansReport(ctx context.Context, params GetDbOrphans
 
 // GetDbScanResult invokes getDbScanResult operation.
 //
-// Returns the most recently persisted db_scan result including the
-// per-category counts and the full per-table inventory (Phase 2.1).
-// Returns `{"result": null}` when no scan has been run yet.
-// Requires the `site:read` permission.
+// Returns the most recently persisted db_scan result including the per-category counts and the full
+// per-table inventory (Phase 2.1). Returns `{"result": null}` when no scan has been run yet. Requires
+// the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/db/scan
 func (c *Client) GetDbScanResult(ctx context.Context, params GetDbScanResultParams) (*GetDbScanResultOK, error) {
@@ -18257,7 +19078,13 @@ func (c *Client) sendGetDbScanResult(ctx context.Context, params GetDbScanResult
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetDbScanResultResponse(resp)
@@ -18270,11 +19097,12 @@ func (c *Client) sendGetDbScanResult(ctx context.Context, params GetDbScanResult
 
 // GetEmailNotifySettings invokes getEmailNotifySettings operation.
 //
-// Returns the tenant-level email alert and digest notification settings.
-// Always returns 200 with sensible defaults when no settings row exists
-// yet (enabled=false, digest_enabled=false).
-// Also returns `instance_mailer_configured` — when false, alerts and
-// digests cannot be delivered even if enabled.
+// Returns the tenant-level email alert and digest notification settings. Always returns 200 with
+// sensible defaults when no settings row exists yet (enabled=false, digest_enabled=false).
+//
+// Also returns `instance_mailer_configured` — when false, alerts and digests cannot be delivered
+// even if enabled.
+//
 // Org-level route. Requires `site.email.manage` permission.
 //
 // GET /api/v1/email/notify-settings
@@ -18336,7 +19164,13 @@ func (c *Client) sendGetEmailNotifySettings(ctx context.Context) (res GetEmailNo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetEmailNotifySettingsResponse(resp)
@@ -18349,32 +19183,24 @@ func (c *Client) sendGetEmailNotifySettings(ctx context.Context) (res GetEmailNo
 
 // GetFleetAgentVersions invokes getFleetAgentVersions operation.
 //
-// Per-site {site_id, site_name, agent_version, status} plus fleet-wide
-// counts, classified against a single reference version. That reference
-// is the published agent version when the release manifest can be read,
-// and otherwise the newest well-formed agent version present in this
-// tenant's own fleet, which is what a self-hosted install (whose object
-// storage never receives the release pipeline's manifest) gets.
-// reference_source names which of the two, or "none" when neither was
-// available. status is one of current | outdated | unknown | ineligible.
-// "unknown" covers a site that has never reported agent_version, a
-// malformed/unparseable version on either side of the comparison, or a
-// reference_source of "none"; never a false
-// "outdated". "ineligible" is a site that cannot self-update at all:
-// today that is the public plugin-directory build, which ships without
-// the self-updater and is upgraded by the plugin directory instead.
-// Such a site is identified from its own plugin inventory and is
-// reported "ineligible" whatever its version, because comparing it
-// against a release channel it cannot consume would be a permanent
-// false "outdated". Org-scoped only
-// (RequireOrgScope), mirroring the vulnerability-scanner fleet rollup:
-// a site-scoped collaborator has no cross-site rollup.
-// agent_mirror (GH #322) reports the freshness of the upstream release
-// mirror, which on a self-hosted install is what keeps latest_version
-// up to date. It describes the mirror job, not the reference version:
-// when reference_source is "fleet" or "none", or when
-// agent_mirror.enabled is false, its timestamps say nothing about
-// latest_version and no freshness age should be shown.
+// Per-site {site_id, site_name, agent_version, status} plus fleet-wide counts, classified against a
+// single reference version. That reference is the published agent version when the release manifest
+// can be read, and otherwise the newest well-formed agent version present in this tenant's own fleet,
+// which is what a self-hosted install (whose object storage never receives the release pipeline's
+// manifest) gets. reference_source names which of the two, or "none" when neither was available.
+// status is one of current | outdated | unknown | ineligible. "unknown" covers a site that has never
+// reported agent_version, a malformed/unparseable version on either side of the comparison, or a
+// reference_source of "none"; never a false "outdated". "ineligible" is a site that cannot self-update
+// at all: today that is the public plugin-directory build, which ships without the self-updater and is
+// upgraded by the plugin directory instead. Such a site is identified from its own plugin inventory
+// and is reported "ineligible" whatever its version, because comparing it against a release channel it
+// cannot consume would be a permanent false "outdated". Org-scoped only (RequireOrgScope), mirroring
+// the vulnerability-scanner fleet rollup: a site-scoped collaborator has no cross-site rollup.
+//
+// agent_mirror (GH #322) reports the freshness of the upstream release mirror, which on a self-hosted
+// install is what keeps latest_version up to date. It describes the mirror job, not the reference
+// version: when reference_source is "fleet" or "none", or when agent_mirror.enabled is false, its
+// timestamps say nothing about latest_version and no freshness age should be shown.
 //
 // GET /api/v1/fleet/agents
 func (c *Client) GetFleetAgentVersions(ctx context.Context) (GetFleetAgentVersionsRes, error) {
@@ -18435,7 +19261,13 @@ func (c *Client) sendGetFleetAgentVersions(ctx context.Context) (res GetFleetAge
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetAgentVersionsResponse(resp)
@@ -18448,8 +19280,8 @@ func (c *Client) sendGetFleetAgentVersions(ctx context.Context) (res GetFleetAge
 
 // GetFleetBackupHealth invokes getFleetBackupHealth operation.
 //
-// Returns one health item per requested site with a server-derived status:
-// unprotected, failed, stale, in_flight, or protected. Requires viewer+.
+// Returns one health item per requested site with a server-derived status: unprotected, failed, stale,
+// in_flight, or protected. Requires viewer+.
 //
 // GET /api/v1/backups/health
 func (c *Client) GetFleetBackupHealth(ctx context.Context, params GetFleetBackupHealthParams) (*BackupHealthList, error) {
@@ -18531,7 +19363,13 @@ func (c *Client) sendGetFleetBackupHealth(ctx context.Context, params GetFleetBa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetBackupHealthResponse(resp)
@@ -18544,10 +19382,9 @@ func (c *Client) sendGetFleetBackupHealth(ctx context.Context, params GetFleetBa
 
 // GetFleetDbHealth invokes getFleetDbHealth operation.
 //
-// Returns an aggregate of database health metrics across all tenant sites
-// that have at least one completed DB scan within the lookback window.
-// Includes total DB size, orphaned option/cron counts, and the top-N sites
-// by DB size. Org-scope only. Requires viewer+.
+// Returns an aggregate of database health metrics across all tenant sites that have at least one
+// completed DB scan within the lookback window. Includes total DB size, orphaned option/cron counts,
+// and the top-N sites by DB size. Org-scope only. Requires viewer+.
 //
 // GET /api/v1/perf/db/fleet-health
 func (c *Client) GetFleetDbHealth(ctx context.Context, params GetFleetDbHealthParams) (*GetFleetDbHealthOK, error) {
@@ -18629,7 +19466,13 @@ func (c *Client) sendGetFleetDbHealth(ctx context.Context, params GetFleetDbHeal
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetDbHealthResponse(resp)
@@ -18642,15 +19485,18 @@ func (c *Client) sendGetFleetDbHealth(ctx context.Context, params GetFleetDbHeal
 
 // GetFleetEmailDeliverability invokes getFleetEmailDeliverability operation.
 //
-// Returns per-site deliverability aggregates for a rolling window.
-// Items are sorted by bounce_rate DESC then total DESC (riskiest first).
-// The `window` query parameter controls the look-back period in days
-// (default 30, clamped to [1, 365]).
-// Org-scope only (site-collaborators are blocked).
-// Requires `site.email.manage` permission.
-// **Reputation thresholds (for frontend colouring):**
-// - `bounce_rate` warn ≥2%, danger ≥5%
-// - `complaint_rate` warn ≥0.05%, danger ≥0.1%.
+// Returns per-site deliverability aggregates for a rolling window. Items are sorted by bounce_rate
+// DESC then total DESC (riskiest first).
+//
+// The `window` query parameter controls the look-back period in days (default 30, clamped to [1,
+// 365]).
+//
+// Org-scope only (site-collaborators are blocked). Requires `site.email.manage` permission.
+//
+// Reputation thresholds (for frontend colouring):
+//
+//   - `bounce_rate` warn ≥2%, danger ≥5%
+//   - `complaint_rate` warn ≥0.05%, danger ≥0.1%
 //
 // GET /api/v1/email/deliverability
 func (c *Client) GetFleetEmailDeliverability(ctx context.Context, params GetFleetEmailDeliverabilityParams) (GetFleetEmailDeliverabilityRes, error) {
@@ -18732,7 +19578,13 @@ func (c *Client) sendGetFleetEmailDeliverability(ctx context.Context, params Get
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetEmailDeliverabilityResponse(resp)
@@ -18745,8 +19597,9 @@ func (c *Client) sendGetFleetEmailDeliverability(ctx context.Context, params Get
 
 // GetFleetEmailStats invokes getFleetEmailStats operation.
 //
-// Returns tenant-wide summary counts and a per-day time-series for the
-// given date range. Org-scope only.
+// Returns tenant-wide summary counts and a per-day time-series for the given date range. Org-scope
+// only.
+//
 // Requires `site.email.manage` permission.
 //
 // GET /api/v1/email/stats
@@ -18846,7 +19699,13 @@ func (c *Client) sendGetFleetEmailStats(ctx context.Context, params GetFleetEmai
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetEmailStatsResponse(resp)
@@ -18859,8 +19718,8 @@ func (c *Client) sendGetFleetEmailStats(ctx context.Context, params GetFleetEmai
 
 // GetFleetIncidentDetail invokes getFleetIncidentDetail operation.
 //
-// A site-scoped collaborator without access to the incident's own site
-// gets `404 incident_not_found` (never a distinguishing signal).
+// A site-scoped collaborator without access to the incident's own site gets `404 incident_not_found`
+// (never a distinguishing signal).
 //
 // GET /api/v1/fleet/incidents/{incidentId}
 func (c *Client) GetFleetIncidentDetail(ctx context.Context, params GetFleetIncidentDetailParams) (GetFleetIncidentDetailRes, error) {
@@ -18939,7 +19798,13 @@ func (c *Client) sendGetFleetIncidentDetail(ctx context.Context, params GetFleet
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetIncidentDetailResponse(resp)
@@ -18952,11 +19817,10 @@ func (c *Client) sendGetFleetIncidentDetail(ctx context.Context, params GetFleet
 
 // GetFleetIncidents invokes getFleetIncidents operation.
 //
-// Returns open incidents (in_incident=true) and recently-alerted sites
-// (last_alert_at >= since). Full historical incident reconstruction is NOT
-// possible from site_alert_state, which stores only current transition
-// memory. ended_at/duration_seconds are estimated from updated_at for
-// closed incidents, not from a true incident-close record. Requires viewer+.
+// Returns open incidents (in_incident=true) and recently-alerted sites (last_alert_at >= since). Full
+// historical incident reconstruction is NOT possible from site_alert_state, which stores only current
+// transition memory. ended_at/duration_seconds are estimated from updated_at for closed incidents, not
+// from a true incident-close record. Requires viewer+.
 //
 // GET /api/v1/fleet/incidents
 func (c *Client) GetFleetIncidents(ctx context.Context, params GetFleetIncidentsParams) (*FleetIncidentList, error) {
@@ -19055,7 +19919,13 @@ func (c *Client) sendGetFleetIncidents(ctx context.Context, params GetFleetIncid
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetIncidentsResponse(resp)
@@ -19068,11 +19938,10 @@ func (c *Client) sendGetFleetIncidents(ctx context.Context, params GetFleetIncid
 
 // GetFleetRumAggregate invokes getFleetRumAggregate operation.
 //
-// Returns a fleet-level CWV aggregate across all tenant sites reporting RUM
-// data in the window. Includes summary counts, per-metric p75/rating/
-// distribution, fleet pass %, and worst offenders. Org-scope only;
-// site-scoped collaborators should use the per-site /perf/rum/summary.
-// Requires viewer+.
+// Returns a fleet-level CWV aggregate across all tenant sites reporting RUM data in the window.
+// Includes summary counts, per-metric p75/rating/ distribution, fleet pass %, and worst offenders.
+// Org-scope only; site-scoped collaborators should use the per-site /perf/rum/summary. Requires
+// viewer+.
 //
 // GET /api/v1/perf/rum/fleet
 func (c *Client) GetFleetRumAggregate(ctx context.Context, params GetFleetRumAggregateParams) (*FleetRumAggregate, error) {
@@ -19171,7 +20040,13 @@ func (c *Client) sendGetFleetRumAggregate(ctx context.Context, params GetFleetRu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetRumAggregateResponse(resp)
@@ -19184,20 +20059,19 @@ func (c *Client) sendGetFleetRumAggregate(ctx context.Context, params GetFleetRu
 
 // GetFleetUptimeHistory invokes getFleetUptimeHistory operation.
 //
-// Returns, for every site the principal can see, one entry per UTC day
-// across the requested window — oldest first, densified, with no gaps in
-// the date sequence.
-// Every entry is either a stored measurement or an explicit null. There
-// is no interpolation, no carry-forward and no default: `uptime_pct` is
-// null on any day with no recorded probes (the site did not exist yet,
-// monitoring was off, the probe worker did not run, or the day has aged
-// past the 90-day probe retention). Null is NOT zero — zero means the
-// site was measured and was down for every probe of that day. Rendering
-// null as 0% tells an operator their site was down when we simply never
-// looked (GH #460).
-// `measured_days` is how many of the entries carry a measurement, so a
-// young site can be shown as "28 of 90 days measured" rather than
-// implying 90 days of history.
+// Returns, for every site the principal can see, one entry per UTC day across the requested window —
+// oldest first, densified, with no gaps in the date sequence.
+//
+// Every entry is either a stored measurement or an explicit null. There is no interpolation, no
+// carry-forward and no default: `uptime_pct` is null on any day with no recorded probes (the site did
+// not exist yet, monitoring was off, the probe worker did not run, or the day has aged past the 90-day
+// probe retention). Null is NOT zero — zero means the site was measured and was down for every probe
+// of that day. Rendering null as 0% tells an operator their site was down when we simply never looked
+// (GH #460).
+//
+// `measured_days` is how many of the entries carry a measurement, so a young site can be shown as "28
+// of 90 days measured" rather than implying 90 days of history.
+//
 // Site-scoped principals see only their granted sites. Requires viewer+.
 //
 // GET /api/v1/fleet/uptime-history
@@ -19280,7 +20154,13 @@ func (c *Client) sendGetFleetUptimeHistory(ctx context.Context, params GetFleetU
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetUptimeHistoryResponse(resp)
@@ -19293,16 +20173,15 @@ func (c *Client) sendGetFleetUptimeHistory(ctx context.Context, params GetFleetU
 
 // GetFleetUptimeStatus invokes getFleetUptimeStatus operation.
 //
-// Returns summary counts {up, degraded, down, unknown} and a per-site list
-// with the latest probe result, 7-day uptime %, and in-incident flag.
-// Status derivation: down=latest probe up=false; degraded=up but latency
-// >2000ms, or connection_state=degraded (status_reason=agent_degraded),
-// or connection_state=disconnected (status_reason=agent_unreachable, GH
-// #291: a cached response can stay up=true while the agent side already
-// proved the site unreachable); up=probe up+fast; unknown=no probe.
-// connection_state=revoked/archived does not affect status derivation
-// (the operator deliberately stopped managing the site). Requires
-// viewer+.
+// Returns summary counts {up, degraded, down, unknown} and a per-site list with the latest probe
+// result, 7-day uptime %, and in-incident flag. Status derivation: down=latest probe up=false;
+// degraded=up but latency
+//
+//	2000ms, or connection_state=degraded (status_reason=agent_degraded), or
+//	connection_state=disconnected (status_reason=agent_unreachable, GH #291: a cached response can stay
+//	up=true while the agent side already proved the site unreachable); up=probe up+fast; unknown=no
+//	probe. connection_state=revoked/archived does not affect status derivation (the operator
+//	deliberately stopped managing the site). Requires viewer+.
 //
 // GET /api/v1/fleet/status
 func (c *Client) GetFleetUptimeStatus(ctx context.Context) (*FleetUptimeStatus, error) {
@@ -19363,7 +20242,13 @@ func (c *Client) sendGetFleetUptimeStatus(ctx context.Context) (res *FleetUptime
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetUptimeStatusResponse(resp)
@@ -19376,9 +20261,8 @@ func (c *Client) sendGetFleetUptimeStatus(ctx context.Context) (res *FleetUptime
 
 // GetFleetVulnerabilities invokes getFleetVulnerabilities operation.
 //
-// Cross-site counts by severity plus a prioritized finding list.
-// Org-scoped only (`RequireOrgScope`); a site-scoped collaborator uses
-// the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
+// Cross-site counts by severity plus a prioritized finding list. Org-scoped only (`RequireOrgScope`);
+// a site-scoped collaborator uses the per-site `GET /sites/{siteId}/vulnerabilities` endpoint instead.
 //
 // GET /api/v1/vulnerabilities
 func (c *Client) GetFleetVulnerabilities(ctx context.Context, params GetFleetVulnerabilitiesParams) (GetFleetVulnerabilitiesRes, error) {
@@ -19460,7 +20344,13 @@ func (c *Client) sendGetFleetVulnerabilities(ctx context.Context, params GetFlee
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetFleetVulnerabilitiesResponse(resp)
@@ -19534,7 +20424,13 @@ func (c *Client) sendGetHealthz(ctx context.Context) (res *Health, err error) {
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetHealthzResponse(resp)
@@ -19608,7 +20504,13 @@ func (c *Client) sendGetMe(ctx context.Context) (res GetMeRes, err error) {
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetMeResponse(resp)
@@ -19719,7 +20621,13 @@ func (c *Client) sendGetMediaJob(ctx context.Context, params GetMediaJobParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetMediaJobResponse(resp)
@@ -19812,7 +20720,13 @@ func (c *Client) sendGetMediaSettings(ctx context.Context, params GetMediaSettin
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetMediaSettingsResponse(resp)
@@ -19825,10 +20739,9 @@ func (c *Client) sendGetMediaSettings(ctx context.Context, params GetMediaSettin
 
 // GetObjectCacheConfig invokes getObjectCacheConfig operation.
 //
-// Returns the stored object cache configuration for the site. The password
-// is never returned; `has_password` indicates whether one is stored.
-// Live status fields (`oc_state`, `oc_latency_ms`, etc.) reflect the last
-// heartbeat from the agent.
+// Returns the stored object cache configuration for the site. The password is never returned;
+// `has_password` indicates whether one is stored. Live status fields (`oc_state`, `oc_latency_ms`,
+// etc.) reflect the last heartbeat from the agent.
 //
 // GET /api/v1/sites/{siteId}/perf/object-cache/config
 func (c *Client) GetObjectCacheConfig(ctx context.Context, params GetObjectCacheConfigParams) (*ObjectCacheConfig, error) {
@@ -19908,7 +20821,13 @@ func (c *Client) sendGetObjectCacheConfig(ctx context.Context, params GetObjectC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetObjectCacheConfigResponse(resp)
@@ -19921,9 +20840,8 @@ func (c *Client) sendGetObjectCacheConfig(ctx context.Context, params GetObjectC
 
 // GetObjectCacheStatsHistory invokes getObjectCacheStatsHistory operation.
 //
-// Returns daily-aggregated object cache stats (hit/miss ratio, memory
-// usage, eviction count) for up to 365 days. Default window is 90 days.
-// Requires `site.read` permission.
+// Returns daily-aggregated object cache stats (hit/miss ratio, memory usage, eviction count) for up to
+// 365 days. Default window is 90 days. Requires `site.read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/object-cache/stats-history
 func (c *Client) GetObjectCacheStatsHistory(ctx context.Context, params GetObjectCacheStatsHistoryParams) (*ObjectCacheStatsHistory, error) {
@@ -20024,7 +20942,13 @@ func (c *Client) sendGetObjectCacheStatsHistory(ctx context.Context, params GetO
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetObjectCacheStatsHistoryResponse(resp)
@@ -20037,9 +20961,9 @@ func (c *Client) sendGetObjectCacheStatsHistory(ctx context.Context, params GetO
 
 // GetOrgEmailConfig invokes getOrgEmailConfig operation.
 //
-// Returns the org-wide default email configuration. Sites with no per-site
-// config inherit this row. Includes `secret_set: bool` — the actual
-// provider secret is never returned.
+// Returns the org-wide default email configuration. Sites with no per-site config inherit this row.
+// Includes `secret_set: bool` — the actual provider secret is never returned.
+//
 // Org-level route. Requires `site.email.manage` permission (operator+).
 //
 // GET /api/v1/email/org-config
@@ -20101,7 +21025,13 @@ func (c *Client) sendGetOrgEmailConfig(ctx context.Context) (res GetOrgEmailConf
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetOrgEmailConfigResponse(resp)
@@ -20114,12 +21044,10 @@ func (c *Client) sendGetOrgEmailConfig(ctx context.Context) (res GetOrgEmailConf
 
 // GetPerfConfig invokes getPerfConfig operation.
 //
-// Returns the full per-site performance config. CDN credentials are
-// WRITE-ONLY and are never returned; `cdn_has_credentials` is the
-// read-only "a credential is set" flag. The `server_software`,
-// `dropin_installed`, `wp_cache_constant_set`, and `htaccess_managed`
-// fields are agent-reported install state.
-// Requires the `site.perf.config` permission.
+// Returns the full per-site performance config. CDN credentials are WRITE-ONLY and are never returned;
+// `cdn_has_credentials` is the read-only "a credential is set" flag. The `server_software`,
+// `dropin_installed`, `wp_cache_constant_set`, and `htaccess_managed` fields are agent-reported
+// install state. Requires the `site.perf.config` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/config
 func (c *Client) GetPerfConfig(ctx context.Context, params GetPerfConfigParams) (*PerfConfig, error) {
@@ -20199,7 +21127,13 @@ func (c *Client) sendGetPerfConfig(ctx context.Context, params GetPerfConfigPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPerfConfigResponse(resp)
@@ -20273,7 +21207,13 @@ func (c *Client) sendGetPortalOverview(ctx context.Context) (res GetPortalOvervi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPortalOverviewResponse(resp)
@@ -20387,7 +21327,13 @@ func (c *Client) sendGetPortalSiteUptime(ctx context.Context, params GetPortalSi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPortalSiteUptimeResponse(resp)
@@ -20501,7 +21447,13 @@ func (c *Client) sendGetPortalSiteVitals(ctx context.Context, params GetPortalSi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPortalSiteVitalsResponse(resp)
@@ -20514,10 +21466,10 @@ func (c *Client) sendGetPortalSiteVitals(ctx context.Context, params GetPortalSi
 
 // GetPortalSummary invokes getPortalSummary operation.
 //
-// Returns the full portal dashboard payload: KPI totals, per-site uptime and vitals, recent work
-// feed, and latest report reference. Data is derived from report.BuildReportData with the email
-// source disabled. Only sites in the principal's AllowedSiteIDs are returned. The ?range parameter
-// accepts 7d, 30d, or 90d; other values are clamped to 30d. In v2 only 30d is fully supported.
+// Returns the full portal dashboard payload: KPI totals, per-site uptime and vitals, recent work feed,
+// and latest report reference. Data is derived from report.BuildReportData with the email source
+// disabled. Only sites in the principal's AllowedSiteIDs are returned. The ?range parameter accepts
+// 7d, 30d, or 90d; other values are clamped to 30d. In v2 only 30d is fully supported.
 //
 // GET /api/v1/portal/summary
 func (c *Client) GetPortalSummary(ctx context.Context, params GetPortalSummaryParams) (GetPortalSummaryRes, error) {
@@ -20599,7 +21551,13 @@ func (c *Client) sendGetPortalSummary(ctx context.Context, params GetPortalSumma
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPortalSummaryResponse(resp)
@@ -20612,13 +21570,11 @@ func (c *Client) sendGetPortalSummary(ctx context.Context, params GetPortalSumma
 
 // GetPublicPricing invokes getPublicPricing operation.
 //
-// Mounted directly on the root engine (no session, no tenant gate)
-// despite sharing the `/api/v1` path prefix — the marketing site's
-// price source. Registered only when hosted billing is enabled;
-// self-host installs 404 here. Response is `Cache-Control:
-// public, max-age=3600` and resolves from a warm cache when possible,
-// falling back to a static in-Go price table when no payment provider
-// is configured.
+// Mounted directly on the root engine (no session, no tenant gate) despite sharing the `/api/v1` path
+// prefix — the marketing site's price source. Registered only when hosted billing is enabled;
+// self-host installs 404 here. Response is `Cache-Control: public, max-age=3600` and resolves from a
+// warm cache when possible, falling back to a static in-Go price table when no payment provider is
+// configured.
 //
 // GET /api/v1/pricing
 func (c *Client) GetPublicPricing(ctx context.Context) (GetPublicPricingRes, error) {
@@ -20679,7 +21635,13 @@ func (c *Client) sendGetPublicPricing(ctx context.Context) (res GetPublicPricing
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetPublicPricingResponse(resp)
@@ -20753,7 +21715,13 @@ func (c *Client) sendGetReadyz(ctx context.Context) (res GetReadyzRes, err error
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetReadyzResponse(resp)
@@ -20766,9 +21734,8 @@ func (c *Client) sendGetReadyz(ctx context.Context) (res GetReadyzRes, err error
 
 // GetRestoreRun invokes getRestoreRun operation.
 //
-// Returns the restore run record by its UUID. Authorization is enforced
-// by resolving the run's `site_id` and applying the caller's
-// `PermSiteRead` grant on that site (the same by-id pattern as
+// Returns the restore run record by its UUID. Authorization is enforced by resolving the run's
+// `site_id` and applying the caller's `PermSiteRead` grant on that site (the same by-id pattern as
 // `GET /backups/{snapshotId}`). Requires viewer+.
 //
 // GET /api/v1/restores/{restoreId}
@@ -20848,7 +21815,13 @@ func (c *Client) sendGetRestoreRun(ctx context.Context, params GetRestoreRunPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetRestoreRunResponse(resp)
@@ -20861,13 +21834,12 @@ func (c *Client) sendGetRestoreRun(ctx context.Context, params GetRestoreRunPara
 
 // GetRumSummary invokes getRumSummary operation.
 //
-// Returns site-level Core Web Vitals p75 estimates (LCP, INP, CLS, FCP,
-// TTFB) over a configurable window (default 28 days, matching CrUX/GSC),
-// with good/needs-improvement/poor ratings per the official web-vitals
-// thresholds. Any (metric, device, country) slice whose scaled sample
-// count is below the site's min_sample_count floor is returned with
-// suppressed=true and p75_ms=0; the dashboard must render
-// "insufficient samples (N of M needed)" for those rows.
+// Returns site-level Core Web Vitals p75 estimates (LCP, INP, CLS, FCP, TTFB) over a configurable
+// window (default 28 days, matching CrUX/GSC), with good/needs-improvement/poor ratings per the
+// official web-vitals thresholds. Any (metric, device, country) slice whose scaled sample count is
+// below the site's min_sample_count floor is returned with suppressed=true and p75_ms=0; the dashboard
+// must render "insufficient samples (N of M needed)" for those rows.
+//
 // Requires the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/rum/summary
@@ -20969,7 +21941,13 @@ func (c *Client) sendGetRumSummary(ctx context.Context, params GetRumSummaryPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetRumSummaryResponse(resp)
@@ -20982,12 +21960,10 @@ func (c *Client) sendGetRumSummary(ctx context.Context, params GetRumSummaryPara
 
 // GetRumTrend invokes getRumTrend operation.
 //
-// Returns a per-metric daily p75 trend series over `window_days` days
-// (default 28, clamped to [1,90]). Days with zero rollup rows are
-// omitted; days below the configured `min_sample_count` floor appear
-// with `suppressed:true` and `p75_ms:0` so the client can render a gap
-// rather than a misleading zero. An optional `device` filter restricts
-// the aggregation to one device class.
+// Returns a per-metric daily p75 trend series over `window_days` days (default 28, clamped to [1,90]).
+// Days with zero rollup rows are omitted; days below the configured `min_sample_count` floor appear
+// with `suppressed:true` and `p75_ms:0` so the client can render a gap rather than a misleading zero.
+// An optional `device` filter restricts the aggregation to one device class.
 //
 // GET /api/v1/sites/{siteId}/perf/rum/trend
 func (c *Client) GetRumTrend(ctx context.Context, params GetRumTrendParams) (GetRumTrendRes, error) {
@@ -21105,7 +22081,13 @@ func (c *Client) sendGetRumTrend(ctx context.Context, params GetRumTrendParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetRumTrendResponse(resp)
@@ -21118,8 +22100,8 @@ func (c *Client) sendGetRumTrend(ctx context.Context, params GetRumTrendParams) 
 
 // GetScanRun invokes getScanRun operation.
 //
-// The run is resolved by id (tenant-scoped); a site-scoped collaborator
-// without access to the run's own site is rejected with 403.
+// The run is resolved by id (tenant-scoped); a site-scoped collaborator without access to the run's
+// own site is rejected with 403.
 //
 // GET /api/v1/sites/{siteId}/scans/{runId}
 func (c *Client) GetScanRun(ctx context.Context, params GetScanRunParams) (GetScanRunRes, error) {
@@ -21217,7 +22199,13 @@ func (c *Client) sendGetScanRun(ctx context.Context, params GetScanRunParams) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetScanRunResponse(resp)
@@ -21230,9 +22218,8 @@ func (c *Client) sendGetScanRun(ctx context.Context, params GetScanRunParams) (r
 
 // GetScheduleRun invokes getScheduleRun operation.
 //
-// Returns the schedule run record by its UUID. Authorization is enforced
-// by resolving the run's `site_id` and applying the caller's
-// `PermSiteRead` grant on that site. Requires viewer+.
+// Returns the schedule run record by its UUID. Authorization is enforced by resolving the run's
+// `site_id` and applying the caller's `PermSiteRead` grant on that site. Requires viewer+.
 //
 // GET /api/v1/schedule-runs/{runId}
 func (c *Client) GetScheduleRun(ctx context.Context, params GetScheduleRunParams) (GetScheduleRunRes, error) {
@@ -21311,7 +22298,13 @@ func (c *Client) sendGetScheduleRun(ctx context.Context, params GetScheduleRunPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetScheduleRunResponse(resp)
@@ -21403,7 +22396,13 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteResponse(resp)
@@ -21416,11 +22415,10 @@ func (c *Client) sendGetSite(ctx context.Context, params GetSiteParams) (res Get
 
 // GetSiteAppHealthSettings invokes getSiteAppHealthSettings operation.
 //
-// Returns the per-site application-health settings (GH #291 Phase 3):
-// the B3 override path for the application-health probe, and the
-// per-site app-health alerting opt-out. Every site has these settings
-// (empty path / alerts not disabled are the defaults) - this never
-// auto-creates a row, it reads the `sites` columns directly.
+// Returns the per-site application-health settings (GH #291 Phase 3): the B3 override path for the
+// application-health probe, and the per-site app-health alerting opt-out. Every site has these
+// settings (empty path / alerts not disabled are the defaults) - this never auto-creates a row, it
+// reads the `sites` columns directly.
 //
 // GET /api/v1/sites/{siteId}/app-health-settings
 func (c *Client) GetSiteAppHealthSettings(ctx context.Context, params GetSiteAppHealthSettingsParams) (GetSiteAppHealthSettingsRes, error) {
@@ -21500,7 +22498,13 @@ func (c *Client) sendGetSiteAppHealthSettings(ctx context.Context, params GetSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteAppHealthSettingsResponse(resp)
@@ -21513,16 +22517,15 @@ func (c *Client) sendGetSiteAppHealthSettings(ctx context.Context, params GetSit
 
 // GetSiteAutologinPolicy invokes getSiteAutologinPolicy operation.
 //
-// Returns the per-site autologin policy (GH #286), auto-creating the
-// default row on first read when none exists yet (mirrors the mint
-// endpoint's own auto-create behaviour, so GET and mint never disagree
-// about what "no policy yet" means).
-// `allowed_wp_roles` is READ-ONLY and informational; it is reported
-// here but is never accepted on the PUT body. The role ceiling can only
-// be widened by a manual database operation.
-// Authorization: requires the `site:autologin` permission (owner+admin,
-// the same floor as minting a login URL). Operator and viewer roles are
-// denied.
+// Returns the per-site autologin policy (GH #286), auto-creating the default row on first read when
+// none exists yet (mirrors the mint endpoint's own auto-create behaviour, so GET and mint never
+// disagree about what "no policy yet" means).
+//
+// `allowed_wp_roles` is READ-ONLY and informational; it is reported here but is never accepted on the
+// PUT body. The role ceiling can only be widened by a manual database operation.
+//
+// Authorization: requires the `site:autologin` permission (owner+admin, the same floor as minting a
+// login URL). Operator and viewer roles are denied.
 //
 // GET /api/v1/sites/{siteId}/autologin-policy
 func (c *Client) GetSiteAutologinPolicy(ctx context.Context, params GetSiteAutologinPolicyParams) (GetSiteAutologinPolicyRes, error) {
@@ -21602,7 +22605,13 @@ func (c *Client) sendGetSiteAutologinPolicy(ctx context.Context, params GetSiteA
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteAutologinPolicyResponse(resp)
@@ -21615,10 +22624,9 @@ func (c *Client) sendGetSiteAutologinPolicy(ctx context.Context, params GetSiteA
 
 // GetSiteAvailableUpdates invokes getSiteAvailableUpdates operation.
 //
-// Returns the cached list of plugins/themes (and core) that have an update
-// available, derived from the agent's last metadata sync. Items are sorted
-// core -> plugins -> themes, with active before inactive. `as_of` is the
-// site's last update timestamp. Requires viewer+.
+// Returns the cached list of plugins/themes (and core) that have an update available, derived from the
+// agent's last metadata sync. Items are sorted core -> plugins -> themes, with active before inactive.
+// `as_of` is the site's last update timestamp. Requires viewer+.
 //
 // GET /api/v1/sites/{siteId}/updates/available
 func (c *Client) GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error) {
@@ -21698,7 +22706,13 @@ func (c *Client) sendGetSiteAvailableUpdates(ctx context.Context, params GetSite
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteAvailableUpdatesResponse(resp)
@@ -21809,7 +22823,13 @@ func (c *Client) sendGetSiteDestination(ctx context.Context, params GetSiteDesti
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteDestinationResponse(resp)
@@ -21822,10 +22842,9 @@ func (c *Client) sendGetSiteDestination(ctx context.Context, params GetSiteDesti
 
 // GetSiteDiagnostics invokes getSiteDiagnostics operation.
 //
-// Returns one card per category (14 total) carrying the latest payload
-// the agent shipped + the collection/freshness timestamps. Categories the
-// agent has never reported for are returned with a null payload so the UI
-// can render an "awaiting first sync" placeholder.
+// Returns one card per category (14 total) carrying the latest payload the agent shipped + the
+// collection/freshness timestamps. Categories the agent has never reported for are returned with a
+// null payload so the UI can render an "awaiting first sync" placeholder.
 //
 // GET /api/v1/sites/{siteId}/diagnostics
 func (c *Client) GetSiteDiagnostics(ctx context.Context, params GetSiteDiagnosticsParams) (GetSiteDiagnosticsRes, error) {
@@ -21905,7 +22924,13 @@ func (c *Client) sendGetSiteDiagnostics(ctx context.Context, params GetSiteDiagn
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteDiagnosticsResponse(resp)
@@ -21918,10 +22943,10 @@ func (c *Client) sendGetSiteDiagnostics(ctx context.Context, params GetSiteDiagn
 
 // GetSiteEmailConfig invokes getSiteEmailConfig operation.
 //
-// Returns the email config for a site. If no per-site row exists the
-// org-wide default is returned (with `site_id` set to the queried site so
-// the frontend knows the row was inherited). Includes `secret_set: bool`;
-// the actual provider secret is never returned.
+// Returns the email config for a site. If no per-site row exists the org-wide default is returned
+// (with `site_id` set to the queried site so the frontend knows the row was inherited). Includes
+// `secret_set: bool`; the actual provider secret is never returned.
+//
 // Requires `site.email.manage` permission (operator+) and site access.
 //
 // GET /api/v1/sites/{siteId}/email/config
@@ -22002,7 +23027,13 @@ func (c *Client) sendGetSiteEmailConfig(ctx context.Context, params GetSiteEmail
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteEmailConfigResponse(resp)
@@ -22015,9 +23046,9 @@ func (c *Client) sendGetSiteEmailConfig(ctx context.Context, params GetSiteEmail
 
 // GetSiteEmailLogEntry invokes getSiteEmailLogEntry operation.
 //
-// Returns a single email log entry. When `body_stored` is true and a
-// body was captured at send time, it is included in this response.
-// Also returns `prev_id` and `next_id` for in-detail navigation.
+// Returns a single email log entry. When `body_stored` is true and a body was captured at send time,
+// it is included in this response. Also returns `prev_id` and `next_id` for in-detail navigation.
+//
 // Requires `site.email.manage` permission and site access.
 //
 // GET /api/v1/sites/{siteId}/email/log/{logId}
@@ -22116,7 +23147,13 @@ func (c *Client) sendGetSiteEmailLogEntry(ctx context.Context, params GetSiteEma
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteEmailLogEntryResponse(resp)
@@ -22129,9 +23166,10 @@ func (c *Client) sendGetSiteEmailLogEntry(ctx context.Context, params GetSiteEma
 
 // GetSiteEmailStats invokes getSiteEmailStats operation.
 //
-// Returns summary counts (total, sent, failed, provider count),
-// a per-day time-series, and a per-provider breakdown for the given
-// date range. Date range defaults to the last 30 days when omitted.
+// Returns summary counts (total, sent, failed, provider count), a per-day time-series, and a
+// per-provider breakdown for the given date range. Date range defaults to the last 30 days when
+// omitted.
+//
 // Requires `site.email.manage` permission and site access.
 //
 // GET /api/v1/sites/{siteId}/email/stats
@@ -22250,7 +23288,13 @@ func (c *Client) sendGetSiteEmailStats(ctx context.Context, params GetSiteEmailS
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteEmailStatsResponse(resp)
@@ -22263,11 +23307,10 @@ func (c *Client) sendGetSiteEmailStats(ctx context.Context, params GetSiteEmailS
 
 // GetSiteErrorConfig invokes getSiteErrorConfig operation.
 //
-// Returns the site's PHP error-level mask and md5 ignore-list. When no
-// config row has been saved yet the defaults are returned: error_level=6143
-// (WordPress default E_ALL & ~E_STRICT) and an empty ignore_md5s list.
-// The config is pushed to the agent on each PATCH; this GET only reads
-// the CP-side stored value.
+// Returns the site's PHP error-level mask and md5 ignore-list. When no config row has been saved yet
+// the defaults are returned: error_level=6143 (WordPress default E_ALL & ~E_STRICT) and an empty
+// ignore_md5s list. The config is pushed to the agent on each PATCH; this GET only reads the CP-side
+// stored value.
 //
 // GET /api/v1/sites/{siteId}/errors/config
 func (c *Client) GetSiteErrorConfig(ctx context.Context, params GetSiteErrorConfigParams) (GetSiteErrorConfigRes, error) {
@@ -22347,7 +23390,13 @@ func (c *Client) sendGetSiteErrorConfig(ctx context.Context, params GetSiteError
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteErrorConfigResponse(resp)
@@ -22360,10 +23409,11 @@ func (c *Client) sendGetSiteErrorConfig(ctx context.Context, params GetSiteError
 
 // GetSiteFilesSettings invokes getSiteFilesSettings operation.
 //
-// Returns the current file manager settings for a site, including whether
-// the feature is enabled.
-// Any site member (viewer+) may call this endpoint so the UI can render
-// the correct enable/disable state without an extra permission check.
+// Returns the current file manager settings for a site, including whether the feature is enabled.
+//
+// Any site member (viewer+) may call this endpoint so the UI can render the correct enable/disable
+// state without an extra permission check.
+//
 // No permission beyond `RequireSiteAccess` is required.
 //
 // GET /api/v1/sites/{siteId}/files/settings
@@ -22444,7 +23494,13 @@ func (c *Client) sendGetSiteFilesSettings(ctx context.Context, params GetSiteFil
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteFilesSettingsResponse(resp)
@@ -22537,7 +23593,13 @@ func (c *Client) sendGetSiteHardeningConfig(ctx context.Context, params GetSiteH
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteHardeningConfigResponse(resp)
@@ -22550,10 +23612,9 @@ func (c *Client) sendGetSiteHardeningConfig(ctx context.Context, params GetSiteH
 
 // GetSiteLoginBrand invokes getSiteLoginBrand operation.
 //
-// Returns the current login brand config (logo URL, logo link, message)
-// for the site. When no config has been saved yet, returns the all-empty
-// default (all string fields are `""`), which the agent interprets as
-// "no override" (WordPress built-in login logo / no custom message).
+// Returns the current login brand config (logo URL, logo link, message) for the site. When no config
+// has been saved yet, returns the all-empty default (all string fields are `""`), which the agent
+// interprets as "no override" (WordPress built-in login logo / no custom message).
 //
 // GET /api/v1/sites/{siteId}/login-brand
 func (c *Client) GetSiteLoginBrand(ctx context.Context, params GetSiteLoginBrandParams) (*SiteLoginBrand, error) {
@@ -22633,7 +23694,13 @@ func (c *Client) sendGetSiteLoginBrand(ctx context.Context, params GetSiteLoginB
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteLoginBrandResponse(resp)
@@ -22646,10 +23713,9 @@ func (c *Client) sendGetSiteLoginBrand(ctx context.Context, params GetSiteLoginB
 
 // GetSiteLoginProtection invokes getSiteLoginProtection operation.
 //
-// Returns the current login-protection mode, brute-force thresholds, IP
-// header selection, and CIDR allow/deny lists for the site. When no config
-// has been saved yet, returns the built-in defaults (mode=protect, standard
-// thresholds, REMOTE_ADDR, empty CIDR lists).
+// Returns the current login-protection mode, brute-force thresholds, IP header selection, and CIDR
+// allow/deny lists for the site. When no config has been saved yet, returns the built-in defaults
+// (mode=protect, standard thresholds, REMOTE_ADDR, empty CIDR lists).
 //
 // GET /api/v1/sites/{siteId}/security/login-protection
 func (c *Client) GetSiteLoginProtection(ctx context.Context, params GetSiteLoginProtectionParams) (*SiteLoginProtectionConfig, error) {
@@ -22729,7 +23795,13 @@ func (c *Client) sendGetSiteLoginProtection(ctx context.Context, params GetSiteL
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteLoginProtectionResponse(resp)
@@ -22742,12 +23814,12 @@ func (c *Client) sendGetSiteLoginProtection(ctx context.Context, params GetSiteL
 
 // GetSiteSecurityPolicy invokes getSiteSecurityPolicy operation.
 //
-// Site-user auth policy governs 2FA and password requirements for the
-// WordPress users of this site (distinct from dashboard operator 2FA,
-// which is per-CP-user — see the two-factor-auth tag).
-// The response also carries `site_roles`, the WordPress roles that
-// actually exist on the site, so the policy editor can offer roles such
-// as WooCommerce's `shop_manager` instead of only the five defaults.
+// Site-user auth policy governs 2FA and password requirements for the WordPress users of this site
+// (distinct from dashboard operator 2FA, which is per-CP-user — see the two-factor-auth tag).
+//
+// The response also carries `site_roles`, the WordPress roles that actually exist on the site, so the
+// policy editor can offer roles such as WooCommerce's `shop_manager` instead of only the five
+// defaults.
 //
 // GET /api/v1/sites/{siteId}/security/policy
 func (c *Client) GetSiteSecurityPolicy(ctx context.Context, params GetSiteSecurityPolicyParams) (GetSiteSecurityPolicyRes, error) {
@@ -22827,7 +23899,13 @@ func (c *Client) sendGetSiteSecurityPolicy(ctx context.Context, params GetSiteSe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteSecurityPolicyResponse(resp)
@@ -22840,12 +23918,10 @@ func (c *Client) sendGetSiteSecurityPolicy(ctx context.Context, params GetSiteSe
 
 // GetSiteUptime invokes getSiteUptime operation.
 //
-// Returns the uptime % and average latency for a site over the requested
-// window (7d/30d/90d), the current up/down state, the last check time, the
-// TLS certificate expiry, and a downsampled recent check series. Metrics
-// come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
-// site's tenant ownership is verified in Postgres first (a foreign site is
-// a 404). Requires viewer+.
+// Returns the uptime % and average latency for a site over the requested window (7d/30d/90d), the
+// current up/down state, the last check time, the TLS certificate expiry, and a downsampled recent
+// check series. Metrics come from the ClickHouse uptime store, scoped by tenant_id + site_id; the
+// site's tenant ownership is verified in Postgres first (a foreign site is a 404). Requires viewer+.
 //
 // GET /api/v1/sites/{siteId}/uptime
 func (c *Client) GetSiteUptime(ctx context.Context, params GetSiteUptimeParams) (GetSiteUptimeRes, error) {
@@ -22946,7 +24022,13 @@ func (c *Client) sendGetSiteUptime(ctx context.Context, params GetSiteUptimePara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteUptimeResponse(resp)
@@ -22959,8 +24041,8 @@ func (c *Client) sendGetSiteUptime(ctx context.Context, params GetSiteUptimePara
 
 // GetSmtpSettings invokes getSmtpSettings operation.
 //
-// Org-scoped (blocks site-scoped collaborators). Reads require admin+;
-// the stored password/secret is never returned in plaintext.
+// Org-scoped (blocks site-scoped collaborators). Reads require admin+; the stored password/secret is
+// never returned in plaintext.
 //
 // GET /api/v1/settings/smtp
 func (c *Client) GetSmtpSettings(ctx context.Context) (GetSmtpSettingsRes, error) {
@@ -23021,7 +24103,13 @@ func (c *Client) sendGetSmtpSettings(ctx context.Context) (res GetSmtpSettingsRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSmtpSettingsResponse(resp)
@@ -23113,7 +24201,13 @@ func (c *Client) sendGetTenant(ctx context.Context, params GetTenantParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetTenantResponse(resp)
@@ -23187,7 +24281,13 @@ func (c *Client) sendGetTwoFactorStatus(ctx context.Context) (res GetTwoFactorSt
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetTwoFactorStatusResponse(resp)
@@ -23279,7 +24379,13 @@ func (c *Client) sendGetUpdateRun(ctx context.Context, params GetUpdateRunParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetUpdateRunResponse(resp)
@@ -23292,8 +24398,8 @@ func (c *Client) sendGetUpdateRun(ctx context.Context, params GetUpdateRunParams
 
 // GetUptimeSummary invokes getUptimeSummary operation.
 //
-// Returns the current up/down status and last check for every site in the
-// tenant (from the latest recorded probe). Requires viewer+.
+// Returns the current up/down status and last check for every site in the tenant (from the latest
+// recorded probe). Requires viewer+.
 //
 // GET /api/v1/uptime/summary
 func (c *Client) GetUptimeSummary(ctx context.Context) (*UptimeSummary, error) {
@@ -23354,7 +24460,13 @@ func (c *Client) sendGetUptimeSummary(ctx context.Context) (res *UptimeSummary, 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGetUptimeSummaryResponse(resp)
@@ -23367,9 +24479,8 @@ func (c *Client) sendGetUptimeSummary(ctx context.Context) (res *UptimeSummary, 
 
 // GrantAdminSelfMembership invokes grantAdminSelfMembership operation.
 //
-// Idempotent recovery primitive for a recovery-induced org split. Only
-// ever adds the CALLER (never an arbitrary user) to the SITE's own org
-// (never an arbitrary tenant).
+// Idempotent recovery primitive for a recovery-induced org split. Only ever adds the CALLER (never an
+// arbitrary user) to the SITE's own org (never an arbitrary tenant).
 //
 // POST /api/v1/admin/sites/{siteId}/grant-self-membership
 func (c *Client) GrantAdminSelfMembership(ctx context.Context, params GrantAdminSelfMembershipParams) (GrantAdminSelfMembershipRes, error) {
@@ -23449,7 +24560,13 @@ func (c *Client) sendGrantAdminSelfMembership(ctx context.Context, params GrantA
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeGrantAdminSelfMembershipResponse(resp)
@@ -23462,10 +24579,9 @@ func (c *Client) sendGrantAdminSelfMembership(ctx context.Context, params GrantA
 
 // HandleBillingProviderWebhook invokes handleBillingProviderWebhook operation.
 //
-// Mounted on the root engine — no session, no tenant gate. The
-// provider's own request signature (verified inside
-// `Service.ProcessWebhook`) is the entire authentication boundary. An
-// unrecognised `provider` value 404s.
+// Mounted on the root engine — no session, no tenant gate. The provider's own request signature
+// (verified inside `Service.ProcessWebhook`) is the entire authentication boundary. An unrecognised
+// `provider` value 404s.
 //
 // POST /webhooks/billing/{provider}
 func (c *Client) HandleBillingProviderWebhook(ctx context.Context, request *HandleBillingProviderWebhookReq, params HandleBillingProviderWebhookParams) (HandleBillingProviderWebhookRes, error) {
@@ -23547,7 +24663,13 @@ func (c *Client) sendHandleBillingProviderWebhook(ctx context.Context, request *
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeHandleBillingProviderWebhookResponse(resp)
@@ -23560,15 +24682,13 @@ func (c *Client) sendHandleBillingProviderWebhook(ctx context.Context, request *
 
 // HandleEmailProviderWebhook invokes handleEmailProviderWebhook operation.
 //
-// Mounted on the root engine — no session, no tenant gate. `routeToken`
-// is a per-config-row opaque random value; its SHA-256 hash resolves
-// the owning tenant + site, and the corresponding per-row signing key
-// (not an instance-wide key) verifies the provider's signature.
-// `provider` is one of `ses`, `sendgrid`, `mailgun`, `postmark`. An
-// unknown `routeToken` or `provider` responds `404` with no body (no
-// existence leak). The request body shape is entirely provider-defined
-// (SNS notification envelope, SendGrid event array, Mailgun form POST,
-// or Postmark JSON) so it is not modeled as a fixed schema here.
+// Mounted on the root engine — no session, no tenant gate. `routeToken` is a per-config-row opaque
+// random value; its SHA-256 hash resolves the owning tenant + site, and the corresponding per-row
+// signing key (not an instance-wide key) verifies the provider's signature. `provider` is one of
+// `ses`, `sendgrid`, `mailgun`, `postmark`. An unknown `routeToken` or `provider` responds `404` with
+// no body (no existence leak). The request body shape is entirely provider-defined (SNS notification
+// envelope, SendGrid event array, Mailgun form POST, or Postmark JSON) so it is not modeled as a fixed
+// schema here.
 //
 // POST /webhooks/email/{provider}/{routeToken}
 func (c *Client) HandleEmailProviderWebhook(ctx context.Context, request *HandleEmailProviderWebhookReq, params HandleEmailProviderWebhookParams) (HandleEmailProviderWebhookRes, error) {
@@ -23669,7 +24789,13 @@ func (c *Client) sendHandleEmailProviderWebhook(ctx context.Context, request *Ha
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeHandleEmailProviderWebhookResponse(resp)
@@ -23682,13 +24808,11 @@ func (c *Client) sendHandleEmailProviderWebhook(ctx context.Context, request *Ha
 
 // IngestRumBeacon invokes ingestRumBeacon operation.
 //
-// Mounted on the root engine — no session, no tenant gate. The
-// `key` field (a per-site beacon key) is the sole access credential.
-// Every failure mode (unknown key, RUM disabled, sampled out, rate
-// limited, a storage write failure) responds `204 No Content` so a
-// `navigator.sendBeacon()` call — which never reads the response — never
-// surfaces a distinguishing status to the page. Only a malformed body
-// yields `400`, and only an oversized body yields `413`.
+// Mounted on the root engine — no session, no tenant gate. The `key` field (a per-site beacon key)
+// is the sole access credential. Every failure mode (unknown key, RUM disabled, sampled out, rate
+// limited, a storage write failure) responds `204 No Content` so a `navigator.sendBeacon()` call —
+// which never reads the response — never surfaces a distinguishing status to the page. Only a
+// malformed body yields `400`, and only an oversized body yields `413`.
 //
 // POST /rum/ingest
 func (c *Client) IngestRumBeacon(ctx context.Context, request *RumBeacon) (IngestRumBeaconRes, error) {
@@ -23752,7 +24876,13 @@ func (c *Client) sendIngestRumBeacon(ctx context.Context, request *RumBeacon) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeIngestRumBeaconResponse(resp)
@@ -23829,7 +24959,13 @@ func (c *Client) sendInviteMember(ctx context.Context, request *InviteRequest) (
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeInviteMemberResponse(resp)
@@ -23842,12 +24978,13 @@ func (c *Client) sendInviteMember(ctx context.Context, request *InviteRequest) (
 
 // IsolateUnusedMedia invokes isolateUnusedMedia operation.
 //
-// Instructs the agent to move the original file and all generated thumbnail
-// sizes for the specified attachment IDs into the quarantine directory
-// (`wp-content/wpmgr-quarantine/media/`). The attachment post rows are left
-// intact so the Restore operation can undo the move cleanly.
-// **This operation is reversible** — use the restore endpoint to undo.
-// The attachment IDs must have appeared in a recent scan result.
+// Instructs the agent to move the original file and all generated thumbnail sizes for the specified
+// attachment IDs into the quarantine directory (`wp-content/wpmgr-quarantine/media/`). The attachment
+// post rows are left intact so the Restore operation can undo the move cleanly.
+//
+// This operation is reversible — use the restore endpoint to undo. The attachment IDs must have
+// appeared in a recent scan result.
+//
 // Requires the `site.media.clean.write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/media/clean/isolate
@@ -23931,7 +25068,13 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeIsolateUnusedMediaResponse(resp)
@@ -23944,13 +25087,11 @@ func (c *Client) sendIsolateUnusedMedia(ctx context.Context, request *MediaClean
 
 // ListAdminAccounts invokes listAdminAccounts operation.
 //
-// Superadmin-only accounts console: instance-wide header tiles (always
-// unfiltered by the current query, so they read as a stable instance
-// census) plus a filtered, sorted, paginated list of every tenant.
-// Default order is a server-computed "needs attention" ranking:
-// suspended first, then past_due (soonest-to-expire grace first), then
-// active (MRR desc), then everything else (newest first). Requires
-// is_superadmin=true.
+// Superadmin-only accounts console: instance-wide header tiles (always unfiltered by the current
+// query, so they read as a stable instance census) plus a filtered, sorted, paginated list of every
+// tenant. Default order is a server-computed "needs attention" ranking: suspended first, then past_due
+// (soonest-to-expire grace first), then active (MRR desc), then everything else (newest first).
+// Requires is_superadmin=true.
 //
 // GET /api/v1/admin/accounts
 func (c *Client) ListAdminAccounts(ctx context.Context, params ListAdminAccountsParams) (ListAdminAccountsRes, error) {
@@ -24185,7 +25326,13 @@ func (c *Client) sendListAdminAccounts(ctx context.Context, params ListAdminAcco
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListAdminAccountsResponse(resp)
@@ -24278,7 +25425,13 @@ func (c *Client) sendListAdminUserSites(ctx context.Context, params ListAdminUse
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListAdminUserSitesResponse(resp)
@@ -24407,7 +25560,13 @@ func (c *Client) sendListAdminUsers(ctx context.Context, params ListAdminUsersPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListAdminUsersResponse(resp)
@@ -24519,7 +25678,13 @@ func (c *Client) sendListApiKeys(ctx context.Context, params ListApiKeysParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListApiKeysResponse(resp)
@@ -24665,7 +25830,13 @@ func (c *Client) sendListAudit(ctx context.Context, params ListAuditParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListAuditResponse(resp)
@@ -24796,7 +25967,13 @@ func (c *Client) sendListBackups(ctx context.Context, params ListBackupsParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListBackupsResponse(resp)
@@ -24889,7 +26066,13 @@ func (c *Client) sendListClientInvitations(ctx context.Context, params ListClien
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListClientInvitationsResponse(resp)
@@ -24982,7 +26165,13 @@ func (c *Client) sendListClientMembers(ctx context.Context, params ListClientMem
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListClientMembersResponse(resp)
@@ -25114,7 +26303,13 @@ func (c *Client) sendListClientReports(ctx context.Context, params ListClientRep
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListClientReportsResponse(resp)
@@ -25210,7 +26405,13 @@ func (c *Client) sendListClients(ctx context.Context, params ListClientsParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListClientsResponse(resp)
@@ -25223,9 +26424,8 @@ func (c *Client) sendListClients(ctx context.Context, params ListClientsParams) 
 
 // ListDbSnapshots invokes listDbSnapshots operation.
 //
-// Returns the manifest of local database snapshots stored on the WP server.
-// Snapshots are a fast local safety-net (not encrypted off-site backups).
-// Requires the `site:read` permission.
+// Returns the manifest of local database snapshots stored on the WP server. Snapshots are a fast local
+// safety-net (not encrypted off-site backups). Requires the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/db/snapshots
 func (c *Client) ListDbSnapshots(ctx context.Context, params ListDbSnapshotsParams) (*DbSnapshotList, error) {
@@ -25305,7 +26505,13 @@ func (c *Client) sendListDbSnapshots(ctx context.Context, params ListDbSnapshots
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListDbSnapshotsResponse(resp)
@@ -25318,8 +26524,9 @@ func (c *Client) sendListDbSnapshots(ctx context.Context, params ListDbSnapshots
 
 // ListEmailConnections invokes listEmailConnections operation.
 //
-// Returns all named provider connections that belong to the site's email
-// config. Empty array when no named connections exist.
+// Returns all named provider connections that belong to the site's email config. Empty array when no
+// named connections exist.
+//
 // Requires `site.email.manage` permission.
 //
 // GET /api/v1/sites/{siteId}/email/connections
@@ -25400,7 +26607,13 @@ func (c *Client) sendListEmailConnections(ctx context.Context, params ListEmailC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListEmailConnectionsResponse(resp)
@@ -25413,12 +26626,12 @@ func (c *Client) sendListEmailConnections(ctx context.Context, params ListEmailC
 
 // ListEmailProviders invokes listEmailProviders operation.
 //
-// Returns the static v1 provider catalog: Generic SMTP, Amazon SES,
-// SendGrid, Mailgun, and Postmark. Each entry includes the provider slug,
-// display label, and the field schema (non-secret and secret fields, types,
-// required flags, options).
-// Org-level route — requires RequireOrgScope (org members only, not
-// site-collaborators). Requires the `site.email.manage` permission.
+// Returns the static v1 provider catalog: Generic SMTP, Amazon SES, SendGrid, Mailgun, and Postmark.
+// Each entry includes the provider slug, display label, and the field schema (non-secret and secret
+// fields, types, required flags, options).
+//
+// Org-level route — requires RequireOrgScope (org members only, not site-collaborators). Requires
+// the `site.email.manage` permission.
 //
 // GET /api/v1/email/providers
 func (c *Client) ListEmailProviders(ctx context.Context) (ListEmailProvidersRes, error) {
@@ -25479,7 +26692,13 @@ func (c *Client) sendListEmailProviders(ctx context.Context) (res ListEmailProvi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListEmailProvidersResponse(resp)
@@ -25492,9 +26711,9 @@ func (c *Client) sendListEmailProviders(ctx context.Context) (res ListEmailProvi
 
 // ListFleetBackups invokes listFleetBackups operation.
 //
-// Returns a filtered, paginated list of backup snapshots across the caller's
-// accessible sites. Org-scoped principals see all tenant sites; site-scoped
-// collaborators see only their granted sites. Requires viewer+.
+// Returns a filtered, paginated list of backup snapshots across the caller's accessible sites.
+// Org-scoped principals see all tenant sites; site-scoped collaborators see only their granted sites.
+// Requires viewer+.
 //
 // GET /api/v1/backups/fleet
 func (c *Client) ListFleetBackups(ctx context.Context, params ListFleetBackupsParams) (*BackupFleetList, error) {
@@ -25661,7 +26880,13 @@ func (c *Client) sendListFleetBackups(ctx context.Context, params ListFleetBacku
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListFleetBackupsResponse(resp)
@@ -25674,12 +26899,12 @@ func (c *Client) sendListFleetBackups(ctx context.Context, params ListFleetBacku
 
 // ListFleetEmailLog invokes listFleetEmailLog operation.
 //
-// Returns a keyset-paginated cross-site email log for the tenant.
-// Org-scope only (site-collaborators are blocked).
-// Body is never included in the list.
-// **Collaborator note**: collaborators who can read specific sites see
-// those sites' data through the per-site `/sites/{siteId}/email/log`
-// route. This fleet-level route is for full org members only.
+// Returns a keyset-paginated cross-site email log for the tenant. Org-scope only (site-collaborators
+// are blocked). Body is never included in the list.
+//
+// Collaborator note: collaborators who can read specific sites see those sites' data through the
+// per-site `/sites/{siteId}/email/log` route. This fleet-level route is for full org members only.
+//
 // Requires `site.email.manage` permission.
 //
 // GET /api/v1/email/log
@@ -25847,7 +27072,13 @@ func (c *Client) sendListFleetEmailLog(ctx context.Context, params ListFleetEmai
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListFleetEmailLogResponse(resp)
@@ -25860,9 +27091,9 @@ func (c *Client) sendListFleetEmailLog(ctx context.Context, params ListFleetEmai
 
 // ListFleetEmailSuppression invokes listFleetEmailSuppression operation.
 //
-// Returns all suppression entries across the tenant fleet. Org-scope only.
-// Entries with `site_id=null` are fleet-wide suppressions that apply to
-// every site in the tenant.
+// Returns all suppression entries across the tenant fleet. Org-scope only. Entries with `site_id=null`
+// are fleet-wide suppressions that apply to every site in the tenant.
+//
 // Requires `site.email.manage` permission.
 //
 // GET /api/v1/email/suppression
@@ -25979,7 +27210,13 @@ func (c *Client) sendListFleetEmailSuppression(ctx context.Context, params ListF
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListFleetEmailSuppressionResponse(resp)
@@ -25992,11 +27229,11 @@ func (c *Client) sendListFleetEmailSuppression(ctx context.Context, params ListF
 
 // ListFontResults invokes listFontResults operation.
 //
-// Returns a page of the site's font_results catalog rows — the per-site
-// dashboard view of every self-hosted font that has been discovered and
-// processed (or is pending processing). Each row includes the source hash,
-// font family, sizes, state (pending|ready|subset|negative), and the
+// Returns a page of the site's font_results catalog rows — the per-site dashboard view of every
+// self-hosted font that has been discovered and processed (or is pending processing). Each row
+// includes the source hash, font family, sizes, state (pending|ready|subset|negative), and the
 // CP-derived savings_pct.
+//
 // Requires the `site:read` permission. Ordered by updated_at DESC, id DESC.
 //
 // GET /api/v1/sites/{siteId}/perf/fonts
@@ -26115,7 +27352,13 @@ func (c *Client) sendListFontResults(ctx context.Context, params ListFontResults
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListFontResultsResponse(resp)
@@ -26128,8 +27371,8 @@ func (c *Client) sendListFontResults(ctx context.Context, params ListFontResults
 
 // ListMediaAssets invokes listMediaAssets operation.
 //
-// Cursor-paginated media library mirror with a summary rollup. Gated on
-// site:read + per-site access. DTOs are hand-rolled (c.JSON), not ogen.
+// Cursor-paginated media library mirror with a summary rollup. Gated on site:read + per-site access.
+// DTOs are hand-rolled (c.JSON), not ogen.
 //
 // GET /api/v1/sites/{siteId}/media/assets
 func (c *Client) ListMediaAssets(ctx context.Context, params ListMediaAssetsParams) (*MediaAssetList, error) {
@@ -26298,7 +27541,13 @@ func (c *Client) sendListMediaAssets(ctx context.Context, params ListMediaAssets
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListMediaAssetsResponse(resp)
@@ -26446,7 +27695,13 @@ func (c *Client) sendListMediaJobs(ctx context.Context, params ListMediaJobsPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListMediaJobsResponse(resp)
@@ -26558,7 +27813,13 @@ func (c *Client) sendListMembers(ctx context.Context, params ListMembersParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListMembersResponse(resp)
@@ -26571,13 +27832,13 @@ func (c *Client) sendListMembers(ctx context.Context, params ListMembersParams) 
 
 // ListMyIdentities invokes listMyIdentities operation.
 //
-// Powers the connected accounts card at settings/security. Acts on the
-// caller's own account only: no user id appears anywhere in this route.
-// `has_password` and `can_unlink` describe the account as a whole.
-// `can_unlink` is the same answer `DELETE /auth/me/identities/{provider}`
-// will give, so the page can avoid offering a button that would only be
-// refused. It is a display hint and never the enforcement: the server
-// re-decides on every delete.
+// Powers the connected accounts card at settings/security. Acts on the caller's own account only: no
+// user id appears anywhere in this route.
+//
+// `has_password` and `can_unlink` describe the account as a whole. `can_unlink` is the same answer
+// `DELETE /auth/me/identities/{provider}` will give, so the page can avoid offering a button that
+// would only be refused. It is a display hint and never the enforcement: the server re-decides on
+// every delete.
 //
 // GET /auth/me/identities
 func (c *Client) ListMyIdentities(ctx context.Context) (ListMyIdentitiesRes, error) {
@@ -26638,7 +27899,13 @@ func (c *Client) sendListMyIdentities(ctx context.Context) (res ListMyIdentities
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListMyIdentitiesResponse(resp)
@@ -26712,7 +27979,13 @@ func (c *Client) sendListOrgs(ctx context.Context) (res ListOrgsRes, err error) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListOrgsResponse(resp)
@@ -26787,7 +28060,13 @@ func (c *Client) sendListPortalReports(ctx context.Context) (res ListPortalRepor
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListPortalReportsResponse(resp)
@@ -26901,7 +28180,13 @@ func (c *Client) sendListPortalSiteBackups(ctx context.Context, params ListPorta
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListPortalSiteBackupsResponse(resp)
@@ -27015,7 +28300,13 @@ func (c *Client) sendListPortalSiteUpdates(ctx context.Context, params ListPorta
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListPortalSiteUpdatesResponse(resp)
@@ -27089,7 +28380,13 @@ func (c *Client) sendListPortalSites(ctx context.Context) (res ListPortalSitesRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListPortalSitesResponse(resp)
@@ -27102,10 +28399,10 @@ func (c *Client) sendListPortalSites(ctx context.Context) (res ListPortalSitesRe
 
 // ListQuarantinedMedia invokes listQuarantinedMedia operation.
 //
-// Returns all quarantine manifests currently held on the site. Each manifest
-// was created by a prior isolate call and describes the set of attachment
-// files that were moved to the quarantine directory. This endpoint is
-// read-only — it does not modify any files or attachment posts.
+// Returns all quarantine manifests currently held on the site. Each manifest was created by a prior
+// isolate call and describes the set of attachment files that were moved to the quarantine directory.
+// This endpoint is read-only — it does not modify any files or attachment posts.
+//
 // Requires the `site.media.clean.scan` permission (viewer+).
 //
 // GET /api/v1/sites/{siteId}/media/clean/quarantine
@@ -27186,7 +28483,13 @@ func (c *Client) sendListQuarantinedMedia(ctx context.Context, params ListQuaran
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListQuarantinedMediaResponse(resp)
@@ -27199,12 +28502,10 @@ func (c *Client) sendListQuarantinedMedia(ctx context.Context, params ListQuaran
 
 // ListRestoreRunEvents invokes listRestoreRunEvents operation.
 //
-// Returns the ordered phase log for a restore run, ascending by event
-// ID. Supports incremental polling via `?after=<id>`: pass the highest
-// `id` from the previous response to receive only newer events.
-// Authorization mirrors `GET /restores/{restoreId}` — the run's site
-// is resolved and the caller's `PermSiteRead` is enforced on it.
-// Requires viewer+.
+// Returns the ordered phase log for a restore run, ascending by event ID. Supports incremental polling
+// via `?after=<id>`: pass the highest `id` from the previous response to receive only newer events.
+// Authorization mirrors `GET /restores/{restoreId}` — the run's site is resolved and the caller's
+// `PermSiteRead` is enforced on it. Requires viewer+.
 //
 // GET /api/v1/restores/{restoreId}/events
 func (c *Client) ListRestoreRunEvents(ctx context.Context, params ListRestoreRunEventsParams) (ListRestoreRunEventsRes, error) {
@@ -27322,7 +28623,13 @@ func (c *Client) sendListRestoreRunEvents(ctx context.Context, params ListRestor
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListRestoreRunEventsResponse(resp)
@@ -27335,12 +28642,10 @@ func (c *Client) sendListRestoreRunEvents(ctx context.Context, params ListRestor
 
 // ListRestoreRuns invokes listRestoreRuns operation.
 //
-// Returns restore runs for the site, ordered newest-first. Each run
-// records a single restore attempt triggered via
-// `POST /backups/{snapshotId}/restore`. The `triggered_by_email` and
-// `triggered_by_name` fields are populated when the actor is a known
-// user in the tenant directory (API-key or system actors leave them
-// null). Requires viewer+.
+// Returns restore runs for the site, ordered newest-first. Each run records a single restore attempt
+// triggered via `POST /backups/{snapshotId}/restore`. The `triggered_by_email` and `triggered_by_name`
+// fields are populated when the actor is a known user in the tenant directory (API-key or system
+// actors leave them null). Requires viewer+.
 //
 // GET /api/v1/sites/{siteId}/restores
 func (c *Client) ListRestoreRuns(ctx context.Context, params ListRestoreRunsParams) (ListRestoreRunsRes, error) {
@@ -27441,7 +28746,13 @@ func (c *Client) sendListRestoreRuns(ctx context.Context, params ListRestoreRuns
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListRestoreRunsResponse(resp)
@@ -27454,9 +28765,8 @@ func (c *Client) sendListRestoreRuns(ctx context.Context, params ListRestoreRuns
 
 // ListRucssResults invokes listRucssResults operation.
 //
-// Returns a page of the site's cached Remove-Unused-CSS results (one row
-// per page structure hash, with original/used byte sizes and the
-// reduction percentage). Requires the `site:read` permission.
+// Returns a page of the site's cached Remove-Unused-CSS results (one row per page structure hash, with
+// original/used byte sizes and the reduction percentage). Requires the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/rucss/results
 func (c *Client) ListRucssResults(ctx context.Context, params ListRucssResultsParams) (*RucssResultList, error) {
@@ -27574,7 +28884,13 @@ func (c *Client) sendListRucssResults(ctx context.Context, params ListRucssResul
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListRucssResultsResponse(resp)
@@ -27587,11 +28903,11 @@ func (c *Client) sendListRucssResults(ctx context.Context, params ListRucssResul
 
 // ListRumResults invokes listRumResults operation.
 //
-// Returns per-URL/metric/device/country p75 breakdown rows for the
-// dashboard table. Each row includes the url_pattern, metric, device,
-// country, p75_ms, sample_count, the CWV rating band, and a suppressed
-// flag. Rows below the site's min_sample_count floor have suppressed=true
-// and p75_ms=0; the dashboard renders "insufficient samples" for those.
+// Returns per-URL/metric/device/country p75 breakdown rows for the dashboard table. Each row includes
+// the url_pattern, metric, device, country, p75_ms, sample_count, the CWV rating band, and a
+// suppressed flag. Rows below the site's min_sample_count floor have suppressed=true and p75_ms=0; the
+// dashboard renders "insufficient samples" for those.
+//
 // Requires the `site:read` permission.
 //
 // GET /api/v1/sites/{siteId}/perf/rum
@@ -27693,7 +29009,13 @@ func (c *Client) sendListRumResults(ctx context.Context, params ListRumResultsPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListRumResultsResponse(resp)
@@ -27826,7 +29148,13 @@ func (c *Client) sendListScanFindings(ctx context.Context, params ListScanFindin
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListScanFindingsResponse(resp)
@@ -27940,7 +29268,13 @@ func (c *Client) sendListScanRuns(ctx context.Context, params ListScanRunsParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListScanRunsResponse(resp)
@@ -27953,11 +29287,10 @@ func (c *Client) sendListScanRuns(ctx context.Context, params ListScanRunsParams
 
 // ListScheduleRuns invokes listScheduleRuns operation.
 //
-// Returns a split view of schedule runs for the site: `upcoming`
-// (non-terminal: scheduled/queued/running, bounded to 10) and `past`
-// (terminal: completed/failed/skipped/canceled, paginated via
-// `limit`/`offset`). Filter to one set with `?status=upcoming` or
-// `?status=past`. Requires viewer+.
+// Returns a split view of schedule runs for the site: `upcoming` (non-terminal:
+// scheduled/queued/running, bounded to 10) and `past` (terminal: completed/failed/skipped/canceled,
+// paginated via `limit`/`offset`). Filter to one set with `?status=upcoming` or `?status=past`.
+// Requires viewer+.
 //
 // GET /api/v1/sites/{siteId}/schedule-runs
 func (c *Client) ListScheduleRuns(ctx context.Context, params ListScheduleRunsParams) (ListScheduleRunsRes, error) {
@@ -28092,7 +29425,13 @@ func (c *Client) sendListScheduleRuns(ctx context.Context, params ListScheduleRu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListScheduleRunsResponse(resp)
@@ -28166,7 +29505,13 @@ func (c *Client) sendListSharedWithMe(ctx context.Context) (res ListSharedWithMe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSharedWithMeResponse(resp)
@@ -28179,12 +29524,11 @@ func (c *Client) sendListSharedWithMe(ctx context.Context) (res ListSharedWithMe
 
 // ListSiteActivity invokes listSiteActivity operation.
 //
-// Returns the agent-captured WordPress activity events for the site,
-// newest first. Each event carries the hash-chain fields (prev_hash,
-// this_hash) and a server-verified chain_valid flag: the CP recomputes
-// every event's hash at ingest and flags any tamper (a mutated, inserted,
-// or deleted historical row) as chain_valid=false. Filter by event_type,
-// object_type, actor_login, severity, and an occurred-at time range.
+// Returns the agent-captured WordPress activity events for the site, newest first. Each event carries
+// the hash-chain fields (prev_hash, this_hash) and a server-verified chain_valid flag: the CP
+// recomputes every event's hash at ingest and flags any tamper (a mutated, inserted, or deleted
+// historical row) as chain_valid=false. Filter by event_type, object_type, actor_login, severity, and
+// an occurred-at time range.
 //
 // GET /api/v1/sites/{siteId}/activity
 func (c *Client) ListSiteActivity(ctx context.Context, params ListSiteActivityParams) (*SiteActivityList, error) {
@@ -28421,7 +29765,13 @@ func (c *Client) sendListSiteActivity(ctx context.Context, params ListSiteActivi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteActivityResponse(resp)
@@ -28514,7 +29864,13 @@ func (c *Client) sendListSiteBans(ctx context.Context, params ListSiteBansParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteBansResponse(resp)
@@ -28527,9 +29883,8 @@ func (c *Client) sendListSiteBans(ctx context.Context, params ListSiteBansParams
 
 // ListSiteDestinations invokes listSiteDestinations operation.
 //
-// ADR-036 P1 storage adapter. Returns every destination configured on the
-// site (`cp` / `local` / `s3_compat`). The encrypted S3 secret is NEVER
-// returned; `has_secret` reports whether one is stored.
+// ADR-036 P1 storage adapter. Returns every destination configured on the site (`cp` / `local` /
+// `s3_compat`). The encrypted S3 secret is NEVER returned; `has_secret` reports whether one is stored.
 //
 // GET /api/v1/sites/{siteId}/destinations
 func (c *Client) ListSiteDestinations(ctx context.Context, params ListSiteDestinationsParams) (ListSiteDestinationsRes, error) {
@@ -28609,7 +29964,13 @@ func (c *Client) sendListSiteDestinations(ctx context.Context, params ListSiteDe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteDestinationsResponse(resp)
@@ -28622,13 +29983,13 @@ func (c *Client) sendListSiteDestinations(ctx context.Context, params ListSiteDe
 
 // ListSiteEmailLog invokes listSiteEmailLog operation.
 //
-// Returns a keyset-paginated list of outgoing email log entries for a
-// site, ordered by `created_at DESC, id DESC`. The composite cursor
-// predicate `(created_at, id)` ensures no rows are skipped when multiple
-// sends share the same timestamp (batch sends).
-// **Body privacy**: `body` is never returned in the list response,
-// regardless of `body_stored`. Use `GET /email/log/{logId}` to retrieve
-// the full detail including body.
+// Returns a keyset-paginated list of outgoing email log entries for a site, ordered by
+// `created_at DESC, id DESC`. The composite cursor predicate `(created_at, id)` ensures no rows are
+// skipped when multiple sends share the same timestamp (batch sends).
+//
+// Body privacy: `body` is never returned in the list response, regardless of `body_stored`. Use
+// `GET /email/log/{logId}` to retrieve the full detail including body.
+//
 // Requires `site.email.manage` permission and site access.
 //
 // GET /api/v1/sites/{siteId}/email/log
@@ -28815,7 +30176,13 @@ func (c *Client) sendListSiteEmailLog(ctx context.Context, params ListSiteEmailL
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteEmailLogResponse(resp)
@@ -28828,10 +30195,10 @@ func (c *Client) sendListSiteEmailLog(ctx context.Context, params ListSiteEmailL
 
 // ListSiteEmailSuppression invokes listSiteEmailSuppression operation.
 //
-// Returns a keyset-paginated list of suppression entries for this site
-// (including fleet-wide entries). Each entry was created either by a
-// provider webhook (hard_bounce / complaint) or manually added by an
-// operator (manual / unsubscribe).
+// Returns a keyset-paginated list of suppression entries for this site (including fleet-wide entries).
+// Each entry was created either by a provider webhook (hard_bounce / complaint) or manually added by
+// an operator (manual / unsubscribe).
+//
 // Requires `site.email.manage` permission.
 //
 // GET /api/v1/sites/{siteId}/email/suppression
@@ -28967,7 +30334,13 @@ func (c *Client) sendListSiteEmailSuppression(ctx context.Context, params ListSi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteEmailSuppressionResponse(resp)
@@ -28980,22 +30353,23 @@ func (c *Client) sendListSiteEmailSuppression(ctx context.Context, params ListSi
 
 // ListSiteFileVersions invokes listSiteFileVersions operation.
 //
-// Issues a `file_versions_list` command to the site's agent. Returns the
-// version history for a single file, ordered newest-first. Each version
-// carries an opaque `version_id` that can be passed to
+// Issues a `file_versions_list` command to the site's agent. Returns the version history for a single
+// file, ordered newest-first. Each version carries an opaque `version_id` that can be passed to
 // `POST /files/versions/restore` to restore that version.
-// **Sensitive-path gate (F3):** If `path` matches the sensitive-file
-// deny-list (wp-config.php, .env*, *.pem, …), the caller must hold
-// `site.files.read_sensitive` (owner). A non-owner is denied `403` and
-// the denial is audited at elevated severity. This prevents leaking that
-// sensitive backups exist to non-owner collaborators.
-// Version history availability depends on the agent-side implementation
-// (e.g. the host's filesystem snapshot, the pre-write backup mechanism,
-// or WP's own revision system). When no history is available for a path,
-// the agent returns an empty `versions` list.
-// This is a **read** operation.
-// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-// when not opted in.
+//
+// Sensitive-path gate (F3): If `path` matches the sensitive-file deny-list (wp-config.php, .env*,
+// *.pem, …), the caller must hold `site.files.read_sensitive` (owner). A non-owner is denied `403`
+// and the denial is audited at elevated severity. This prevents leaking that sensitive backups exist
+// to non-owner collaborators.
+//
+// Version history availability depends on the agent-side implementation (e.g. the host's filesystem
+// snapshot, the pre-write backup mechanism, or WP's own revision system). When no history is available
+// for a path, the agent returns an empty `versions` list.
+//
+// This is a read operation.
+//
+// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+//
 // Requires `site.files.read` permission (admin+).
 //
 // GET /api/v1/sites/{siteId}/files/versions
@@ -29094,7 +30468,13 @@ func (c *Client) sendListSiteFileVersions(ctx context.Context, params ListSiteFi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteFileVersionsResponse(resp)
@@ -29107,13 +30487,16 @@ func (c *Client) sendListSiteFileVersions(ctx context.Context, params ListSiteFi
 
 // ListSiteFiles invokes listSiteFiles operation.
 //
-// Issues a `file_list` command to the site's agent and returns one page
-// of directory entries for the given path.
-// The feature must be **explicitly enabled per site** (off by default).
-// Returns `403 files_not_enabled` when the site has not opted in.
+// Issues a `file_list` command to the site's agent and returns one page of directory entries for the
+// given path.
+//
+// The feature must be explicitly enabled per site (off by default). Returns `403 files_not_enabled`
+// when the site has not opted in.
+//
 // Requires the `site.files.read` permission (admin+).
-// Pagination is cursor-based: when `truncated=true` the response carries
-// an opaque `cursor` that the caller passes on the next request.
+//
+// Pagination is cursor-based: when `truncated=true` the response carries an opaque `cursor` that the
+// caller passes on the next request.
 //
 // GET /api/v1/sites/{siteId}/files
 func (c *Client) ListSiteFiles(ctx context.Context, params ListSiteFilesParams) (ListSiteFilesRes, error) {
@@ -29231,7 +30614,13 @@ func (c *Client) sendListSiteFiles(ctx context.Context, params ListSiteFilesPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteFilesResponse(resp)
@@ -29244,8 +30633,8 @@ func (c *Client) sendListSiteFiles(ctx context.Context, params ListSiteFilesPara
 
 // ListSiteInvitations invokes listSiteInvitations operation.
 //
-// Requires the `member.manage` permission and full org membership — a
-// site-scoped collaborator cannot manage shares.
+// Requires the `member.manage` permission and full org membership — a site-scoped collaborator
+// cannot manage shares.
 //
 // GET /api/v1/sites/{siteId}/invitations
 func (c *Client) ListSiteInvitations(ctx context.Context, params ListSiteInvitationsParams) (ListSiteInvitationsRes, error) {
@@ -29325,7 +30714,13 @@ func (c *Client) sendListSiteInvitations(ctx context.Context, params ListSiteInv
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteInvitationsResponse(resp)
@@ -29338,9 +30733,8 @@ func (c *Client) sendListSiteInvitations(ctx context.Context, params ListSiteInv
 
 // ListSiteLoginEvents invokes listSiteLoginEvents operation.
 //
-// Returns the agent-ingested login events for the site, ordered by
-// `occurred_at` descending (newest first). Filter by `status` (1=failure,
-// 2=success, 3=blocked). Default limit is 100; max 500.
+// Returns the agent-ingested login events for the site, ordered by `occurred_at` descending (newest
+// first). Filter by `status` (1=failure, 2=success, 3=blocked). Default limit is 100; max 500.
 //
 // GET /api/v1/sites/{siteId}/security/login-events
 func (c *Client) ListSiteLoginEvents(ctx context.Context, params ListSiteLoginEventsParams) (*SiteLoginEventList, error) {
@@ -29458,7 +30852,13 @@ func (c *Client) sendListSiteLoginEvents(ctx context.Context, params ListSiteLog
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteLoginEventsResponse(resp)
@@ -29471,9 +30871,8 @@ func (c *Client) sendListSiteLoginEvents(ctx context.Context, params ListSiteLog
 
 // ListSitePHPErrors invokes listSitePHPErrors operation.
 //
-// Returns the agent-captured PHP errors for the site, grouped by md5
-// fingerprint. Each row carries the occurrence count, first/last seen
-// timestamps, and the silenced flag.
+// Returns the agent-captured PHP errors for the site, grouped by md5 fingerprint. Each row carries the
+// occurrence count, first/last seen timestamps, and the silenced flag.
 //
 // GET /api/v1/sites/{siteId}/errors
 func (c *Client) ListSitePHPErrors(ctx context.Context, params ListSitePHPErrorsParams) (*PHPErrorList, error) {
@@ -29625,7 +31024,13 @@ func (c *Client) sendListSitePHPErrors(ctx context.Context, params ListSitePHPEr
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSitePHPErrorsResponse(resp)
@@ -29718,7 +31123,13 @@ func (c *Client) sendListSitePolicyGroups(ctx context.Context, params ListSitePo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSitePolicyGroupsResponse(resp)
@@ -29811,7 +31222,13 @@ func (c *Client) sendListSiteShares(ctx context.Context, params ListSiteSharesPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteSharesResponse(resp)
@@ -29904,7 +31321,13 @@ func (c *Client) sendListSiteVulnerabilities(ctx context.Context, params ListSit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteVulnerabilitiesResponse(resp)
@@ -29917,20 +31340,18 @@ func (c *Client) sendListSiteVulnerabilities(ctx context.Context, params ListSit
 
 // ListSites invokes listSites operation.
 //
-// Lists the tenant's sites. By default (ADR-041) archived sites are hidden.
-// Pass `?state=<connection_state>` to filter to exactly one state (e.g.
-// `?state=archived` for the archived chip), or `?include_archived=true` as
-// a convenience alias that returns only the archived sites.
-// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the
-// DATABASE, before `limit`/`offset`. That is the point of them: a client
-// that fetches one page and filters it locally is searching only that
-// page, so an agency with more sites than the page size gets "no results"
-// for a site it owns. With `q` on the server, the rows returned are the
-// best matches in the requested order rather than the newest page filtered
-// afterwards.
-// `q` and `sort` compose with every other parameter here (`tags`,
-// `tags_match`, `state`, `include_archived`, `clientId`) rather than
-// replacing any of them.
+// Lists the tenant's sites. By default (ADR-041) archived sites are hidden. Pass
+// `?state=<connection_state>` to filter to exactly one state (e.g. `?state=archived` for the archived
+// chip), or `?include_archived=true` as a convenience alias that returns only the archived sites.
+//
+// GH #349: `q` (free-text search) and `sort` (ordering) are applied in the DATABASE, before
+// `limit`/`offset`. That is the point of them: a client that fetches one page and filters it locally
+// is searching only that page, so an agency with more sites than the page size gets "no results" for a
+// site it owns. With `q` on the server, the rows returned are the best matches in the requested order
+// rather than the newest page filtered afterwards.
+//
+// `q` and `sort` compose with every other parameter here (`tags`, `tags_match`, `state`,
+// `include_archived`, `clientId`) rather than replacing any of them.
 //
 // GET /api/v1/sites
 func (c *Client) ListSites(ctx context.Context, params ListSitesParams) (ListSitesRes, error) {
@@ -30157,7 +31578,13 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSitesResponse(resp)
@@ -30170,8 +31597,8 @@ func (c *Client) sendListSites(ctx context.Context, params ListSitesParams) (res
 
 // ListSocialProviders invokes listSocialProviders operation.
 //
-// Returns the provider keys that are configured and will work. The sign-in page renders exactly
-// these, so an unconfigured provider never shows a button that leads to a provider error page.
+// Returns the provider keys that are configured and will work. The sign-in page renders exactly these,
+// so an unconfigured provider never shows a button that leads to a provider error page.
 // Unauthenticated by design: the caller has not signed in yet, and the response reveals only which
 // buttons the operator chose to enable.
 //
@@ -30234,7 +31661,13 @@ func (c *Client) sendListSocialProviders(ctx context.Context) (res *ListSocialPr
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListSocialProvidersResponse(resp)
@@ -30247,9 +31680,8 @@ func (c *Client) sendListSocialProviders(ctx context.Context) (res *ListSocialPr
 
 // ListTags invokes listTags operation.
 //
-// Lists every tag in the tenant's registry (m100), sorted
-// case-insensitively by name, with a live `usage_count` (the number of
-// sites currently carrying it — unused tags with usage_count 0 are
+// Lists every tag in the tenant's registry (m100), sorted case-insensitively by name, with a live
+// `usage_count` (the number of sites currently carrying it — unused tags with usage_count 0 are
 // legitimate). No pagination: a tenant's tag vocabulary is small.
 //
 // GET /api/v1/tags
@@ -30311,7 +31743,13 @@ func (c *Client) sendListTags(ctx context.Context) (res *SiteTagList, err error)
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListTagsResponse(resp)
@@ -30423,7 +31861,13 @@ func (c *Client) sendListTenants(ctx context.Context, params ListTenantsParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListTenantsResponse(resp)
@@ -30497,7 +31941,13 @@ func (c *Client) sendListTrustedDevices(ctx context.Context) (res ListTrustedDev
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListTrustedDevicesResponse(resp)
@@ -30609,7 +32059,13 @@ func (c *Client) sendListUpdateRuns(ctx context.Context, params ListUpdateRunsPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListUpdateRunsResponse(resp)
@@ -30683,7 +32139,13 @@ func (c *Client) sendListWebAuthnCredentials(ctx context.Context) (res ListWebAu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeListWebAuthnCredentialsResponse(resp)
@@ -30696,10 +32158,9 @@ func (c *Client) sendListWebAuthnCredentials(ctx context.Context) (res ListWebAu
 
 // LockBackup invokes lockBackup operation.
 //
-// Sets `locked=true` on a completed snapshot. Locked snapshots are never
-// auto-pruned by the retention GC regardless of age or count rules.
-// The operator must explicitly DELETE the lock before the GC can reclaim it.
-// Track C (m49). Requires operator+.
+// Sets `locked=true` on a completed snapshot. Locked snapshots are never auto-pruned by the retention
+// GC regardless of age or count rules. The operator must explicitly DELETE the lock before the GC can
+// reclaim it. Track C (m49). Requires operator+.
 //
 // PATCH /api/v1/backups/{snapshotId}/lock
 func (c *Client) LockBackup(ctx context.Context, params LockBackupParams) (LockBackupRes, error) {
@@ -30779,7 +32240,13 @@ func (c *Client) sendLockBackup(ctx context.Context, params LockBackupParams) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeLockBackupResponse(resp)
@@ -30856,7 +32323,13 @@ func (c *Client) sendLogin(ctx context.Context, request *LoginRequest) (res Logi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeLoginResponse(resp)
@@ -30930,7 +32403,13 @@ func (c *Client) sendLogout(ctx context.Context) (res LogoutRes, err error) {
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeLogoutResponse(resp)
@@ -31042,7 +32521,13 @@ func (c *Client) sendOidcCallback(ctx context.Context, params OidcCallbackParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeOidcCallbackResponse(resp)
@@ -31116,7 +32601,13 @@ func (c *Client) sendOidcLogin(ctx context.Context) (res OidcLoginRes, err error
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeOidcLoginResponse(resp)
@@ -31212,7 +32703,13 @@ func (c *Client) sendOptimizeMedia(ctx context.Context, request OptMediaOptimize
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeOptimizeMediaResponse(resp)
@@ -31307,7 +32804,13 @@ func (c *Client) sendPatchMember(ctx context.Context, request *PatchMemberReques
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePatchMemberResponse(resp)
@@ -31320,20 +32823,19 @@ func (c *Client) sendPatchMember(ctx context.Context, request *PatchMemberReques
 
 // PatchSiteErrorConfig invokes patchSiteErrorConfig operation.
 //
-// Stores the PHP error-level mask and md5 ignore-list for the site, then
-// pushes the new config to the agent via a signed `sync_error_config`
-// command. Returns the stored config on success.
+// Stores the PHP error-level mask and md5 ignore-list for the site, then pushes the new config to the
+// agent via a signed `sync_error_config` command. Returns the stored config on success.
+//
 // Validation:
-// - `error_level` must be a positive integer that fits in int32 (>0,
-// ≤2147483647). Typical values: 6143 (WP default), 32767 (E_ALL),
-// 0x7FFFFFFF (all flags set).
-// - Each entry in `ignore_md5s` must be exactly 32 lowercase hex
-// characters (the md5(code:file:line:message) fingerprint produced
-// by the agent).
-// If the agent push fails after the config is successfully stored the
-// response is still HTTP 200 with the stored config; an
-// `X-Agent-Push-Warning` response header carries the push error message
-// so the UI can surface it as a non-blocking warning.
+//
+//   - `error_level` must be a positive integer that fits in int32 (>0, ≤2147483647). Typical values:
+//     6143 (WP default), 32767 (E_ALL), 0x7FFFFFFF (all flags set).
+//   - Each entry in `ignore_md5s` must be exactly 32 lowercase hex characters (the
+//     md5(code:file:line:message) fingerprint produced by the agent).
+//
+// If the agent push fails after the config is successfully stored the response is still HTTP 200 with
+// the stored config; an `X-Agent-Push-Warning` response header carries the push error message so the
+// UI can surface it as a non-blocking warning.
 //
 // PATCH /api/v1/sites/{siteId}/errors/config
 func (c *Client) PatchSiteErrorConfig(ctx context.Context, request *SiteErrorConfigUpdate, params PatchSiteErrorConfigParams) (PatchSiteErrorConfigRes, error) {
@@ -31416,7 +32918,13 @@ func (c *Client) sendPatchSiteErrorConfig(ctx context.Context, request *SiteErro
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePatchSiteErrorConfigResponse(resp)
@@ -31429,19 +32937,19 @@ func (c *Client) sendPatchSiteErrorConfig(ctx context.Context, request *SiteErro
 
 // PauseSiteMonitoring invokes pauseSiteMonitoring operation.
 //
-// GH #414 phase 1. Records the operator's intent to pause scheduled
-// monitoring on each site in `site_ids`. Requires the `site.write`
-// permission.
-// Idempotent: pausing a site that is already paused succeeds and
-// changes nothing — in particular it does NOT overwrite the existing
-// `reason` or paused-at instant — and comes back with `changed: false`.
-// Per-site, not all-or-nothing: ids the caller cannot access, or that
-// do not exist in this tenant, come back with `ok: false` rather than
-// failing the whole call. `changed` is true only for the sites this
-// request actually moved.
-// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM
-// beacon ingestion, retention jobs and every operator-initiated action
-// continue to run on a paused site.
+// GH #414 phase 1. Records the operator's intent to pause scheduled monitoring on each site in
+// `site_ids`. Requires the `site.write` permission.
+//
+// Idempotent: pausing a site that is already paused succeeds and changes nothing — in particular it
+// does NOT overwrite the existing `reason` or paused-at instant — and comes back with
+// `changed: false`.
+//
+// Per-site, not all-or-nothing: ids the caller cannot access, or that do not exist in this tenant,
+// come back with `ok: false` rather than failing the whole call. `changed` is true only for the sites
+// this request actually moved.
+//
+// Pause governs the SCHEDULE only. Backups, the connection sweep, RUM beacon ingestion, retention jobs
+// and every operator-initiated action continue to run on a paused site.
 //
 // POST /api/v1/sites/monitoring/pause
 func (c *Client) PauseSiteMonitoring(ctx context.Context, request *PauseMonitoringRequest) (PauseSiteMonitoringRes, error) {
@@ -31505,7 +33013,13 @@ func (c *Client) sendPauseSiteMonitoring(ctx context.Context, request *PauseMoni
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePauseSiteMonitoringResponse(resp)
@@ -31518,9 +33032,8 @@ func (c *Client) sendPauseSiteMonitoring(ctx context.Context, request *PauseMoni
 
 // PreloadCache invokes preloadCache operation.
 //
-// Triggers the agent to begin warming the page cache. Returns an
-// `{ok, detail}` ack; preload progress lands via the `cache.preload.*`
-// SSE events. Requires the `site.cache.purge` permission.
+// Triggers the agent to begin warming the page cache. Returns an `{ok, detail}` ack; preload progress
+// lands via the `cache.preload.*` SSE events. Requires the `site.cache.purge` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/cache/preload
 func (c *Client) PreloadCache(ctx context.Context, params PreloadCacheParams) (*PerfActionResult, error) {
@@ -31600,7 +33113,13 @@ func (c *Client) sendPreloadCache(ctx context.Context, params PreloadCacheParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePreloadCacheResponse(resp)
@@ -31614,24 +33133,28 @@ func (c *Client) sendPreloadCache(ctx context.Context, params PreloadCacheParams
 // PrepareSiteFileDownload invokes prepareSiteFileDownload operation.
 //
 // Prepares a file for large-file download in three steps:
-// 1. CP mints presigned S3 PUT URLs in a tenant-namespaced staging area.
-// 2. CP issues `file_download_prepare` to the agent, which uploads the
-// file in chunks directly to S3 (never through the CP).
-// 3. CP mints a short-lived presigned GET URL (≤ 5 min TTL) for the
-// browser to fetch the staged file directly from object storage.
-// Large files bypass the CP's response path entirely — only the
-// presigned URL is returned in the 200 body.
+//
+//  1. CP mints presigned S3 PUT URLs in a tenant-namespaced staging area.
+//  2. CP issues `file_download_prepare` to the agent, which uploads the file in chunks directly to S3
+//     (never through the CP).
+//  3. CP mints a short-lived presigned GET URL (≤ 5 min TTL) for the browser to fetch the staged file
+//     directly from object storage.
+//
+// Large files bypass the CP's response path entirely — only the presigned URL is returned in the 200
+// body.
+//
 // A `file_transfers` row is persisted for audit and GC tracking.
-// **Sensitive-path gate (T6):** same rules as `readSiteFileContent`, owner-level permission required;
 //
-//	the attempt is always audited.
+// Sensitive-path gate (T6): same rules as `readSiteFileContent`, owner-level permission required; the
+// attempt is always audited.
 //
-// Returns `503 storage_not_configured` when object storage is not
-// configured (self-hosted deployments without S3).
-// The feature must be explicitly enabled per site. Returns
-// `403 files_not_enabled` when not opted in.
-// Requires the `site.files.read` permission (admin+). Sensitive-path
-// downloads additionally require `site.files.read_sensitive` (owner only).
+// Returns `503 storage_not_configured` when object storage is not configured (self-hosted deployments
+// without S3).
+//
+// The feature must be explicitly enabled per site. Returns `403 files_not_enabled` when not opted in.
+//
+// Requires the `site.files.read` permission (admin+). Sensitive-path downloads additionally require
+// `site.files.read_sensitive` (owner only).
 //
 // POST /api/v1/sites/{siteId}/files/download
 func (c *Client) PrepareSiteFileDownload(ctx context.Context, request *FileDownloadRequest, params PrepareSiteFileDownloadParams) (PrepareSiteFileDownloadRes, error) {
@@ -31714,7 +33237,13 @@ func (c *Client) sendPrepareSiteFileDownload(ctx context.Context, request *FileD
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePrepareSiteFileDownloadResponse(resp)
@@ -31727,19 +33256,21 @@ func (c *Client) sendPrepareSiteFileDownload(ctx context.Context, request *FileD
 
 // PrepareSiteFileUpload invokes prepareSiteFileUpload operation.
 //
-// Step 1 of 2 for browser file upload. The CP mints short-lived presigned
-// S3 PUT URLs in the tenant-namespaced staging area and returns them to
-// the browser. The browser PUTs each chunk directly to S3 (never through
-// the CP). After all chunks are staged, the caller invokes
-// `POST /files/upload/apply` to have the agent fetch, reassemble,
-// validate (SHA-256), and atomic-swap the file into place.
-// Presigned PUT URLs are **never logged** (T8). TTL is ≤ 5 minutes.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-// **Executable/sensitive gate:** Same as `writeSiteFileContent` — if
-// `confirm_executable_write` or `confirm_sensitive` is set, owner
-// permission (`site.files.write_code`) is required.
-// Returns `503 storage_not_configured` on self-hosted deployments without
-// object storage.
+// Step 1 of 2 for browser file upload. The CP mints short-lived presigned S3 PUT URLs in the
+// tenant-namespaced staging area and returns them to the browser. The browser PUTs each chunk directly
+// to S3 (never through the CP). After all chunks are staged, the caller invokes
+// `POST /files/upload/apply` to have the agent fetch, reassemble, validate (SHA-256), and atomic-swap
+// the file into place.
+//
+// Presigned PUT URLs are never logged (T8). TTL is ≤ 5 minutes.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+//
+// Executable/sensitive gate: Same as `writeSiteFileContent` — if `confirm_executable_write` or
+// `confirm_sensitive` is set, owner permission (`site.files.write_code`) is required.
+//
+// Returns `503 storage_not_configured` on self-hosted deployments without object storage.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/upload
@@ -31823,7 +33354,13 @@ func (c *Client) sendPrepareSiteFileUpload(ctx context.Context, request *Prepare
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePrepareSiteFileUploadResponse(resp)
@@ -31836,12 +33373,11 @@ func (c *Client) sendPrepareSiteFileUpload(ctx context.Context, request *Prepare
 
 // PurgeCache invokes purgeCache operation.
 //
-// Purges the whole cache (`scope: all`), a single URL (`scope: url` with
-// `url`), or a list of URLs (`urls`). Setting `delete_everything: true`
-// with `scope: all` additionally clears every cached artifact and requires
-// the higher `site.cache.delete-everything` permission. The normal purge
-// requires `site.cache.purge`. An agent rejection is returned as HTTP 200
-// with `ok: false` and a `detail`.
+// Purges the whole cache (`scope: all`), a single URL (`scope: url` with `url`), or a list of URLs
+// (`urls`). Setting `delete_everything: true` with `scope: all` additionally clears every cached
+// artifact and requires the higher `site.cache.delete-everything` permission. The normal purge
+// requires `site.cache.purge`. An agent rejection is returned as HTTP 200 with `ok: false` and a
+// `detail`.
 //
 // POST /api/v1/sites/{siteId}/perf/cache/purge
 func (c *Client) PurgeCache(ctx context.Context, request *PurgeRequest, params PurgeCacheParams) (PurgeCacheRes, error) {
@@ -31924,7 +33460,13 @@ func (c *Client) sendPurgeCache(ctx context.Context, request *PurgeRequest, para
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePurgeCacheResponse(resp)
@@ -31937,9 +33479,8 @@ func (c *Client) sendPurgeCache(ctx context.Context, request *PurgeRequest, para
 
 // PutAlertConfig invokes putAlertConfig operation.
 //
-// Sets the email recipients, webhook URL + signing secret, and enabled flag
-// for downtime/recovery alerts. The webhook secret is write-only. Requires
-// admin+.
+// Sets the email recipients, webhook URL + signing secret, and enabled flag for downtime/recovery
+// alerts. The webhook secret is write-only. Requires admin+.
 //
 // PUT /api/v1/alert-config
 func (c *Client) PutAlertConfig(ctx context.Context, request *AlertConfigUpdate) (PutAlertConfigRes, error) {
@@ -32003,7 +33544,13 @@ func (c *Client) sendPutAlertConfig(ctx context.Context, request *AlertConfigUpd
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutAlertConfigResponse(resp)
@@ -32099,7 +33646,13 @@ func (c *Client) sendPutBackupSchedule(ctx context.Context, request *BackupSched
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutBackupScheduleResponse(resp)
@@ -32195,7 +33748,13 @@ func (c *Client) sendPutBackupSettingsContents(ctx context.Context, request *Sit
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutBackupSettingsContentsResponse(resp)
@@ -32291,7 +33850,13 @@ func (c *Client) sendPutBackupSettingsNotifications(ctx context.Context, request
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutBackupSettingsNotificationsResponse(resp)
@@ -32387,7 +33952,13 @@ func (c *Client) sendPutClientReportSchedule(ctx context.Context, request *Clien
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutClientReportScheduleResponse(resp)
@@ -32400,11 +33971,11 @@ func (c *Client) sendPutClientReportSchedule(ctx context.Context, request *Clien
 
 // PutEmailConnection invokes putEmailConnection operation.
 //
-// Creates or updates the named connection identified by `connKey` for the
-// site's email config. The key must match `^[a-z0-9][a-z0-9_-]{0,31}$`;
-// the value `default` is reserved and returns 400.
-// Omit `secret` to preserve the existing stored credential. Provide an
-// empty string to clear it.
+// Creates or updates the named connection identified by `connKey` for the site's email config. The key
+// must match `^[a-z0-9][a-z0-9_-]{0,31}$`; the value `default` is reserved and returns 400.
+//
+// Omit `secret` to preserve the existing stored credential. Provide an empty string to clear it.
+//
 // Requires `site.email.manage` permission.
 //
 // PUT /api/v1/sites/{siteId}/email/connections/{connKey}
@@ -32506,7 +34077,13 @@ func (c *Client) sendPutEmailConnection(ctx context.Context, request *PutEmailCo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutEmailConnectionResponse(resp)
@@ -32519,13 +34096,13 @@ func (c *Client) sendPutEmailConnection(ctx context.Context, request *PutEmailCo
 
 // PutEmailNotifySettings invokes putEmailNotifySettings operation.
 //
-// Creates or updates the tenant-level email notification settings.
-// This is a full replace, not a partial patch — every field is required
-// and the request body fully overwrites the stored row.
-// `digest_cadence`/`digest_day`/`digest_hour`/`timezone` are only
-// enforced when `digest_enabled` is true; when the digest is disabled
-// they may be sent as zero values (a save that only touches the
+// Creates or updates the tenant-level email notification settings. This is a full replace, not a
+// partial patch — every field is required and the request body fully overwrites the stored row.
+//
+// `digest_cadence`/`digest_day`/`digest_hour`/`timezone` are only enforced when `digest_enabled` is
+// true; when the digest is disabled they may be sent as zero values (a save that only touches the
 // per-failure-alerts section must not be blocked by digest fields).
+//
 // Org-level route. Requires `site.email.manage` permission.
 //
 // PUT /api/v1/email/notify-settings
@@ -32590,7 +34167,13 @@ func (c *Client) sendPutEmailNotifySettings(ctx context.Context, request *PutEma
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutEmailNotifySettingsResponse(resp)
@@ -32603,14 +34186,12 @@ func (c *Client) sendPutEmailNotifySettings(ctx context.Context, request *PutEma
 
 // PutObjectCacheConfig invokes putObjectCacheConfig operation.
 //
-// Stores the object cache configuration. An empty `password` field
-// preserves the stored password (nil-sentinel). If connection-critical
-// fields change (host, port, scheme, database, username, prefix, or
-// password), the stored test hash is cleared and a new test is required
-// before re-enabling. The agent receives the new config via an
-// `objectcache.apply_config` signed command (best-effort: a push failure
-// returns 200 with an `X-Agent-Push-Warning` header). Requires
-// `site.perf.config` permission.
+// Stores the object cache configuration. An empty `password` field preserves the stored password
+// (nil-sentinel). If connection-critical fields change (host, port, scheme, database, username,
+// prefix, or password), the stored test hash is cleared and a new test is required before re-enabling.
+// The agent receives the new config via an `objectcache.apply_config` signed command (best-effort: a
+// push failure returns 200 with an `X-Agent-Push-Warning` header). Requires `site.perf.config`
+// permission.
 //
 // PUT /api/v1/sites/{siteId}/perf/object-cache/config
 func (c *Client) PutObjectCacheConfig(ctx context.Context, request *ObjectCacheConfigPut, params PutObjectCacheConfigParams) (PutObjectCacheConfigRes, error) {
@@ -32693,7 +34274,13 @@ func (c *Client) sendPutObjectCacheConfig(ctx context.Context, request *ObjectCa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutObjectCacheConfigResponse(resp)
@@ -32706,10 +34293,10 @@ func (c *Client) sendPutObjectCacheConfig(ctx context.Context, request *ObjectCa
 
 // PutOrgEmailConfig invokes putOrgEmailConfig operation.
 //
-// Creates or updates the org-wide default email configuration. This row is
-// inherited by any site that has no per-site override. Provide `secret` in
-// the body to store a new provider secret (age-encrypted at rest); omit
-// `secret` to preserve the existing stored credential.
+// Creates or updates the org-wide default email configuration. This row is inherited by any site that
+// has no per-site override. Provide `secret` in the body to store a new provider secret (age-encrypted
+// at rest); omit `secret` to preserve the existing stored credential.
+//
 // Org-level route. Requires `site.email.manage` permission (operator+).
 //
 // PUT /api/v1/email/org-config
@@ -32774,7 +34361,13 @@ func (c *Client) sendPutOrgEmailConfig(ctx context.Context, request *PutEmailCon
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutOrgEmailConfigResponse(resp)
@@ -32787,10 +34380,10 @@ func (c *Client) sendPutOrgEmailConfig(ctx context.Context, request *PutEmailCon
 
 // PutOrgEmailWebhookConfig invokes putOrgEmailWebhookConfig operation.
 //
-// Updates the inbound webhook route token and/or signing key for the
-// org-wide email config. When rotate_token is true a new route token is
-// generated (the old URL is immediately invalid) and the plain token is
-// returned once in webhook_route_token.
+// Updates the inbound webhook route token and/or signing key for the org-wide email config. When
+// rotate_token is true a new route token is generated (the old URL is immediately invalid) and the
+// plain token is returned once in webhook_route_token.
+//
 // Org-level route. Requires `site.email.manage` permission (operator+).
 //
 // PUT /api/v1/email/org-config/webhook-config
@@ -32855,7 +34448,13 @@ func (c *Client) sendPutOrgEmailWebhookConfig(ctx context.Context, request *PutE
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutOrgEmailWebhookConfigResponse(resp)
@@ -32868,12 +34467,10 @@ func (c *Client) sendPutOrgEmailWebhookConfig(ctx context.Context, request *PutE
 
 // PutPerfConfig invokes putPerfConfig operation.
 //
-// Stores the new performance config and pushes it to the agent. If the
-// agent push fails after a successful store, HTTP 200 is still returned
-// with the stored config and the push error is surfaced in the
-// `X-Agent-Push-Warning` response header. `cdn_credentials`, when present,
-// is encrypted server-side and never echoed back. Requires the
-// `site.perf.config` permission.
+// Stores the new performance config and pushes it to the agent. If the agent push fails after a
+// successful store, HTTP 200 is still returned with the stored config and the push error is surfaced
+// in the `X-Agent-Push-Warning` response header. `cdn_credentials`, when present, is encrypted
+// server-side and never echoed back. Requires the `site.perf.config` permission.
 //
 // PUT /api/v1/sites/{siteId}/perf/config
 func (c *Client) PutPerfConfig(ctx context.Context, request *PerfConfig, params PutPerfConfigParams) (PutPerfConfigRes, error) {
@@ -32956,7 +34553,13 @@ func (c *Client) sendPutPerfConfig(ctx context.Context, request *PerfConfig, par
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutPerfConfigResponse(resp)
@@ -32969,13 +34572,11 @@ func (c *Client) sendPutPerfConfig(ctx context.Context, request *PerfConfig, par
 
 // PutSiteAppHealthSettings invokes putSiteAppHealthSettings operation.
 //
-// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291
-// Phase 3). `app_probe_path` must be a site-relative path (starts with
-// `/`, no scheme, no host, no `..` traversal) - validation failures
-// return 422. An empty `app_probe_path` clears the override back to
-// auto-detect. `app_alerts_disabled` excludes the site from app-health
-// alerting entirely (both the individual alert and the fleet circuit
-// breaker's eligible-site count) while the probe keeps running.
+// Stores `{app_probe_path, app_alerts_disabled}` for the site (GH #291 Phase 3). `app_probe_path` must
+// be a site-relative path (starts with `/`, no scheme, no host, no `..` traversal) - validation
+// failures return 422. An empty `app_probe_path` clears the override back to auto-detect.
+// `app_alerts_disabled` excludes the site from app-health alerting entirely (both the individual alert
+// and the fleet circuit breaker's eligible-site count) while the probe keeps running.
 //
 // PUT /api/v1/sites/{siteId}/app-health-settings
 func (c *Client) PutSiteAppHealthSettings(ctx context.Context, request *AppHealthSettingsUpdate, params PutSiteAppHealthSettingsParams) (PutSiteAppHealthSettingsRes, error) {
@@ -33058,7 +34659,13 @@ func (c *Client) sendPutSiteAppHealthSettings(ctx context.Context, request *AppH
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteAppHealthSettingsResponse(resp)
@@ -33071,24 +34678,24 @@ func (c *Client) sendPutSiteAppHealthSettings(ctx context.Context, request *AppH
 
 // PutSiteAutologinPolicy invokes putSiteAutologinPolicy operation.
 //
-// Stores `{enabled, default_wp_user_login}` for the site (GH #286).
-// `default_wp_user_login` is the WordPress login the mint endpoint
-// injects when an operator's mint request omits `target_wp_user_login`;
-// an explicit choice on mint always overrides it. An empty string
-// clears the default, reverting to the agent's built-in "first
-// administrator" fallback.
-// `allowed_wp_roles` is NOT accepted on this body; it is read-only via
-// the API. Unknown fields (including an attempt to send
-// `allowed_wp_roles`) are rejected with 422 rather than silently
+// Stores `{enabled, default_wp_user_login}` for the site (GH #286). `default_wp_user_login` is the
+// WordPress login the mint endpoint injects when an operator's mint request omits
+// `target_wp_user_login`; an explicit choice on mint always overrides it. An empty string clears the
+// default, reverting to the agent's built-in "first administrator" fallback.
+//
+// `allowed_wp_roles` is NOT accepted on this body; it is read-only via the API. Unknown fields
+// (including an attempt to send `allowed_wp_roles`) are rejected with 422 rather than silently
 // ignored.
-// **Validation**:
-// - `default_wp_user_login` must be at most 60 characters (WordPress's
-// `users.user_login` column is `varchar(60)`).
-// - `default_wp_user_login` may contain only letters, numbers, and
-// the characters `_ . - @` (WordPress usernames may be an email
-// address).
-// Authorization: requires the `site:autologin` permission (owner+admin).
-// Operator and viewer roles are explicitly denied.
+//
+// Validation:
+//
+//   - `default_wp_user_login` must be at most 60 characters (WordPress's `users.user_login` column is
+//     `varchar(60)`).
+//   - `default_wp_user_login` may contain only letters, numbers, and the characters `_ . - @`
+//     (WordPress usernames may be an email address).
+//
+// Authorization: requires the `site:autologin` permission (owner+admin). Operator and viewer roles are
+// explicitly denied.
 //
 // PUT /api/v1/sites/{siteId}/autologin-policy
 func (c *Client) PutSiteAutologinPolicy(ctx context.Context, request *SiteAutologinPolicyUpdate, params PutSiteAutologinPolicyParams) (PutSiteAutologinPolicyRes, error) {
@@ -33171,7 +34778,13 @@ func (c *Client) sendPutSiteAutologinPolicy(ctx context.Context, request *SiteAu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteAutologinPolicyResponse(resp)
@@ -33184,9 +34797,10 @@ func (c *Client) sendPutSiteAutologinPolicy(ctx context.Context, request *SiteAu
 
 // PutSiteEmailConfig invokes putSiteEmailConfig operation.
 //
-// Creates or updates the per-site email configuration. Provide `secret` in
-// the body to store a new provider secret (age-encrypted at rest); omit
-// `secret` to preserve the existing stored credential (nil-sentinel pattern).
+// Creates or updates the per-site email configuration. Provide `secret` in the body to store a new
+// provider secret (age-encrypted at rest); omit `secret` to preserve the existing stored credential
+// (nil-sentinel pattern).
+//
 // Requires `site.email.manage` permission (operator+) and site access.
 //
 // PUT /api/v1/sites/{siteId}/email/config
@@ -33270,7 +34884,13 @@ func (c *Client) sendPutSiteEmailConfig(ctx context.Context, request *PutEmailCo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteEmailConfigResponse(resp)
@@ -33283,10 +34903,10 @@ func (c *Client) sendPutSiteEmailConfig(ctx context.Context, request *PutEmailCo
 
 // PutSiteEmailWebhookConfig invokes putSiteEmailWebhookConfig operation.
 //
-// Updates the inbound webhook route token and/or signing key for the
-// per-site email config. When rotate_token is true a new route token is
-// generated (the old URL is immediately invalid) and the plain token is
-// returned once in webhook_route_token.
+// Updates the inbound webhook route token and/or signing key for the per-site email config. When
+// rotate_token is true a new route token is generated (the old URL is immediately invalid) and the
+// plain token is returned once in webhook_route_token.
+//
 // Requires `site.email.manage` permission (operator+) and site access.
 //
 // PUT /api/v1/sites/{siteId}/email/webhook-config
@@ -33370,7 +34990,13 @@ func (c *Client) sendPutSiteEmailWebhookConfig(ctx context.Context, request *Put
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteEmailWebhookConfigResponse(resp)
@@ -33383,10 +35009,9 @@ func (c *Client) sendPutSiteEmailWebhookConfig(ctx context.Context, request *Put
 
 // PutSiteHardeningConfig invokes putSiteHardeningConfig operation.
 //
-// Requires the `site.security.manage` permission. On a successful store
-// but failed agent push, returns `200` with the stored config and an
-// `X-Agent-Push-Warning` header (never a 5xx — the config is durably
-// saved and will be re-pushed on the next reconcile).
+// Requires the `site.security.manage` permission. On a successful store but failed agent push, returns
+// `200` with the stored config and an `X-Agent-Push-Warning` header (never a 5xx — the config is
+// durably saved and will be re-pushed on the next reconcile).
 //
 // PUT /api/v1/sites/{siteId}/security/hardening
 func (c *Client) PutSiteHardeningConfig(ctx context.Context, request *SiteHardeningConfig, params PutSiteHardeningConfigParams) (PutSiteHardeningConfigRes, error) {
@@ -33469,7 +35094,13 @@ func (c *Client) sendPutSiteHardeningConfig(ctx context.Context, request *SiteHa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteHardeningConfigResponse(resp)
@@ -33482,16 +35113,17 @@ func (c *Client) sendPutSiteHardeningConfig(ctx context.Context, request *SiteHa
 
 // PutSiteLoginBrand invokes putSiteLoginBrand operation.
 //
-// Stores the new login brand config and pushes it to the agent via the
-// signed `sync_login_brand` command. If the agent push fails after a
-// successful store, HTTP 200 is still returned with the stored config;
-// the push error is surfaced in the `X-Agent-Push-Warning` response
-// header so callers can surface it as a non-blocking warning.
-// **Validation**:
-// - `logo_url` and `logo_link` must be empty (`""`) or a valid
-// `http`/`https` URL (other schemes are rejected with 422).
-// - `message` must be at most 2000 characters.
-// - All fields are optional; omitted or `""` fields mean "no override".
+// Stores the new login brand config and pushes it to the agent via the signed `sync_login_brand`
+// command. If the agent push fails after a successful store, HTTP 200 is still returned with the
+// stored config; the push error is surfaced in the `X-Agent-Push-Warning` response header so callers
+// can surface it as a non-blocking warning.
+//
+// Validation:
+//
+//   - `logo_url` and `logo_link` must be empty (`""`) or a valid `http`/`https` URL (other schemes are
+//     rejected with 422).
+//   - `message` must be at most 2000 characters.
+//   - All fields are optional; omitted or `""` fields mean "no override".
 //
 // PUT /api/v1/sites/{siteId}/login-brand
 func (c *Client) PutSiteLoginBrand(ctx context.Context, request *SiteLoginBrandUpdate, params PutSiteLoginBrandParams) (PutSiteLoginBrandRes, error) {
@@ -33574,7 +35206,13 @@ func (c *Client) sendPutSiteLoginBrand(ctx context.Context, request *SiteLoginBr
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteLoginBrandResponse(resp)
@@ -33587,16 +35225,15 @@ func (c *Client) sendPutSiteLoginBrand(ctx context.Context, request *SiteLoginBr
 
 // PutSiteLoginProtection invokes putSiteLoginProtection operation.
 //
-// Stores the new config and pushes it to the agent via the signed
-// `sync_security_config` command. If the agent push fails after a
-// successful store, HTTP 200 is still returned with the stored config;
-// the push error is surfaced in the `X-Agent-Push-Warning` response
-// header so callers can surface it as a non-blocking warning.
-// **Safety rail**: when `mode` is `"protect"` and `allow_cidrs` is empty,
-// the CP automatically adds the requesting operator's client IP (/32 for
-// IPv4, /128 for IPv6) to `allow_cidrs` before storing. This prevents the
-// operator from enabling protection and immediately locking themselves out.
-// The auto-added CIDR is reflected in the returned config.
+// Stores the new config and pushes it to the agent via the signed `sync_security_config` command. If
+// the agent push fails after a successful store, HTTP 200 is still returned with the stored config;
+// the push error is surfaced in the `X-Agent-Push-Warning` response header so callers can surface it
+// as a non-blocking warning.
+//
+// Safety rail: when `mode` is `"protect"` and `allow_cidrs` is empty, the CP automatically adds the
+// requesting operator's client IP (/32 for IPv4, /128 for IPv6) to `allow_cidrs` before storing. This
+// prevents the operator from enabling protection and immediately locking themselves out. The
+// auto-added CIDR is reflected in the returned config.
 //
 // PUT /api/v1/sites/{siteId}/security/login-protection
 func (c *Client) PutSiteLoginProtection(ctx context.Context, request *SiteLoginProtectionConfigUpdate, params PutSiteLoginProtectionParams) (PutSiteLoginProtectionRes, error) {
@@ -33679,7 +35316,13 @@ func (c *Client) sendPutSiteLoginProtection(ctx context.Context, request *SiteLo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteLoginProtectionResponse(resp)
@@ -33793,7 +35436,13 @@ func (c *Client) sendPutSitePolicyGroup(ctx context.Context, request *SitePolicy
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSitePolicyGroupResponse(resp)
@@ -33806,9 +35455,8 @@ func (c *Client) sendPutSitePolicyGroup(ctx context.Context, request *SitePolicy
 
 // PutSiteSecurityPolicy invokes putSiteSecurityPolicy operation.
 //
-// Requires the `site.security.manage` permission. On a successful store
-// but failed agent push, returns `200` with the stored policy and an
-// `X-Agent-Push-Warning` header.
+// Requires the `site.security.manage` permission. On a successful store but failed agent push, returns
+// `200` with the stored policy and an `X-Agent-Push-Warning` header.
 //
 // PUT /api/v1/sites/{siteId}/security/policy
 func (c *Client) PutSiteSecurityPolicy(ctx context.Context, request *SiteSecurityPolicy, params PutSiteSecurityPolicyParams) (PutSiteSecurityPolicyRes, error) {
@@ -33891,7 +35539,13 @@ func (c *Client) sendPutSiteSecurityPolicy(ctx context.Context, request *SiteSec
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodePutSiteSecurityPolicyResponse(resp)
@@ -33904,21 +35558,23 @@ func (c *Client) sendPutSiteSecurityPolicy(ctx context.Context, request *SiteSec
 
 // ReadSiteFileContent invokes readSiteFileContent operation.
 //
-// Issues a `file_read` command to the site's agent and returns the
-// base64-encoded content of a file up to 256 KiB. When the file is
-// larger than the cap, `truncated=true` is returned; use the download
+// Issues a `file_read` command to the site's agent and returns the base64-encoded content of a file up
+// to 256 KiB. When the file is larger than the cap, `truncated=true` is returned; use the download
 // endpoint for the full file.
-// **Sensitive-path gate (T6):** paths matching `wp-config.php`, `.env*`,
-// `*.pem`, `*.key`, `id_rsa*`, `.git/`, `.htpasswd`, or `auth.json`
-// require **both**:
-// - `confirm_sensitive=true` query parameter, and
-// - Owner-level permission (`site.files.read_sensitive`).
-// Both the successful read AND any denied attempt are recorded in the
-// tamper-evident audit log with the full path.
-// The feature must be explicitly enabled per site. Returns
-// `403 files_not_enabled` when not opted in.
-// Requires the `site.files.read` permission (admin+). Sensitive-path
-// reads additionally require `site.files.read_sensitive` (owner only).
+//
+// Sensitive-path gate (T6): paths matching `wp-config.php`, `.env*`, `*.pem`, `*.key`, `id_rsa*`,
+// `.git/`, `.htpasswd`, or `auth.json` require both:
+//
+//   - `confirm_sensitive=true` query parameter, and
+//   - Owner-level permission (`site.files.read_sensitive`).
+//
+// Both the successful read AND any denied attempt are recorded in the tamper-evident audit log with
+// the full path.
+//
+// The feature must be explicitly enabled per site. Returns `403 files_not_enabled` when not opted in.
+//
+// Requires the `site.files.read` permission (admin+). Sensitive-path reads additionally require
+// `site.files.read_sensitive` (owner only).
 //
 // GET /api/v1/sites/{siteId}/files/content
 func (c *Client) ReadSiteFileContent(ctx context.Context, params ReadSiteFileContentParams) (ReadSiteFileContentRes, error) {
@@ -34033,7 +35689,13 @@ func (c *Client) sendReadSiteFileContent(ctx context.Context, params ReadSiteFil
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeReadSiteFileContentResponse(resp)
@@ -34046,22 +35708,19 @@ func (c *Client) sendReadSiteFileContent(ctx context.Context, params ReadSiteFil
 
 // RebaselineAuditIntegrity invokes rebaselineAuditIntegrity operation.
 //
-// Moves the tenant's audit-integrity verification anchor to the CURRENT
-// chain head, so `verifyAudit` treats everything up to and including
-// that point as trusted and only walks entries written after it going
-// forward. This exists because `audit_log` is append-only and hash-
-// chained: a historical break caused by a race that pre-dates the
-// per-tenant serialization in the append path can never be repaired in
-// place, so without this endpoint an operator would see a permanent
-// "chain break" badge with no way to acknowledge it.
-// This endpoint NEVER alters or deletes any `audit_log` row — the
-// flagged rows (and everything else) remain exactly as written, for
-// forensic review; re-baselining only moves where verification starts.
-// It is itself recorded as a normal hash-chained audit entry (action
-// `audit.integrity.rebaselined`), so the acknowledgment lives in the
-// tamper-evident trail too. Any tampering that happens AFTER the
-// baseline is still caught by `verifyAudit`. Owner-only
-// (`audit:manage`) — the same trust bar as tenant/SMTP management.
+// Moves the tenant's audit-integrity verification anchor to the CURRENT chain head, so `verifyAudit`
+// treats everything up to and including that point as trusted and only walks entries written after it
+// going forward. This exists because `audit_log` is append-only and hash- chained: a historical break
+// caused by a race that pre-dates the per-tenant serialization in the append path can never be
+// repaired in place, so without this endpoint an operator would see a permanent "chain break" badge
+// with no way to acknowledge it.
+//
+// This endpoint NEVER alters or deletes any `audit_log` row — the flagged rows (and everything else)
+// remain exactly as written, for forensic review; re-baselining only moves where verification starts.
+// It is itself recorded as a normal hash-chained audit entry (action `audit.integrity.rebaselined`),
+// so the acknowledgment lives in the tamper-evident trail too. Any tampering that happens AFTER the
+// baseline is still caught by `verifyAudit`. Owner-only (`audit:manage`) — the same trust bar as
+// tenant/SMTP management.
 //
 // POST /api/v1/audit/integrity/rebaseline
 func (c *Client) RebaselineAuditIntegrity(ctx context.Context, request OptAuditRebaselineRequest) (RebaselineAuditIntegrityRes, error) {
@@ -34125,7 +35784,13 @@ func (c *Client) sendRebaselineAuditIntegrity(ctx context.Context, request OptAu
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRebaselineAuditIntegrityResponse(resp)
@@ -34138,12 +35803,10 @@ func (c *Client) sendRebaselineAuditIntegrity(ctx context.Context, request OptAu
 
 // RecheckSite invokes recheckSite operation.
 //
-// Dispatches a synchronous `metadata` command to the site's agent,
-// applies the returned metadata, and records a heartbeat (recovering
-// the connection state to `connected` when it was `degraded` or
-// `disconnected`). Rate-limited per (tenant, site). Requires
-// `site.write` and site access; no org-scope requirement (a
-// write-access collaborator may re-check).
+// Dispatches a synchronous `metadata` command to the site's agent, applies the returned metadata, and
+// records a heartbeat (recovering the connection state to `connected` when it was `degraded` or
+// `disconnected`). Rate-limited per (tenant, site). Requires `site.write` and site access; no
+// org-scope requirement (a write-access collaborator may re-check).
 //
 // POST /api/v1/sites/{siteId}/recheck
 func (c *Client) RecheckSite(ctx context.Context, params RecheckSiteParams) (RecheckSiteRes, error) {
@@ -34223,7 +35886,13 @@ func (c *Client) sendRecheckSite(ctx context.Context, params RecheckSiteParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRecheckSiteResponse(resp)
@@ -34236,11 +35905,10 @@ func (c *Client) sendRecheckSite(ctx context.Context, params RecheckSiteParams) 
 
 // RefreshSiteDiagnostics invokes refreshSiteDiagnostics operation.
 //
-// Enqueues a signed `diagnostics` command to the agent. The agent runs
-// the 14-category collector immediately and pushes the result back to
-// POST /agent/v1/diagnostics. Returns 202 on accept. Returns 503 with
-// code `diagnostics_refresh_unwired` when the CP->agent commander has
-// not yet been wired (V1).
+// Enqueues a signed `diagnostics` command to the agent. The agent runs the 14-category collector
+// immediately and pushes the result back to POST /agent/v1/diagnostics. Returns 202 on accept. Returns
+// 503 with code `diagnostics_refresh_unwired` when the CP->agent commander has not yet been wired
+// (V1).
 //
 // POST /api/v1/sites/{siteId}/diagnostics/refresh
 func (c *Client) RefreshSiteDiagnostics(ctx context.Context, params RefreshSiteDiagnosticsParams) (RefreshSiteDiagnosticsRes, error) {
@@ -34320,7 +35988,13 @@ func (c *Client) sendRefreshSiteDiagnostics(ctx context.Context, params RefreshS
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRefreshSiteDiagnosticsResponse(resp)
@@ -34333,12 +36007,11 @@ func (c *Client) sendRefreshSiteDiagnostics(ctx context.Context, params RefreshS
 
 // RefreshSiteScreenshot invokes refreshSiteScreenshot operation.
 //
-// Marks the site's screenshot status as `pending` and enqueues a
-// `site_screenshot_capture` job in the media-encoder queue. Returns 202
-// immediately. The web client should poll the site GET / subscribe to SSE
-// for `screenshot.updated` events to learn when the capture completes.
-// Requires site:read (same gate as updates/refresh). Returns 409 when the
-// site is not enrolled; 404 when the site is not in this tenant.
+// Marks the site's screenshot status as `pending` and enqueues a `site_screenshot_capture` job in the
+// media-encoder queue. Returns 202 immediately. The web client should poll the site GET / subscribe to
+// SSE for `screenshot.updated` events to learn when the capture completes. Requires site:read (same
+// gate as updates/refresh). Returns 409 when the site is not enrolled; 404 when the site is not in
+// this tenant.
 //
 // POST /api/v1/sites/{siteId}/screenshot/refresh
 func (c *Client) RefreshSiteScreenshot(ctx context.Context, params RefreshSiteScreenshotParams) (RefreshSiteScreenshotRes, error) {
@@ -34418,7 +36091,13 @@ func (c *Client) sendRefreshSiteScreenshot(ctx context.Context, params RefreshSi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRefreshSiteScreenshotResponse(resp)
@@ -34431,11 +36110,10 @@ func (c *Client) sendRefreshSiteScreenshot(ctx context.Context, params RefreshSi
 
 // RefreshSiteUpdates invokes refreshSiteUpdates operation.
 //
-// Enqueues a CP->agent refresh-inventory command for the site. The agent
-// re-reads its plugin/theme inventory and `update_*` transients and pushes
-// them back over /agent/v1/metadata. Returns 202 immediately. Requires
-// viewer+. Returns 409 when the site is offline or unreachable, or 404 if
-// the site is not enrolled in this tenant.
+// Enqueues a CP->agent refresh-inventory command for the site. The agent re-reads its plugin/theme
+// inventory and `update_*` transients and pushes them back over /agent/v1/metadata. Returns 202
+// immediately. Requires viewer+. Returns 409 when the site is offline or unreachable, or 404 if the
+// site is not enrolled in this tenant.
 //
 // POST /api/v1/sites/{siteId}/updates/refresh
 func (c *Client) RefreshSiteUpdates(ctx context.Context, params RefreshSiteUpdatesParams) (RefreshSiteUpdatesRes, error) {
@@ -34515,7 +36193,13 @@ func (c *Client) sendRefreshSiteUpdates(ctx context.Context, params RefreshSiteU
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRefreshSiteUpdatesResponse(resp)
@@ -34628,7 +36312,13 @@ func (c *Client) sendRegenerateClientInvitation(ctx context.Context, params Rege
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRegenerateClientInvitationResponse(resp)
@@ -34641,8 +36331,8 @@ func (c *Client) sendRegenerateClientInvitation(ctx context.Context, params Rege
 
 // RegenerateRecoveryCodes invokes regenerateRecoveryCodes operation.
 //
-// Requires `current_password` re-authentication. Replaces the existing
-// 10-code batch with 10 new ones, returned once.
+// Requires `current_password` re-authentication. Replaces the existing 10-code batch with 10 new ones,
+// returned once.
 //
 // POST /auth/2fa/recovery-codes/regenerate
 func (c *Client) RegenerateRecoveryCodes(ctx context.Context, request *RegenerateRecoveryCodesReq) (RegenerateRecoveryCodesRes, error) {
@@ -34706,7 +36396,13 @@ func (c *Client) sendRegenerateRecoveryCodes(ctx context.Context, request *Regen
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRegenerateRecoveryCodesResponse(resp)
@@ -34719,8 +36415,8 @@ func (c *Client) sendRegenerateRecoveryCodes(ctx context.Context, request *Regen
 
 // RegenerateSiteInvitation invokes regenerateSiteInvitation operation.
 //
-// Requires the `member.manage` permission and full org membership.
-// Returns a fresh `accept_link` for the same pending invitation.
+// Requires the `member.manage` permission and full org membership. Returns a fresh `accept_link` for
+// the same pending invitation.
 //
 // POST /api/v1/sites/{siteId}/invitations/{invitationId}/regenerate
 func (c *Client) RegenerateSiteInvitation(ctx context.Context, params RegenerateSiteInvitationParams) (RegenerateSiteInvitationRes, error) {
@@ -34819,7 +36515,13 @@ func (c *Client) sendRegenerateSiteInvitation(ctx context.Context, params Regene
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRegenerateSiteInvitationResponse(resp)
@@ -34832,13 +36534,11 @@ func (c *Client) sendRegenerateSiteInvitation(ctx context.Context, params Regene
 
 // Register invokes register operation.
 //
-// On first run (zero users in the database) this bootstraps the instance:
-// creates the first user verified and active, creates their tenant, and
-// establishes an immediate session (201 + Me). After the first user exists,
-// registration is open self-serve: the account is created in a pending
-// state, a verification email is sent, and the response is 200
-// {ok: true, pending: true}. The user must verify their email via
-// POST /auth/verify-email before they can log in.
+// On first run (zero users in the database) this bootstraps the instance: creates the first user
+// verified and active, creates their tenant, and establishes an immediate session (201 + Me). After
+// the first user exists, registration is open self-serve: the account is created in a pending state, a
+// verification email is sent, and the response is 200 {ok: true, pending: true}. The user must verify
+// their email via POST /auth/verify-email before they can log in.
 //
 // POST /auth/register
 func (c *Client) Register(ctx context.Context, request *RegisterRequest) (RegisterRes, error) {
@@ -34902,7 +36602,13 @@ func (c *Client) sendRegister(ctx context.Context, request *RegisterRequest) (re
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRegisterResponse(resp)
@@ -35014,7 +36720,13 @@ func (c *Client) sendRemediateSiteVulnerability(ctx context.Context, params Reme
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRemediateSiteVulnerabilityResponse(resp)
@@ -35126,7 +36838,13 @@ func (c *Client) sendRemoveClientMember(ctx context.Context, params RemoveClient
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRemoveClientMemberResponse(resp)
@@ -35221,7 +36939,13 @@ func (c *Client) sendRenameOrg(ctx context.Context, request *RenameOrgReq, param
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRenameOrgResponse(resp)
@@ -35234,13 +36958,14 @@ func (c *Client) sendRenameOrg(ctx context.Context, request *RenameOrgReq, param
 
 // RenameSiteFile invokes renameSiteFile operation.
 //
-// Issues a `file_rename` command to the site's agent. Both `src` and `dst`
-// are containment-checked by the agent; escaping the jail on either path
-// returns `400 outside_root`.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be true.
-// **Executable/sensitive gate:** Same as `writeSiteFileContent` — if
-// `confirm_executable_write` or `confirm_sensitive` is set, owner
-// permission (`site.files.write_code`) is required.
+// Issues a `file_rename` command to the site's agent. Both `src` and `dst` are containment-checked by
+// the agent; escaping the jail on either path returns `400 outside_root`.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be true.
+//
+// Executable/sensitive gate: Same as `writeSiteFileContent` — if `confirm_executable_write` or
+// `confirm_sensitive` is set, owner permission (`site.files.write_code`) is required.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/rename
@@ -35324,7 +37049,13 @@ func (c *Client) sendRenameSiteFile(ctx context.Context, request *FileRenameRequ
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRenameSiteFileResponse(resp)
@@ -35417,7 +37148,13 @@ func (c *Client) sendRescanSiteVulnerabilities(ctx context.Context, params Resca
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRescanSiteVulnerabilitiesResponse(resp)
@@ -35510,7 +37247,13 @@ func (c *Client) sendResendAdminUserVerification(ctx context.Context, params Res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeResendAdminUserVerificationResponse(resp)
@@ -35523,14 +37266,14 @@ func (c *Client) sendResendAdminUserVerification(ctx context.Context, params Res
 
 // ResendEmailLog invokes resendEmailLog operation.
 //
-// Dispatches the `resend_email` agent command for the given log entry.
-// Only available when `body_stored=true` on the log entry — returns 409
-// otherwise. The resend is best-effort: if the agent is offline or returns
-// an error the response contains `ok=false` with the agent's detail message
-// but HTTP 200 is returned (matching the test-email pattern).
-// The `resent_count` counter is incremented before the agent dispatch so
-// operators can see how many resend attempts were made even if the agent
-// was unavailable.
+// Dispatches the `resend_email` agent command for the given log entry. Only available when
+// `body_stored=true` on the log entry — returns 409 otherwise. The resend is best-effort: if the
+// agent is offline or returns an error the response contains `ok=false` with the agent's detail
+// message but HTTP 200 is returned (matching the test-email pattern).
+//
+// The `resent_count` counter is incremented before the agent dispatch so operators can see how many
+// resend attempts were made even if the agent was unavailable.
+//
 // Requires `site.email.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/email/log/{logId}/resend
@@ -35630,7 +37373,13 @@ func (c *Client) sendResendEmailLog(ctx context.Context, params ResendEmailLogPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeResendEmailLogResponse(resp)
@@ -35643,9 +37392,8 @@ func (c *Client) sendResendEmailLog(ctx context.Context, params ResendEmailLogPa
 
 // ResendVerification invokes resendVerification operation.
 //
-// Always returns 200 {ok: true} whether or not the email maps to a
-// pending account (enumeration-safe). A new verification email is sent
-// when the account exists and is still pending verification.
+// Always returns 200 {ok: true} whether or not the email maps to a pending account (enumeration-safe).
+// A new verification email is sent when the account exists and is still pending verification.
 //
 // POST /auth/verification/resend
 func (c *Client) ResendVerification(ctx context.Context, request *ResendVerificationReq) (*ResendVerificationOK, error) {
@@ -35709,7 +37457,13 @@ func (c *Client) sendResendVerification(ctx context.Context, request *ResendVeri
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeResendVerificationResponse(resp)
@@ -35722,9 +37476,8 @@ func (c *Client) sendResendVerification(ctx context.Context, request *ResendVeri
 
 // ResetPassword invokes resetPassword operation.
 //
-// Validates the one-time reset token and replaces the user's password.
-// Does not establish a session; the user must log in separately. Returns
-// 410 when the token is expired, already used, or not found.
+// Validates the one-time reset token and replaces the user's password. Does not establish a session;
+// the user must log in separately. Returns 410 when the token is expired, already used, or not found.
 //
 // POST /auth/password/reset
 func (c *Client) ResetPassword(ctx context.Context, request *ResetPasswordReq) (ResetPasswordRes, error) {
@@ -35788,7 +37541,13 @@ func (c *Client) sendResetPassword(ctx context.Context, request *ResetPasswordRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeResetPasswordResponse(resp)
@@ -35801,12 +37560,10 @@ func (c *Client) sendResetPassword(ctx context.Context, request *ResetPasswordRe
 
 // RestoreAdminAccount invokes restoreAdminAccount operation.
 //
-// Clears tenants.suspended_at/suspended_reason, returning the tenant to
-// whatever its underlying plan/plan_status already was. A missing or
-// empty request body is tolerated (treated as an empty reason, which
-// then fails the reason-required validation below) rather than a hard
-// 400 — every other manual control on this page rejects a malformed
-// body outright. Requires is_superadmin=true.
+// Clears tenants.suspended_at/suspended_reason, returning the tenant to whatever its underlying
+// plan/plan_status already was. A missing or empty request body is tolerated (treated as an empty
+// reason, which then fails the reason-required validation below) rather than a hard 400 — every
+// other manual control on this page rejects a malformed body outright. Requires is_superadmin=true.
 //
 // POST /api/v1/admin/accounts/{id}/restore
 func (c *Client) RestoreAdminAccount(ctx context.Context, request OptAdminReasonRequest, params RestoreAdminAccountParams) (RestoreAdminAccountRes, error) {
@@ -35889,7 +37646,13 @@ func (c *Client) sendRestoreAdminAccount(ctx context.Context, request OptAdminRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreAdminAccountResponse(resp)
@@ -35902,8 +37665,9 @@ func (c *Client) sendRestoreAdminAccount(ctx context.Context, request OptAdminRe
 
 // RestoreIsolatedMedia invokes restoreIsolatedMedia operation.
 //
-// Moves quarantined attachment files back to the WordPress uploads directory
-// using the quarantine manifest. The attachment posts are already intact.
+// Moves quarantined attachment files back to the WordPress uploads directory using the quarantine
+// manifest. The attachment posts are already intact.
+//
 // Requires the `site.media.clean.write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/media/clean/restore
@@ -35987,7 +37751,13 @@ func (c *Client) sendRestoreIsolatedMedia(ctx context.Context, request *MediaCle
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreIsolatedMediaResponse(resp)
@@ -36083,7 +37853,13 @@ func (c *Client) sendRestoreMedia(ctx context.Context, request OptMediaAssetSele
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreMediaResponse(resp)
@@ -36176,7 +37952,13 @@ func (c *Client) sendRestoreOrg(ctx context.Context, params RestoreOrgParams) (r
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreOrgResponse(resp)
@@ -36189,8 +37971,8 @@ func (c *Client) sendRestoreOrg(ctx context.Context, params RestoreOrgParams) (r
 
 // RestoreSite invokes restoreSite operation.
 //
-// M21 / ADR-041 — operator action. Un-archives a site back to
-// `disconnected`. Only valid from `archived`. Requires operator+.
+// M21 / ADR-041 — operator action. Un-archives a site back to `disconnected`. Only valid from
+// `archived`. Requires operator+.
 //
 // POST /api/v1/sites/{siteId}/restore
 func (c *Client) RestoreSite(ctx context.Context, params RestoreSiteParams) (RestoreSiteRes, error) {
@@ -36270,7 +38052,13 @@ func (c *Client) sendRestoreSite(ctx context.Context, params RestoreSiteParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteResponse(resp)
@@ -36283,22 +38071,23 @@ func (c *Client) sendRestoreSite(ctx context.Context, params RestoreSiteParams) 
 
 // RestoreSiteFileVersion invokes restoreSiteFileVersion operation.
 //
-// Issues a `file_version_restore` command to the site's agent, which
-// overwrites the file at `path` with the content of the specified
-// `version_id`. The version identifier is opaque — retrieve valid IDs
-// from `GET /files/versions?path=…`.
-// Returns `404 no_such_version` when the version ID does not exist for
-// the given path.
-// **Write-enabled gate:** Both `enabled` and `write_enabled` must be
-// `true`. Returns `403 files_write_not_enabled` when write mode is off.
-// **Sensitive-path gate (F3):** If `path` matches the sensitive-file
-// deny-list (wp-config.php, .env*, *.pem, …), the caller must set
-// `confirm_sensitive=true` AND hold `site.files.write_code` (owner).
-// Both checks must pass — a missing flag or insufficient permission
-// returns `403`. The denial is audited at elevated severity. The agent
-// independently re-checks and returns `sensitive_denied` when the flag
-// is absent.
+// Issues a `file_version_restore` command to the site's agent, which overwrites the file at `path`
+// with the content of the specified `version_id`. The version identifier is opaque — retrieve valid
+// IDs from `GET /files/versions?path=…`.
+//
+// Returns `404 no_such_version` when the version ID does not exist for the given path.
+//
+// Write-enabled gate: Both `enabled` and `write_enabled` must be `true`. Returns
+// `403 files_write_not_enabled` when write mode is off.
+//
+// Sensitive-path gate (F3): If `path` matches the sensitive-file deny-list (wp-config.php, .env*,
+// *.pem, …), the caller must set `confirm_sensitive=true` AND hold `site.files.write_code` (owner).
+// Both checks must pass — a missing flag or insufficient permission returns `403`. The denial is
+// audited at elevated severity. The agent independently re-checks and returns `sensitive_denied` when
+// the flag is absent.
+//
 // Every restore is audited with the full `path` and `version_id`.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // POST /api/v1/sites/{siteId}/files/versions/restore
@@ -36382,7 +38171,13 @@ func (c *Client) sendRestoreSiteFileVersion(ctx context.Context, request *FileVe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteFileVersionResponse(resp)
@@ -36494,7 +38289,13 @@ func (c *Client) sendRestoreSiteVulnerability(ctx context.Context, params Restor
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteVulnerabilityResponse(resp)
@@ -36507,10 +38308,11 @@ func (c *Client) sendRestoreSiteVulnerability(ctx context.Context, params Restor
 
 // ResumeSiteMonitoring invokes resumeSiteMonitoring operation.
 //
-// GH #414 phase 1. Clears the monitoring pause on each site in
-// `site_ids`. Requires the `site.write` permission.
-// Idempotent: resuming a site that is already active succeeds with
-// `changed: false`. Same per-site result contract as the pause route.
+// GH #414 phase 1. Clears the monitoring pause on each site in `site_ids`. Requires the `site.write`
+// permission.
+//
+// Idempotent: resuming a site that is already active succeeds with `changed: false`. Same per-site
+// result contract as the pause route.
 //
 // POST /api/v1/sites/monitoring/resume
 func (c *Client) ResumeSiteMonitoring(ctx context.Context, request *ResumeMonitoringRequest) (ResumeSiteMonitoringRes, error) {
@@ -36574,7 +38376,13 @@ func (c *Client) sendResumeSiteMonitoring(ctx context.Context, request *ResumeMo
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeResumeSiteMonitoringResponse(resp)
@@ -36587,27 +38395,28 @@ func (c *Client) sendResumeSiteMonitoring(ctx context.Context, request *ResumeMo
 
 // RetryUpdateRun invokes retryUpdateRun operation.
 //
-// Creates a NEW update run repeating the named tasks of an existing one.
-// The source run is never mutated: the failure it records stays exactly as
-// it happened.
-// The retry is planned from the TASK ROWS, so each new task targets the
-// same (site, target) pair as the task it repeats, with the same desired
-// version. It does not replay the original request's item selection, which
-// would re-expand items across sites and re-intersect them against each
-// site's current pending set.
-// Two things are RE-RESOLVED rather than copied, because they are facts
-// about now and not about the old run:
-// * enrollment - a site unenrolled since the run is excluded;
-// * the published agent version - for an agent rollout, each site is
-// re-classified against the version published RIGHT NOW, so a release
-// reverted mid-incident excludes the sites that are no longer behind
-// instead of silently upgrading them to a target that moved.
-// An agent retry re-runs the whole wave structure with a fresh canary:
-// only the first wave is enqueued, and the claim-time wave gate is
-// authoritative regardless, so a retry cannot dispatch a fleet at once and
-// cannot bypass the gate.
-// The response accounts for EVERY requested task: `created` +
-// `len(excluded)` always equals `requested`. Requires operator+.
+// Creates a NEW update run repeating the named tasks of an existing one. The source run is never
+// mutated: the failure it records stays exactly as it happened.
+//
+// The retry is planned from the TASK ROWS, so each new task targets the same (site, target) pair as
+// the task it repeats, with the same desired version. It does not replay the original request's item
+// selection, which would re-expand items across sites and re-intersect them against each site's
+// current pending set.
+//
+// Two things are RE-RESOLVED rather than copied, because they are facts about now and not about the
+// old run:
+//
+//   - enrollment - a site unenrolled since the run is excluded;
+//   - the published agent version - for an agent rollout, each site is re-classified against the
+//     version published RIGHT NOW, so a release reverted mid-incident excludes the sites that are no
+//     longer behind instead of silently upgrading them to a target that moved.
+//
+// An agent retry re-runs the whole wave structure with a fresh canary: only the first wave is
+// enqueued, and the claim-time wave gate is authoritative regardless, so a retry cannot dispatch a
+// fleet at once and cannot bypass the gate.
+//
+// The response accounts for EVERY requested task: `created` + `len(excluded)` always equals
+// `requested`. Requires operator+.
 //
 // POST /api/v1/updates/runs/{id}/retry
 func (c *Client) RetryUpdateRun(ctx context.Context, request *UpdateRunRetryRequest, params RetryUpdateRunParams) (RetryUpdateRunRes, error) {
@@ -36690,7 +38499,13 @@ func (c *Client) sendRetryUpdateRun(ctx context.Context, request *UpdateRunRetry
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRetryUpdateRunResponse(resp)
@@ -36703,13 +38518,15 @@ func (c *Client) sendRetryUpdateRun(ctx context.Context, request *UpdateRunRetry
 
 // RevertDbSnapshot invokes revertDbSnapshot operation.
 //
-// Replaces the entire live database with the SQL captured in a local
-// snapshot. **This is irreversible without another backup.**
-// An automatic safety snapshot is taken immediately before the import
-// so the pre-revert state is preserved locally (returned as `safety_id`).
-// The `confirm` field in the request body MUST equal `"REVERT"` exactly.
-// The agent enforces this independently — a request without the token is
-// rejected.
+// Replaces the entire live database with the SQL captured in a local snapshot. This is irreversible
+// without another backup.
+//
+// An automatic safety snapshot is taken immediately before the import so the pre-revert state is
+// preserved locally (returned as `safety_id`).
+//
+// The `confirm` field in the request body MUST equal `"REVERT"` exactly. The agent enforces this
+// independently — a request without the token is rejected.
+//
 // Requires the `site:write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/perf/db/snapshots/{snapshotId}/revert
@@ -36812,7 +38629,13 @@ func (c *Client) sendRevertDbSnapshot(ctx context.Context, request *DbSnapshotRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevertDbSnapshotResponse(resp)
@@ -36825,9 +38648,8 @@ func (c *Client) sendRevertDbSnapshot(ctx context.Context, request *DbSnapshotRe
 
 // RevokeAdminAccountComp invokes revokeAdminAccountComp operation.
 //
-// Adopts the tenant's live payment-provider subscription if one exists,
-// else falls back to plan=free/plan_status=none. Requires
-// is_superadmin=true.
+// Adopts the tenant's live payment-provider subscription if one exists, else falls back to
+// plan=free/plan_status=none. Requires is_superadmin=true.
 //
 // DELETE /api/v1/admin/accounts/{id}/comp
 func (c *Client) RevokeAdminAccountComp(ctx context.Context, request *AdminReasonRequest, params RevokeAdminAccountCompParams) (RevokeAdminAccountCompRes, error) {
@@ -36910,7 +38732,13 @@ func (c *Client) sendRevokeAdminAccountComp(ctx context.Context, request *AdminR
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeAdminAccountCompResponse(resp)
@@ -36984,7 +38812,13 @@ func (c *Client) sendRevokeAllTrustedDevices(ctx context.Context) (res RevokeAll
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeAllTrustedDevicesResponse(resp)
@@ -37076,7 +38910,13 @@ func (c *Client) sendRevokeApiKey(ctx context.Context, params RevokeApiKeyParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeApiKeyResponse(resp)
@@ -37187,7 +39027,13 @@ func (c *Client) sendRevokeClientInvitation(ctx context.Context, params RevokeCl
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeClientInvitationResponse(resp)
@@ -37200,14 +39046,12 @@ func (c *Client) sendRevokeClientInvitation(ctx context.Context, params RevokeCl
 
 // RevokeSite invokes revokeSite operation.
 //
-// M21 / ADR-041 — operator action. Transitions the site to `revoked` and
-// queues a `revoke` instruction returned on the agent's next heartbeat,
-// accompanied by a short-lived signed token (`revoke_token`) the agent
-// verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
-// The agent_public_key is KEPT (not nulled) so the agent can still
-// authenticate the heartbeat that delivers the revoke; a later re-enroll
-// overwrites the key on the same row (partial unique index). Requires
-// operator+ and org scope (a site-scoped collaborator cannot revoke).
+// M21 / ADR-041 — operator action. Transitions the site to `revoked` and queues a `revoke`
+// instruction returned on the agent's next heartbeat, accompanied by a short-lived signed token
+// (`revoke_token`) the agent verifies before it wipes its keys + self-deactivates (ADR-040 addendum).
+// The agent_public_key is KEPT (not nulled) so the agent can still authenticate the heartbeat that
+// delivers the revoke; a later re-enroll overwrites the key on the same row (partial unique index).
+// Requires operator+ and org scope (a site-scoped collaborator cannot revoke).
 //
 // POST /api/v1/sites/{siteId}/revoke
 func (c *Client) RevokeSite(ctx context.Context, request OptSiteLifecycleReason, params RevokeSiteParams) (RevokeSiteRes, error) {
@@ -37290,7 +39134,13 @@ func (c *Client) sendRevokeSite(ctx context.Context, request OptSiteLifecycleRea
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeSiteResponse(resp)
@@ -37401,7 +39251,13 @@ func (c *Client) sendRevokeSiteInvitation(ctx context.Context, params RevokeSite
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeSiteInvitationResponse(resp)
@@ -37493,7 +39349,13 @@ func (c *Client) sendRevokeTrustedDevice(ctx context.Context, params RevokeTrust
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRevokeTrustedDeviceResponse(resp)
@@ -37506,18 +39368,17 @@ func (c *Client) sendRevokeTrustedDevice(ctx context.Context, params RevokeTrust
 
 // RotateRumBeaconKey invokes rotateRumBeaconKey operation.
 //
-// Unconditionally mints a fresh RUM beacon key, rotates the previous
-// hash into a grace-window column (in-flight beacons signed with the
-// old key still resolve), and pushes the new plaintext key to the
-// site's agent in this one request only — it is never returned in the
-// response, logged, or exposed anywhere but the agent's local copy.
-// This is the deterministic recovery path for GH #174: the one
-// best-effort mint+push that happens on first RUM-enable can be lost
-// (agent down/unreachable), permanently stranding the beacon key empty
-// on the agent with zero RUM samples ever collected and no visible
-// error. This endpoint lets an operator force a fresh mint+push on
-// demand; the control plane also self-heals this automatically via an
+// Unconditionally mints a fresh RUM beacon key, rotates the previous hash into a grace-window column
+// (in-flight beacons signed with the old key still resolve), and pushes the new plaintext key to the
+// site's agent in this one request only — it is never returned in the response, logged, or exposed
+// anywhere but the agent's local copy.
+//
+// This is the deterministic recovery path for GH #174: the one best-effort mint+push that happens on
+// first RUM-enable can be lost (agent down/unreachable), permanently stranding the beacon key empty on
+// the agent with zero RUM samples ever collected and no visible error. This endpoint lets an operator
+// force a fresh mint+push on demand; the control plane also self-heals this automatically via an
 // ack-based reconcile job.
+//
 // Requires the `site.perf.config` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/rum/rotate-key
@@ -37598,7 +39459,13 @@ func (c *Client) sendRotateRumBeaconKey(ctx context.Context, params RotateRumBea
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRotateRumBeaconKeyResponse(resp)
@@ -37672,7 +39539,13 @@ func (c *Client) sendRumIngestPreflight(ctx context.Context) (res *RumIngestPref
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRumIngestPreflightResponse(resp)
@@ -37685,12 +39558,10 @@ func (c *Client) sendRumIngestPreflight(ctx context.Context) (res *RumIngestPref
 
 // RunDbTableAction invokes runDbTableAction operation.
 //
-// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb`
-// (non-destructive; `site.cache.manage`), or `drop`/`empty`
-// (destructive; additionally requires `site.cache.delete-all`, admin+,
-// and a type-to-confirm `confirm` token) against a list of tables. An
-// advisory `X-Backup-Warning` header is set when no recent backup is
-// found.
+// Dispatches `optimize`, `repair`, `analyze`, `convert_innodb` (non-destructive; `site.cache.manage`),
+// or `drop`/`empty` (destructive; additionally requires `site.cache.delete-all`, admin+, and a
+// type-to-confirm `confirm` token) against a list of tables. An advisory `X-Backup-Warning` header is
+// set when no recent backup is found.
 //
 // POST /api/v1/sites/{siteId}/perf/db/table-action
 func (c *Client) RunDbTableAction(ctx context.Context, request *DbTableActionRequest, params RunDbTableActionParams) (RunDbTableActionRes, error) {
@@ -37773,7 +39644,13 @@ func (c *Client) sendRunDbTableAction(ctx context.Context, request *DbTableActio
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRunDbTableActionResponse(resp)
@@ -37786,14 +39663,16 @@ func (c *Client) sendRunDbTableAction(ctx context.Context, request *DbTableActio
 
 // RunSearchReplace invokes runSearchReplace operation.
 //
-// Dispatches a serialization-safe search-replace command to the site's
-// agent. The command handles PHP-serialized blobs correctly by
-// unserializing, walking the data structure, replacing only string leaves,
-// and re-serializing (so `s:NN:` length prefixes are always recomputed).
-// **Always call with `dry_run: true` first** to get a preview of how many
-// rows would change before committing. The UI enforces this flow.
-// When `dry_run: false` and no recent backup is found, the response
-// includes an `X-Backup-Warning` header.
+// Dispatches a serialization-safe search-replace command to the site's agent. The command handles
+// PHP-serialized blobs correctly by unserializing, walking the data structure, replacing only string
+// leaves, and re-serializing (so `s:NN:` length prefixes are always recomputed).
+//
+// Always call with `dry_run: true` first to get a preview of how many rows would change before
+// committing. The UI enforces this flow.
+//
+// When `dry_run: false` and no recent backup is found, the response includes an `X-Backup-Warning`
+// header.
+//
 // Requires the `site:write` permission (operator+).
 //
 // POST /api/v1/sites/{siteId}/perf/db/search-replace
@@ -37877,7 +39756,13 @@ func (c *Client) sendRunSearchReplace(ctx context.Context, request *SearchReplac
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeRunSearchReplaceResponse(resp)
@@ -37890,18 +39775,17 @@ func (c *Client) sendRunSearchReplace(ctx context.Context, request *SearchReplac
 
 // ScanUnusedMedia invokes scanUnusedMedia operation.
 //
-// Dispatches a read-only scan to the site's agent. The agent walks the
-// WordPress media library and checks every attachment against an exhaustive
-// set of reference surfaces (post_content, postmeta, options, termmeta,
-// usermeta, page-builder JSON blobs, ACF fields, WooCommerce galleries,
-// nav menus, and more). Attachments for which no reference is found are
-// returned as candidates.
-// **Conservative rule**: when a check cannot run or the result is ambiguous
-// the attachment is treated as referenced (safe). False negatives (calling a
-// used image unused) are the dangerous failure; this implementation prefers
-// false positives.
-// Paginated by `offset`. Results are ordered by attachment ID ascending.
-// Requires the `site.media.clean.scan` permission (viewer+).
+// Dispatches a read-only scan to the site's agent. The agent walks the WordPress media library and
+// checks every attachment against an exhaustive set of reference surfaces (post_content, postmeta,
+// options, termmeta, usermeta, page-builder JSON blobs, ACF fields, WooCommerce galleries, nav menus,
+// and more). Attachments for which no reference is found are returned as candidates.
+//
+// Conservative rule: when a check cannot run or the result is ambiguous the attachment is treated as
+// referenced (safe). False negatives (calling a used image unused) are the dangerous failure; this
+// implementation prefers false positives.
+//
+// Paginated by `offset`. Results are ordered by attachment ID ascending. Requires the
+// `site.media.clean.scan` permission (viewer+).
 //
 // GET /api/v1/sites/{siteId}/media/clean/scan
 func (c *Client) ScanUnusedMedia(ctx context.Context, params ScanUnusedMediaParams) (*MediaCleanScanResult, error) {
@@ -38019,7 +39903,13 @@ func (c *Client) sendScanUnusedMedia(ctx context.Context, params ScanUnusedMedia
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeScanUnusedMediaResponse(resp)
@@ -38033,14 +39923,18 @@ func (c *Client) sendScanUnusedMedia(ctx context.Context, params ScanUnusedMedia
 // SearchSiteFiles invokes searchSiteFiles operation.
 //
 // Issues a `file_search` command to the site's agent. Supports two modes:
-// - `name` — match filenames against the query string.
-// - `content` — grep file contents for the query string (line + snippet returned).
-// Results are cursor-paginated: when `truncated=true` the response carries
-// an opaque `cursor` for the next page.
-// This is a **read** operation. The agent never exposes the content of
-// sensitive paths (wp-config.php, .env*, *.pem, …) in search snippets.
-// The feature must be explicitly enabled. Returns `403 files_not_enabled`
-// when not opted in.
+//
+//   - `name` — match filenames against the query string.
+//   - `content` — grep file contents for the query string (line + snippet returned).
+//
+// Results are cursor-paginated: when `truncated=true` the response carries an opaque `cursor` for the
+// next page.
+//
+// This is a read operation. The agent never exposes the content of sensitive paths (wp-config.php,
+// .env*, *.pem, …) in search snippets.
+//
+// The feature must be explicitly enabled. Returns `403 files_not_enabled` when not opted in.
+//
 // Requires `site.files.read` permission (admin+).
 //
 // GET /api/v1/sites/{siteId}/files/search
@@ -38190,7 +40084,13 @@ func (c *Client) sendSearchSiteFiles(ctx context.Context, params SearchSiteFiles
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSearchSiteFilesResponse(resp)
@@ -38203,10 +40103,9 @@ func (c *Client) sendSearchSiteFiles(ctx context.Context, params SearchSiteFiles
 
 // SendSmtpTestEmail invokes sendSmtpTestEmail operation.
 //
-// Requires the `smtp.manage` permission (owner-only). A send failure is
-// returned as `200 {ok:false, message}` — the scrubbed reason string
-// never contains internal IPs/hostnames — rather than a 4xx/5xx, so the
-// UI can show it inline.
+// Requires the `smtp.manage` permission (owner-only). A send failure is returned as
+// `200 {ok:false, message}` — the scrubbed reason string never contains internal IPs/hostnames —
+// rather than a 4xx/5xx, so the UI can show it inline.
 //
 // POST /api/v1/settings/smtp/test
 func (c *Client) SendSmtpTestEmail(ctx context.Context, request *SendSmtpTestEmailReq) (SendSmtpTestEmailRes, error) {
@@ -38270,7 +40169,13 @@ func (c *Client) sendSendSmtpTestEmail(ctx context.Context, request *SendSmtpTes
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSendSmtpTestEmailResponse(resp)
@@ -38283,13 +40188,13 @@ func (c *Client) sendSendSmtpTestEmail(ctx context.Context, request *SendSmtpTes
 
 // SendTestEmail invokes sendTestEmail operation.
 //
-// Dispatches the signed `send_test_email` command to the site's agent.
-// The agent uses its current email config (previously synced via
-// sync_email_config) to send the test message.
-// **Phase 1 note**: the agent does not yet implement this command (Phase 2
-// will add the PHP handler). Until then the response will be
-// `{ok: false, detail: "command not found"}`. This is expected and not an
-// error state — wire the UI and handle the graceful failure.
+// Dispatches the signed `send_test_email` command to the site's agent. The agent uses its current
+// email config (previously synced via sync_email_config) to send the test message.
+//
+// Phase 1 note: the agent does not yet implement this command (Phase 2 will add the PHP handler).
+// Until then the response will be `{ok: false, detail: "command not found"}`. This is expected and not
+// an error state — wire the UI and handle the graceful failure.
+//
 // Requires `site.email.manage` permission (operator+) and site access.
 //
 // POST /api/v1/sites/{siteId}/email/test
@@ -38373,7 +40278,13 @@ func (c *Client) sendSendTestEmail(ctx context.Context, request *EmailTestReques
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSendTestEmailResponse(resp)
@@ -38386,11 +40297,10 @@ func (c *Client) sendSendTestEmail(ctx context.Context, request *EmailTestReques
 
 // SetAdminAccountOverrides invokes setAdminAccountOverrides operation.
 //
-// Each field is a signed delta applied on top of the tenant's CURRENT
-// plan's ladder base (not accumulated with any prior override for that
-// key — a second PUT replaces the delta). Omitting a key leaves that
-// limit untouched; sending it as `null` (or `0`) clears it back to the
-// pure ladder base. Requires is_superadmin=true.
+// Each field is a signed delta applied on top of the tenant's CURRENT plan's ladder base (not
+// accumulated with any prior override for that key — a second PUT replaces the delta). Omitting a
+// key leaves that limit untouched; sending it as `null` (or `0`) clears it back to the pure ladder
+// base. Requires is_superadmin=true.
 //
 // PUT /api/v1/admin/accounts/{id}/overrides
 func (c *Client) SetAdminAccountOverrides(ctx context.Context, request *AdminSetOverridesRequest, params SetAdminAccountOverridesParams) (SetAdminAccountOverridesRes, error) {
@@ -38473,7 +40383,13 @@ func (c *Client) sendSetAdminAccountOverrides(ctx context.Context, request *Admi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSetAdminAccountOverridesResponse(resp)
@@ -38568,7 +40484,13 @@ func (c *Client) sendSetAdminUserStatus(ctx context.Context, request *SetAdminUs
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSetAdminUserStatusResponse(resp)
@@ -38581,8 +40503,8 @@ func (c *Client) sendSetAdminUserStatus(ctx context.Context, request *SetAdminUs
 
 // SetAdminVulnFeedKey invokes setAdminVulnFeedKey operation.
 //
-// Plaintext key in the body over TLS. On success an immediate sync is
-// triggered so the operator sees it connect without waiting an hour.
+// Plaintext key in the body over TLS. On success an immediate sync is triggered so the operator sees
+// it connect without waiting an hour.
 //
 // PUT /api/v1/admin/vuln-feed/key
 func (c *Client) SetAdminVulnFeedKey(ctx context.Context, request *SetAdminVulnFeedKeyReq) (SetAdminVulnFeedKeyRes, error) {
@@ -38646,7 +40568,13 @@ func (c *Client) sendSetAdminVulnFeedKey(ctx context.Context, request *SetAdminV
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSetAdminVulnFeedKeyResponse(resp)
@@ -38659,20 +40587,20 @@ func (c *Client) sendSetAdminVulnFeedKey(ctx context.Context, request *SetAdminV
 
 // SetMyInitialPassword invokes setMyInitialPassword operation.
 //
-// For an account created through a social provider, which has no password
-// at all. Adds one, so the account no longer depends on the provider.
-// Separate from `POST /auth/me/password` on purpose. That endpoint changes
-// an existing password and proves knowledge of the current one first; this
-// one has no current password to ask for, so an authenticated session is
-// the whole authorisation. Folding the two together would let a request
-// with no `current_password` reach the stronger operation.
-// This is also why password reset cannot do it: `POST
-// /auth/password/forgot` deliberately sends nothing for an account with no
-// password, because minting a set-password link for one would turn reset
-// into account creation for anyone who knows the address.
-// Refuses with 409 when a password already exists. The account address is
-// notified, and every other session for this user is invalidated
-// (`password_changed_at` moves); the calling session stays alive.
+// For an account created through a social provider, which has no password at all. Adds one, so the
+// account no longer depends on the provider.
+//
+// Separate from `POST /auth/me/password` on purpose. That endpoint changes an existing password and
+// proves knowledge of the current one first; this one has no current password to ask for, so an
+// authenticated session is the whole authorisation. Folding the two together would let a request with
+// no `current_password` reach the stronger operation.
+//
+// This is also why password reset cannot do it: `POST /auth/password/forgot` deliberately sends
+// nothing for an account with no password, because minting a set-password link for one would turn
+// reset into account creation for anyone who knows the address.
+//
+// Refuses with 409 when a password already exists. The account address is notified, and every other
+// session for this user is invalidated (`password_changed_at` moves); the calling session stays alive.
 //
 // POST /auth/me/password/set
 func (c *Client) SetMyInitialPassword(ctx context.Context, request *SetMyInitialPasswordReq) (SetMyInitialPasswordRes, error) {
@@ -38736,7 +40664,13 @@ func (c *Client) sendSetMyInitialPassword(ctx context.Context, request *SetMyIni
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSetMyInitialPasswordResponse(resp)
@@ -38832,7 +40766,13 @@ func (c *Client) sendSetSiteTags(ctx context.Context, request *SiteTags, params 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSetSiteTagsResponse(resp)
@@ -38845,9 +40785,8 @@ func (c *Client) sendSetSiteTags(ctx context.Context, request *SiteTags, params 
 
 // SilenceSitePHPError invokes silenceSitePHPError operation.
 //
-// Toggles the silenced flag on a (site, md5) error row. The agent
-// continues to count silently on its side; the CP UI hides silenced
-// rows by default.
+// Toggles the silenced flag on a (site, md5) error row. The agent continues to count silently on its
+// side; the CP UI hides silenced rows by default.
 //
 // POST /api/v1/sites/{siteId}/errors/{md5}/silence
 func (c *Client) SilenceSitePHPError(ctx context.Context, request OptPHPErrorSilence, params SilenceSitePHPErrorParams) (SilenceSitePHPErrorRes, error) {
@@ -38949,7 +40888,13 @@ func (c *Client) sendSilenceSitePHPError(ctx context.Context, request OptPHPErro
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSilenceSitePHPErrorResponse(resp)
@@ -39100,7 +41045,13 @@ func (c *Client) sendSocialCallback(ctx context.Context, params SocialCallbackPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSocialCallbackResponse(resp)
@@ -39113,14 +41064,14 @@ func (c *Client) sendSocialCallback(ctx context.Context, params SocialCallbackPa
 
 // SocialStart invokes socialStart operation.
 //
-// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never
-// returns a JSON error body: the caller is a browser doing a full-page navigation, so a provider
-// that is not configured, or an issuer that cannot be reached, sends it back to the sign-in page
-// with a `social_error` code exactly as the callback does.
-// The handshake (provider, state, nonce, PKCE verifier and the deep link) travels in a short-lived
-// signed cookie that is host-only, HttpOnly, SameSite=Lax and Secure in production. NOTHING IS
-// STORED SERVER-SIDE: this endpoint needs no credential, so a session record per call was an
-// unauthenticated way to fill the store that every live session shares.
+// Redirects (302) to the provider's authorization endpoint with PKCE. ALWAYS redirects, never returns
+// a JSON error body: the caller is a browser doing a full-page navigation, so a provider that is not
+// configured, or an issuer that cannot be reached, sends it back to the sign-in page with a
+// `social_error` code exactly as the callback does. The handshake (provider, state, nonce, PKCE
+// verifier and the deep link) travels in a short-lived signed cookie that is host-only, HttpOnly,
+// SameSite=Lax and Secure in production. NOTHING IS STORED SERVER-SIDE: this endpoint needs no
+// credential, so a session record per call was an unauthenticated way to fill the store that every
+// live session shares.
 //
 // GET /auth/social/{provider}/start
 func (c *Client) SocialStart(ctx context.Context, params SocialStartParams) error {
@@ -39221,7 +41172,13 @@ func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSocialStartResponse(resp)
@@ -39234,9 +41191,8 @@ func (c *Client) sendSocialStart(ctx context.Context, params SocialStartParams) 
 
 // StartScanRun invokes startScanRun operation.
 //
-// Enqueues a scan against the site's WordPress core/plugin/theme files
-// (checksum comparison). `kind` defaults to `core` when the body is
-// omitted. Requires the `site.write` permission.
+// Enqueues a scan against the site's WordPress core/plugin/theme files (checksum comparison). `kind`
+// defaults to `core` when the body is omitted. Requires the `site.write` permission.
 //
 // POST /api/v1/sites/{siteId}/scans
 func (c *Client) StartScanRun(ctx context.Context, request OptStartScanRunReq, params StartScanRunParams) (StartScanRunRes, error) {
@@ -39319,7 +41275,13 @@ func (c *Client) sendStartScanRun(ctx context.Context, request OptStartScanRunRe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeStartScanRunResponse(resp)
@@ -39330,15 +41292,176 @@ func (c *Client) sendStartScanRun(ctx context.Context, request OptStartScanRunRe
 	return result, nil
 }
 
+// StreamBackupSnapshotEvents invokes streamBackupSnapshotEvents operation.
+//
+// Server-Sent Events stream (text/event-stream) of progress transitions for a backup snapshot, for
+// live UI updates. Each frame is tagged `event: progress` with a JSON BackupEvent payload. The stream
+// emits periodic heartbeat comment lines (":\n\n") every 15 seconds and has a 30-minute server-side
+// safety timeout. The server does NOT close the stream on a terminal snapshot status — a completed
+// snapshot can still receive restore phase events on the same channel. The client is responsible for
+// closing its EventSource when it observes a terminal `phase` (completed/failed). Requires viewer+.
+//
+// GET /api/v1/backups/{snapshotId}/events
+func (c *Client) StreamBackupSnapshotEvents(ctx context.Context, params StreamBackupSnapshotEventsParams) (StreamBackupSnapshotEventsRes, error) {
+	res, err := c.sendStreamBackupSnapshotEvents(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendStreamBackupSnapshotEvents(ctx context.Context, params StreamBackupSnapshotEventsParams) (res StreamBackupSnapshotEventsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("streamBackupSnapshotEvents"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/backups/{snapshotId}/events"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, StreamBackupSnapshotEventsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/backups/"
+	{
+		// Encode "snapshotId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "snapshotId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SnapshotId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/events"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	sseOptions := c.cfg.sseCfg
+	r.Header.Set("Cache-Control", "no-cache")
+	lastEventID := r.Header.Get("Last-Event-ID")
+	if lastEventID == "" {
+		lastEventID = sseOptions.LastEventID
+	}
+	if lastEventID != "" {
+		r.Header.Set("Last-Event-ID", lastEventID)
+		sseOptions.LastEventID = lastEventID
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+
+	stage = "DecodeResponse"
+	result, err := decodeStreamBackupSnapshotEventsResponse(resp)
+	if err != nil {
+		_ = resp.Body.Close()
+		return res, errors.Wrap(err, "decode response")
+	}
+	ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		_ = resp.Body.Close()
+		return res, errors.Wrap(err, "parse media type")
+	}
+	// For SSE response keep the body open for streaming.
+	if ht.MatchContentType("text/event-stream", ct) {
+		result.initSSEStream(func(reconnectCtx context.Context, lastEventID string) (*http.Response, error) {
+			reconnectReq := r.Clone(reconnectCtx)
+			if r.GetBody != nil {
+				body, err := r.GetBody()
+				if err != nil {
+					return nil, errors.Wrap(err, "clone reconnect body")
+				}
+				reconnectReq.Body = body
+			} else if r.Body != nil && r.Body != http.NoBody {
+				return nil, errors.New("reconnect request body is not readable")
+			}
+			reconnectReq.Header.Set("Cache-Control", "no-cache")
+			reconnectReq.Header.Set("Accept", "text/event-stream")
+			if lastEventID != "" {
+				reconnectReq.Header.Set("Last-Event-ID", lastEventID)
+			} else {
+				reconnectReq.Header.Del("Last-Event-ID")
+			}
+
+			reconnectResp, err := c.cfg.Client.Do(reconnectReq)
+			if err != nil {
+				return nil, errors.Wrap(err, "do reconnect request")
+			}
+
+			// SSE standard treats 204 No Content as an explicit instruction to stop reconnecting.
+			if reconnectResp.StatusCode == http.StatusNoContent {
+				_ = reconnectResp.Body.Close()
+				return nil, sse.ErrNoReconnect
+			}
+			if reconnectResp.StatusCode != resp.StatusCode {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.UnexpectedStatusCodeWithResponse(reconnectResp)
+			}
+			ct, _, err := mime.ParseMediaType(reconnectResp.Header.Get("Content-Type"))
+			if err != nil {
+				_ = reconnectResp.Body.Close()
+				return nil, errors.Wrap(err, "parse reconnect media type")
+			}
+			if !ht.MatchContentType("text/event-stream", ct) {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.InvalidContentType(ct)
+			}
+
+			return reconnectResp, nil
+		}, sseOptions)
+	} else {
+		_ = resp.Body.Close()
+	}
+
+	return result, nil
+}
+
 // StreamSiteEvents invokes streamSiteEvents operation.
 //
-// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of
-// connection-lifecycle events (site.created, site.state_changed,
-// site.revoked, site.disconnected, site.archived, site.restored). The
-// client filters by site_id in the browser. Supports `?since=<event_id>`
-// (or the `Last-Event-ID` header) to replay missed events from the durable
-// journal (~5 min retention) on reconnect; each frame carries an `id:`
-// (ULID) line. 15s keepalive comments; session-auth, requires site:read.
+// M21 / ADR-038 — a single tenant-scoped Server-Sent Events stream of connection-lifecycle events
+// (site.created, site.state_changed, site.revoked, site.disconnected, site.archived, site.restored).
+// The client filters by site_id in the browser. Supports `?since=<event_id>` (or the `Last-Event-ID`
+// header) to replay missed events from the durable journal (~5 min retention) on reconnect; each frame
+// carries an `id:` (ULID) line. 15s keepalive comments; session-auth, requires site:read.
 //
 // GET /api/v1/sites/events
 func (c *Client) StreamSiteEvents(ctx context.Context, params StreamSiteEventsParams) (StreamSiteEventsOK, error) {
@@ -39420,7 +41543,13 @@ func (c *Client) sendStreamSiteEvents(ctx context.Context, params StreamSiteEven
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeStreamSiteEventsResponse(resp)
@@ -39431,11 +41560,170 @@ func (c *Client) sendStreamSiteEvents(ctx context.Context, params StreamSiteEven
 	return result, nil
 }
 
+// StreamUpdateRunEvents invokes streamUpdateRunEvents operation.
+//
+// Server-Sent Events stream (text/event-stream) of task status transitions for a run, for live
+// progress. Each `data:` line is a JSON UpdateEvent. The stream emits periodic heartbeat comment lines
+// (":\n") and ends when the run reaches a terminal state or the client disconnects. Requires viewer+.
+//
+// GET /api/v1/updates/{runId}/events
+func (c *Client) StreamUpdateRunEvents(ctx context.Context, params StreamUpdateRunEventsParams) (StreamUpdateRunEventsRes, error) {
+	res, err := c.sendStreamUpdateRunEvents(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendStreamUpdateRunEvents(ctx context.Context, params StreamUpdateRunEventsParams) (res StreamUpdateRunEventsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("streamUpdateRunEvents"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/updates/{runId}/events"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, StreamUpdateRunEventsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/updates/"
+	{
+		// Encode "runId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "runId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.RunId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/events"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	sseOptions := c.cfg.sseCfg
+	r.Header.Set("Cache-Control", "no-cache")
+	lastEventID := r.Header.Get("Last-Event-ID")
+	if lastEventID == "" {
+		lastEventID = sseOptions.LastEventID
+	}
+	if lastEventID != "" {
+		r.Header.Set("Last-Event-ID", lastEventID)
+		sseOptions.LastEventID = lastEventID
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+
+	stage = "DecodeResponse"
+	result, err := decodeStreamUpdateRunEventsResponse(resp)
+	if err != nil {
+		_ = resp.Body.Close()
+		return res, errors.Wrap(err, "decode response")
+	}
+	ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		_ = resp.Body.Close()
+		return res, errors.Wrap(err, "parse media type")
+	}
+	// For SSE response keep the body open for streaming.
+	if ht.MatchContentType("text/event-stream", ct) {
+		result.initSSEStream(func(reconnectCtx context.Context, lastEventID string) (*http.Response, error) {
+			reconnectReq := r.Clone(reconnectCtx)
+			if r.GetBody != nil {
+				body, err := r.GetBody()
+				if err != nil {
+					return nil, errors.Wrap(err, "clone reconnect body")
+				}
+				reconnectReq.Body = body
+			} else if r.Body != nil && r.Body != http.NoBody {
+				return nil, errors.New("reconnect request body is not readable")
+			}
+			reconnectReq.Header.Set("Cache-Control", "no-cache")
+			reconnectReq.Header.Set("Accept", "text/event-stream")
+			if lastEventID != "" {
+				reconnectReq.Header.Set("Last-Event-ID", lastEventID)
+			} else {
+				reconnectReq.Header.Del("Last-Event-ID")
+			}
+
+			reconnectResp, err := c.cfg.Client.Do(reconnectReq)
+			if err != nil {
+				return nil, errors.Wrap(err, "do reconnect request")
+			}
+
+			// SSE standard treats 204 No Content as an explicit instruction to stop reconnecting.
+			if reconnectResp.StatusCode == http.StatusNoContent {
+				_ = reconnectResp.Body.Close()
+				return nil, sse.ErrNoReconnect
+			}
+			if reconnectResp.StatusCode != resp.StatusCode {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.UnexpectedStatusCodeWithResponse(reconnectResp)
+			}
+			ct, _, err := mime.ParseMediaType(reconnectResp.Header.Get("Content-Type"))
+			if err != nil {
+				_ = reconnectResp.Body.Close()
+				return nil, errors.Wrap(err, "parse reconnect media type")
+			}
+			if !ht.MatchContentType("text/event-stream", ct) {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.InvalidContentType(ct)
+			}
+
+			return reconnectResp, nil
+		}, sseOptions)
+	} else {
+		_ = resp.Body.Close()
+	}
+
+	return result, nil
+}
+
 // SuspendAdminAccount invokes suspendAdminAccount operation.
 //
-// Sets tenants.suspended_at/suspended_reason — a field distinct from
-// plan_status. Tenant data is never touched. Requires
-// is_superadmin=true.
+// Sets tenants.suspended_at/suspended_reason — a field distinct from plan_status. Tenant data is
+// never touched. Requires is_superadmin=true.
 //
 // POST /api/v1/admin/accounts/{id}/suspend
 func (c *Client) SuspendAdminAccount(ctx context.Context, request *AdminReasonRequest, params SuspendAdminAccountParams) (SuspendAdminAccountRes, error) {
@@ -39518,7 +41806,13 @@ func (c *Client) sendSuspendAdminAccount(ctx context.Context, request *AdminReas
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSuspendAdminAccountResponse(resp)
@@ -39531,12 +41825,10 @@ func (c *Client) sendSuspendAdminAccount(ctx context.Context, request *AdminReas
 
 // SwitchOrg invokes switchOrg operation.
 //
-// Requires authentication but NOT an active tenant — this is how a user
-// stranded without a valid active org (e.g. a former site-collaborator
-// whose access was revoked) recovers. The membership gate runs under
-// the caller's own row-level-security scope: a non-member of
-// `tenant_id` gets 403, never a different signal that would confirm the
-// tenant's existence.
+// Requires authentication but NOT an active tenant — this is how a user stranded without a valid
+// active org (e.g. a former site-collaborator whose access was revoked) recovers. The membership gate
+// runs under the caller's own row-level-security scope: a non-member of `tenant_id` gets 403, never a
+// different signal that would confirm the tenant's existence.
 //
 // POST /api/v1/orgs/switch
 func (c *Client) SwitchOrg(ctx context.Context, request *SwitchOrgReq) (SwitchOrgRes, error) {
@@ -39600,7 +41892,13 @@ func (c *Client) sendSwitchOrg(ctx context.Context, request *SwitchOrgReq) (res 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSwitchOrgResponse(resp)
@@ -39674,7 +41972,13 @@ func (c *Client) sendSyncAdminVulnFeed(ctx context.Context) (res SyncAdminVulnFe
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSyncAdminVulnFeedResponse(resp)
@@ -39767,7 +42071,13 @@ func (c *Client) sendSyncMedia(ctx context.Context, params SyncMediaParams) (res
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSyncMediaResponse(resp)
@@ -39780,14 +42090,16 @@ func (c *Client) sendSyncMedia(ctx context.Context, params SyncMediaParams) (res
 
 // SyncSiteEmailConfig invokes syncSiteEmailConfig operation.
 //
-// Dispatches the signed `sync_email_config` command so the agent has the
-// current provider config and decrypted secret before the next send.
-// Use this when the agent was offline at save time (the implicit sync on
-// PUT /email/config was skipped), after rotating a secret, or when the
-// operator explicitly wants to confirm the agent has the latest config.
-// Unlike `sendTestEmail` there is no request body — the stored config is
-// read from the CP and pushed as-is. The response is always 200; `ok`
-// indicates whether the agent acknowledged the push.
+// Dispatches the signed `sync_email_config` command so the agent has the current provider config and
+// decrypted secret before the next send.
+//
+// Use this when the agent was offline at save time (the implicit sync on PUT /email/config was
+// skipped), after rotating a secret, or when the operator explicitly wants to confirm the agent has
+// the latest config.
+//
+// Unlike `sendTestEmail` there is no request body — the stored config is read from the CP and pushed
+// as-is. The response is always 200; `ok` indicates whether the agent acknowledged the push.
+//
 // Requires `site.email.manage` permission (operator+) and site access.
 //
 // POST /api/v1/sites/{siteId}/email/sync
@@ -39868,7 +42180,13 @@ func (c *Client) sendSyncSiteEmailConfig(ctx context.Context, params SyncSiteEma
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSyncSiteEmailConfigResponse(resp)
@@ -39881,13 +42199,11 @@ func (c *Client) sendSyncSiteEmailConfig(ctx context.Context, params SyncSiteEma
 
 // TestObjectCache invokes testObjectCache operation.
 //
-// Sends an `objectcache.test` command to the agent using the stored
-// configuration. An optional `password` in the body overrides the stored
-// password for this call only (useful for testing before saving). On
-// success the control plane stores the config hash as the enable-gate
-// token; on failure the hash is NOT updated. The result is also published
-// as an `objectcache.test_completed` SSE event. Requires
-// `site.cache.manage` permission.
+// Sends an `objectcache.test` command to the agent using the stored configuration. An optional
+// `password` in the body overrides the stored password for this call only (useful for testing before
+// saving). On success the control plane stores the config hash as the enable-gate token; on failure
+// the hash is NOT updated. The result is also published as an `objectcache.test_completed` SSE event.
+// Requires `site.cache.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/object-cache/test
 func (c *Client) TestObjectCache(ctx context.Context, request OptTestObjectCacheReq, params TestObjectCacheParams) (*ObjectCacheTestResult, error) {
@@ -39970,7 +42286,13 @@ func (c *Client) sendTestObjectCache(ctx context.Context, request OptTestObjectC
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeTestObjectCacheResponse(resp)
@@ -39983,10 +42305,9 @@ func (c *Client) sendTestObjectCache(ctx context.Context, request OptTestObjectC
 
 // TestSiteDestination invokes testSiteDestination operation.
 //
-// Returns 200 with `{ok, message}` regardless of success/failure so the
-// UI can render the operator-readable diagnostic inline. S3-compat
-// kinds run a HeadBucket + PutObject + DeleteObject probe against the
-// target bucket; cp/local kinds return ok=true trivially.
+// Returns 200 with `{ok, message}` regardless of success/failure so the UI can render the
+// operator-readable diagnostic inline. S3-compat kinds run a HeadBucket + PutObject + DeleteObject
+// probe against the target bucket; cp/local kinds return ok=true trivially.
 //
 // POST /api/v1/sites/{siteId}/destinations/test
 func (c *Client) TestSiteDestination(ctx context.Context, request *SiteDestinationTest, params TestSiteDestinationParams) (TestSiteDestinationRes, error) {
@@ -40069,7 +42390,13 @@ func (c *Client) sendTestSiteDestination(ctx context.Context, request *SiteDesti
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeTestSiteDestinationResponse(resp)
@@ -40082,10 +42409,9 @@ func (c *Client) sendTestSiteDestination(ctx context.Context, request *SiteDesti
 
 // ToggleScanFindingIgnore invokes toggleScanFindingIgnore operation.
 //
-// Global route (no `:siteId` path segment — a finding id is unique per
-// tenant). The finding's own site is resolved server-side and checked
-// against the caller's site allowlist. `ignored` defaults to `true`
-// when omitted from the body.
+// Global route (no `:siteId` path segment — a finding id is unique per tenant). The finding's own
+// site is resolved server-side and checked against the caller's site allowlist. `ignored` defaults to
+// `true` when omitted from the body.
 //
 // POST /api/v1/findings/{id}/ignore
 func (c *Client) ToggleScanFindingIgnore(ctx context.Context, request OptToggleScanFindingIgnoreReq, params ToggleScanFindingIgnoreParams) (ToggleScanFindingIgnoreRes, error) {
@@ -40168,7 +42494,13 @@ func (c *Client) sendToggleScanFindingIgnore(ctx context.Context, request OptTog
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeToggleScanFindingIgnoreResponse(resp)
@@ -40181,11 +42513,9 @@ func (c *Client) sendToggleScanFindingIgnore(ctx context.Context, request OptTog
 
 // TriggerDbScan invokes triggerDbScan operation.
 //
-// Runs a synchronous read-only scan against the site's WordPress database
-// via the agent. Returns the job_id. The full result (categories + per-table
-// inventory) is pushed via the `db.scan.completed` SSE event and persisted
-// for retrieval via the GET endpoint. Requires the `site.cache.manage`
-// permission.
+// Runs a synchronous read-only scan against the site's WordPress database via the agent. Returns the
+// job_id. The full result (categories + per-table inventory) is pushed via the `db.scan.completed` SSE
+// event and persisted for retrieval via the GET endpoint. Requires the `site.cache.manage` permission.
 //
 // POST /api/v1/sites/{siteId}/perf/db/scan
 func (c *Client) TriggerDbScan(ctx context.Context, request OptTriggerDbScanReq, params TriggerDbScanParams) (*TriggerDbScanOK, error) {
@@ -40268,7 +42598,13 @@ func (c *Client) sendTriggerDbScan(ctx context.Context, request OptTriggerDbScan
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeTriggerDbScanResponse(resp)
@@ -40281,10 +42617,9 @@ func (c *Client) sendTriggerDbScan(ctx context.Context, request OptTriggerDbScan
 
 // UnblockSiteIP invokes unblockSiteIP operation.
 //
-// Sends the signed `unblock_ip` command to the site's agent, removing any
-// active block for the given IP. Returns `ok=true` on success; `ok=false`
-// with a `detail` message when the agent rejects or cannot apply the
-// unblock (still HTTP 200 — it is an application-level, not transport, failure).
+// Sends the signed `unblock_ip` command to the site's agent, removing any active block for the given
+// IP. Returns `ok=true` on success; `ok=false` with a `detail` message when the agent rejects or
+// cannot apply the unblock (still HTTP 200 — it is an application-level, not transport, failure).
 //
 // POST /api/v1/sites/{siteId}/security/unblock-ip
 func (c *Client) UnblockSiteIP(ctx context.Context, request *UnblockIPRequest, params UnblockSiteIPParams) (UnblockSiteIPRes, error) {
@@ -40367,7 +42702,13 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUnblockSiteIPResponse(resp)
@@ -40380,16 +42721,14 @@ func (c *Client) sendUnblockSiteIP(ctx context.Context, request *UnblockIPReques
 
 // UnlinkMyIdentity invokes unlinkMyIdentity operation.
 //
-// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN,
-// which is the case where this is the only connected provider and no
-// password is set. That state is not recoverable: there would be no
-// password to reset and no provider to sign in with, and password reset
-// will not mint a set-password link for a passwordless account. The
-// refusal names the next step, which is to add a password first via
-// `POST /auth/me/password/set`.
-// The check and the delete happen inside one locked transaction, so two
-// requests disconnecting two different providers at the same moment cannot
-// each conclude that one may go.
+// REFUSES WITH 409 WHEN IT WOULD LEAVE THE ACCOUNT WITH NO WAY TO SIGN IN, which is the case where
+// this is the only connected provider and no password is set. That state is not recoverable: there
+// would be no password to reset and no provider to sign in with, and password reset will not mint a
+// set-password link for a passwordless account. The refusal names the next step, which is to add a
+// password first via `POST /auth/me/password/set`.
+//
+// The check and the delete happen inside one locked transaction, so two requests disconnecting two
+// different providers at the same moment cannot each conclude that one may go.
 //
 // DELETE /auth/me/identities/{provider}
 func (c *Client) UnlinkMyIdentity(ctx context.Context, params UnlinkMyIdentityParams) (UnlinkMyIdentityRes, error) {
@@ -40468,7 +42807,13 @@ func (c *Client) sendUnlinkMyIdentity(ctx context.Context, params UnlinkMyIdenti
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUnlinkMyIdentityResponse(resp)
@@ -40481,8 +42826,8 @@ func (c *Client) sendUnlinkMyIdentity(ctx context.Context, params UnlinkMyIdenti
 
 // UnlockBackup invokes unlockBackup operation.
 //
-// Clears the `locked` flag, making the snapshot eligible for normal
-// retention GC again. Track C (m49). Requires operator+.
+// Clears the `locked` flag, making the snapshot eligible for normal retention GC again. Track C (m49).
+// Requires operator+.
 //
 // DELETE /api/v1/backups/{snapshotId}/lock
 func (c *Client) UnlockBackup(ctx context.Context, params UnlockBackupParams) (UnlockBackupRes, error) {
@@ -40562,7 +42907,13 @@ func (c *Client) sendUnlockBackup(ctx context.Context, params UnlockBackupParams
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUnlockBackupResponse(resp)
@@ -40657,7 +43008,13 @@ func (c *Client) sendUpdateClient(ctx context.Context, request *UpdateAgencyClie
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateClientResponse(resp)
@@ -40670,8 +43027,7 @@ func (c *Client) sendUpdateClient(ctx context.Context, request *UpdateAgencyClie
 
 // UpdateMe invokes updateMe operation.
 //
-// Updates the caller's display name. Email is intentionally not
-// editable here.
+// Updates the caller's display name. Email is intentionally not editable here.
 //
 // PATCH /auth/me
 func (c *Client) UpdateMe(ctx context.Context, request *UpdateMeReq) (UpdateMeRes, error) {
@@ -40735,7 +43091,13 @@ func (c *Client) sendUpdateMe(ctx context.Context, request *UpdateMeReq) (res Up
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateMeResponse(resp)
@@ -40748,8 +43110,8 @@ func (c *Client) sendUpdateMe(ctx context.Context, request *UpdateMeReq) (res Up
 
 // UpdateMediaSettings invokes updateMediaSettings operation.
 //
-// On a successful store but failed agent push, returns `200` with the
-// stored settings and an `X-Agent-Push-Warning` header.
+// On a successful store but failed agent push, returns `200` with the stored settings and an
+// `X-Agent-Push-Warning` header.
 //
 // PUT /api/v1/sites/{siteId}/media/settings
 func (c *Client) UpdateMediaSettings(ctx context.Context, request *MediaSettings, params UpdateMediaSettingsParams) (UpdateMediaSettingsRes, error) {
@@ -40832,7 +43194,13 @@ func (c *Client) sendUpdateMediaSettings(ctx context.Context, request *MediaSett
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateMediaSettingsResponse(resp)
@@ -40946,7 +43314,13 @@ func (c *Client) sendUpdateSiteDestination(ctx context.Context, request *SiteDes
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateSiteDestinationResponse(resp)
@@ -40959,15 +43333,18 @@ func (c *Client) sendUpdateSiteDestination(ctx context.Context, request *SiteDes
 
 // UpdateSiteFilesSettings invokes updateSiteFilesSettings operation.
 //
-// Enables or disables the file manager feature for a site. The feature is
-// **off by default** (migration m82); an explicit enable is required before
-// any file browse/read/download endpoint will work.
-// `root_jail` is read-only in P1 (always `""`) — the agent defaults to the
-// site's `ABSPATH`. Any `root_jail` field in the request body is ignored.
-// An audit entry (`site.files.settings.changed`) is recorded on every call,
-// capturing the resulting `enabled` and `write_enabled` state.
-// `root_jail` is read-only in P1/P2 (always `""`) — the agent defaults to
-// the site's `ABSPATH`. Any `root_jail` field in the request body is ignored.
+// Enables or disables the file manager feature for a site. The feature is off by default (migration
+// m82); an explicit enable is required before any file browse/read/download endpoint will work.
+//
+// `root_jail` is read-only in P1 (always `""`) — the agent defaults to the site's `ABSPATH`. Any
+// `root_jail` field in the request body is ignored.
+//
+// An audit entry (`site.files.settings.changed`) is recorded on every call, capturing the resulting
+// `enabled` and `write_enabled` state.
+//
+// `root_jail` is read-only in P1/P2 (always `""`) — the agent defaults to the site's `ABSPATH`. Any
+// `root_jail` field in the request body is ignored.
+//
 // Requires `site.files.manage` permission (admin+).
 //
 // PUT /api/v1/sites/{siteId}/files/settings
@@ -41051,7 +43428,13 @@ func (c *Client) sendUpdateSiteFilesSettings(ctx context.Context, request *Updat
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateSiteFilesSettingsResponse(resp)
@@ -41128,7 +43511,13 @@ func (c *Client) sendUpdateSmtpSettings(ctx context.Context, request *SmtpSettin
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateSmtpSettingsResponse(resp)
@@ -41141,14 +43530,12 @@ func (c *Client) sendUpdateSmtpSettings(ctx context.Context, request *SmtpSettin
 
 // UpdateTag invokes updateTag operation.
 //
-// A color-only body just updates the color. A `name` change renames the
-// tag and propagates the new name onto every site (and every unexpired,
-// unredeemed pairing code) currently carrying the old name, in the same
-// transaction. Renaming onto an existing name returns 409
-// `tag_name_exists` unless `merge: true`, in which case the source tag
-// is merged into the existing survivor (sites are rewritten to the
-// survivor's name, deduplicated; the survivor's color is kept unless
-// this request also sets `color`).
+// A color-only body just updates the color. A `name` change renames the tag and propagates the new
+// name onto every site (and every unexpired, unredeemed pairing code) currently carrying the old name,
+// in the same transaction. Renaming onto an existing name returns 409 `tag_name_exists` unless
+// `merge: true`, in which case the source tag is merged into the existing survivor (sites are
+// rewritten to the survivor's name, deduplicated; the survivor's color is kept unless this request
+// also sets `color`).
 //
 // PATCH /api/v1/tags/{tagId}
 func (c *Client) UpdateTag(ctx context.Context, request *SiteTagUpdate, params UpdateTagParams) (UpdateTagRes, error) {
@@ -41230,7 +43617,13 @@ func (c *Client) sendUpdateTag(ctx context.Context, request *SiteTagUpdate, para
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeUpdateTagResponse(resp)
@@ -41304,7 +43697,13 @@ func (c *Client) sendVerifyAudit(ctx context.Context) (res VerifyAuditRes, err e
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeVerifyAuditResponse(resp)
@@ -41383,7 +43782,13 @@ func (c *Client) sendVerifyBillingCheckoutCallback(ctx context.Context, request 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeVerifyBillingCheckoutCallbackResponse(resp)
@@ -41396,10 +43801,9 @@ func (c *Client) sendVerifyBillingCheckoutCallback(ctx context.Context, request 
 
 // VerifyEmail invokes verifyEmail operation.
 //
-// Consumes the one-time verification token sent during self-serve
-// registration, activates the account, and establishes a session so the
-// user lands logged in. Returns 410 when the token is expired or already
-// consumed.
+// Consumes the one-time verification token sent during self-serve registration, activates the account,
+// and establishes a session so the user lands logged in. Returns 410 when the token is expired or
+// already consumed.
 //
 // POST /auth/verify-email
 func (c *Client) VerifyEmail(ctx context.Context, request *VerifyEmailReq) (VerifyEmailRes, error) {
@@ -41463,7 +43867,13 @@ func (c *Client) sendVerifyEmail(ctx context.Context, request *VerifyEmailReq) (
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeVerifyEmailResponse(resp)
@@ -41476,11 +43886,10 @@ func (c *Client) sendVerifyEmail(ctx context.Context, request *VerifyEmailReq) (
 
 // VerifySiteActivity invokes verifySiteActivity operation.
 //
-// Recomputes the entire hash chain for the site server-side from genesis
-// and reports whether it is intact. When a break is found, break_at_seq
-// carries the seq of the first event whose recomputed hash (or prev_hash
-// linkage) does not match — the tamper point. This is the integrity badge
-// feeding the activity view.
+// Recomputes the entire hash chain for the site server-side from genesis and reports whether it is
+// intact. When a break is found, break_at_seq carries the seq of the first event whose recomputed hash
+// (or prev_hash linkage) does not match — the tamper point. This is the integrity badge feeding the
+// activity view.
 //
 // GET /api/v1/sites/{siteId}/activity/verify
 func (c *Client) VerifySiteActivity(ctx context.Context, params VerifySiteActivityParams) (*ActivityVerifyResult, error) {
@@ -41560,7 +43969,13 @@ func (c *Client) sendVerifySiteActivity(ctx context.Context, params VerifySiteAc
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeVerifySiteActivityResponse(resp)
@@ -41573,21 +43988,21 @@ func (c *Client) sendVerifySiteActivity(ctx context.Context, params VerifySiteAc
 
 // WriteSiteFileContent invokes writeSiteFileContent operation.
 //
-// Issues a `file_write` command to the site's agent. The agent writes the
-// content atomically (temp-write → rename swap) to the resolved path.
-// **Write-enabled gate:** The site must have both `enabled=true` AND
-// `write_enabled=true` in its file manager settings. Returns
-// `403 files_write_not_enabled` when write mode is off.
-// **Executable-write gate (T1):** When `confirm_executable_write=true` is
-// set in the request body, the caller must additionally hold
-// `site.files.write_code` (owner). If an admin-level caller passes
-// `confirm_executable_write=true`, the request is rejected with
-// `403 insufficient_permission` and the denial is audited at elevated
-// severity. The agent independently enforces its executable deny-list
+// Issues a `file_write` command to the site's agent. The agent writes the content atomically
+// (temp-write → rename swap) to the resolved path.
+//
+// Write-enabled gate: The site must have both `enabled=true` AND `write_enabled=true` in its file
+// manager settings. Returns `403 files_write_not_enabled` when write mode is off.
+//
+// Executable-write gate (T1): When `confirm_executable_write=true` is set in the request body, the
+// caller must additionally hold `site.files.write_code` (owner). If an admin-level caller passes
+// `confirm_executable_write=true`, the request is rejected with `403 insufficient_permission` and the
+// denial is audited at elevated severity. The agent independently enforces its executable deny-list
 // regardless.
-// **Sensitive-file gate (T6):** Same as above for `confirm_sensitive=true`, requires owner (`site.
-// files.write_code`) and is audited at elevated
-// severity on both success and denial.
+//
+// Sensitive-file gate (T6): Same as above for `confirm_sensitive=true`, requires owner
+// (`site.files.write_code`) and is audited at elevated severity on both success and denial.
+//
 // Requires `site.files.write` permission (admin+).
 //
 // PUT /api/v1/sites/{siteId}/files/content
@@ -41671,7 +44086,13 @@ func (c *Client) sendWriteSiteFileContent(ctx context.Context, request *WriteFil
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeWriteSiteFileContentResponse(resp)
