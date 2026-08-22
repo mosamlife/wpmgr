@@ -42,6 +42,7 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 057 | Security Suite Foundation: Per-Site Policy Model | Accepted | 2026-06-20 | [ADR-057-security-suite-foundation.md](./ADR-057-security-suite-foundation.md) |
 | 059 | Site-User Authentication Policy (2FA + Password Policy) | Accepted — 2026-06-20 | 2026-06-20 | [ADR-059-site-user-auth-policy.md](./ADR-059-site-user-auth-policy.md) |
 | 060 | Phase order: safety and truth before capability | Accepted | 2026-08-18 | [ADR-060-phase-order-safety-before-capability.md](./ADR-060-phase-order-safety-before-capability.md) |
+| 061 | Assistant surface, Phase 1: control-plane server and out-of-band approval | Accepted | 2026-08-22 | [ADR-061-assistant-surface-phase-1.md](./ADR-061-assistant-surface-phase-1.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
@@ -70,7 +71,7 @@ Two files don't fit any of the three and are findings, not table artifacts:
 ## Numbering
 
 Numbers are allocated in this file and are never reused, including the ones
-below that have no file. **The next free number is 061.**
+below that have no file. **The next free number is 062.**
 
 | Number(s) | What happened |
 |---|---|
