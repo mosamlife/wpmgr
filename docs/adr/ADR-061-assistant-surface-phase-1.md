@@ -17,14 +17,14 @@ any part of it.
 
 ## Context
 
-An assistant connector is table stakes and it is commoditising. Connecting a
+An assistant connector is table stakes and it is commoditizing. Connecting a
 model to a site-management product is a few weeks of work for anyone who wants
 to do it, and the number of products that have done it grows every quarter. A
 connector is therefore not a moat, and building one because others have is a
 plan to arrive second at a place with no prize.
 
-What is not commoditising is the part every connector defers: proving that a
-**person** authorised a change. The market position worth taking is not "our
+What is not commoditizing is the part every connector defers: proving that a
+**person** authorized a change. The market position worth taking is not "our
 assistant can do more things"; it is "when our assistant changes your fleet, a
 named human approved it, and you can verify that claim without taking our word
 for it". That claim is an architecture, not a feature, and it has to be
@@ -119,7 +119,7 @@ An approval that committed while its ledger entry did not is an action taken
 with no verifiable human behind it — which is precisely the thing this design
 exists to make impossible — and best-effort auditing would produce exactly that
 outcome, silently, under the ordinary conditions that make a write fail. Worse,
-we could not afterwards enumerate which approvals were affected, so a single
+we could not afterward enumerate which approvals were affected, so a single
 lost append would put every approval in the account into question rather than
 one.
 
@@ -127,8 +127,42 @@ Two consequences follow and are accepted. Approval is unavailable when the
 ledger is unwritable, rather than degraded; that is the correct failure
 direction for this operation and the operator sees a real error rather than a
 false success. And the approve path must not adopt any later "audit
-asynchronously" or "queue the append" optimisation without superseding this
+asynchronously" or "queue the append" optimization without superseding this
 ADR, because either one reintroduces the gap.
+
+**Dispatch starts only after that transaction commits, and the committed row is
+what causes it.** Both simpler orderings are wrong, in different ways.
+
+*Dispatch inside the transaction* is wrong because a database transaction
+cannot roll back a command that has already left the building. Once a signed
+command is on its way to a site, rolling back the approval row does not recall
+it, so the atomicity above would be satisfied while the guarantee it exists to
+provide is broken. It is also the shape that holds a transaction open across a
+network call to a machine that may be slow, unreachable, or hanging — a shape
+this codebase has already been bitten by, and one that turns one unreachable
+site into database-wide contention.
+
+*Dispatch immediately after commit, as the next statement*, is wrong because a
+crash in the gap between the two leaves an approval a human genuinely granted,
+recorded in the ledger as granted, that never ran and that nothing will ever
+retry.
+
+So the approval commits into an explicit `approved, not yet dispatched` state,
+and a worker claims committed rows in that state and dispatches them. The
+commit is the handoff. A crash in the gap is then not a lost action but an
+unclaimed row, which is what recovery is for, and the retry is idempotent
+against the already-signed command rather than a second approval.
+
+**What the operator sees is part of this decision, not an implementation
+detail.** `approved, not yet dispatched` is a state the interface represents
+honestly and by name. It is never rendered as "running", because nothing is
+running, and never silently folded into "approved" as though the work had
+happened. If dispatch keeps failing, the request surfaces as approved but not
+started, with the reason and the time of the last attempt, and it stays that
+way rather than aging into something that looks finished. The ledger entry
+remains correct and unedited throughout: a human did approve, at that time, and
+that is what it says. What must never happen is a screen implying the fleet
+changed when it did not.
 
 **No automation escape hatch, ever.** No auto-approve tier, no policy engine
 that can approve, no "trusted automation may approve" flag, no approve button
@@ -145,7 +179,7 @@ quarantined place: after the facts, before the controls.**
 
 An approval screen that shows the model's summary of what it is about to do is
 an operator approving the attacker's description of the action. If a model has
-been steered by injected content, its summary is precisely the artefact not to
+been steered by injected content, its summary is precisely the artifact not to
 trust, and putting it where the decision gets made hands the attacker the one
 surface that converts a sentence into authority over a fleet.
 
@@ -177,7 +211,7 @@ this the thing I asked for". Its contract:
   a visually demoted surface, as an escaped plain-text node — never markup,
   never a link or link label, never a title attribute — with control
   characters, bidirectional overrides and zero-width characters stripped, hard
-  capped, and labelled with both what it is and what it is not.
+  capped, and labeled with both what it is and what it is not.
 - **It appears nowhere else, ever**: not in the title, the summary, the queue
   row, the notification or email body or subject, the audit row title, or any
   API response consumed by something that will render it as anything but a
@@ -200,7 +234,7 @@ asserts it does not survive.
 
 ## Decision 4 — Site scoping is enforced in the application, not the database, in v1 — and the UI says so
 
-**Assistant principals are organisation-scoped at the database. The
+**Assistant principals are organization-scoped at the database. The
 connection's site allowlist is an application-layer filter through one audited
 chokepoint, and the interface describes it in exactly those terms.**
 
@@ -225,17 +259,29 @@ count_calls() {
 grep -q "func (p \*Pool) InScopedTenantTx" internal/db/db.go \
   || { echo "FAIL: InScopedTenantTx is not defined in internal/db/db.go" >&2; exit 1; }
 
-count_calls "InScopedTenantTx(" || exit 1
-count_calls "\.InTenantTx("     || exit 1
+count_calls "\.InScopedTenantTx(" || exit 1
+count_calls "\.InTenantTx("      || exit 1
 ```
 
-**Note the shape, and do not simplify it back.** The obvious form,
-`grep … | wc -l`, takes its exit status from `wc`, so a pattern that matches
-nothing prints `0` and exits `0` — a renamed helper would read as "no call
-sites activate the policies", which is this ADR's conclusion arrived at by
-accident rather than by evidence. Counting with `grep -c .` and refusing on
-zero makes an absent pattern go red. The control grep is there for the same
-reason: it must match, or the counts are measuring nothing.
+**Note the shape, and do not simplify it back.** Two things in it are
+load-bearing and both were got wrong in earlier drafts of this ADR.
+
+*Refusing on zero.* The obvious form, `grep … | wc -l`, takes its exit status
+from `wc`, so a pattern that matches nothing prints `0` and exits `0` — a
+renamed helper would read as "no call sites activate the policies", which is
+this ADR's conclusion arrived at by accident rather than by evidence. Counting
+with `grep -c .` and refusing on zero makes an absent pattern go red, and the
+control grep must match for the same reason: without it the counts measure
+nothing.
+
+*The leading `\.` is not decoration.* An unanchored `InScopedTenantTx(` also
+matches the function's own definition and its interface declaration, both in
+`internal/db/db.go`. An earlier draft counted those, which inflated the figure
+by two and — worse — meant the guard could report a healthy non-zero count with
+every real call site deleted, since the definition alone would satisfy it.
+Anchoring on the method-call form counts calls and nothing else. `InTenantTx`
+was already written this way and is unaffected; it was checked rather than
+assumed.
 
 The first count is a handful of call sites; the second is the rest of the
 application. On every path in the second group the site-scope policies are
@@ -248,22 +294,47 @@ needs carry no site-scope policy at all — and this check is written so that a
 renamed table fails rather than reads as an absence of policy:
 
 ```sh
-all=$(grep -hoE "CREATE POLICY [a-z_0-9]+ ON (site_vulnerabilities|update_runs)\b" db/schema.sql | sort -u)
-[ -n "$all" ] || { echo "FAIL: no policies found on either table -- renamed or moved, not 'no policies'" >&2; exit 1; }
-printf '%s\n' "$all"
-printf '%s\n' "$all" | grep -q '_site_scope' \
-  && { echo "FAIL: a site-scope policy now exists; this ADR's premise has changed" >&2; exit 1; }
-echo "OK: neither table carries a _site_scope policy"
+check_table() {
+  t=$1
+  block=$(awk -v t="$t" '
+    $0 ~ ("^CREATE POLICY [a-z_0-9]+ ON " t "$") {inb=1}
+    inb {print}
+    inb && /;[[:space:]]*$/ {inb=0}
+  ' db/schema.sql)
+  [ -n "$block" ] || { echo "FAIL: no policy found on $t -- table renamed or dropped, which is not 'no site scoping'" >&2; return 1; }
+  echo "$t policies:"
+  printf '%s\n' "$block" | grep -oE "^CREATE POLICY [a-z_0-9]+" | sed 's/^/  /'
+  if printf '%s\n' "$block" | grep -qE 'site_scope|allowed_site_ids'; then
+    echo "FAIL: $t now carries a site-scope predicate; this ADR's premise has changed" >&2
+    return 1
+  fi
+  echo "  OK: no site-scope predicate in any policy on $t"
+}
+
+check_table site_vulnerabilities || exit 1
+check_table update_runs         || exit 1
 ```
 
-The non-empty check is the control — a renamed or dropped table would otherwise
-print nothing and read as "no policies", which is the same sentence as the
-finding and means the opposite thing. The listing that comes back is the
-tenant-isolation and cross-tenant worker policy for each table, and nothing
-else. There is no site-scope policy to activate. The final check is what turns
-this from a snapshot into a standing assertion: on the day the deferred
-migration lands it goes red, which is the correct moment for someone to
-supersede this section.
+**Each table is asserted separately, and on its predicate rather than its
+name.** Both properties matter and an earlier draft had neither.
+
+Checking the two tables with one combined pattern meant output from either
+satisfied the non-empty control, so a dropped or renamed `update_runs` would
+have passed on the strength of `site_vulnerabilities` still matching. Per-table
+means a table that vanishes fails as a table that vanished, which is a
+different fact from "this table has no site scoping" and must not read as one.
+
+Matching on the policy *name* containing `_site_scope` assumed a naming
+convention rather than checking behavior. A site-scope predicate introduced
+under any other name would have passed silently. The check now reads each
+policy's whole definition, up to its terminating semicolon, and looks for the
+GUC the scoping actually depends on — so it goes red on the semantics whatever
+the policy ends up being called.
+
+What comes back today is the tenant-isolation and cross-tenant worker policy on
+each table, and nothing else. There is no site-scope predicate to activate. On
+the day the deferred migration lands this goes red, which is the correct moment
+for someone to supersede this section rather than discover it is stale.
 
 There are also fail-open shapes for a principal whose scope is the zero value,
 in the transaction dispatcher, in the site-access middleware, and in the
@@ -272,7 +343,7 @@ site-scoped-in-name-only would land on those paths.
 
 Given that, manufacturing database-level per-site isolation for a non-human
 principal inside this release is not available. The honest design is the one
-taken: organisation scope at the database, and one Go chokepoint that resolves
+taken: organization scope at the database, and one Go chokepoint that resolves
 which sites a request may touch by intersecting the request with the
 connection's allowlist, refusing an empty result with a named code. A registry
 test asserts every registered tool declares a site parameter derived from that
@@ -462,7 +533,7 @@ sustained 0% decline rate is read as a kill signal rather than as success.
 - Fleet-level tools cannot answer per-site operational questions that need a
   live round trip. Some genuinely useful questions are unanswerable in Phase 1.
 - The pilot uses a pasted static credential rather than a delegated
-  authorisation flow, which skews the cohort toward developer-tool users. We
+  authorization flow, which skews the cohort toward developer-tool users. We
   will not learn how a non-technical site owner experiences an approval queue
   until that flow exists. This is a real gap, accepted knowingly, and it is why
   that flow is next rather than distant.
@@ -474,7 +545,7 @@ sustained 0% decline rate is read as a kill signal rather than as success.
 
 - The one-chokepoint site resolver, with the registry test that asserts every
   tool goes through it.
-- The two sanitisers — one for text on its way to the model, one for text on
+- The two sanitizers — one for text on its way to the model, one for text on
   its way to a human — with a planted hostile-name test on the approval
   payload.
 - The proposal state machine with the conditional approve, plus proofs that the
