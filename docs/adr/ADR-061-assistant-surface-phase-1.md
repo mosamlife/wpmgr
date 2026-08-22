@@ -102,6 +102,34 @@ The decision lands as metadata inside the existing hash-chained audit log,
 inside the fields the canonical hash covers, so "a human approved this" is
 verifiable through an endpoint we already ship.
 
+**The approval transition and its ledger entry commit together, or neither
+commits.** They are one database transaction. If the ledger append fails, the
+approval fails, the operator is told it failed, and nothing is dispatched.
+
+This departs from the best-effort audit convention used elsewhere in this
+codebase, where a failed audit write is logged and the operation proceeds. That
+convention is defensible where the ledger *records* an action: losing a row
+degrades an investigation, and refusing the action would be a worse outcome
+than a gap in the log.
+
+It is not defensible here, because on this path the ledger entry **is the
+product claim, not a record of it.** The entire differentiator in Decision 2 is
+that a customer's auditor can verify a named human approved a specific action.
+An approval that committed while its ledger entry did not is an action taken
+with no verifiable human behind it — which is precisely the thing this design
+exists to make impossible — and best-effort auditing would produce exactly that
+outcome, silently, under the ordinary conditions that make a write fail. Worse,
+we could not afterwards enumerate which approvals were affected, so a single
+lost append would put every approval in the account into question rather than
+one.
+
+Two consequences follow and are accepted. Approval is unavailable when the
+ledger is unwritable, rather than degraded; that is the correct failure
+direction for this operation and the operator sees a real error rather than a
+false success. And the approve path must not adopt any later "audit
+asynchronously" or "queue the append" optimisation without superseding this
+ADR, because either one reintroduces the gap.
+
 **No automation escape hatch, ever.** No auto-approve tier, no policy engine
 that can approve, no "trusted automation may approve" flag, no approve button
 in a notification email, no "remember this choice for this session". Every one
@@ -121,19 +149,43 @@ been steered by injected content, its summary is precisely the artefact not to
 trust, and putting it where the decision gets made hands the attacker the one
 surface that converts a sentence into authority over a fleet.
 
-So the model supplies a structured selection — site ids, component slugs,
-target versions — and nothing else. The control plane re-derives every
-human-readable line from inventory it holds, and flags downgrades and
-major-version bumps **from its own data**, regardless of what the model
-claimed. The proposal record carries no free-text column the proposer controls,
-on the parent table or on its children, because if such a column existed
-something would eventually render it.
+So every fact on the surface comes from a structured selection — site ids,
+component slugs, target versions — and nothing else the model sends. The
+control plane re-derives every human-readable line from inventory it holds, and
+flags downgrades and major-version bumps **from its own data**, regardless of
+what the model claimed.
+
+**The one exception is a single quarantined note, and it is specified here
+rather than left to the build**, because an under-specified quarantine is how
+model text leaks onto a surface that must not carry it.
 
 The quarantine block is kept rather than removed. An operator with no statement
 of intent approves on shape alone, and a short note genuinely helps answer "is
-this the thing I asked for". But it is demoted, plain text, capped, escaped,
-labelled with what it is and what it is not, and it never appears in the title,
-the summary, the notification, or the audit row.
+this the thing I asked for". Its contract:
+
+- **It is one named column on the proposal record, and it is the only
+  proposer-controlled free text anywhere in the schema.** Every other column on
+  the parent table and on its children is either control-plane-derived or a
+  closed enum. The reason field in particular is a server-side enum that cannot
+  carry a sentence.
+- **It is excluded from the plan digest**, so editing it cannot invalidate an
+  approval and cannot be used to churn one.
+- **It never becomes a fact.** It is not an input to any computed value, any
+  flag, any ordering, any grouping, or any control-plane-derived line on the
+  screen.
+- **It renders in exactly one slot**: after the facts, before the controls, in
+  a visually demoted surface, as an escaped plain-text node — never markup,
+  never a link or link label, never a title attribute — with control
+  characters, bidirectional overrides and zero-width characters stripped, hard
+  capped, and labelled with both what it is and what it is not.
+- **It appears nowhere else, ever**: not in the title, the summary, the queue
+  row, the notification or email body or subject, the audit row title, or any
+  API response consumed by something that will render it as anything but a
+  plain text node.
+
+If any part of that contract cannot be met at build time, the note is dropped
+rather than shipped loosely. The facts are what the decision rests on; the note
+is a convenience, and a convenience does not get to weaken the surface.
 
 One consequence that was nearly missed and is recorded so it is not missed
 again: **site-origin strings are an injection surface for the human, not only
@@ -158,31 +210,60 @@ false, and recording why is the point of this section.
 
 The site-scope policies exist, but they are activated only by the transaction
 helper that sets the scope GUC, and almost nothing calls it. Rather than pin a
-number that drifts, here are the commands; run them and compare the two
-results:
+number that drifts, here are the commands; run them from `apps/api` and compare
+the two results:
 
 ```sh
-cd apps/api
-grep -rn "InScopedTenantTx(" --include="*.go" internal/ | grep -v _test | wc -l
-grep -rn "\.InTenantTx("     --include="*.go" internal/ | grep -v _test | wc -l
+count_calls() {
+  pat=$1
+  hits=$(grep -rn "$pat" --include="*.go" internal/ | grep -v _test | grep -c .)
+  [ "$hits" -gt 0 ] || { echo "FAIL: no match for '$pat' -- renamed or moved, which is not zero call sites" >&2; return 1; }
+  echo "$pat -> $hits"
+}
+
+# Control. If the helper is gone the two counts below mean nothing, so check first.
+grep -q "func (p \*Pool) InScopedTenantTx" internal/db/db.go \
+  || { echo "FAIL: InScopedTenantTx is not defined in internal/db/db.go" >&2; exit 1; }
+
+count_calls "InScopedTenantTx(" || exit 1
+count_calls "\.InTenantTx("     || exit 1
 ```
 
-The first is a handful of call sites; the second is the rest of the
+**Note the shape, and do not simplify it back.** The obvious form,
+`grep … | wc -l`, takes its exit status from `wc`, so a pattern that matches
+nothing prints `0` and exits `0` — a renamed helper would read as "no call
+sites activate the policies", which is this ADR's conclusion arrived at by
+accident rather than by evidence. Counting with `grep -c .` and refusing on
+zero makes an absent pattern go red. The control grep is there for the same
+reason: it must match, or the counts are measuring nothing.
+
+The first count is a handful of call sites; the second is the rest of the
 application. On every path in the second group the site-scope policies are
-inert, because their predicate short-circuits when the GUC is unset. This
+inert, because their predicate short-circuits when the GUC is unset. The first
 number has already moved once during the drafting of this ADR, which is the
-argument against writing it down.
+argument against writing either one down.
 
 Worse for this feature specifically, the two tables a fleet assistant most
-needs carry no site-scope policy at all:
+needs carry no site-scope policy at all — and this check is written so that a
+renamed table fails rather than reads as an absence of policy:
 
 ```sh
-cd apps/api
-grep -hoE "CREATE POLICY [a-z_0-9]+ ON (site_vulnerabilities|update_runs)\b" db/schema.sql | sort -u
+all=$(grep -hoE "CREATE POLICY [a-z_0-9]+ ON (site_vulnerabilities|update_runs)\b" db/schema.sql | sort -u)
+[ -n "$all" ] || { echo "FAIL: no policies found on either table -- renamed or moved, not 'no policies'" >&2; exit 1; }
+printf '%s\n' "$all"
+printf '%s\n' "$all" | grep -q '_site_scope' \
+  && { echo "FAIL: a site-scope policy now exists; this ADR's premise has changed" >&2; exit 1; }
+echo "OK: neither table carries a _site_scope policy"
 ```
 
-That returns only the tenant-isolation and cross-tenant worker policies for
-each table. There is no site-scope policy to activate.
+The non-empty check is the control — a renamed or dropped table would otherwise
+print nothing and read as "no policies", which is the same sentence as the
+finding and means the opposite thing. The listing that comes back is the
+tenant-isolation and cross-tenant worker policy for each table, and nothing
+else. There is no site-scope policy to activate. The final check is what turns
+this from a snapshot into a standing assertion: on the day the deferred
+migration lands it goes red, which is the correct moment for someone to
+supersede this section.
 
 There are also fail-open shapes for a principal whose scope is the zero value,
 in the transaction dispatcher, in the site-access middleware, and in the
@@ -311,14 +392,28 @@ gets re-proposed every planning cycle by whoever has not read the reasoning.
 ## Two things that were expensive to learn
 
 **Per-command signing is not AI safety, and must never be marketed as such.**
-The signed-command design protects a **site from a compromised control plane**:
-the site verifies that an instruction genuinely came from us before acting on
-it. It says nothing whatever about whether the instruction was a good idea, and
-it constrains a model not at all, because a model-proposed action that the
-control plane dispatches is signed exactly like any other. Presenting signing
-as a constraint on the assistant would be a false claim in the one area where
-the product's real claim is unusually strong and checkable. The claim to make
-is the approval one.
+What the signed-command design actually buys is **forgery and tampering
+resistance while the signing authority remains trusted**: a site acts only on
+an instruction carrying a valid signature, so a network attacker, an
+intercepting proxy, or anything else that is not the signer cannot manufacture
+or alter a command, and there is no standing privileged session on the site for
+an attacker to ride.
+
+It does **not** protect a site against a compromised control plane or a stolen
+signing key. An attacker holding the key issues valid signatures by definition,
+and the site cannot tell those from ours — that threat is answered by key
+custody, revocation and rotation, not by the signature. An earlier draft of
+this ADR said signing protects the site from a compromised control plane. That
+was wrong, it was caught in review, and the corrected statement is recorded
+here rather than quietly replaced, because the wrong version is the intuitive
+one and will be re-derived by the next person who reasons about it quickly.
+
+Either way it says nothing about whether an instruction was a good idea, and it
+constrains a model not at all, because a model-proposed action that the control
+plane dispatches is signed exactly like any other. Presenting signing as a
+constraint on the assistant would be a false claim in the one area where the
+product's real claim is unusually strong and checkable. The claim to make is
+the approval one.
 
 **The threat model's first item is prompt injection, and the design assumes it
 succeeds.** Every string that originated on a managed WordPress site is
@@ -351,6 +446,9 @@ sustained 0% decline rate is read as a kill signal rather than as success.
 - No automation may ever approve. This closes off an auto-approve tier, a
   policy engine with approval authority, and scheduled or autonomous runs with
   no human in the loop.
+- The approve path cannot later adopt asynchronous or queued audit appends, or
+  the best-effort audit convention used elsewhere, without superseding this
+  ADR. Approval is unavailable when the ledger is unwritable, by design.
 - Assistant principals cannot be made site-scoped at the database by
   configuration; that requires the deferred migration and its own decision.
 - Content and page-builder operations are outside this design entirely.
@@ -383,6 +481,10 @@ sustained 0% decline rate is read as a kill signal rather than as success.
   self-approval refusal and the wrong-credential-class refusal actually fire:
   plant the failure, watch it go red, restore, watch it go green, both outputs
   pasted with their commands.
+- The approve path's single transaction, with a proof that a forced ledger-write
+  failure leaves the request pending and dispatches nothing. This one needs the
+  fault injected rather than reasoned about, since the failure it guards against
+  only appears when the append genuinely fails.
 - Off by default at the tenant level, and a connection whose site allowlist
   starts empty, so a credential leaked from a half-configured connection reads
   nothing.
