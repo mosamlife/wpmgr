@@ -1,7 +1,7 @@
 # ADR-061 — Assistant surface, Phase 1: control-plane server and out-of-band approval
 
-**Status:** Accepted · **Date:** 2026-08-22
-**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy).
+**Status:** Accepted (amended 2026-08-23) · **Date:** 2026-08-22
+**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — supersedes Decision 7 below, per amendment A7).
 
 This ADR records the locked Phase 1 design for the assistant surface: an
 endpoint on the control plane that lets an AI assistant read a fleet and
@@ -12,6 +12,12 @@ It records the decisions and the reasoning behind them, not the build plan.
 **Phase 2 — content operations and page-builder work — is out of scope for
 this record and gets its own ADR.** Nothing here should be read as approving
 any part of it.
+
+**Amended 2026-08-23 — read [Amendments](#amendments-2026-08-23) before acting
+on Decisions 1, 6 or 7.** The status stays Accepted and no decision text below
+was rewritten. Eight amendments are recorded at the end of this file: Decision 1
+is clarified rather than changed, Decision 6 is amended, Decision 7 is
+superseded by ADR-062, and four items ADR-061 was silent on are decided.
 
 ---
 
@@ -42,6 +48,10 @@ model applies nothing directly.
 ---
 
 ## Decision 1 — The server lives on the control plane, not on managed sites
+
+*Clarified 2026-08-23 by amendment A1. The text below is unchanged. The
+clarification scopes the fan-out argument and activates the second clause of the
+first Consequences bullet; it does not weaken the credential argument.*
 
 **The assistant endpoint is a route on the existing API host. It is not a
 surface on the WordPress agent, and it does not route through the WordPress
@@ -407,6 +417,12 @@ caught all of them.
 
 ## Decision 6 — The tool surface is fleet-level questions, not per-site commands
 
+*Amended 2026-08-23 by amendment A3. The text below is unchanged and its flat
+fleet-read set stands. What changed: the revisit threshold is now measured
+rather than a round number, a three-layer registry is recorded, and the second
+of the three arguments against a facade is retired as not binding on this
+architecture.*
+
 **A small flat set of fleet-level tools. No meta-tool facade, no per-site
 command mirror of the product's action surface.**
 
@@ -444,7 +460,14 @@ prompt-level safety is not a boundary.
 
 ---
 
-## Decision 7 — Site generation is conceded
+## Decision 7 — Site generation is conceded — SUPERSEDED
+
+*Superseded 2026-08-23 by ADR-062 (Proposed), via amendment A7. The text below
+is kept as written and is no longer the standing decision. Its factual premise
+survives — Phase 1 writes no content, and no content write path exists in either
+process — but the conclusion drawn from that premise does not. Read
+[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md) instead;
+until ADR-062 is Accepted, no Phase 2 content code ships.*
 
 **Content writes and site generation are not scheduled, and this is a
 concession rather than a deferral.**
@@ -524,6 +547,14 @@ sustained 0% decline rate is read as a kill signal rather than as success.
   configuration; that requires the deferred migration and its own decision.
 - Content and page-builder operations are outside this design entirely.
 
+*Three items in that list were amended on 2026-08-23 and must be read with the
+Amendments section below. The second sentence of the first bullet — per-site
+capability dispatched through the existing signed-command path — is activated
+rather than hypothetical (A1). The second bullet is bounded against scheduling:
+a scheduler that only proposes is permitted, and nothing scheduled may approve
+(A5). The last bullet is retired (A7); it remains true of Phase 1's scope and is
+no longer a statement about the product.*
+
 **What it costs.**
 
 - Site scoping in v1 is an application-layer property, which is a weaker
@@ -571,3 +602,293 @@ sustained 0% decline rate is read as a kill signal rather than as success.
 surface exists. The assistant route must answer 401 rather than 404 to an
 unauthenticated request against the deployed revision, because a missed
 constructor leaves every route 404 while the build and the package tests pass.
+
+---
+
+## Amendments (2026-08-23)
+
+A design review over the whole assistant surface — the decisions above, the
+published Phase 1 and Phase 2 design surfaces, and the agent's actual command
+surface — found that this record contradicts our own published design work in
+four places, decides three things it never states, and rests one argument on a
+premise that a later decision had already discharged.
+
+**These are amendments, not a rewrite.** Every decision above keeps its original
+text. This section records what changed and why, in the pattern `CLAUDE.md`
+already uses for its own corrections: the wrong or incomplete version stays
+visible, because the next person to reason about it quickly will re-derive the
+same version and needs to find the correction rather than the argument.
+
+**What these amendments do not change.** Decisions 2, 3, 4 and 5 are untouched.
+So is *Two things that were expensive to learn*, and in particular the corrected
+statement at the top of it: per-command signing gives **forgery and tampering
+resistance while the signing authority remains trusted**, and does **not**
+protect a site from a compromised control plane or a stolen key. Nothing in A2
+or A4 below is a claim about the signing key, and nothing below turns signing
+into a safety property it does not have.
+
+---
+
+### A1 — Decision 1 stands. The fan-out argument is scoped, and the per-site clause is activated
+
+Decision 1 gave two arguments and they have different reach.
+
+**The credential argument (Decision 1, paragraph 3) is untouched and is the
+load-bearing half.** A per-site *inbound* assistant path would still require a
+privileged WordPress user and a standing credential on every managed site,
+multiplied by the size of the fleet. Nothing here reopens that, and no amendment
+below creates an inbound path to a site.
+
+**The fan-out argument is narrower than it reads.** Its subject is *fleet
+questions* — "Sending them to individual sites turns one Postgres query into an
+unbounded fan-out". The antecedent is fleet-aggregate queries, and the argument
+was never applied to a targeted single-site action, which is a different traffic
+shape: one round trip to one named site, not N.
+
+Decision 6's "Per-site commands are an unbounded fan-out of round trips" looks
+like a counter-example and is not, for a reason neither decision noticed.
+"Unbounded" describes a tool whose site parameter is a *set*. And more
+decisively: **under Decision 2 a per-site tool call does not execute anything.**
+It writes a proposal row. Its cost at tool-call time is one INSERT and zero
+network round trips. Dispatch happens afterwards, on a worker, after a human
+approves, outside any first-byte deadline. Decision 6's response-time argument
+assumes the tool call executes; it does not, and that assumption is the only
+thing holding it up.
+
+**What this activates.** The second sentence of the first Consequences bullet —
+"Any future per-site capability is dispatched by the control plane through the
+existing signed-command path" — was written as a hypothetical. It is hereby the
+sanctioned and only route: per-site capability reaches a site as a signed command
+dispatched by the control plane after a human approval, and never as an inbound
+connection to the site. A future per-site capability therefore does **not**
+require superseding Decision 1. Opening an inbound path still does.
+
+### A2 — The agent already has a large action surface, and this record reads as though it does not
+
+Measured in the working tree at the time of writing, from `apps/agent`:
+
+```sh
+ls includes/commands/*.php | wc -l
+#   68
+
+grep -rhoE 'command/[a-z0-9_]+' includes/commands/*.php \
+  | sed 's#command/##' | sort -u | wc -l
+#   55
+```
+
+Sixty-eight command classes implementing fifty-five distinct signed command
+names ship today, over the outbound signed-command channel: the filesystem
+surface, database maintenance, search-and-replace, media, cache, backup, restore,
+rollback, scan and update. Re-run both commands rather than citing these
+figures; they move with the plugin.
+
+This corrects a **reading**, not a decision. "The agent plugin does not move for
+this feature" is a statement about Phase 1 and stays true — Phase 1 adds no
+command. But the surrounding framing reads as though the agent has no action
+surface at all, and every downstream design artifact inherited that reading. The
+consequence is the single largest correction in the review: for most per-site
+work an assistant might propose, **what is missing is model-facing exposure, not
+capability.**
+
+Decision 7's premise — "no post, page, block, taxonomy or menu write path exists
+in the control plane or in the agent" — is about *content* write paths
+specifically and remains true. It was re-verified against the same command's
+output this pass: no name in the set is a content verb.
+
+One property of that channel is worth recording here because A3 and A4 lean on
+it. Each command is authorized by its own short-lived Ed25519 bearer token bound
+to a single command name and a single site, so a token minted for one command
+cannot invoke another (`apps/api/internal/agentcmd/jwt.go`); confirmation for a
+dangerous write is a body field the agent enforces server-side rather than a
+prose instruction; and a file write that would overwrite an existing file copies
+it to a staging area first (`apps/agent/includes/commands/class-file-write-command.php`).
+That is a description of the wire contract. It is not a claim about the signing
+key, and the paragraph above still governs what signing does and does not buy.
+
+### A3 — Decision 6: a measured threshold, a three-layer registry, and one retired argument
+
+Decision 6's flat fleet-read set is right and stays. Three things change.
+
+**The threshold is measured, and it is measured against `tools/list` size
+specifically.** "Revisit a facade if the flat set approaches roughly 25 entries"
+is replaced by: *revisit at the measured point at which tool-selection accuracy
+degrades, measured against the size of the list the client actually receives,
+re-measured per release.* Two reasons. Registry size and `tools/list` size are
+different quantities and the original conflated them — a registry of hundreds
+behind a handful of exposed tools does not test the exposed-list claim at all.
+And a round number in an ADR is a guess wearing a decision's clothes; `CLAUDE.md`
+already requires that a performance question be settled by measurement before a
+fix, and tool-selection accuracy is that kind of question. Until the measurement
+exists, Layer A ships and instrumenting tool-selection correctness is a Phase 1
+deliverable.
+
+**The registry has three layers, and the boundary between them is enforced by
+what is registered rather than by a flag.**
+
+- **Layer A — flat fleet-read tools.** Decision 6 as written, unchanged. A small
+  set, each wearing its own name, each answered from control-plane inventory with
+  its own staleness stamp in the same object as the answer.
+- **Layer B — curated per-site *proposal* tools, named by intent rather than by
+  command.** Not a mirror of the command surface. Most of that surface is
+  operator plumbing — inventory refresh, cache preload queueing, agent
+  self-update, object cache and performance config — that no model should ever be
+  asked to choose between. A Layer B tool resolves to one or more signed
+  commands, and it wears its own name **on our approval surface**, which renders
+  the resolved command names from control-plane-derived facts and never a generic
+  "execute".
+- **Layer C — at most one dispatcher, and only if Layer B exceeds the measured
+  cap.** Permitted only over a positively enumerated, per-site-gated registry
+  whose argument is constrained by an enum generated from what a given site
+  actually has. Never over an open tail.
+
+**The facade objection is retained in one half and retired in the other.**
+Decision 6 cut the facade on two grounds.
+
+The first — "a tail defined only by what is absent from it is not a registry" —
+is **retained**, and it is exactly why Layer C is confined to a positively
+enumerated registry with a generated argument enum. A facade over an enumerated,
+per-target-gated, runtime-verified registry is a different object from a facade
+over an undefined tail, and only the second is what that sentence rejects.
+
+The second — "every action should wear its own name in the client's approval UI"
+— is **retired as not binding on this architecture**, and the reasoning matters
+more than the conclusion. That argument protects a property Decision 2 does not
+rely on. Decision 2 removed the client's approval UI from our trust model
+entirely: approval happens on a control-plane surface the model cannot reach, the
+proposing and approving credential classes are disjoint, and the confirmation
+phrase is never sent to the model. In an architecture whose *only* gate is the
+client's tool-approval prompt, a generic invoke tool is a real and serious cost —
+the operator is shown one tool name standing in for every action the surface can
+take, and that is the whole of what they get to approve. We are not that
+architecture. The name that carries our approval decision is the one **our**
+surface renders, and Decision 3 already requires that surface to derive it from
+inventory rather than from anything the model sends. The argument is sound; it
+binds a different product.
+
+**Unchanged by this amendment:** shell execution and command-runner tools remain
+excluded from this product line permanently, and Layer C is not a route back to
+them. The byte-capped, record-boundary output rule is also unchanged.
+
+### A4 — Concurrency: a per-organization ceiling and a per-site exclusive lock
+
+ADR-061 was silent on concurrency, and two published surfaces filled the silence
+differently — one rendering several operations running at once, another
+disabling an action because another operation holds its sites. Both are correct
+under one rule, and nothing said so.
+
+**Two mechanisms, both in force.**
+
+1. **A per-organization fleet-wide ceiling on concurrently dispatching steps,
+   default 4.** It is configured as the `MaxWorkers` of the assistant dispatch
+   River queue, sharded per tenant the way `apps/api/internal/update` already
+   shards its task queue (`const tenantQueueShards = 8`,
+   `apps/api/internal/update/worker.go:60`), so one organization's burst fills
+   only its own shard and cannot starve another tenant. The default of 4 is a
+   starting value, not a measurement: it is the same bounded default the RUCSS
+   queue already uses (`apps/api/internal/rucss/worker/worker.go:405`), and it is
+   expected to move once real dispatch load exists. It is stated here so that
+   there is a number with a decision behind it.
+2. **A per-site exclusive advisory lock, held for the duration of that site's
+   step.** `pg_advisory_xact_lock(hashtext(<namespace>), hashtext(<site id>))`,
+   released by commit or rollback — the same discipline
+   `apps/api/internal/update/agent_repo.go` and `apps/api/internal/org` already
+   use, and not a new locking mechanism.
+
+The ceiling bounds fleet-wide load. The lock is what makes "another operation
+holds these sites" true without taking a global lock, so unrelated sites keep
+moving while one site is busy.
+
+Reads are freely concurrent and take no lock. A proposal is an INSERT and is
+concurrency-safe, which is A1's point restated: the thing that needs serializing
+is dispatch, and dispatch happens after approval.
+
+**Recorded so it is not cited again: the "3 concurrent" figure in the Phase 1
+design surfaces is mock copy.** No decision stood behind it; it was invented to
+fill a wireframe. It is not the ceiling, and the surfaces render whatever this
+decision sets.
+
+### A5 — A scheduler that only proposes is permitted; nothing scheduled may approve
+
+"No automation may ever approve" is unchanged and absolute. It does not forbid
+automation that only proposes.
+
+A scheduler may assemble a proposal on a timetable and enqueue it. That proposal
+enters the same queue, is rendered on the same approval surface, and waits for
+the same human decision as any other. Nothing scheduled may approve; no timeout,
+escalation or policy may approve; and a run that waits forever waits forever,
+visibly. The operative words in the foreclosure are "with no human in the loop",
+and without this sentence the bullet reads as foreclosing scheduled dispatch
+entirely, which was not the decision.
+
+### A6 — The protocol is MCP, and this record now says so
+
+This is a decision record for a connector that never named its protocol.
+Before this amendment,
+`grep -ric 'MCP\|Model Context Protocol' docs/adr/ADR-061-assistant-surface-phase-1.md`
+returned `0`, while the published Phase 1 design surfaces already show users an
+`/mcp` endpoint on the app host. The UI encoded a protocol decision the ADR did
+not record. Closing that gap:
+
+- **Protocol: MCP (Model Context Protocol).**
+- **Target version: 2025-11-25**, with a compatibility window for clients that
+  negotiate an earlier version. Version negotiation happens at `initialize`, and
+  a version we cannot serve is refused with a named error rather than silently
+  downgraded into unspecified behaviour.
+- **Transport: Streamable HTTP**, on the existing API host, inside the existing
+  TLS boundary and auth path. That is Decision 1's consequence restated: one
+  origin, one boundary. There is no stdio transport, because there is nothing on
+  a customer machine for us to run.
+- **Resources: out of scope for Phase 1.** Every fleet answer is a tool result
+  that carries its own staleness stamp in the same object as the answer, and a
+  resource has nowhere to put one.
+- **Prompts: out of scope for Phase 1.**
+- **Elicitation and sampling are never on the approval path.** Neither is a
+  substitute for the Decision 2 surface, and an elicitation round trip that
+  looked like an approval would produce precisely the ambiguity Decision 2 exists
+  to remove — a confirmation the model could have satisfied itself.
+- **Server instructions are delivered in the first tool result rather than
+  relying on the `initialize` handshake, and prepended rather than appended.**
+  Client handling of handshake instructions varies, and where an instruction
+  budget is capped it is the tail that gets cut.
+
+### A7 — Decision 7 is superseded by ADR-062
+
+Decision 7 conceded content writes and site generation, and recorded the
+concession as permanent specifically so it would not be re-proposed each planning
+cycle by someone who had not read the reasoning. The reasoning is what failed.
+
+Its premise was a fact about this tree — no content write path exists in either
+process — and that half is still true (A2). What Decision 7 drew from it was a
+*market* conclusion: that building one is "a product bet about entering a
+different market". That conclusion does not survive. Fleet content operations are
+already designed in this product's own published Phase 2 design surfaces, against
+a locked decision that forbids them; and the technical objection underneath the
+concession rested on a test that was the wrong test, which ADR-062 states and
+replaces.
+
+**Decision 7 is superseded by
+[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md).** ADR-062
+is **Proposed**, not Accepted, and no Phase 2 content code ships until it is
+accepted. "Conceded rather than deferred" is retired and replaced by a scoped
+commitment recorded there.
+
+The Consequences bullet "Content and page-builder operations are outside this
+design entirely" is retired with it. It remains an accurate statement of *this*
+ADR's scope — Phase 1 writes no content — and it is no longer a statement about
+the product.
+
+### A8 — Added to *Two things that were expensive to learn*
+
+**"Prompt-level safety is not a boundary" now has external corroboration, and
+the strongest kind.** The exclusion of shell execution and command-runner tools
+was recorded above as reasoning. A shipping product in this category exposes
+arbitrary code execution inside the WordPress process to a model, and the entire
+safety mechanism around it is a short prose instruction asking the model to
+behave. Its own published documentation states that the containment appearing to
+surround that feature is not a security boundary, and that code execution passes
+straight through it.
+
+A vendor documenting the limit of its own containment, on its own flagship
+feature, is better evidence than any argument we could construct: it is the
+claim's author conceding it. The exclusion stands unamended, and A3's Layer C is
+not a route back to it.
