@@ -798,6 +798,24 @@ The ceiling bounds fleet-wide load. The lock is what makes "another operation
 holds these sites" true without taking a global lock, so unrelated sites keep
 moving while one site is busy.
 
+**The unit of the ceiling is the per-site step, and "runs" and "operations" are
+not synonyms for it.** A step is the smallest unit of work that touches one site;
+it is what occupies a worker and makes one outbound request, so it is what
+`MaxWorkers` counts and the only unit in which a concurrency limit means
+anything here. **A run is not capped.** An organization may have any number of
+multi-site runs in flight; what is capped is how many of their steps dispatch at
+once. Counting the ceiling in runs would understate fleet load by roughly the
+size of the fleet — one run across forty sites is a single run and forty steps,
+so a ceiling of four *runs* permits up to forty concurrent site dispatches while
+reading on screen as four.
+
+The conversion between the two, since it is meaningful: **a run over N sites
+contributes at most `min(N, ceiling)` concurrently dispatching steps, and never
+more than one step per site at a time**, because mechanism 2 serializes a site's
+own steps whatever the ceiling allows. Every surface that renders this limit
+renders it in steps and uses that word: three nouns for one limit is how the
+withdrawn figure above survived as long as it did.
+
 Reads are freely concurrent and take no lock. A proposal is an INSERT and is
 concurrency-safe, which is A1's point restated: the thing that needs serializing
 is dispatch, and dispatch happens after approval.
@@ -830,10 +848,23 @@ returned `0`, while the published Phase 1 design surfaces already show users an
 not record. Closing that gap:
 
 - **Protocol: MCP (Model Context Protocol).**
-- **Target version: 2025-11-25**, with a compatibility window for clients that
-  negotiate an earlier version. Version negotiation happens at `initialize`, and
-  a version we cannot serve is refused with a named error rather than silently
-  downgraded into unspecified behaviour.
+- **Target version: 2025-11-25.** This is what we implement against and what a
+  current client negotiates. It is corroborated against the WordPress project's
+  published MCP schema package, whose typed protocol DTOs are described as MCP
+  2025-11-25.
+- **Floor: 2025-03-26, and it is a floor rather than a preference.** Below it the
+  protocol drops fields the approval flow depends on, and the approval flow is
+  the product — ADR-061 exists to make "a named human approved this" checkable,
+  and a negotiated version that cannot carry the fields that claim rests on
+  cannot serve it. A compatibility window is therefore bounded below by
+  2025-03-26 and not by whatever the oldest client in the field happens to speak.
+- **Below the floor: refuse, and say why.** Version negotiation happens at
+  `initialize`; a version below the floor is refused rather than silently
+  downgraded into unspecified behaviour, and the refusal reaches the operator as
+  the reason rather than as a bare version mismatch — this client speaks an older
+  revision of the protocol, that revision cannot carry the approval fields, and
+  the remedy is a newer client. A version-mismatch error the operator cannot act
+  on is the same defect as a silent downgrade, arriving one screen later.
 - **Transport: Streamable HTTP**, on the existing API host, inside the existing
   TLS boundary and auth path. That is Decision 1's consequence restated: one
   origin, one boundary. There is no stdio transport, because there is nothing on
