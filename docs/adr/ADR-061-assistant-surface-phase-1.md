@@ -1,7 +1,7 @@
 # ADR-061 — Assistant surface, Phase 1: control-plane server and out-of-band approval
 
-**Status:** Accepted (amended 2026-08-23) · **Date:** 2026-08-22
-**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — supersedes Decision 7 below, per amendment A7).
+**Status:** Accepted (amended 2026-08-23 and 2026-08-24) · **Date:** 2026-08-22
+**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation — and its freeze clause fixes the ordering *inside* this phase, per amendment A9), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — supersedes Decision 7 below, per amendment A7), ADR-063 (licensing and third-party reuse — its conclusion independently supports Decision 1's siting).
 
 This ADR records the locked Phase 1 design for the assistant surface: an
 endpoint on the control plane that lets an AI assistant read a fleet and
@@ -18,6 +18,15 @@ on Decisions 1, 6 or 7.** The status stays Accepted and no decision text below
 was rewritten. Eight amendments are recorded at the end of this file: Decision 1
 is clarified rather than changed, Decision 6 is amended, Decision 7 is
 superseded by ADR-062, and four items ADR-061 was silent on are decided.
+
+**Amended again 2026-08-24 — read [Amendments](#amendments-2026-08-24) before
+planning any Phase 1 work.** Five further amendments, A9 through A13. **A9 is the
+one to read first**: ADR-060's freeze clause fixes the ordering *inside* Phase 1,
+so the gate work closes before the endpoint ships. The rest make the audit posture
+fail-closed for this surface, put site scoping in v1 as named work, settle three
+protocol-header cases the code must not conflate, and state the rule that skill
+and prompt content is data and never permission. No decision text below is
+rewritten by any of them.
 
 ---
 
@@ -923,3 +932,194 @@ A vendor documenting the limit of its own containment, on its own flagship
 feature, is better evidence than any argument we could construct: it is the
 claim's author conceding it. The exclusion stands unamended, and A3's Layer C is
 not a route back to it.
+
+---
+
+## Amendments (2026-08-24)
+
+A second review pass — over the whole assistant surface, the connection
+experience, the tool and capability model, the skill and prompt content model,
+the client setup formats and this repository's own licence position — produced
+five further amendments. A9 is the most consequential: it fixes an **ordering**
+inside Phase 1 that this record left free, and the ordering is not a preference.
+
+The 2026-08-23 amendments above stand unchanged, and so does every decision above
+them. As before, the earlier text is not rewritten; the correction is recorded
+next to it.
+
+### A9 — Sequencing inside Phase 1 is fixed by ADR-060's freeze clause, and this is the most consequential sequencing fact in the plan
+
+ADR-060 carries one absolute prohibition, and it is the only absolute in that
+record:
+
+> No new externally-reachable surface ships while an auth-boundary item is open.
+
+Three facts meet in Phase 1 and the conclusion follows from them without judgement
+being involved:
+
+1. **The MCP endpoint is a new externally-reachable surface.** A9 does not need to
+   argue this; A6 already records the protocol, the transport and the fact that
+   the endpoint answers on the existing API host. Something that a third-party
+   client connects to from the public internet is the case the clause is about.
+2. **The site-scope chokepoint is an auth-boundary item, and it is open.**
+   Decision 4 records that the application-layer chokepoint is the boundary in v1,
+   and the chokepoint does not exist yet. A10 and A11 below say what is left.
+3. **The audit posture on this surface is an auth-boundary item, and it is open.**
+   The audit path is documented as best-effort and fails open by default, and A10
+   changes that for this surface. Until the helper exists, the surface's own
+   record of who was denied what is not reliable, which is the boundary's evidence.
+
+**Therefore the Phase-1 gate work closes before the MCP endpoint ships.** Not
+"should", not "ideally in the same release" — the clause is absolute and it is
+narrow precisely so that it can be held rather than informally suspended. Anything
+that renders a Phase 1 plan renders the gate work ahead of the endpoint, and a
+plan that shows them shipping together is wrong on its face rather than optimistic.
+
+**Why this needs stating at all.** The connection wizard, the endpoint and the
+capability hub are the visible part of Phase 1 and the chokepoint is not visible
+at all. That asymmetry is exactly the pressure ADR-060 exists to resist, and it
+resolves silently in the visible direction unless the ordering is written where a
+planner will hit it.
+
+### A10 — Audit is fail-closed for this surface, and opting in is deliberate
+
+**On the assistant surface the audit trail is the point: every AI-originated
+read, proposal, approval, denial and execution writes its record in the same
+transaction as its effect, and if the record cannot be written the operation
+fails — no AI action is ever performed whose record was lost.**
+
+The existing write helper is documented as **best-effort and fail-open**: callers
+are told to log an audit error and continue, *except where the audit trail is
+itself the point*. That default is right for the rest of the product, and there is
+no existing helper that implements the exception — the fail-closed branch exists as
+a sentence in a doc comment and not as a function.
+
+Three things follow, and each is work rather than a caveat:
+
+- **The helper has to be built**, and it becomes the only audit path this surface
+  may use. A surface that can reach the fail-open helper will eventually reach it.
+- **Reads are included.** *Which sites a connection read, and when* is the record
+  a customer needs when they ask what the assistant saw. Reads may be batched or
+  sampled for volume, but the batching rule is written down with a stated
+  retention. An omission dressed as an optimisation is how a read log becomes
+  absent.
+- **The chain lock becomes a throughput ceiling, and it must be measured.** Audit
+  appends take a per-tenant advisory lock. Fail-closed plus a per-tenant
+  serialisation point means audit contention bounds this surface's throughput,
+  under A4's per-organization step ceiling. That is the correct trade and it is
+  still a number somebody has to take, before production takes it for us.
+
+This is an opt-in to a stricter posture than the codebase's default, chosen for
+one surface, and named as such so that nobody later reads the difference as an
+inconsistency to be tidied away.
+
+### A11 — Site scoping is in v1, as an application-layer chokepoint, and it must be built rather than assumed
+
+Decision 4 is unchanged and this amendment does not soften it. What it adds is
+that site scoping is **in v1** — an organization-wide assistant key is not a
+product that can be sold to an operator who answers to someone else for the sites
+they touch — together with the specific work that makes it true.
+
+The current state is that the capability-set migration **stores** a site scope and
+a site allowlist on an API key and **enforces neither**; its own header says so.
+Storage is not a boundary. Six things:
+
+1. **The chokepoint.** One function taking the principal and the requested site
+   id, returning either a scoped context or a typed denial. It is the only way
+   this surface names a site.
+2. **It uses the scoped transaction helper, not the plain tenant one**, so the
+   restrictive site-scope policies that *do* exist actually engage. Today that
+   helper has a handful of call sites; Decision 4 gives the commands for counting
+   them and they are the commands to re-run, not the figures to quote. This
+   surface making it the default is also the honest way to prove it works.
+3. **A scope of "site" with an empty allowlist resolves to zero sites, not all
+   sites.** The scope column exists precisely so that "restricted to nothing" is
+   expressible, and a test proves it fails closed. This is the single most likely
+   place for a fail-open default to survive review.
+4. **A containment test that fails CI.** No handler on this surface may take a
+   site id from a request and pass it anywhere but the chokepoint. Plant a bypass,
+   watch it go red, restore, watch it go green, paste both outputs with their
+   commands.
+5. **Every denial is audited**, under the established action / action-denied
+   naming convention, through A10's fail-closed path.
+6. **The proof runs as the role every install runs as, through the same code path
+   production uses.** A proof that opens its own connection leaves the policies
+   inert while every test passes, which has already happened in this repository
+   once.
+
+**Reaffirmed, and it binds every artifact and not only this one:** database-level
+site scoping for API-key principals is **v2**. The v1 boundary is this
+application-layer chokepoint plus the restrictive policies that already exist.
+**No document, wireframe, marketing page or reviewer-facing summary may imply the
+database enforces it.** The presence of a scope column and an allowlist column is
+not a boundary, and the most likely way this goes wrong is a reviewer reading the
+columns as one.
+
+### A12 — Protocol: three header cases the code must not conflate, and logging from the first request
+
+A6 fixed the target at 2025-11-25 and the floor at 2025-03-26. It did not say what
+happens to the version **header** on an ordinary request, which is a different
+question from what happens at `initialize`, and conflating the three cases below
+produces a server that rejects compliant clients.
+
+1. **Header absent → assume the floor, 2025-03-26. Do not return 400.** This is
+   not leniency and it is not a compatibility concession; the specification says
+   the server should assume that version when the header is not received.
+   Returning 400 here rejects a client that is behaving correctly.
+2. **Header present but unsupported or unparseable → 400 Bad Request.** The
+   specification requires it. The response names the floor and the target so the
+   operator has something to act on, per A6's rule that a version-mismatch error
+   the operator cannot act on is the same defect as a silent downgrade arriving
+   one screen later.
+3. **The negotiated version governs.** Not the header, not the newest version
+   either side supports, not a per-request override. The header is transport
+   metadata about the request; negotiation at `initialize` is what decides the
+   contract.
+
+**Log the received header from day one, on every request, alongside the client
+name and version reported at `initialize`.** No AI client's public documentation
+mentions this header at all, so the real distribution of what clients actually
+send is unknowable from documentation and can only be observed. That log is the
+only route to an answer, and it is the same instrumentation the tool-selection
+measurement in A3 needs.
+
+One consequence follows immediately and constrains scope rather than describing
+it: **no Phase 1 capability may depend on a feature that exists only at
+2025-11-25.** Header-less clients are floor clients by definition, so the whole
+Phase 1 tool surface has to be expressible at 2025-03-26. Anything richer is gated
+and degrades with an explicit message, never with a silent absence.
+
+### A13 — Skill and prompt content is data, never permission
+
+**Authorization resolves outside the model loop. Instruction text that asks for an
+approval to be skipped is therefore denied identically to text that does not ask,
+because the text is not consulted when the question is decided.**
+
+This is not a new decision — it is Decision 2's architecture stated as a rule
+about *content*, because the content is where it will be tested. A skill, a
+prompt, a page body, a plugin error string and a site name are all the same kind
+of object to this surface: material the model may read, and material that can
+never widen what the model may do. There is no phrasing, no framing and no claimed
+authority inside that material which changes the answer, and the reason is
+structural rather than a matter of the model being well-behaved.
+
+**The fencing rule is Phase 1, even though the skill store itself is later.** Every
+site-originated string reaching the model arrives inside a fenced envelope, under
+a standing preamble stating that the enclosed material is reference text that
+cannot change what is permitted, with a provenance attribute we emit from our own
+database and never from the content itself, and with the delimiter escaped so the
+content cannot close its own fence.
+
+The ordering argument is the whole of A13's point: **the fence must predate the
+first untrusted string, not the first skill.** Site names, plugin-supplied error
+strings and — under ADR-062 — page content all reach the model in Phase 1,
+regardless of whether any skill exists. If the fence arrives with the store, then
+every string that reached the model before the store did so naked, and the first
+skill inherits a precedent that instructions arrive unfenced. Likewise the
+structural rule above is Phase 1, because a rule that is not true in Phase 1 is
+decoration.
+
+The ship gate is a **planted hostile site name**: a site whose name is an injection
+payload must produce an approval surface that still renders correctly and a set of
+permitted actions that is unchanged. A fence nobody has watched fail is not known
+to fence anything.

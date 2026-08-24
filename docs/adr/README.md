@@ -42,8 +42,9 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 057 | Security Suite Foundation: Per-Site Policy Model | Accepted | 2026-06-20 | [ADR-057-security-suite-foundation.md](./ADR-057-security-suite-foundation.md) |
 | 059 | Site-User Authentication Policy (2FA + Password Policy) | Accepted — 2026-06-20 | 2026-06-20 | [ADR-059-site-user-auth-policy.md](./ADR-059-site-user-auth-policy.md) |
 | 060 | Phase order: safety and truth before capability | Accepted | 2026-08-18 | [ADR-060-phase-order-safety-before-capability.md](./ADR-060-phase-order-safety-before-capability.md) |
-| 061 | Assistant surface, Phase 1: control-plane server and out-of-band approval | Accepted (amended 2026-08-23) | 2026-08-22 | [ADR-061-assistant-surface-phase-1.md](./ADR-061-assistant-surface-phase-1.md) |
-| 062 | Assistant surface, Phase 2: governed fleet content operations | Proposed | 2026-08-23 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
+| 061 | Assistant surface, Phase 1: control-plane server and out-of-band approval | Accepted (amended 2026-08-23 and 2026-08-24) | 2026-08-22 | [ADR-061-assistant-surface-phase-1.md](./ADR-061-assistant-surface-phase-1.md) |
+| 062 | Assistant surface, Phase 2: governed fleet content operations | Proposed (amended 2026-08-24) | 2026-08-23 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
+| 063 | Repository licensing, and the rules for third-party reuse | Accepted | 2026-08-24 | [ADR-063-licensing-and-third-party-reuse.md](./ADR-063-licensing-and-third-party-reuse.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
@@ -56,7 +57,7 @@ normalized:
 
 1. **Bold inline**, its own line near the top — `**Status:** <value>`, e.g.
    ADR-037 through ADR-047 (except the ADR-045 appendices), ADR-055–057,
-   ADR-059, ADR-060.
+   ADR-059 through ADR-063.
 2. **Plain inline**, no bold — `Status: <value> (<date>)`, e.g.
    ADR-051–054.
 3. **Bold bullet**, inside a metadata list — `- **Status:** <value> (<date>) —
@@ -72,7 +73,7 @@ Two files don't fit any of the three and are findings, not table artifacts:
 ## Numbering
 
 Numbers are allocated in this file and are never reused, including the ones
-below that have no file. **The next free number is 063.**
+below that have no file. **The next free number is 064.**
 
 | Number(s) | What happened |
 |---|---|
