@@ -228,9 +228,9 @@ class BackupJanitor
         if (!is_object($wpdb)) {
             return false;
         }
+        /** @var \wpdb $wpdb */
 
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
-        // @phpstan-ignore-next-line — dynamic wpdb.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct read on plugin-owned task-state table; identifier is prefix+constant; live liveness check, not cacheable
         $row = $wpdb->get_row($wpdb->prepare("SELECT phase, last_progress_at FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
         if (!is_array($row)) {

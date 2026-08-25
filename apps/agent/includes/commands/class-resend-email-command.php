@@ -122,6 +122,7 @@ final class ResendEmailCommand implements CommandInterface {
 		if ( ! is_object( $wpdb ) ) {
 			return null;
 		}
+		/** @var \wpdb $wpdb */
 
 		$table = $wpdb->prefix . Schema::EMAIL_LOG_TABLE;
 
@@ -209,6 +210,7 @@ final class ResendEmailCommand implements CommandInterface {
 		if ( ! is_object( $wpdb ) ) {
 			return;
 		}
+		/** @var \wpdb $wpdb */
 
 		$table = $wpdb->prefix . Schema::EMAIL_LOG_TABLE;
 

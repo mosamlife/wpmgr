@@ -122,6 +122,7 @@ final class EmailLogReporter {
 		if ( ! is_object( $wpdb ) ) {
 			return;
 		}
+		/** @var \wpdb $wpdb */
 
 		$base = $this->settings->controlPlaneUrl();
 		if ( $base === '' ) {

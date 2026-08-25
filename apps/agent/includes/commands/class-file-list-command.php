@@ -246,7 +246,7 @@ final class FileListCommand implements CommandInterface
      *
      * @param string $jailRoot Absolute jail root (no trailing slash, realpath'd).
      * @param string $relPath  Site-relative forward-slash path.
-     * @return array{ok:bool,abs?:string,rel?:string,code?:string,message?:string}
+     * @return array{ok:true,abs:string,rel:string}|array{ok:false,code:string,message:string}
      */
     public static function jailPath(string $jailRoot, string $relPath): array
     {

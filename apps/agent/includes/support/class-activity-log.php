@@ -811,6 +811,7 @@ final class ActivityLog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         try {
             $table = $wpdb->prefix . self::TABLE;
@@ -985,6 +986,7 @@ final class ActivityLog
         if (!is_object($wpdb)) {
             return self::GENESIS_HASH;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . self::TABLE;
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct read on plugin-owned table; identifier is prefix+constant; no caching (live chain-head needed)
         $hash = $wpdb->get_var("SELECT this_hash FROM {$table} ORDER BY seq DESC LIMIT 1");
@@ -1007,6 +1009,7 @@ final class ActivityLog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . self::TABLE;
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct count on plugin-owned table; identifier is prefix+constant; live read needed
         $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
@@ -1055,6 +1058,7 @@ final class ActivityLog
         if (!is_object($wpdb)) {
             return [];
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . self::TABLE;
         // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; no caching (live unshipped rows needed)
         $rows = $wpdb->get_results(

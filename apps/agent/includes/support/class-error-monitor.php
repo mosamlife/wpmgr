@@ -388,6 +388,7 @@ final class ErrorMonitor
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $md5 = md5($code . ':' . $file . ':' . $line . ':' . $message);
 
         // --- S1.2 ignore-list + level gating ---
@@ -497,6 +498,7 @@ final class ErrorMonitor
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . self::TABLE;
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct count on plugin-owned table; identifier is prefix+constant; live read needed
         $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
@@ -624,6 +626,7 @@ final class ErrorMonitor
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . self::TABLE;
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; correctness requires a live write
         $result = $wpdb->update(
@@ -655,6 +658,7 @@ final class ErrorMonitor
         if (!is_object($wpdb)) {
             return [];
         }
+        /** @var \wpdb $wpdb */
         $table    = $wpdb->prefix . self::TABLE;
         $sinceId  = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_CURSOR, 0) : 0);
         $sinceTs  = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_TS, 0) : 0);

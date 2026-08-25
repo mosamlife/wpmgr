@@ -59,7 +59,10 @@ final class Bloat
             add_action('wp_enqueue_scripts', [$this, 'dequeueDashicons'], 100);
         }
         if ($this->config->bloatDisableJqueryMigrate) {
-            add_filter('wp_default_scripts', [$this, 'removeJqueryMigrate']);
+            // wp_default_scripts is fired via do_action_ref_array() in core — an
+            // action, not a filter. $scripts is mutated by reference; the
+            // callback has nothing to return.
+            add_action('wp_default_scripts', [$this, 'removeJqueryMigrate']);
         }
         if ($this->config->bloatDisableXmlRpc) {
             add_filter('xmlrpc_enabled', '__return_false');

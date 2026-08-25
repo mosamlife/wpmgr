@@ -91,7 +91,9 @@ final class DbRestorer
      *                                $tmpPrefix.
      * @param callable $progress     function(string $phase, array $detail): void
      * @return list<string> Names of the tmp tables that ended up populated.
-     * @throws \RuntimeException On fatal connection / read failure.
+     * @throws \RuntimeException On fatal connection / read failure, or when
+     *      the dump's trailing fragment cannot be classified (see
+     *      looksLikeCommentOnly()) — aborting beats discarding SQL.
      */
     public function restore(string $sqlGzPath, string $tmpPrefix, string $sourcePrefix, callable $progress): array
     {
@@ -1146,12 +1148,43 @@ final class DbRestorer
     /**
      * Whether a buffer tail looks like only whitespace and SQL comments — in
      * which case we don't need to flush it as a "statement" at EOF.
+     *
+     * A `true` here makes the caller DISCARD the dump's final fragment, so
+     * this method must never answer `true` out of ignorance. The two regex
+     * calls below are therefore treated asymmetrically, on purpose.
+     *
+     * @throws \RuntimeException When the tail cannot be classified at all.
      */
     private static function looksLikeCommentOnly(string $tail): bool
     {
         // Strip /* */ block comments and -- line comments / # line comments.
+        //
+        // A preg_replace() failure is safe to absorb. Falling back to the
+        // unstripped tail can only make a line look like real SQL, never like
+        // a comment, so the worst case is flushing a comment-only tail to the
+        // server as a statement. That errs towards KEEPING data, which is the
+        // safe direction on a restore.
         $stripped = preg_replace('#/\*.*?\*/#s', '', $tail) ?? $tail;
-        $lines    = preg_split('/\r?\n/', $stripped) ?? [];
+
+        // A preg_split() failure is NOT safe to absorb. Coercing `false` to an
+        // empty list would skip the loop below entirely and fall through to
+        // `return true` — telling the caller "only comments here, safe to
+        // drop" and silently discarding the dump's last SQL statement while
+        // the restore still reports success. A regex failure is not evidence
+        // that the tail is comment-only; it is evidence that we cannot tell,
+        // and "cannot tell" must never resolve to "safe to discard". Abort
+        // instead: restore()'s transaction is left uncommitted and the caller
+        // fails the restore rather than committing a partial database.
+        $lines = preg_split('/\r?\n/', $stripped);
+        if ($lines === false) {
+            throw new \RuntimeException(
+                'DbRestorer: cannot classify the trailing SQL fragment of the dump (preg_split failed: '
+                . esc_html(preg_last_error_msg()) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                . '). Aborting the restore rather than risk discarding SQL. Raise pcre.backtrack_limit'
+                . ' / pcre.recursion_limit on this host and retry the restore.'
+            );
+        }
+
         foreach ($lines as $line) {
             $t = trim($line);
             if ($t === '' || strpos($t, '--') === 0 || strpos($t, '#') === 0) {

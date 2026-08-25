@@ -541,6 +541,7 @@ final class SizeProbe
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         try {
             $bytes = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- information_schema aggregate size query; no caching (live read required for accurate size probe)
                 "SELECT SUM(data_length + index_length)
