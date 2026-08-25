@@ -323,18 +323,33 @@ final class SizeProbe
      * so the value is accepted and ignored rather than normalised. Anything
      * added here that DOES read it must handle the false.
      *
-     * $maxExecTime is not guaranteed to be int either, for the same reason:
-     * recurse_dirsize() normalises a null budget from
-     * `ini_get( 'max_execution_time' )`, which returns a STRING, and only
-     * casts it to int via its own `-= 1` arithmetic when that value is > 10.
-     * A `max_execution_time` of 0 (unlimited — the PHP-CLI and WP-CLI
-     * default, so also the common case when this filter fires from a real
-     * cron running `wp cron event run` rather than wp-cron.php over HTTP) or
-     * anything <= 10 reaches this filter as the literal string PHP's
-     * ini_get() returned. A strict `int` hint under this file's
-     * `declare(strict_types=1)` is a TypeError on that string — the same
-     * defect class this file exists to close. Untyped here for the same
-     * reason $directoryCache is untyped: this callback never reads it.
+     * $maxExecTime is not guaranteed to be int either. recurse_dirsize()
+     * normalises a null budget from `ini_get( 'max_execution_time' )`, which
+     * returns a STRING, and only casts it to int via its own `-= 1`
+     * arithmetic when that value is > 10. A `max_execution_time` of 0
+     * (unlimited — the PHP-CLI and WP-CLI default, so also the common case
+     * when this filter fires from a real cron running `wp cron event run`
+     * rather than wp-cron.php over HTTP) or anything <= 10 reaches this
+     * filter as the literal numeric string PHP's ini_get() returned, e.g.
+     * "0".
+     *
+     * That does not fatal TODAY, and not because of this file's own
+     * `declare(strict_types=1)` — PHP's coercion mode for an argument is
+     * decided by the CALLING file, not the declaring one. The call into this
+     * callback is made by `WP_Hook::apply_filters()`'s
+     * `call_user_func_array()` in wp-includes/class-wp-hook.php, which
+     * declares no strict types, so a plain `int` hint here would still be
+     * evaluated in weak mode against that call: a well-formed numeric string
+     * like "0" coerces to int silently regardless of what this file declares.
+     *
+     * Relying on that coercion is fragile rather than already broken:
+     * `ini_get()` returns `false` if the directive is unknown, and can
+     * return a non-numeric string if the ini value is set but empty. A
+     * non-numeric string into an `int` parameter IS a TypeError even in weak
+     * mode — weak-mode coercion accepts well-formed numeric strings for
+     * int/float parameters, not arbitrary ones. `mixed` removes the
+     * dependence on that coercion entirely rather than trusting it to keep
+     * holding.
      *
      * @param false|int          $size           Existing filtered value.
      * @param string             $directory      Directory being measured.

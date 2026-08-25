@@ -114,20 +114,34 @@ final class SizeProbeColdCacheTest extends TestCase
     }
 
     /**
-     * CodeRabbit review on PR #526: recurse_dirsize() normalises a null
-     * $max_execution_time from `ini_get( 'max_execution_time' )`, which
-     * returns a STRING, and only casts it to int via `-= 1` when that value
-     * is > 10. An ini value of "0" (unlimited — the PHP-CLI/WP-CLI default)
-     * reaches this filter as the literal string, never cast. Before the fix
-     * this dies with
+     * CodeRabbit review on PR #526 flagged that recurse_dirsize() can hand
+     * this filter a numeric string for $max_execution_time instead of an int
+     * (ini_get('max_execution_time') returns a STRING, cast to int only when
+     * the value is > 10 — see the callback's docblock). A well-formed numeric
+     * string like "0" does NOT fatal even under the old strict `int` hint:
+     * PHP's argument-coercion mode is decided by the CALLING file, not the
+     * declaring one, and the real caller — WP_Hook::apply_filters()'s
+     * call_user_func_array() in wp-includes/class-wp-hook.php — declares no
+     * strict types, so "0" coerces to int(0) silently there regardless of
+     * this file's own `declare(strict_types=1)`. (Verified directly: a
+     * throwaway weak-mode caller confirmed the coercion; this file's own
+     * strict_types would otherwise mask that.)
+     *
+     * The honest failure is a NON-numeric string, which ini_get() can return
+     * if the ini value is set but empty. Weak-mode coercion only accepts
+     * well-formed numeric strings for an int parameter — a non-numeric one is
+     * a TypeError in weak mode too, so this assertion holds the same whether
+     * this test calls the callback directly (as it does, from this file's own
+     * strict_types context) or WordPress calls it through its real weak-mode
+     * dispatch. Before the fix this dies with
      *   TypeError: ...preRecurseDirsizeFilter(): Argument #4 ($maxExecTime)
      *   must be of type int, string given
      */
-    public function test_numeric_string_max_exec_time_from_ini_get_does_not_fatal(): void
+    public function test_non_numeric_max_exec_time_does_not_fatal(): void
     {
         $probe = new SizeProbe();
 
-        $result = $probe->preRecurseDirsizeFilter(false, sys_get_temp_dir(), null, '0', false);
+        $result = $probe->preRecurseDirsizeFilter(false, sys_get_temp_dir(), null, '', false);
 
         $this->assertFalse($result);
     }
