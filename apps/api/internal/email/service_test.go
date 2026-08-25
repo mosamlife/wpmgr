@@ -350,8 +350,8 @@ func (r *fakeRepo) PruneWebhookDedup(_ context.Context, _ time.Time) (int64, err
 	return 0, nil
 }
 
-func (r *fakeRepo) GetEmailLogBodyStored(_ context.Context, _, _, _ uuid.UUID) (bool, error) {
-	return false, ErrNotFound
+func (r *fakeRepo) GetResendTarget(_ context.Context, _, _, _ uuid.UUID) (ResendTarget, error) {
+	return ResendTarget{}, ErrNotFound
 }
 
 func (r *fakeRepo) IncrEmailLogResentCount(_ context.Context, _, _, _ uuid.UUID) error {
@@ -745,6 +745,9 @@ type fakeAgentClient struct {
 
 	sendTestCalled int
 	sendTestErr    error
+
+	resendCalled  int
+	resendLastReq agentcmd.ResendEmailRequest
 }
 
 func (f *fakeAgentClient) SyncEmailConfig(_ context.Context, _ uuid.UUID, _ string, req agentcmd.EmailConfigRequest) (agentcmd.EmailConfigResult, error) {
@@ -761,7 +764,12 @@ func (f *fakeAgentClient) SendTestEmail(_ context.Context, _ uuid.UUID, _ string
 	return agentcmd.SendTestEmailResult{OK: true, Detail: "sent"}, nil
 }
 
-func (f *fakeAgentClient) ResendEmail(_ context.Context, _ uuid.UUID, _ string, _ agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error) {
+// ResendEmail records the request. It used to discard it with a blank
+// identifier, which is precisely why GH #520 — a CP payload the agent could
+// never read — shipped and survived. Never take a command request as `_`.
+func (f *fakeAgentClient) ResendEmail(_ context.Context, _ uuid.UUID, _ string, req agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error) {
+	f.resendCalled++
+	f.resendLastReq = req
 	return agentcmd.ResendEmailResult{OK: true}, nil
 }
 

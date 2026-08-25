@@ -684,7 +684,7 @@ func TestResendEmail_BodyNotStored_Conflict(t *testing.T) {
 	logID := uuid.New()
 
 	repo := newFakeRepo()
-	// fakeRepo.GetEmailLogBodyStored returns (false, ErrNotFound) by default.
+	// fakeRepo.GetResendTarget returns ErrNotFound by default.
 	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
 	svc.repo = repo
 
@@ -703,8 +703,8 @@ func TestResendEmail_BodyStored_Dispatches(t *testing.T) {
 	siteID := uuid.New()
 	logID := uuid.New()
 
-	// Extend fakeRepo with body_stored = true for this logID.
-	repo := &fakeRepoBodyStored{fakeRepo: newFakeRepo(), bodyStoredID: logID}
+	// A resendable row: body captured and an agent_seq to address it by.
+	repo := &fakeRepoBodyStored{fakeRepo: newFakeRepo(), bodyStoredID: logID, agentSeq: 17}
 	svc := NewService(&Repo{}, &fakeEncryptor{}, nil)
 	svc.repo = repo
 
@@ -712,24 +712,36 @@ func TestResendEmail_BodyStored_Dispatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResendEmail with body_stored=true: unexpected error: %v", err)
 	}
-	// Agent not wired → ok=false but no error.
+	// No agent client is wired here, so the service reports ok=false rather
+	// than pretending a command was sent.
 	if res.OK {
-		t.Log("ok=true is fine if agent is wired; here agent is nil so ok=false is expected")
+		t.Error("expected ok=false with no agent client wired")
+	}
+	if repo.incrCalls != 0 {
+		t.Errorf("resent_count incremented %d time(s) without an agent dispatch, want 0", repo.incrCalls)
 	}
 }
 
-// fakeRepoBodyStored wraps fakeRepo and overrides GetEmailLogBodyStored to
-// return true for a specific log ID, simulating an email stored with body capture.
+// fakeRepoBodyStored wraps fakeRepo and serves one resendable row, simulating an
+// email logged with body capture that the agent has since reported by agent_seq.
 type fakeRepoBodyStored struct {
 	*fakeRepo
 	bodyStoredID uuid.UUID
+	agentSeq     int64
+	incrCalls    int
 }
 
-func (r *fakeRepoBodyStored) GetEmailLogBodyStored(_ context.Context, _, _, id uuid.UUID) (bool, error) {
-	if id == r.bodyStoredID {
-		return true, nil
+func (r *fakeRepoBodyStored) GetResendTarget(_ context.Context, _, _, id uuid.UUID) (ResendTarget, error) {
+	if id != r.bodyStoredID {
+		return ResendTarget{}, ErrNotFound
 	}
-	return false, ErrNotFound
+	seq := r.agentSeq
+	return ResendTarget{AgentSeq: &seq, BodyStored: true}, nil
+}
+
+func (r *fakeRepoBodyStored) IncrEmailLogResentCount(_ context.Context, _, _, _ uuid.UUID) error {
+	r.incrCalls++
+	return nil
 }
 
 // ---------------------------------------------------------------------------

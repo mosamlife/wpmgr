@@ -302,19 +302,71 @@ final class SizeProbe
     /**
      * Filter callback for pre_recurse_dirsize.
      *
-     * @param false|int            $size           Existing filtered value.
-     * @param string               $directory      Directory being measured.
-     * @param array<string>|null   $exclude        Exclusion list (WP core).
-     * @param int                  $maxExecTime    Budget from WP (ignored here).
-     * @param array<string,int>    $directoryCache WP's in-memory cache.
+     * $directoryCache is NOT always an array, whatever core's own docblock at
+     * wp-includes/functions.php says. recurse_dirsize() seeds it with
+     *
+     *     $directory_cache = get_transient( 'dirsize_cache' );
+     *
+     * and get_transient() returns FALSE when the transient is missing or
+     * expired, which is then handed straight to this filter. Core knows: it
+     * normalises with `if ( ! is_array( $directory_cache ) )` only AFTER
+     * apply_filters() has run. An `array` hint here is therefore a TypeError
+     * whenever the cache is cold — and this filter is registered
+     * unconditionally on every boot (Plugin::registerHooks), so it fired on
+     * fresh installs, after any transient or object-cache flush, on Site
+     * Health -> Info -> Directory sizes, and on multisite for every upload via
+     * get_space_used(). It could not self-heal either: the transient is only
+     * written after the walk the fatal prevented.
+     *
+     * This callback does not read the cache — it either short-circuits with a
+     * du(1) byte count or returns false and lets core do its own recursion —
+     * so the value is accepted and ignored rather than normalised. Anything
+     * added here that DOES read it must handle the false.
+     *
+     * $maxExecTime is not guaranteed to be int either. recurse_dirsize()
+     * normalises a null budget from `ini_get( 'max_execution_time' )`, which
+     * returns a STRING, and only casts it to int via its own `-= 1`
+     * arithmetic when that value is > 10. A `max_execution_time` of 0
+     * (unlimited — the PHP-CLI and WP-CLI default, so also the common case
+     * when this filter fires from a real cron running `wp cron event run`
+     * rather than wp-cron.php over HTTP) or anything <= 10 reaches this
+     * filter as the literal numeric string PHP's ini_get() returned, e.g.
+     * "0".
+     *
+     * That does not fatal TODAY, and not because of this file's own
+     * `declare(strict_types=1)` — PHP's coercion mode for an argument is
+     * decided by the CALLING file, not the declaring one. The call into this
+     * callback is made by `WP_Hook::apply_filters()`'s
+     * `call_user_func_array()` in wp-includes/class-wp-hook.php, which
+     * declares no strict types, so a plain `int` hint here would still be
+     * evaluated in weak mode against that call: a well-formed numeric string
+     * like "0" coerces to int silently regardless of what this file declares.
+     *
+     * Relying on that coercion is fragile rather than already broken:
+     * `ini_get()` returns `false` if the directive is unknown, and can
+     * return a non-numeric string if the ini value is set but empty. A
+     * non-numeric string into an `int` parameter IS a TypeError even in weak
+     * mode — weak-mode coercion accepts well-formed numeric strings for
+     * int/float parameters, not arbitrary ones. `mixed` removes the
+     * dependence on that coercion entirely rather than trusting it to keep
+     * holding.
+     *
+     * @param false|int          $size           Existing filtered value.
+     * @param string             $directory      Directory being measured.
+     * @param array<string>|null $exclude        Exclusion list (WP core).
+     * @param mixed              $maxExecTime    Budget from WP (ignored here):
+     *                                           int, or a numeric string from
+     *                                           ini_get(), or null.
+     * @param mixed              $directoryCache Cached dir paths: array, or
+     *                                           false on a cold transient.
      * @return false|int
      */
     public function preRecurseDirsizeFilter(
         $size,
         string $directory,
-        $exclude,
-        int $maxExecTime,
-        array $directoryCache
+        $exclude = null,
+        mixed $maxExecTime = 0,
+        mixed $directoryCache = false
     ) {
         if ($size !== false) {
             return $size; // already handled upstream

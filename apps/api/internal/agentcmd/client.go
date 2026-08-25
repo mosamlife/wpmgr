@@ -935,12 +935,14 @@ func joinCommandURL(siteURL, command string) (string, error) {
 }
 
 // ResendEmail sends the signed `resend_email` command to the site's agent,
-// asking it to re-send a previously logged email using the stored body.
-// The gate (body_stored=true) is enforced by the CP service before this call.
+// asking it to re-send an email from its OWN log row, named by agent_seq.
+// The CP's near-end preconditions (row exists, body captured, agent_seq known)
+// are enforced by the email service before this call so a request that cannot
+// succeed never spends a signed command.
 //
-// Phase 4a: this command is DEFINED here but the agent does not yet implement
-// it (Phase 4b). Old agents will return a 404 from the REST router — the CP
-// surfaces that as ok=false + a descriptive detail rather than a hard error.
+// An agent too old to route the command answers 404, which post() returns as a
+// transport error; the CP surfaces that as ok=false with a descriptive detail
+// rather than a hard error.
 func (c *Client) ResendEmail(ctx context.Context, siteID uuid.UUID, siteURL string, req ResendEmailRequest) (ResendEmailResult, error) {
 	var out ResendEmailResult
 	if err := c.post(ctx, siteID, siteURL, "resend_email", req, &out); err != nil {

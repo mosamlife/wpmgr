@@ -592,8 +592,50 @@ func (h *Handler) getFleetDeliverability(c *gin.Context) {
 // Phase 4a — resend + bulk delete log handlers
 // ---------------------------------------------------------------------------
 
+// resendAuditMeta decides whether a completed single resend has anything to
+// audit, and with what metadata.
+//
+// GH #520: ActionEmailResent used to be recorded unconditionally, immediately
+// after the service call, so an audit row saying an email had been resent was
+// written for every click — including the entire period in which the CP/agent
+// contract mismatch meant no resend could possibly have succeeded. An audit log
+// that records intentions is worse than one that records nothing, because it is
+// believed. Audit the send.
+func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
+	if !res.OK {
+		return nil, false
+	}
+	return map[string]any{
+		"log_id":     logID.String(),
+		"message_id": res.MessageID,
+	}, true
+}
+
+// bulkResendAuditMeta is the same decision for the bulk route.
+//
+// `count` is how many entries the site confirmed it resent, not how many were
+// asked for: N commands spent and zero emails sent used to leave one audit row
+// reading {"count": N}. `requested` is kept beside it so a partial batch stays
+// legible, and a batch that resent nothing writes no row at all.
+func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]any, bool) {
+	resent := 0
+	for _, r := range results {
+		if r.OK {
+			resent++
+		}
+	}
+	if resent == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"count":     resent,
+		"requested": requested,
+	}, true
+}
+
 // resendLog handles POST /sites/:siteId/email/log/:logId/resend.
-// Gates on body_stored=true; returns 409 otherwise.
+// Refuses near-end (404/409) when the entry cannot be resent; otherwise returns
+// 200 with ok=true/false from the site. Audits only a confirmed resend.
 func (h *Handler) resendLog(c *gin.Context) {
 	p, _ := domain.PrincipalFromContext(c.Request.Context())
 	siteID, ok := parseSiteID(c)
@@ -610,7 +652,9 @@ func (h *Handler) resendLog(c *gin.Context) {
 		httpx.Error(c, serr)
 		return
 	}
-	h.record(c, p, audit.ActionEmailResent, siteID, map[string]any{"log_id": logID.String()})
+	if meta, ok := resendAuditMeta(logID, result); ok {
+		h.record(c, p, audit.ActionEmailResent, siteID, meta)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok":         result.OK,
 		"detail":     result.Detail,
@@ -693,7 +737,9 @@ func (h *Handler) bulkResendLog(c *gin.Context) {
 		httpx.Error(c, serr)
 		return
 	}
-	h.record(c, p, audit.ActionEmailResent, siteID, map[string]any{"count": len(ids)})
+	if meta, ok := bulkResendAuditMeta(len(ids), results); ok {
+		h.record(c, p, audit.ActionEmailResent, siteID, meta)
+	}
 	dtos := make([]gin.H, 0, len(results))
 	for _, r := range results {
 		dtos = append(dtos, gin.H{
