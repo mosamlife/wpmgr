@@ -321,6 +321,7 @@ final class LoginProtection
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         try {
             $table = $wpdb->prefix . self::TABLE;
@@ -494,6 +495,7 @@ final class LoginProtection
         if (!is_object($wpdb)) {
             return [];
         }
+        /** @var \wpdb $wpdb */
 
         $sinceId = (int) (function_exists('get_option') ? get_option(self::OPTION_SHIP_CURSOR, 0) : 0);
         $table   = $wpdb->prefix . self::TABLE;
@@ -573,6 +575,7 @@ final class LoginProtection
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
 
         $cutoff = $now - $gap;
         $table  = $wpdb->prefix . self::TABLE;
@@ -820,6 +823,7 @@ final class LoginProtection
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         try {
             $table = $wpdb->prefix . self::TABLE;
@@ -858,6 +862,7 @@ final class LoginProtection
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         try {
             $table = $wpdb->prefix . self::TABLE;

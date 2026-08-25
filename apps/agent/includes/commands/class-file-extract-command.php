@@ -721,6 +721,7 @@ final class FileExtractCommand implements CommandInterface {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- headless agent; WP_Filesystem never initialized; direct writability probe
 			&& is_writable( $tmpBaseReal );
 
+		$quarantineDir = '';
 		if ( $useSystemTmp ) {
 			// Create a per-job subdirectory with restrictive permissions.
 			$quarantineDir = (string) $tmpBaseReal . '/wpmgr-extract-' . bin2hex( random_bytes( 8 ) );

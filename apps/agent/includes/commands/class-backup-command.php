@@ -374,6 +374,7 @@ final class BackupCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return true; // No DB seam — allow the run (single-process dev).
         }
+        /** @var \wpdb $wpdb */
         $table  = $wpdb->prefix . Schema::BACKUP_RUNS_TABLE;
         $now    = time();
         $cutoff = $now - self::DEDUP_WINDOW_SECONDS;
@@ -384,11 +385,9 @@ final class BackupCommand implements CommandInterface
             return false;
         }
         if (is_object($existing)) {
-            // @phpstan-ignore-next-line
             $wpdb->update($table, ['pid' => getmypid() ?: 0, 'started_at' => $now], ['snapshot_id' => $snapshotId], ['%d', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned dedup table; no core helper exists
             return true;
         }
-        // @phpstan-ignore-next-line
         $inserted = $wpdb->insert($table, ['snapshot_id' => $snapshotId, 'pid' => getmypid() ?: 0, 'started_at' => $now], ['%s', '%d', '%d']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- direct insert on plugin-owned dedup table; no core helper exists
         return $inserted !== false;
     }
@@ -399,8 +398,8 @@ final class BackupCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RUNS_TABLE;
-        // @phpstan-ignore-next-line
         @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned dedup table; no core helper exists
     }
 
@@ -443,6 +442,7 @@ final class BackupCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
         $now   = time();
         $subState = (string) wp_json_encode(['params' => $runnerParams]);
@@ -701,8 +701,8 @@ final class BackupCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         try {
-            // @phpstan-ignore-next-line
             $value = $wpdb->get_var('SELECT @@max_allowed_packet'); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- preflight max_allowed_packet probe; informational session variable read; no suitable cached alternative
         } catch (\Throwable $e) {
             return null;
@@ -800,6 +800,7 @@ final class BackupCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
         $now   = time();
         $subState = (string) wp_json_encode([

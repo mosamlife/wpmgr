@@ -1708,14 +1708,25 @@ func (r *Repo) PruneWebhookDedup(ctx context.Context, cutoffTs time.Time) (int64
 // Log actions (Phase 4a)
 // ---------------------------------------------------------------------------
 
-// GetEmailLogBodyStored fetches the body_stored flag for a log entry (resend gate).
-func (r *Repo) GetEmailLogBodyStored(ctx context.Context, tenantID, siteID, id uuid.UUID) (bool, error) {
-	var bodyStored bool
+// GetResendTarget fetches everything a resend dispatch needs to decide whether
+// the command can succeed, and to name the row to the agent: the agent-local
+// row id (agent_seq) and the body_stored flag.
+//
+// GH #520: the resend gate used to read body_stored alone, because the CP
+// believed it was sending the body itself. The agent addresses its own log by
+// agent_seq, so agent_seq is now a precondition, not an afterthought — without
+// it there is nothing to ask the agent for.
+//
+// This reads through the existing GetEmailLog query rather than a narrower one.
+// That row carries the stored body; it stays in this process and never reaches
+// the command channel, which is the point of the agent-side contract.
+func (r *Repo) GetResendTarget(ctx context.Context, tenantID, siteID, id uuid.UUID) (ResendTarget, error) {
+	var target ResendTarget
 	err := r.scopedTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, qerr := sqlc.New(tx).GetEmailLogBodyStored(ctx, sqlc.GetEmailLogBodyStoredParams{
-			ID:       id,
+		row, qerr := sqlc.New(tx).GetEmailLog(ctx, sqlc.GetEmailLogParams{
 			TenantID: tenantID,
 			SiteID:   siteID,
+			ID:       id,
 		})
 		if qerr != nil {
 			if errors.Is(qerr, pgx.ErrNoRows) {
@@ -1723,10 +1734,11 @@ func (r *Repo) GetEmailLogBodyStored(ctx context.Context, tenantID, siteID, id u
 			}
 			return qerr
 		}
-		bodyStored = row.BodyStored
+		target.AgentSeq = row.AgentSeq
+		target.BodyStored = row.BodyStored
 		return nil
 	})
-	return bodyStored, err
+	return target, err
 }
 
 // IncrEmailLogResentCount increments resent_count on a log entry. Runs under scopedTenantTx.

@@ -59,6 +59,7 @@ class EmailLogger {
 		if ( ! is_object( $wpdb ) ) {
 			return false;
 		}
+		/** @var \wpdb $wpdb */
 
 		$table = $wpdb->prefix . Schema::EMAIL_LOG_TABLE;
 
@@ -151,6 +152,7 @@ class EmailLogger {
 		if ( ! is_object( $wpdb ) ) {
 			return 0;
 		}
+		/** @var \wpdb $wpdb */
 
 		$days  = max( 1, $retention_days );
 		$table = $wpdb->prefix . Schema::EMAIL_LOG_TABLE;

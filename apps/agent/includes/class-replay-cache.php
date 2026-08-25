@@ -68,7 +68,6 @@ class ReplayCache
 
         // $table is built from a class constant + the trusted wpdb prefix
         // (no user input), so interpolating it ahead of prepare() is safe.
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders
         $sql = $wpdb->prepare("SELECT 1 FROM {$table} WHERE jti_hash = %s AND expires_at >= %d LIMIT 1", $hash, $now);
         if (!is_string($sql)) {
@@ -179,7 +178,6 @@ class ReplayCache
         $now   = $now ?? time();
         $table = $this->tableName();
 
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders
         $sql = $wpdb->prepare("DELETE FROM {$table} WHERE expires_at < %d", $now);
         if (!is_string($sql)) {

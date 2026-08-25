@@ -110,12 +110,25 @@ final class PasswordPolicyModule
     /**
      * Validate password strength on profile update.
      *
+     * WordPress core does NOT pass a WP_User here. edit_user() builds a bare
+     * stdClass and passes it by reference (wp-admin/includes/user.php), so a
+     * \WP_User hint on this method throws a TypeError at argument binding —
+     * before any guard in the body can run, and outside validatePassword()'s
+     * catch(\Throwable). That is a fatal on every wp-admin route that edits a
+     * user, an administrator's own profile.php included.
+     *
+     * The object is deliberately NOT trusted for role-scoped decisions: it has
+     * no `roles` and no `caps`, so reading roles off it would silently
+     * under-enforce every role-scoped rule. ProfileUpdateUser::resolve()
+     * produces a real user to evaluate against instead.
+     *
      * @param \WP_Error $errors Error object to append to.
      * @param bool      $update Whether this is an update (vs. create).
-     * @param \WP_User  $user   User being updated.
+     * @param mixed     $user   User being updated. Core passes \stdClass; typed
+     *                          mixed because this is a hook boundary.
      * @return void
      */
-    public function validateOnProfileUpdate(\WP_Error $errors, bool $update, \WP_User $user): void
+    public function validateOnProfileUpdate(\WP_Error $errors, bool $update, mixed $user): void
     {
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified by WP core's profile-update handler before this hook fires
         $password = isset($_POST['pass1']) && is_string($_POST['pass1']) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
@@ -124,18 +137,33 @@ final class PasswordPolicyModule
         if ($password === '') {
             return;
         }
-        $this->validatePassword($password, $user, $errors);
+        // Resolved after the early return: no user load on the far more common
+        // profile save that does not touch the password.
+        $this->validatePassword($password, ProfileUpdateUser::resolve($user), $errors);
     }
 
     /**
      * Validate password strength on password reset.
      *
+     * Core documents this argument as `WP_User|WP_Error` — "WP_User object if
+     * the login and reset key match, WP_Error object otherwise" (wp-login.php).
+     * Core's own resetpass branch bails before firing the action when the key
+     * did not match, but the published contract is the contract, and any other
+     * caller firing `validate_password_reset` may hand us the WP_Error. A
+     * \WP_User hint would make that a fatal on the reset form.
+     *
+     * A WP_Error means there is no user whose password is being set — core will
+     * not call reset_password() either — so there is nothing to validate.
+     *
      * @param \WP_Error $errors
-     * @param \WP_User  $user
+     * @param mixed     $user   \WP_User on success, \WP_Error otherwise.
      * @return \WP_Error
      */
-    public function validateOnPasswordReset(\WP_Error $errors, \WP_User $user): \WP_Error
+    public function validateOnPasswordReset(\WP_Error $errors, mixed $user): \WP_Error
     {
+        if (!$user instanceof \WP_User) {
+            return $errors;
+        }
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- WP core verifies the reset key before this filter fires; no additional nonce is needed
         $password = isset($_POST['pass1']) && is_string($_POST['pass1']) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same
             ? wp_unslash($_POST['pass1']) // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- plaintext required for zxcvbn + HIBP SHA-1; sanitize_text_field alters special chars; never stored or echoed

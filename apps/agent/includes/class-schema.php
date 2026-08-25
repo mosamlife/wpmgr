@@ -121,6 +121,7 @@ class Schema
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         // dbDelta lives in wp-admin/includes/upgrade.php and is not loaded by
         // default on the frontend. require_once is safe to call multiple times.

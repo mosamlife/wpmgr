@@ -72,6 +72,7 @@ final class MediaSyncCommand implements CommandInterface
         if (!isset($wpdb) || !is_object($wpdb)) {
             return ['ok' => false, 'detail' => 'WP not available'];
         }
+        /** @var \wpdb $wpdb */
 
         // A mega library can enumerate thousands of rows across many pages; this
         // runs in the command's REST request, so lift PHP's per-request caps
@@ -193,6 +194,7 @@ final class MediaSyncCommand implements CommandInterface
         if (!isset($wpdb) || !is_object($wpdb)) {
             return [];
         }
+        /** @var \wpdb $wpdb */
 
         // $wpdb->posts is a trusted core table name; 'image/%' passes through
         // prepare() as a literal value whose % stays a SQL LIKE wildcard.

@@ -498,7 +498,6 @@ final class AttachmentMeta
         }
         $ext  = $this->rename->extensionOf($url);
         $mime = $ext === 'jpg' ? 'image/jpeg' : ('image/' . $ext);
-        // @phpstan-ignore-next-line — wpdb runtime seam.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on core posts table; correctness requires live write; no plugin-helper wraps $wpdb->update for GUID+mime_type
         $wpdb->update($wpdb->posts, ['guid' => $url, 'post_mime_type' => $mime], ['ID' => $attachmentId]);
     }

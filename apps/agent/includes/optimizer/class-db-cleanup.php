@@ -106,7 +106,9 @@ final class DbCleanup
     public function __construct(?PerfConfig $config = null, ?object $wpdb = null)
     {
         $this->config = $config ?? PerfConfig::load();
-        $this->wpdb   = $wpdb ?? (isset($GLOBALS['wpdb']) && is_object($GLOBALS['wpdb']) ? $GLOBALS['wpdb'] : null);
+        /** @var \wpdb|null $resolvedWpdb */
+        $resolvedWpdb = $wpdb ?? (isset($GLOBALS['wpdb']) && is_object($GLOBALS['wpdb']) ? $GLOBALS['wpdb'] : null);
+        $this->wpdb   = $resolvedWpdb;
     }
 
     /**
@@ -620,7 +622,7 @@ final class DbCleanup
         $offset = 0;
 
         while (true) {
-            if ($this->wpdb === null || !method_exists($this->wpdb, 'prepare') || !method_exists($this->wpdb, 'get_results')) {
+            if ($this->wpdb === null || !method_exists($this->wpdb, 'prepare') || !method_exists($this->wpdb, 'get_results') || !method_exists($this->wpdb, 'esc_like')) {
                 break;
             }
 
@@ -631,8 +633,8 @@ final class DbCleanup
             // _transient_* rows to pass all subsequent attribution passes and surface
             // as false-positive orphans. The esc_like() + '%' suffix matches the same
             // pattern that scanExpiredTransients uses for the timeout LIKE.
-            $transientPat     = esc_like('_transient_')     . '%';
-            $siteTransientPat = esc_like('_site_transient_') . '%';
+            $transientPat     = $this->wpdb->esc_like('_transient_')     . '%';
+            $siteTransientPat = $this->wpdb->esc_like('_site_transient_') . '%';
 
             $sql = "SELECT option_name, autoload, LENGTH(option_value) AS size_bytes
                     FROM {$options}

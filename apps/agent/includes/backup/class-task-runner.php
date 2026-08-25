@@ -660,8 +660,8 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         try {
-            /** @phpstan-ignore-next-line */
             $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock probe; anti-double-fire correctness read, not a cacheable value
         } catch (\Throwable $e) {
             return null;
@@ -680,8 +680,8 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         try {
-            /** @phpstan-ignore-next-line */
             $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lockName())); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory run-lock release; no core helper exists
         } catch (\Throwable $e) {
             // Swallow — MySQL releases the lock automatically on connection close.
@@ -858,6 +858,7 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
@@ -868,7 +869,6 @@ final class TaskRunner
             $sql      = "SELECT sub_state FROM {$table} WHERE snapshot_id = %s LIMIT 1";
             /** @phpstan-ignore-next-line */
             $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
-            /** @phpstan-ignore-next-line */
             $raw = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct read on plugin-owned table; value is the output of $wpdb->prepare(); $table comes from tableName() (prefix+constant), opaque to static analysis but not user input
 
             $envelope = [];
@@ -884,7 +884,6 @@ final class TaskRunner
                 return;
             }
 
-            /** @phpstan-ignore-next-line */
             $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb-only write, phase column untouched
                 $table,
                 ['sub_state' => $encoded],
@@ -1725,6 +1724,7 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return null;
@@ -1734,7 +1734,6 @@ final class TaskRunner
         $sql = "SELECT phase, kind, sub_state, resume_count, max_resumes FROM {$table} WHERE snapshot_id = %s LIMIT 1";
         /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
         $prepared = $wpdb->prepare($sql, $this->snapshotId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
-        /** @phpstan-ignore-next-line */
         $row      = $wpdb->get_row($prepared, ARRAY_A); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.UnescapedDBParameter, PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct query on plugin-owned table; value is the output of $wpdb->prepare()
 
         if (!is_array($row)) {
@@ -1762,6 +1761,7 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
@@ -1775,7 +1775,6 @@ final class TaskRunner
         $sql = "INSERT IGNORE INTO {$table}
                 (snapshot_id, kind, phase, sub_state, started_at, last_progress_at, resume_count, max_resumes)
                 VALUES (%s, %s, %s, %s, %d, %d, %d, %d)";
-        /** @phpstan-ignore-next-line */
         $prepared = $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on this line via $wpdb->prepare()
             $sql, // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- identifier validated against information_schema / prefix+constant; values bound via placeholders
             $this->snapshotId(),
@@ -1872,6 +1871,7 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return false;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return false;
@@ -1913,7 +1913,6 @@ final class TaskRunner
             }
         }
 
-        /** @phpstan-ignore-next-line */
         $result = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; no core helper exists; correctness requires a live write
             $table,
             [
@@ -1956,13 +1955,13 @@ final class TaskRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
         }
         $this->lastDbUpdate = $now;
 
-        /** @phpstan-ignore-next-line */
         $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; throttled liveness ping; no core helper exists
             $table,
             ['last_progress_at' => $now],

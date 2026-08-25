@@ -65,8 +65,8 @@ final class RestoreWatchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
-        // @phpstan-ignore-next-line — dynamic wpdb.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
         $row = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$table} WHERE snapshot_id = %s AND restore_id = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders
@@ -94,7 +94,6 @@ final class RestoreWatchdog
         $resumeCount = (int) ($row['resume_count'] ?? 0);
         $maxResumes  = (int) ($row['max_resumes'] ?? 6);
         if ($resumeCount >= $maxResumes) {
-            // @phpstan-ignore-next-line
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
             @$wpdb->update(
                 $table,
@@ -112,7 +111,6 @@ final class RestoreWatchdog
             return;
         }
 
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
         @$wpdb->update(
             $table,
@@ -163,8 +161,8 @@ final class RestoreWatchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
-        // @phpstan-ignore-next-line — dynamic wpdb.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
         $row = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$table} WHERE snapshot_id = %s AND restore_id = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders

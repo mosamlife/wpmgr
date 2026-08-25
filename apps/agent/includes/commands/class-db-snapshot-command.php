@@ -541,6 +541,7 @@ final class DbSnapshotCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         try {
             $count = $wpdb->get_var("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- static literal query on information_schema; direct query; no caching appropriate for a live count
             return is_numeric($count) ? (int) $count : 0;

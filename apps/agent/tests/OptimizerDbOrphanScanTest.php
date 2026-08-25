@@ -970,4 +970,10 @@ final class OrphanFakeWpdb
         $this->writes[] = $sql;
         return 0;
     }
+
+    /** Mirrors real wpdb::esc_like(): escape \, %, _ for a SQL LIKE clause. */
+    public function esc_like(string $text): string
+    {
+        return addcslashes($text, '_%\\');
+    }
 }

@@ -135,7 +135,7 @@ final class MailgunHandler implements ProviderHandlerInterface {
 				}
 			}
 			if ( $att_names !== array() && $body_text !== '' ) {
-				$body['text'] .= "\n\n[Attachments: " . implode( ', ', $att_names ) . ']';
+				$body['text'] = ( $body['text'] ?? '' ) . "\n\n[Attachments: " . implode( ', ', $att_names ) . ']';
 			}
 		}
 

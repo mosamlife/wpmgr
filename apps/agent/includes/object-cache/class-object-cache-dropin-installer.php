@@ -289,6 +289,7 @@ final class ObjectCacheDropinInstaller
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
 			return 0;
 		}
+		/** @var \wpdb $wpdb */
 		$count = 0;
 
 		// Identifier defense in depth: $wpdb->options is a trusted core property,

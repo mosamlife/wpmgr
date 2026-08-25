@@ -113,9 +113,9 @@ final class Watchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
-        // @phpstan-ignore-next-line — dynamic wpdb.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; no caching on live task-state read
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
         if (!is_array($row)) {
@@ -127,7 +127,6 @@ final class Watchdog
             // Terminal. Best-effort DELETE the row so a future stale
             // wpmgr_backup_watchdog event can't even find it. (Defensive
             // cleanup — the TaskRunner success path now also DELETEs.)
-            // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; correctness requires a live write
             return;
         }
@@ -162,7 +161,6 @@ final class Watchdog
             // last legitimate /progress post made it; if it's already
             // 'completed' on the CP, this guard prevents the phantom 'failed'
             // event that would otherwise overwrite it.
-            // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; stale-row cleanup
             DebugLog::write(sprintf(
                 'WPMgr Backup: watchdog refusing to re-enter stale task for snapshot %s (started %ds ago, phase=%s); deleted row without re-entry',
@@ -214,7 +212,6 @@ final class Watchdog
             // for why this is now gated on the run-lock rather than on
             // $stalledFor alone.
             self::reclaimRunScratch($row);
-            // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; late-phase stale-row cleanup
             DebugLog::write(sprintf(
                 'WPMgr Backup: watchdog refusing to re-enter late-phase stalled task for snapshot %s (phase=%s, stalled %ds); deleted row',
@@ -274,13 +271,11 @@ final class Watchdog
             // local troubleshooting, and the CP's own progress-watchdog
             // independently times the snapshot out on its side regardless.
             self::reclaimRunScratch($row);
-            // @phpstan-ignore-next-line
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal give-up, no further recovery is ever attempted for this row
             DebugLog::write(sprintf('WPMgr Backup: snapshot %s exhausted %d resume attempts; reclaimed scratch and deleted row. %s', $snapshotId, $maxResumes, $failureReason));
             return;
         }
 
-        // @phpstan-ignore-next-line
         @$wpdb->update($table, ['resume_count' => $resumeCount + 1, 'last_progress_at' => time()], ['snapshot_id' => $snapshotId], ['%d', '%d'], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; watchdog resume-count must be written live
         DebugLog::write(sprintf('WPMgr Backup: watchdog resuming snapshot %s (attempt %d/%d) — stalled for %ds in phase=%s',
             $snapshotId, $resumeCount + 1, $maxResumes, $stalledFor, $phase));
@@ -426,8 +421,8 @@ final class Watchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
-        // @phpstan-ignore-next-line — dynamic wpdb.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- direct query on plugin-owned table; identifier is prefix+constant; no caching on live task-state read
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE snapshot_id = %s", $snapshotId), ARRAY_A);
         if (!is_array($row)) {
@@ -450,7 +445,6 @@ final class Watchdog
             // Terminal. DELETE the row so this and any future stale
             // wpmgr_backup_run firings short-circuit at the "row missing"
             // check above. Mirrors the success-path cleanup in TaskRunner.
-            // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; terminal cleanup
             return;
         }
@@ -475,7 +469,6 @@ final class Watchdog
             // file when a live runner still holds it, deferring to
             // BackupJanitor::gcRuns(). See reclaimRunScratch()'s own doc.
             self::reclaimRunScratch($row);
-            // @phpstan-ignore-next-line — dynamic wpdb.
             @$wpdb->delete($table, ['snapshot_id' => $snapshotId], ['%s']); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct delete on plugin-owned table; stale dispatch cleanup
             DebugLog::write(sprintf(
                 'WPMgr Backup: dispatch refusing to start stale task for snapshot %s (started %ds ago, phase=%s); deleted row',
@@ -544,6 +537,7 @@ final class Watchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
 
         $table     = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
         $cutoff    = time() - self::STALL_THRESHOLD_SECONDS;
@@ -555,7 +549,6 @@ final class Watchdog
                     WHERE phase NOT IN (%s, %s) AND last_progress_at < %d
                     ORDER BY started_at ASC
                     LIMIT %d";
-            /** @phpstan-ignore-next-line — dynamic wpdb. */
             $prepared = $wpdb->prepare(
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a hard-coded query template with placeholders only; values are bound by this very prepare() call
                 $sql,
@@ -564,7 +557,6 @@ final class Watchdog
                 $cutoff,
                 $safeLimit
             );
-            /** @phpstan-ignore-next-line — dynamic wpdb. */
             $rows = $wpdb->get_col($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- direct read on plugin-owned table; value is the output of $wpdb->prepare()
         } catch (\Throwable $e) {
             DebugLog::write('WPMgr Backup: sweepStalled query failed: ' . $e->getMessage());
@@ -616,6 +608,7 @@ final class Watchdog
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_TASKS_TABLE;
 
         try {
@@ -623,7 +616,6 @@ final class Watchdog
             $sql = "SELECT sub_state FROM {$table} WHERE snapshot_id = %s LIMIT 1";
             /** @phpstan-ignore-next-line — dynamic wpdb. */
             $prepared = $wpdb->prepare($sql, $snapshotId); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
-            /** @phpstan-ignore-next-line — dynamic wpdb. */
             $raw = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- direct read on plugin-owned table; value is the output of $wpdb->prepare()
 
             $envelope = [];
@@ -639,7 +631,6 @@ final class Watchdog
                 return;
             }
 
-            /** @phpstan-ignore-next-line — dynamic wpdb. */
             @$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- direct update on plugin-owned table; breadcrumb write, correctness requires a live write
                 $table,
                 ['sub_state' => $encoded, 'last_progress_at' => time()],
