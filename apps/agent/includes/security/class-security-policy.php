@@ -384,12 +384,18 @@ final class SecurityPolicy
     }
 
     /**
-     * Get the effective minimum zxcvbn score for a WP_User's role.
+     * Get the effective minimum zxcvbn score for a user's role.
      *
-     * @param \WP_User $user
+     * Accepts an object rather than a \WP_User because the
+     * `user_profile_update_errors` chain reaches here carrying whatever core
+     * passed, and core passes a bare stdClass. Callers on that path should
+     * resolve through ProfileUpdateUser::resolve() first; userRoles() below is
+     * the backstop for any that do not.
+     *
+     * @param object $user \WP_User, or the \stdClass core builds in edit_user().
      * @return int
      */
-    public function effectiveMinZxcvbnScore(\WP_User $user): int
+    public function effectiveMinZxcvbnScore(object $user): int
     {
         $roles = $this->userRoles($user);
 
@@ -439,12 +445,14 @@ final class SecurityPolicy
     }
 
     /**
-     * Get whether compromised-password blocking applies to a WP_User.
+     * Get whether compromised-password blocking applies to a user.
      *
-     * @param \WP_User $user
+     * Object-typed for the same reason as effectiveMinZxcvbnScore() above.
+     *
+     * @param object $user \WP_User, or the \stdClass core builds in edit_user().
      * @return bool
      */
-    public function blockCompromisedFor(\WP_User $user): bool
+    public function blockCompromisedFor(object $user): bool
     {
         if ($this->passwordBlockCompromised) {
             return true;
@@ -463,17 +471,36 @@ final class SecurityPolicy
     // -------------------------------------------------------------------------
 
     /**
-     * Extract the roles array from a WP_User safely.
+     * Extract the roles array from a user object safely.
      *
-     * @param \WP_User $user
+     * The `role` fallback is the backstop against silent under-enforcement: the
+     * stdClass core passes to `user_profile_update_errors` has no `roles`
+     * property, only the single submitted `role` string. Without this branch a
+     * caller that skipped ProfileUpdateUser::resolve() would read an empty role
+     * list, conclude no role-scoped rule applies, and enforce nothing — with no
+     * error and no log. Reading the submitted role keeps scoping alive there.
+     *
+     * This fallback is a REPLACEMENT, not a union, and is strictly weaker than
+     * ProfileUpdateUser::resolve(): on the raw stdClass it can only ever see
+     * the single submitted `role`, never the account's stored role. Any future
+     * caller that reaches effectiveMinZxcvbnScore() or blockCompromisedFor()
+     * with that unresolved object on a demotion gets `['subscriber']` and
+     * silently skips the stored administrator rule — the exact defect class
+     * this fallback exists to catch, one level down. Do not rely on it for a
+     * role-scoped decision; resolve the user first.
+     *
+     * @param object $user \WP_User, or the \stdClass core builds in edit_user().
      * @return list<string>
      */
-    private function userRoles(\WP_User $user): array
+    private function userRoles(object $user): array
     {
-        if (!isset($user->roles) || !is_array($user->roles)) {
-            return [];
+        if (isset($user->roles) && is_array($user->roles)) {
+            return array_values(array_filter(array_map('strval', $user->roles)));
         }
-        return array_values(array_filter(array_map('strval', $user->roles)));
+        if (isset($user->role) && is_string($user->role) && $user->role !== '') {
+            return [$user->role];
+        }
+        return [];
     }
 
     /**

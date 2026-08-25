@@ -116,6 +116,49 @@ final class HardeningModule
         $this->applyBanFilters($config);
     }
 
+    /**
+     * Whether the operator's recovery constant is set.
+     *
+     * `define('WPMGR_DISABLE_SITE_2FA', true)` is the documented escape hatch
+     * for an admin locked out by this plugin's auth policy. It was honoured by
+     * Site2faModule and PasswordPolicyModule but NOT here, so an operator who
+     * set it still hit HardeningModule's auth rules — an escape hatch that does
+     * not release everything it claims to is worse than none, because the
+     * person using it believes they are safe.
+     *
+     * DELIBERATELY SCOPED TO AUTH POLICY. This gates the two appliers that can
+     * keep an administrator out of their own site: applyLoginIdentifier()
+     * (which identifier may be used to log in) and applyForceUniqueNickname()
+     * (which can refuse a profile save). It does NOT gate the file-editor
+     * block, xmlrpc mode, REST restriction, force-SSL, author-archive
+     * enumeration or the IP/user-agent bans.
+     *
+     * That exclusion is NOT because none of those six can lock anyone out —
+     * at least one demonstrably can. applyBanFilters() registers on `init`
+     * priority 1 with no gate at all; `init` fires on wp-login.php; the match
+     * is an unbounded case-insensitive substring
+     * (stripos($ua, $pattern) !== false) with no length or genericity check;
+     * and a match ends in exit('Access denied.'). A ban pattern of "Mozilla",
+     * "Chrome", "Safari", "AppleWebKit" or "Gecko" 403s the administrator's
+     * own login page along with everyone else's. That lockout risk is real,
+     * pre-existing, and tracked and scoped separately (#529) — it is not
+     * resolved by widening this constant's reach.
+     *
+     * The actual reason these six stay ungated is that silently dropping a
+     * site's file-editor lock, xmlrpc mode, REST restriction, forced SSL,
+     * author-archive block or IP/user-agent bans the moment someone sets a
+     * recovery constant would risk turning a recovery step into a worse
+     * regression than the lockout it is meant to fix. The scoping to just the
+     * two auth appliers is correct; only the "cannot lock anyone out"
+     * justification for it was.
+     *
+     * @return bool
+     */
+    private static function authPolicyDisabled(): bool
+    {
+        return defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA;
+    }
+
     // -------------------------------------------------------------------------
     // Per-toggle appliers (all no-ops when the toggle is off)
     // -------------------------------------------------------------------------
@@ -296,6 +339,9 @@ final class HardeningModule
      */
     private function applyLoginIdentifier(HardeningConfig $config): void
     {
+        if (self::authPolicyDisabled()) {
+            return;
+        }
         if ($config->restrictLoginIdentifier === HardeningConfig::LOGIN_BOTH) {
             return;
         }
@@ -321,18 +367,27 @@ final class HardeningModule
      */
     private function applyForceUniqueNickname(HardeningConfig $config): void
     {
+        if (self::authPolicyDisabled()) {
+            return;
+        }
         if (!$config->forceUniqueNickname) {
             return;
         }
 
-        add_action('user_profile_update_errors', static function (\WP_Error $errors, bool $update, \WP_User $user): void {
+        // $user is typed mixed, not \WP_User: core builds a bare stdClass in
+        // edit_user() and passes it by reference, so a \WP_User hint here is a
+        // TypeError at argument binding — a fatal on every user-edit screen for
+        // any site with this single toggle on, password policy or not.
+        // ProfileUpdateUser::resolve() also recovers user_login from the stored
+        // user, so an object without it cannot silently switch the check off.
+        add_action('user_profile_update_errors', static function (\WP_Error $errors, bool $update, mixed $user): void {
             if (!$update) {
                 return;
             }
             $nickname = isset($_POST['nickname']) && is_string($_POST['nickname']) // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- nonce verified by WP core's profile-update handler before this hook fires; sanitized on the next line
                 ? sanitize_text_field(wp_unslash($_POST['nickname'])) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same as above
                 : '';
-            $userLogin = $user->user_login;
+            $userLogin = ProfileUpdateUser::resolve($user)->user_login;
             if ($nickname !== '' && $userLogin !== '' && $nickname === $userLogin) {
                 $errors->add(
                     'wpmgr_nickname_conflict',
