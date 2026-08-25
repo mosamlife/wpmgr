@@ -362,9 +362,22 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
      * B is an independent toggle behind a different setting, so a site with no
      * password policy at all still hits the identical crash. Capture the
      * closure install() registers and invoke it with core's stdClass.
+     *
+     * Every caller of this helper runs in its own process. Site2faModuleTest
+     * defines WPMGR_DISABLE_SITE_2FA process-globally, and a constant cannot be
+     * undefined; applyForceUniqueNickname() now honours that constant, so in a
+     * whole-suite run these tests would register no closure, assert nothing and
+     * pass green — a regression test for a production fatal that silently stops
+     * running is worth less than no test. Verified: without isolation this
+     * helper returns null under `phpunit tests/Security/`, and the three
+     * callers fail on "null is of type callable".
      */
     private function nicknameClosure(): callable
     {
+        $this->assertFalse(
+            defined('WPMGR_DISABLE_SITE_2FA'),
+            'these tests need the recovery constant unset; process isolation has failed'
+        );
         $captured = null;
         Functions\expect('add_action')
             ->once()
@@ -384,6 +397,10 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
         return $captured;
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function test_force_unique_nickname_accepts_core_stdclass(): void
     {
         $this->storeUser(7, ['administrator']);
@@ -401,6 +418,10 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
         );
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function test_force_unique_nickname_allows_a_distinct_nickname(): void
     {
         $this->storeUser(7, ['administrator']);
@@ -419,6 +440,10 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
      * that omits it must not silently disable the check — the login is
      * recovered from the stored user instead.
      */
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function test_force_unique_nickname_recovers_login_when_absent_from_the_object(): void
     {
         $this->storeUser(7, ['administrator'], 'admin');
@@ -436,6 +461,87 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
             'wpmgr_nickname_conflict',
             $errors->errors,
             'a missing user_login on the hook object must not silently disable the check'
+        );
+    }
+
+    // =========================================================================
+    // The recovery constant must actually release the auth policy
+    // =========================================================================
+
+    /**
+     * `define('WPMGR_DISABLE_SITE_2FA', true)` is the documented escape hatch
+     * for an admin locked out by this plugin's auth policy. Site2faModule and
+     * PasswordPolicyModule honoured it; HardeningModule did not — so an
+     * operator who set it silenced the password-policy crash and was still
+     * refused by force_unique_nickname. An escape hatch that does not release
+     * everything it claims to is worse than none.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_recovery_constant_releases_the_nickname_rule(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+
+        Functions\expect('add_action')->never();
+
+        $mod = new HardeningModule();
+        $ref = new \ReflectionMethod($mod, 'applyForceUniqueNickname');
+        $ref->invoke($mod, HardeningConfig::fromArray(['config' => ['force_unique_nickname' => true]]));
+
+        $this->addToAssertionCount(1);
+    }
+
+    /**
+     * The same hatch must release the login-identifier restriction, the other
+     * HardeningModule rule that can keep an administrator out.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_recovery_constant_releases_the_login_identifier_restriction(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+
+        Functions\expect('add_action')->never();
+
+        $mod = new HardeningModule();
+        $ref = new \ReflectionMethod($mod, 'applyLoginIdentifier');
+        $ref->invoke($mod, HardeningConfig::fromArray(['config' => ['restrict_login_identifier' => 'username']]));
+
+        $this->addToAssertionCount(1);
+    }
+
+    /**
+     * Over-fire guard on the hatch. It is scoped to auth policy on purpose:
+     * recovering a login must not silently drop the site's IP bans. If someone
+     * later widens authPolicyDisabled() to gate every applier, this reddens.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_recovery_constant_does_not_drop_ip_bans(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+
+        $captured = null;
+        Functions\expect('add_action')
+            ->once()
+            ->andReturnUsing(function ($hook, $cb, $priority = 10, $args = 1) use (&$captured) {
+                $captured = $cb;
+                return true;
+            });
+
+        $mod    = new HardeningModule();
+        $config = HardeningConfig::fromArray([
+            'bans' => [['id' => 'b1', 'type' => 'user_agent', 'value' => 'EvilBot']],
+        ]);
+        $ref = new \ReflectionMethod($mod, 'applyBanFilters');
+        $ref->invoke($mod, $config);
+
+        $this->assertIsCallable(
+            $captured,
+            'the auth-policy recovery constant must not disable IP/user-agent bans'
         );
     }
 

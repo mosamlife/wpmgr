@@ -302,19 +302,41 @@ final class SizeProbe
     /**
      * Filter callback for pre_recurse_dirsize.
      *
-     * @param false|int            $size           Existing filtered value.
-     * @param string               $directory      Directory being measured.
-     * @param array<string>|null   $exclude        Exclusion list (WP core).
-     * @param int                  $maxExecTime    Budget from WP (ignored here).
-     * @param array<string,int>    $directoryCache WP's in-memory cache.
+     * $directoryCache is NOT always an array, whatever core's own docblock at
+     * wp-includes/functions.php says. recurse_dirsize() seeds it with
+     *
+     *     $directory_cache = get_transient( 'dirsize_cache' );
+     *
+     * and get_transient() returns FALSE when the transient is missing or
+     * expired, which is then handed straight to this filter. Core knows: it
+     * normalises with `if ( ! is_array( $directory_cache ) )` only AFTER
+     * apply_filters() has run. An `array` hint here is therefore a TypeError
+     * whenever the cache is cold — and this filter is registered
+     * unconditionally on every boot (Plugin::registerHooks), so it fired on
+     * fresh installs, after any transient or object-cache flush, on Site
+     * Health -> Info -> Directory sizes, and on multisite for every upload via
+     * get_space_used(). It could not self-heal either: the transient is only
+     * written after the walk the fatal prevented.
+     *
+     * This callback does not read the cache — it either short-circuits with a
+     * du(1) byte count or returns false and lets core do its own recursion —
+     * so the value is accepted and ignored rather than normalised. Anything
+     * added here that DOES read it must handle the false.
+     *
+     * @param false|int          $size           Existing filtered value.
+     * @param string             $directory      Directory being measured.
+     * @param array<string>|null $exclude        Exclusion list (WP core).
+     * @param int                $maxExecTime    Budget from WP (ignored here).
+     * @param mixed              $directoryCache Cached dir paths: array, or
+     *                                           false on a cold transient.
      * @return false|int
      */
     public function preRecurseDirsizeFilter(
         $size,
         string $directory,
-        $exclude,
-        int $maxExecTime,
-        array $directoryCache
+        $exclude = null,
+        int $maxExecTime = 0,
+        mixed $directoryCache = false
     ) {
         if ($size !== false) {
             return $size; // already handled upstream

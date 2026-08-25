@@ -116,6 +116,32 @@ final class HardeningModule
         $this->applyBanFilters($config);
     }
 
+    /**
+     * Whether the operator's recovery constant is set.
+     *
+     * `define('WPMGR_DISABLE_SITE_2FA', true)` is the documented escape hatch
+     * for an admin locked out by this plugin's auth policy. It was honoured by
+     * Site2faModule and PasswordPolicyModule but NOT here, so an operator who
+     * set it still hit HardeningModule's auth rules — an escape hatch that does
+     * not release everything it claims to is worse than none, because the
+     * person using it believes they are safe.
+     *
+     * DELIBERATELY SCOPED TO AUTH POLICY. This gates the two appliers that can
+     * keep an administrator out of their own site: applyLoginIdentifier()
+     * (which identifier may be used to log in) and applyForceUniqueNickname()
+     * (which can refuse a profile save). It does NOT gate the file-editor
+     * block, xmlrpc mode, REST restriction, force-SSL, author-archive
+     * enumeration or the IP/user-agent bans. Those cannot lock anyone out, and
+     * silently dropping a site's IP bans because someone is recovering a login
+     * would turn a recovery step into a security regression.
+     *
+     * @return bool
+     */
+    private static function authPolicyDisabled(): bool
+    {
+        return defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA;
+    }
+
     // -------------------------------------------------------------------------
     // Per-toggle appliers (all no-ops when the toggle is off)
     // -------------------------------------------------------------------------
@@ -296,6 +322,9 @@ final class HardeningModule
      */
     private function applyLoginIdentifier(HardeningConfig $config): void
     {
+        if (self::authPolicyDisabled()) {
+            return;
+        }
         if ($config->restrictLoginIdentifier === HardeningConfig::LOGIN_BOTH) {
             return;
         }
@@ -321,6 +350,9 @@ final class HardeningModule
      */
     private function applyForceUniqueNickname(HardeningConfig $config): void
     {
+        if (self::authPolicyDisabled()) {
+            return;
+        }
         if (!$config->forceUniqueNickname) {
             return;
         }
