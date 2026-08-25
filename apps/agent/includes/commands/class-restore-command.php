@@ -329,11 +329,11 @@ final class RestoreCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return true;
         }
+        /** @var \wpdb $wpdb */
         $table  = $wpdb->prefix . Schema::BACKUP_RESTORE_RUNS_TABLE;
         $now    = time();
         $cutoff = $now - self::DEDUP_WINDOW_SECONDS;
 
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists; correctness requires a live read (anti-replay/locking)
         $existing = $wpdb->get_row($wpdb->prepare(
             "SELECT pid, started_at FROM {$table} WHERE snapshot_id = %s AND restore_id = %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- interpolated identifier is prefix+constant (trusted); values bound via placeholders
@@ -344,7 +344,6 @@ final class RestoreCommand implements CommandInterface
             return false;
         }
         if (is_object($existing)) {
-            // @phpstan-ignore-next-line
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists
             $wpdb->update(
                 $table,
@@ -355,7 +354,6 @@ final class RestoreCommand implements CommandInterface
             );
             return true;
         }
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- direct query on plugin-owned table; no core $wpdb helper exists
         $inserted = $wpdb->insert(
             $table,
@@ -376,8 +374,8 @@ final class RestoreCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RESTORE_RUNS_TABLE;
-        // @phpstan-ignore-next-line
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; no core $wpdb helper exists
         @$wpdb->delete($table, ['snapshot_id' => $snapshotId, 'restore_id' => $restoreId], ['%s', '%s']);
     }
@@ -433,6 +431,7 @@ final class RestoreCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
         $now   = time();
         $subState = (string) wp_json_encode(['params' => $runnerParams]);
@@ -528,7 +527,6 @@ final class RestoreCommand implements CommandInterface
         global $wpdb;
         if (is_object($wpdb)) {
             try {
-                // @phpstan-ignore-next-line — runtime wpdb seam.
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- connectivity probe on core WP connection; no core helper exists; adding cache would defeat the purpose
                 $probe = $wpdb->get_var('SELECT 1');
                 if ((string) $probe !== '1') {
@@ -594,8 +592,8 @@ final class RestoreCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         try {
-            // @phpstan-ignore-next-line
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- reads a MySQL system variable; no caching applicable; no core $wpdb helper exists
             $value = $wpdb->get_var('SELECT @@max_allowed_packet');
         } catch (\Throwable $e) {
@@ -618,6 +616,7 @@ final class RestoreCommand implements CommandInterface
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $wpdb->prefix . Schema::BACKUP_RESTORE_TASKS_TABLE;
         $now   = time();
         $subState = (string) wp_json_encode([

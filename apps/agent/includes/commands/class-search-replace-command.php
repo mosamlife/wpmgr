@@ -186,6 +186,7 @@ final class SearchReplaceCommand implements CommandInterface
         if (!isset($wpdb) || !is_object($wpdb)) {
             throw new \RuntimeException('wpdb not available');
         }
+        /** @var \wpdb $wpdb */
 
         $prefix        = (string) ($wpdb->prefix ?? '');
         $mysqli        = $this->openMysqli();

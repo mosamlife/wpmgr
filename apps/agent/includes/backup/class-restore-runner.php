@@ -1833,17 +1833,16 @@ final class RestoreRunner
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $dbName = $this->dbCreds()['name'] ?? '';
         if ($dbName === '') {
             return 0;
         }
         try {
-            /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
             $prepared = $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
                 'SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = %s',
                 $dbName
             );
-            /** @phpstan-ignore-next-line */
             $bytes = $wpdb->get_var($prepared); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- information_schema size probe; no core helper exists; not a cacheable value (must reflect live size right before the dump)
             return is_numeric($bytes) ? (int) $bytes : 0;
         } catch (\Throwable $e) {
@@ -2553,6 +2552,7 @@ final class RestoreRunner
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return null;
@@ -2563,7 +2563,6 @@ final class RestoreRunner
                 WHERE snapshot_id = %s AND restore_id = %s LIMIT 1";
         /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
         $prepared = $wpdb->prepare($sql, $this->snapshotId(), $this->restoreId()); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- already prepared on the preceding line
-        /** @phpstan-ignore-next-line */
         $row = $wpdb->get_row($prepared, ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange,PluginCheck.Security.DirectDB.UnescapedDBParameter -- direct query on plugin-owned table; correctness requires a live read; already prepared above; value is the output of $wpdb->prepare()
 
         if (!is_array($row)) {
@@ -2593,6 +2592,7 @@ final class RestoreRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
@@ -2602,7 +2602,6 @@ final class RestoreRunner
         $sql = "INSERT IGNORE INTO {$table}
                 (snapshot_id, restore_id, kind, phase, sub_state, started_at, last_progress_at, resume_count, max_resumes)
                 VALUES (%s, %s, %s, %s, %s, %d, %d, %d, %d)";
-        /** @phpstan-ignore-next-line */
         $prepared = $wpdb->prepare(
             $sql, // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- identifier validated against information_schema / prefix+constant; values bound via placeholders
             $this->snapshotId(),
@@ -2628,6 +2627,7 @@ final class RestoreRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
@@ -2647,7 +2647,6 @@ final class RestoreRunner
         }
         $this->lastDbUpdate = $now;
 
-        /** @phpstan-ignore-next-line */
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
         $wpdb->update(
             $table,
@@ -2675,13 +2674,13 @@ final class RestoreRunner
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->tableName();
         if ($table === '') {
             return;
         }
         $this->lastDbUpdate = $now;
 
-        /** @phpstan-ignore-next-line */
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
         $wpdb->update(
             $table,
@@ -2765,7 +2764,6 @@ final class RestoreRunner
         global $wpdb;
         if (is_object($wpdb)) {
             $runsTable = $this->prefix() . Schema::BACKUP_RESTORE_RUNS_TABLE;
-            /** @phpstan-ignore-next-line */
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- direct query on plugin-owned table; correctness requires a live read
             $wpdb->delete(
                 $runsTable,

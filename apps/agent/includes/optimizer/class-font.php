@@ -302,7 +302,7 @@ final class Font
     private function transcodeWoff2InlineStyles(string $html): string
     {
         if ($this->transcodeClient === null) {
-            return $html; // @phpstan-ignore-line — guard re-checked for clarity
+            return $html;
         }
         return (string) preg_replace_callback(
             '/<style\b[^>]*>(.*?)<\/style>/is',
@@ -557,7 +557,6 @@ final class Font
      */
     private function walkFontDir(string $dir, string $baseDir): void
     {
-        // @phpstan-ignore-next-line
         $entries = @scandir($dir);
         if ($entries === false) {
             return;

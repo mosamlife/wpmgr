@@ -163,6 +163,7 @@ final class RestoreHealthCheck
         if (!is_object($wpdb)) {
             return ['ok' => false, 'failures' => ['DB probe: $wpdb is not available']];
         }
+        /** @var \wpdb $wpdb */
 
         $failures = [];
 
@@ -182,9 +183,7 @@ final class RestoreHealthCheck
             if (isset($wpdb->options) && is_string($wpdb->options) && $wpdb->options !== '') {
                 $optionsTable = $wpdb->options;
             }
-            /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
             $siteurl = $wpdb->get_var("SELECT option_value FROM {$optionsTable} WHERE option_name = 'siteurl' LIMIT 1"); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- $optionsTable is either the real $wpdb->options property or prefix+the literal 'options', never user input; a fresh uncached read of the just-swapped live table is the entire point of this probe
-            /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
             $lastError = (string) $wpdb->last_error;
             if ($lastError !== '') {
                 $failures[] = 'DB probe: siteurl query error: ' . substr($lastError, 0, 200);
@@ -205,9 +204,7 @@ final class RestoreHealthCheck
                 if (isset($wpdb->{$core}) && is_string($wpdb->{$core}) && $wpdb->{$core} !== '') {
                     $table = $wpdb->{$core};
                 }
-                /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
                 $wpdb->get_var("SELECT 1 FROM {$table} LIMIT 1"); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- $table is either the real $wpdb->users/$wpdb->posts property or prefix+a literal from the hardcoded ['users','posts'] loop, never user input; a fresh uncached read of the just-swapped live table is the entire point of this probe
-                /** @phpstan-ignore-next-line — $wpdb is a runtime interface. */
                 $lastError = (string) $wpdb->last_error;
                 if ($lastError !== '') {
                     $failures[] = 'DB probe: ' . $core . ' table query error: ' . substr($lastError, 0, 200);

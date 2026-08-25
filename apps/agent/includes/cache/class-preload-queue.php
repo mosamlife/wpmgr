@@ -212,6 +212,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $url = trim($url);
         if ($url === '') {
             return 0;
@@ -268,6 +269,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return null;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
 
         try {
@@ -438,6 +440,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             return (int) $wpdb->get_var( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -486,6 +489,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             return (int) $wpdb->get_var( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -514,6 +518,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return [];
         }
+        /** @var \wpdb $wpdb */
         $limit = min(200, max(1, $limit));
         $table = $this->table();
         try {
@@ -548,6 +553,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             $wpdb->query( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -577,6 +583,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             $wpdb->query( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -631,6 +638,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             return (int) $wpdb->get_var( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -660,6 +668,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return 0;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             return (int) $wpdb->get_var( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -688,6 +697,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return false;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
         try {
             $count = (int) $wpdb->get_var( // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter -- value is the output of $wpdb->prepare(); not attacker-controlled
@@ -891,6 +901,7 @@ final class PreloadQueue
         if (!is_object($wpdb)) {
             return;
         }
+        /** @var \wpdb $wpdb */
         $table = $this->table();
 
         // Table-missing guard: a fresh install before dbDelta ran.
