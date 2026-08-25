@@ -1,47 +1,61 @@
 package agentcmd
 
-// resend_email_contract.go — CP->agent command contract for resending a stored
-// email from the CP-held email log body (Phase 4a definition; Phase 4b implementation).
+// resend_email_contract.go — CP->agent command contract for resending an email
+// the agent already holds in its own local log.
 //
-// The CP looks up the site_email_log row identified by log_id (UUID), reads the
-// stored body (requires body_stored=true, enforced by the service gate), and
-// dispatches the signed `resend_email` command to the agent. The agent re-sends
-// using its currently configured email provider (same config as the original send)
-// and returns the new provider Message-ID.
+// Wire contract (must match apps/agent/includes/commands/class-resend-email-command.php):
 //
-// The agent MUST implement the `resend_email` command handler in Phase 4b.
-// Until then, the CP stub returns ok=false with a descriptive detail.
+//	POST {siteURL}/wp-json/wpmgr/v1/command/resend_email
+//	Authorization: Bearer <Ed25519 JWT, cmd="resend_email", aud=<siteId>>
+//	Body: {"agent_seq": <int>}
+//
+// The agent looks the row up in its own wpmgr_email_log by that local row id,
+// refuses when the row is gone or its body was not captured, and otherwise
+// re-sends through its configured provider and returns the new Message-ID.
+//
+// GH #520: the CP used to send a log_id UUID plus an (unpopulated) copy of the
+// message itself. The agent has required agent_seq since the same commit that
+// shipped the CP side, so every resend, on every site, failed on the agent's
+// first validation branch. The agent's contract wins: it is already implemented
+// and tested, one CP deploy repairs the whole fleet without waiting for a
+// plugin update, and it keeps customer message bodies off the command channel.
+//
+// Consequence to keep in view: the agent prunes its log at 14 days / 50k rows
+// (class-email-logger.php), so a resend of an older entry legitimately returns
+// ResendDetailRowNotFound. That is an honest failure, not a silent empty send.
 
 // ResendEmailRequest is the POST body for the `resend_email` agent command.
+//
+// One field, deliberately. Everything the agent needs to rebuild the message
+// (recipients, from, subject, body, provider) it reads from its own log row —
+// the CP names the row and nothing more.
 type ResendEmailRequest struct {
-	// LogID is the CP-side site_email_log.id (UUID string). The agent uses it
-	// as a correlation identifier for the resend attempt — it does not need to
-	// query the CP to retrieve the body; the full message body is embedded in
-	// this request so the agent can re-send without a second round-trip.
-	LogID string `json:"log_id"`
-
-	// ToAddresses is the recipient list for the resend. Required.
-	// The CP copies the original log entry's to_addresses.
-	ToAddresses []string `json:"to_addresses"`
-
-	// FromAddress is the From: header value. Required.
-	FromAddress string `json:"from_address"`
-
-	// FromName is the From: display name. May be empty.
-	FromName string `json:"from_name,omitempty"`
-
-	// Subject is the email subject line. Required.
-	Subject string `json:"subject"`
-
-	// Body is the full email body (plain text or HTML, matching what was captured
-	// at the original send time). The CP only sends this when body_stored=true.
-	Body string `json:"body"`
-
-	// Provider is the provider slug used for the original send (smtp, ses,
-	// sendgrid, mailgun, postmark). The agent uses its currently configured
-	// provider; this field is informational for logging.
-	Provider string `json:"provider,omitempty"`
+	// AgentSeq is the agent-local wpmgr_email_log row id, mirrored into the CP
+	// as site_email_log.agent_seq at ingest. It is the only field the agent
+	// reads, and it must be a positive integer or the agent refuses.
+	AgentSeq int64 `json:"agent_seq"`
 }
+
+// Known `detail` values the agent returns with ok=false. These are contract
+// strings, not free text: callers map them to operator-facing wording rather
+// than showing them raw (a user saw "missing required field: agent_seq" in a
+// toast, which is how GH #520 was reported).
+const (
+	// ResendDetailRowNotFound — the agent's own log no longer holds the row,
+	// normally because its 14-day / 50k-row prune has passed over it.
+	ResendDetailRowNotFound = "log_row_not_found"
+	// ResendDetailBodyNotStored — the row exists but was logged without body
+	// capture, so there is nothing to re-send.
+	ResendDetailBodyNotStored = "body_not_stored"
+	// ResendDetailNoConfig — the agent has no email configuration yet; the CP
+	// must push sync_email_config first. Prefix, the agent appends guidance.
+	ResendDetailNoConfig = "no email config"
+	// ResendDetailMissingSeq — the agent rejected the request shape itself.
+	// Reachable only if the CP regresses to a pre-#520 payload.
+	ResendDetailMissingSeq = "missing required field: agent_seq"
+	// ResendDetailBadSeq — agent_seq was present but not a positive integer.
+	ResendDetailBadSeq = "agent_seq must be a positive integer"
+)
 
 // ResendEmailResult is the response body for the `resend_email` agent command.
 type ResendEmailResult struct {

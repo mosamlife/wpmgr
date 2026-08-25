@@ -415,6 +415,18 @@ type LogDetail struct {
 	NextID *uuid.UUID
 }
 
+// ResendTarget is the slice of a log row a resend needs, and nothing else.
+//
+// AgentSeq is the agent-local wpmgr_email_log row id and the only thing the
+// resend_email command carries. It is a pointer because the column is nullable,
+// though IngestEmailLogEntry — the only production INSERT — always sets it
+// (repo.go IngestLogBatch takes &e.AgentSeq unconditionally). A nil here means
+// a row that arrived some other way, and a resend for it cannot be addressed.
+type ResendTarget struct {
+	AgentSeq   *int64
+	BodyStored bool
+}
+
 // IngestEntry is one entry from the agent's ingest push.
 type IngestEntry struct {
 	AgentSeq    int64

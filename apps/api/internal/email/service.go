@@ -80,7 +80,7 @@ type repository interface {
 	GetConfigByRouteTokenHashWithSecret(ctx context.Context, tokenHash []byte) (Config, []byte, error)
 	SetWebhookFields(ctx context.Context, tenantID, configID uuid.UUID, tokenHash, signingKeyCT []byte, setSigningKey bool, sesTopicArns []string) (Config, error)
 	PruneWebhookDedup(ctx context.Context, cutoffTs time.Time) (int64, error)
-	GetEmailLogBodyStored(ctx context.Context, tenantID, siteID, id uuid.UUID) (bool, error)
+	GetResendTarget(ctx context.Context, tenantID, siteID, id uuid.UUID) (ResendTarget, error)
 	IncrEmailLogResentCount(ctx context.Context, tenantID, siteID, id uuid.UUID) error
 	DeleteEmailLogsBulk(ctx context.Context, tenantID, siteID uuid.UUID, ids []uuid.UUID) (int64, error)
 	// m62 Area 2 — multi-connection CRUD
@@ -929,33 +929,51 @@ func (s *Service) PruneWebhookDedup(ctx context.Context, cutoffTs time.Time) (in
 // ---------------------------------------------------------------------------
 
 // ResendEmail dispatches the resend_email agent command for a single log entry.
-// Gate: body_stored must be true; returns 409 otherwise.
+//
+// The command names the agent's OWN log row by agent_seq and carries nothing
+// else — see agentcmd/resend_email_contract.go and GH #520, where the CP sent a
+// log_id UUID the agent has never read and every resend on every site failed.
+//
+// Near-end preconditions, all checked before a signed command is spent:
+//
+//   - the row exists for this tenant+site (404),
+//   - its body was captured (409), and
+//   - it carries an agent_seq to address (409).
+//
+// body_stored is KEPT as a gate. It is the agent's own flag for the same row,
+// mirrored at ingest, so it is a sound proxy for "the agent still has a body
+// too" and it refuses near-end what the agent would refuse far-end. It is not
+// the authority: the agent re-reads its live row and answers body_not_stored
+// itself, which is the check that counts.
+//
+// resent_count and the audit row move on SUCCESS only. They used to move on
+// every attempt, which meant every failed click — that is, every click, for as
+// long as #520 was live — inflated the counter and wrote an audit row saying an
+// email had been resent when none had.
 func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.UUID) (ResendResult, error) {
-	bodyStored, err := s.repo.GetEmailLogBodyStored(ctx, tenantID, siteID, logID)
+	target, err := s.repo.GetResendTarget(ctx, tenantID, siteID, logID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return ResendResult{}, domain.NotFound("email_log_not_found", "email log entry not found")
 		}
 		return ResendResult{}, domain.Internal("resend_get_log", "failed to fetch log entry").WithCause(err)
 	}
-	if !bodyStored {
+	if !target.BodyStored {
 		return ResendResult{}, domain.Conflict("resend_body_not_stored",
 			"resend is only available when body was captured at send time (body_stored=true); "+
 				"this entry was sent without body capture enabled")
 	}
-
-	// Increment the resent_count counter before dispatching.
-	if err := s.repo.IncrEmailLogResentCount(ctx, tenantID, siteID, logID); err != nil {
-		return ResendResult{}, domain.Internal("resend_incr_count", "failed to increment resent_count").WithCause(err)
+	if target.AgentSeq == nil || *target.AgentSeq < 1 {
+		return ResendResult{}, domain.Conflict("resend_agent_seq_missing",
+			"this log entry has no agent sequence number, so the site cannot be told which "+
+				"message to resend; entries recorded before the site reported its own log ids "+
+				"cannot be resent")
 	}
 
-	// Dispatch the signed resend_email agent command (Phase 4b implements the
-	// agent side). Failure is non-fatal — the counter was already incremented
-	// so the operator knows a resend was attempted.
 	if s.agent == nil || s.siteLook == nil {
 		return ResendResult{
 			OK:     false,
-			Detail: "agent command client not configured; resend dispatched counter incremented but command not sent",
+			Detail: "agent command client not configured; the resend was not sent",
 		}, nil
 	}
 
@@ -964,15 +982,57 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 		return ResendResult{OK: false, Detail: "site not enrolled or unavailable"}, nil
 	}
 
-	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, agentcmd.ResendEmailRequest{LogID: logID.String()})
+	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, agentcmd.ResendEmailRequest{AgentSeq: *target.AgentSeq})
 	if err != nil {
-		return ResendResult{OK: false, Detail: err.Error()}, nil
+		return ResendResult{OK: false, Detail: resendFailureMessage(err.Error())}, nil
 	}
 	// DELIBERATE: the agent's ok=false is propagated as this call's OK rather than
 	// raised as an error. Every failure branch above returns the same shape, the
 	// handler renders OK plus Detail to the operator, and BulkResendEmail reports
 	// per-log outcomes from it. Nothing here reports success on a refusal.
-	return ResendResult{OK: res.OK, Detail: res.Detail, MessageID: res.MessageID}, nil
+	if !res.OK {
+		return ResendResult{OK: false, Detail: resendFailureMessage(res.Detail)}, nil
+	}
+
+	// The email is already out. A counter write that fails now must not turn a
+	// successful resend into a reported failure — log it and report the truth.
+	if err := s.repo.IncrEmailLogResentCount(ctx, tenantID, siteID, logID); err != nil {
+		s.log.Error("email resend: agent confirmed the send but resent_count was not incremented",
+			slog.String("site_id", siteID.String()),
+			slog.String("log_id", logID.String()),
+			slog.String("err", err.Error()),
+		)
+	}
+	return ResendResult{OK: true, Detail: res.Detail, MessageID: res.MessageID}, nil
+}
+
+// resendFailureMessage turns an agent-side refusal into a sentence an operator
+// can act on. The agent's contract strings are codes, not prose: one of them
+// ("missing required field: agent_seq") reached a user's toast verbatim and is
+// how GH #520 was reported.
+//
+// An unrecognised detail is returned unchanged — it is usually the provider's
+// own SMTP/API error, which is the most useful thing anyone could show.
+func resendFailureMessage(detail string) string {
+	switch {
+	case detail == "":
+		return "the site refused the resend without giving a reason"
+	case strings.Contains(detail, agentcmd.ResendDetailRowNotFound):
+		return "this message is no longer in the site's own email log, so it cannot be resent; " +
+			"WordPress keeps that log for 14 days (or 50,000 messages, whichever comes first)"
+	case strings.Contains(detail, agentcmd.ResendDetailBodyNotStored):
+		return "the site did not keep a copy of this message body, so there is nothing to resend"
+	case strings.Contains(detail, agentcmd.ResendDetailNoConfig):
+		return "this site has no email configuration yet; save its email settings to push the " +
+			"configuration to the site, then try the resend again"
+	case strings.Contains(detail, agentcmd.ResendDetailMissingSeq),
+		strings.Contains(detail, agentcmd.ResendDetailBadSeq):
+		return "the site rejected the resend request format; update the wpmgr plugin on this site"
+	case strings.Contains(detail, "status 404"):
+		return "this site's wpmgr plugin is too old to support resending; update the plugin and try again"
+	default:
+		return detail
+	}
 }
 
 // Bulk log-operation ceilings. These mirror the maxItems the OpenAPI schemas
@@ -985,7 +1045,15 @@ const (
 )
 
 // BulkResendEmail dispatches resend_email commands for multiple log entries.
-// Each entry is processed independently; per-entry body_stored gate is checked.
+//
+// Each entry is processed independently through ResendEmail, so each one gets
+// the same preconditions, the same success-only counter write, and the same
+// humanised failure detail. A per-entry refusal is reported in that entry's
+// result, never as a failure of the batch.
+//
+// The caller (the handler) audits the number of entries that actually came back
+// ok, not the number requested: a batch of 100 that resent nothing used to write
+// one audit row claiming 100.
 func (s *Service) BulkResendEmail(ctx context.Context, tenantID, siteID uuid.UUID, logIDs []uuid.UUID) ([]BulkResendResult, error) {
 	if len(logIDs) == 0 {
 		return nil, nil
