@@ -1,6 +1,24 @@
 parameters:
 	ignoreErrors:
 		-
+			message: '#^Parameter \#1 \$params of class WPMgr\\Agent\\Backup\\TaskRunner constructor expects array\{snapshot_id\: string, kind\: string, age_recipient\: string, presign_endpoint\: string, manifest_endpoint\: string, progress_endpoint\: string, chunk_bytes\: int, scratch_dir\: string, \.\.\.\}, array\{snapshot_id\: non\-falsy\-string, scratch_dir\: non\-falsy\-string\} given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-backup-janitor.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-backup-janitor.php
+
+		-
+			message: '#^Unsafe usage of new static\(\)\.$#'
+			identifier: new.static
+			count: 1
+			path: includes/backup/class-backup-janitor.php
+
+		-
 			message: '#^Cannot call method fetch_array\(\) on mysqli_result\|true\.$#'
 			identifier: method.nonObject
 			count: 2
@@ -37,22 +55,16 @@ parameters:
 			path: includes/backup/class-db-dumper.php
 
 		-
-			message: '#^Parameter \#3 \$length of function substr expects int\|null, int\|false given\.$#'
-			identifier: argument.type
-			count: 1
-			path: includes/backup/class-db-dumper.php
-
-		-
 			message: '#^Property WPMgr\\Agent\\Backup\\DbDumper\:\:\$opts is never read, only written\.$#'
 			identifier: property.onlyWritten
 			count: 1
 			path: includes/backup/class-db-dumper.php
 
 		-
-			message: '#^Argument of an invalid type list\<string\>\|false supplied for foreach, only iterables are supported\.$#'
-			identifier: foreach.nonIterable
+			message: '#^Strict comparison using \!\=\= between numeric\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
 			count: 1
-			path: includes/backup/class-db-restorer.php
+			path: includes/backup/class-db-dumper.php
 
 		-
 			message: '#^Cannot call method close\(\) on mysqli_result\|true\.$#'
@@ -76,12 +88,6 @@ parameters:
 			message: '#^Cannot call method free\(\) on mysqli_result\|true\.$#'
 			identifier: method.nonObject
 			count: 5
-			path: includes/backup/class-db-restorer.php
-
-		-
-			message: '#^Expression on left side of \?\? is not nullable\.$#'
-			identifier: nullCoalesce.expr
-			count: 1
 			path: includes/backup/class-db-restorer.php
 
 		-
@@ -111,7 +117,7 @@ parameters:
 		-
 			message: '#^Parameter \#1 \$array \(list\<\(int\|string\)\>\) of array_values is already a list, call has no effect\.$#'
 			identifier: arrayValues.list
-			count: 1
+			count: 3
 			path: includes/backup/class-files-archiver.php
 
 		-
@@ -119,6 +125,24 @@ parameters:
 			identifier: booleanAnd.leftAlwaysTrue
 			count: 2
 			path: includes/backup/class-files-restorer.php
+
+		-
+			message: '#^Property wpdb\:\:\$options \(string\) in isset\(\) is not nullable\.$#'
+			identifier: isset.property
+			count: 1
+			path: includes/backup/class-restore-health-check.php
+
+		-
+			message: '#^Property wpdb\:\:\$prefix \(string\) in isset\(\) is not nullable\.$#'
+			identifier: isset.property
+			count: 1
+			path: includes/backup/class-restore-health-check.php
+
+		-
+			message: '#^Call to an undefined method object\:\:delete\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/backup/class-restore-runner.php
 
 		-
 			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
@@ -271,14 +295,44 @@ parameters:
 			path: includes/backup/class-restore-runner.php
 
 		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between non\-empty\-string and '''' will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between non\-empty\-string and false will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
 			message: '#^Ternary operator condition is always false\.$#'
 			identifier: ternary.alwaysFalse
 			count: 1
 			path: includes/backup/class-restore-runner.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
-			identifier: property.notFound
+			message: '#^Variable \$age on left side of \?\?\= always exists and is always null\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: includes/backup/class-restore-runner.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
 			count: 2
 			path: includes/backup/class-restore-watchdog.php
 
@@ -289,16 +343,46 @@ parameters:
 			path: includes/backup/class-sql-inspector.php
 
 		-
+			message: '#^Parameter \#1 \$array of function array_values contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
 			message: '#^Parameter \#1 \$entries of method WPMgr\\Agent\\Backup\\EncryptAndUpload\:\:submitManifest\(\) expects list\<array\<string, mixed\>\>, non\-empty\-array\<mixed\> given\.$#'
 			identifier: argument.type
 			count: 1
 			path: includes/backup/class-task-runner.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
-			identifier: property.notFound
-			count: 2
-			path: includes/backup/class-watchdog.php
+			message: '#^Parameter \#1 \$entries of method WPMgr\\Agent\\Backup\\TaskRunner\:\:appendTombstoneEntries\(\) expects list\<array\<string, mixed\>\>, array\<mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
+			message: '#^Return type of call to function array_values contains unresolvable type\.$#'
+			identifier: function.unresolvableReturnType
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between array\{\} and array\{\} will always evaluate to false\.$#'
+			identifier: notIdentical.alwaysFalse
+			count: 1
+			path: includes/backup/class-task-runner.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between non\-empty\-string and '''' will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/backup/class-task-runner.php
 
 		-
 			message: '#^Method WPMgr\\Agent\\Backup\\Watchdog\:\:decodeSubState\(\) has parameter \$raw with no type specified\.$#'
@@ -319,10 +403,100 @@ parameters:
 			path: includes/backup/class-watchdog.php
 
 		-
+			message: '#^Parameter \#1 \$params of class WPMgr\\Agent\\Backup\\TaskRunner constructor expects array\{snapshot_id\: string, kind\: string, age_recipient\: string, presign_endpoint\: string, manifest_endpoint\: string, progress_endpoint\: string, chunk_bytes\: int, scratch_dir\: string, \.\.\.\}, non\-empty\-array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/backup/class-watchdog.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 3
+			path: includes/backup/class-watchdog.php
+
+		-
 			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
 			identifier: function.alreadyNarrowedType
 			count: 1
 			path: includes/backup/destinations/class-local-destination.php
+
+		-
+			message: '#^Constant WPMgr\\Agent\\Backup\\Destinations\\LocalDestination\:\:BASE_DIR_NAME is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: includes/backup/destinations/class-local-destination.php
+
+		-
+			message: '#^Parameter \#1 \$args of method WP_Admin_Bar\:\:add_node\(\) expects array\{id\?\: string, title\?\: string, parent\?\: string, href\?\: string, group\?\: bool, meta\?\: array\}, array\{id\: ''wpmgr\-cache'', title\: ''WPMgr Cache'', href\: false\} given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/cache/class-admin-bar-purge.php
+
+		-
+			message: '#^Cannot cast int\|WP_Post to int\.$#'
+			identifier: cast.int
+			count: 1
+			path: includes/cache/class-cache-manager.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/cache/class-cache-writer.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-falsy\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: includes/cache/class-cacheability.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: includes/cache/class-preload-queue.php
+
+		-
+			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: includes/cache/class-preload-queue.php
+
+		-
+			message: '#^Offset 0 on array\{float, float, float\} in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.offset
+			count: 1
+			path: includes/cache/class-preload-queue.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 13
+			path: includes/cache/class-preload-queue.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 5
+			path: includes/cache/class-preload-queue.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 1
+			path: includes/cache/class-purge.php
+
+		-
+			message: '#^Parameter \#1 \$hook_name of function do_action expects non\-empty\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/cache/class-purge.php
+
+		-
+			message: '#^Found usage of constant DOING_AJAX\. Use wp_doing_ajax\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/class-heartbeat-catchup.php
 
 		-
 			message: '#^Call to function is_string\(\) with ''/var/keys/wpmgr…'' will always evaluate to true\.$#'
@@ -333,8 +507,32 @@ parameters:
 		-
 			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
 			identifier: function.alreadyNarrowedType
-			count: 3
+			count: 4
 			path: includes/class-keystore.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\MediaKeystore\:\:get\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/class-media-keystore.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\MediaKeystore\:\:reduceAfterRestore\(\) has parameter \$sizesUnoptimized with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/class-media-keystore.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\MediaKeystore\:\:set\(\) has parameter \$blob with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/class-media-keystore.php
+
+		-
+			message: '#^Action callback returns bool but should not return anything\.$#'
+			identifier: return.void
+			count: 1
+			path: includes/class-plugin.php
 
 		-
 			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
@@ -343,22 +541,40 @@ parameters:
 			path: includes/class-plugin.php
 
 		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/class-replay-cache.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 1
+			path: includes/class-scheduler.php
+
+		-
+			message: '#^Result of && is always false\.$#'
+			identifier: booleanAnd.alwaysFalse
+			count: 1
+			path: includes/class-scheduler.php
+
+		-
 			message: '#^Call to function property_exists\(\) with WP_User and ''roles'' will always evaluate to true\.$#'
 			identifier: function.alreadyNarrowedType
 			count: 1
 			path: includes/commands/class-autologin-command.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
-			identifier: property.notFound
-			count: 4
-			path: includes/commands/class-backup-command.php
+			message: '#^If condition is always false\.$#'
+			identifier: if.alwaysFalse
+			count: 1
+			path: includes/commands/class-autologin-command.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$started_at\.$#'
-			identifier: property.notFound
+			message: '#^Offset ''type'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
 			count: 1
-			path: includes/commands/class-backup-command.php
+			path: includes/commands/class-autologin-command.php
 
 		-
 			message: '#^Call to function method_exists\(\) with ''ZipArchive'' and ''addFile'' will always evaluate to true\.$#'
@@ -367,22 +583,64 @@ parameters:
 			path: includes/commands/class-backup-command.php
 
 		-
-			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:execute\(\) should return array\{ok\: bool, detail\: string\} but returns array\.$#'
-			identifier: return.type
-			count: 8
-			path: includes/commands/class-backup-command.php
-
-		-
-			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:refuse\(\) return type has no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: includes/commands/class-backup-command.php
-
-		-
 			message: '#^Method WPMgr\\Agent\\Commands\\BackupCommand\:\:seedTaskRow\(\) has parameter \$runnerParams with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
 			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/commands/class-backup-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\CacheEnableCommand\:\:execute\(\) should return array\{ok\: bool, detail\: string, steps\?\: array\<string, bool\>, stats\?\: array\<string, mixed\>\} but returns array\<string, mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/commands/class-cache-enable-command.php
+
+		-
+			message: '#^If condition is always false\.$#'
+			identifier: if.alwaysFalse
+			count: 1
+			path: includes/commands/class-db-clean-command.php
+
+		-
+			message: '#^Offset ''message'' on array\{type\: int, message\: string, file\: string, line\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/commands/class-db-clean-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/commands/class-db-orphan-delete-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/commands/class-db-orphan-delete-command.php
+
+		-
+			message: '#^Call to function is_callable\(\) with ''get_plugins'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-db-orphan-delete-command.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Commands\\DbOrphanDeleteCommand\:\:\$settings is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/commands/class-db-orphan-delete-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 10
+			path: includes/commands/class-db-table-action-command.php
 
 		-
 			message: '#^Call to an undefined method object\:\:get_row\(\)\.$#'
@@ -409,14 +667,122 @@ parameters:
 			path: includes/commands/class-diagnostics-command.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
-			identifier: property.notFound
-			count: 4
-			path: includes/commands/class-restore-command.php
+			message: '#^Parameter \#2 \$length of function fread expects int\<1, max\>, int given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-file-archive-create-command.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$started_at\.$#'
-			identifier: property.notFound
+			message: '#^Call to function is_float\(\) with float will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-file-chmod-command.php
+
+		-
+			message: '#^Call to function is_array\(\) with non\-empty\-array will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/commands/class-media-clean-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\MediaCleanCommand\:\:allFilePathsForAttachment\(\) has parameter \$meta with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/commands/class-media-clean-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\MediaCleanCommand\:\:optimizerManagedPaths\(\) has parameter \$meta with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/commands/class-media-clean-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\MediaCleanCommand\:\:requireJobId\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/commands/class-media-clean-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaDeleteOriginalsCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-delete-originals-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaDeleteOriginalsCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<string, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-delete-originals-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaOptimizeCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-optimize-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaOptimizeCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<string, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-optimize-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaRestoreCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-restore-command.php
+
+		-
+			message: '#^Parameter \#1 \$job of method WPMgr\\Agent\\Commands\\MediaRestoreCommand\:\:processJob\(\) expects array\{job_id\: string, wp_attachment_id\: int\}, array\<string, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-restore-command.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-media-sync-command.php
+
+		-
+			message: '#^Dead catch \- Throwable is never thrown in the try block\.$#'
+			identifier: catch.neverThrown
+			count: 1
+			path: includes/commands/class-objectcache-test-command.php
+
+		-
+			message: '#^Left side of && is always true\.$#'
+			identifier: booleanAnd.leftAlwaysTrue
+			count: 1
+			path: includes/commands/class-objectcache-test-command.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Commands\\PerfConfigUpdateCommand\:\:execute\(\) should return array\{ok\: bool, detail\: string, stats\?\: array\<string, mixed\>\} but returns array\<string, mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/commands/class-perf-config-update-command.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between non\-empty\-string and '''' will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/commands/class-record-managed-files-command.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/commands/class-resend-email-command.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/commands/class-resend-email-command.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
 			count: 1
 			path: includes/commands/class-restore-command.php
 
@@ -427,10 +793,40 @@ parameters:
 			path: includes/commands/class-restore-command.php
 
 		-
-			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
-			identifier: method.notFound
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 3
+			path: includes/commands/class-restore-command.php
+
+		-
+			message: '#^Cannot call method fetch_assoc\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 4
+			path: includes/commands/class-search-replace-command.php
+
+		-
+			message: '#^Cannot call method fetch_row\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 3
+			path: includes/commands/class-search-replace-command.php
+
+		-
+			message: '#^Cannot call method free\(\) on mysqli_result\|true\.$#'
+			identifier: method.nonObject
+			count: 7
+			path: includes/commands/class-search-replace-command.php
+
+		-
+			message: '#^Property wpdb\:\:\$prefix \(string\) on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.property
 			count: 1
-			path: includes/diagnostics/class-size-probe.php
+			path: includes/commands/class-search-replace-command.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: includes/commands/class-update-command.php
 
 		-
 			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
@@ -439,10 +835,604 @@ parameters:
 			path: includes/diagnostics/class-size-probe.php
 
 		-
+			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/email/class-email-log-reporter.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/email/class-email-log-reporter.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/email/class-email-logger.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/email/class-email-logger.php
+
+		-
+			message: '#^Comparison operation "\>\=" between int\<0, max\> and 0 is always true\.$#'
+			identifier: greaterOrEqual.alwaysTrue
+			count: 1
+			path: includes/email/class-mail-router.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 3
+			path: includes/email/class-mail-router.php
+
+		-
+			message: '#^Parameter \#1 \$array \(non\-empty\-list\<mixed\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/email/class-provider-router.php
+
+		-
+			message: '#^Cannot cast array\|string to string\.$#'
+			identifier: cast.string
+			count: 1
+			path: includes/email/handlers/class-sendgrid-handler.php
+
+		-
+			message: '#^Cannot call method getPathname\(\) on SplFileInfo\|string\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/integrations/class-cloudpanel.php
+
+		-
+			message: '#^Cannot call method isDir\(\) on SplFileInfo\|string\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/integrations/class-cloudpanel.php
+
+		-
+			message: '#^Cannot call method isFile\(\) on SplFileInfo\|string\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/integrations/class-cloudpanel.php
+
+		-
+			message: '#^Cannot call method isLink\(\) on SplFileInfo\|string\.$#'
+			identifier: method.nonObject
+			count: 2
+			path: includes/integrations/class-cloudpanel.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Integrations\\CloudPanel\:\:urlPart\(\) should return int\|string\|false\|null but returns array\{scheme\?\: string, host\?\: string, port\?\: int\<0, 65535\>, user\?\: string, pass\?\: string, path\?\: string, query\?\: string, fragment\?\: string\}\|int\<0, 65535\>\|string\|false\|null\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/integrations/class-cloudpanel.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\Breeze_CloudFlare…'' and ''is_cloudflare…'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-cloudways.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\Breeze_CloudFlare…'' and ''purge_cloudflare…'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-cloudways.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\Breeze_CloudFlare…'' and ''reset_all_cache'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-cloudways.php
+
+		-
+			message: '#^Call to static method purge_cloudflare_cache_urls\(\) on an unknown class Breeze_CloudFlare_Helper\.$#'
+			identifier: class.notFound
+			count: 1
+			path: includes/integrations/class-cloudways.php
+
+		-
+			message: '#^Call to static method reset_all_cache\(\) on an unknown class Breeze_CloudFlare_Helper\.$#'
+			identifier: class.notFound
+			count: 1
+			path: includes/integrations/class-cloudways.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\CDN_Clear_Cache…'' and ''purge_cache'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-rocketnet.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\CDN_Clear_Cache…'' and ''purge_cache_url'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-rocketnet.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\RunCloud_Hub'' and ''purge_cache_all'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-runcloud.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\RunCloud_Hub'' and ''purge_cache_all…'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-runcloud.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\RunCloud_Hub'' and ''purge_cache_object'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-runcloud.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\SiteGround…'' and ''get_instance'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-siteground.php
+
+		-
+			message: '#^PHPDoc tag @var for constant WPMgr\\Agent\\Integrations\\SiteGround\:\:SUPERCACHER with type class\-string is incompatible with value ''\\\\SiteGround…''\.$#'
+			identifier: classConstant.phpDocType
+			count: 1
+			path: includes/integrations/class-siteground.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\WpeCommon'' and ''clear_maxcdn_cache''\|''purge_memcached''\|''purge_varnish_cache'' will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: includes/integrations/class-wpengine.php
+
+		-
+			message: '#^Call to an undefined method object\:\:update\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: includes/media/class-attachment-meta.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/media/class-db-rewriter.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaQuarantine\:\:loadManifest\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-quarantine.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Media\\MediaQuarantine\:\:\$openManifests type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-quarantine.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:allPathsForAttachment\(\) has parameter \$meta with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:extractFromArray\(\) has parameter \$data with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:extractFromArrayAttributed\(\) has parameter \$data with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:extractFromJsonMeta\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:extractFromSerialized\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:isReferenced\(\) has parameter \$attachmentMeta with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:\$ids type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Property WPMgr\\Agent\\Media\\MediaReferenceIndex\:\:\$paths type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 2
+			path: includes/media/class-media-reference-index.php
+
+		-
+			message: '#^Parameter \#1 \$array \(non\-empty\-list\<mixed\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/media/class-media-run-store.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Media\\MediaUploader\:\:jobStatus\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: includes/media/class-media-uploader.php
+
+		-
+			message: '#^PHPDoc tag @return with type bool is incompatible with native type array\.$#'
+			identifier: return.phpDocType
+			count: 1
+			path: includes/media/class-media-uploader.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/object-cache/class-object-cache-dropin-installer.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/object-cache/class-object-cache-dropin-installer.php
+
+		-
+			message: '#^Property wpdb\:\:\$options \(string\) on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.property
+			count: 1
+			path: includes/object-cache/class-object-cache-dropin-installer.php
+
+		-
+			message: '#^Anonymous function has an unused use \$results\.$#'
+			identifier: closure.unusedUse
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method del\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method get\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 3
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method mget\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method pipeline\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method set\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 11
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method setex\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method ttl\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 4
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Cannot call method unlink\(\) on Redis\|null\.$#'
+			identifier: method.nonObject
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Comparison operation "\<" between 0\|1 and 2 is always true\.$#'
+			identifier: smaller.alwaysTrue
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Parameter \#1 \$redis of static method WPMgr\\Agent\\ObjectCache\\RedisConnection\:\:probeCapabilities\(\) expects Redis, Redis\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$failbackFlushed is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$globalGroups \(array\<string\>\) does not accept array\<bool\|string\>\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$globalGroups \(array\<string\>\) does not accept array\<string, int\>\.$#'
+			identifier: assign.propertyType
+			count: 2
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$nonPersistentGroups \(array\<string\>\) does not accept array\<bool\|string\>\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$nonPersistentGroups \(array\<string\>\) does not accept array\<string, int\>\.$#'
+			identifier: assign.propertyType
+			count: 2
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Property WPMgr_Object_Cache\:\:\$nonPrefetchableGroups is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between Redis and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: includes/object-cache/class-object-cache-engine.php
+
+		-
+			message: '#^Parameter \#1 \$objectOrClass of class ReflectionClass constructor expects class\-string\<T of object\>\|T of object, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/object-cache/class-object-cache-heartbeat.php
+
+		-
+			message: '#^Call to function method_exists\(\) with Redis and ''connect'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/object-cache/class-redis-connection.php
+
+		-
+			message: '#^Constant WPMgr\\Agent\\ObjectCache\\RedisConnection\:\:JITTER_BASE_US is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: includes/object-cache/class-redis-connection.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\ObjectCache\\RedisConnection\:\:acquire\(\) should return Redis but returns Redis\|null\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/object-cache/class-redis-connection.php
+
+		-
+			message: '#^Result of && is always false\.$#'
+			identifier: booleanAnd.alwaysFalse
+			count: 1
+			path: includes/object-cache/class-redis-connection.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between int\<min, 3\> and 4 will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/object-cache/class-redis-connection.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Optimizer\\DbCleanup\:\:buildInstalledPluginsSnapshot\(\) should return list\<array\{slug\: string, name\: string, active\: bool, source\: string\}\> but returns list\<array\{active\: true, source\: ''network''\}\|array\{slug\: non\-empty\-string, name\: non\-empty\-string, active\: bool, source\: ''dropin''\|''mu\-plugin''\|''network''\|''plugin''\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Optimizer\\DbCleanup\:\:directQuery\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Optimizer\\DbCleanup\:\:ids\(\) should return list\<int\> but returns array\<int\>\.$#'
+			identifier: return.type
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Offset 1 on array\{string, non\-falsy\-string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 2
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 4
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between string and false will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between object and null will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/optimizer/class-db-cleanup.php
+
+		-
+			message: '#^Offset ''otf''\|''ttf''\|''woff'' on array\{woff\: ''woff'', ttf\: ''truetype'', otf\: ''opentype''\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/optimizer/class-font.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between ''opentype''\|''truetype''\|''woff'' and null will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: includes/optimizer/class-font.php
+
+		-
+			message: '#^Offset 0 on array\{0\: int\<0, max\>, 1\: int\<0, max\>, 2\: int, 3\: string, mime\: string, channels\?\: int, bits\?\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/optimizer/class-images-html.php
+
+		-
+			message: '#^Offset 1 on array\{0\: int\<0, max\>, 1\: int\<0, max\>, 2\: int, 3\: string, mime\: string, channels\?\: int, bits\?\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/optimizer/class-images-html.php
+
+		-
+			message: '#^Left side of && is always true\.$#'
+			identifier: booleanAnd.leftAlwaysTrue
+			count: 1
+			path: includes/optimizer/class-optimizer.php
+
+		-
+			message: '#^Call to function is_array\(\) with list\<non\-empty\-string\> will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/optimizer/class-rum-injector.php
+
+		-
+			message: '#^Call to function is_string\(\) with non\-empty\-string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/optimizer/class-rum-injector.php
+
+		-
 			message: '#^Property WPMgr\\Agent\\Phpbu\\ProgressClient\:\:\$snapshotId is never read, only written\.$#'
 			identifier: property.onlyWritten
 			count: 1
 			path: includes/phpbu/class-progress-client.php
+
+		-
+			message: '#^Constant WPMgr\\Agent\\Security\\HardeningModule\:\:AGENT_AUTOLOGIN_PATH is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: includes/security/class-hardening-module.php
+
+		-
+			message: '#^Found usage of constant DOING_CRON\. Use wp_doing_cron\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/security/class-hardening-module.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/security/class-hardening-module.php
+
+		-
+			message: '#^Found usage of constant DOING_CRON\. Use wp_doing_cron\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/security/class-hide-backend-module.php
+
+		-
+			message: '#^Found usage of constant WP_INSTALLING\. Use wp_installing\(\) instead\.$#'
+			identifier: phpstanWP.wpConstant.fetch
+			count: 1
+			path: includes/security/class-hide-backend-module.php
+
+		-
+			message: '#^Parameter \#1 \.\.\.\$arg1 of function max expects non\-empty\-array, list\<int\<0, max\>\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/security/class-qr-encoder.php
+
+		-
+			message: '#^Static property WPMgr\\Agent\\Security\\QrEncoder\:\:\$gfExp \(list\<int\>\) does not accept non\-empty\-array\<int\<0, max\>, int\>\.$#'
+			identifier: assign.propertyType
+			count: 2
+			path: includes/security/class-qr-encoder.php
+
+		-
+			message: '#^Parameter \#1 \$array \(non\-empty\-list\<string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: includes/security/class-security-policy.php
+
+		-
+			message: '#^Property WP_User\:\:\$roles \(array\<string\>\) in isset\(\) is not nullable\.$#'
+			identifier: isset.property
+			count: 1
+			path: includes/security/class-security-policy.php
+
+		-
+			message: '#^Call to function method_exists\(\) with WP_REST_Request and ''get_route'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/security/class-site-2fa-module.php
+
+		-
+			message: '#^Parameter \#1 \$object_or_class of function is_a expects object, WP_Error\|WP_User\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/security/class-site-2fa-module.php
+
+		-
+			message: '#^Property WP_Roles\:\:\$role_names \(array\<string\>\) in isset\(\) is not nullable\.$#'
+			identifier: isset.property
+			count: 1
+			path: includes/security/class-site-roles.php
+
+		-
+			message: '#^Property WP_Roles\:\:\$roles \(array\<array\>\) in isset\(\) is not nullable\.$#'
+			identifier: isset.property
+			count: 1
+			path: includes/security/class-site-roles.php
+
+		-
+			message: '#^Method WPMgr\\Agent\\Security\\TotpProvider\:\:storeSecret\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: includes/security/class-totp-provider.php
 
 		-
 			message: '#^Access to an undefined property object\:\:\$options\.$#'
@@ -453,23 +1443,11 @@ parameters:
 		-
 			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
 			identifier: property.notFound
-			count: 5
-			path: includes/support/class-activity-log.php
-
-		-
-			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
-			identifier: method.notFound
 			count: 1
 			path: includes/support/class-activity-log.php
 
 		-
 			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
-			identifier: method.notFound
-			count: 3
-			path: includes/support/class-activity-log.php
-
-		-
-			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
 			identifier: method.notFound
 			count: 1
 			path: includes/support/class-activity-log.php
@@ -477,13 +1455,13 @@ parameters:
 		-
 			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
 			identifier: method.notFound
-			count: 6
+			count: 3
 			path: includes/support/class-activity-log.php
 
 		-
 			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
 			identifier: method.notFound
-			count: 4
+			count: 2
 			path: includes/support/class-activity-log.php
 
 		-
@@ -496,6 +1474,18 @@ parameters:
 			message: '#^Offset ''status'' on \*NEVER\* on left side of \?\? always exists and is not nullable\.$#'
 			identifier: nullCoalesce.offset
 			count: 1
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 3
+			path: includes/support/class-activity-log.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 2
 			path: includes/support/class-activity-log.php
 
 		-
@@ -523,43 +1513,25 @@ parameters:
 			path: includes/support/class-blake3.php
 
 		-
+			message: '#^Trying to invoke string but it might not be a callable\.$#'
+			identifier: callable.nonCallable
+			count: 1
+			path: includes/support/class-connection-finisher.php
+
+		-
 			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
 			identifier: property.notFound
-			count: 5
-			path: includes/support/class-error-monitor.php
-
-		-
-			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
-			identifier: method.notFound
-			count: 1
-			path: includes/support/class-error-monitor.php
-
-		-
-			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
-			identifier: method.notFound
-			count: 1
-			path: includes/support/class-error-monitor.php
-
-		-
-			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
-			identifier: method.notFound
 			count: 1
 			path: includes/support/class-error-monitor.php
 
 		-
 			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
 			identifier: method.notFound
-			count: 4
+			count: 1
 			path: includes/support/class-error-monitor.php
 
 		-
 			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
-			identifier: method.notFound
-			count: 3
-			path: includes/support/class-error-monitor.php
-
-		-
-			message: '#^Call to an undefined method object\:\:update\(\)\.$#'
 			identifier: method.notFound
 			count: 1
 			path: includes/support/class-error-monitor.php
@@ -595,6 +1567,18 @@ parameters:
 			path: includes/support/class-error-monitor.php
 
 		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 3
+			path: includes/support/class-error-monitor.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/support/class-error-monitor.php
+
+		-
 			message: '#^Strict comparison using \=\=\= between non\-empty\-string and '''' will always evaluate to false\.$#'
 			identifier: identical.alwaysFalse
 			count: 1
@@ -607,40 +1591,40 @@ parameters:
 			path: includes/support/class-file-scanner.php
 
 		-
-			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
-			identifier: property.notFound
-			count: 5
-			path: includes/support/class-login-protection.php
-
-		-
-			message: '#^Call to an undefined method object\:\:get_results\(\)\.$#'
-			identifier: method.notFound
+			message: '#^Method WPMgr\\Agent\\Support\\FileScanner\:\:scan\(\) has parameter \$excludeTopDirs with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
 			count: 1
-			path: includes/support/class-login-protection.php
+			path: includes/support/class-file-scanner.php
 
 		-
-			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
-			identifier: method.notFound
-			count: 3
-			path: includes/support/class-login-protection.php
-
-		-
-			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
-			identifier: method.notFound
+			message: '#^Method WPMgr\\Agent\\Support\\FileScanner\:\:scan\(\) has parameter \$resumeCursor with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
 			count: 1
-			path: includes/support/class-login-protection.php
+			path: includes/support/class-file-scanner.php
 
 		-
-			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
-			identifier: method.notFound
-			count: 5
-			path: includes/support/class-login-protection.php
+			message: '#^Offset ''mode'' on array\{path\: array\|string, size\: int, md5\: '''', mtime\: int, mode\: mixed, is_link\: bool, uid\?\: mixed, gid\?\: mixed\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-file-scanner.php
 
 		-
-			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
-			identifier: method.notFound
-			count: 2
-			path: includes/support/class-login-protection.php
+			message: '#^Offset ''mtime'' on array\{path\: array\|string, size\: int, md5\: '''', mtime\: mixed, mode\: mixed, is_link\: bool, uid\?\: mixed, gid\?\: mixed\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-file-scanner.php
+
+		-
+			message: '#^Offset ''size'' on array\{path\: array\|string, size\: mixed, md5\: '''', mtime\: mixed, mode\: mixed, is_link\: bool, uid\?\: mixed, gid\?\: mixed\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: includes/support/class-file-scanner.php
+
+		-
+			message: '#^Parameter \#2 \$traversalStack of method WPMgr\\Agent\\Support\\FileScanner\:\:buildBasePath\(\) expects list\<array\>, array given\.$#'
+			identifier: argument.type
+			count: 1
+			path: includes/support/class-file-scanner.php
 
 		-
 			message: '#^Parameter \#1 \$array \(list\<non\-falsy\-string\>\) of array_values is already a list, call has no effect\.$#'
@@ -649,7 +1633,79 @@ parameters:
 			path: includes/support/class-login-protection.php
 
 		-
-			message: '#^Property WPMgr\\Agent\\Support\\LoginProtection\:\:\$configCache \(array\{mode\: string, thresholds\: array\{captcha_limit\: int, temp_block_limit\: int, block_all_limit\: int, failed_login_gap\: int, success_login_gap\: int, all_blocked_gap\: int\}, ip_header\: string, allow_cidrs\: array\<int, string\>, deny_cidrs\: array\<int, string\>\}\|null\) does not accept array\{mode\: string, thresholds\: array\<string, int\>, ip_header\: string, allow_cidrs\: array\<int, string\>, deny_cidrs\: array\<int, string\>\}\.$#'
-			identifier: assign.propertyType
-			count: 1
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 5
 			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:query\(\) expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 2
+			path: includes/support/class-login-protection.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 3
+			path: includes/support/class-mu-plugin-installer.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\WP_Upgrader'' and ''create_lock'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 2
+			path: includes/support/class-site-update-lock.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\WP_Upgrader'' and ''release_lock'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/support/class-site-update-lock.php
+
+		-
+			message: '#^Unsafe usage of new static\(\)\.$#'
+			identifier: new.static
+			count: 1
+			path: includes/support/class-snapshot-manager.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 2
+			path: includes/support/class-storage-paths.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$no_update\.$#'
+			identifier: property.notFound
+			count: 1
+			path: includes/support/class-update-checker.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$response\.$#'
+			identifier: property.notFound
+			count: 1
+			path: includes/support/class-update-checker.php
+
+		-
+			message: '#^Call to function method_exists\(\) with ''\\\\WP_Upgrader'' and ''release_lock'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/support/class-update-checker.php
+
+		-
+			message: '#^Cannot access offset ''filename'' on array\{headers\: WpOrg\\Requests\\Utility\\CaseInsensitiveDictionary, body\: string, response\: array\{code\: int, message\: string\}, cookies\: array\<int, WP_Http_Cookie\>, filename\: string\|null, http_response\: WP_HTTP_Requests_Response\}\|WP_Error\.$#'
+			identifier: offsetAccess.nonOffsetAccessible
+			count: 1
+			path: includes/support/class-update-checker.php
+
+		-
+			message: '#^Call to function method_exists\(\) with WP_Error and ''get_error_message'' will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/support/class-update-runner.php
+
+		-
+			message: '#^Call to function is_array\(\) with array\<mixed\> will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: includes/webhooks/class-media-modal-injector.php

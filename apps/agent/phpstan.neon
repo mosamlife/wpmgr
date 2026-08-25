@@ -10,6 +10,74 @@ includes:
     #     LoginProtection::emitBlockEvent — corrected to the 5-arg shape.
     #   - a stale @phpstan-ignore-next-line in EncryptAndUpload::submitManifest
     #     (2.x infers the manifest-entry type cleanly) — removed.
+    #
+    # 2026-08-25 (#525): phpVersion was pinned at 80000 (PHP 8.0) against code
+    # that requires 8.1 and uses `readonly` properties. PHPStan parsed 8.1
+    # syntax under 8.0 rules, hit a syntax error, and aborted before analysing
+    # anything — composer analyse had never once produced a result. Corrected
+    # to 80100 and regenerated this baseline against a completed run for the
+    # first time. Six GENUINE bugs the completed run surfaced were fixed in
+    # source, not baselined: a bare esc_like() call (that function does not
+    # exist in WordPress — $wpdb->esc_like() does — so this was a live fatal
+    # on the code path that runs it) in DbCleanup; a hook registered with
+    # add_filter() for wp_default_scripts, which core actually fires via
+    # do_action_ref_array() — add_action() is the same registration and
+    # matches what the hook is; an uninitialized-variable risk in
+    # FileExtractCommand one refactor away from a real bug; a compound-assign
+    # into an optional array offset in the Mailgun handler that only stayed
+    # safe by two unenforced guards agreeing; a `preg_split() ?? []` that can
+    # never fire because preg_split() fails with false, not null; and
+    # FileListCommand::jailPath()'s @return docblock, which declared every key
+    # of both outcomes optional instead of the discriminated union the six
+    # return statements actually produce — fixing the docblock alone resolved
+    # 65 offsetAccess.notFound findings across the 14 file-command classes
+    # that consume it.
+    #
+    # The other large false-positive class fixed at the root rather than
+    # baselined: `global $wpdb;` has no declared type anywhere in scope, so
+    # PHPStan treats it as mixed, and the pervasive
+    # `if (!is_object($wpdb)) { return ...; }` guard then narrows the
+    # surviving branch to the bare `object` pseudo-type — every $wpdb->method()
+    # call after that read as undefined-method-on-object. Fixed with a
+    # `/** @var \wpdb $wpdb */` annotation placed immediately after the
+    # existing guard (the same idiom already used in class-connector.php,
+    # class-replay-cache.php and class-backup-source.php), applied only where
+    # the guard was a clean, immediate early-return.
+    #
+    # What's captured in the regenerated baseline below, confirmed by reading
+    # the flagged source rather than assumed from the message text:
+    #   - wpdb/mysqli_result runtime seams, extended: wpdb::prepare()'s
+    #     declared `literal-string` parameter type rejects any query built
+    #     with interpolated (but program-controlled, not user-controlled)
+    #     identifiers, and both prepare() and mysqli::query() carry
+    #     nullable/bool return types for failure modes that can't occur when
+    #     the placeholder count and the query text are fixed at the call site.
+    #   - Redis|null closure-capture: ObjectCacheEngine's redisOp() checks
+    #     `$this->redis !== null` before invoking its $op closure, but that
+    #     guarantee doesn't reach into the closure body's own analysis —
+    #     PHPStan re-evaluates $this->redis's declared type independently
+    #     inside each closure.
+    #   - optional third-party integration classes (e.g.
+    #     Breeze_CloudFlare_Helper in Cloudways) guarded by method_exists()
+    #     at runtime; PHPStan has no stub for a class it doesn't ship with and
+    #     can't credit the guard.
+    #   - list<T> vs array<K,V> strictness in bit/array-manipulation code
+    #     (Blake3, QrEncoder, object-cache group config) where the array is a
+    #     list at every runtime call site but PHPStan's inference through
+    #     array manipulation loses the sequential-key guarantee statically.
+    #   - dynamic invocation of a function named by a string variable
+    #     (ConnectionFinisher's default $invoke), which PHPStan cannot verify
+    #     names a real function without running it.
+    #
+    # The remainder is this plugin's first level-8 analysis to ever complete.
+    # It is triaged above by identifier/file distribution, not verified line
+    # by line — count it yourself with (from apps/agent, config with the
+    # `- phpstan-baseline.neon` line above temporarily removed):
+    #   php -d memory_limit=2G vendor/bin/phpstan analyse --no-progress \
+    #     --error-format=raw | grep -cE ':[0-9]+:'
+    # It is baselined so CI can gate future regressions against today's count
+    # instead of staying unenforced, not asserted as false-positive-free.
+    # Working it down is tracked as follow-up, not closed by this baseline.
     - phpstan-baseline.neon
 
 parameters:
