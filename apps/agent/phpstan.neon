@@ -14,7 +14,7 @@ includes:
 
 parameters:
     level: 8
-    phpVersion: 80000
+    phpVersion: 80100
     paths:
         - includes
         - wpmgr-agent.php
