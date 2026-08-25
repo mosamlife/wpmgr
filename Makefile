@@ -457,6 +457,26 @@ agent-check: ## Fast phpcs pass over apps/agent (committed phpcs.xml.dist). NOT 
 		|| composer update --no-interaction --quiet --ignore-platform-reqs)
 	cd apps/agent && vendor/bin/phpcs -d memory_limit=1G
 
+# The static analysis gate for the plugin, and the same one CI runs.
+#
+# It is a script rather than a `vendor/bin/phpstan` line because the decision is
+# not the exit code. PHPStan exits 1 both when it analysed everything and found
+# things and when it aborted in the parser having analysed almost nothing, and
+# in JSON mode the only signal telling those apart is on stderr. Answering the
+# second case by widening phpstan-baseline.neon turns the build green and leaves
+# the analyser blind, so the guard reports it as its own outcome with its own
+# exit code. See the header of the script.
+#
+# agent-phpstan-test is the guard's own regression suite; run it after editing
+# the guard. Needs a vendor tree: run `composer install` in apps/agent first.
+.PHONY: agent-phpstan
+agent-phpstan: ## PHPStan static analysis over apps/agent (fails on findings AND on an incomplete analysis)
+	scripts/check-agent-phpstan.sh
+
+.PHONY: agent-phpstan-test
+agent-phpstan-test: ## Run the agent PHPStan guard's regression suite
+	scripts/check-agent-phpstan_test.sh
+
 .PHONY: agent-format
 agent-format: ## phpcbf auto-fix over apps/agent, then re-lint
 	cd apps/agent && vendor/bin/phpcbf -d memory_limit=1G --report-summary --report-source || true

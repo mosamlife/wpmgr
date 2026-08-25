@@ -494,6 +494,18 @@ jobs:
           tools: composer:v2
           coverage: none
 
+      # The guard's own regression suite. It needs php and nothing else, so a
+      # guard whose behaviour has regressed is caught here, before the composer
+      # install below, rather than after it. The suite runs FIRST for the same
+      # reason the version surface suite does: a broken guard must not be able
+      # to pass by failing open.
+      #
+      # working-directory is overridden because this job otherwise runs from
+      # apps/agent, and these two paths are repo relative.
+      - name: Agent PHPStan guard self-test
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-agent-phpstan_test.sh
+
       - name: Get composer cache dir
         id: composer-cache
         run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
@@ -510,3 +522,24 @@ jobs:
 
       - name: Test
         run: composer test
+
+      # PHPStan over the plugin. The plugin has owned a level 8 PHPStan config
+      # with the WordPress extension, the stubs and a baseline for a long time,
+      # and until this step existed nothing in CI ever invoked it, so it had
+      # never produced a result at all.
+      #
+      # Why a script and not `composer analyse`: the exit code is not the
+      # verdict. PHPStan exits 1 both when it analysed the whole plugin and
+      # found things and when it aborted in the parser having analysed almost
+      # nothing, and with --error-format=json the only thing distinguishing
+      # them is a line on stderr that the JSON report itself does not carry.
+      # Read carelessly, an aborted run looks like a short list of findings,
+      # and the obvious way to clear a short list of findings is to widen
+      # phpstan-baseline.neon, which turns this step green and leaves the
+      # analyser blind over the entire plugin. The guard reports an incomplete
+      # analysis as its own outcome, with its own exit code and a message that
+      # says not to baseline it, and scripts/check-agent-phpstan_test.sh holds
+      # that behaviour in place.
+      - name: Agent PHPStan static analysis
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-agent-phpstan.sh
