@@ -114,6 +114,40 @@ final class SizeProbeColdCacheTest extends TestCase
     }
 
     /**
+     * CodeRabbit review on PR #526: recurse_dirsize() normalises a null
+     * $max_execution_time from `ini_get( 'max_execution_time' )`, which
+     * returns a STRING, and only casts it to int via `-= 1` when that value
+     * is > 10. An ini value of "0" (unlimited — the PHP-CLI/WP-CLI default)
+     * reaches this filter as the literal string, never cast. Before the fix
+     * this dies with
+     *   TypeError: ...preRecurseDirsizeFilter(): Argument #4 ($maxExecTime)
+     *   must be of type int, string given
+     */
+    public function test_numeric_string_max_exec_time_from_ini_get_does_not_fatal(): void
+    {
+        $probe = new SizeProbe();
+
+        $result = $probe->preRecurseDirsizeFilter(false, sys_get_temp_dir(), null, '0', false);
+
+        $this->assertFalse($result);
+    }
+
+    /**
+     * recurse_dirsize()'s own default for $max_execution_time is null before
+     * normalisation. This filter must not assume a caller always normalises
+     * first — a plugin or a future core version applying this filter directly
+     * must not fatal on the parameter's own documented default.
+     */
+    public function test_null_max_exec_time_does_not_fatal(): void
+    {
+        $probe = new SizeProbe();
+
+        $result = $probe->preRecurseDirsizeFilter(false, sys_get_temp_dir(), null, null, false);
+
+        $this->assertFalse($result);
+    }
+
+    /**
      * Core marks arguments 3-5 optional. A third-party plugin applying the
      * filter with fewer arguments must not produce an ArgumentCountError.
      */

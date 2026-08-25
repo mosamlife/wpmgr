@@ -285,6 +285,40 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
         );
     }
 
+    /**
+     * Demotion: the stored role is IN scope but the submitted role is out of
+     * scope. The union must still apply the STORED role's rule — a demotion
+     * must not be usable to smuggle a weak password past the policy the
+     * account is currently held to.
+     *
+     * This is the case that pins ProfileUpdateUser::resolve() as load-bearing
+     * rather than decorative: the raw core stdClass carries only the
+     * submitted `role` ('subscriber'), and SecurityPolicy::userRoles()'s
+     * `role` backstop would read that alone and see no in-scope role at all.
+     * Only resolve()'s union — which loads the STORED role via
+     * get_userdata() before folding in the submission — keeps the
+     * administrator rule alive here.
+     */
+    public function test_profile_update_demotion_still_applies_the_stored_role_rule(): void
+    {
+        $this->storeUser(11, ['administrator']);
+        $_POST['pass1'] = self::WEAK_PASSWORD;
+
+        $raw       = $this->coreUpdateObject(11);
+        $raw->role = 'subscriber';
+
+        $mod    = $this->passwordModule($this->adminScopedStrengthPolicy());
+        $errors = new \WP_Error();
+
+        $mod->validateOnProfileUpdate($errors, true, $raw);
+
+        $this->assertArrayHasKey(
+            'wpmgr_password_strength',
+            $errors->errors,
+            'DEMOTION: the stored administrator rule must still apply when the same submit demotes the account'
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Site A — over-fire checks
     // -------------------------------------------------------------------------
@@ -439,8 +473,7 @@ final class UserProfileUpdateErrorsHookTest extends TestCase
      * Core sets user_login on the stdClass from the stored user, but a caller
      * that omits it must not silently disable the check — the login is
      * recovered from the stored user instead.
-     */
-    /**
+     *
      * @runInSeparateProcess
      * @preserveGlobalState disabled
      */

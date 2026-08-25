@@ -480,6 +480,15 @@ final class SecurityPolicy
      * list, conclude no role-scoped rule applies, and enforce nothing — with no
      * error and no log. Reading the submitted role keeps scoping alive there.
      *
+     * This fallback is a REPLACEMENT, not a union, and is strictly weaker than
+     * ProfileUpdateUser::resolve(): on the raw stdClass it can only ever see
+     * the single submitted `role`, never the account's stored role. Any future
+     * caller that reaches effectiveMinZxcvbnScore() or blockCompromisedFor()
+     * with that unresolved object on a demotion gets `['subscriber']` and
+     * silently skips the stored administrator rule — the exact defect class
+     * this fallback exists to catch, one level down. Do not rely on it for a
+     * role-scoped decision; resolve the user first.
+     *
      * @param object $user \WP_User, or the \stdClass core builds in edit_user().
      * @return list<string>
      */

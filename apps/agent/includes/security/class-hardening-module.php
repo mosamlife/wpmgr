@@ -131,9 +131,26 @@ final class HardeningModule
      * (which identifier may be used to log in) and applyForceUniqueNickname()
      * (which can refuse a profile save). It does NOT gate the file-editor
      * block, xmlrpc mode, REST restriction, force-SSL, author-archive
-     * enumeration or the IP/user-agent bans. Those cannot lock anyone out, and
-     * silently dropping a site's IP bans because someone is recovering a login
-     * would turn a recovery step into a security regression.
+     * enumeration or the IP/user-agent bans.
+     *
+     * That exclusion is NOT because none of those six can lock anyone out —
+     * at least one demonstrably can. applyBanFilters() registers on `init`
+     * priority 1 with no gate at all; `init` fires on wp-login.php; the match
+     * is an unbounded case-insensitive substring
+     * (stripos($ua, $pattern) !== false) with no length or genericity check;
+     * and a match ends in exit('Access denied.'). A ban pattern of "Mozilla",
+     * "Chrome", "Safari", "AppleWebKit" or "Gecko" 403s the administrator's
+     * own login page along with everyone else's. That lockout risk is real,
+     * pre-existing, and tracked and scoped separately (#529) — it is not
+     * resolved by widening this constant's reach.
+     *
+     * The actual reason these six stay ungated is that silently dropping a
+     * site's file-editor lock, xmlrpc mode, REST restriction, forced SSL,
+     * author-archive block or IP/user-agent bans the moment someone sets a
+     * recovery constant would risk turning a recovery step into a worse
+     * regression than the lockout it is meant to fix. The scoping to just the
+     * two auth appliers is correct; only the "cannot lock anyone out"
+     * justification for it was.
      *
      * @return bool
      */

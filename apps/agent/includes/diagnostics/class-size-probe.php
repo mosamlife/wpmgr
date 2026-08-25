@@ -323,10 +323,25 @@ final class SizeProbe
      * so the value is accepted and ignored rather than normalised. Anything
      * added here that DOES read it must handle the false.
      *
+     * $maxExecTime is not guaranteed to be int either, for the same reason:
+     * recurse_dirsize() normalises a null budget from
+     * `ini_get( 'max_execution_time' )`, which returns a STRING, and only
+     * casts it to int via its own `-= 1` arithmetic when that value is > 10.
+     * A `max_execution_time` of 0 (unlimited — the PHP-CLI and WP-CLI
+     * default, so also the common case when this filter fires from a real
+     * cron running `wp cron event run` rather than wp-cron.php over HTTP) or
+     * anything <= 10 reaches this filter as the literal string PHP's
+     * ini_get() returned. A strict `int` hint under this file's
+     * `declare(strict_types=1)` is a TypeError on that string — the same
+     * defect class this file exists to close. Untyped here for the same
+     * reason $directoryCache is untyped: this callback never reads it.
+     *
      * @param false|int          $size           Existing filtered value.
      * @param string             $directory      Directory being measured.
      * @param array<string>|null $exclude        Exclusion list (WP core).
-     * @param int                $maxExecTime    Budget from WP (ignored here).
+     * @param mixed              $maxExecTime    Budget from WP (ignored here):
+     *                                           int, or a numeric string from
+     *                                           ini_get(), or null.
      * @param mixed              $directoryCache Cached dir paths: array, or
      *                                           false on a cold transient.
      * @return false|int
@@ -335,7 +350,7 @@ final class SizeProbe
         $size,
         string $directory,
         $exclude = null,
-        int $maxExecTime = 0,
+        mixed $maxExecTime = 0,
         mixed $directoryCache = false
     ) {
         if ($size !== false) {
