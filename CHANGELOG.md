@@ -6,6 +6,18 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.145] - 2026-08-26
+
+### Fixed
+
+- A database restore could silently drop the dump's last SQL statement while still reporting success. When the restorer could not tell whether the unterminated tail end of a dump was nothing but SQL comments, it treated that uncertainty as "yes, only comments" and discarded the fragment. Proven end to end against two otherwise byte-identical dumps that differed only in whether the final statement ended with a semicolon: the one that landed in the discarded tail lost a row, silently. A restore that cannot classify its own trailing fragment now aborts loudly instead of finishing and reporting success (GH #525).
+- The database tools' orphaned-data scan could fail outright with a fatal error every time it actually ran, calling a global function WordPress does not provide in place of the equivalent method it does provide. It now calls the correct one (GH #525).
+- Resending a failed outgoing email now actually works. The control plane and the agent had never agreed on what a resend command needs to carry, so every resend attempt failed with "missing required field: agent_seq," shown to the operator verbatim, on every connected site. A failed resend attempt no longer increments the "resent" counter or writes an audit entry claiming the email was resent; both now move only after a confirmed send (GH #520).
+- Editing a user's profile in wp-admin no longer fails with a critical error. WordPress does not always hand the agent's hooks the object type they expect on a profile edit, and five callbacks assumed one unconditionally; the crash hit every profile edit on every connected site, whether or not a password policy was configured (GH #521).
+- The disk-size probe behind Site Health's Directory sizes panel, the agent's own daily size walk, and every media upload on a multisite network no longer crashes when its cache is cold, which is any fresh install, any cache or object-cache flush, or the first read after either (GH #521).
+- The documented recovery constant for an admin locked out by this plugin's own auth policy (`WPMGR_DISABLE_SITE_2FA`) now also releases the unique-nickname rule. It previously silenced the password-policy crash above but still blocked recovery on that second rule (GH #521).
+- A parser-configuration bug had kept the agent's own static analysis from ever completing a run. Completing it for the first time is what surfaced the two fixes above, plus several smaller correctness fixes with no live symptom (GH #525).
+
 ## [0.61.144] - 2026-08-22
 
 ### Added
