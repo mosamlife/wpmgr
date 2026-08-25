@@ -62,10 +62,14 @@ FAILED=0
 SKIPPED=0
 FAILED_NAMES=''
 
-# Per case environment overrides, reset by case_run after every case so one
-# case can never leak an override into the next.
+# Per case switches, reset by case_run after every case so one case can never
+# leak a setting into the next. ALLOW_FINDINGS passes --allow-findings on the
+# command line; ALLOW_FINDINGS_ENV sets the environment variable instead, so
+# both routes into the same behaviour are covered.
 ENV_PHP_BIN=''
 ENV_PHPSTAN_BIN=''
+ALLOW_FINDINGS=0
+ALLOW_FINDINGS_ENV=0
 
 # ---------------------------------------------------------------------------
 # Fixtures: real PHPStan 2.x output shapes.
@@ -191,15 +195,29 @@ case_run() {
         SKIPPED=$((SKIPPED + 1))
         ENV_PHP_BIN=''
         ENV_PHPSTAN_BIN=''
+        ALLOW_FINDINGS=0
+        ALLOW_FINDINGS_ENV=0
         return 0
         ;;
     esac
   fi
 
-  _out="$(WPMGR_AGENT_PHP_BIN="$ENV_PHP_BIN" WPMGR_PHPSTAN_BIN="$ENV_PHPSTAN_BIN" "$GUARD" "$_dir" 2>&1)"
-  _code=$?
+  if [ "$ALLOW_FINDINGS" -eq 1 ]; then
+    _out="$(WPMGR_AGENT_PHP_BIN="$ENV_PHP_BIN" WPMGR_PHPSTAN_BIN="$ENV_PHPSTAN_BIN" \
+      "$GUARD" --allow-findings "$_dir" 2>&1)"
+    _code=$?
+  elif [ "$ALLOW_FINDINGS_ENV" -eq 1 ]; then
+    _out="$(WPMGR_AGENT_PHP_BIN="$ENV_PHP_BIN" WPMGR_PHPSTAN_BIN="$ENV_PHPSTAN_BIN" \
+      WPMGR_PHPSTAN_ALLOW_FINDINGS=1 "$GUARD" "$_dir" 2>&1)"
+    _code=$?
+  else
+    _out="$(WPMGR_AGENT_PHP_BIN="$ENV_PHP_BIN" WPMGR_PHPSTAN_BIN="$ENV_PHPSTAN_BIN" "$GUARD" "$_dir" 2>&1)"
+    _code=$?
+  fi
   ENV_PHP_BIN=''
   ENV_PHPSTAN_BIN=''
+  ALLOW_FINDINGS=0
+  ALLOW_FINDINGS_ENV=0
   _problems=''
 
   if [ "$_code" -ne "$_want" ]; then
@@ -453,6 +471,66 @@ stub "$t2" "$JSON_TWO_FINDINGS_REORDERED" '' 1
 case_same "no over-fire: the report is identical whichever order the files come back in" "$t" "$t2"
 
 case_run "no over-fire: --help exits 0" 0 --help
+
+case_run "no over-fire: an unknown option is refused rather than ignored" 2 --nonsense-flag
+
+# ===========================================================================
+# ADVISORY MODE. --allow-findings exists so the gate can land before the
+# backlog is triaged without inviting a one-command baseline regeneration that
+# would swallow the real findings. It must relax the FINDINGS outcome and
+# NOTHING ELSE. Every case below is the proof of that boundary: if any of them
+# starts passing, the flag has become a way to switch the guard off.
+# ===========================================================================
+
+t="$(tree advisory-findings)"
+stub "$t" "$JSON_TWO_FINDINGS" "$STDERR_INSTRUCTIONS" 1
+ALLOW_FINDINGS=1
+case_run "advisory: findings are reported loudly but do not fail the build" \
+  0 "$t" "+ADVISORY" "+reported 2 finding(s)" \
+  "+includes/class-alpha.php:9" "-OK:"
+
+t="$(tree advisory-parse-abort)"
+stub "$t" "$JSON_PARSE_ABORT" "$STDERR_INCOMPLETE" 1
+ALLOW_FINDINGS=1
+case_run "advisory: a parse abort STILL fails, the flag does not reach it" \
+  3 "$t" "+did not complete" "+MUST NOT BE BASELINED" "-ADVISORY"
+
+t="$(tree advisory-parse-abort-identifier)"
+stub "$t" "$JSON_PARSE_ABORT" "$STDERR_NOTE" 1
+ALLOW_FINDINGS=1
+case_run "advisory: a parse abort seen only via the identifier STILL fails" \
+  3 "$t" "+did not complete" "-ADVISORY"
+
+t="$(tree advisory-zero-findings-nonzero)"
+stub "$t" "$JSON_CLEAN" "$STDERR_NOTE" 1
+ALLOW_FINDINGS=1
+case_run "advisory: zero findings with a non-zero exit STILL fails" \
+  3 "$t" "+cannot be trusted" "-ADVISORY"
+
+t="$(tree advisory-empty-output)"
+stub "$t" '' '' 1
+ALLOW_FINDINGS=1
+case_run "advisory: no parseable output STILL fails" \
+  3 "$t" "+produced no output at all" "-ADVISORY"
+
+t="$(tree advisory-no-vendor)"
+rm -rf "$t/vendor"
+ALLOW_FINDINGS=1
+case_run "advisory: a missing vendor tree STILL fails" \
+  2 "$t" "+vendor does not exist" "-ADVISORY"
+
+t="$(tree advisory-clean)"
+stub "$t" "$JSON_CLEAN" '' 0
+ALLOW_FINDINGS=1
+case_run "advisory: a genuinely clean run is still reported as clean, not as advisory" \
+  0 "$t" "+OK:" "-ADVISORY"
+
+# The env var is the same switch as the flag, so a CI step can set either.
+t="$(tree advisory-env-var)"
+stub "$t" "$JSON_TWO_FINDINGS" '' 1
+ALLOW_FINDINGS_ENV=1
+case_run "advisory: WPMGR_PHPSTAN_ALLOW_FINDINGS=1 behaves the same as the flag" \
+  0 "$t" "+ADVISORY" "+reported 2 finding(s)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

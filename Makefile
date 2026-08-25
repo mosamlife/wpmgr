@@ -469,6 +469,9 @@ agent-check: ## Fast phpcs pass over apps/agent (committed phpcs.xml.dist). NOT 
 #
 # agent-phpstan-test is the guard's own regression suite; run it after editing
 # the guard. Needs a vendor tree: run `composer install` in apps/agent first.
+# This target is STRICTER than CI on purpose. CI passes --allow-findings while
+# the backlog is triaged; locally you want the truth, so this one fails on
+# findings too. Add --allow-findings by hand to see exactly what CI sees.
 .PHONY: agent-phpstan
 agent-phpstan: ## PHPStan static analysis over apps/agent (fails on findings AND on an incomplete analysis)
 	scripts/check-agent-phpstan.sh

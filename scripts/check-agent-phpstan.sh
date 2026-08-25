@@ -36,6 +36,22 @@
 # its own exit code, distinct from "the analysis completed and found things",
 # and says in the failure message that the entries must not be baselined.
 #
+# THERE IS NO COVERAGE FIELD TO CHECK, SO DO NOT GO LOOKING FOR ONE. The obvious
+# way to detect an incomplete run is to compare files analysed against files
+# expected. The report format has no such field. Dumped from the installed
+# version, the document has exactly three top level keys, totals, files and
+# errors, and totals has exactly two, errors and file_errors. There is no
+# files_analysed, no scanned count, no coverage and no incomplete flag anywhere
+# in it. A completeness check written against a field like that cannot fire,
+# ever, and would sit in CI looking like protection while providing none.
+#
+# The two signals below are the only two that exist, and both are verified
+# against real output rather than assumed:
+#   1. the sentence PHPStan prints on stderr, which is not in the report at all;
+#   2. the phpstan.parse identifier on the individual messages, which is.
+# If a future PHPStan changes either, this guard must go red and be rewritten
+# against whatever replaced them, not quietly relaxed.
+#
 # EXIT CODES. Distinct on purpose, so CI logs and the regression suite can tell
 # the outcomes apart without matching on prose:
 #
@@ -52,6 +68,27 @@
 #
 # Any non-zero exit fails the build. The codes exist to make the reason legible,
 # not to grade severity.
+#
+# --allow-findings, AND WHY IT IS NOT A WEAKENING. Repairing the parse abort
+# does not reveal a clean plugin. It reveals a large backlog that was never
+# visible because the analyser never ran, a significant part of it the known
+# $wpdb and defensive-narrowing noise that phpstan.neon's own comment describes.
+# Landing a fully blocking gate on top of that backlog has one predictable
+# outcome: the first red PR is cleared by regenerating the baseline, which
+# swallows the genuine findings along with the noise and leaves a gate that is
+# green forever. A guard silenced on its first day guards nothing.
+#
+# So the findings outcome can be made advisory while the backlog is triaged.
+# What --allow-findings does NOT relax is everything that means the analysis is
+# not trustworthy: exit 2 and exit 3 still fail with it set. That split is the
+# whole reason the outcomes have separate exit codes. The parse abort in
+# particular is safe to enforce from day one, because it is unambiguous and
+# cannot be cleared by widening the baseline: PHPStan will not generate a
+# baseline from a run that aborted.
+#
+# This flag is temporary by design. Removing it from the CI step is the single
+# change that makes the gate fully blocking, and that should happen as soon as
+# the backlog has been triaged.
 #
 # RUN IT:
 #   make agent-phpstan          or  scripts/check-agent-phpstan.sh
@@ -79,12 +116,16 @@ set -uo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/check-agent-phpstan.sh [AGENT_DIR]
+Usage: scripts/check-agent-phpstan.sh [--allow-findings] [AGENT_DIR]
 
 AGENT_DIR defaults to apps/agent inside the repository this script lives in,
 or to $WPMGR_AGENT_DIR when that is set.
 
-Exit 0: the analysis completed and found nothing.
+  --allow-findings   Report findings loudly but exit 0 for them. An incomplete
+                     or unrunnable analysis STILL FAILS. See the header.
+
+Exit 0: the analysis completed and found nothing (or found things, under
+        --allow-findings).
 Exit 1: the analysis completed and reported findings.
 Exit 2: the environment cannot run the analysis (php, PHPStan, vendor, config).
 Exit 3: the analysis ran but its result cannot be trusted (parse abort,
@@ -92,15 +133,37 @@ Exit 3: the analysis ran but its result cannot be trusted (parse abort,
 USAGE
 }
 
-case "${1:-}" in
-  -h | --help)
-    usage
-    exit 0
-    ;;
-esac
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_DIR_IN="${1:-${WPMGR_AGENT_DIR:-$SCRIPT_DIR/../apps/agent}}"
+ALLOW_FINDINGS=0
+if [ "${WPMGR_PHPSTAN_ALLOW_FINDINGS:-}" = "1" ]; then
+  ALLOW_FINDINGS=1
+fi
+AGENT_DIR_IN=''
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --allow-findings)
+      ALLOW_FINDINGS=1
+      ;;
+    -*)
+      printf 'ERROR: unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      AGENT_DIR_IN="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$AGENT_DIR_IN" ]; then
+  AGENT_DIR_IN="${WPMGR_AGENT_DIR:-$SCRIPT_DIR/../apps/agent}"
+fi
 
 # Exit codes, named so the branches below read as decisions.
 EXIT_CLEAN=0
@@ -459,6 +522,18 @@ fi
 
 # --- Outcome: the analysis completed and found things.
 if [ "$FINDINGS" -gt 0 ]; then
+  if [ "$ALLOW_FINDINGS" -eq 1 ]; then
+    # Advisory. Deliberately not the OK line: this is not a clean result, and a
+    # reader skimming for OK must not find one here.
+    printf 'ADVISORY: PHPStan completed and reported %s finding(s), which are not failing this build.\n' "$FINDINGS"
+    print_findings 'finding(s)'
+    printf '  \n'
+    printf '  These are real findings over the whole plugin, not a parse abort.\n'
+    printf '  They are advisory only while the backlog is triaged, and they are\n'
+    printf '  meant to be worked down, not baselined away in one command.\n'
+    printf '  An incomplete or unrunnable analysis still fails this build.\n'
+    exit "$EXIT_CLEAN"
+  fi
   err "PHPStan completed and reported $FINDINGS finding(s)."
   print_findings 'finding(s)' >&2
   detail ''
