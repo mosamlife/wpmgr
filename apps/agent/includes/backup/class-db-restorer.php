@@ -1151,7 +1151,8 @@ final class DbRestorer
     {
         // Strip /* */ block comments and -- line comments / # line comments.
         $stripped = preg_replace('#/\*.*?\*/#s', '', $tail) ?? $tail;
-        $lines    = preg_split('/\r?\n/', $stripped) ?? [];
+        $lines    = preg_split('/\r?\n/', $stripped);
+        $lines    = $lines === false ? [] : $lines;
         foreach ($lines as $line) {
             $t = trim($line);
             if ($t === '' || strpos($t, '--') === 0 || strpos($t, '#') === 0) {
