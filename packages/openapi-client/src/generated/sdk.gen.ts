@@ -7489,14 +7489,20 @@ export const deleteFleetEmailSuppression = <
  * Resend a single email log entry
  *
  * Dispatches the `resend_email` agent command for the given log entry.
- * Only available when `body_stored=true` on the log entry — returns 409
- * otherwise. The resend is best-effort: if the agent is offline or returns
- * an error the response contains `ok=false` with the agent's detail message
- * but HTTP 200 is returned (matching the test-email pattern).
+ * The command names the site's own log row, so the entry must have been
+ * reported by the site (`agent_seq`) and must have been logged with its
+ * body captured (`body_stored=true`) — 409 otherwise, with no command sent.
  *
- * The `resent_count` counter is incremented before the agent dispatch so
- * operators can see how many resend attempts were made even if the agent
- * was unavailable.
+ * The resend is best-effort past that point: if the site is offline or
+ * refuses, the response is HTTP 200 with `ok=false` and a `detail`
+ * explaining why (matching the test-email pattern).
+ *
+ * The site keeps its own email log for 14 days, or 50,000 messages,
+ * whichever comes first. An entry older than that is still listed here but
+ * can no longer be resent, and the attempt returns `ok=false`.
+ *
+ * `resent_count` and the `email.resent` audit entry record confirmed
+ * resends only; a refusal moves neither.
  *
  * Requires `site.email.manage` permission.
  *
