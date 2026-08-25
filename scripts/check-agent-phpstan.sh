@@ -65,6 +65,13 @@
 #      parser, it produced nothing parseable, or it reported no findings while
 #      exiting non-zero. THIS IS NOT A FINDING COUNT. Never respond to a 3 by
 #      editing the baseline.
+#   4  PHPStan reported a top-level analysis error: an entry in the report's
+#      "errors" array, not attached to any file. THIS IS ALSO NOT A FINDING
+#      COUNT. It is the analyser saying part of the run itself failed (an
+#      internal error, for instance), not that it examined the code and found
+#      something. Distinct from 3 because the two are diagnosed differently:
+#      3 means the source would not parse, 4 means the analyser broke while
+#      trying.
 #
 # Any non-zero exit fails the build. The codes exist to make the reason legible,
 # not to grade severity.
@@ -80,11 +87,11 @@
 #
 # So the findings outcome can be made advisory while the backlog is triaged.
 # What --allow-findings does NOT relax is everything that means the analysis is
-# not trustworthy: exit 2 and exit 3 still fail with it set. That split is the
-# whole reason the outcomes have separate exit codes. The parse abort in
-# particular is safe to enforce from day one, because it is unambiguous and
-# cannot be cleared by widening the baseline: PHPStan will not generate a
-# baseline from a run that aborted.
+# not trustworthy: exit 2, exit 3 and exit 4 all still fail with it set. That
+# split is the whole reason the outcomes have separate exit codes. The parse
+# abort and the top-level analysis error are both safe to enforce from day
+# one, because both are unambiguous and neither can be cleared by widening the
+# baseline: PHPStan will not generate a baseline entry for either one.
 #
 # This flag is temporary by design. Removing it from the CI step is the single
 # change that makes the gate fully blocking, and that should happen as soon as
@@ -130,6 +137,8 @@ Exit 1: the analysis completed and reported findings.
 Exit 2: the environment cannot run the analysis (php, PHPStan, vendor, config).
 Exit 3: the analysis ran but its result cannot be trusted (parse abort,
         unparseable output, or no findings alongside a non-zero exit).
+Exit 4: PHPStan reported a top-level analysis error (not tied to any file).
+        Never suppressible by --allow-findings or WPMGR_PHPSTAN_ALLOW_FINDINGS.
 USAGE
 }
 
@@ -170,6 +179,7 @@ EXIT_CLEAN=0
 EXIT_FINDINGS=1
 EXIT_ENV=2
 EXIT_UNTRUSTWORTHY=3
+EXIT_ANALYSIS_ERROR=4
 
 # The marker PHPStan prints to stderr when it gave up early. Matched as plain
 # ASCII on purpose: the real line is wrapped in warning emoji and may be
@@ -429,9 +439,6 @@ print_findings() {
   if [ "$MSG_ROWS" -gt "$MAX_LISTED" ]; then
     printf '  ... and %s more %s not listed.\n' "$((MSG_ROWS - MAX_LISTED))" "$_kind"
   fi
-  printf '%s\n' "$SUMMARY_OUT" | grep '^E	' | while IFS='	' read -r _tag _msg; do
-    printf '  [analysis error] %s\n' "$_msg"
-  done | sort
 }
 
 # --- Outcome: the analysis gave up. Checked before any count is reported, so
@@ -495,15 +502,50 @@ if [ "$STATUS" != ok ]; then
   exit "$EXIT_UNTRUSTWORTHY"
 fi
 
+# TOP_FINDINGS: entries in the report's top level "errors" array. These are not
+# attached to any file, which is exactly what marks them out: PHPStan reports a
+# problem WITH THE CODE under a file in "files", and reports a problem WITH THE
+# RUN ITSELF here. An internal analyser error is the textbook case. This is the
+# same category as the parse abort above, not the ordinary-findings category
+# below it, and it is checked first and unconditionally for the same reason:
+# the one signal that says "do not trust this run" must never be the signal
+# --allow-findings suppresses.
+#
+# Believe whichever of the totals field and the actual row count is worse,
+# same reasoning as the ordinary-findings count further down.
+TOP_FINDINGS="$TOP_ERRORS"
+if [ "$TOP_ROWS" -gt "$TOP_FINDINGS" ]; then
+  TOP_FINDINGS="$TOP_ROWS"
+fi
+
+# --- Outcome: a top-level analysis error. Never a finding, never advisory.
+if [ "$TOP_FINDINGS" -gt 0 ]; then
+  err "PHPStan reported $TOP_FINDINGS top-level analysis error(s); the result cannot be trusted."
+  detail ''
+  detail 'THIS IS NOT A FINDING COUNT, AND --allow-findings DOES NOT REACH IT.'
+  detail 'A top-level error is not attached to any file: PHPStan is saying part of'
+  detail 'the run itself failed (an internal analyser error, for instance), not'
+  detail 'that it examined the code and found something to report. Whatever'
+  detail 'ordinary findings came back alongside it cannot be trusted either, so'
+  detail 'none of them are listed here.'
+  detail ''
+  detail 'What PHPStan reported:'
+  printf '%s\n' "$SUMMARY_OUT" | grep '^E	' | while IFS='	' read -r _tag _msg; do
+    printf '    %s\n' "$_msg"
+  done | sort >&2
+  exit "$EXIT_ANALYSIS_ERROR"
+fi
+
 # The count is computed here and printed from the computation. It is never
 # written down anywhere, in this script or in the workflow that calls it.
-FINDINGS=$((FILE_ERRORS + TOP_ERRORS))
-ROWS=$((MSG_ROWS + TOP_ROWS))
+# File-scoped only: a top-level analysis error is handled above, on its own
+# exit code, and must never be folded back in here.
+FINDINGS="$FILE_ERRORS"
 # If the totals and the reported messages disagree, believe whichever is worse.
 # A totals block that says zero over a non-empty message list is exactly the
 # shape of a zero that must not read as a pass.
-if [ "$ROWS" -gt "$FINDINGS" ]; then
-  FINDINGS="$ROWS"
+if [ "$MSG_ROWS" -gt "$FINDINGS" ]; then
+  FINDINGS="$MSG_ROWS"
 fi
 
 # --- Outcome: zero findings, but the run failed. Never a pass.

@@ -550,12 +550,16 @@ jobs:
       # So findings are reported loudly and do not fail the build yet.
       #
       # This is NOT a soft gate. --allow-findings relaxes the findings outcome
-      # and nothing else. A parse abort, an unparseable report, a run that
-      # reports nothing while exiting non-zero, a missing binary, a missing
-      # vendor tree and a missing config all still fail this step with it set,
-      # and the guard's suite has a case pinning each of those. The parse abort
-      # is enforced from day one because it cannot be cleared by widening the
-      # baseline: PHPStan will not generate a baseline from a run that aborted.
+      # and nothing else. A parse abort, a top-level analysis error (an entry
+      # in PHPStan's own "errors" array, not attached to any file — the
+      # analyser saying part of the run itself failed), an unparseable report,
+      # a run that reports nothing while exiting non-zero, a missing binary, a
+      # missing vendor tree and a missing config all still fail this step with
+      # it set, and the guard's suite has a case pinning each of those. The
+      # parse abort and the top-level analysis error are both enforced from day
+      # one because neither can be cleared by widening the baseline: PHPStan
+      # will not generate a baseline entry from a run that aborted or a
+      # top-level error.
       #
       # TO MAKE IT FULLY BLOCKING: delete --allow-findings from the line below.
       # That is the whole change. Do it once the backlog has been triaged.

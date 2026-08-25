@@ -104,6 +104,11 @@ JSON_NO_TOTALS='{"files":{},"errors":[]}'
 
 JSON_TOP_LEVEL_ERROR='{"totals":{"errors":1,"file_errors":0},"files":{},"errors":["Internal error: something went wrong in the analyser."]}'
 
+# A per-file finding whose MESSAGE TEXT mentions an analysis error, with the
+# top level "errors" array itself empty. A guard that keyed off the words
+# rather than the array would misread this as the untrustworthy outcome above.
+JSON_FINDING_MENTIONS_ANALYSIS_ERROR='{"totals":{"errors":0,"file_errors":1},"files":{"@@CWD@@/includes/class-doc.php":{"errors":1,"messages":[{"message":"Catches and logs an analysis error from the remote API gracefully.","line":22,"ignorable":true,"identifier":"return.type"}]}},"errors":[]}'
+
 NOT_JSON='PHP Fatal error:  Allowed memory size of 134217728 bytes exhausted in /vendor/phpstan/phpstan/phpstan.phar on line 1'
 
 STDERR_EMPTY=''
@@ -336,6 +341,19 @@ stub "$t" "$JSON_PARSE_ABORT" "$STDERR_INCOMPLETE" 0
 case_run "parse: an incomplete analysis that exits 0 still fails" 3 "$t" "+did not complete"
 
 # ===========================================================================
+# TOP-LEVEL ANALYSIS ERRORS. An entry in PHPStan's "errors" array is not tied
+# to any file: it is the analyser saying part of the run itself failed, not
+# that it examined code and found something. Same untrustworthy category as
+# the parse abort above, on its own exit code, never a finding count.
+# ===========================================================================
+
+t="$(tree top-level-error)"
+stub "$t" "$JSON_TOP_LEVEL_ERROR" '' 1
+case_run "top-level: an analysis error is its own outcome, not a finding" \
+  4 "$t" "+top-level analysis error" "+Internal error" \
+  "-reported 1 finding(s)" "-OK:"
+
+# ===========================================================================
 # NOTHING USABLE CAME BACK. A guard that finds nothing goes red.
 # ===========================================================================
 
@@ -414,11 +432,6 @@ case_run "findings: two findings are reported as two, with the count computed no
   "+includes/class-alpha.php:9" "+includes/class-beta.php:14" \
   "+[return.type]" "-did not complete"
 
-t="$(tree findings-top-level)"
-stub "$t" "$JSON_TOP_LEVEL_ERROR" '' 1
-case_run "findings: a top level analysis error counts as a finding" \
-  1 "$t" "+reported 1 finding(s)" "+Internal error"
-
 # The count is printed from the data, so a different number of findings prints
 # a different number without anybody editing the guard.
 _msgs=''
@@ -463,6 +476,14 @@ stub "$t" "$JSON_FINDING_QUOTING_MARKER" "$STDERR_INSTRUCTIONS" 1
 case_run "no over-fire: a finding whose message quotes the incompleteness sentence is a finding, not an abort" \
   1 "$t" "+reported 1 finding(s)" "-did not complete" "-MUST NOT BE BASELINED"
 
+# The equivalent over-fire for the top-level-error check: the array is what
+# means it, not the words. A finding whose message text merely mentions an
+# analysis error must still be read as an ordinary finding.
+t="$(tree finding-mentions-analysis-error)"
+stub "$t" "$JSON_FINDING_MENTIONS_ANALYSIS_ERROR" '' 1
+case_run "no over-fire: a finding whose message mentions an analysis error is a finding, not a top-level error" \
+  1 "$t" "+reported 1 finding(s)" "-top-level analysis error"
+
 # Ordering is a property of the analyser, not of the codebase.
 t="$(tree order-a)"
 stub "$t" "$JSON_TWO_FINDINGS" '' 1
@@ -500,6 +521,18 @@ stub "$t" "$JSON_PARSE_ABORT" "$STDERR_NOTE" 1
 ALLOW_FINDINGS=1
 case_run "advisory: a parse abort seen only via the identifier STILL fails" \
   3 "$t" "+did not complete" "-ADVISORY"
+
+t="$(tree advisory-top-level-error)"
+stub "$t" "$JSON_TOP_LEVEL_ERROR" '' 1
+ALLOW_FINDINGS=1
+case_run "advisory: a top level analysis error STILL fails, the flag does not reach it" \
+  4 "$t" "+top-level analysis error" "-ADVISORY"
+
+t="$(tree advisory-env-top-level-error)"
+stub "$t" "$JSON_TOP_LEVEL_ERROR" '' 1
+ALLOW_FINDINGS_ENV=1
+case_run "advisory: WPMGR_PHPSTAN_ALLOW_FINDINGS=1 does not reach a top level analysis error either" \
+  4 "$t" "+top-level analysis error" "-ADVISORY"
 
 t="$(tree advisory-zero-findings-nonzero)"
 stub "$t" "$JSON_CLEAN" "$STDERR_NOTE" 1
