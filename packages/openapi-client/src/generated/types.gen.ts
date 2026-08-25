@@ -5384,7 +5384,9 @@ export type ResendEmailResult = {
    * Why the resend did not happen, phrased for an operator. Known
    * agent refusals (log pruned, body not captured, site not configured,
    * plugin too old) are translated here; anything else is the provider's
-   * own error text, passed through. Safe to display as-is.
+   * own error text, passed through unmodified from the site's agent.
+   * Plain text, not markup: the passthrough case can carry arbitrary
+   * characters from a compromised site, so escape it before rendering.
    *
    */
   detail?: string | null;

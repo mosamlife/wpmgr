@@ -313,7 +313,12 @@ func TestBulkResendEmail_MixedOutcomes(t *testing.T) {
 
 	wantOK := map[uuid.UUID]bool{okID: true, refusedID: false, noSeqID: false, missingID: false}
 	for _, r := range results {
-		if want := wantOK[r.LogID]; r.OK != want {
+		want, known := wantOK[r.LogID]
+		if !known {
+			t.Errorf("log %s: result carries an id that was never requested", r.LogID)
+			continue
+		}
+		if r.OK != want {
 			t.Errorf("log %s: ok=%v, want %v (detail %q)", r.LogID, r.OK, want, r.Detail)
 		}
 	}
@@ -321,6 +326,22 @@ func TestBulkResendEmail_MixedOutcomes(t *testing.T) {
 	// Only the two addressable rows may spend a signed command.
 	if agent.calls != 2 {
 		t.Errorf("agent dispatched %d command(s), want 2 (the unaddressable and missing rows must be refused near-end)", agent.calls)
+	}
+	// Each addressable row must be dispatched with its own agent_seq, in
+	// request order — proof that the bulk path addresses rows individually
+	// rather than resending one id (or one seq) for the whole batch.
+	wantSeqs := []int64{11, 12}
+	seqsMatch := len(agent.seqs) == len(wantSeqs)
+	if seqsMatch {
+		for i, want := range wantSeqs {
+			if agent.seqs[i] != want {
+				seqsMatch = false
+				break
+			}
+		}
+	}
+	if !seqsMatch {
+		t.Errorf("agent saw agent_seq sequence %v, want %v (each row must be addressed individually)", agent.seqs, wantSeqs)
 	}
 	if repo.incrCalls != 1 {
 		t.Errorf("resent_count incremented %d time(s), want 1", repo.incrCalls)

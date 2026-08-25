@@ -8953,7 +8953,7 @@ export const ResendEmailResultSchema = {
     detail: {
       type: ["string", "null"],
       description:
-        "Why the resend did not happen, phrased for an operator. Known\nagent refusals (log pruned, body not captured, site not configured,\nplugin too old) are translated here; anything else is the provider's\nown error text, passed through. Safe to display as-is.\n",
+        "Why the resend did not happen, phrased for an operator. Known\nagent refusals (log pruned, body not captured, site not configured,\nplugin too old) are translated here; anything else is the provider's\nown error text, passed through unmodified from the site's agent.\nPlain text, not markup: the passthrough case can carry arbitrary\ncharacters from a compromised site, so escape it before rendering.\n",
     },
     message_id: {
       type: ["string", "null"],
