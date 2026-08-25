@@ -325,14 +325,20 @@ final class HardeningModule
             return;
         }
 
-        add_action('user_profile_update_errors', static function (\WP_Error $errors, bool $update, \WP_User $user): void {
+        // $user is typed mixed, not \WP_User: core builds a bare stdClass in
+        // edit_user() and passes it by reference, so a \WP_User hint here is a
+        // TypeError at argument binding — a fatal on every user-edit screen for
+        // any site with this single toggle on, password policy or not.
+        // ProfileUpdateUser::resolve() also recovers user_login from the stored
+        // user, so an object without it cannot silently switch the check off.
+        add_action('user_profile_update_errors', static function (\WP_Error $errors, bool $update, mixed $user): void {
             if (!$update) {
                 return;
             }
             $nickname = isset($_POST['nickname']) && is_string($_POST['nickname']) // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- nonce verified by WP core's profile-update handler before this hook fires; sanitized on the next line
                 ? sanitize_text_field(wp_unslash($_POST['nickname'])) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- same as above
                 : '';
-            $userLogin = $user->user_login;
+            $userLogin = ProfileUpdateUser::resolve($user)->user_login;
             if ($nickname !== '' && $userLogin !== '' && $nickname === $userLogin) {
                 $errors->add(
                     'wpmgr_nickname_conflict',

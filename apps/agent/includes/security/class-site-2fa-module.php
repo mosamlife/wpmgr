@@ -248,8 +248,15 @@ final class Site2faModule
         }
 
         // XML-RPC block for 2FA users.
+        //
+        // Deliberately NOT hooked: `xmlrpc_login_error`. Core fires it only
+        // from inside `if ( is_wp_error( $user ) )` in
+        // wp-includes/class-wp-xmlrpc-server.php, i.e. only once authentication
+        // has ALREADY failed, and its second argument is that WP_Error — never
+        // a WP_User. A callback there cannot block a successful login, which is
+        // the whole point of this control. `authenticate` is where the decision
+        // is actually made, and interceptXmlrpc2fa() makes it.
         if ($has2fa && $this->policy->blockXmlrpcFor2faUsers) {
-            add_filter('xmlrpc_login_error', [$this, 'blockXmlrpcFor2faUser'], 10, 2);
             add_filter('authenticate', [$this, 'interceptXmlrpc2fa'], 100, 3);
         }
 
@@ -1000,16 +1007,6 @@ final class Site2faModule
         }
 
         return $user;
-    }
-
-    /**
-     * @param mixed    $error
-     * @param \WP_User $user
-     * @return mixed
-     */
-    public function blockXmlrpcFor2faUser(mixed $error, \WP_User $user): mixed
-    {
-        return $error;
     }
 
     // -------------------------------------------------------------------------
