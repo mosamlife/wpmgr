@@ -571,6 +571,22 @@ if [ -n "$FILTER" ]; then
   printf 'filter: %s (%s skipped)\n' "$FILTER" "$SKIPPED"
 fi
 printf '%s passed, %s failed\n' "$PASSED" "$FAILED"
+
+# A guard that finds nothing must go red, not green. "0 passed, 0 failed" is
+# not a clean run, it is proof nothing was checked: either FILTER matched no
+# case name (a typo, or a case renamed without updating an invocation), or
+# every case_run/case_same call above was removed. Either way this suite has
+# verified nothing and must not exit 0.
+if [ "$((PASSED + FAILED))" -eq 0 ]; then
+  if [ -n "$FILTER" ]; then
+    echo "no case matched filter '$FILTER' ($SKIPPED skipped, 0 run)." >&2
+  else
+    echo 'no case ran at all.' >&2
+  fi
+  echo 'Refusing to report a pass over tests that did not run.' >&2
+  exit 2
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   printf 'failing cases:\n%s' "$FAILED_NAMES"
   exit 1
