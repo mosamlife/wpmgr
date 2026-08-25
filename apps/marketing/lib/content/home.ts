@@ -14,7 +14,7 @@ import { SITE_CONFIG, signupHref } from "@/lib/site";
 // on every release: the agent version deliberately does not track the repo
 // release version, so a control-plane-only release leaves this alone and the
 // badge stays true.
-const AGENT_VERSION = "0.61.139";
+const AGENT_VERSION = "0.61.145";
 
 export const HOME_HERO = {
   badge: `v${AGENT_VERSION} / open source`,

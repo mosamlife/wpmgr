@@ -50,6 +50,119 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.145",
+    date: "2026-08-26",
+    summary:
+      "The most notable fix: a database restore could silently drop the dump's last SQL statement while still reporting success. It now aborts instead of guessing. Also fixed: resending a failed outgoing email, a WordPress agent crash on every user profile edit, and a crash in the disk-size check used by Site Health and multisite media uploads.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "A database restore could silently drop the dump's last SQL statement while still reporting success, when the restorer could not tell whether the very end of the dump was nothing but comments. Proven against two otherwise identical dumps that differed only in whether the last statement ended with a semicolon: the one that landed in the discarded tail lost a row, silently. It now aborts the restore instead of finishing on an uncertain guess.",
+      },
+      {
+        tag: "Fixed",
+        text: "Resending a failed outgoing email now actually works. It previously failed on every attempt with an error shown verbatim to the operator. A failed attempt no longer inflates the resend counter or writes an audit entry claiming the email went out.",
+      },
+      {
+        tag: "Fixed",
+        text: "Editing a user's profile in wp-admin no longer crashes with a critical error, on every connected site.",
+      },
+      {
+        tag: "Fixed",
+        text: "The disk-size check behind Site Health's Directory sizes panel, the agent's own daily size walk, and multisite media uploads no longer crashes when its cache is cold, which is any fresh install or cache flush.",
+      },
+      {
+        tag: "Fixed",
+        text: "A database-cleanup scan for orphaned options could fail outright with a fatal error every time it ran. It now completes.",
+      },
+    ],
+    featureLinks: [{ label: "Email deliverability", href: "/features/email-deliverability" }],
+  },
+  {
+    version: "0.61.144",
+    date: "2026-08-22",
+    summary:
+      "An API key can now be scoped to exactly the access it needs instead of a whole role, and restricted to specific sites.",
+    items: [
+      {
+        tag: "Added",
+        text: "An API key can now be granted a specific set of capabilities instead of a whole role. Previously, a key that could read files could transitively manage members, mint further keys, read the audit log, and log into sites as a user. A key can now also be restricted to named sites. Existing keys keep exactly the access they have today.",
+      },
+      {
+        tag: "Fixed",
+        text: "The published API contract now correctly marks fields that can be null as nullable, instead of declaring them always present when the control plane can send a JSON null value.",
+      },
+    ],
+  },
+  {
+    version: "0.61.143",
+    date: "2026-08-20",
+    summary:
+      "Several control-plane reliability fixes: a stopped agent update run can no longer be reported as finished after the fact, a backup snapshot can no longer be left in an inconsistent state by two writes racing each other, and a rare bug that could leak a database connection's live-update subscription under load is fixed.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "An agent update run that was stopped by the kill switch or a withdrawn release could later be overwritten to show as completed if work already in flight finished afterward. Operators now see the stopped state as final.",
+      },
+      {
+        tag: "Fixed",
+        text: "A backup snapshot's claim and its final outcome are now protected against being written out of order, which previously could strand the storage a failed backup used, or leave a good backup marked unusable.",
+      },
+      {
+        tag: "Fixed",
+        text: "A shared database connection could stay subscribed to another request's live update notifications after that request ended, letting notifications cross between unrelated connections under load. Fixed.",
+      },
+    ],
+  },
+  {
+    version: "0.61.142",
+    date: "2026-08-20",
+    summary:
+      "Fleet uptime now has a 90-day history view. Also fixed: paused sites are correctly skipped by scheduled updates, database cleaning and vulnerability scans; a site with no monitoring data shows as unmeasured instead of 0% uptime; and a lock-release bug that could stall backups, per-tenant storage cleanup and organization deletion for up to 30 minutes.",
+    items: [
+      {
+        tag: "Added",
+        text: "Fleet uptime now has a 90-day availability view, one entry per day, in place of a single derived 7-day figure.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site paused after an update run was already scheduled is no longer dispatched to. Scheduled database cleaning and the vulnerability digest now respect a paused site the same way.",
+      },
+      {
+        tag: "Fixed",
+        text: "A site with no uptime measurement yet now reports as unmeasured instead of showing 0% uptime.",
+      },
+      {
+        tag: "Fixed",
+        text: "A lock-release bug that could silently leak a database lock is fixed. While leaked, it could fleet-wide stall scheduled backups, stall per-tenant storage cleanup, and block organization deletion or restore for up to 30 minutes.",
+      },
+      {
+        tag: "Fixed",
+        text: "A cleanup worker for old webhook records is now actually running; it existed in code but was never wired in.",
+      },
+    ],
+  },
+  {
+    version: "0.61.141",
+    date: "2026-08-19",
+    summary:
+      "Scheduled update runs now actually wait for their scheduled time instead of firing immediately, and can be canceled before they run.",
+    items: [
+      {
+        tag: "Changed",
+        text: "Scheduled update runs now wait for their scheduled time instead of dispatching immediately. Runs and tasks show new statuses (scheduled, dispatching, expired), and a run whose start time passed more than two hours ago is marked expired rather than dispatched late.",
+      },
+      {
+        tag: "Added",
+        text: "A scheduled update run can now be canceled any time before dispatch claims it. Once dispatch has started, use the existing halt control instead.",
+      },
+      {
+        tag: "Fixed",
+        text: "The self-hosted setup script could report failure on a successful, fully configured re-run. It now exits cleanly as it should.",
+      },
+    ],
+  },
+  {
     version: "0.61.140",
     date: "2026-08-19",
     summary:

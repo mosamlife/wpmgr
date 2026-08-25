@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.139
+Stable tag: 0.61.145
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -275,6 +275,13 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 == Changelog ==
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
+
+= 0.61.145 =
+* Fixed: a database restore could silently drop the dump's last SQL statement while still reporting success, when the restorer could not tell whether the very end of the dump was nothing but comments. It now aborts the restore instead of finishing on an uncertain guess.
+* Fixed: the database tools' orphaned-data scan could fail with a fatal error every time it ran, calling a function that does not exist outside of $wpdb. It now calls the correct one.
+* Fixed: editing a user's profile in wp-admin no longer fails with a critical error. WordPress does not always hand this plugin's hooks the object type they expect on a profile edit, and this plugin assumed one unconditionally.
+* Fixed: the disk-size probe behind Site Health's Directory sizes panel, this plugin's own daily size walk, and every media upload on a multisite network no longer crash when the size cache is cold, which is any fresh install, any cache flush, or the first read after either.
+* Fixed: the documented recovery constant for an admin locked out by this plugin's own auth policy (`WPMGR_DISABLE_SITE_2FA`) now also releases the unique-nickname rule, instead of leaving that one rule still blocking recovery.
 
 = 0.61.139 =
 * Added: this site now also reports an email delivery failure detected through WordPress's own mail-failure signal, not only failures on mail this site routes through WPMgr. Sites sending through their own SMTP setup are now covered too.
