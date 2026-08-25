@@ -5381,7 +5381,11 @@ export type AddSuppressionRequest = {
 export type ResendEmailResult = {
   ok: boolean;
   /**
-   * Agent response message or error detail.
+   * Why the resend did not happen, phrased for an operator. Known
+   * agent refusals (log pruned, body not captured, site not configured,
+   * plugin too old) are translated here; anything else is the provider's
+   * own error text, passed through. Safe to display as-is.
+   *
    */
   detail?: string | null;
   /**
@@ -18380,7 +18384,11 @@ export type ResendEmailLogErrors = {
    */
   404: Error;
   /**
-   * Body not stored — resend unavailable
+   * Resend unavailable for this entry, and no command was sent.
+   * `resend_body_not_stored`: the body was not captured at send time.
+   * `resend_agent_seq_missing`: the entry carries no site-side log id,
+   * so the site cannot be told which message to resend.
+   *
    */
   409: Error;
 };

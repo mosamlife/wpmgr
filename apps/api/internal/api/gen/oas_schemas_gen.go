@@ -40242,7 +40242,9 @@ func (*ResendEmailLogUnauthorized) resendEmailLogRes() {}
 // Ref: #/components/schemas/ResendEmailResult
 type ResendEmailResult struct {
 	Ok bool `json:"ok"`
-	// Agent response message or error detail.
+	// Why the resend did not happen, phrased for an operator. Known agent refusals (log pruned, body not
+	// captured, site not configured, plugin too old) are translated here; anything else is the provider's
+	// own error text, passed through. Safe to display as-is.
 	Detail OptNilString `json:"detail"`
 	// Provider message ID assigned to the resent email (if agent returned it).
 	MessageID OptNilString `json:"message_id"`
