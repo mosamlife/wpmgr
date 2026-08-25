@@ -1399,12 +1399,6 @@ parameters:
 			path: includes/security/class-security-policy.php
 
 		-
-			message: '#^Property WP_User\:\:\$roles \(array\<string\>\) in isset\(\) is not nullable\.$#'
-			identifier: isset.property
-			count: 1
-			path: includes/security/class-security-policy.php
-
-		-
 			message: '#^Call to function method_exists\(\) with WP_REST_Request and ''get_route'' will always evaluate to true\.$#'
 			identifier: function.alreadyNarrowedType
 			count: 1

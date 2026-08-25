@@ -78,6 +78,28 @@ includes:
     # It is baselined so CI can gate future regressions against today's count
     # instead of staying unenforced, not asserted as false-positive-free.
     # Working it down is tracked as follow-up, not closed by this baseline.
+    #
+    # 2026-08-26 (#530): re-baselined against `main` after #526 merged in,
+    # which touched several of the files this baseline already covered (their
+    # line numbers moved, which does not affect matching — entries key on
+    # message/identifier/path/count, never on line) and added one new file,
+    # includes/security/class-profile-update-user.php. That file surfaced a
+    # genuine finding rather than noise, so it was fixed in source instead of
+    # baselined: line 105 read `isset($loaded->roles) && is_array(...)` right
+    # after `$loaded instanceof \WP_User` was already confirmed on the branch
+    # above it. WP_User::$roles has no nullable path — core's constructor and
+    # this suite's own WP_User test double (tests/bootstrap.php) both declare
+    # it with a `[]` default — so the isset() half could never be false and
+    # was dead. Removed the isset(), kept is_array() as the real guard (a
+    # filter can still hand back a non-array despite the declared type). This
+    # merge also made one existing ignore-pattern entry for the identical
+    # message stale (it used to match a since-refactored check in
+    # class-security-policy.php's userRoles(), which now takes a generic
+    # `object` and no longer emits this identifier); regenerating dropped it
+    # rather than leaving it to rot as an ignore.unmatched failure. Net effect
+    # on the baseline is exactly those two changes — regenerate and diff
+    # against the previous commit's phpstan-baseline.neon to see it, rather
+    # than trusting a count written here.
     - phpstan-baseline.neon
 
 parameters:

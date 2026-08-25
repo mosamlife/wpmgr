@@ -102,7 +102,14 @@ final class ProfileUpdateUser
             $loaded = get_userdata($id);
             if ($loaded instanceof \WP_User) {
                 $existing = $loaded;
-                if (isset($loaded->roles) && is_array($loaded->roles)) {
+                // No isset() here: WP_User::$roles is populated by the
+                // constructor on every real instance (core's WP_User and this
+                // suite's stub both declare it with a `[]` default), so once
+                // $loaded is confirmed instanceof \WP_User the property is
+                // always set. is_array() stays as the actual runtime guard —
+                // a plugin filtering user data could still hand back something
+                // that is not an array despite the declared type.
+                if (is_array($loaded->roles)) {
                     $roles = array_values(array_filter(array_map('strval', $loaded->roles)));
                 }
             }
