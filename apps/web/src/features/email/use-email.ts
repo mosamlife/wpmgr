@@ -786,17 +786,24 @@ export function useResendEmail(
       if (result.ok) {
         // GH #528: `verified` is only meaningful when ok is true. false means
         // wpmgr sent the email but could not confirm the site's copy was
-        // still the exact message the operator picked (most commonly: the
-        // original send had failed, so there was no delivery id on record to
-        // check against). That is not a failure — the send happened — so it
-        // gets a calm heads-up, never the error/destructive treatment. The
-        // raw `detail` token is never shown here; this is fixed, reviewed
-        // copy so the sentence stays legible regardless of what the control
-        // plane's `detail` string says.
+        // still the exact message the operator picked. That is not a failure
+        // — the send happened — so it gets a calm heads-up, never the
+        // error/destructive treatment.
+        //
+        // The control plane's `detail` already names the specific cause
+        // (resendUnverifiedNote in apps/api/internal/email/service.go: no
+        // Message-ID was ever recorded, vs. a current plugin that ran the
+        // comparison and answered false, vs. a plugin too old to check —
+        // only the last one has an actual remedy, "update the plugin").
+        // Defer to that text rather than re-asserting a single cause here;
+        // it renders as plain text (sonner does not interpret it as markup),
+        // so it is safe to show verbatim. Fall back to a generic sentence
+        // only when the server sent no detail at all.
         if (result.verified === false) {
           toast.warning("Email resent — unconfirmed", {
             description:
-              "wpmgr could not confirm the site sent the exact message you selected — usually because the original send had failed, so there was no delivery id to check against. If this site's database was restored recently, verify the delivery before relying on it.",
+              result.detail ??
+              "wpmgr could not confirm the site sent the exact message you selected. If this site's database was restored recently, verify the delivery before relying on it.",
           });
         } else {
           toast.success("Email queued for resend");
