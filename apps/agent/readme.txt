@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.145
+Stable tag: 0.61.146
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -276,12 +276,16 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
-= 0.61.145 =
+= 0.61.146 =
+* Security: the application-password two-factor control now actually runs. It was registered against a name that is a core WordPress function, not a hook anything fires, so it silently never took effect on any site. Breaking change for integrations: a site with two-factor authentication enabled will have application passwords stop working for a user who has a second factor enrolled or whose role requires one, returning HTTP 401. That is the intended fix.
 * Fixed: a database restore could silently drop the dump's last SQL statement while still reporting success, when the restorer could not tell whether the very end of the dump was nothing but comments. It now aborts the restore instead of finishing on an uncertain guess.
+* Fixed: a database restore could also write straight into this site's live tables while still reporting success, when the step that stages a restore under a temporary table prefix could not tell which table a statement named. It now aborts the restore instead of guessing, proven end to end against a live database.
+* Fixed: resending an email could send a different message than the one selected, after this site's database was restored, because the row id a resend uses is a local auto-increment counter that a restore rolls back. This site now confirms the row before sending and refuses the resend on a mismatch. An older version of this plugin still resends exactly as it always has; it simply cannot be confirmed.
 * Fixed: the database tools' orphaned-data scan could fail with a fatal error every time it ran, calling a function that does not exist outside of $wpdb. It now calls the correct one.
 * Fixed: editing a user's profile in wp-admin no longer fails with a critical error. WordPress does not always hand this plugin's hooks the object type they expect on a profile edit, and this plugin assumed one unconditionally.
 * Fixed: the disk-size probe behind Site Health's Directory sizes panel, this plugin's own daily size walk, and every media upload on a multisite network no longer crash when the size cache is cold, which is any fresh install, any cache flush, or the first read after either.
-* Fixed: the documented recovery constant for an admin locked out by this plugin's own auth policy (`WPMGR_DISABLE_SITE_2FA`) now also releases the unique-nickname rule, instead of leaving that one rule still blocking recovery.
+* Fixed: a generic, operator-defined user-agent ban could 403 this site's own login page, with no recovery path, because the ban matched as an unbounded substring with no minimum length or genericity check. The login page (and a hidden login address, if configured) is now exempt, and an overly short or generic pattern is now refused outright.
+* Fixed: the documented recovery constant for an admin locked out by this plugin's own auth policy (`WPMGR_DISABLE_SITE_2FA`) now also releases the unique-nickname rule and the automatic login lockout, instead of leaving those two still blocking recovery.
 
 = 0.61.139 =
 * Added: this site now also reports an email delivery failure detected through WordPress's own mail-failure signal, not only failures on mail this site routes through WPMgr. Sites sending through their own SMTP setup are now covered too.
@@ -428,6 +432,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.146 =
+The application-password two-factor control now actually takes effect: if this site has two-factor authentication enabled, an application password will stop working for a user who has a second factor enrolled or whose role requires one, returning HTTP 401. Review any integration on this site that authenticates with an application password before updating. Also fixes a database restore that could write into live tables while reporting success, and a user-agent ban that could lock administrators out of the login page.
 
 = 0.61.139 =
 Email delivery failures are now detected on sites that send through their own SMTP setup, not only sites routed through WPMgr, and a plugin bug that reported a failed send as successful is fixed: wp_mail() now returns false on a failed send. Forms and other flows that check the result of wp_mail() will start correctly reporting failures they previously hid. Safe to update in place.
