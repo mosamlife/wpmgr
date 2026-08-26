@@ -2600,10 +2600,20 @@ final class RestoreRunner
             // armGuardOnce()'s rollback callback would "roll back" an empty
             // sub-state — each of them reporting success over work that never
             // happened. Fail loudly instead: the caller marks the restore
-            // failed and an operator retries, which is recoverable. The
-            // is_array() check below still stands for a well-formed payload
-            // that simply is not an object (`null`, a scalar); that decodes
-            // cleanly and genuinely carries no state.
+            // failed and an operator retries, which is recoverable.
+            //
+            // The is_array() check below still stands for a payload that
+            // decodes cleanly but is not an object (`null`, a scalar), and
+            // that case is deliberately left as it was. Not because a scalar
+            // means "no state" — `null` arguably does, `5` or `"text"` is
+            // corruption wearing valid JSON, and by the reasoning above
+            // corruption ought to abort too — but because no writer of this
+            // column can produce one: seedTask() writes the literal '{}',
+            // saveTaskState() always encodes an array, and RestoreCommand
+            // seeds wp_json_encode(['params' => ...]). Reaching it means the
+            // row was edited outside this plugin. Tightening it to a throw
+            // changes resume behaviour and belongs in a change reviewed as
+            // such, not in this one.
             if (json_last_error() !== JSON_ERROR_NONE) {
                 throw new \RuntimeException(
                     'RestoreRunner: persisted sub_state is unreadable (json_decode failed: '
