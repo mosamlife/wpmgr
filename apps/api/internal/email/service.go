@@ -987,9 +987,20 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	// it when we have one, and the agent refuses rather than sending the wrong
 	// mail. When we have none the field is omitted, the send is unconfirmed,
 	// and that fact is reported rather than swallowed.
+	// PR #542 review: neither half normalises a Message-ID it compares.
+	// Normalisation is an ingestion-time policy (a provider handler parsing
+	// the id), never a comparison-time one. The agent now compares raw bytes,
+	// untouched, on both sides (PR #541); trimming here would silently break
+	// that agreement in two directions: a row stored as "  <a@x>  " would
+	// dispatch as "<a@x>", so a byte-comparing agent would see a mismatch and
+	// refuse a legitimate resend, and a row stored as "   " would trim to ""
+	// and the key would be omitted, so the agent would skip verification and
+	// send the mail unverified — the exact outcome #528 exists to prevent.
+	// So: nil, or exactly "", omits the key; anything else — including a
+	// whitespace-only or whitespace-padded id — goes out verbatim.
 	req := agentcmd.ResendEmailRequest{AgentSeq: *target.AgentSeq}
-	if target.MessageID != nil {
-		req.MessageID = strings.TrimSpace(*target.MessageID)
+	if target.MessageID != nil && *target.MessageID != "" {
+		req.MessageID = *target.MessageID
 	}
 	// askedForCheck is used for WORDING and for failing closed, never as the
 	// source of `verified` — see below.
@@ -1105,10 +1116,11 @@ func resendFailureMessage(detail string) string {
 		strings.Contains(detail, agentcmd.ResendDetailBadSeq):
 		return "the site rejected the resend request format; update the wpmgr plugin on this site"
 	case strings.Contains(detail, agentcmd.ResendDetailMessageIDMismatch):
-		return "the site refused this resend: the message stored at that position in the site's own " +
-			"email log is no longer the message shown here, which happens after a site database " +
-			"restore. Nothing was sent. Reload the email log so wpmgr can re-read the site's " +
-			"current entries, then try again"
+		return "wpmgr did not send this: it could not confirm that this is still the same email on " +
+			"the site, which can happen after the site's database has been restored. Nothing was " +
+			"sent, and this entry can't be resent from here. If you still need this email delivered, " +
+			"trigger it again on the site itself — for example, resubmit the form, resave the order, " +
+			"or whatever originally sent it"
 	case strings.Contains(detail, "status 404"):
 		return "this site's wpmgr plugin is too old to support resending; update the plugin and try again"
 	default:

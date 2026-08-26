@@ -449,6 +449,99 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GH #528, PR #542 review — the CP never normalises a Message-ID it dispatches
+// ---------------------------------------------------------------------------
+//
+// The agent now compares raw bytes on both sides, untouched, and pins that
+// with its own tests (PR #541): test_whitespace_only_supplied_id_is_compared_
+// not_discarded, test_supplied_id_padded_with_whitespace_is_a_mismatch, and
+// test_identically_padded_ids_on_both_sides_still_resend. The CP used to call
+// strings.TrimSpace on the way out, which disagreed with that contract in two
+// directions: a row stored as "  <a@x>  " would dispatch as "<a@x>", so a
+// byte-comparing agent sees a mismatch and refuses a legitimate resend, and a
+// row stored as "   " would trim to "" and the CP would omit the key, so the
+// agent skips verification and sends the mail unverified — the exact outcome
+// #528 exists to prevent.
+//
+// The rule: nil, or exactly "", omits the key. Anything else — including a
+// whitespace-only or whitespace-padded id — goes out verbatim.
+
+func TestResendEmail_NilMessageID_OmitsKey(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	repo := newFakeResendRepo(logID, 501) // addRow leaves MessageID nil
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":false}`)}
+	svc := newResendSvc(repo, agent)
+
+	_, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	assertResendPayload(t, agent.lastReq, wantResendKeysUnverified, map[string]any{
+		"agent_seq": int64(501),
+	})
+}
+
+func TestResendEmail_EmptyMessageID_OmitsKey(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, 502, "") // exactly empty, distinct from nil
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":false}`)}
+	svc := newResendSvc(repo, agent)
+
+	_, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	assertResendPayload(t, agent.lastReq, wantResendKeysUnverified, map[string]any{
+		"agent_seq": int64(502),
+	})
+}
+
+// TestResendEmail_WhitespaceOnlyMessageID_SentVerbatim is the case #528's fix
+// mishandled: TrimSpace turns a whitespace-only id into "", which is the
+// OMITTED shape, not the verbatim shape a raw-byte-comparing agent expects.
+func TestResendEmail_WhitespaceOnlyMessageID_SentVerbatim(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, 503, "   ") // whitespace-only, not empty
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":true}`)}
+	svc := newResendSvc(repo, agent)
+
+	_, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	assertResendPayload(t, agent.lastReq, wantResendKeysVerified, map[string]any{
+		"agent_seq":  int64(503),
+		"message_id": "   ",
+	})
+}
+
+// TestResendEmail_PaddedMessageID_SentWithPadIntact is the other half: a
+// stored id with real content and surrounding whitespace must reach the agent
+// with both pads intact, or a legitimate resend is refused as a mismatch.
+func TestResendEmail_PaddedMessageID_SentWithPadIntact(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, 504, "  <a@x>  ")
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":true}`)}
+	svc := newResendSvc(repo, agent)
+
+	_, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	assertResendPayload(t, agent.lastReq, wantResendKeysVerified, map[string]any{
+		"agent_seq":  int64(504),
+		"message_id": "  <a@x>  ",
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Accounting: resent_count and the audit row move on SUCCESS only
 // ---------------------------------------------------------------------------
 
@@ -777,7 +870,7 @@ func TestResendFailureMessage(t *testing.T) {
 		{
 			name:   "#528 row identity mismatch",
 			detail: agentcmd.ResendDetailMessageIDMismatch,
-			want:   "no longer the message shown here",
+			want:   "this entry can't be resent from here",
 		},
 		{name: "old plugin", detail: "resend_email command rejected by agent: status 404 body=x", want: "too old"},
 		{name: "silent refusal", detail: "", want: "without giving a reason"},
