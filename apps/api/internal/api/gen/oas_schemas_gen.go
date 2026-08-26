@@ -11943,6 +11943,9 @@ type BulkResendItemResult struct {
 	LogID  uuid.UUID    `json:"log_id"`
 	Ok     bool         `json:"ok"`
 	Detail OptNilString `json:"detail"`
+	// Per-entry equivalent of ResendEmailResult.verified (GH #528). One batch routinely mixes entries that
+	// could be confirmed with entries that could not, so this is reported per entry, never per batch.
+	Verified OptBool `json:"verified"`
 }
 
 // GetLogID returns the value of LogID.
@@ -11960,6 +11963,11 @@ func (s *BulkResendItemResult) GetDetail() OptNilString {
 	return s.Detail
 }
 
+// GetVerified returns the value of Verified.
+func (s *BulkResendItemResult) GetVerified() OptBool {
+	return s.Verified
+}
+
 // SetLogID sets the value of LogID.
 func (s *BulkResendItemResult) SetLogID(val uuid.UUID) {
 	s.LogID = val
@@ -11973,6 +11981,11 @@ func (s *BulkResendItemResult) SetOk(val bool) {
 // SetDetail sets the value of Detail.
 func (s *BulkResendItemResult) SetDetail(val OptNilString) {
 	s.Detail = val
+}
+
+// SetVerified sets the value of Verified.
+func (s *BulkResendItemResult) SetVerified(val OptBool) {
+	s.Verified = val
 }
 
 // Ref: #/components/schemas/BulkResendRequest
@@ -40250,6 +40263,17 @@ type ResendEmailResult struct {
 	Detail OptNilString `json:"detail"`
 	// Provider message ID assigned to the resent email (if agent returned it).
 	MessageID OptNilString `json:"message_id"`
+	// Whether the SITE confirmed it resent the same message the operator selected (GH #528). The site's
+	// log ids are a local AUTO_INCREMENT that a database restore rolls back, so wpmgr sends the Message-ID
+	// it has on record, the site compares it against its own row, and it refuses on a mismatch. This flag
+	// is the site's answer, never wpmgr's assumption: a site that does not answer is never counted as
+	// having confirmed.
+	//
+	// `false` has two causes, and `detail` names the one that applies: no Message-ID was recorded for that
+	// entry (normal when the original send failed, and nothing to fix), or the site's wpmgr plugin is too
+	// old to perform the check (fixed by updating the plugin). Either way the message was sent and the
+	// confirmation is missing. Only meaningful when `ok` is true.
+	Verified OptBool `json:"verified"`
 }
 
 // GetOk returns the value of Ok.
@@ -40267,6 +40291,11 @@ func (s *ResendEmailResult) GetMessageID() OptNilString {
 	return s.MessageID
 }
 
+// GetVerified returns the value of Verified.
+func (s *ResendEmailResult) GetVerified() OptBool {
+	return s.Verified
+}
+
 // SetOk sets the value of Ok.
 func (s *ResendEmailResult) SetOk(val bool) {
 	s.Ok = val
@@ -40280,6 +40309,11 @@ func (s *ResendEmailResult) SetDetail(val OptNilString) {
 // SetMessageID sets the value of MessageID.
 func (s *ResendEmailResult) SetMessageID(val OptNilString) {
 	s.MessageID = val
+}
+
+// SetVerified sets the value of Verified.
+func (s *ResendEmailResult) SetVerified(val OptBool) {
+	s.Verified = val
 }
 
 func (*ResendEmailResult) resendEmailLogRes() {}

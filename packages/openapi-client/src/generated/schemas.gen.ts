@@ -8960,6 +8960,11 @@ export const ResendEmailResultSchema = {
       description:
         "Provider message ID assigned to the resent email (if agent returned it).",
     },
+    verified: {
+      type: "boolean",
+      description:
+        "Whether the SITE confirmed it resent the same message the operator\nselected (GH #528). The site's log ids are a local AUTO_INCREMENT\nthat a database restore rolls back, so wpmgr sends the Message-ID it\nhas on record, the site compares it against its own row, and it\nrefuses on a mismatch. This flag is the site's answer, never\nwpmgr's assumption: a site that does not answer is never counted as\nhaving confirmed.\n\n`false` has two causes, and `detail` names the one that applies:\nno Message-ID was recorded for that entry (normal when the original\nsend failed, and nothing to fix), or the site's wpmgr plugin is too\nold to perform the check (fixed by updating the plugin). Either way\nthe message was sent and the confirmation is missing. Only\nmeaningful when `ok` is true.\n",
+    },
   },
 } as const;
 
@@ -8992,6 +8997,11 @@ export const BulkResendItemResultSchema = {
     },
     detail: {
       type: ["string", "null"],
+    },
+    verified: {
+      type: "boolean",
+      description:
+        "Per-entry equivalent of ResendEmailResult.verified (GH #528). One\nbatch routinely mixes entries that could be confirmed with entries\nthat could not, so this is reported per entry, never per batch.\n",
     },
   },
 } as const;

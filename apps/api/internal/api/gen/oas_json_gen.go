@@ -30663,12 +30663,19 @@ func (s *BulkResendItemResult) encodeFields(e *jx.Encoder) {
 			s.Detail.Encode(e)
 		}
 	}
+	{
+		if s.Verified.Set {
+			e.FieldStart("verified")
+			s.Verified.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfBulkResendItemResult = [3]string{
+var jsonFieldsNameOfBulkResendItemResult = [4]string{
 	0: "log_id",
 	1: "ok",
 	2: "detail",
+	3: "verified",
 }
 
 // Decode decodes BulkResendItemResult from json.
@@ -30713,6 +30720,16 @@ func (s *BulkResendItemResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"detail\"")
+			}
+		case "verified":
+			if err := func() error {
+				s.Verified.Reset()
+				if err := s.Verified.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"verified\"")
 			}
 		default:
 			return d.Skip()
@@ -96126,12 +96143,19 @@ func (s *ResendEmailResult) encodeFields(e *jx.Encoder) {
 			s.MessageID.Encode(e)
 		}
 	}
+	{
+		if s.Verified.Set {
+			e.FieldStart("verified")
+			s.Verified.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfResendEmailResult = [3]string{
+var jsonFieldsNameOfResendEmailResult = [4]string{
 	0: "ok",
 	1: "detail",
 	2: "message_id",
+	3: "verified",
 }
 
 // Decode decodes ResendEmailResult from json.
@@ -96174,6 +96198,16 @@ func (s *ResendEmailResult) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"message_id\"")
+			}
+		case "verified":
+			if err := func() error {
+				s.Verified.Reset()
+				if err := s.Verified.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"verified\"")
 			}
 		default:
 			return d.Skip()

@@ -608,6 +608,21 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 	return map[string]any{
 		"log_id":     logID.String(),
 		"message_id": res.MessageID,
+		// GH #528: whether the site confirmed it resent the message the
+		// operator selected. An audit row that cannot distinguish a confirmed
+		// resend from an unconfirmed one is the same defect as one that records
+		// intentions: it is believed.
+		"verified": res.Verified,
+		// PR #542 review: an unverified resend has two fixable-or-not causes
+		// with different remedies (see ResendResult.LegacyAgent). An audit row
+		// that collapses them is the same defect one layer down — it cannot
+		// tell a reader auditing this site's history whether the plugin
+		// needed updating or nothing was wrong at all. ResendResult.LegacyAgent
+		// is already gated on askedForCheck, so a request that never had a
+		// Message-ID to send records false here too: "legacy agent" is a
+		// verdict on this response, not an inference from silence when
+		// nothing was asked. Meaningless (false) when verified is true.
+		"legacy_agent": res.LegacyAgent,
 	}, true
 }
 
@@ -618,10 +633,17 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 // reading {"count": N}. `requested` is kept beside it so a partial batch stays
 // legible, and a batch that resent nothing writes no row at all.
 func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]any, bool) {
-	resent := 0
+	resent, unverified, legacyAgent := 0, 0, 0
 	for _, r := range results {
-		if r.OK {
-			resent++
+		if !r.OK {
+			continue
+		}
+		resent++
+		if !r.Verified {
+			unverified++
+			if r.LegacyAgent {
+				legacyAgent++
+			}
 		}
 	}
 	if resent == 0 {
@@ -630,6 +652,14 @@ func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]
 	return map[string]any{
 		"count":     resent,
 		"requested": requested,
+		// GH #528: how many of those confirmed resends went out without the
+		// site confirming the row identity. Counted, not summarised away.
+		"unverified": unverified,
+		// PR #542 review: of those unverified, how many were unverifiable
+		// because the site's agent is too old to attest at all (fixable by
+		// updating the plugin), versus a current agent correctly reporting it
+		// had nothing to compare (nothing to fix). See ResendResult.LegacyAgent.
+		"legacy_agent_count": legacyAgent,
 	}, true
 }
 
@@ -659,6 +689,7 @@ func (h *Handler) resendLog(c *gin.Context) {
 		"ok":         result.OK,
 		"detail":     result.Detail,
 		"message_id": result.MessageID,
+		"verified":   result.Verified,
 	})
 }
 
@@ -746,6 +777,11 @@ func (h *Handler) bulkResendLog(c *gin.Context) {
 			"log_id": r.LogID.String(),
 			"ok":     r.OK,
 			"detail": r.Detail,
+			// GH #528: BulkResendItemResult declares `verified` in the spec, so
+			// the body has to carry it. A batch routinely mixes confirmed and
+			// unconfirmed entries and only the per-entry flag can tell an
+			// operator which of the two a given row was.
+			"verified": r.Verified,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"results": dtos})
