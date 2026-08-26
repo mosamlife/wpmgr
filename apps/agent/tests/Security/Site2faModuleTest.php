@@ -16,8 +16,10 @@
  *   C1. Session destruction is proven: wp_destroy_all_sessions + wp_clear_auth_cookie
  *       are both invoked BEFORE the interstitial renders (no half-auth window).
  *   H1. Application-password bypass is blocked: a 2FA-required user's app-password
- *       auth is rejected; a non-required user's app password still works; the agent's
- *       own /wpmgr/v1 channel is unaffected.
+ *       auth is rejected and a non-required user's app password still works. The
+ *       decision is made from the WP_User alone -- REQUEST_URI cannot exempt it
+ *       (#536), because it is client-supplied and the old substring exemption was
+ *       satisfiable with one spare query parameter.
  *   H2. Forced-change enforcement: a user with META_FORCE_CHANGE is intercepted on
  *       login; the flag is cleared on successful password change; autologin and the
  *       escape hatch bypass it; the new password is validated against the policy.
@@ -169,21 +171,75 @@ final class Site2faModuleTest extends TestCase
     // SAFETY: constant disables enforcement
     // -------------------------------------------------------------------------
 
-    public function test_safety_disable_constant_makes_install_noop(): void
+    /**
+     * The WPMGR_DISABLE_SITE_2FA escape hatch is the fleet's way out of a 2FA
+     * lockout, so its contract is not "install() does not crash" -- it is
+     * "install() leaves no hook behind". Asserting that means recording the
+     * registrations rather than discarding them, and asserting the recording is
+     * empty; a recorder that captured nothing at all would make that pass for
+     * the wrong reason, so it is proven live first.
+     *
+     * WHAT THIS TEST DELIBERATELY DOES NOT CLAIM:
+     * install() guards itself with a process-wide `static $installed`. If
+     * anything called install() earlier in this PHPUnit process it returns
+     * before it ever looks at the constant, and "registered nothing" would then
+     * be true for that reason instead. This test cannot rule that out from
+     * inside the shared process, and it must stay in the shared process because
+     * the constant it defines is process-global and several later tests in this
+     * file assert it is set. The non-vacuous version -- fresh process, fresh
+     * static, same assertion -- is
+     * Site2faHookRegistrationTest::test_disable_constant_makes_install_register_no_hooks.
+     *
+     * The constant is defined before anything here can fail, so a failure below
+     * can never cascade into those later tests by leaving it undefined.
+     */
+    public function test_safety_disable_constant_makes_install_register_no_hooks(): void
     {
         if (!defined('WPMGR_DISABLE_SITE_2FA')) {
             define('WPMGR_DISABLE_SITE_2FA', true);
         }
+        $this->assertTrue(
+            defined('WPMGR_DISABLE_SITE_2FA') && (bool) WPMGR_DISABLE_SITE_2FA,
+            'the escape hatch must be defined and true in this process'
+        );
 
+        $registered = [];
+        $recorder   = function ($hook, $callback = null, $priority = 10, $acceptedArgs = 1) use (&$registered): bool {
+            $registered[] = (string) $hook;
+            return true;
+        };
+        Functions\when('add_action')->alias($recorder);
+        Functions\when('add_filter')->alias($recorder);
+
+        // Instrument self-check: a recorder that captures nothing would make the
+        // assertion at the end of this test pass for the wrong reason.
+        add_action('wpmgr_recorder_self_check', 'wpmgr_recorder_self_check_cb', 7, 2);
+        $this->assertSame(
+            ['wpmgr_recorder_self_check'],
+            $registered,
+            'instrument self-check: the add_action recorder must capture registrations'
+        );
+        $registered = [];
+
+        // A policy that would otherwise register every hook the module owns.
         $policy = SecurityPolicy::fromArray([
-            'policy' => ['two_factor_enabled' => true, 'two_factor_required_roles' => ['administrator']],
+            'policy' => [
+                'two_factor_enabled'         => true,
+                'two_factor_required_roles'  => ['administrator'],
+                'block_xmlrpc_for_2fa_users' => true,
+                'password_max_age_days'      => 30,
+            ],
         ]);
         Functions\when('esc_url_raw')->justReturn('');
 
         $module = $this->makeModule($policy);
         $module->install();
 
-        $this->assertTrue(true, 'install() with WPMGR_DISABLE_SITE_2FA must not crash');
+        $this->assertSame(
+            [],
+            $registered,
+            'WPMGR_DISABLE_SITE_2FA must leave install() with zero hook registrations'
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -460,6 +516,16 @@ final class Site2faModuleTest extends TestCase
 
     // -------------------------------------------------------------------------
     // H1: Application-password bypass block
+    //
+    // These exercise the callback's BODY. They deliberately do NOT prove it is
+    // reachable: that it was registered on a hook nothing fires went unnoticed
+    // for exactly as long as this was the only coverage (#523). The
+    // registration, the declared arity and a dispatch with core's own argument
+    // list are asserted in Site2faHookRegistrationTest.
+    //
+    // Core fires wp_authenticate_application_password_errors with ($error,
+    // $user, $item, $password) and inspects $error afterwards: a populated
+    // WP_Error means "refuse this credential", an untouched one means "allow".
     // -------------------------------------------------------------------------
 
     public function test_h1_app_password_blocked_for_2fa_required_user(): void
@@ -472,19 +538,19 @@ final class Site2faModuleTest extends TestCase
         ]);
         $module = $this->makeModule($policy);
 
-        $user              = $this->makeUser(1, ['administrator']);
-        $resolvedUser      = $this->makeUser(1, ['administrator']);
-
-        $result = $module->blockAppPasswordFor2faUser(
-            $user,           // $user (prior filter result, WP_User)
-            $resolvedUser,   // $inputUser
-            'app-pw',        // $appPassword
-            null,            // $item
-            null             // $request
+        $error = new \WP_Error();
+        $module->blockAppPasswordFor2faUser(
+            $error,                                 // $error (mutated in place)
+            $this->makeUser(1, ['administrator']),  // $user
+            ['uuid' => 'abc', 'name' => 'ci'],      // $item
+            'app-pw'                                // $password
         );
 
-        $this->assertInstanceOf(\WP_Error::class, $result, 'H1: app password must be blocked for 2FA-required user');
-        $this->assertSame('wpmgr_2fa_app_password_blocked', $result->get_error_code());
+        $this->assertSame(
+            'wpmgr_2fa_app_password_blocked',
+            $error->get_error_code(),
+            'H1: app password must be blocked for 2FA-required user'
+        );
     }
 
     public function test_h1_app_password_allowed_for_non_required_user(): void
@@ -499,14 +565,12 @@ final class Site2faModuleTest extends TestCase
 
         // Subscriber: not role-required, and no TOTP/backup enrolled (EmailCodeProvider
         // is always "configured", but does not count as deliberate enrollment).
-        $user         = $this->makeUser(2, ['subscriber']);
-        $resolvedUser = $this->makeUser(2, ['subscriber']);
-
-        $result = $module->blockAppPasswordFor2faUser($user, $resolvedUser, 'app-pw', null, null);
+        $error = new \WP_Error();
+        $module->blockAppPasswordFor2faUser($error, $this->makeUser(2, ['subscriber']), null, 'app-pw');
 
         $this->assertSame(
-            $user,
-            $result,
+            [],
+            $error->errors,
             'H1: app password must be allowed for a non-required, non-enrolled user'
         );
     }
@@ -546,35 +610,48 @@ final class Site2faModuleTest extends TestCase
 
         $module = new Site2faModule($policy, [$totpProvider, new EmailCodeProvider(), new BackupCodesProvider()]);
 
-        $result = $module->blockAppPasswordFor2faUser($user, $user, 'app-pw', null, null);
+        $error = new \WP_Error();
+        $module->blockAppPasswordFor2faUser($error, $user, null, 'app-pw');
 
-        $this->assertInstanceOf(
-            \WP_Error::class,
-            $result,
+        $this->assertSame(
+            'wpmgr_2fa_app_password_blocked',
+            $error->get_error_code(),
             'H1: app password must be blocked for a user with TOTP enrolled (even if not role-required)'
         );
     }
 
-    public function test_h1_app_password_passes_through_prior_wp_error(): void
+    public function test_h1_app_password_ignores_a_caller_that_is_not_core(): void
     {
-        // If a prior filter already returned a WP_Error, it must pass through unchanged.
+        // Core's contract is ($error, $user, ...). Another plugin re-firing the
+        // action with something else must not make this callback guess: there is
+        // no WP_Error to refuse through, so the only safe move is to do nothing.
         $policy = SecurityPolicy::fromArray([
-            'policy' => ['two_factor_enabled' => true],
+            'policy' => ['two_factor_enabled' => true, 'two_factor_required_roles' => ['administrator']],
         ]);
         $module = $this->makeModule($policy);
+        $user   = $this->makeUser(1, ['administrator']);
 
-        $priorError = new \WP_Error('prior_error', 'Some earlier auth failure');
-        $user       = $this->makeUser(1, ['administrator']);
+        $module->blockAppPasswordFor2faUser(null, $user, null, 'app-pw');
+        $module->blockAppPasswordFor2faUser(new \WP_Error(), 'not-a-user', null, 'app-pw');
 
-        $result = $module->blockAppPasswordFor2faUser($priorError, $user, 'app-pw', null, null);
-
-        $this->assertSame($priorError, $result, 'H1: prior WP_Error must pass through unchanged');
+        // Reaching here without a TypeError is the assertion; add an explicit one
+        // so the test is not a bare smoke test.
+        $error = new \WP_Error('prior_error', 'Some earlier auth failure');
+        $module->blockAppPasswordFor2faUser($error, false, null, 'app-pw');
+        $this->assertSame(
+            ['prior_error' => 'Some earlier auth failure'],
+            $error->errors,
+            'H1: a non-core argument shape must leave the passed WP_Error untouched'
+        );
     }
 
-    public function test_h1_app_password_allowed_for_agent_rest_request(): void
+    public function test_h1_request_uri_cannot_exempt_an_app_password(): void
     {
-        // Requests to /wpmgr/v1/* must always be exempted from app-password blocking,
-        // regardless of user role -- the agent's own REST channel uses Ed25519 auth.
+        // #536: there is no REQUEST_URI exemption any more. It used to be
+        // str_contains($uri, '/wpmgr/v1/') over the whole client-supplied
+        // request target, which any caller could satisfy with one spare query
+        // parameter. The agent's own channel is Ed25519-signed and never
+        // presents an application password, so the exemption bought nothing.
         $policy = SecurityPolicy::fromArray([
             'policy' => [
                 'two_factor_enabled'        => true,
@@ -583,22 +660,28 @@ final class Site2faModuleTest extends TestCase
         ]);
         $module = $this->makeModule($policy);
 
-        $user    = $this->makeUser(1, ['administrator']);
-        $request = new \WP_REST_Request();
+        $user = $this->makeUser(1, ['administrator']);
 
-        // Simulate the agent REST request by setting REQUEST_URI.
-        $_SERVER['REQUEST_URI'] = '/wp-json/wpmgr/v1/command/sync_security_policy';
+        $uris = [
+            '/wp-json/wpmgr/v1/command/sync_security_policy',
+            '/wp-json/wp/v2/users/1?wpmgr=/wpmgr/v1/',
+            '/?rest_route=/wpmgr/v1/status',
+        ];
 
-        $result = $module->blockAppPasswordFor2faUser($user, $user, 'app-pw', null, $request);
+        foreach ($uris as $uri) {
+            $_SERVER['REQUEST_URI'] = $uri;
+
+            $error = new \WP_Error();
+            $module->blockAppPasswordFor2faUser($error, $user, null, 'app-pw');
+
+            $this->assertSame(
+                'wpmgr_2fa_app_password_blocked',
+                $error->get_error_code(),
+                'H1/#536: REQUEST_URI must not exempt a 2FA-required user; failed for ' . $uri
+            );
+        }
 
         unset($_SERVER['REQUEST_URI']);
-
-        // The agent channel is exempted: should return the original user, not a WP_Error.
-        $this->assertSame(
-            $user,
-            $result,
-            'H1: agent /wpmgr/v1 requests must be exempted from app-password blocking'
-        );
     }
 
     // -------------------------------------------------------------------------

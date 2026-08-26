@@ -1393,18 +1393,6 @@ parameters:
 			path: includes/security/class-security-policy.php
 
 		-
-			message: '#^Call to function method_exists\(\) with WP_REST_Request and ''get_route'' will always evaluate to true\.$#'
-			identifier: function.alreadyNarrowedType
-			count: 1
-			path: includes/security/class-site-2fa-module.php
-
-		-
-			message: '#^Parameter \#1 \$object_or_class of function is_a expects object, WP_Error\|WP_User\|null given\.$#'
-			identifier: argument.type
-			count: 1
-			path: includes/security/class-site-2fa-module.php
-
-		-
 			message: '#^Property WP_Roles\:\:\$role_names \(array\<string\>\) in isset\(\) is not nullable\.$#'
 			identifier: isset.property
 			count: 1
