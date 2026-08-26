@@ -418,6 +418,17 @@ func (s *Service) RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUI
 	if lookupErr != nil {
 		return lookupErr
 	}
+	// Read the CDN ciphertext we must carry forward BEFORE minting, for the
+	// same fail-fast reason as the checks above: UpsertPerfConfig writes
+	// cdn_credentials_encrypted unconditionally, so a FAILED read must abort
+	// the whole rotate rather than blank a site's stored CDN credentials
+	// (GH #522). Reading it here means a read failure also never leaves a
+	// rotated-but-unpushed hash behind. A genuine "no credentials stored"
+	// still returns (nil, nil) and is not an error.
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		return ctErr
+	}
 
 	freshKey, mintErr := s.mintAndRotateBeaconKey(ctx, tenantID, siteID)
 	if mintErr != nil {
@@ -430,7 +441,6 @@ func (s *Service) RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUI
 	// forward unchanged (UpsertPerfConfig always writes the column — mirrors
 	// EnableCache/DisableCache exactly).
 	cfg.ConfigVersion++
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
 	saved, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct})
 	if err != nil {
 		return err
@@ -470,7 +480,23 @@ func (s *Service) resolveCDNCiphertext(ctx context.Context, tenantID, siteID uui
 	// No new creds: carry forward the existing ciphertext.
 	prior, _, err := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
 	if err != nil {
-		return nil, err
+		// GH #522 review follow-up: this used to return the bare repo error,
+		// which the handler renders verbatim (EnableCache/DisableCache render
+		// non-domain errors as HTTP 200 {"ok":false,"detail":err.Error()};
+		// UpdateConfig/RotateBeaconKey propagate it as a plain 500 message),
+		// leaking persistence-layer internals (e.g. "tenant tx failed:
+		// connection reset") to anyone who can click the button. Map it to a
+		// stable domain error here — the single chokepoint all four call
+		// sites (UpdateConfig, RotateBeaconKey, EnableCache, DisableCache)
+		// share — and log the raw diagnostic once, here, since this is the
+		// only place it should still be visible. Deliberately no
+		// .WithCause: handler.go's bulkConfig calls err.Error() on
+		// confirmed domain errors, and (*domain.Error).Error() appends the
+		// cause, which would re-open the identical leak through that path.
+		s.logger.Error("perf: CDN credentials read failed",
+			slog.String("site_id", siteID.String()), slog.Any("error", err))
+		return nil, domain.ServiceUnavailable("perf_cdn_credentials_read_failed",
+			"Could not read this site's stored CDN credentials, so nothing was changed. Your stored credentials are intact — please try again in a moment.")
 	}
 	return prior, nil
 }
@@ -699,7 +725,14 @@ func (s *Service) EnableCache(ctx context.Context, tenantID, siteID uuid.UUID) (
 	}
 	cfg.CacheEnabled = true
 	cfg.ConfigVersion = cfg.ConfigVersion + 1
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
+	// Carry the stored CDN ciphertext forward. UpsertPerfConfig writes
+	// cdn_credentials_encrypted unconditionally, so a FAILED read must abort
+	// the toggle instead of blanking the site's credentials (GH #522) —
+	// "read failed" and "no credentials stored" are NOT the same nil.
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		return "", ctErr
+	}
 	if _, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct}); err != nil {
 		return "", err
 	}
@@ -745,7 +778,12 @@ func (s *Service) DisableCache(ctx context.Context, tenantID, siteID uuid.UUID) 
 	}
 	cfg.CacheEnabled = false
 	cfg.ConfigVersion = cfg.ConfigVersion + 1
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
+	// See EnableCache: a failed credentials read aborts the toggle rather than
+	// silently NULLing cdn_credentials_encrypted (GH #522).
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		return "", ctErr
+	}
 	if _, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct}); err != nil {
 		return "", err
 	}

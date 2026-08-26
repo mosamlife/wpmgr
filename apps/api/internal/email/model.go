@@ -425,6 +425,11 @@ type LogDetail struct {
 type ResendTarget struct {
 	AgentSeq   *int64
 	BodyStored bool
+	// MessageID is the provider Message-ID recorded for this row, or nil when
+	// none was ever captured. Sent to the agent as the #528 confirmation
+	// selector when present. Nil is common and expected — see
+	// agentcmd.ResendEmailRequest.MessageID.
+	MessageID *string
 }
 
 // IngestEntry is one entry from the agent's ingest push.
@@ -595,6 +600,25 @@ type ResendResult struct {
 	OK        bool
 	Detail    string
 	MessageID string
+	// Verified is the SITE's confirmation that it resent the same message the
+	// operator selected (GH #528) — agentcmd.ResendEmailResult.IsVerified(),
+	// never anything the CP inferred from its own request.
+	//
+	// False has two causes, both unconfirmed sends: the row carried no recorded
+	// Message-ID to compare against, or the site's plugin is too old to answer
+	// the question. It is never silently false — Detail names the cause and the
+	// audit row records the flag.
+	Verified bool
+	// LegacyAgent distinguishes those two causes (PR #542 review, second
+	// pass): true only when the CP actually had a Message-ID to send AND the
+	// agent's response omitted `verified` altogether (too old to know the
+	// field exists — updating the plugin is the fix). False both when a
+	// current agent answered `verified: false` out loud (it ran and had
+	// nothing to compare) and when the CP never sent a Message-ID at all — in
+	// that case the agent's silence proves nothing about its version, so
+	// recording legacy_agent=true would state an intention rather than a
+	// fact. Meaningless when Verified is true.
+	LegacyAgent bool
 }
 
 // BulkResendInput is the request for POST /sites/:siteId/email/log/resend (bulk).
@@ -609,6 +633,12 @@ type BulkResendResult struct {
 	LogID  uuid.UUID
 	OK     bool
 	Detail string
+	// Verified mirrors ResendResult.Verified for this entry. Per-entry, not
+	// per-batch: one batch routinely mixes rows that could be confirmed with
+	// rows that could not.
+	Verified bool
+	// LegacyAgent mirrors ResendResult.LegacyAgent for this entry — see there.
+	LegacyAgent bool
 }
 
 // BulkDeleteLogsInput is the request for DELETE /sites/:siteId/email/log (bulk).

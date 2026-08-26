@@ -1710,7 +1710,8 @@ func (r *Repo) PruneWebhookDedup(ctx context.Context, cutoffTs time.Time) (int64
 
 // GetResendTarget fetches everything a resend dispatch needs to decide whether
 // the command can succeed, and to name the row to the agent: the agent-local
-// row id (agent_seq) and the body_stored flag.
+// row id (agent_seq), the body_stored flag, and the recorded Message-ID that
+// confirms agent_seq still names the message the operator chose (GH #528).
 //
 // GH #520: the resend gate used to read body_stored alone, because the CP
 // believed it was sending the body itself. The agent addresses its own log by
@@ -1736,6 +1737,10 @@ func (r *Repo) GetResendTarget(ctx context.Context, tenantID, siteID, id uuid.UU
 		}
 		target.AgentSeq = row.AgentSeq
 		target.BodyStored = row.BodyStored
+		// GH #528: the recorded Message-ID is the confirmation selector the
+		// agent checks its own row against. Nullable, and legitimately null for
+		// failed sends — the service handles the absence, it does not refuse.
+		target.MessageID = row.MessageID
 		return nil
 	})
 	return target, err
