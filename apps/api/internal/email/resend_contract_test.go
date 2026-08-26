@@ -479,6 +479,69 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 	}
 }
 
+// TestResendEmail_NoMessageID_LegacyAgentSilence_IsNotAPluginProblem is the
+// regression test for a CodeRabbit thread on PR #542: the combination the
+// legacyAgent-only branching in this same PR's first pass got wrong.
+//
+// The row has no recorded Message-ID (askedForCheck=false, the ordinary shape
+// of a resend whose original send failed), AND the agent's response happens to
+// omit `verified` altogether — the same wire shape as a legacy agent's
+// silence. The first pass keyed the operator note on that silence alone
+// (legacyAgent := res.Verified == nil) and told this operator to update the
+// plugin. That advice cannot possibly help: the CP never had a Message-ID to
+// send, so no agent of any version — current or legacy — could have confirmed
+// anything. Whether nothing could be checked must be decided before whether
+// the agent stayed silent; it wins over legacyAgent, not the other way round.
+func TestResendEmail_NoMessageID_LegacyAgentSilence_IsNotAPluginProblem(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	const agentSeq int64 = 202
+
+	repo := newFakeResendRepo(logID, agentSeq) // no message_id — a failed send
+	// Same wire shape as TestResendEmail_LegacyAgentSilence_IsNotVerified: no
+	// `verified` key at all. The only difference is this row never had a
+	// Message-ID to send in the first place.
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>"}`)}
+	svc := newResendSvc(repo, agent)
+
+	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("a row without a Message-ID must still resend, got ok=false detail=%q", res.Detail)
+	}
+	if agent.lastReq.MessageID != "" {
+		t.Fatalf("precondition: this row has no Message-ID, so none may be sent; got %q", agent.lastReq.MessageID)
+	}
+	if res.Verified {
+		t.Error("the agent returned no `verified` field; this must not report a verified resend")
+	}
+	if !strings.Contains(res.Detail, "could not confirm") {
+		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
+	}
+	// The crux of the bug: nothing could have been checked, so telling this
+	// operator to update the plugin is advice that cannot help.
+	if strings.Contains(res.Detail, "too old") || strings.Contains(res.Detail, "Update the plugin") {
+		t.Errorf("no Message-ID was ever sent, so this is not a plugin problem, got %q", res.Detail)
+	}
+	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+		t.Errorf("expected the no-recorded-id cause, got %q", res.Detail)
+	}
+	if !strings.Contains(res.Detail, "nothing to fix") {
+		t.Errorf("the operator must be told plainly there is nothing to fix, got %q", res.Detail)
+	}
+
+	meta, ok := resendAuditMeta(logID, res)
+	if !ok {
+		t.Fatal("a completed send must still be audited when unverified")
+	}
+	if meta["legacy_agent"] != false {
+		t.Errorf("audit metadata legacy_agent = %v, want false: a request that never asked for a "+
+			"check cannot use the agent's silence as evidence it is a legacy agent", meta["legacy_agent"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GH #528, PR #542 review — the CP never normalises a Message-ID it dispatches
 // ---------------------------------------------------------------------------

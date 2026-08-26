@@ -613,11 +613,15 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 		// resend from an unconfirmed one is the same defect as one that records
 		// intentions: it is believed.
 		"verified": res.Verified,
-		// PR #542 review: an unverified resend has two causes with different
-		// remedies (see ResendResult.LegacyAgent). An audit row that collapses
-		// them is the same defect one layer down — it cannot tell a reader
-		// auditing this site's history whether the plugin needed updating or
-		// nothing was wrong at all. Meaningless (false) when verified is true.
+		// PR #542 review: an unverified resend has two fixable-or-not causes
+		// with different remedies (see ResendResult.LegacyAgent). An audit row
+		// that collapses them is the same defect one layer down — it cannot
+		// tell a reader auditing this site's history whether the plugin
+		// needed updating or nothing was wrong at all. ResendResult.LegacyAgent
+		// is already gated on askedForCheck, so a request that never had a
+		// Message-ID to send records false here too: "legacy agent" is a
+		// verdict on this response, not an inference from silence when
+		// nothing was asked. Meaningless (false) when verified is true.
 		"legacy_agent": res.LegacyAgent,
 	}, true
 }

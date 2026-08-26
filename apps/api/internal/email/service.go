@@ -1053,13 +1053,21 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 		verified = false
 	}
 
-	// legacyAgent is the wire fact that distinguishes the two ways IsVerified()
-	// can come back false (PR #542 review) — see resendUnverifiedNote.
-	legacyAgent := res.Verified == nil
+	// legacyAgent is gated on askedForCheck (PR #542 review, second pass): the
+	// wire fact "the agent's response omitted `verified`" only means "this
+	// agent is too old" when the CP actually sent something for it to compare
+	// against. When askedForCheck is false there was nothing to check, so the
+	// field's absence proves nothing about the agent's version — recording
+	// legacy_agent=true here would state an intention (this agent must be old)
+	// rather than a fact, and it is exactly what sent an operator to update a
+	// plugin that update could never have helped, because the CP never had a
+	// Message-ID to send in the first place. See resendUnverifiedNote for the
+	// full priority order this same gating feeds.
+	legacyAgent := askedForCheck && res.Verified == nil
 
 	detail := res.Detail
 	if !verified {
-		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(legacyAgent))
+		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(askedForCheck, legacyAgent))
 	}
 	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified, LegacyAgent: legacyAgent}, nil
 }
@@ -1078,38 +1086,47 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 // nothing. So the caller gets Verified=false, this sentence in Detail, and an
 // audit row that records the send as unverified.
 //
-// There are TWO reasons a send can be unconfirmed and they are not
-// interchangeable, so the wording is keyed on legacyAgent, not on what the CP
-// asked for.
+// There are three causes and they carry a PRIORITY ORDER, not an independent
+// pair of switches (PR #542 review, second pass — a CodeRabbit thread on #542
+// caught the first pass's remaining gap):
 //
-// PR #542 review: this used to branch on askedForCheck (did the CP have a
-// Message-ID to send). That is true whenever the original send succeeded, and
-// it is true regardless of which of the two causes below actually applies, so
-// it told a site running a fully current plugin to update it, on the strength
-// of a request-side fact that says nothing about the response. legacyAgent
-// reads the response instead: whether the agent's `verified` key was present
-// at all (agentcmd.ResendEmailResult.Verified == nil), which is exactly the
-// wire-level fact IsVerified() already treats as the legacy default.
+//  1. askedForCheck=false → the CP had no Message-ID to send, so nothing
+//     could possibly have been checked, whatever the site is running. Normal
+//     when the original send failed. Nothing for the operator to fix. This
+//     wins over everything below, including an agent that also happens to be
+//     legacy: an old agent's silence about a comparison it was never asked to
+//     run proves nothing about its version, and telling the operator to
+//     update the plugin cannot produce a comparison the CP never requested.
+//  2. askedForCheck=true, legacyAgent=false → a current agent ran the
+//     comparison and answered `verified: false` out loud. Nothing is wrong
+//     and there is nothing to fix.
+//  3. askedForCheck=true, legacyAgent=true → the agent never answered
+//     `verified` even though it was given something to compare against. Only
+//     here is updating the plugin the fix.
 //
-//	legacyAgent=true  → the agent never answered `verified`. It predates the
-//	                    GH #528 attestation and cannot confirm a resend no
-//	                    matter what the CP sends. Updating the plugin fixes
-//	                    it.
-//	legacyAgent=false → a current agent answered `verified: false` out loud:
-//	                    it ran and had nothing to compare, the normal shape
-//	                    of a resend whose original send failed and so never
-//	                    had a Message-ID recorded. Nothing is wrong and
-//	                    there is nothing to fix.
-func resendUnverifiedNote(legacyAgent bool) string {
-	if legacyAgent {
+// The first pass (this same PR) branched on legacyAgent alone, which reads
+// correctly for cases 2 and 3 but mis-selects case 3's wording whenever
+// legacyAgent happens to be true AND askedForCheck is false: an old agent
+// asked for nothing still says nothing, and the old branching sent that
+// operator to update a plugin that was never the cause and could not have
+// been the fix. askedForCheck is checked first so that case always wins.
+func resendUnverifiedNote(askedForCheck, legacyAgent bool) string {
+	switch {
+	case !askedForCheck:
+		return "Note: wpmgr could not confirm the site resent this exact message, because no " +
+			"provider message ID was recorded for this entry (usual when the original send failed) " +
+			"— there is nothing to fix here. The message has been sent; if this site's database was " +
+			"restored recently, check the delivery before relying on it."
+	case legacyAgent:
 		return "Note: wpmgr could not confirm the site resent this exact message, because this " +
 			"site's wpmgr plugin is too old to support the check. The message has been sent. " +
 			"Update the plugin on this site so future resends can be confirmed."
+	default:
+		return "Note: wpmgr could not confirm the site resent this exact message, because no " +
+			"provider message ID was recorded for this entry (usual when the original send failed) " +
+			"— there is nothing to fix here. The message has been sent; if this site's database was " +
+			"restored recently, check the delivery before relying on it."
 	}
-	return "Note: wpmgr could not confirm the site resent this exact message, because no " +
-		"provider message ID was recorded for this entry (usual when the original send failed) " +
-		"— there is nothing to fix here. The message has been sent; if this site's database was " +
-		"restored recently, check the delivery before relying on it."
 }
 
 // resendFailureMessage turns an agent-side refusal into a sentence an operator

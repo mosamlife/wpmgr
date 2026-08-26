@@ -609,12 +609,15 @@ type ResendResult struct {
 	// the question. It is never silently false — Detail names the cause and the
 	// audit row records the flag.
 	Verified bool
-	// LegacyAgent distinguishes those two causes (PR #542 review): true when
-	// the agent's response omitted `verified` altogether (too old to know the
-	// field exists — updating the plugin is the fix), false when a current
-	// agent answered `verified: false` out loud (it ran and had nothing to
-	// compare, normally because the original send failed — nothing to fix).
-	// Meaningless when Verified is true.
+	// LegacyAgent distinguishes those two causes (PR #542 review, second
+	// pass): true only when the CP actually had a Message-ID to send AND the
+	// agent's response omitted `verified` altogether (too old to know the
+	// field exists — updating the plugin is the fix). False both when a
+	// current agent answered `verified: false` out loud (it ran and had
+	// nothing to compare) and when the CP never sent a Message-ID at all — in
+	// that case the agent's silence proves nothing about its version, so
+	// recording legacy_agent=true would state an intention rather than a
+	// fact. Meaningless when Verified is true.
 	LegacyAgent bool
 }
 
