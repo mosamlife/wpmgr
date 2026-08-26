@@ -484,6 +484,7 @@ final class HardeningBanLockoutTest extends TestCase
             // Unconstrained prefix — the whole class the suffix match let through.
             'arbitrary path prefix'   => ['/anything/wp-json/wpmgr/v1/autologin', '/index.php'],
             'xmlrpc PATH_INFO'        => ['/xmlrpc.php/wp-json/wpmgr/v1/autologin', '/xmlrpc.php'],
+            'comments-post PATH_INFO' => ['/wp-comments-post.php/wp-json/wpmgr/v1/autologin', '/wp-comments-post.php'],
             'admin script PATH_INFO'  => ['/wp-admin/options.php%3f/wp-json/wpmgr/v1/autologin', '/wp-admin/options.php'],
             'percent-encoded suffix'  => ['/wp-json/wpmgr/v1/autologin%00', '/index.php'],
             'protocol-relative slash' => ['//wp-json/wpmgr/v1/autologin', '/index.php'],
