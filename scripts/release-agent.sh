@@ -31,7 +31,9 @@
 #   WPMGR_RELEASE_BUCKET   (default: wpmgr-chunks-prod)
 #   WPMGR_RELEASE_PREFIX   (default: agent-releases)
 #   WPMGR_AGENT_MIN_VERSION(default: 0.0.0)   minimum on-disk version this applies to
-#   WPMGR_AGENT_TESTED     (default: 6.8)     "Tested up to" WP version for the UI
+#   WPMGR_AGENT_TESTED     (default: parsed from apps/agent/readme.txt's own
+#                            "Tested up to:" line; an explicit override skips
+#                            that parse entirely — see GH #515)
 #
 set -euo pipefail
 
@@ -63,7 +65,8 @@ cd "$repo_root"
 BUCKET="${WPMGR_RELEASE_BUCKET:-wpmgr-chunks-prod}"
 PREFIX="${WPMGR_RELEASE_PREFIX:-agent-releases}"
 MIN_VERSION="${WPMGR_AGENT_MIN_VERSION:-0.0.0}"
-TESTED="${WPMGR_AGENT_TESTED:-6.8}"
+# TESTED is resolved below, after the zip's own header is read — its default
+# is derived from apps/agent/readme.txt, not a literal (GH #515).
 
 ZIP="release/wpmgr-agent.zip"
 SLUG="wpmgr-agent"
@@ -89,11 +92,36 @@ top_dirs="$(unzip -Z1 "$ZIP" | sed 's#/.*##' | sort -u)"
 unzip -l "$ZIP" "$PLUGIN_FILE" >/dev/null 2>&1 || die "zip is missing $PLUGIN_FILE"
 
 # --- derive version + requirements from the zip's OWN main file --------------
+# Every extraction pipeline below ends in `|| true` so a non-match never trips
+# `set -o pipefail` before the explicit `[[ -n ... ]] || die` check gets to run
+# — without it, a failed grep mid-pipeline kills the script under `set -e`
+# with bash's own bare exit 1 and no message, which is silent in a different
+# costume. The explicit check is what actually produces the actionable error.
 header="$(unzip -p "$ZIP" "$PLUGIN_FILE")"
-VERSION="$(printf '%s\n' "$header" | grep -oE "WPMGR_AGENT_VERSION', *'[^']+'" | head -1 | sed -E "s/.*'([^']+)'.*/\1/")"
+VERSION="$(printf '%s\n' "$header" | grep -oE "WPMGR_AGENT_VERSION', *'[^']+'" | head -1 | sed -E "s/.*'([^']+)'.*/\1/" || true)"
 [[ -n "$VERSION" ]] || die "could not parse WPMGR_AGENT_VERSION from $PLUGIN_FILE"
-REQUIRES="$(printf '%s\n' "$header" | grep -oiE 'Requires at least: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || echo '6.0')"
-REQUIRES_PHP="$(printf '%s\n' "$header" | grep -oiE 'Requires PHP: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || echo '8.1')"
+REQUIRES="$(printf '%s\n' "$header" | grep -oiE 'Requires at least: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+[[ -n "$REQUIRES" ]] || die "could not parse 'Requires at least' from $PLUGIN_FILE's header — refusing to publish a guessed minimum WordPress version"
+REQUIRES_PHP="$(printf '%s\n' "$header" | grep -oiE 'Requires PHP: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+[[ -n "$REQUIRES_PHP" ]] || die "could not parse 'Requires PHP' from $PLUGIN_FILE's header — refusing to publish a guessed minimum PHP version"
+
+# --- derive "Tested up to" from readme.txt, the wordpress.org listing page --
+# GH #515: this used to be `${WPMGR_AGENT_TESTED:-6.8}` and nobody ever set the
+# override, so every published manifest claimed the agent was tested only up
+# to WordPress 6.8 regardless of what readme.txt actually declared. The
+# default is now the parsed value. WPMGR_AGENT_TESTED remains available as an
+# explicit override (and, when set, skips the readme parse entirely); when it
+# is unset, a missing file or an unparseable line is a hard error — a wrong
+# compatibility floor published silently is the defect being fixed, so a
+# fallback here would only reintroduce it in a new costume.
+if [[ -n "${WPMGR_AGENT_TESTED:-}" ]]; then
+  TESTED="$WPMGR_AGENT_TESTED"
+else
+  README_FILE="apps/agent/readme.txt"
+  [[ -f "$README_FILE" ]] || die "missing $README_FILE — cannot derive 'Tested up to'; refusing to publish a guessed WordPress compatibility floor (set WPMGR_AGENT_TESTED to override explicitly)"
+  TESTED="$(grep -iE '^Tested up to:' "$README_FILE" | head -1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -1 || true)"
+  [[ -n "$TESTED" ]] || die "could not parse a 'Tested up to:' version from $README_FILE — refusing to publish a guessed WordPress compatibility floor (set WPMGR_AGENT_TESTED to override explicitly)"
+fi
 
 SHA256="$(sha256_of "$ZIP")"
 SIZE="$(wc -c < "$ZIP" | tr -d ' ')"
