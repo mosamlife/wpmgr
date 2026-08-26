@@ -977,6 +977,54 @@ final class HardeningBanLockoutTest extends TestCase
     }
 
     /**
+     * THE WIRING, not the mechanism. Every other test in this section reaches
+     * refreshServerConfigIfStale() by reflection, and every one of them would
+     * still pass if install() never called it — which is the exact shape of the
+     * bug: applyConfig() refreshed the block, install() did not, and no test
+     * looked at install() because its `static $installed` latch makes it awkward
+     * to call twice in one process. That awkwardness is why the gap survived, so
+     * this test pays for a separate process rather than inherit it.
+     *
+     * SERVER_SOFTWARE is nginx so writeServerConfig() returns before any disk
+     * write; the stamp is then the only observable effect, and it can only be
+     * written by the call under test.
+     *
+     * `@runInSeparateProcess` — install()'s latch is process-wide.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_install_reaches_the_server_config_refresh(): void
+    {
+        self::agentVersion();
+
+        $options = [HardeningModule::OPTION_SERVER_REV => '0.60.0-stale'];
+        Functions\when('get_option')->alias(
+            function ($key, $default = false) use (&$options) {
+                return $options[$key] ?? $default;
+            }
+        );
+        Functions\when('update_option')->alias(
+            function ($key, $value) use (&$options) {
+                $options[$key] = $value;
+                return true;
+            }
+        );
+        Functions\when('add_filter')->justReturn(true);
+        Functions\when('add_action')->justReturn(true);
+        Functions\when('remove_filter')->justReturn(true);
+        $_SERVER['SERVER_SOFTWARE'] = 'nginx/1.24.0';
+
+        (new HardeningModule())->install();
+
+        $this->assertSame(
+            self::agentVersion(),
+            $options[HardeningModule::OPTION_SERVER_REV] ?? null,
+            'install() must reach refreshServerConfigIfStale() — a stale block is repaired on boot, not on the next sync'
+        );
+    }
+
+    /**
      * The agent version this test process is running as. Read, never asserted:
      * another test in the same process may have defined the constant first.
      */
