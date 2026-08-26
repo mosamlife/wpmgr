@@ -1121,11 +1121,31 @@ func resendUnverifiedNote(askedForCheck, legacyAgent bool) string {
 		return "Note: wpmgr could not confirm the site resent this exact message, because this " +
 			"site's wpmgr plugin is too old to support the check. The message has been sent. " +
 			"Update the plugin on this site so future resends can be confirmed."
+	// default: askedForCheck=true, legacyAgent=false. A provider message ID
+	// WAS sent, and the site's plugin is current and did answer — it ran the
+	// comparison and reported back that it could not confirm the match. This
+	// is case 2 in the doc comment above, and is not a plugin problem, so the
+	// wording must not say a Message-ID was missing (case 1's sentence, wrongly
+	// reused here until this fix) and must not send the operator to update
+	// anything (case 3's remedy) — the plugin already answered.
+	//
+	// PR #542 follow-up: as built, apps/agent's ResendEmailCommand::execute()
+	// cannot actually reach this branch. When the CP supplies a message_id,
+	// the loaded row's id is compared once (class-resend-email-command.php
+	// ~L229-241): a mismatch returns ok=false via refuse() before verified is
+	// ever considered, and a match sets verified=true, which is never reset
+	// before the final `ok: $result['ok'], verified: $verified` return
+	// (~L256-268). So a CURRENT agent's ok=true reply always carries
+	// verified=true whenever askedForCheck is true; explicit ok=true,
+	// verified=false is not producible by this agent version. The branch is
+	// kept as a defensive fallback — for a future or nonstandard agent that
+	// runs the check and honestly reports a non-match without refusing — with
+	// wording that states the truth if it is ever hit.
 	default:
-		return "Note: wpmgr could not confirm the site resent this exact message, because no " +
-			"provider message ID was recorded for this entry (usual when the original send failed) " +
-			"— there is nothing to fix here. The message has been sent; if this site's database was " +
-			"restored recently, check the delivery before relying on it."
+		return "Note: wpmgr could not confirm the site resent this exact message. A provider " +
+			"message ID was sent for this entry, and this site's wpmgr plugin is current and " +
+			"checked it — it reported that it could not confirm the match. There is nothing to " +
+			"fix here. The message has been sent."
 	}
 }
 

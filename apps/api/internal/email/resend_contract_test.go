@@ -991,3 +991,65 @@ func TestResendFailureMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestResendUnverifiedNote_DefaultCase pins case 2 of resendUnverifiedNote's
+// doc comment directly: askedForCheck=true, legacyAgent=false. A provider
+// message ID WAS sent, and a current agent answered the comparison honestly
+// with verified:false. Before this fix, this branch returned the identical
+// sentence as the !askedForCheck case ("no provider message ID was recorded
+// for this entry"), which is the opposite of what happened here and
+// contradicted the doc comment immediately above the switch.
+//
+// As built, apps/agent's ResendEmailCommand::execute() cannot actually
+// produce this combination end to end (see the comment on the default case
+// in resendUnverifiedNote) — a supplied message_id either mismatches and
+// refuses outright, or matches and verified is fixed true through the return.
+// This test calls the function directly so the corrected wording is pinned
+// even though the branch is presently unreachable through a real agent.
+func TestResendUnverifiedNote_DefaultCase(t *testing.T) {
+	got := resendUnverifiedNote(true, false)
+
+	if strings.Contains(got, "no provider message ID was recorded") || strings.Contains(got, "usual when the original send failed") {
+		t.Errorf("a Message-ID WAS sent in this case; the note must not claim none was recorded, got %q", got)
+	}
+	if strings.Contains(got, "too old") || strings.Contains(got, "Update the plugin") {
+		t.Errorf("a current agent answered the check; the note must not send the operator to update it, got %q", got)
+	}
+	if !strings.Contains(got, "message ID was sent") {
+		t.Errorf("the note must say a Message-ID was sent, got %q", got)
+	}
+	if !strings.Contains(got, "current") {
+		t.Errorf("the note must say the plugin is current and did respond, got %q", got)
+	}
+	if !strings.Contains(got, "could not confirm the match") {
+		t.Errorf("the note must say the site reported it could not confirm the match, got %q", got)
+	}
+	if !strings.Contains(got, "message has been sent") {
+		t.Errorf("the note must say the message was sent, got %q", got)
+	}
+}
+
+// TestResendUnverifiedNote_AllCases is a light sanity check that the other two
+// branches keep their existing, distinct wording after the default case was
+// corrected — the switch was not restructured, only the default branch's
+// return value changed.
+func TestResendUnverifiedNote_AllCases(t *testing.T) {
+	cases := []struct {
+		name          string
+		askedForCheck bool
+		legacyAgent   bool
+		want          string
+	}{
+		{name: "no message id at all", askedForCheck: false, legacyAgent: false, want: "no provider message ID was recorded"},
+		{name: "legacy agent silence", askedForCheck: true, legacyAgent: true, want: "too old to support the check"},
+		{name: "current agent, verified:false", askedForCheck: true, legacyAgent: false, want: "could not confirm the match"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resendUnverifiedNote(tc.askedForCheck, tc.legacyAgent)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("resendUnverifiedNote(%v, %v) = %q, want it to contain %q", tc.askedForCheck, tc.legacyAgent, got, tc.want)
+			}
+		})
+	}
+}
