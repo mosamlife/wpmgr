@@ -9,12 +9,12 @@
  *   Content-Type: application/json
  *   Body: { "agent_seq": <int>, "message_id": "<string>" (optional) }
  *
- * Response:
- *   On success: { "ok": true, "detail": "resent", "message_id": "<string>" }
- *   Body not stored: { "ok": false, "detail": "body_not_stored" }
- *   Row not found:   { "ok": false, "detail": "log_row_not_found" }
- *   Config missing:  { "ok": false, "detail": "no email config" }
- *   Identity check:  { "ok": false, "detail": "message_id_mismatch" }
+ * Response (every branch carries all four keys):
+ *   On success: { "ok": true, "detail": "resent", "message_id": "<string>", "verified": <bool> }
+ *   Body not stored: { "ok": false, "detail": "body_not_stored", "verified": <bool> }
+ *   Row not found:   { "ok": false, "detail": "log_row_not_found", "verified": false }
+ *   Config missing:  { "ok": false, "detail": "no email config", "verified": false }
+ *   Identity check:  { "ok": false, "detail": "message_id_mismatch", "verified": false }
  *
  * The command:
  *   1. Looks up the buffered row by agent_seq in wpmgr_email_log.
@@ -57,6 +57,31 @@
  * a mirror of this row's own message_id, so presence on one side with absence
  * on the other means they are not the same row — which is precisely what a
  * rolled-back counter re-issuing an id to a later failed send looks like.
+ *
+ * The ids are compared as RAW BYTES, both sides untouched. A provider message
+ * id is opaque: this plugin stores it and reports it without normalisation
+ * anywhere else, so normalising it at the comparison alone would invent an
+ * equality the rest of the system does not hold. Two ids that differ only in
+ * surrounding whitespace are two different ids, and folding them together
+ * weakens the guard in the single direction that matters — it lets a re-used
+ * agent_seq match a different stored email and send it. Nothing here trims,
+ * lowercases, unwraps angle brackets or otherwise "helps"; if some provider
+ * ever genuinely needs it, it gets a narrow rule naming that provider, never a
+ * blanket normalisation of both sides.
+ *
+ * The response carries "verified": THIS AGENT'S attestation that it performed
+ * the comparison, and not an inference anyone else may draw.
+ *
+ * It is true on exactly one code path — a supplied message_id was compared
+ * against the loaded row and matched — and false on every path that skipped the
+ * comparison or was refused by it. The control plane must not conclude "the
+ * agent checked" from "I sent the field", because an agent from before this
+ * change ignores the field, resends happily and answers ok=true: inferring
+ * verification from the request would record a confirmed resend and show an
+ * operator, and the audit trail, a check that never ran. That is the same
+ * defect this file exists to fix, one layer up. An older agent omits the key
+ * altogether and the control plane reads an absent field as false, so silence
+ * and "unverified" agree and the field is safe across versions.
  *
  * The refusal `detail` is the bare literal "message_id_mismatch" and nothing
  * else. It is a contract string the control plane pins and maps to
@@ -130,17 +155,17 @@ final class ResendEmailCommand implements CommandInterface {
 	 * @param array<string,mixed> $claims Validated JWT claims.
 	 * @param array<string,mixed> $params ResendEmailRequest fields
 	 *                                    (agent_seq: int, message_id: ?string optional).
-	 * @return array{ok:bool,detail:string,message_id:string}
+	 * @return array{ok:bool,detail:string,message_id:string,verified:bool}
 	 */
 	public function execute( array $claims, array $params ): array {
 		// Validate agent_seq.
 		if ( ! array_key_exists( 'agent_seq', $params ) ) {
-			return array( 'ok' => false, 'detail' => 'missing required field: agent_seq', 'message_id' => '' );
+			return $this->refuse( 'missing required field: agent_seq' );
 		}
 
 		$agent_seq = filter_var( $params['agent_seq'], FILTER_VALIDATE_INT );
 		if ( $agent_seq === false || $agent_seq < 1 ) {
-			return array( 'ok' => false, 'detail' => 'agent_seq must be a positive integer', 'message_id' => '' );
+			return $this->refuse( 'agent_seq must be a positive integer' );
 		}
 
 		// Resolve the optional message_id (GH #528) before any work is done.
@@ -153,48 +178,62 @@ final class ResendEmailCommand implements CommandInterface {
 		$expected_message_id = null;
 		if ( array_key_exists( 'message_id', $params ) && $params['message_id'] !== null ) {
 			if ( ! is_string( $params['message_id'] ) ) {
-				return array(
-					'ok'         => false,
-					'detail'     => self::DETAIL_INVALID,
-					'message_id' => '',
-				);
+				return $this->refuse( self::DETAIL_INVALID );
 			}
-			$supplied = trim( $params['message_id'] );
-			if ( $supplied !== '' ) {
-				$expected_message_id = $supplied;
+			// The empty test is on the RAW string, deliberately. Trimming first
+			// would reclassify a whitespace-only id as "nothing supplied" and
+			// send the mail unverified; a value that is not the empty string is
+			// an identifier, and identifiers get compared.
+			if ( $params['message_id'] !== '' ) {
+				$expected_message_id = $params['message_id'];
 			}
 		}
 
 		// Load the email config, required before attempting a resend.
 		$cfg = EmailConfig::load();
 		if ( ! $cfg->is_configured() ) {
-			return array( 'ok' => false, 'detail' => 'no email config, run sync_email_config first', 'message_id' => '' );
+			return $this->refuse( 'no email config, run sync_email_config first' );
 		}
 
 		// Fetch the log row.
 		$row = $this->fetch_row( $agent_seq );
 		if ( $row === null ) {
-			return array( 'ok' => false, 'detail' => 'log_row_not_found', 'message_id' => '' );
+			return $this->refuse( 'log_row_not_found' );
 		}
 
 		// GH #528: verify the loaded row IS the message the control plane named,
 		// before anything is built and long before anything is sent. This runs
 		// ahead of the body_stored check on purpose: "body_not_stored" about the
 		// wrong row is a misleading answer to give an operator.
+		//
+		// $verified is this agent's own attestation and nothing else. It starts
+		// false and is raised on exactly one line, below, after a supplied id has
+		// been compared against this row and found identical. It must never be
+		// derived from the presence of the request field: the control plane
+		// already knows what it sent, and what it cannot know is whether THIS
+		// agent looked. An agent from before this change omits the key entirely
+		// and the control plane reads that absence as false, so an old agent's
+		// silence and "unverified" say the same thing.
+		$verified = false;
 		if ( $expected_message_id !== null ) {
-			$stored_message_id = trim( (string) ( $row['message_id'] ?? '' ) );
+			// Compared as raw bytes, both sides untouched. A provider message id
+			// is opaque and is stored and reported without normalisation
+			// everywhere else in this plugin, so normalising it here would invent
+			// an equality the rest of the system does not hold — and it would do
+			// so in the one direction that matters, letting a re-used agent_seq
+			// match a different stored email and send it.
+			$stored_message_id = (string) ( $row['message_id'] ?? '' );
 			if ( $stored_message_id !== $expected_message_id ) {
-				return array(
-					'ok'         => false,
-					'detail'     => self::DETAIL_MISMATCH,
-					'message_id' => '',
-				);
+				return $this->refuse( self::DETAIL_MISMATCH );
 			}
+			$verified = true;
 		}
 
-		// Refuse resend when the body was not stored.
+		// Refuse resend when the body was not stored. The attestation is carried
+		// through: if the comparison ran and matched, it matched, and `ok` is
+		// what says the resend did not happen.
 		if ( (int) ( $row['body_stored'] ?? 0 ) !== 1 ) {
-			return array( 'ok' => false, 'detail' => 'body_not_stored', 'message_id' => '' );
+			return $this->refuse( 'body_not_stored', $verified );
 		}
 
 		// Rebuild the mail payload from the stored row.
@@ -214,12 +253,36 @@ final class ResendEmailCommand implements CommandInterface {
 			'ok'         => $result['ok'],
 			'detail'     => $result['ok'] ? 'resent' : $result['detail'],
 			'message_id' => $result['message_id'],
+			'verified'   => $verified,
 		);
 	}
 
 	// -------------------------------------------------------------------------
 	// Private helpers
 	// -------------------------------------------------------------------------
+
+	/**
+	 * Build a refusal, with the GH #528 attestation defaulted to false.
+	 *
+	 * Every refusal in execute() returns through here so that `verified` cannot
+	 * be dropped from one of them by accident and cannot become true by default
+	 * on any of them. The parameter exists for the single refusal that happens
+	 * AFTER a successful comparison (body_not_stored), and the only other place
+	 * `verified` is ever true is the compared-and-matched path in execute().
+	 *
+	 * @param string $detail   Contract `detail` string for the refusal.
+	 * @param bool   $verified Whether a supplied message_id was compared against
+	 *                         the loaded row and matched before this refusal.
+	 * @return array{ok:bool,detail:string,message_id:string,verified:bool}
+	 */
+	private function refuse( string $detail, bool $verified = false ): array {
+		return array(
+			'ok'         => false,
+			'detail'     => $detail,
+			'message_id' => '',
+			'verified'   => $verified,
+		);
+	}
 
 	/**
 	 * Fetch a single email log row by its local id.
