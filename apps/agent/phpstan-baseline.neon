@@ -1351,12 +1351,6 @@ parameters:
 			path: includes/phpbu/class-progress-client.php
 
 		-
-			message: '#^Constant WPMgr\\Agent\\Security\\HardeningModule\:\:AGENT_AUTOLOGIN_PATH is unused\.$#'
-			identifier: classConstant.unused
-			count: 1
-			path: includes/security/class-hardening-module.php
-
-		-
 			message: '#^Found usage of constant DOING_CRON\. Use wp_doing_cron\(\) instead\.$#'
 			identifier: phpstanWP.wpConstant.fetch
 			count: 1

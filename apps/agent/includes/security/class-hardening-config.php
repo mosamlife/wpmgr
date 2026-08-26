@@ -56,6 +56,52 @@ final class HardeningConfig
     public const BAN_TYPE_RANGE      = 'range';
     public const BAN_TYPE_USER_AGENT = 'user_agent';
 
+    /**
+     * Shortest accepted user_agent ban pattern (GH #529).
+     *
+     * The match is an unbounded case-insensitive substring, so a one- to
+     * three-character pattern ("NT", "64", "rv:") appears inside essentially
+     * every real browser user-agent string. Four is the shortest length at
+     * which a pattern can plausibly identify a specific client, and it still
+     * admits the short hostile agents operators actually ban ("curl", "wget",
+     * "nikto", "zmeu").
+     */
+    public const UA_BAN_MIN_LENGTH = 4;
+
+    /**
+     * Representative user-agent strings sent by ordinary visitors' browsers.
+     *
+     * A user_agent ban pattern that is a case-insensitive substring of ANY of
+     * these would 403 real people, so it is refused at this boundary rather
+     * than persisted (GH #529). This is a genericity test, not a matching
+     * engine: the strings only ever appear on the LEFT of the stripos() call
+     * in {@see userAgentPatternRejection()}, never on the right, so no request
+     * is ever compared against them at runtime.
+     *
+     * Deliberately contains only mainstream browsers. Crawler and bot agents
+     * (Googlebot, bingbot, AhrefsBot, …) are absent because banning one of
+     * those is a legitimate operator choice this validator must not block.
+     *
+     * @var array<int,string>
+     */
+    private const COMMON_BROWSER_AGENTS = [
+        // Chrome — Windows, macOS, Linux.
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        // Edge.
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0',
+        // Firefox — Windows, macOS.
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:130.0) Gecko/20100101 Firefox/130.0',
+        // Safari — macOS, iOS, iPadOS.
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        // Chrome on Android.
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36',
+    ];
+
     /** Toggle: add DISALLOW_FILE_EDIT to wp-config. */
     public readonly bool $disableFileEditor;
 
@@ -98,6 +144,25 @@ final class HardeningConfig
     public readonly array $bans;
 
     /**
+     * Ban entries this object REFUSED during validation, with the reason.
+     *
+     * Only populated for refusals an operator needs to see — today, user_agent
+     * patterns rejected as too generic (GH #529). Structural junk (a missing
+     * id, an unparseable IP, a control character) stays silently dropped: that
+     * is a malformed push, not an operator decision quietly discarded.
+     *
+     * NOT part of {@see toArray()} and therefore never persisted. A refusal is
+     * a property of one push, not of stored site state; re-reading the option
+     * later must not resurrect a stale complaint. The live surface is the
+     * sync_security_hardening command's `detail` string, which travels straight
+     * back to the control plane and into the operator's dashboard — see
+     * {@see \WPMgr\Agent\Commands\SyncSecurityHardeningCommand::execute()}.
+     *
+     * @var array<int,array{value:string,reason:string}>
+     */
+    public readonly array $rejectedBans;
+
+    /**
      * @param bool   $disableFileEditor
      * @param string $xmlrpcMode
      * @param string $restrictRestApi
@@ -109,6 +174,7 @@ final class HardeningConfig
      * @param bool   $disablePhpInUploads
      * @param bool   $protectSystemFiles
      * @param array<int,array{id:string,type:string,value:string,comment:string}> $bans
+     * @param array<int,array{value:string,reason:string}> $rejectedBans
      */
     public function __construct(
         bool $disableFileEditor,
@@ -121,7 +187,8 @@ final class HardeningConfig
         bool $disableDirectoryBrowsing,
         bool $disablePhpInUploads,
         bool $protectSystemFiles,
-        array $bans
+        array $bans,
+        array $rejectedBans = []
     ) {
         $this->disableFileEditor        = $disableFileEditor;
         $this->xmlrpcMode               = $xmlrpcMode;
@@ -134,6 +201,7 @@ final class HardeningConfig
         $this->disablePhpInUploads      = $disablePhpInUploads;
         $this->protectSystemFiles       = $protectSystemFiles;
         $this->bans                     = $bans;
+        $this->rejectedBans             = $rejectedBans;
     }
 
     /**
@@ -168,7 +236,8 @@ final class HardeningConfig
             self::LOGIN_BOTH
         );
 
-        $validatedBans = self::validateBans($bans);
+        $rejectedBans  = [];
+        $validatedBans = self::validateBans($bans, $rejectedBans);
 
         return new self(
             (bool) ($cfg['disable_file_editor']         ?? false),
@@ -181,7 +250,8 @@ final class HardeningConfig
             (bool) ($cfg['disable_directory_browsing']   ?? false),
             (bool) ($cfg['disable_php_in_uploads']       ?? false),
             (bool) ($cfg['protect_system_files']         ?? false),
-            $validatedBans
+            $validatedBans,
+            $rejectedBans
         );
     }
 
@@ -288,6 +358,70 @@ final class HardeningConfig
         return $out;
     }
 
+    /**
+     * Ban entries refused during validation, each with an operator-readable
+     * reason. Empty on a clean push. See {@see $rejectedBans}.
+     *
+     * @return array<int,array{value:string,reason:string}>
+     */
+    public function rejectedBans(): array
+    {
+        return $this->rejectedBans;
+    }
+
+    /**
+     * Decide whether a user_agent ban pattern is safe to enforce (GH #529).
+     *
+     * Returns null when the pattern is acceptable, or an operator-readable
+     * reason string when it must be refused.
+     *
+     * Both enforcement layers match this pattern as an UNBOUNDED,
+     * case-insensitive substring of the request's user-agent — the PHP filter
+     * in HardeningModule::applyBanFilters() via stripos(), and the .htaccess
+     * block in ServerConfigWriter via `RewriteCond %{HTTP_USER_AGENT} … [NC]`.
+     * A pattern that appears inside ordinary browser user-agents therefore
+     * blocks ordinary people, including the administrator, on every page of
+     * the site. That is what this refuses, and it is refused HERE so both
+     * layers inherit the guarantee from one place.
+     *
+     * This is not an attempt to judge intent. A pattern is refused only when
+     * it is demonstrably a substring of a real mainstream browser's
+     * user-agent, or too short to be one — never for looking suspicious.
+     * "sqlmap", "curl/7.88", "Nikto", "python-requests", "Mozilla/5.0
+     * (compatible; EvilBot/1.0)" and every other genuinely hostile agent pass
+     * unchanged, because none of them appears inside a real browser's string.
+     *
+     * @param string $pattern Raw operator- or control-plane-supplied pattern.
+     * @return string|null Reason for refusal, or null when the pattern is safe.
+     */
+    public static function userAgentPatternRejection(string $pattern): ?string
+    {
+        $pattern = trim($pattern);
+
+        if ($pattern === '') {
+            return 'pattern is empty';
+        }
+
+        // strlen(), not mb_strlen(): the pattern is matched byte-wise by
+        // stripos() and by Apache, so bytes are the unit that decides how
+        // promiscuous it is.
+        if (strlen($pattern) < self::UA_BAN_MIN_LENGTH) {
+            return sprintf(
+                'pattern is shorter than %d characters and would match almost every visitor',
+                self::UA_BAN_MIN_LENGTH
+            );
+        }
+
+        foreach (self::COMMON_BROWSER_AGENTS as $agent) {
+            if (stripos($agent, $pattern) !== false) {
+                return 'pattern appears inside ordinary browser user-agents '
+                    . 'and would block real visitors, including administrators';
+            }
+        }
+
+        return null;
+    }
+
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
@@ -313,10 +447,18 @@ final class HardeningConfig
      * non-empty strings. Unknown types, empty values, or non-string fields are
      * silently dropped rather than causing an error.
      *
+     * A user_agent pattern refused by {@see userAgentPatternRejection()} is NOT
+     * silently dropped: it is appended to $rejected so the caller can report it
+     * back to whoever configured it (GH #529). Dropping an operator's explicit
+     * instruction without telling them is its own fail-open — they would
+     * believe a ban is live when it is not.
+     *
      * @param array<mixed> $rawBans
+     * @param array<int,array{value:string,reason:string}> $rejected Out-param:
+     *   receives every ban refused for a reason the operator needs to know.
      * @return array<int,array{id:string,type:string,value:string,comment:string}>
      */
-    private static function validateBans(array $rawBans): array
+    private static function validateBans(array $rawBans, array &$rejected = []): array
     {
         $valid = [];
         foreach ($rawBans as $entry) {
@@ -361,7 +503,18 @@ final class HardeningConfig
                 continue;
             }
 
-            // user_agent: no structural validation beyond non-empty + above control-char check.
+            // GH #529: a user_agent pattern that is a substring of ordinary
+            // browser user-agents 403s the administrator's own login page.
+            // Refuse it here — the single boundary both the PHP filter and the
+            // .htaccess renderer read from — and record it so the refusal
+            // reaches the operator instead of vanishing.
+            if ($type === self::BAN_TYPE_USER_AGENT) {
+                $reason = self::userAgentPatternRejection($value);
+                if ($reason !== null) {
+                    $rejected[] = ['value' => $value, 'reason' => $reason];
+                    continue;
+                }
+            }
 
             $valid[] = [
                 'id'      => $id,

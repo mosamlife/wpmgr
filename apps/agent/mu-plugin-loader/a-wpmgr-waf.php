@@ -251,11 +251,32 @@ function wpmgr_waf_deny(): void
  * request; false when it would pass.
  *
  * Layer order (must be preserved exactly — tests assert on this order):
+ *   (0) WPMGR_DISABLE_SITE_2FA      → no-deny (operator recovery constant)
  *   (1) allow_cidrs match           → no-deny (always wins)
  *   (2) private/loopback IP         → no-deny (operator lock-out guard)
  *   (3) hardening_deny_cidrs        → deny    (all modes, mode-independent)
  *   (4) mode != protect             → no-deny (brute-force gate is mode-gated)
  *   (5) deny_cidrs in protect mode  → deny
+ *
+ * Layer (0) is GH #529. `define('WPMGR_DISABLE_SITE_2FA', true)` is the
+ * documented last-resort escape hatch for an administrator this plugin has
+ * locked out, and it was already honoured by Site2faModule, PasswordPolicyModule
+ * and HardeningModule's auth appliers — but not here, so an admin whose ordinary
+ * public IP had landed in a ban list still met a 403 before WordPress even
+ * booted, with the escape hatch set and no way to tell it had done nothing.
+ *
+ * The constant is readable at this point: wp-config.php runs to completion
+ * (it is what requires wp-settings.php), so every define() in it exists before
+ * wp-settings.php line 1, and the mu-plugin include loop is line 498 of the
+ * WordPress 7.0.4 tree.
+ *
+ * Setting it costs an attacker nothing less than write access to wp-config.php,
+ * at which point the site is already theirs; it costs a locked-out owner one
+ * line over SFTP. That asymmetry is why this is the correct recovery lever for
+ * the IP gate, and why the gate does NOT instead exempt wp-login.php by path:
+ * blocking repeated login attempts by IP is the entire job of deny_cidrs in
+ * protect mode, and a path exemption would delete the brute-force protection it
+ * exists to provide. A request cannot assert this constant; only the owner can.
  *
  * Extracting the decision into this pure function means:
  *   - Tests `require_once` this file and call wpmgr_waf_should_deny() directly,
@@ -269,6 +290,12 @@ function wpmgr_waf_deny(): void
  */
 function wpmgr_waf_should_deny(array $config, string $ip, string $mode): bool
 {
+    // (0) Operator recovery constant — GH #529. Set in wp-config.php, which has
+    // already run in full by the time any mu-plugin loads.
+    if (defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA) {
+        return false;
+    }
+
     if ($ip === '') {
         return false;
     }

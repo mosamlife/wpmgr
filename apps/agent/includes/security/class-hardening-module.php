@@ -134,23 +134,26 @@ final class HardeningModule
      * enumeration or the IP/user-agent bans.
      *
      * That exclusion is NOT because none of those six can lock anyone out —
-     * at least one demonstrably can. applyBanFilters() registers on `init`
+     * at least one demonstrably could. applyBanFilters() registered on `init`
      * priority 1 with no gate at all; `init` fires on wp-login.php; the match
      * is an unbounded case-insensitive substring
-     * (stripos($ua, $pattern) !== false) with no length or genericity check;
-     * and a match ends in exit('Access denied.'). A ban pattern of "Mozilla",
-     * "Chrome", "Safari", "AppleWebKit" or "Gecko" 403s the administrator's
-     * own login page along with everyone else's. That lockout risk is real,
-     * pre-existing, and tracked and scoped separately (#529) — it is not
-     * resolved by widening this constant's reach.
+     * (stripos($ua, $pattern) !== false) with, at the time, no length or
+     * genericity check; and a match ends in exit('Access denied.'). A ban
+     * pattern of "Mozilla", "Chrome", "Safari", "AppleWebKit" or "Gecko" 403'd
+     * the administrator's own login page along with everyone else's.
      *
-     * The actual reason these six stay ungated is that silently dropping a
-     * site's file-editor lock, xmlrpc mode, REST restriction, forced SSL,
-     * author-archive block or IP/user-agent bans the moment someone sets a
-     * recovery constant would risk turning a recovery step into a worse
-     * regression than the lockout it is meant to fix. The scoping to just the
-     * two auth appliers is correct; only the "cannot lock anyone out"
-     * justification for it was.
+     * GH #529 fixed that lockout WITHOUT widening this constant's reach, which
+     * remains the right call: silently dropping a site's file-editor lock,
+     * xmlrpc mode, REST restriction, forced SSL, author-archive block or
+     * IP/user-agent bans the moment someone sets a recovery constant would turn
+     * a recovery step into a worse regression than the lockout it is meant to
+     * fix. Instead the ban callback exempts exactly the two surfaces an admin
+     * needs to get back in ({@see isRecoverySurface()}), and a pattern generic
+     * enough to cause the lockout is now refused at the config boundary by
+     * HardeningConfig::userAgentPatternRejection(). The ban itself still bans.
+     *
+     * The scoping of this constant to just the two auth appliers is therefore
+     * correct; only the "cannot lock anyone out" justification for it was.
      *
      * @return bool
      */
@@ -504,6 +507,10 @@ final class HardeningModule
      * IP/range bans are fed into the existing WAF mu-plugin's deny_cidrs via the
      * stored wpmgr_security_config option's deny_cidrs key — see syncWafDenyCidrs().
      *
+     * GH #529: the recovery surfaces are exempt — see {@see isRecoverySurface()}.
+     * A user-agent ban is for traffic; it is not for the door the owner uses to
+     * get back in.
+     *
      * @param HardeningConfig $config
      * @return void
      */
@@ -516,6 +523,10 @@ final class HardeningModule
 
         // PHP-layer UA ban: fires before most output is generated (priority 1 on init).
         add_action('init', static function () use ($uaBans): void {
+            // GH #529: never 403 the login screen or the autologin route.
+            if (self::isRecoverySurface()) {
+                return;
+            }
             if (!isset($_SERVER['HTTP_USER_AGENT']) || !is_string($_SERVER['HTTP_USER_AGENT'])) {
                 return;
             }
@@ -531,6 +542,90 @@ final class HardeningModule
                 }
             }
         }, 1);
+    }
+
+    /**
+     * True when this request is one of the two surfaces an administrator uses
+     * to regain access to their own site (GH #529).
+     *
+     * Scope, deliberately narrow — exactly two surfaces:
+     *
+     *  1. The login screen. WordPress core sets $pagenow from PHP_SELF in
+     *     wp-includes/vars.php, which wp-settings.php requires (line 553 of the
+     *     7.0.4 tree) long before it fires `init` (line 771), so the global is
+     *     populated and trustworthy by the time the ban callback runs. It is
+     *     derived from the resolved script path, NOT from anything the client
+     *     sends, so a request cannot claim to be the login page. HideBackendModule
+     *     assigns the same value at `setup_theme` (line 697, still before init)
+     *     when it serves the secret slug, so a hidden login screen is covered by
+     *     the identical check with no second code path.
+     *
+     *  2. The agent's own autologin route, /wpmgr/v1/autologin. At `init`
+     *     priority 1 the REST request has not been routed yet — $wp->query_vars
+     *     ['rest_route'] is populated later, during parse_request — so the raw
+     *     request path is the only signal available, and it is matched ANCHORED
+     *     (a path SEGMENT and an exact rest_route value), never with a bare
+     *     strpos: '/blog/wp-json/wpmgr/v1/autologin' is the route, and
+     *     '/?x=/wp-json/wpmgr/v1/autologin' is not.
+     *
+     * NOT a general "logged-in users are exempt" rule, and not a blanket gate on
+     * the recovery constant. Both would be wider than the problem: the first
+     * would hand any compromised subscriber account a free pass on every page,
+     * and the second would drop a site's whole ban list the moment someone
+     * recovers a login. This exempts two doors and nothing else.
+     *
+     * Costs the ban almost nothing. A user-agent is a client-supplied string
+     * that any attacker rewrites in one line, so a UA ban was never the control
+     * holding wp-login.php: that is the login-protection subsystem's rate limit
+     * and its IP deny_cidrs in the WAF mu-plugin, both untouched here and both
+     * still fully active on this page.
+     *
+     * @return bool
+     */
+    private static function isRecoverySurface(): bool
+    {
+        // (1) The login screen — core's own resolved-script signal.
+        if (isset($GLOBALS['pagenow'])
+            && is_string($GLOBALS['pagenow'])
+            && $GLOBALS['pagenow'] === 'wp-login.php'
+        ) {
+            return true;
+        }
+
+        // (2) The agent's autologin route.
+        if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI'])) {
+            return false;
+        }
+        $uri = sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized via sanitize_text_field(wp_unslash())
+        if ($uri === '') {
+            return false;
+        }
+
+        $route      = self::AGENT_REST_NAMESPACE . self::AGENT_AUTOLOGIN_PATH;
+        $parts      = explode('?', $uri, 2);
+        $path       = rtrim($parts[0], '/');
+        $queryString = $parts[1] ?? '';
+
+        // Pretty permalinks: /wp-json/wpmgr/v1/autologin, possibly under a
+        // subdirectory install. Anchored to the END of the path.
+        if (str_ends_with($path, '/wp-json/' . $route)) {
+            return true;
+        }
+
+        // Plain permalinks: /?rest_route=/wpmgr/v1/autologin. Exact match on the
+        // decoded query argument, never a substring of the raw query string.
+        if ($queryString !== '') {
+            $args = [];
+            parse_str($queryString, $args);
+            if (isset($args['rest_route'])
+                && is_string($args['rest_route'])
+                && rtrim($args['rest_route'], '/') === '/' . $route
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
