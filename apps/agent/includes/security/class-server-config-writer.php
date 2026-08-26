@@ -362,7 +362,20 @@ final class ServerConfigWriter
         $autologinPath = preg_quote('/' . trim($restPrefix, '/') . '/' . $route, '#');
         $restRouteArg  = preg_quote('rest_route=/' . $route, '#');
 
-        return [
+        $conds = [];
+
+        // 0. The hidden login slug, when hide-backend is on. With it enabled,
+        //    wp-login.php is NOT the door — HideBackendModule intercepts the
+        //    secret slug at `setup_theme` and serves the login form there — and
+        //    `RewriteRule ^ - [F,L]` reaches the slug before PHP does. Exempting
+        //    only wp-login.php would leave the one door that works 403'd on
+        //    exactly the sites that hardened it hardest.
+        $slug = $this->hideBackendSlug();
+        if ($slug !== '') {
+            $conds[] = 'RewriteCond %{REQUEST_URI} !^' . $home . '/' . preg_quote($slug, '#') . '($|/) [NC]';
+        }
+
+        return array_merge($conds, [
             // 1. The login screen. ($|/) mirrors core's $pagenow regex, which
             //    absorbs PATH_INFO, so /wp-login.php/foo is the login screen to
             //    the PHP layer and must be the login screen to this one.
@@ -372,7 +385,31 @@ final class ServerConfigWriter
             // 3+4. Plain-permalink autologin: site root AND the rest_route arg.
             'RewriteCond %{REQUEST_URI} !^' . $home . '/(index\.php)?$ [NC,OR]',
             'RewriteCond %{QUERY_STRING} !(^|&)' . $restRouteArg . '/?($|&) [NC]',
-        ];
+        ]);
+    }
+
+    /**
+     * The configured hidden login slug, or '' when hide-backend is off.
+     *
+     * Read through SecurityPolicy rather than re-parsed here, so this cannot
+     * drift from what HideBackendModule actually matches: SecurityPolicy
+     * already validates the slug against ^[a-z0-9-]{4,64}$, rejects reserved
+     * paths, and forces hide_backend_enabled to false when the slug is
+     * unusable. A slug this returns non-empty is a slug the PHP layer honours.
+     *
+     * Anchored as the first path segment after the home path, matching
+     * HideBackendModule::matchesSlug(), which compares the first segment only
+     * so a slug buried at depth never triggers the login handler.
+     *
+     * @return string
+     */
+    private function hideBackendSlug(): string
+    {
+        if (!function_exists('get_option')) {
+            return '';
+        }
+        $policy = SecurityPolicy::load();
+        return $policy->hideBackendEnabled ? $policy->hideBackendSlug : '';
     }
 
     /**

@@ -80,9 +80,12 @@ final class HardeningModule
 
         update_option(self::OPTION_CONFIG, $encoded, false);
 
-        // Refresh the server-config block immediately on sync.
-        $this->writeServerConfig($config);
-        $this->stampServerRev();
+        // Refresh the server-config block immediately on sync. The stamp
+        // follows the write here too, so a sync that could not reach .htaccess
+        // leaves the boot-time repair armed rather than marking it done.
+        if ($this->writeServerConfig($config)) {
+            $this->stampServerRev();
+        }
 
         return true;
     }
@@ -95,14 +98,19 @@ final class HardeningModule
      * persisted config without going through a sync — see
      * {@see refreshServerConfigIfStale()}.
      *
+     * Returns whether the block on disk is now current. nginx returns true:
+     * there is no .htaccess to write, so there is nothing left undone. A false
+     * return means the file still holds whatever it held before, which is what
+     * the version stamp must not paper over.
+     *
      * @param HardeningConfig $config
-     * @return void
+     * @return bool
      */
-    private function writeServerConfig(HardeningConfig $config): void
+    private function writeServerConfig(HardeningConfig $config): bool
     {
         $writer = new ServerConfigWriter();
         if ($writer->isNginx()) {
-            return;
+            return true;
         }
 
         $hasAnyServerRule = $config->forceSsl
@@ -114,11 +122,11 @@ final class HardeningModule
             || $config->userAgentBans() !== [];
 
         if ($hasAnyServerRule) {
-            $writer->install($config);
-        } else {
-            // All toggles off — remove any prior block cleanly.
-            $writer->uninstall();
+            return $writer->install($config);
         }
+
+        // All toggles off — remove any prior block cleanly.
+        return $writer->uninstall();
     }
 
     /**
@@ -140,11 +148,23 @@ final class HardeningModule
      * message that a 403 is eating. This runs on plugins_loaded, from the site's
      * own boot, on the first request after the files change.
      *
-     * COST. One autoloaded option read per request, and a write only when the
-     * stamp differs. The stamp is written whether or not the .htaccess write
-     * succeeded: on a read-only filesystem retrying every request would be an
-     * I/O storm that still cannot succeed, and the PHP layer is the fallback
-     * there by design.
+     * THE STAMP FOLLOWS THE WRITE, NEVER LEADS IT. Stamping unconditionally
+     * looks like it avoids an I/O storm on a read-only filesystem, and it does
+     * — by permanently abandoning the repair. A .htaccess write fails for
+     * transient reasons too (a full disk, a deploy that flips the tree
+     * read-only for a minute, a lock held by another process), and one unlucky
+     * boot would then strand the site on the stale generic rule until the next
+     * version bump or the next sync — the sync being exactly the inbound
+     * request the stale 403 is eating. So the stamp is written only when the
+     * block on disk is actually current, and an unrepaired site retries on the
+     * next boot.
+     *
+     * COST. One autoloaded option read per request. On a permanently read-only
+     * site the retry costs one file read and one writability probe per boot and
+     * never reaches a write: ServerConfigWriter::install() compares the rendered
+     * block first and returns early when it is already current, then refuses
+     * before writing when the path is not writable. That is the correct price
+     * for not giving up on a site that could recover.
      *
      * @param HardeningConfig $config The config just loaded by install().
      * @return void
@@ -167,8 +187,9 @@ final class HardeningModule
             return;
         }
 
-        $this->writeServerConfig($config);
-        $this->stampServerRev();
+        if ($this->writeServerConfig($config)) {
+            $this->stampServerRev();
+        }
     }
 
     /**

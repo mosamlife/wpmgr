@@ -389,14 +389,22 @@ final class HardeningBanLockoutTest extends TestCase
         $this->assertSame([], $config->userAgentBans());
 
         // And even a pattern that IS accepted cannot reach the admin's login page.
+        // The pattern below is longer than any COMMON_BROWSER_AGENTS entry and is
+        // not a substring of one, so it MUST survive validation and MUST bind a
+        // callback. Branching on `$cb !== null` here would let this whole test
+        // pass green the day applyBanFilters() or the validator regressed and
+        // stopped binding anything — a guard that finds nothing has to go red.
         $cb = $this->captureInitCallback($this->configWithUaBan('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) x'));
-        if ($cb !== null) {
-            $GLOBALS['pagenow']         = 'wp-login.php';
-            $_SERVER['REQUEST_URI']     = '/wp-login.php';
-            $_SERVER['HTTP_USER_AGENT'] = self::ADMIN_UA;
-            $this->assertFalse($this->callbackDenies($cb));
-        }
-        $this->addToAssertionCount(1);
+        $this->assertInstanceOf(
+            \Closure::class,
+            $cb,
+            'an accepted pattern must still bind the ban callback — no callback means the ban stopped working, not that the test passed'
+        );
+
+        $GLOBALS['pagenow']         = 'wp-login.php';
+        $_SERVER['REQUEST_URI']     = '/wp-login.php';
+        $_SERVER['HTTP_USER_AGENT'] = self::ADMIN_UA;
+        $this->assertFalse($this->callbackDenies($cb));
     }
 
     /**
@@ -1022,6 +1030,105 @@ final class HardeningBanLockoutTest extends TestCase
             self::agentVersion(),
             $options[HardeningModule::OPTION_SERVER_REV] ?? null,
             'install() must reach refreshServerConfigIfStale() — a stale block is repaired on boot, not on the next sync'
+        );
+    }
+
+    /**
+     * THE STAMP MUST FOLLOW THE WRITE. Stamping a failed write marks the repair
+     * done and permanently strands the site on the stale generic rule: the only
+     * things that would try again are the next version bump and the next sync,
+     * and the sync is the inbound request the stale 403 is eating.
+     *
+     * A read-only site root is the transient case that matters — a full disk, a
+     * deploy that flips the tree read-only for a minute, a lock held elsewhere.
+     */
+    public function test_a_failed_rewrite_is_not_stamped_as_current(): void
+    {
+        $options = [HardeningModule::OPTION_SERVER_REV => '0.60.0-stale'];
+        [$root, $htaccess] = $this->stubSiteRoot($options);
+        file_put_contents($htaccess, self::STALE_BLOCK);
+
+        // Make the write fail the way a real read-only tree does.
+        chmod($htaccess, 0444);
+        chmod($root, 0555);
+
+        $ref = new \ReflectionMethod(HardeningModule::class, 'refreshServerConfigIfStale');
+        $ref->invoke(new HardeningModule(), $this->configWithUaBan('EvilBot'));
+
+        chmod($root, 0755);
+        chmod($htaccess, 0644);
+
+        $this->assertSame(
+            self::STALE_BLOCK,
+            (string) file_get_contents($htaccess),
+            'the write really did fail — otherwise this test proves nothing about the stamp'
+        );
+        $this->assertSame(
+            '0.60.0-stale',
+            $options[HardeningModule::OPTION_SERVER_REV] ?? null,
+            'a failed rewrite must leave the stamp stale so the next boot retries the repair'
+        );
+    }
+
+    /**
+     * With hide-backend on, wp-login.php is NOT the door — HideBackendModule
+     * intercepts the secret slug at setup_theme and serves the login form
+     * there. Apache reaches the slug before PHP does, so a server block that
+     * exempts only wp-login.php 403s the one door that works, on exactly the
+     * sites that hardened it hardest.
+     */
+    public function test_rendered_server_block_exempts_the_hidden_login_slug(): void
+    {
+        $this->stubSite('https://example.test', '/index.php');
+        Functions\when('get_option')->alias(
+            static function ($key, $default = false) {
+                if ($key === 'wpmgr_security_policy') {
+                    return (string) json_encode([
+                        'policy' => [
+                            'hide_backend_enabled' => true,
+                            'hide_backend_slug'    => 'my-secret-door',
+                        ],
+                    ]);
+                }
+                return $default;
+            }
+        );
+        unset($_SERVER['SERVER_SOFTWARE']);
+
+        $block = (new ServerConfigWriter())->renderInto('', HardeningConfig::fromArray([
+            'bans' => [['id' => 'ua-0', 'type' => 'user_agent', 'value' => 'EvilBot']],
+        ]));
+
+        $this->assertFalse(
+            $this->blockDenies($block, '/my-secret-door', 'EvilBot/1.0'),
+            'the hidden login slug is the recovery surface when hide-backend is on'
+        );
+        $this->assertTrue(
+            $this->blockDenies($block, '/', 'EvilBot/1.0'),
+            'and the ban must still fire on ordinary traffic'
+        );
+        $this->assertTrue(
+            $this->blockDenies($block, '/not-the-door', 'EvilBot/1.0'),
+            'only the configured slug is exempt'
+        );
+    }
+
+    /**
+     * OVER-FIRE GUARD. With hide-backend off there is no slug to exempt, and an
+     * empty or unset slug must never widen into a bare `!^/($|/)`.
+     */
+    public function test_no_slug_exemption_when_hide_backend_is_off(): void
+    {
+        $block = $this->renderBlock(['EvilBot']);
+
+        $this->assertSame(
+            4,
+            substr_count($block, 'RewriteCond %{REQUEST_URI} !') + substr_count($block, 'RewriteCond %{QUERY_STRING} !'),
+            'exactly the four standing exemptions, no slug condition'
+        );
+        $this->assertTrue(
+            $this->blockDenies($block, '/anything', 'EvilBot/1.0'),
+            'an absent slug must not exempt an arbitrary first segment'
         );
     }
 
