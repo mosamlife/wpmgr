@@ -1372,7 +1372,22 @@ final class RestoreRunner
         // Classify before the FilesArchiver generic check so 'core' is never
         // misclassified as 'file' (the legacy fallback) even when componentKindFromPartName
         // cannot match it (COMPONENT_PARTITIONS does not include 'core').
-        if (preg_match('/^core\.(g\d+\.)?part\d+\.zip$/i', $lower) === 1) {
+        $isCorePart = preg_match('/^core\.(g\d+\.)?part\d+\.zip$/i', $lower);
+        if ($isCorePart === false) {
+            // Same shape as rewritePrefix(): this call ROUTES data. A `false`
+            // absorbed as "not a core part" does not merely mis-label — the
+            // fallthrough below lands every unrecognised `.zip` on the legacy
+            // 'file' entry_kind, so a WordPress core part would be overlaid by
+            // the whole-wp-content swap path instead of the core path. Route
+            // nothing on a guess.
+            throw new \RuntimeException(
+                'RestoreRunner: cannot classify restore artifact "' . esc_html($logical) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                . '" (preg_match failed: ' . esc_html(preg_last_error_msg()) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                . '). Aborting rather than routing it to the wrong restore path.'
+                . ' Raise pcre.backtrack_limit / pcre.recursion_limit on this host and retry the restore.'
+            );
+        }
+        if ($isCorePart === 1) {
             return 'core';
         }
         // Track 5 per-component archives. FilesArchiver emits generation-
@@ -2545,6 +2560,9 @@ final class RestoreRunner
 
     /**
      * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int}|null
+     *
+     * @throws \RuntimeException When a persisted sub_state exists but cannot
+     *      be decoded — resuming from a blank slate silently skips phases.
      */
     private function loadTask(): ?array
     {
@@ -2572,6 +2590,38 @@ final class RestoreRunner
         $sub = [];
         if (isset($row['sub_state']) && is_string($row['sub_state']) && $row['sub_state'] !== '') {
             $decoded = json_decode($row['sub_state'], true);
+            // A decode FAILURE is not "no resume state", it is "we cannot read
+            // the resume state", and the two must not be conflated. Silently
+            // substituting [] hands every caller a blank slate over a run that
+            // is demonstrably mid-flight: run() would re-derive a fresh
+            // tmp_prefix and lose the tmp tables the previous pass populated,
+            // runUrlRewrite() would no-op, swap() would take its empty-list
+            // branch and report 'done' => true having swapped nothing, and
+            // armGuardOnce()'s rollback callback would "roll back" an empty
+            // sub-state — each of them reporting success over work that never
+            // happened. Fail loudly instead: the caller marks the restore
+            // failed and an operator retries, which is recoverable.
+            //
+            // The is_array() check below still stands for a payload that
+            // decodes cleanly but is not an object (`null`, a scalar), and
+            // that case is deliberately left as it was. Not because a scalar
+            // means "no state" — `null` arguably does, `5` or `"text"` is
+            // corruption wearing valid JSON, and by the reasoning above
+            // corruption ought to abort too — but because no writer of this
+            // column can produce one: seedTask() writes the literal '{}',
+            // saveTaskState() always encodes an array, and RestoreCommand
+            // seeds wp_json_encode(['params' => ...]). Reaching it means the
+            // row was edited outside this plugin. Tightening it to a throw
+            // changes resume behaviour and belongs in a change reviewed as
+            // such, not in this one.
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \RuntimeException(
+                    'RestoreRunner: persisted sub_state is unreadable (json_decode failed: '
+                    . esc_html(json_last_error_msg()) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                    . '). Refusing to resume from a blank slate — an empty sub-state would skip the'
+                    . ' table swap and report the restore complete.'
+                );
+            }
             if (is_array($decoded)) {
                 $sub = $decoded;
             }
