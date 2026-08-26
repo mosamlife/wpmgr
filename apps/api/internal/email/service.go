@@ -1002,8 +1002,10 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	if target.MessageID != nil && *target.MessageID != "" {
 		req.MessageID = *target.MessageID
 	}
-	// askedForCheck is used for WORDING and for failing closed, never as the
-	// source of `verified` — see below.
+	// askedForCheck fails the resend closed below when the site attests a
+	// comparison it had nothing to compare against. It no longer selects the
+	// operator wording — see legacyAgent and the PR #542 review note on
+	// resendUnverifiedNote.
 	askedForCheck := req.MessageID != ""
 
 	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, req)
@@ -1051,11 +1053,15 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 		verified = false
 	}
 
+	// legacyAgent is the wire fact that distinguishes the two ways IsVerified()
+	// can come back false (PR #542 review) — see resendUnverifiedNote.
+	legacyAgent := res.Verified == nil
+
 	detail := res.Detail
 	if !verified {
-		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(askedForCheck))
+		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(legacyAgent))
 	}
-	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified}, nil
+	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified, LegacyAgent: legacyAgent}, nil
 }
 
 // resendUnverifiedNote is what an operator is told when the resend went out
@@ -1073,24 +1079,37 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 // audit row that records the send as unverified.
 //
 // There are TWO reasons a send can be unconfirmed and they are not
-// interchangeable, so askedForCheck picks the true one. Telling an operator
-// "no message ID was recorded for this entry" when in fact one was recorded
-// and sent, and the SITE could not check it, is a false statement with a
-// misleading remedy attached — the same defect the rest of this change is
-// about, one layer down in the prose.
+// interchangeable, so the wording is keyed on legacyAgent, not on what the CP
+// asked for.
 //
-//	askedForCheck=false → the CP had no Message-ID to send. Nothing to fix.
-//	askedForCheck=true  → the CP sent one and the site did not answer the
-//	                      question. Updating the plugin fixes it.
-func resendUnverifiedNote(askedForCheck bool) string {
-	if askedForCheck {
-		return "Note: wpmgr could not confirm the site resent this exact message. wpmgr asked the " +
-			"site to check, and this site's wpmgr plugin is too old to answer. The message was " +
-			"sent. Update the plugin on this site so future resends are confirmed."
+// PR #542 review: this used to branch on askedForCheck (did the CP have a
+// Message-ID to send). That is true whenever the original send succeeded, and
+// it is true regardless of which of the two causes below actually applies, so
+// it told a site running a fully current plugin to update it, on the strength
+// of a request-side fact that says nothing about the response. legacyAgent
+// reads the response instead: whether the agent's `verified` key was present
+// at all (agentcmd.ResendEmailResult.Verified == nil), which is exactly the
+// wire-level fact IsVerified() already treats as the legacy default.
+//
+//	legacyAgent=true  → the agent never answered `verified`. It predates the
+//	                    GH #528 attestation and cannot confirm a resend no
+//	                    matter what the CP sends. Updating the plugin fixes
+//	                    it.
+//	legacyAgent=false → a current agent answered `verified: false` out loud:
+//	                    it ran and had nothing to compare, the normal shape
+//	                    of a resend whose original send failed and so never
+//	                    had a Message-ID recorded. Nothing is wrong and
+//	                    there is nothing to fix.
+func resendUnverifiedNote(legacyAgent bool) string {
+	if legacyAgent {
+		return "Note: wpmgr could not confirm the site resent this exact message, because this " +
+			"site's wpmgr plugin is too old to support the check. The message has been sent. " +
+			"Update the plugin on this site so future resends can be confirmed."
 	}
 	return "Note: wpmgr could not confirm the site resent this exact message, because no " +
-		"provider message ID was recorded for this entry (usual when the original send failed). " +
-		"If this site's database was restored recently, check the delivery before relying on it."
+		"provider message ID was recorded for this entry (usual when the original send failed) " +
+		"— there is nothing to fix here. The message has been sent; if this site's database was " +
+		"restored recently, check the delivery before relying on it."
 }
 
 // resendFailureMessage turns an agent-side refusal into a sentence an operator
@@ -1166,7 +1185,7 @@ func (s *Service) BulkResendEmail(ctx context.Context, tenantID, siteID uuid.UUI
 			}
 			continue
 		}
-		results = append(results, BulkResendResult{LogID: id, OK: res.OK, Detail: res.Detail, Verified: res.Verified})
+		results = append(results, BulkResendResult{LogID: id, OK: res.OK, Detail: res.Detail, Verified: res.Verified, LegacyAgent: res.LegacyAgent})
 	}
 	return results, nil
 }

@@ -613,6 +613,12 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 		// resend from an unconfirmed one is the same defect as one that records
 		// intentions: it is believed.
 		"verified": res.Verified,
+		// PR #542 review: an unverified resend has two causes with different
+		// remedies (see ResendResult.LegacyAgent). An audit row that collapses
+		// them is the same defect one layer down — it cannot tell a reader
+		// auditing this site's history whether the plugin needed updating or
+		// nothing was wrong at all. Meaningless (false) when verified is true.
+		"legacy_agent": res.LegacyAgent,
 	}, true
 }
 
@@ -623,7 +629,7 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 // reading {"count": N}. `requested` is kept beside it so a partial batch stays
 // legible, and a batch that resent nothing writes no row at all.
 func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]any, bool) {
-	resent, unverified := 0, 0
+	resent, unverified, legacyAgent := 0, 0, 0
 	for _, r := range results {
 		if !r.OK {
 			continue
@@ -631,6 +637,9 @@ func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]
 		resent++
 		if !r.Verified {
 			unverified++
+			if r.LegacyAgent {
+				legacyAgent++
+			}
 		}
 	}
 	if resent == 0 {
@@ -642,6 +651,11 @@ func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]
 		// GH #528: how many of those confirmed resends went out without the
 		// site confirming the row identity. Counted, not summarised away.
 		"unverified": unverified,
+		// PR #542 review: of those unverified, how many were unverifiable
+		// because the site's agent is too old to attest at all (fixable by
+		// updating the plugin), versus a current agent correctly reporting it
+		// had nothing to compare (nothing to fix). See ResendResult.LegacyAgent.
+		"legacy_agent_count": legacyAgent,
 	}, true
 }
 

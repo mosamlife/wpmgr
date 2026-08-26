@@ -244,6 +244,8 @@ func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 		t.Error("a confirmed resend must be audited")
 	} else if meta["verified"] != true {
 		t.Errorf("audit metadata verified = %v, want true", meta["verified"])
+	} else if meta["legacy_agent"] != false {
+		t.Errorf("audit metadata legacy_agent = %v, want false", meta["legacy_agent"])
 	}
 }
 
@@ -273,6 +275,19 @@ func TestResendEmail_AgentSaysUnverified_IsNotVerified(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "could not confirm") {
 		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
+	}
+	// PR #542 review: an EXPLICIT `verified:false` is a current agent saying it
+	// ran and had nothing to compare. That is never a plugin problem, so the
+	// note must never send this operator to update anything — even though the
+	// CP DID have a Message-ID to send (askedForCheck=true), which is exactly
+	// the case the old askedForCheck-keyed wording got wrong.
+	if strings.Contains(res.Detail, "too old") || strings.Contains(res.Detail, "Update the plugin") {
+		t.Errorf("a current agent's explicit verified=false is not a plugin problem, got %q", res.Detail)
+	}
+	if meta, ok := resendAuditMeta(logID, res); !ok {
+		t.Error("a completed send must still be audited when unverified")
+	} else if meta["legacy_agent"] != false {
+		t.Errorf("audit metadata legacy_agent = %v, want false (the agent answered explicitly)", meta["legacy_agent"])
 	}
 }
 
@@ -348,6 +363,10 @@ func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
 	if strings.Contains(res.Detail, "too old") {
 		t.Errorf("this site's plugin is not the problem; the note misdirects: %q", res.Detail)
 	}
+	// PR #542 review: this state must say plainly that there is nothing to fix.
+	if !strings.Contains(res.Detail, "nothing to fix") {
+		t.Errorf("an explicit verified=false with no prior Message-ID must tell the operator there is nothing to fix, got %q", res.Detail)
+	}
 
 	// The audit row must record it too, or the log cannot tell the two apart.
 	meta, ok := resendAuditMeta(logID, res)
@@ -356,6 +375,10 @@ func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
 	}
 	if meta["verified"] != false {
 		t.Errorf("audit metadata verified = %v, want false", meta["verified"])
+	}
+	// This is a current agent answering honestly, not one too old to attest.
+	if meta["legacy_agent"] != false {
+		t.Errorf("audit metadata legacy_agent = %v, want false", meta["legacy_agent"])
 	}
 }
 
@@ -438,6 +461,11 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 	if strings.Contains(res.Detail, "no provider message ID was recorded") {
 		t.Errorf("wrong cause reported: the CP had a Message-ID and sent it, got %q", res.Detail)
 	}
+	// PR #542 review: an agent old enough to omit `verified` entirely is
+	// exactly the state where updating the plugin is the fix — say so.
+	if !strings.Contains(res.Detail, "Update the plugin") {
+		t.Errorf("a legacy agent's silence must tell the operator to update the plugin, got %q", res.Detail)
+	}
 
 	meta, ok := resendAuditMeta(logID, res)
 	if !ok {
@@ -445,6 +473,9 @@ func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
 	}
 	if meta["verified"] != false {
 		t.Errorf("audit metadata verified = %v, want false", meta["verified"])
+	}
+	if meta["legacy_agent"] != true {
+		t.Errorf("audit metadata legacy_agent = %v, want true (the agent never answered `verified`)", meta["legacy_agent"])
 	}
 }
 

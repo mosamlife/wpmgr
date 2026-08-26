@@ -609,6 +609,13 @@ type ResendResult struct {
 	// the question. It is never silently false — Detail names the cause and the
 	// audit row records the flag.
 	Verified bool
+	// LegacyAgent distinguishes those two causes (PR #542 review): true when
+	// the agent's response omitted `verified` altogether (too old to know the
+	// field exists — updating the plugin is the fix), false when a current
+	// agent answered `verified: false` out loud (it ran and had nothing to
+	// compare, normally because the original send failed — nothing to fix).
+	// Meaningless when Verified is true.
+	LegacyAgent bool
 }
 
 // BulkResendInput is the request for POST /sites/:siteId/email/log/resend (bulk).
@@ -627,6 +634,8 @@ type BulkResendResult struct {
 	// per-batch: one batch routinely mixes rows that could be confirmed with
 	// rows that could not.
 	Verified bool
+	// LegacyAgent mirrors ResendResult.LegacyAgent for this entry — see there.
+	LegacyAgent bool
 }
 
 // BulkDeleteLogsInput is the request for DELETE /sites/:siteId/email/log (bulk).
