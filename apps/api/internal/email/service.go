@@ -991,7 +991,9 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 	if target.MessageID != nil {
 		req.MessageID = strings.TrimSpace(*target.MessageID)
 	}
-	verified := req.MessageID != ""
+	// askedForCheck is used for WORDING and for failing closed, never as the
+	// source of `verified` — see below.
+	askedForCheck := req.MessageID != ""
 
 	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, req)
 	if err != nil {
@@ -1014,9 +1016,33 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 			slog.String("err", err.Error()),
 		)
 	}
+	// GH #528, corrected in PR #542 review: verification is what the SITE
+	// attested, never what the CP asked for. This used to read
+	// `verified := req.MessageID != ""`, which recorded a verified resend
+	// whenever the CP had an id to send — including against a compatible older
+	// agent that reads only agent_seq, ignores message_id, resends whatever now
+	// sits at that row and answers ok=true. The operator was told the message
+	// they selected had been confirmed when nothing had been compared, which is
+	// the defect class of this whole issue sitting inside the fix for it.
+	//
+	// res.IsVerified() is the single source, and it states the legacy default
+	// rather than inheriting it: an absent `verified` key is false.
+	verified := res.IsVerified()
+	if verified && !askedForCheck {
+		// Fail closed. We supplied nothing to compare against, so no comparison
+		// against our recorded Message-ID was possible; an attestation here is a
+		// contract violation, not evidence. Believing it would be the same
+		// mistake in the other direction.
+		s.log.Warn("email resend: site claimed verification for a resend that carried no message_id",
+			slog.String("site_id", siteID.String()),
+			slog.String("log_id", logID.String()),
+		)
+		verified = false
+	}
+
 	detail := res.Detail
 	if !verified {
-		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote())
+		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote(askedForCheck))
 	}
 	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified}, nil
 }
@@ -1034,7 +1060,23 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 // What is NOT acceptable is the third option: sending unconfirmed and saying
 // nothing. So the caller gets Verified=false, this sentence in Detail, and an
 // audit row that records the send as unverified.
-func resendUnverifiedNote() string {
+//
+// There are TWO reasons a send can be unconfirmed and they are not
+// interchangeable, so askedForCheck picks the true one. Telling an operator
+// "no message ID was recorded for this entry" when in fact one was recorded
+// and sent, and the SITE could not check it, is a false statement with a
+// misleading remedy attached — the same defect the rest of this change is
+// about, one layer down in the prose.
+//
+//	askedForCheck=false → the CP had no Message-ID to send. Nothing to fix.
+//	askedForCheck=true  → the CP sent one and the site did not answer the
+//	                      question. Updating the plugin fixes it.
+func resendUnverifiedNote(askedForCheck bool) string {
+	if askedForCheck {
+		return "Note: wpmgr could not confirm the site resent this exact message. wpmgr asked the " +
+			"site to check, and this site's wpmgr plugin is too old to answer. The message was " +
+			"sent. Update the plugin on this site so future resends are confirmed."
+	}
 	return "Note: wpmgr could not confirm the site resent this exact message, because no " +
 		"provider message ID was recorded for this entry (usual when the original send failed). " +
 		"If this site's database was restored recently, check the delivery before relying on it."

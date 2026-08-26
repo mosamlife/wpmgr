@@ -759,6 +759,11 @@ func (h *Handler) bulkResendLog(c *gin.Context) {
 			"log_id": r.LogID.String(),
 			"ok":     r.OK,
 			"detail": r.Detail,
+			// GH #528: BulkResendItemResult declares `verified` in the spec, so
+			// the body has to carry it. A batch routinely mixes confirmed and
+			// unconfirmed entries and only the per-entry flag can tell an
+			// operator which of the two a given row was.
+			"verified": r.Verified,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"results": dtos})

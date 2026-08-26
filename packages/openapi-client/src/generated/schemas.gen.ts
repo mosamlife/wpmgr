@@ -8963,7 +8963,7 @@ export const ResendEmailResultSchema = {
     verified: {
       type: "boolean",
       description:
-        "Whether wpmgr was able to confirm the site resent the same message\nthe operator selected (GH #528). The site's log ids are a local\nAUTO_INCREMENT that a database restore rolls back, so wpmgr sends\nthe Message-ID it has on record and the site refuses on a mismatch.\n`false` means no Message-ID was recorded for that entry — normal\nwhen the original send failed — so the resend went out unconfirmed.\n`detail` carries the same warning in prose. Only meaningful when\n`ok` is true.\n",
+        "Whether the SITE confirmed it resent the same message the operator\nselected (GH #528). The site's log ids are a local AUTO_INCREMENT\nthat a database restore rolls back, so wpmgr sends the Message-ID it\nhas on record, the site compares it against its own row, and it\nrefuses on a mismatch. This flag is the site's answer, never\nwpmgr's assumption: a site that does not answer is never counted as\nhaving confirmed.\n\n`false` has two causes, and `detail` names the one that applies:\nno Message-ID was recorded for that entry (normal when the original\nsend failed, and nothing to fix), or the site's wpmgr plugin is too\nold to perform the check (fixed by updating the plugin). Either way\nthe message was sent and the confirmation is missing. Only\nmeaningful when `ok` is true.\n",
     },
   },
 } as const;

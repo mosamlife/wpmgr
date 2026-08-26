@@ -206,7 +206,10 @@ func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 
 	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
 	repo.addRowWithMessageID(logID, agentSeq, storedMsgID)
-	agent := &fakeResendAgent{result: agentcmd.ResendEmailResult{OK: true, Detail: "resent", MessageID: "<new@site>"}}
+	// A CURRENT agent (PR #541): it compared the supplied message_id against
+	// its own row, they matched, and it says so.
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":true}`)}
 	svc := newResendSvc(repo, agent)
 
 	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
@@ -227,11 +230,77 @@ func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 		"message_id": storedMsgID,
 	})
 
+	// OVER-FIRE GUARD: a site that DID do the comparison and says so must still
+	// come back verified, with no warning bolted onto its detail. A change that
+	// makes every resend read "unverified" would be as useless as one that makes
+	// every resend read "verified".
 	if !res.Verified {
-		t.Error("a dispatch that carried message_id must report Verified=true")
+		t.Error("an agent that attested verified=true must report Verified=true")
 	}
 	if strings.Contains(res.Detail, "could not confirm") {
 		t.Errorf("a verified resend must not carry the unverified note: %q", res.Detail)
+	}
+	if meta, ok := resendAuditMeta(logID, res); !ok {
+		t.Error("a confirmed resend must be audited")
+	} else if meta["verified"] != true {
+		t.Errorf("audit metadata verified = %v, want true", meta["verified"])
+	}
+}
+
+// TestResendEmail_AgentSaysUnverified_IsNotVerified covers the third wire
+// state: a current agent that answers the question with "no". It sent the mail
+// but did not confirm the row, so the CP must report exactly that — the
+// attestation is read, not assumed from the fact that the agent is new enough
+// to carry the field.
+func TestResendEmail_AgentSaysUnverified_IsNotVerified(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, 77, "<stored-77@site.example>")
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":false}`)}
+	svc := newResendSvc(repo, agent)
+
+	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("the send succeeded, so ok must stay true; got detail=%q", res.Detail)
+	}
+	if res.Verified {
+		t.Error("the agent said verified=false; the CP must not report a verified resend")
+	}
+	if !strings.Contains(res.Detail, "could not confirm") {
+		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
+	}
+}
+
+// TestResendEmail_UnaskedAttestation_FailsClosed is the other direction of the
+// same rule. The CP had no Message-ID, so it sent no message_id key and no
+// comparison against its record was possible; an agent that claims verified
+// anyway is violating the contract, and a claim we never asked for is not
+// evidence. Believing it would be the original defect wearing the fix.
+func TestResendEmail_UnaskedAttestation_FailsClosed(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+
+	repo := newFakeResendRepo(logID, 88) // no recorded Message-ID
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":true}`)}
+	svc := newResendSvc(repo, agent)
+
+	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	if agent.lastReq.MessageID != "" {
+		t.Fatalf("precondition: this row has no Message-ID, so none may be sent; got %q", agent.lastReq.MessageID)
+	}
+	if res.Verified {
+		t.Error("the CP supplied nothing to compare against, so no attestation can be believed")
+	}
+	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+		t.Errorf("the operator must be told the real cause, got %q", res.Detail)
 	}
 }
 
@@ -244,7 +313,9 @@ func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
 	const agentSeq int64 = 99
 
 	repo := newFakeResendRepo(logID, agentSeq) // no message_id — a failed send
-	agent := &fakeResendAgent{result: agentcmd.ResendEmailResult{OK: true, Detail: "resent", MessageID: "<new@site>"}}
+	// A current agent, asked for no comparison, answers the question honestly.
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>","verified":false}`)}
 	svc := newResendSvc(repo, agent)
 
 	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
@@ -269,11 +340,108 @@ func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
 	if !strings.Contains(res.Detail, "could not confirm") {
 		t.Errorf("an unverified resend must say so to the operator, got %q", res.Detail)
 	}
+	// And with the RIGHT cause. Nothing here is fixable by updating the plugin,
+	// so the note must not send the operator after one.
+	if !strings.Contains(res.Detail, "no provider message ID was recorded") {
+		t.Errorf("expected the no-recorded-id cause, got %q", res.Detail)
+	}
+	if strings.Contains(res.Detail, "too old") {
+		t.Errorf("this site's plugin is not the problem; the note misdirects: %q", res.Detail)
+	}
 
 	// The audit row must record it too, or the log cannot tell the two apart.
 	meta, ok := resendAuditMeta(logID, res)
 	if !ok {
 		t.Fatal("a confirmed send must still be audited even when unverified")
+	}
+	if meta["verified"] != false {
+		t.Errorf("audit metadata verified = %v, want false", meta["verified"])
+	}
+}
+
+// mustDecodeResendResult builds an agent response by DECODING the literal bytes
+// a site would put on the wire, never by filling in the Go struct by hand.
+//
+// That distinction is the whole point of the tests below. "The agent did not
+// send a `verified` key" is a property of the bytes; a hand-built
+// agentcmd.ResendEmailResult{} would express it as a Go zero value chosen by
+// the test author, which is exactly the reasoning that produced the defect.
+func mustDecodeResendResult(t *testing.T, body string) agentcmd.ResendEmailResult {
+	t.Helper()
+	var out agentcmd.ResendEmailResult
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode agent response %s: %v", body, err)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// GH #528, PR #542 review — verification is the AGENT's attestation
+// ---------------------------------------------------------------------------
+//
+// The first cut of this fix set Verified from whether the CP had SENT
+// message_id, not from whether the site had CHECKED it. A site running a
+// compatible older agent reads only agent_seq, ignores the new key, resends
+// whatever now sits at that row, and answers ok=true. The CP then recorded a
+// verified resend, suppressed the unverified warning and wrote a verified audit
+// row, for a comparison that never happened — the same "claiming a check
+// happened when it did not" defect this whole issue is about, sitting inside
+// the fix for it.
+//
+// The contract, agreed with the agent half in PR #541: the response carries
+// `verified`, set true ONLY on a path where the agent compared a supplied
+// message_id against its own row and they matched. Absent means false.
+
+// TestResendEmail_LegacyAgentSilence_IsNotVerified is the regression test for
+// that defect. The CP has a Message-ID and sends it; the agent is old enough to
+// ignore the key and answers without a `verified` field. Silence is not
+// confirmation.
+func TestResendEmail_LegacyAgentSilence_IsNotVerified(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	const agentSeq int64 = 4242
+	const storedMsgID = "<stored-4242@site.example>"
+
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, agentSeq, storedMsgID)
+
+	// A COMPATIBLE OLDER AGENT: it routes resend_email, reads only agent_seq,
+	// never looks at message_id, and returns no `verified` key at all.
+	agent := &fakeResendAgent{result: mustDecodeResendResult(t,
+		`{"ok":true,"detail":"resent","message_id":"<new@site>"}`)}
+	svc := newResendSvc(repo, agent)
+
+	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("the send itself succeeded, so ok must stay true; got detail=%q", res.Detail)
+	}
+	// The CP did ask for the comparison — that is what makes the silence
+	// meaningful rather than absent.
+	if agent.lastReq.MessageID != storedMsgID {
+		t.Fatalf("the CP must still send message_id; got %q", agent.lastReq.MessageID)
+	}
+
+	if res.Verified {
+		t.Error("an agent that returned no `verified` field never compared anything; " +
+			"reporting the resend as verified tells the operator a check happened when none did")
+	}
+	if !strings.Contains(res.Detail, "could not confirm") {
+		t.Errorf("an unconfirmed resend must say so to the operator, got %q", res.Detail)
+	}
+	// And the cause has to be the honest one: the plugin did not answer, which
+	// is NOT the same as "no Message-ID was recorded for this entry".
+	if !strings.Contains(res.Detail, "too old") {
+		t.Errorf("the operator must be told the site's plugin could not check, got %q", res.Detail)
+	}
+	if strings.Contains(res.Detail, "no provider message ID was recorded") {
+		t.Errorf("wrong cause reported: the CP had a Message-ID and sent it, got %q", res.Detail)
+	}
+
+	meta, ok := resendAuditMeta(logID, res)
+	if !ok {
+		t.Fatal("a completed send must still be audited when unverified")
 	}
 	if meta["verified"] != false {
 		t.Errorf("audit metadata verified = %v, want false", meta["verified"])
@@ -416,10 +584,11 @@ func TestBulkResendEmail_MixedOutcomes(t *testing.T) {
 	repo.addRow(refusedID, 12, true)
 	repo.addRow(noSeqID, 0, true)
 
-	// The agent resends the first row and refuses the second.
+	// The agent resends the first row (confirming the id it was given) and
+	// refuses the second.
 	agent := &perSeqResendAgent{results: map[int64]agentcmd.ResendEmailResult{
-		11: {OK: true, Detail: "resent", MessageID: "<a@site>"},
-		12: {OK: false, Detail: agentcmd.ResendDetailBodyNotStored},
+		11: mustDecodeResendResult(t, `{"ok":true,"detail":"resent","message_id":"<a@site>","verified":true}`),
+		12: mustDecodeResendResult(t, `{"ok":false,"detail":"body_not_stored"}`),
 	}}
 	svc := newResendSvc(repo, agent)
 
@@ -507,9 +676,11 @@ func TestBulkResendEmail_UnverifiedCounted(t *testing.T) {
 	repo.addRowWithMessageID(withID, 31, "<x@site>")
 	repo.addRow(withoutID, 32, true)
 
+	// Row 31 carried a Message-ID, so the agent compared it and confirms. Row 32
+	// carried none, so there was nothing to compare and the agent says so.
 	agent := &perSeqResendAgent{results: map[int64]agentcmd.ResendEmailResult{
-		31: {OK: true, Detail: "resent", MessageID: "<n1@site>"},
-		32: {OK: true, Detail: "resent", MessageID: "<n2@site>"},
+		31: mustDecodeResendResult(t, `{"ok":true,"detail":"resent","message_id":"<n1@site>","verified":true}`),
+		32: mustDecodeResendResult(t, `{"ok":true,"detail":"resent","message_id":"<n2@site>","verified":false}`),
 	}}
 	svc := newResendSvc(repo, agent)
 

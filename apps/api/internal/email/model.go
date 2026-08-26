@@ -600,11 +600,14 @@ type ResendResult struct {
 	OK        bool
 	Detail    string
 	MessageID string
-	// Verified reports whether the CP was able to ask the site to confirm it
-	// was resending the same message the operator selected (GH #528). False
-	// means the row carried no recorded Message-ID to compare against, so the
-	// send went out unconfirmed. It is never silently false: Detail carries
-	// resendUnverifiedNote() alongside it and the audit row records it.
+	// Verified is the SITE's confirmation that it resent the same message the
+	// operator selected (GH #528) — agentcmd.ResendEmailResult.IsVerified(),
+	// never anything the CP inferred from its own request.
+	//
+	// False has two causes, both unconfirmed sends: the row carried no recorded
+	// Message-ID to compare against, or the site's plugin is too old to answer
+	// the question. It is never silently false — Detail names the cause and the
+	// audit row records the flag.
 	Verified bool
 }
 

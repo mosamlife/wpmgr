@@ -8,6 +8,8 @@ package agentcmd
 //	POST {siteURL}/wp-json/wpmgr/v1/command/resend_email
 //	Authorization: Bearer <Ed25519 JWT, cmd="resend_email", aud=<siteId>>
 //	Body: {"agent_seq": <int>, "message_id": <string, optional>}
+//	Response: {"ok": <bool>, "detail": <string>, "message_id": <string>,
+//	           "verified": <bool, absent on agents older than #541>}
 //
 // The agent looks the row up in its own wpmgr_email_log by that local row id,
 // refuses when the row is gone or its body was not captured, and otherwise
@@ -98,4 +100,43 @@ type ResendEmailResult struct {
 	Detail string `json:"detail,omitempty"`
 	// MessageID is the provider-returned Message-ID header value for the new send.
 	MessageID string `json:"message_id,omitempty"`
+
+	// Verified is the AGENT'S ATTESTATION that it compared the message_id the
+	// CP supplied against the message_id on its own row, and they matched —
+	// GH #528. The agent sets it true only on that path (see #541); every
+	// other path leaves it false.
+	//
+	// A POINTER, deliberately. Three wire states have to stay distinguishable
+	// at the point where the decision is written down:
+	//
+	//	{"verified": true}   → a comparison happened and matched
+	//	{"verified": false}  → the agent ran but did not (or could not) compare
+	//	  (key absent)       → an agent too old to know the field exists
+	//
+	// The last one is the one that matters and it is why this is not a plain
+	// bool. A compatible older agent reads only agent_seq, ignores message_id,
+	// resends whatever now sits at that row and answers ok=true. Decoded into
+	// a plain bool its silence would become `false` by Go's zero value — the
+	// right answer, but reached by accident, invisible to a reader, and one
+	// refactor away from becoming true. IsVerified() below is where the
+	// decision is stated instead.
+	//
+	// Never derive this from the request. Sending message_id only ASKS for the
+	// comparison; this field is the only thing that reports one happened.
+	Verified *bool `json:"verified"`
+}
+
+// IsVerified reports whether the site confirmed it resent the message the
+// operator selected.
+//
+// ABSENT MEANS FALSE, explicitly and on purpose (GH #528, PR #542 review).
+// A legacy agent says nothing about `verified`, and silence from a site that
+// never performed the check must never read as confirmation that it did. This
+// is the whole safety property of the field: the CP may only claim a check
+// happened when a site says it happened.
+func (r ResendEmailResult) IsVerified() bool {
+	if r.Verified == nil {
+		return false
+	}
+	return *r.Verified
 }
