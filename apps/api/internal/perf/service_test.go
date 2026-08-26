@@ -240,15 +240,26 @@ type fakeAgent struct {
 	purgeErr        error
 	lastSnapshotReq agentcmd.DbSnapshotRequest
 	snapshotErr     error
+	// GH #522 review follow-up — over-fire proof: an agent-side refusal must
+	// keep surfacing as-is (200 {"ok":false,"detail":<agent detail>}), not get
+	// swept into the new CDN-credentials sanitization.
+	cacheEnableErr  error
+	cacheDisableErr error
 }
 
 func (a *fakeAgent) SyncPerfConfig(context.Context, uuid.UUID, string, agentcmd.PerfConfigRequest) (agentcmd.PerfConfigResult, error) {
 	return agentcmd.PerfConfigResult{OK: true}, nil
 }
 func (a *fakeAgent) CacheEnable(context.Context, uuid.UUID, string, agentcmd.CacheEnableRequest) (agentcmd.CacheEnableResult, error) {
+	if a.cacheEnableErr != nil {
+		return agentcmd.CacheEnableResult{}, a.cacheEnableErr
+	}
 	return agentcmd.CacheEnableResult{OK: true, Detail: "enabled"}, nil
 }
 func (a *fakeAgent) CacheDisable(context.Context, uuid.UUID, string, agentcmd.CacheDisableRequest) (agentcmd.CacheDisableResult, error) {
+	if a.cacheDisableErr != nil {
+		return agentcmd.CacheDisableResult{}, a.cacheDisableErr
+	}
 	return agentcmd.CacheDisableResult{OK: true, Detail: "disabled"}, nil
 }
 func (a *fakeAgent) CachePurge(_ context.Context, _ uuid.UUID, _ string, req agentcmd.CachePurgeRequest) (agentcmd.CachePurgeResult, error) {

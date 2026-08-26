@@ -95,9 +95,10 @@ func TestEnableCache_CredentialsReadFails_AbortsWriteAndKeepsCiphertext(t *testi
 	if err == nil {
 		t.Fatalf("EnableCache must FAIL when the credentials read fails; got detail=%q, err=nil", detail)
 	}
-	if !errors.Is(err, errCredRead) {
-		t.Errorf("error must carry the underlying read failure; got %v", err)
-	}
+	// Review follow-up (Greptile, PR #533): the raw repo error is no longer
+	// propagated verbatim — see cdn_creds_errormap_test.go for the sanitized-
+	// message + log-preservation proof. Here we only pin that SOME error
+	// aborts the write; the shape of that error is asserted there.
 	if detail == "cache enabled" {
 		t.Error("a failed read must never report success")
 	}
@@ -120,9 +121,8 @@ func TestDisableCache_CredentialsReadFails_AbortsWriteAndKeepsCiphertext(t *test
 	if err == nil {
 		t.Fatalf("DisableCache must FAIL when the credentials read fails; got detail=%q, err=nil", detail)
 	}
-	if !errors.Is(err, errCredRead) {
-		t.Errorf("error must carry the underlying read failure; got %v", err)
-	}
+	// See EnableCache above — sanitized-message proof lives in
+	// cdn_creds_errormap_test.go.
 	if detail == "cache disabled" {
 		t.Error("a failed read must never report success")
 	}
@@ -150,9 +150,8 @@ func TestRotateBeaconKey_CredentialsReadFails_AbortsWriteAndKeepsCiphertext(t *t
 	if err == nil {
 		t.Fatal("RotateBeaconKey must FAIL when the credentials read fails")
 	}
-	if !errors.Is(err, errCredRead) {
-		t.Errorf("error must carry the underlying read failure; got %v", err)
-	}
+	// See EnableCache above — sanitized-message proof lives in
+	// cdn_creds_errormap_test.go.
 	if n := repo.upsertCount(); n != 0 {
 		t.Errorf("no config write may happen after a failed credentials read; got %d upserts", n)
 	}
@@ -167,9 +166,12 @@ func TestRotateBeaconKey_CredentialsReadFails_AbortsWriteAndKeepsCiphertext(t *t
 // TestEnableCacheEndpoint_CredentialsReadFails_DoesNotReportSuccess drives the
 // real HTTP route (permission + site-access middleware included) and pins that
 // the response no longer says "cache enabled" while the credentials survive.
-// These two routes report non-domain failures as 200 {"ok":false,...} by house
-// convention; what matters is that ok is false, the detail is the failure, and
-// nothing was written.
+// Since the review follow-up (see cdn_creds_errormap_test.go), resolveCDNCiphertext's
+// read-failure branch returns a domain.Error, so the handler's
+// `if isDomain { httpx.Error(...) }` branch fires: a 503 domain envelope, NOT
+// the old 200 {"ok":false,"detail":err.Error()} shape. The sanitized-message
+// and no-leak assertions live in cdn_creds_errormap_test.go; here we only
+// re-pin that success is never reported and nothing was written.
 func TestEnableCacheEndpoint_CredentialsReadFails_DoesNotReportSuccess(t *testing.T) {
 	tenantID, siteID := uuid.New(), uuid.New()
 	repo := credsRepo(t, tenantID, siteID, storedCreds, errCredRead)
@@ -186,8 +188,8 @@ func TestEnableCacheEndpoint_CredentialsReadFails_DoesNotReportSuccess(t *testin
 	if strings.Contains(body, `"ok":true`) || strings.Contains(body, "cache enabled") {
 		t.Fatalf("endpoint reported success over a failed credentials read; body = %s", body)
 	}
-	if !strings.Contains(body, `"ok":false`) {
-		t.Fatalf("expected ok:false; body = %s", body)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected a non-200 status for a failed credentials read; got %d, body = %s", rec.Code, body)
 	}
 	if n := repo.upsertCount(); n != 0 {
 		t.Errorf("no config write may happen; got %d upserts", n)
