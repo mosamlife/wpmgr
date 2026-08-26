@@ -512,6 +512,10 @@ agent-release: agent-zip ## Publish the agent release (zip + latest.json) to obj
 agent-release-dry-run: agent-zip ## Preview the agent release (build zip + print latest.json) without uploading
 	./scripts/release-agent.sh --dry-run
 
+.PHONY: agent-release-test
+agent-release-test: ## Run scripts/release-agent.sh's regression suite (GH #515: the tested/requires/requires_php defaults)
+	scripts/release-agent_test.sh
+
 .PHONY: gen
 gen: ## Regenerate OpenAPI clients (Go + TS) from packages/openapi/openapi.yaml
 	# Until GH #511 this target ran a script that echoed "wired in Phase 4" and
