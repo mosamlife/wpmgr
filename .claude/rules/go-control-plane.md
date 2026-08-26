@@ -30,11 +30,20 @@ defence in depth, and it keeps the index in play.
 `internal/db/sqlc/**` and `internal/api/gen/**` are machine output. A hand-sync
 of the sqlc tree caused a production 500. Regenerate.
 
-`make gen` and `scripts/gen-openapi.sh` are **stubs**, the script prints one
-line and changes nothing, so a `git status` assertion after running it can never
-fail. The real regeneration is `go generate ./internal/api/gen/...` plus
-`pnpm -C packages/openapi-client generate`, committed together with the
-`openapi.yaml` change.
+`make gen` and `scripts/gen-openapi.sh` **really regenerate**. The script runs
+`go generate ./internal/api/gen` and `pnpm -C packages/openapi-client generate`,
+and `scripts/gen-openapi.sh --check` genuinely compares the committed trees
+against a fresh generation — it prints `OK: committed generated trees match a
+fresh generation` on success and fails otherwise. Commit the regenerated output
+together with the `openapi.yaml` change.
+
+Until GH #511 this paragraph said the opposite: that both were stubs which
+printed one line and changed nothing, so a `git status` assertion after running
+them could never fail. That was true when it was written and stopped being true
+when #511 landed. It is corrected here because two separate sessions read the
+old text, distrusted a check that works, and re-derived the regeneration by
+hand — a rule that tells you not to trust a working guard costs more than no
+rule at all.
 
 ## Cursor pagination
 
