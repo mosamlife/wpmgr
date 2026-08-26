@@ -784,7 +784,23 @@ export function useResendEmail(
     },
     onSuccess: (result) => {
       if (result.ok) {
-        toast.success("Email queued for resend");
+        // GH #528: `verified` is only meaningful when ok is true. false means
+        // wpmgr sent the email but could not confirm the site's copy was
+        // still the exact message the operator picked (most commonly: the
+        // original send had failed, so there was no delivery id on record to
+        // check against). That is not a failure — the send happened — so it
+        // gets a calm heads-up, never the error/destructive treatment. The
+        // raw `detail` token is never shown here; this is fixed, reviewed
+        // copy so the sentence stays legible regardless of what the control
+        // plane's `detail` string says.
+        if (result.verified === false) {
+          toast.warning("Email resent — unconfirmed", {
+            description:
+              "wpmgr could not confirm the site sent the exact message you selected — usually because the original send had failed, so there was no delivery id to check against. If this site's database was restored recently, verify the delivery before relying on it.",
+          });
+        } else {
+          toast.success("Email queued for resend");
+        }
       } else {
         // A null detail means the agent gave no reason. Pass undefined so the
         // toast renders the title alone rather than an empty description line.
@@ -823,11 +839,34 @@ export function useBulkResendEmail(
     onSuccess: (result) => {
       const succeeded = result.results.filter((r) => r.ok).length;
       const failed = result.results.filter((r) => !r.ok).length;
-      if (failed === 0) {
+      // GH #528: per-item `verified` is only meaningful on the items that
+      // succeeded. A batch routinely mixes confirmed and unconfirmed sends,
+      // so this is never folded into the success/fail count — it is reported
+      // as its own number, and the caller narrows table selection to exactly
+      // these log_ids so the operator has a concrete way to find them (see
+      // email-log-table.tsx's bulkResend.mutate onSuccess).
+      const unverified = result.results.filter(
+        (r) => r.ok && r.verified === false,
+      ).length;
+      if (failed === 0 && unverified === 0) {
         toast.success(`${succeeded} email${succeeded !== 1 ? "s" : ""} queued for resend`);
+      } else if (failed === 0) {
+        toast.warning(
+          `${succeeded} email${succeeded !== 1 ? "s" : ""} queued for resend, ${unverified} unconfirmed`,
+          {
+            description:
+              unverified === 1
+                ? "wpmgr could not confirm one of them went out as the exact message selected. It stays selected below so you can review it."
+                : `wpmgr could not confirm ${unverified} of them went out as the exact message selected. They stay selected below so you can review them.`,
+          },
+        );
       } else {
+        const unverifiedNote =
+          unverified > 0
+            ? ` (${unverified} of the successes could not be confirmed as the exact message selected)`
+            : "";
         toast.error(`${failed} resend${failed !== 1 ? "s" : ""} failed`, {
-          description: `${succeeded} succeeded, ${failed} could not be resent`,
+          description: `${succeeded} succeeded, ${failed} could not be resent${unverifiedNote}`,
         });
       }
       void queryClient.invalidateQueries({ queryKey: emailKeys.all });
