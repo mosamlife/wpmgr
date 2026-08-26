@@ -27,6 +27,9 @@ type fakeRepo struct {
 	configFound bool
 	ciphertext  []byte
 	provider    string
+	// GH #522 — forces GetCDNCredentialsCiphertext to fail the way the real
+	// repo does (a tenant-tx/query error, NOT "no credentials stored").
+	ciphertextErr error
 	purges      []RecordPurgeInput
 	upserts     []UpsertConfigInput
 	markedKinds []string // kinds passed to MarkCachePurged
@@ -68,6 +71,11 @@ func (r *fakeRepo) UpsertConfig(_ context.Context, in UpsertConfigInput) (Config
 func (r *fakeRepo) GetCDNCredentialsCiphertext(_ context.Context, _, _ uuid.UUID) ([]byte, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// GH #522: a genuine read failure must be distinguishable from "no
+	// credentials stored" — the real repo returns (nil, "", err) here.
+	if r.ciphertextErr != nil {
+		return nil, "", r.ciphertextErr
+	}
 	return r.ciphertext, r.provider, nil
 }
 

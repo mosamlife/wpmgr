@@ -418,6 +418,17 @@ func (s *Service) RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUI
 	if lookupErr != nil {
 		return lookupErr
 	}
+	// Read the CDN ciphertext we must carry forward BEFORE minting, for the
+	// same fail-fast reason as the checks above: UpsertPerfConfig writes
+	// cdn_credentials_encrypted unconditionally, so a FAILED read must abort
+	// the whole rotate rather than blank a site's stored CDN credentials
+	// (GH #522). Reading it here means a read failure also never leaves a
+	// rotated-but-unpushed hash behind. A genuine "no credentials stored"
+	// still returns (nil, nil) and is not an error.
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		return ctErr
+	}
 
 	freshKey, mintErr := s.mintAndRotateBeaconKey(ctx, tenantID, siteID)
 	if mintErr != nil {
@@ -430,7 +441,6 @@ func (s *Service) RotateBeaconKey(ctx context.Context, tenantID, siteID uuid.UUI
 	// forward unchanged (UpsertPerfConfig always writes the column — mirrors
 	// EnableCache/DisableCache exactly).
 	cfg.ConfigVersion++
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
 	saved, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct})
 	if err != nil {
 		return err
@@ -699,7 +709,16 @@ func (s *Service) EnableCache(ctx context.Context, tenantID, siteID uuid.UUID) (
 	}
 	cfg.CacheEnabled = true
 	cfg.ConfigVersion = cfg.ConfigVersion + 1
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
+	// Carry the stored CDN ciphertext forward. UpsertPerfConfig writes
+	// cdn_credentials_encrypted unconditionally, so a FAILED read must abort
+	// the toggle instead of blanking the site's credentials (GH #522) —
+	// "read failed" and "no credentials stored" are NOT the same nil.
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		s.logger.Error("cache enable aborted: CDN credentials read failed (write skipped to preserve stored credentials)",
+			slog.String("site_id", siteID.String()), slog.Any("error", ctErr))
+		return "", ctErr
+	}
 	if _, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct}); err != nil {
 		return "", err
 	}
@@ -745,7 +764,14 @@ func (s *Service) DisableCache(ctx context.Context, tenantID, siteID uuid.UUID) 
 	}
 	cfg.CacheEnabled = false
 	cfg.ConfigVersion = cfg.ConfigVersion + 1
-	ct, _, _ := s.repo.GetCDNCredentialsCiphertext(ctx, tenantID, siteID)
+	// See EnableCache: a failed credentials read aborts the toggle rather than
+	// silently NULLing cdn_credentials_encrypted (GH #522).
+	ct, ctErr := s.resolveCDNCiphertext(ctx, tenantID, siteID, cfg, nil)
+	if ctErr != nil {
+		s.logger.Error("cache disable aborted: CDN credentials read failed (write skipped to preserve stored credentials)",
+			slog.String("site_id", siteID.String()), slog.Any("error", ctErr))
+		return "", ctErr
+	}
 	if _, err := s.repo.UpsertConfig(ctx, UpsertConfigInput{Config: cfg, CDNCredentialsEncrypted: ct}); err != nil {
 		return "", err
 	}
