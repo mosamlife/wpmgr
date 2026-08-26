@@ -31,7 +31,11 @@
 #   WPMGR_RELEASE_BUCKET   (default: wpmgr-chunks-prod)
 #   WPMGR_RELEASE_PREFIX   (default: agent-releases)
 #   WPMGR_AGENT_MIN_VERSION(default: 0.0.0)   minimum on-disk version this applies to
-#   WPMGR_AGENT_TESTED     (default: 6.8)     "Tested up to" WP version for the UI
+#   WPMGR_AGENT_TESTED     (default: parsed from the ZIP's own readme.txt
+#                            "Tested up to:" line — the same archive VERSION,
+#                            REQUIRES and REQUIRES_PHP already come from, not
+#                            the working tree; an explicit override skips that
+#                            parse entirely — see GH #515)
 #
 set -euo pipefail
 
@@ -63,7 +67,9 @@ cd "$repo_root"
 BUCKET="${WPMGR_RELEASE_BUCKET:-wpmgr-chunks-prod}"
 PREFIX="${WPMGR_RELEASE_PREFIX:-agent-releases}"
 MIN_VERSION="${WPMGR_AGENT_MIN_VERSION:-0.0.0}"
-TESTED="${WPMGR_AGENT_TESTED:-6.8}"
+# TESTED is resolved below, after the zip's own header is read — its default
+# is derived from the zip's own readme.txt, not a literal and not the
+# working-tree copy (GH #515).
 
 ZIP="release/wpmgr-agent.zip"
 SLUG="wpmgr-agent"
@@ -89,11 +95,48 @@ top_dirs="$(unzip -Z1 "$ZIP" | sed 's#/.*##' | sort -u)"
 unzip -l "$ZIP" "$PLUGIN_FILE" >/dev/null 2>&1 || die "zip is missing $PLUGIN_FILE"
 
 # --- derive version + requirements from the zip's OWN main file --------------
+# Every extraction pipeline below ends in `|| true` so a non-match never trips
+# `set -o pipefail` before the explicit `[[ -n ... ]] || die` check gets to run
+# — without it, a failed grep mid-pipeline kills the script under `set -e`
+# with bash's own bare exit 1 and no message, which is silent in a different
+# costume. The explicit check is what actually produces the actionable error.
 header="$(unzip -p "$ZIP" "$PLUGIN_FILE")"
-VERSION="$(printf '%s\n' "$header" | grep -oE "WPMGR_AGENT_VERSION', *'[^']+'" | head -1 | sed -E "s/.*'([^']+)'.*/\1/")"
+VERSION="$(printf '%s\n' "$header" | grep -oE "WPMGR_AGENT_VERSION', *'[^']+'" | head -1 | sed -E "s/.*'([^']+)'.*/\1/" || true)"
 [[ -n "$VERSION" ]] || die "could not parse WPMGR_AGENT_VERSION from $PLUGIN_FILE"
-REQUIRES="$(printf '%s\n' "$header" | grep -oiE 'Requires at least: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || echo '6.0')"
-REQUIRES_PHP="$(printf '%s\n' "$header" | grep -oiE 'Requires PHP: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || echo '8.1')"
+REQUIRES="$(printf '%s\n' "$header" | grep -oiE 'Requires at least: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+[[ -n "$REQUIRES" ]] || die "could not parse 'Requires at least' from $PLUGIN_FILE's header — refusing to publish a guessed minimum WordPress version"
+REQUIRES_PHP="$(printf '%s\n' "$header" | grep -oiE 'Requires PHP: *[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+[[ -n "$REQUIRES_PHP" ]] || die "could not parse 'Requires PHP' from $PLUGIN_FILE's header — refusing to publish a guessed minimum PHP version"
+
+# --- derive "Tested up to" from the zip's OWN readme.txt --------------------
+# GH #515: this used to be `${WPMGR_AGENT_TESTED:-6.8}` and nobody ever set the
+# override, so every published manifest claimed the agent was tested only up
+# to WordPress 6.8 regardless of what readme.txt actually declared. The
+# default is now the parsed value.
+#
+# It is parsed from readme.txt INSIDE THE ZIP, not the working-tree copy at
+# apps/agent/readme.txt — the same rule already applied to VERSION, REQUIRES
+# and REQUIRES_PHP above. This script can publish an already-built zip after
+# the working tree has moved on (that is the whole point of separating build
+# from publish), and version/requires/requires_php were already reading the
+# archive; a working-tree read here would make `tested` describe a DIFFERENT
+# build than its three manifest neighbours (GH #515 follow-up). One source of
+# truth per manifest: the artefact actually being published.
+#
+# WPMGR_AGENT_TESTED remains available as an explicit override (and, when
+# set, skips the readme read entirely); when it is unset, a missing readme in
+# the zip or an unparseable line is a hard error — a wrong compatibility
+# floor published silently is the defect being fixed, so a fallback here
+# would only reintroduce it in a new costume.
+if [[ -n "${WPMGR_AGENT_TESTED:-}" ]]; then
+  TESTED="$WPMGR_AGENT_TESTED"
+else
+  README_IN_ZIP="${SLUG}/readme.txt"
+  unzip -l "$ZIP" "$README_IN_ZIP" >/dev/null 2>&1 || die "missing $README_IN_ZIP inside $ZIP — cannot derive 'Tested up to'; refusing to publish a guessed WordPress compatibility floor (set WPMGR_AGENT_TESTED to override explicitly)"
+  readme="$(unzip -p "$ZIP" "$README_IN_ZIP")"
+  TESTED="$(printf '%s\n' "$readme" | grep -iE '^Tested up to:' | head -1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -1 || true)"
+  [[ -n "$TESTED" ]] || die "could not parse a 'Tested up to:' version from $README_IN_ZIP inside $ZIP — refusing to publish a guessed WordPress compatibility floor (set WPMGR_AGENT_TESTED to override explicitly)"
+fi
 
 SHA256="$(sha256_of "$ZIP")"
 SIZE="$(wc -c < "$ZIP" | tr -d ' ')"
