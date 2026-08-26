@@ -88,10 +88,28 @@ build_zip() {
   ( cd "$_dir" && zip -X -q -r release/wpmgr-agent.zip wpmgr-agent )
 }
 
+# write_readme FILE -> writes a readme.txt declaring "Tested up to: 7.1" to FILE.
+write_readme() {
+  _file="$1"
+  {
+    echo '=== WPMgr Agent ==='
+    echo 'Requires at least: 6.2'
+    echo 'Tested up to: 7.1'
+    echo 'Requires PHP: 8.1'
+    echo 'Stable tag: 1.2.3'
+  } >"$_file"
+}
+
 # fixture NAME -> path to a fresh scratch repo root with:
 #   scripts/release-agent.sh   (a copy of $GUARD, so repo-root detection
 #                                lands here, not on this checkout)
-#   apps/agent/readme.txt      (default: declares "Tested up to: 7.1")
+#   apps/agent/readme.txt      (the WORKING-TREE copy; default: "Tested up to: 7.1")
+#   wpmgr-agent/readme.txt     (the ARCHIVE copy that actually gets zipped —
+#                                release-agent.sh reads THIS one, mirroring
+#                                `make agent-zip`'s rsync of apps/agent/ into
+#                                release/wpmgr-agent/. Starts identical to the
+#                                working-tree copy; a case that wants to prove
+#                                the two may diverge edits only one of them.)
 #   release/wpmgr-agent.zip    (default: version 1.2.3, requires 6.2/8.1)
 fixture() {
   _t="$WORK/$1"
@@ -99,14 +117,9 @@ fixture() {
   mkdir -p "$_t/scripts" "$_t/apps/agent"
   cp "$GUARD" "$_t/scripts/release-agent.sh"
   chmod +x "$_t/scripts/release-agent.sh"
-  {
-    echo '=== WPMgr Agent ==='
-    echo 'Requires at least: 6.2'
-    echo 'Tested up to: 7.1'
-    echo 'Requires PHP: 8.1'
-    echo 'Stable tag: 1.2.3'
-  } >"$_t/apps/agent/readme.txt"
+  write_readme "$_t/apps/agent/readme.txt"
   write_plugin_php "$_t" "1.2.3" "6.2" "8.1"
+  cp "$_t/apps/agent/readme.txt" "$_t/wpmgr-agent/readme.txt"
   build_zip "$_t"
   printf '%s' "$_t"
 }
@@ -205,34 +218,52 @@ run_case "honest: tested is parsed from readme.txt's Tested up to line, not defa
   pass "$t" -- '+"tested": "7.1"' -'"tested": "6.8"'
 
 t="$(fixture tested-override-wins-and-skips-readme)"
-rm -f "$t/apps/agent/readme.txt" # prove the override needs no readme at all
+rm -f "$t/apps/agent/readme.txt" "$t/wpmgr-agent/readme.txt" # prove the override needs no readme at all, in the archive or the working tree
+build_zip "$t"
 run_case "tested: an explicit WPMGR_AGENT_TESTED override wins and never touches readme.txt" \
   pass "$t" "WPMGR_AGENT_TESTED=6.5" -- '+"tested": "6.5"'
 
 t="$(fixture tested-readme-missing-fails-loud)"
-rm -f "$t/apps/agent/readme.txt"
-run_case "tested: a missing readme.txt with no override is a hard error, not a fallback" \
+rm -f "$t/wpmgr-agent/readme.txt" # the ARCHIVE copy is what release-agent.sh reads
+build_zip "$t"
+run_case "tested: a missing readme.txt in the archive with no override is a hard error, not a fallback" \
   fail "$t" -- '+missing' '+readme.txt' '+refusing to publish a guessed'
 
 t="$(fixture tested-line-absent-fails-loud)"
-sub "$t/apps/agent/readme.txt" '/^Tested up to:/d'
-run_case "tested: a readme.txt with no Tested up to line is a hard error" \
+sub "$t/wpmgr-agent/readme.txt" '/^Tested up to:/d'
+build_zip "$t"
+run_case "tested: an archive readme.txt with no Tested up to line is a hard error" \
   fail "$t" -- "+could not parse a 'Tested up to:'"
 
 t="$(fixture tested-line-unparseable-fails-loud)"
-sub "$t/apps/agent/readme.txt" 's/^Tested up to: .*/Tested up to: latest/'
+sub "$t/wpmgr-agent/readme.txt" 's/^Tested up to: .*/Tested up to: latest/'
+build_zip "$t"
 run_case "tested: a non-numeric Tested up to value is a hard error, not silently coerced" \
   fail "$t" -- "+could not parse a 'Tested up to:'"
 
 t="$(fixture tested-tolerates-case-and-spacing)"
-sub "$t/apps/agent/readme.txt" 's/^Tested up to: 7\.1/tested up to:   7.2   /'
+sub "$t/wpmgr-agent/readme.txt" 's/^Tested up to: 7\.1/tested up to:   7.2   /'
+build_zip "$t"
 run_case "tested: label case and extra whitespace do not disable the parse (no over-fire)" \
   pass "$t" -- '+"tested": "7.2"'
 
 t="$(fixture tested-old-default-never-appears)"
-sub "$t/apps/agent/readme.txt" 's/^Tested up to: 7\.1/Tested up to: 6.3/'
-run_case "regress: the old 6.8 literal cannot reappear when readme says something else" \
+sub "$t/wpmgr-agent/readme.txt" 's/^Tested up to: 7\.1/Tested up to: 6.3/'
+build_zip "$t"
+run_case "regress: the old 6.8 literal cannot reappear when the archive says something else" \
   pass "$t" -- '+"tested": "6.3"' -'"tested": "6.8"'
+
+# ===========================================================================
+# GH #515 follow-up (this fix): the manifest must describe the ARCHIVE, not
+# the working tree it happened to be published from. version/requires/
+# requires_php already read the zip's own plugin file; tested now reads the
+# zip's own readme.txt the same way. Prove the working tree can diverge from
+# the archive WITHOUT moving the manifest.
+# ===========================================================================
+t="$(fixture tested-archive-is-source-not-working-tree)"
+sub "$t/apps/agent/readme.txt" 's/^Tested up to: 7\.1/Tested up to: 9.9/' # working tree only; archive untouched, zip NOT rebuilt
+run_case "tested: a working-tree readme.txt that disagrees with the archive is ignored" \
+  pass "$t" -- '+"tested": "7.1"' -'"tested": "9.9"'
 
 # ===========================================================================
 # Siblings found during the audit: requires / requires_php / version had the

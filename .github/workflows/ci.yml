@@ -406,6 +406,24 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- Agent release manifest guard ------------------------------------
+      # scripts/release-agent.sh is the trust boundary release.yml calls to
+      # build the agent's self-update manifest (GH #515: it used to publish a
+      # hard-coded "tested up to 6.8" regardless of what the plugin actually
+      # declared). scripts/release-agent_test.sh is its regression suite —
+      # `make agent-release-test` — and until now nothing ran it: release.yml
+      # invokes release-agent.sh directly, so a regression in the
+      # version/requires/requires_php/tested parsing merged green and reached
+      # the release path with no guard between it and a live compatibility
+      # floor. It needs only zip/unzip (both on this image already) — no PHP,
+      # no Go — and builds its own throwaway fixture repos, so it runs here
+      # rather than in the PHP (agent) job.
+      #
+      # Self-test first, same reasoning as the version surface guard above: a
+      # broken guard must fail here, not pass by failing open.
+      - name: Agent release manifest guard self-test (GH #515)
+        run: scripts/release-agent_test.sh
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.6"
