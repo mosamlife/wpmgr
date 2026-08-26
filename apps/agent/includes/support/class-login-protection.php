@@ -28,6 +28,27 @@
  *      using binary inet_pton comparison (RFC 1918, RFC 4193, RFC 3927).
  *   5. Allow/deny CIDR lists support both IPv4 and IPv6 using binary bitmask
  *      comparison (IpUtils::matchesAnyCidr).
+ *
+ * THE TWO DENY LISTS, BECAUSE THE NAMES MISLEAD
+ * ---------------------------------------------
+ * wpmgr_security_config carries two deny lists and only one of them belongs to
+ * this class:
+ *
+ *   deny_cidrs            THIS subsystem's list. Auto-populated from failed
+ *                         login attempts; transient and self-inflicted. Read
+ *                         here (onAuthenticate step 4) and by the WAF mu-plugin.
+ *                         Released by the WPMGR_DISABLE_SITE_2FA recovery
+ *                         constant in both places.
+ *
+ *   hardening_deny_cidrs  The OPERATOR's explicit IP ban list, written by
+ *                         HardeningModule::syncWafDenyCidrs() from
+ *                         HardeningConfig::ipRangeBans(). Deliberate standing
+ *                         policy. NEVER read by this class, and never released
+ *                         by the recovery constant anywhere.
+ *
+ * The plainer name is the automatic list and the qualified name is the
+ * deliberate one, which is the opposite of what most readers assume. #529 was
+ * scoped wrongly on exactly that assumption before the code was checked.
  *   6. The ship-cursor pattern (advanceCursor / shipBatch) mirrors ErrorMonitor
  *      and ActivityLog: store the highest confirmed id in wp-options; fetch
  *      rows WHERE id > cursor ORDER BY id ASC LIMIT batch; advance on CP 2xx.
@@ -350,10 +371,13 @@ final class LoginProtection
      *   1. Pass-through when mode is disabled.
      *   2. Resolve client IP via the configured header.
      *   3. Allow-CIDR bypass (short-circuit; no record).
+     *  3b. WPMGR_DISABLE_SITE_2FA -> pass through (GH #529; releases every deny
+     *      below, all of which are brute-force-owned -- see the note at the
+     *      check itself for why deny_cidrs is in scope and hardening_deny_cidrs
+     *      is not, and why that is not the distinction the names suggest).
      *   4. Deny-CIDR block -> terminate(BLACKLISTED).
      *   5. Private-IP bypass (RFC 1918 / loopback / link-local; no record).
      *   6. Known-good bypass (recent success from this IP -> no block).
-     *  6b. WPMGR_DISABLE_SITE_2FA -> pass through (releases 7-9 only, GH #529).
      *   7. Global failure count >= block_all_limit -> terminate(ALL_BLOCKED).
      *   8. Per-IP failure count >= temp_block_limit -> terminate(TEMP_BLOCK).
      *   9. Per-IP failure count >= captcha_limit -> terminate(CAPTCHA_BLOCK).
@@ -383,6 +407,52 @@ final class LoginProtection
             return $user;
         }
 
+        // Step 3b: Operator recovery constant -- GH #529. Everything below this
+        // line is a deny THIS CLASS can issue, and every one of them is
+        // brute-force-owned, so the constant releases all of them together.
+        //
+        // WHICH LIST IS WHICH -- the names do not tell you, and getting this
+        // backwards is how the fix was scoped wrongly the first time:
+        //
+        //   deny_cidrs            Owned solely by this login-protection /
+        //                         brute-force subsystem. Auto-populated from
+        //                         failed attempts. Self-inflicted, transient,
+        //                         aimed at whoever is currently typing. THIS is
+        //                         what the recovery constant is for.
+        //                         (HardeningModule::syncWafDenyCidrs() states
+        //                         the ownership outright: "The 'deny_cidrs' key
+        //                         remains owned solely by the login-protection /
+        //                         brute-force subsystem.")
+        //
+        //   hardening_deny_cidrs  The operator's explicit IP ban list, pushed
+        //                         from HardeningConfig::ipRangeBans(). Deliberate
+        //                         standing policy about somebody else's traffic.
+        //                         NEVER released by this constant.
+        //
+        // This class never reads hardening_deny_cidrs at all -- buildConfig()
+        // does not build the key and nothing here consults it. It is enforced
+        // one layer earlier, by the WAF mu-plugin, whose gate keeps its own
+        // recovery check BELOW the hardening layer for exactly that reason. That
+        // asymmetry is deliberate: the WAF enforces both lists so its gate must
+        // sit between them; this class enforces only the brute-force list so its
+        // gate sits above everything. IF hardening_deny_cidrs IS EVER ENFORCED
+        // HERE, THIS GATE MUST MOVE BELOW IT -- see the test that pins this
+        // class's blindness to that key.
+        //
+        // Placing it here rather than below step 4 is the fix to the fix. With
+        // the gate under step 4, the WAF released deny_cidrs before WordPress
+        // booted and this method then blocked the same list in PHP: the hatch
+        // opened the outer door and locked the inner one, and the admin it was
+        // written for still met "Your IP address is blocked from logging in".
+        //
+        // Recording is unaffected. onLoginFailed() records on the wp_login_failed
+        // action independently of this method, so attempts made during a recovery
+        // are still written to wpmgr_login_events and still ship to the control
+        // plane. This gate suppresses enforcement, never the audit trail.
+        if (self::recoveryConstantSet()) {
+            return $user;
+        }
+
         // Step 4: Deny-CIDR block -- explicitly blacklisted IPs are always blocked.
         if (!empty($config['deny_cidrs']) && IpUtils::matchesAnyCidr($ip, $config['deny_cidrs'])) {
             $this->terminate($ip, $username, self::CATEGORY_BLACKLISTED, $config);
@@ -402,25 +472,6 @@ final class LoginProtection
         // Step 6: Known-good bypass. A recent successful login from this IP is
         // treated as a trusted session; skip all brute-force checks.
         if ($this->getLoginCount(self::STATUS_SUCCESS, $ip, $now, $thresholds['success_login_gap']) > 0) {
-            return $user;
-        }
-
-        // Step 6b: Operator recovery constant — GH #529. Releases the three
-        // event-backed lockout tiers below (7, 8, 9) and nothing else.
-        //
-        // POSITION IS THE POINT, exactly as in the WAF gate. It sits AFTER the
-        // deny_cidrs check at step 4 so an explicitly configured blacklist keeps
-        // blocking, and BEFORE steps 7-9 so the counters this plugin builds by
-        // itself, out of this administrator's own mistyped passwords, stop
-        // holding the door shut. Tiers 7-9 are automatic, transient and aimed at
-        // whoever is currently typing; step 4 is a standing instruction about
-        // somebody else's traffic, and a recovery lever must not delete it.
-        //
-        // Recording continues below and above this line: a released attempt is
-        // still written to wpmgr_login_events and still ships to the control
-        // plane, so the operator sees the attempts they made while recovering.
-        // This gate suppresses enforcement, never the audit trail.
-        if (self::recoveryConstantSet()) {
             return $user;
         }
 
@@ -464,20 +515,27 @@ final class LoginProtection
      * locked out is worse than having no remedy, because the operator now
      * believes they have tried it and it failed.
      *
-     * SCOPED TO THE EVENT-BACKED TIERS. The caller consults this only for
-     * steps 7-9 of onAuthenticate(): ALL_BLOCKED, TEMP_BLOCK and CAPTCHA_BLOCK.
-     * Those three are computed live from rows this plugin wrote into
-     * {prefix}wpmgr_login_events; they are automatic, transient, self-inflicted
-     * and aimed at whoever is currently typing. They are precisely what a
-     * recovery constant exists for.
+     * SCOPED TO THE BRUTE-FORCE SURFACES, WHICH IS EVERY DENY THIS CLASS CAN
+     * ISSUE. The caller consults it once, at step 3b, releasing:
      *
-     * It deliberately does NOT reach step 4, the deny_cidrs blacklist. That
-     * list is pushed by the operator through the control plane; it is a
-     * standing decision about someone else's traffic, and a constant that
-     * silently emptied it would turn a recovery step into a security
-     * regression. Same boundary HardeningModule::authPolicyDisabled() draws:
-     * the constant releases the rules that decide who may log in, never the
-     * operator's explicit bans.
+     *   - step 4, the deny_cidrs blacklist. Despite the bare name, this list is
+     *     owned solely by the login-protection / brute-force subsystem and is
+     *     auto-populated from failed attempts. The operator's deliberate ban
+     *     list is a DIFFERENT key, hardening_deny_cidrs, which this class never
+     *     reads.
+     *   - steps 7, 8 and 9: ALL_BLOCKED, TEMP_BLOCK and CAPTCHA_BLOCK, computed
+     *     live from rows this plugin wrote into {prefix}wpmgr_login_events.
+     *
+     * All four are automatic, transient, self-inflicted and aimed at whoever is
+     * currently typing. They are precisely what a recovery constant exists for.
+     *
+     * WHAT IT MUST NEVER RELEASE is hardening_deny_cidrs, the operator's
+     * explicit IP ban list from HardeningConfig::ipRangeBans() -- a standing
+     * decision about someone else's traffic, removed by removing it. It is
+     * enforced by the WAF mu-plugin, not here, and the WAF's own recovery check
+     * deliberately sits BELOW that layer. Same boundary
+     * HardeningModule::authPolicyDisabled() draws: the constant releases the
+     * rules deciding who may log in, never the operator's explicit bans.
      *
      * Setting it costs an attacker write access to wp-config.php, at which
      * point the site is already theirs and they could delete this module
