@@ -53,7 +53,7 @@ const RELEASES: ChangeEntry[] = [
     version: "0.61.146",
     date: "2026-08-26",
     summary:
-      "A database restore could silently drop the dump's last statement, write into a site's live tables, or make a later resend send the wrong email, all while still reporting success. All three now abort or refuse instead of guessing. The application-password two-factor control now actually runs, which is a breaking change for integrations on a 2FA-enabled site. Also fixed: resending a failed outgoing email, a WordPress agent crash on every user profile edit, a user-agent ban that could lock administrators out of their own login page, and a cache toggle that could destroy a site's stored CDN credentials.",
+      "Breaking change: the application-password two-factor control now actually runs, so on a 2FA-enabled site an application password stops working for an enrolled or role-required user and returns HTTP 401. Also fixed: a database restore that could silently drop the dump's last statement, write into a site's live tables, or make a later resend send the wrong email, all while still reporting success; resending a failed outgoing email; a WordPress agent crash on every user profile edit; a user-agent ban that could lock administrators out of their own login page; and a cache toggle that could destroy a site's stored CDN credentials.",
     items: [
       {
         tag: "Security",
@@ -69,7 +69,7 @@ const RELEASES: ChangeEntry[] = [
       },
       {
         tag: "Fixed",
-        text: "Resend could send a different email than the one selected, after a site's database restore, because the row id resend uses is a local auto-increment counter that a restore rolls back. wpmgr now confirms the row before sending and refuses the resend on a mismatch. A site running an older version of the plugin still resends exactly as it always has; it simply cannot be confirmed, and wpmgr now says so.",
+        text: "Resend could send a different email than the one selected, after a site's database restore, because the row id resend uses is a local auto-increment counter that a restore rolls back. wpmgr now confirms the row before sending and refuses the resend on a mismatch. A site running an older version of the plugin still resends exactly as it always has; it simply cannot be confirmed, and when it cannot the dashboard now shows the specific reason instead of a plain success, for one resend or a whole batch.",
       },
       {
         tag: "Fixed",
