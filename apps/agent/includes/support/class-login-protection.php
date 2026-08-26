@@ -353,6 +353,7 @@ final class LoginProtection
      *   4. Deny-CIDR block -> terminate(BLACKLISTED).
      *   5. Private-IP bypass (RFC 1918 / loopback / link-local; no record).
      *   6. Known-good bypass (recent success from this IP -> no block).
+     *  6b. WPMGR_DISABLE_SITE_2FA -> pass through (releases 7-9 only, GH #529).
      *   7. Global failure count >= block_all_limit -> terminate(ALL_BLOCKED).
      *   8. Per-IP failure count >= temp_block_limit -> terminate(TEMP_BLOCK).
      *   9. Per-IP failure count >= captcha_limit -> terminate(CAPTCHA_BLOCK).
@@ -404,6 +405,25 @@ final class LoginProtection
             return $user;
         }
 
+        // Step 6b: Operator recovery constant — GH #529. Releases the three
+        // event-backed lockout tiers below (7, 8, 9) and nothing else.
+        //
+        // POSITION IS THE POINT, exactly as in the WAF gate. It sits AFTER the
+        // deny_cidrs check at step 4 so an explicitly configured blacklist keeps
+        // blocking, and BEFORE steps 7-9 so the counters this plugin builds by
+        // itself, out of this administrator's own mistyped passwords, stop
+        // holding the door shut. Tiers 7-9 are automatic, transient and aimed at
+        // whoever is currently typing; step 4 is a standing instruction about
+        // somebody else's traffic, and a recovery lever must not delete it.
+        //
+        // Recording continues below and above this line: a released attempt is
+        // still written to wpmgr_login_events and still ships to the control
+        // plane, so the operator sees the attempts they made while recovering.
+        // This gate suppresses enforcement, never the audit trail.
+        if (self::recoveryConstantSet()) {
+            return $user;
+        }
+
         // Step 7: Global all-blocked check. If total site-wide failures in the
         // window exceed block_all_limit, every new attempt is blocked regardless
         // of per-IP counts. Checked before per-IP so the most severe tier wins.
@@ -429,6 +449,46 @@ final class LoginProtection
 
         // Step 10: No threshold exceeded -- pass through unchanged.
         return $user;
+    }
+
+    /**
+     * Whether the operator's recovery constant is set.
+     *
+     * `define('WPMGR_DISABLE_SITE_2FA', true)` is this plugin's documented
+     * last-resort escape hatch for an administrator it has locked out. It was
+     * honoured by Site2faModule, PasswordPolicyModule, HardeningModule's auth
+     * appliers and the WAF mu-plugin gate — but not here, which left the single
+     * most likely lockout of all still shut: the escalating brute-force tiers
+     * this class raises against an administrator who mistyped their own
+     * password a few times. Reaching for the documented remedy and staying
+     * locked out is worse than having no remedy, because the operator now
+     * believes they have tried it and it failed.
+     *
+     * SCOPED TO THE EVENT-BACKED TIERS. The caller consults this only for
+     * steps 7-9 of onAuthenticate(): ALL_BLOCKED, TEMP_BLOCK and CAPTCHA_BLOCK.
+     * Those three are computed live from rows this plugin wrote into
+     * {prefix}wpmgr_login_events; they are automatic, transient, self-inflicted
+     * and aimed at whoever is currently typing. They are precisely what a
+     * recovery constant exists for.
+     *
+     * It deliberately does NOT reach step 4, the deny_cidrs blacklist. That
+     * list is pushed by the operator through the control plane; it is a
+     * standing decision about someone else's traffic, and a constant that
+     * silently emptied it would turn a recovery step into a security
+     * regression. Same boundary HardeningModule::authPolicyDisabled() draws:
+     * the constant releases the rules that decide who may log in, never the
+     * operator's explicit bans.
+     *
+     * Setting it costs an attacker write access to wp-config.php, at which
+     * point the site is already theirs and they could delete this module
+     * outright. It costs a locked-out owner one line over SFTP. The constant is
+     * proof of ownership, not a bypass.
+     *
+     * @return bool
+     */
+    private static function recoveryConstantSet(): bool
+    {
+        return defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA;
     }
 
     /**

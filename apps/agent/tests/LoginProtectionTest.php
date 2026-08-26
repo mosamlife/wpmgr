@@ -32,10 +32,34 @@ use WPMgr\Agent\Support\LoginProtection;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
+ * PROCESS ISOLATION IS LOAD-BEARING HERE (GH #529).
+ *
+ * LoginProtection::onAuthenticate() now returns the login through untouched at
+ * its three event-backed tiers whenever WPMGR_DISABLE_SITE_2FA is defined — the
+ * operator's documented recovery constant, honoured here so an admin locked out
+ * by their own failed attempts has a way back in. A constant cannot be
+ * undefined, and Site2faModuleTest defines this one in the SHARED test process
+ * (tests/Security/Site2faModuleTest.php, test_safety_disable_constant_makes_
+ * install_noop). PHPUnit's file order puts that before this file, so without
+ * isolation five "must block" assertions below silently stopped testing the
+ * brute-force gate and started testing the escape hatch:
+ *
+ *   vendor/bin/phpunit tests/Security/Site2faModuleTest.php tests/LoginProtectionTest.php
+ *   -> Tests: 105, Failures: 5
+ *
+ * @runTestsInSeparateProcesses is the CLASS-level form (the per-test spelling is
+ * @runInSeparateProcess and is silently ignored on a class), applied here rather
+ * than to the five affected tests so a test added later inherits the guarantee
+ * instead of quietly rotting the moment someone else's suite defines the
+ * constant first. Same call WafGateHardeningTest made one layer earlier.
+ *
  * @covers \WPMgr\Agent\Support\IpUtils
  * @covers \WPMgr\Agent\Support\LoginProtection
  * @covers \WPMgr\Agent\Commands\SyncSecurityConfigCommand
  * @covers \WPMgr\Agent\Commands\UnblockIpCommand
+ *
+ * @runTestsInSeparateProcesses
+ * @preserveGlobalState disabled
  */
 final class LoginProtectionTest extends TestCase
 {
