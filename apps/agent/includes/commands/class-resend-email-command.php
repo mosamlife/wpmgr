@@ -84,11 +84,13 @@
  * and "unverified" agree and the field is safe across versions.
  *
  * The refusal `detail` is the bare literal "message_id_mismatch" and nothing
- * else. It is a contract string the control plane pins and maps to
- * operator-facing wording ("this site's log row no longer matches the message
- * you selected; the site's database may have been restored since — refresh the
- * email log and try again"). Appending that sentence here instead would put raw
- * agent text in front of a user, which is how GH #520 was reported.
+ * else. It is a contract string the control plane pins and maps to whatever
+ * operator-facing wording it chooses; appending a sentence to it here instead
+ * would put raw agent text in front of a user, which is how GH #520 was
+ * reported. From this agent's side the condition is exactly this: the row now
+ * living at this agent_seq is not the row the control plane captured that
+ * message_id from, most often because the site's database was restored and
+ * the counter was reused for different mail.
  *
  * Note that this is why a successful resend no longer overwrites the row's
  * message_id: EmailLogReporter pages rows with `WHERE id > cursor`
@@ -97,6 +99,15 @@
  * would desynchronise the two and make the SECOND resend of any row refuse
  * itself. The new send's id still reaches the CP — it is the command's return
  * value.
+ *
+ * Known bounded false positive: a pre-#541 agent still rewrote the row's
+ * message_id on every successful resend, overwriting the value the control
+ * plane had mirrored at ingest. Any row resent by such an agent between the
+ * control-plane #520 fix deploying and this agent version landing on that
+ * site now carries a message_id the control plane does not have, so every
+ * later resend of that row is refused with "message_id_mismatch" forever.
+ * That is the safe direction to fail in: it refuses to send rather than
+ * risking the wrong mail.
  *
  * @package WPMgr\Agent\Commands
  */
