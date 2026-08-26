@@ -263,7 +263,20 @@ export function EmailLogTable({
       .map((e) => e.id);
     if (ids.length === 0) return;
     bulkResend.mutate(ids, {
-      onSuccess: () => setSelectedIds(new Set()),
+      // GH #528: when any of the successful resends could not be confirmed
+      // as the exact message selected, narrow the selection down to just
+      // those log_ids instead of clearing it — this is the operator's way
+      // to see which ones the toast is talking about (highlighted rows,
+      // still available in the bulk action bar). A fully-verified batch
+      // clears the selection exactly as before.
+      onSuccess: (result) => {
+        const unverifiedIds = new Set(
+          result.results
+            .filter((r) => r.ok && r.verified === false)
+            .map((r) => r.log_id),
+        );
+        setSelectedIds(unverifiedIds);
+      },
     });
   }
 
