@@ -608,6 +608,11 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 	return map[string]any{
 		"log_id":     logID.String(),
 		"message_id": res.MessageID,
+		// GH #528: whether the site confirmed it resent the message the
+		// operator selected. An audit row that cannot distinguish a confirmed
+		// resend from an unconfirmed one is the same defect as one that records
+		// intentions: it is believed.
+		"verified": res.Verified,
 	}, true
 }
 
@@ -618,10 +623,14 @@ func resendAuditMeta(logID uuid.UUID, res ResendResult) (map[string]any, bool) {
 // reading {"count": N}. `requested` is kept beside it so a partial batch stays
 // legible, and a batch that resent nothing writes no row at all.
 func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]any, bool) {
-	resent := 0
+	resent, unverified := 0, 0
 	for _, r := range results {
-		if r.OK {
-			resent++
+		if !r.OK {
+			continue
+		}
+		resent++
+		if !r.Verified {
+			unverified++
 		}
 	}
 	if resent == 0 {
@@ -630,6 +639,9 @@ func bulkResendAuditMeta(requested int, results []BulkResendResult) (map[string]
 	return map[string]any{
 		"count":     resent,
 		"requested": requested,
+		// GH #528: how many of those confirmed resends went out without the
+		// site confirming the row identity. Counted, not summarised away.
+		"unverified": unverified,
 	}, true
 }
 
@@ -659,6 +671,7 @@ func (h *Handler) resendLog(c *gin.Context) {
 		"ok":         result.OK,
 		"detail":     result.Detail,
 		"message_id": result.MessageID,
+		"verified":   result.Verified,
 	})
 }
 

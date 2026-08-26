@@ -5394,6 +5394,18 @@ export type ResendEmailResult = {
    * Provider message ID assigned to the resent email (if agent returned it).
    */
   message_id?: string | null;
+  /**
+   * Whether wpmgr was able to confirm the site resent the same message
+   * the operator selected (GH #528). The site's log ids are a local
+   * AUTO_INCREMENT that a database restore rolls back, so wpmgr sends
+   * the Message-ID it has on record and the site refuses on a mismatch.
+   * `false` means no Message-ID was recorded for that entry — normal
+   * when the original send failed — so the resend went out unconfirmed.
+   * `detail` carries the same warning in prose. Only meaningful when
+   * `ok` is true.
+   *
+   */
+  verified?: boolean;
 };
 
 export type BulkResendRequest = {
@@ -5407,6 +5419,13 @@ export type BulkResendItemResult = {
   log_id: string;
   ok: boolean;
   detail?: string | null;
+  /**
+   * Per-entry equivalent of ResendEmailResult.verified (GH #528). One
+   * batch routinely mixes entries that could be confirmed with entries
+   * that could not, so this is reported per entry, never per batch.
+   *
+   */
+  verified?: boolean;
 };
 
 export type BulkResendResponse = {

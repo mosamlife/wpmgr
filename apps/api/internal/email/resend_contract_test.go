@@ -35,9 +35,81 @@ import (
 // The agent's reader is apps/agent/includes/commands/class-resend-email-command.php:
 // execute() rejects a params array without agent_seq before anything else runs.
 
-// wantResendKeys is the exact set of JSON keys the agent's resend_email handler
-// reads. Keep this in lockstep with class-resend-email-command.php::execute().
-var wantResendKeys = []string{"agent_seq"}
+// GH #528 — agent_seq alone is not a safe selector.
+//
+// agent_seq is a MySQL AUTO_INCREMENT on the site's own table. A database
+// restore rolls it back, later sends re-use ids the CP has already bound to
+// other messages, and the operator's "Resend Alice's invoice" becomes "send
+// Bob's password reset to Bob". The CP now sends the recorded Message-ID
+// alongside it so the agent can confirm the row before it sends.
+//
+// The payload therefore has TWO shapes, and both are pinned below:
+//
+//	verified   {"agent_seq": N, "message_id": "<...>"}  — CP had a Message-ID
+//	unverified {"agent_seq": N}                          — CP had none
+//
+// The unverified shape is not a degenerate case to wave through. message_id is
+// NULL on the CP for every send that failed at the time, which is the most
+// common thing anyone resends, so this shape is the common one and it must stay
+// exactly one key: an empty "message_id" on the wire would read to the agent as
+// "compare against empty" and refuse every such row.
+
+// wantResendKeysVerified is the exact set of JSON keys the agent's resend_email
+// handler reads when the CP has a Message-ID to confirm against.
+// Keep this in lockstep with class-resend-email-command.php::execute().
+var wantResendKeysVerified = []string{"agent_seq", "message_id"}
+
+// wantResendKeysUnverified is the exact set when the CP has no Message-ID.
+// message_id must be ABSENT, not empty.
+var wantResendKeysUnverified = []string{"agent_seq"}
+
+// assertResendPayload marshals the request the service actually dispatched and
+// asserts it against an exact key set and exact values.
+//
+// Exact in all four directions, which is the whole point of this file:
+//   - a MISSING key fails the per-key loop (the #520 bug),
+//   - an EXTRA key fails the length check (data on the command channel the
+//     agent never reads — how message bodies would leak back onto the wire),
+//   - a RENAMED key fails both at once,
+//   - a WRONG VALUE fails the value comparison.
+func assertResendPayload(t *testing.T, req agentcmd.ResendEmailRequest, wantKeys []string, wantValues map[string]any) {
+	t.Helper()
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal dispatched request: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal dispatched request: %v", err)
+	}
+
+	if len(got) != len(wantKeys) {
+		t.Errorf("dispatched payload has %d field(s), want %d\n  got:  %s\n  want keys: %v",
+			len(got), len(wantKeys), raw, wantKeys)
+	}
+	for _, k := range wantKeys {
+		if _, ok := got[k]; !ok {
+			t.Errorf("dispatched payload is missing %q — the agent cannot act on this request\n  got: %s", k, raw)
+		}
+	}
+	for k, want := range wantValues {
+		switch w := want.(type) {
+		case int64:
+			n, ok := got[k].(float64)
+			if !ok || int64(n) != w {
+				t.Errorf("%s = %v, want %d\n  got: %s", k, got[k], w, raw)
+			}
+		case string:
+			s, ok := got[k].(string)
+			if !ok || s != w {
+				t.Errorf("%s = %v, want %q\n  got: %s", k, got[k], w, raw)
+			}
+		default:
+			t.Fatalf("assertResendPayload: unsupported want type for %q", k)
+		}
+	}
+}
 
 // fakeResendAgent captures the ResendEmailRequest the service dispatches.
 type fakeResendAgent struct {
@@ -78,12 +150,24 @@ func newFakeResendRepo(logID uuid.UUID, agentSeq int64) *fakeResendRepo {
 	return r
 }
 
+// addRow adds a row with NO recorded Message-ID — the #528 unverified shape,
+// and the shape every row of a failed send has.
 func (r *fakeResendRepo) addRow(id uuid.UUID, agentSeq int64, bodyStored bool) {
 	t := ResendTarget{BodyStored: bodyStored}
 	if agentSeq != 0 {
 		seq := agentSeq
 		t.AgentSeq = &seq
 	}
+	r.rows[id] = t
+}
+
+// addRowWithMessageID adds a row that DOES carry a recorded Message-ID, so the
+// dispatch can be confirmed by the agent.
+func (r *fakeResendRepo) addRowWithMessageID(id uuid.UUID, agentSeq int64, messageID string) {
+	r.addRow(id, agentSeq, true)
+	t := r.rows[id]
+	m := messageID
+	t.MessageID = &m
 	r.rows[id] = t
 }
 
@@ -113,13 +197,16 @@ func newResendSvc(repo repository, agent AgentEmailClient) *Service {
 }
 
 // TestResendEmail_DispatchedPayloadMatchesAgentContract is the regression test
-// for GH #520. It asserts the literal JSON the agent would receive.
+// for GH #520, extended for GH #528. It asserts the literal JSON the agent
+// would receive, in both the verified and the unverified shape.
 func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
 	const agentSeq int64 = 4242
+	const storedMsgID = "<stored-4242@site.example>"
 
-	repo := newFakeResendRepo(logID, agentSeq)
-	agent := &fakeResendAgent{result: agentcmd.ResendEmailResult{OK: true, Detail: "resent", MessageID: "<m@site>"}}
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(logID, agentSeq, storedMsgID)
+	agent := &fakeResendAgent{result: agentcmd.ResendEmailResult{OK: true, Detail: "resent", MessageID: "<new@site>"}}
 	svc := newResendSvc(repo, agent)
 
 	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
@@ -133,29 +220,63 @@ func TestResendEmail_DispatchedPayloadMatchesAgentContract(t *testing.T) {
 		t.Fatalf("expected exactly 1 agent dispatch, got %d", agent.calls)
 	}
 
-	raw, err := json.Marshal(agent.lastReq)
-	if err != nil {
-		t.Fatalf("marshal dispatched request: %v", err)
+	// message_id must be the CP's RECORDED id for the row (the selector the
+	// agent compares against), never the id the agent returns for the new send.
+	assertResendPayload(t, agent.lastReq, wantResendKeysVerified, map[string]any{
+		"agent_seq":  agentSeq,
+		"message_id": storedMsgID,
+	})
+
+	if !res.Verified {
+		t.Error("a dispatch that carried message_id must report Verified=true")
 	}
-	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal dispatched request: %v", err)
+	if strings.Contains(res.Detail, "could not confirm") {
+		t.Errorf("a verified resend must not carry the unverified note: %q", res.Detail)
+	}
+}
+
+// TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified pins the other half
+// of the #528 decision: a row with no recorded Message-ID is still resent, the
+// key is ABSENT rather than empty, and the operator is told it was not
+// confirmed. The forbidden outcome is sending unconfirmed and saying nothing.
+func TestResendEmail_NoMessageID_OmitsKeyAndReportsUnverified(t *testing.T) {
+	tenantID, siteID, logID := uuid.New(), uuid.New(), uuid.New()
+	const agentSeq int64 = 99
+
+	repo := newFakeResendRepo(logID, agentSeq) // no message_id — a failed send
+	agent := &fakeResendAgent{result: agentcmd.ResendEmailResult{OK: true, Detail: "resent", MessageID: "<new@site>"}}
+	svc := newResendSvc(repo, agent)
+
+	res, err := svc.ResendEmail(context.Background(), tenantID, siteID, logID)
+	if err != nil {
+		t.Fatalf("ResendEmail: unexpected error: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("a row without a Message-ID must still resend, got ok=false detail=%q", res.Detail)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("expected exactly 1 agent dispatch, got %d", agent.calls)
 	}
 
-	// Exact key set — a missing key is the #520 bug, an extra key puts data on
-	// the command channel that the agent never reads.
-	if len(got) != len(wantResendKeys) {
-		t.Errorf("dispatched payload has %d field(s), want %d\n  got:  %s\n  want keys: %v",
-			len(got), len(wantResendKeys), raw, wantResendKeys)
+	// Exactly one key. An empty "message_id" would make the agent refuse.
+	assertResendPayload(t, agent.lastReq, wantResendKeysUnverified, map[string]any{
+		"agent_seq": agentSeq,
+	})
+
+	if res.Verified {
+		t.Error("a dispatch with no message_id must report Verified=false")
 	}
-	for _, k := range wantResendKeys {
-		if _, ok := got[k]; !ok {
-			t.Errorf("dispatched payload is missing %q — the agent rejects this request\n  got: %s", k, raw)
-		}
+	if !strings.Contains(res.Detail, "could not confirm") {
+		t.Errorf("an unverified resend must say so to the operator, got %q", res.Detail)
 	}
-	// agent_seq must be the row's own local id, as a JSON number.
-	if n, ok := got["agent_seq"].(float64); !ok || int64(n) != agentSeq {
-		t.Errorf("agent_seq = %v, want %d\n  got: %s", got["agent_seq"], agentSeq, raw)
+
+	// The audit row must record it too, or the log cannot tell the two apart.
+	meta, ok := resendAuditMeta(logID, res)
+	if !ok {
+		t.Fatal("a confirmed send must still be audited even when unverified")
+	}
+	if meta["verified"] != false {
+		t.Errorf("audit metadata verified = %v, want false", meta["verified"])
 	}
 }
 
@@ -291,7 +412,7 @@ func TestBulkResendEmail_MixedOutcomes(t *testing.T) {
 	okID, refusedID, noSeqID, missingID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 
 	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
-	repo.addRow(okID, 11, true)
+	repo.addRowWithMessageID(okID, 11, "<a-orig@site>")
 	repo.addRow(refusedID, 12, true)
 	repo.addRow(noSeqID, 0, true)
 
@@ -360,6 +481,58 @@ func TestBulkResendEmail_MixedOutcomes(t *testing.T) {
 	if meta["requested"] != len(ids) {
 		t.Errorf("audit requested = %v, want %d", meta["requested"], len(ids))
 	}
+	// GH #528: the only entry that resent carried a Message-ID, so none of the
+	// confirmed sends were unverified.
+	if meta["unverified"] != 0 {
+		t.Errorf("audit unverified = %v, want 0", meta["unverified"])
+	}
+
+	// Each addressable row must be addressed with its OWN selectors — the row
+	// with a recorded Message-ID sends it, the row without omits it. A batch
+	// that reused one row's message_id for the whole batch would be the #528
+	// bug wearing a fix.
+	if got := agent.msgIDs; len(got) != 2 || got[0] != "<a-orig@site>" || got[1] != "" {
+		t.Errorf("agent saw message_id sequence %q, want [\"<a-orig@site>\" \"\"]", got)
+	}
+}
+
+// TestBulkResendEmail_UnverifiedCounted proves the bulk audit row distinguishes
+// a confirmed resend from an unconfirmed one rather than collapsing both into
+// `count`.
+func TestBulkResendEmail_UnverifiedCounted(t *testing.T) {
+	tenantID, siteID := uuid.New(), uuid.New()
+	withID, withoutID := uuid.New(), uuid.New()
+
+	repo := &fakeResendRepo{fakeRepo: newFakeRepo(), rows: map[uuid.UUID]ResendTarget{}}
+	repo.addRowWithMessageID(withID, 31, "<x@site>")
+	repo.addRow(withoutID, 32, true)
+
+	agent := &perSeqResendAgent{results: map[int64]agentcmd.ResendEmailResult{
+		31: {OK: true, Detail: "resent", MessageID: "<n1@site>"},
+		32: {OK: true, Detail: "resent", MessageID: "<n2@site>"},
+	}}
+	svc := newResendSvc(repo, agent)
+
+	results, err := svc.BulkResendEmail(context.Background(), tenantID, siteID, []uuid.UUID{withID, withoutID})
+	if err != nil {
+		t.Fatalf("BulkResendEmail: unexpected error: %v", err)
+	}
+	for _, r := range results {
+		wantVerified := r.LogID == withID
+		if r.Verified != wantVerified {
+			t.Errorf("log %s: Verified=%v, want %v", r.LogID, r.Verified, wantVerified)
+		}
+	}
+	meta, ok := bulkResendAuditMeta(2, results)
+	if !ok {
+		t.Fatal("a batch with confirmed resends must be audited")
+	}
+	if meta["count"] != 2 {
+		t.Errorf("audit count = %v, want 2", meta["count"])
+	}
+	if meta["unverified"] != 1 {
+		t.Errorf("audit unverified = %v, want 1", meta["unverified"])
+	}
 }
 
 // TestBulkResendEmail_AllFail_NoAuditRow is the N-commands-zero-emails case:
@@ -391,6 +564,7 @@ func TestBulkResendEmail_AllFail_NoAuditRow(t *testing.T) {
 type perSeqResendAgent struct {
 	calls   int
 	seqs    []int64
+	msgIDs  []string
 	results map[int64]agentcmd.ResendEmailResult
 }
 
@@ -405,6 +579,7 @@ func (f *perSeqResendAgent) SendTestEmail(_ context.Context, _ uuid.UUID, _ stri
 func (f *perSeqResendAgent) ResendEmail(_ context.Context, _ uuid.UUID, _ string, req agentcmd.ResendEmailRequest) (agentcmd.ResendEmailResult, error) {
 	f.calls++
 	f.seqs = append(f.seqs, req.AgentSeq)
+	f.msgIDs = append(f.msgIDs, req.MessageID)
 	res, ok := f.results[req.AgentSeq]
 	if !ok {
 		return agentcmd.ResendEmailResult{OK: false, Detail: agentcmd.ResendDetailRowNotFound}, nil
@@ -428,6 +603,11 @@ func TestResendFailureMessage(t *testing.T) {
 		{name: "unconfigured", detail: "no email config, run sync_email_config first", want: "no email configuration yet"},
 		{name: "the #520 string", detail: agentcmd.ResendDetailMissingSeq, want: "update the wpmgr plugin"},
 		{name: "bad seq", detail: agentcmd.ResendDetailBadSeq, want: "update the wpmgr plugin"},
+		{
+			name:   "#528 row identity mismatch",
+			detail: agentcmd.ResendDetailMessageIDMismatch,
+			want:   "no longer the message shown here",
+		},
 		{name: "old plugin", detail: "resend_email command rejected by agent: status 404 body=x", want: "too old"},
 		{name: "silent refusal", detail: "", want: "without giving a reason"},
 		{

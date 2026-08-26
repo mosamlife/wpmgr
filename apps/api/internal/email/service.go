@@ -982,7 +982,18 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 		return ResendResult{OK: false, Detail: "site not enrolled or unavailable"}, nil
 	}
 
-	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, agentcmd.ResendEmailRequest{AgentSeq: *target.AgentSeq})
+	// GH #528: agent_seq is a site-local AUTO_INCREMENT, so a database restore
+	// can rebind it to a different message. Send the recorded Message-ID with
+	// it when we have one, and the agent refuses rather than sending the wrong
+	// mail. When we have none the field is omitted, the send is unconfirmed,
+	// and that fact is reported rather than swallowed.
+	req := agentcmd.ResendEmailRequest{AgentSeq: *target.AgentSeq}
+	if target.MessageID != nil {
+		req.MessageID = strings.TrimSpace(*target.MessageID)
+	}
+	verified := req.MessageID != ""
+
+	res, err := s.agent.ResendEmail(ctx, siteID, siteURL, req)
 	if err != nil {
 		return ResendResult{OK: false, Detail: resendFailureMessage(err.Error())}, nil
 	}
@@ -1003,7 +1014,30 @@ func (s *Service) ResendEmail(ctx context.Context, tenantID, siteID, logID uuid.
 			slog.String("err", err.Error()),
 		)
 	}
-	return ResendResult{OK: true, Detail: res.Detail, MessageID: res.MessageID}, nil
+	detail := res.Detail
+	if !verified {
+		detail = strings.TrimSpace(detail + " " + resendUnverifiedNote())
+	}
+	return ResendResult{OK: true, Detail: detail, MessageID: res.MessageID, Verified: verified}, nil
+}
+
+// resendUnverifiedNote is what an operator is told when the resend went out
+// without the GH #528 confirmation.
+//
+// DECISION (GH #528): a row with no recorded Message-ID is resent, not refused,
+// and the absence of confirmation is stated. Refusing would break resend for
+// every send that FAILED — all five agent provider handlers record an empty
+// message id on their failure branch, and a failed send is the single most
+// common thing an operator wants to resend. Refusing the main use case to close
+// a restore-only window trades a certain outage for an uncertain one.
+//
+// What is NOT acceptable is the third option: sending unconfirmed and saying
+// nothing. So the caller gets Verified=false, this sentence in Detail, and an
+// audit row that records the send as unverified.
+func resendUnverifiedNote() string {
+	return "Note: wpmgr could not confirm the site resent this exact message, because no " +
+		"provider message ID was recorded for this entry (usual when the original send failed). " +
+		"If this site's database was restored recently, check the delivery before relying on it."
 }
 
 // resendFailureMessage turns an agent-side refusal into a sentence an operator
@@ -1028,6 +1062,11 @@ func resendFailureMessage(detail string) string {
 	case strings.Contains(detail, agentcmd.ResendDetailMissingSeq),
 		strings.Contains(detail, agentcmd.ResendDetailBadSeq):
 		return "the site rejected the resend request format; update the wpmgr plugin on this site"
+	case strings.Contains(detail, agentcmd.ResendDetailMessageIDMismatch):
+		return "the site refused this resend: the message stored at that position in the site's own " +
+			"email log is no longer the message shown here, which happens after a site database " +
+			"restore. Nothing was sent. Reload the email log so wpmgr can re-read the site's " +
+			"current entries, then try again"
 	case strings.Contains(detail, "status 404"):
 		return "this site's wpmgr plugin is too old to support resending; update the plugin and try again"
 	default:
@@ -1073,7 +1112,7 @@ func (s *Service) BulkResendEmail(ctx context.Context, tenantID, siteID uuid.UUI
 			}
 			continue
 		}
-		results = append(results, BulkResendResult{LogID: id, OK: res.OK, Detail: res.Detail})
+		results = append(results, BulkResendResult{LogID: id, OK: res.OK, Detail: res.Detail, Verified: res.Verified})
 	}
 	return results, nil
 }

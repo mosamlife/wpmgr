@@ -8960,6 +8960,11 @@ export const ResendEmailResultSchema = {
       description:
         "Provider message ID assigned to the resent email (if agent returned it).",
     },
+    verified: {
+      type: "boolean",
+      description:
+        "Whether wpmgr was able to confirm the site resent the same message\nthe operator selected (GH #528). The site's log ids are a local\nAUTO_INCREMENT that a database restore rolls back, so wpmgr sends\nthe Message-ID it has on record and the site refuses on a mismatch.\n`false` means no Message-ID was recorded for that entry — normal\nwhen the original send failed — so the resend went out unconfirmed.\n`detail` carries the same warning in prose. Only meaningful when\n`ok` is true.\n",
+    },
   },
 } as const;
 
@@ -8992,6 +8997,11 @@ export const BulkResendItemResultSchema = {
     },
     detail: {
       type: ["string", "null"],
+    },
+    verified: {
+      type: "boolean",
+      description:
+        "Per-entry equivalent of ResendEmailResult.verified (GH #528). One\nbatch routinely mixes entries that could be confirmed with entries\nthat could not, so this is reported per entry, never per batch.\n",
     },
   },
 } as const;

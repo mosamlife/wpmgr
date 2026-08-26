@@ -425,6 +425,11 @@ type LogDetail struct {
 type ResendTarget struct {
 	AgentSeq   *int64
 	BodyStored bool
+	// MessageID is the provider Message-ID recorded for this row, or nil when
+	// none was ever captured. Sent to the agent as the #528 confirmation
+	// selector when present. Nil is common and expected — see
+	// agentcmd.ResendEmailRequest.MessageID.
+	MessageID *string
 }
 
 // IngestEntry is one entry from the agent's ingest push.
@@ -595,6 +600,12 @@ type ResendResult struct {
 	OK        bool
 	Detail    string
 	MessageID string
+	// Verified reports whether the CP was able to ask the site to confirm it
+	// was resending the same message the operator selected (GH #528). False
+	// means the row carried no recorded Message-ID to compare against, so the
+	// send went out unconfirmed. It is never silently false: Detail carries
+	// resendUnverifiedNote() alongside it and the audit row records it.
+	Verified bool
 }
 
 // BulkResendInput is the request for POST /sites/:siteId/email/log/resend (bulk).
@@ -609,6 +620,10 @@ type BulkResendResult struct {
 	LogID  uuid.UUID
 	OK     bool
 	Detail string
+	// Verified mirrors ResendResult.Verified for this entry. Per-entry, not
+	// per-batch: one batch routinely mixes rows that could be confirmed with
+	// rows that could not.
+	Verified bool
 }
 
 // BulkDeleteLogsInput is the request for DELETE /sites/:siteId/email/log (bulk).
