@@ -2560,8 +2560,7 @@ final class RestoreRunner
 
     /**
      * @return array{phase:string,kind:string,sub_state:array<string,mixed>,resume_count:int,max_resumes:int}|null
-     */
-    /**
+     *
      * @throws \RuntimeException When a persisted sub_state exists but cannot
      *      be decoded — resuming from a blank slate silently skips phases.
      */

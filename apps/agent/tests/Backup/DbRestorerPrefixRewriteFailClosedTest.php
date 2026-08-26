@@ -1,8 +1,24 @@
 <?php
 /**
  * DbRestorerPrefixRewriteFailClosedTest — locks the fail-closed contract of
- * `DbRestorer::rewritePrefix()`, proven END-TO-END through the public
- * `DbRestorer::restore()` path against a live scratch MariaDB/MySQL.
+ * `DbRestorer::rewritePrefix()`, in two tiers.
+ *
+ *  - UNIT tier, no server, ALWAYS RUNS. `rewritePrefix()` is `static` and the
+ *    abort is raised inside it, so the defect and its repair are both a pure
+ *    function call away. This tier is what holds the line in CI.
+ *  - END-TO-END tier, through the public `DbRestorer::restore()` path against
+ *    a live scratch MariaDB/MySQL. It proves the abort reaches `restore()` and
+ *    that the live tables survive untouched — the part no unit test can fake,
+ *    since DDL is not transactional in MySQL. Each of these calls
+ *    `requireLiveMysql()` and skips individually when `WPMGR_TEST_MYSQL_*` is
+ *    unset.
+ *
+ * The tiering is deliberate and is itself a fix. With the scratch-database
+ * bootstrap in `set_up()`, the skip covered the whole class, and since
+ * `ci.yml` runs `composer test` with no MySQL env, this file reported
+ * `Tests: 6, Assertions: 0, Skipped: 6` and exit 0 on every CI run — the
+ * regression lock for a data-loss defect announcing success over its own
+ * absence, which is the same defect class the code under test commits.
  *
  * `rewritePrefix()` is the single point at which a dump statement naming
  * `wp_posts` becomes a statement naming `tmp<rand>_posts`. That rewrite IS the
@@ -42,7 +58,11 @@
  * restores it in a `finally` — a leaked limit of 0 would break the rest of the
  * suite.
  *
- * @group integration
+ * `@group integration` is applied PER METHOD, to the end-to-end tier only.
+ * Tagging the class would put the unit tier one `--exclude-group integration`
+ * away from silently vanishing again, which is the failure this file just came
+ * back from.
+ *
  * @package WPMgr\Agent\Tests\Backup
  */
 
@@ -78,21 +98,34 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
 
     private string $dumpPath = '';
 
+    /** Per-run namespace for every identifier this test creates. */
+    private string $suffix = '';
+
     /** @var array{host:string,user:string,password:string,name:string,prefix:string} */
     private array $db = [];
 
+    /**
+     * MySQL-FREE. Everything here works with no server, because most of what
+     * this file locks needs none: `rewritePrefix()` is `static`, and the abort
+     * is raised inside it, so the defect and its repair are both reachable as
+     * a pure function call.
+     *
+     * The scratch-database bootstrap deliberately does NOT live here. It did
+     * once, and the cost was the whole guard: `ci.yml` runs `composer test`
+     * and sets no `WPMGR_TEST_MYSQL_*`, so the `markTestSkipped()` in `set_up()`
+     * fired for every test in the class and the file reported
+     * `Tests: 6, Assertions: 0, Skipped: 6` with exit 0 — the regression lock
+     * for a proven data-loss defect announcing success over its own absence,
+     * which is precisely the defect class this file exists to guard against.
+     *
+     * Moving the bootstrap into `requireLiveMysql()`, called by the end-to-end
+     * tests only, is what lets the unit-level tests below run unconditionally.
+     * Failing hard on absent env instead would have reddened every developer's
+     * `composer test`, and a guard that reddens correct work gets switched off.
+     */
     protected function set_up(): void
     {
         parent::set_up();
-
-        $host = getenv('WPMGR_TEST_MYSQL_HOST');
-        $user = getenv('WPMGR_TEST_MYSQL_USER');
-        $pass = getenv('WPMGR_TEST_MYSQL_PASSWORD');
-        $name = getenv('WPMGR_TEST_MYSQL_DATABASE');
-
-        if ($host === false || $user === false || $name === false) {
-            $this->markTestSkipped('WPMGR_TEST_MYSQL_* env vars not set.');
-        }
 
         $suffix = bin2hex(random_bytes(4));
         // Stands in for the live install's `wp_` prefix. Namespaced per run so
@@ -102,6 +135,31 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
         $this->livePrefix   = 'live' . $suffix . '_';
         $this->tmpPrefix    = 'tmp' . $suffix . '_';
         $this->foreignTable = 'other' . $suffix . '_widgets';
+        $this->suffix       = $suffix;
+    }
+
+    /**
+     * Bring up the live scratch database, seed the pre-restore live tables and
+     * write the fixture dump — or skip THIS test alone.
+     *
+     * Called as the first line of the end-to-end tests, never from `set_up()`.
+     * The skip is still correct for those: they assert on real DDL against a
+     * real server, and there is no honest way to fake that. What is no longer
+     * correct is letting the skip reach the tests that need no server.
+     */
+    private function requireLiveMysql(): void
+    {
+        $host = getenv('WPMGR_TEST_MYSQL_HOST');
+        $user = getenv('WPMGR_TEST_MYSQL_USER');
+        $pass = getenv('WPMGR_TEST_MYSQL_PASSWORD');
+        $name = getenv('WPMGR_TEST_MYSQL_DATABASE');
+
+        if ($host === false || $user === false || $name === false) {
+            $this->markTestSkipped(
+                'WPMGR_TEST_MYSQL_* env vars not set — end-to-end restore case skipped. '
+                . 'The unit-level fail-closed assertions in this class run regardless.'
+            );
+        }
 
         $this->db = [
             'host'     => (string) $host,
@@ -119,7 +177,7 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
 
         $this->seedLiveTables();
 
-        $this->dumpPath = sys_get_temp_dir() . '/wpmgr-dbrestorer-531-' . $suffix . '.sql.gz';
+        $this->dumpPath = sys_get_temp_dir() . '/wpmgr-dbrestorer-531-' . $this->suffix . '.sql.gz';
         file_put_contents($this->dumpPath, (string) gzencode($this->buildFixtureDump()));
     }
 
@@ -180,7 +238,154 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // RED -> GREEN, unit level. NO SERVER REQUIRED, so this runs in CI.
+    //
+    // The abort is raised inside the static rewritePrefix(), which is also
+    // where the defect lived, so the whole red-to-green transition is
+    // observable without MySQL. The end-to-end cases below prove the abort
+    // reaches restore() and spares the live tables; THIS one proves the abort
+    // happens at all, and it is the assertion that carries the lock in CI.
+    // -----------------------------------------------------------------
+
+    /**
+     * THE REGRESSION LOCK, unit level.
+     *
+     * With PCRE unable to answer, `rewritePrefix()` must throw rather than
+     * return. The defect was `if (!preg_match(...)) { continue; }`: `false`
+     * collapsed into `0`, every pattern "did not match", the loop fell through
+     * and the statement came back VERBATIM — still naming the live table, with
+     * `$currentTable` never set. Both halves of that are asserted here, so
+     * restoring the old line reddens this test with no database in sight.
+     */
+    public function test_rewrite_prefix_aborts_instead_of_returning_a_live_prefixed_statement(): void
+    {
+        $stmt = 'CREATE TABLE `' . $this->livePrefix . "posts` (\n"
+            . "  `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT,\n"
+            . "  `post_title` text NOT NULL,\n"
+            . "  PRIMARY KEY (`ID`)\n"
+            . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
+
+        $currentTable = '';
+        $returned     = null;
+        $thrown       = null;
+
+        try {
+            $returned = $this->withBrokenPcre(function () use ($stmt, &$currentTable) {
+                return DbRestorer::rewritePrefix($stmt, $this->livePrefix, $this->tmpPrefix, $currentTable);
+            });
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNotNull(
+            $thrown,
+            'rewritePrefix() must ABORT when PCRE cannot tell which table the statement targets. '
+            . 'Returning at all is the defect — the returned SQL still names the live table and '
+            . 'gets replayed straight into the live database.'
+        );
+
+        // The specific shape of the old failure, asserted rather than implied:
+        // it did not merely fail to abort, it handed back live-prefixed SQL.
+        $this->assertNull(
+            $returned,
+            'nothing may be returned on a PCRE failure; the verbatim live-prefixed statement is '
+            . 'exactly what overwrote the live database'
+        );
+        $this->assertSame(
+            '',
+            $currentTable,
+            '$currentTable must stay unset — the empty $touchedTbls it produced is what made swap() '
+            . "report 'done' => true having swapped nothing"
+        );
+    }
+
+    /**
+     * The abort message must tell an operator what happened and what to do.
+     * Asserted against `rewritePrefix()` directly — the message is built there,
+     * so this needs no server, and its propagation out through `restore()` is
+     * covered by the end-to-end case below.
+     */
+    public function test_abort_message_is_actionable(): void
+    {
+        $stmt = 'INSERT INTO `' . $this->livePrefix . "options` VALUES\n"
+            . "(1,'siteurl','https://old-site.example'),\n"
+            . "(2,'home','https://old-site.example'),\n"
+            . "(3,'blogname','WPMgr Fixture Site')";
+
+        $currentTable = '';
+        $thrown       = null;
+
+        // Captured, never asserted from inside the catch: PHPUnit's own
+        // AssertionFailedError extends RuntimeException, so a `fail()` in the
+        // try block lands in the catch and gets re-reported as a nonsense
+        // string assertion against the failure message itself.
+        try {
+            $this->withBrokenPcre(function () use ($stmt, &$currentTable) {
+                return DbRestorer::rewritePrefix($stmt, $this->livePrefix, $this->tmpPrefix, $currentTable);
+            });
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNotNull($thrown, 'rewritePrefix() must throw when preg_match() fails');
+
+        $message = $thrown->getMessage();
+        $this->assertStringContainsString('DbRestorer', $message);
+        $this->assertStringContainsString('cannot determine which table a dump statement targets', $message);
+        $this->assertStringContainsString('preg_match failed', $message);
+        $this->assertStringContainsString('Aborting the restore', $message);
+        $this->assertStringContainsString('live tables', $message);
+        $this->assertStringContainsString('pcre.backtrack_limit', $message);
+        $this->assertStringContainsString('pcre.recursion_limit', $message);
+    }
+
+    /**
+     * OVER-FIRE GUARD, unit level, and NO SERVER REQUIRED. `0` and `false` are
+     * now distinct and only `false` aborts, so a statement that legitimately
+     * does not match must still be handled exactly as it was before the fix.
+     *
+     * This pairs with the lock above: together they are what makes the CI-side
+     * assertions a real guard rather than a one-directional tripwire.
+     */
+    public function test_legitimately_unmatched_statements_still_pass_through_untouched(): void
+    {
+        // Names a table, but not one of OURS: still skipped outright, because
+        // replaying it would corrupt an unrelated plugin's data.
+        $current = '';
+        $this->assertSame(
+            '',
+            DbRestorer::rewritePrefix(
+                'CREATE TABLE `' . $this->foreignTable . "` (\n  `id` bigint(20) unsigned NOT NULL,\n  PRIMARY KEY (`id`)\n)",
+                $this->livePrefix,
+                $this->tmpPrefix,
+                $current
+            ),
+            'a statement naming a table outside the source prefix must still be skipped entirely'
+        );
+        $this->assertSame('', $current, 'a foreign table must not become the current table');
+
+        // Names no table at all (SET / START TRANSACTION / COMMIT): still
+        // passes through verbatim rather than aborting.
+        $current = '';
+        $this->assertSame(
+            'SET NAMES utf8mb4',
+            DbRestorer::rewritePrefix('SET NAMES utf8mb4', $this->livePrefix, $this->tmpPrefix, $current),
+            'a prefix-free statement must still pass through verbatim'
+        );
+        $this->assertSame('', $current, 'a prefix-free statement must not claim a current table');
+
+        // The context-switching statements are still refused.
+        $current = '';
+        $this->assertSame(
+            '',
+            DbRestorer::rewritePrefix('USE some_other_database', $this->livePrefix, $this->tmpPrefix, $current),
+            'context-switching statements must still be dropped'
+        );
+    }
+
+    // -----------------------------------------------------------------
     // RED -> GREEN. The end-to-end proof through the public restore() path.
+    // These need a live scratch server and skip individually without one.
     // -----------------------------------------------------------------
 
     /**
@@ -197,9 +402,12 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
      * proof: DDL is not transactional in MySQL, so had the unrewritten
      * `DROP TABLE IF EXISTS `<live>_options`` executed, no rollback could have
      * brought it back.
+     *
+     * @group integration
      */
     public function test_pcre_failure_aborts_before_writing_to_the_live_tables(): void
     {
+        $this->requireLiveMysql();
         $restorer = new DbRestorer($this->db);
 
         $thrown = null;
@@ -249,35 +457,6 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
         );
     }
 
-    /**
-     * The abort message must tell an operator what happened and what to do.
-     */
-    public function test_abort_message_is_actionable(): void
-    {
-        $restorer = new DbRestorer($this->db);
-
-        try {
-            $this->withBrokenPcre(function () use ($restorer) {
-                return $restorer->restore(
-                    $this->dumpPath,
-                    $this->tmpPrefix,
-                    $this->livePrefix,
-                    static function (string $phase, array $detail): void {
-                    }
-                );
-            });
-            $this->fail('expected a RuntimeException');
-        } catch (\RuntimeException $e) {
-            $message = $e->getMessage();
-            $this->assertStringContainsString('DbRestorer', $message);
-            $this->assertStringContainsString('preg_match failed', $message);
-            $this->assertStringContainsString('Aborting the restore', $message);
-            $this->assertStringContainsString('live tables', $message);
-            $this->assertStringContainsString('pcre.backtrack_limit', $message);
-            $this->assertStringContainsString('pcre.recursion_limit', $message);
-        }
-    }
-
     // -----------------------------------------------------------------
     // OVER-FIRE. A fix that aborts real restores is worse than the bug.
     // -----------------------------------------------------------------
@@ -286,9 +465,12 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
      * OVER-FIRE GUARD. With PCRE healthy the identical dump restores in full:
      * every statement rewritten to the tmp prefix, every row present, the live
      * tables still untouched, and both tmp tables reported back to swap().
+     *
+     * @group integration
      */
     public function test_a_normal_restore_still_completes_with_every_row(): void
     {
+        $this->requireLiveMysql();
         $restorer = new DbRestorer($this->db);
 
         $tmpTables = $restorer->restore(
@@ -329,13 +511,18 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
     }
 
     /**
-     * OVER-FIRE GUARD, the other direction. A statement that legitimately does
-     * not match must still be handled exactly as before — skipped when it
-     * names someone else's table, passed through when it names no table at
-     * all. `0` and `false` are now distinct, and only `false` aborts.
+     * OVER-FIRE GUARD, the other direction, end to end: a foreign table named
+     * in the dump is skipped by a real restore rather than created. The
+     * unit-level half of this assertion — that `rewritePrefix()` returns `''`
+     * for it — is in
+     * `test_legitimately_unmatched_statements_still_pass_through_untouched`
+     * and runs without a server; this proves `restore()` acts on that `''`.
+     *
+     * @group integration
      */
-    public function test_legitimately_unmatched_statements_are_still_handled_as_before(): void
+    public function test_a_foreign_table_in_the_dump_is_never_created(): void
     {
+        $this->requireLiveMysql();
         $restorer = new DbRestorer($this->db);
 
         $restorer->restore(
@@ -353,24 +540,6 @@ final class DbRestorerPrefixRewriteFailClosedTest extends TestCase
         $this->assertFalse(
             $this->tableExists($this->foreignTable),
             'a statement naming a table outside the source prefix must still be skipped entirely'
-        );
-
-        // And a statement naming no table at all (SET / START TRANSACTION /
-        // COMMIT) still passes through untouched rather than aborting.
-        $current = '';
-        $this->assertSame(
-            'SET NAMES utf8mb4',
-            DbRestorer::rewritePrefix('SET NAMES utf8mb4', $this->livePrefix, $this->tmpPrefix, $current),
-            'a prefix-free statement must still pass through verbatim'
-        );
-        $this->assertSame('', $current, 'a prefix-free statement must not claim a current table');
-
-        // The context-switching statements are still refused.
-        $current = '';
-        $this->assertSame(
-            '',
-            DbRestorer::rewritePrefix('USE some_other_database', $this->livePrefix, $this->tmpPrefix, $current),
-            'context-switching statements must still be dropped'
         );
     }
 
