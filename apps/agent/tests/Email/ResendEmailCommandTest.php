@@ -81,10 +81,11 @@ class ResendEmailCommandTest extends TestCase
         return $router;
     }
 
-    private function make_log_row(int $id, bool $body_stored, string $body = ''): array
+    private function make_log_row(int $id, bool $body_stored, string $body = '', string $message_id = ''): array
     {
         return [
             'id'           => (string) $id,
+            'message_id'   => $message_id,
             'mail_to'      => 'recipient@example.com',
             'mail_from'    => 'Sender Name <sender@example.com>',
             'subject'      => 'Original subject',
@@ -93,6 +94,20 @@ class ResendEmailCommandTest extends TestCase
             'body'         => $body,
             'resent_count' => '0',
         ];
+    }
+
+    /**
+     * Build a router around a handler that RECORDS every send it is asked to
+     * make, so a test can assert on what was transmitted — or that nothing was.
+     */
+    private function make_router_with_spy(RecordingProviderHandler $spy): ProviderRouter
+    {
+        $logger = $this->createMock(EmailLogger::class);
+        $logger->method('write')->willReturn(1);
+
+        $router = new ProviderRouter(new FakeKeystore('test-secret'), $logger);
+        $router->register($spy);
+        return $router;
     }
 
     private function install_wpdb(?array $row): FakeResendWpdb
@@ -240,6 +255,305 @@ class ResendEmailCommandTest extends TestCase
         $this->assertStringContainsString('quota', $result['detail']);
         $this->assertFalse($wpdb->update_called, 'UPDATE must NOT be called when the provider send failed');
     }
+
+    // -------------------------------------------------------------------------
+    // GH #528 — agent_seq is not a safe identity across a database restore.
+    //
+    // A restore rolls the wpmgr_email_log AUTO_INCREMENT counter back, so later
+    // traffic re-uses ids the control plane already bound to other messages. The
+    // CP names the message_id it mirrored at ingest; a mismatch means the local
+    // row is no longer the message the operator selected, and email cannot be
+    // recalled, so the send must not happen at all.
+    //
+    // These tests do not depend on any process-global constant (the
+    // WPMGR_DISABLE_SITE_2FA leak that has silently disabled assertions in other
+    // files today), so they need no process isolation: every one of them asserts
+    // on the spy's own recorded state.
+    // -------------------------------------------------------------------------
+
+    /**
+     * The restore scenario itself. Local row 42 is Bob's password reset; the
+     * control plane still believes 42 is Alice's invoice. Nothing may be sent.
+     */
+    public function test_message_id_mismatch_refuses_and_sends_nothing(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+
+        // Post-restore: id 42 now holds a completely different message.
+        $row             = $this->make_log_row(42, true, '<p>Reset your password, Bob</p>', 'sg-bob-password-reset');
+        $row['mail_to']  = 'bob@example.com';
+        $row['subject']  = 'Password reset';
+        $wpdb            = $this->install_wpdb($row);
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-001', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        // The CP asks for agent_seq 42, the invoice it logged for Alice.
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        // The load-bearing assertion: no email left the site.
+        $this->assertSame(0, $spy->send_count, 'no email may be sent when the named message_id does not match the local row');
+        $this->assertSame([], $spy->sent, 'the provider handler must have received nothing at all');
+
+        $this->assertFalse($result['ok']);
+        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+        $this->assertStringContainsString('restored', $result['detail']);
+        $this->assertSame('', $result['message_id']);
+        $this->assertFalse($wpdb->update_called, 'a refused resend must not touch the log row');
+    }
+
+    /**
+     * Over-fire guard 1: a legitimate resend, ids matching, still sends.
+     */
+    public function test_matching_message_id_still_resends(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $wpdb = $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-002', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        $this->assertSame(1, $spy->send_count, 'a verified resend must still send');
+        $this->assertTrue($result['ok']);
+        $this->assertSame('resent', $result['detail']);
+        $this->assertSame('sg-new-002', $result['message_id']);
+        $this->assertTrue($wpdb->update_called);
+    }
+
+    /**
+     * Over-fire guard 2 — the one that keeps an older control plane working: a
+     * command with NO message_id key resends exactly as it does today.
+     */
+    public function test_absent_message_id_resends_exactly_as_today(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $wpdb = $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-003', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        // Exactly the pre-#528 payload.
+        $result = $cmd->execute([], ['agent_seq' => 42]);
+
+        $this->assertSame(1, $spy->send_count, 'a control plane that sends no message_id must keep working unchanged');
+        $this->assertTrue($result['ok']);
+        $this->assertSame('resent', $result['detail']);
+        $this->assertSame('sg-new-003', $result['message_id']);
+        $this->assertTrue($wpdb->update_called);
+    }
+
+    /**
+     * An explicit JSON null is the encoding of "no value", so it means the same
+     * as an absent key: the control plane is not asking for verification.
+     * Refusing on it would turn an additive field into a breaking one.
+     */
+    public function test_null_message_id_is_treated_as_not_supplied(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-004', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => null]);
+
+        $this->assertSame(1, $spy->send_count);
+        $this->assertTrue($result['ok']);
+    }
+
+    /**
+     * The row-has-no-stored-id case, and the decision it forces.
+     *
+     * The CP's copy of message_id is a mirror of this row's own value at ingest.
+     * If the CP holds one and the local row does not, they are not the same row
+     * — which is exactly what a rolled-back counter re-issuing an id to a FAILED
+     * send (logged with message_id='') looks like. We cannot verify, so we do
+     * not send, and we say why.
+     */
+    public function test_row_without_stored_message_id_refuses_when_cp_names_one(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $wpdb = $this->install_wpdb($this->make_log_row(42, true, '<p>whatever landed here</p>', ''));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-005', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        $this->assertSame(0, $spy->send_count, 'an unverifiable resend must not be sent');
+        $this->assertFalse($result['ok']);
+        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+        $this->assertFalse($wpdb->update_called);
+    }
+
+    /**
+     * The mirror of the above: empty is compared as a value, not read as "skip".
+     * A send that failed is logged with message_id='' and mirrored to the CP as
+     * '', so ''-vs-'' is a genuine match and that resend must still work.
+     */
+    public function test_empty_message_id_matches_a_row_logged_without_one(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>failed original send</p>', ''));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-006', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => '']);
+
+        $this->assertSame(1, $spy->send_count, 'a failed send mirrored as message_id="" must still be resendable');
+        $this->assertTrue($result['ok']);
+    }
+
+    /**
+     * ...and the same rule in the other direction: the CP holds no id, the local
+     * row does. Still not the same row. Still refuse.
+     */
+    public function test_empty_message_id_refuses_when_the_row_has_one(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-007', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => '']);
+
+        $this->assertSame(0, $spy->send_count);
+        $this->assertFalse($result['ok']);
+        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+    }
+
+    /**
+     * A present-but-unusable message_id is refused before any work is done. An
+     * unverifiable resend is never a silent send.
+     */
+    public function test_non_string_message_id_refuses_and_sends_nothing(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-008', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => ['not', 'a', 'string']]);
+
+        $this->assertSame(0, $spy->send_count);
+        $this->assertFalse($result['ok']);
+        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_INVALID, $result['detail']);
+    }
+
+    /**
+     * The verification runs BEFORE the body_stored branch, so an operator whose
+     * row was replaced by a restore is told the truth ("this is not your
+     * message") rather than a misleading fact about the wrong row.
+     */
+    public function test_mismatch_is_reported_ahead_of_body_not_stored(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, false, '', 'sg-bob-password-reset'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-009', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        $this->assertSame(0, $spy->send_count);
+        $this->assertFalse($result['ok']);
+        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+    }
+
+    /**
+     * The guard must not redden correct work on the SECOND resend.
+     *
+     * EmailLogReporter pages rows with `WHERE id > cursor`, so a row that has
+     * already been pushed is never pushed again and the control plane's copy of
+     * message_id stays at the original send's value forever. A successful resend
+     * therefore must NOT rewrite the row's message_id, or resending the same row
+     * twice would refuse itself.
+     */
+    public function test_successful_resend_preserves_the_rows_message_id(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $wpdb = $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-new-010', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $first = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+        $this->assertTrue($first['ok']);
+        $this->assertTrue($wpdb->update_called);
+
+        $updates = array_values(array_filter(
+            $wpdb->queries,
+            static fn (string $q): bool => stripos($q, 'UPDATE') !== false
+        ));
+        $this->assertNotEmpty($updates, 'the successful resend must have issued an UPDATE');
+        foreach ($updates as $q) {
+            $this->assertStringNotContainsString(
+                'message_id',
+                $q,
+                'the row message_id is the identity the CP verifies against and must survive a resend'
+            );
+        }
+
+        // ...and the row is therefore still resendable with the same id.
+        $second = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+        $this->assertTrue($second['ok'], 'a second resend of the same row must not refuse itself');
+        $this->assertSame(2, $spy->send_count);
+    }
+}
+
+/**
+ * A provider handler that records every send it is asked to perform, so a test
+ * can assert that nothing was sent rather than merely that an error came back.
+ */
+class RecordingProviderHandler implements ProviderHandlerInterface
+{
+    public int $send_count = 0;
+
+    /** @var array<int,array<string,mixed>> Every mail payload handed to send(). */
+    public array $sent = [];
+
+    /** @var array{ok:bool,message_id:string,error:string,provider_response:string} */
+    private array $result;
+
+    /**
+     * @param array{ok:bool,message_id:string,error:string,provider_response:string} $result
+     */
+    public function __construct(array $result)
+    {
+        $this->result = $result;
+    }
+
+    /**
+     * @param array<string,mixed> $mail
+     * @param array<string,mixed> $config
+     * @return array{ok:bool,message_id:string,error:string,provider_response:string}
+     */
+    public function send(array $mail, array $config, string $secret): array
+    {
+        ++$this->send_count;
+        $this->sent[] = $mail;
+        return $this->result;
+    }
+
+    public function provider(): string
+    {
+        return 'sendgrid';
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +569,9 @@ class FakeResendWpdb
     public string $prefix = 'wp_';
 
     public bool $update_called = false;
+
+    /** @var array<int,string> Every query text passed to query(). */
+    public array $queries = [];
 
     /** @var array<string,mixed>|null */
     private ?array $row;
@@ -284,6 +601,7 @@ class FakeResendWpdb
      */
     public function query(string $query)
     {
+        $this->queries[] = $query;
         if (stripos($query, 'UPDATE') !== false) {
             $this->update_called = true;
             return 1;
