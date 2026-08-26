@@ -81,9 +81,22 @@ final class ServerConfigWriter
     }
 
     /**
-     * Remove the managed security block. Idempotent (absent => no-op true).
+     * Remove the managed security block.
      *
-     * @return bool
+     * Idempotent in the honest direction only: "there is nothing to remove"
+     * returns true, "I could not tell whether anything was removed" returns
+     * false.
+     *
+     * A TRUE RETURN IS A CLAIM THAT THE BLOCK IS GONE FROM DISK, and
+     * HardeningModule::writeServerConfig() converts that claim into a
+     * stampServerRev() call, which disarms refreshServerConfigIfStale() until
+     * the next version bump. Anything that returns true without having verified
+     * removal therefore does not merely fail — it records the failure as done
+     * and suppresses every future repair attempt, while Apache goes on serving
+     * the stale block. That is the same defect fixed on the install path in
+     * 264e0786; this is the uninstall half of it.
+     *
+     * @return bool True only when the block is verifiably absent from disk.
      */
     public function uninstall(): bool
     {
@@ -94,7 +107,15 @@ final class ServerConfigWriter
 
         $content = @file_get_contents($path);
         if ($content === false) {
-            return true;
+            // The file EXISTS (is_file passed above) but cannot be read, so any
+            // managed block in it is still there and still being served. This
+            // is transient far more often than it is permanent — a partial
+            // upgrade, a deploy mid-flight, an SELinux relabel, a lock held
+            // elsewhere — so it must be reported as a failure to retry on the
+            // next boot, never as a removal to stamp. Returning true here left
+            // a site 403ing its own recovery routes with the repair permanently
+            // disarmed.
+            return false;
         }
 
         $stripped = $this->stripBlock($content);

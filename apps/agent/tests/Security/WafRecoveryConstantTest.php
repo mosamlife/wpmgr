@@ -1,26 +1,32 @@
 <?php
 /**
- * GH #529, layer (4): the WAF mu-plugin's brute-force gate must honour the
- * operator's documented recovery constant — and must not honour it anywhere
- * else.
+ * GH #529: the WAF mu-plugin's gate must NOT honour the recovery constant, and
+ * these tests hold that shut from both directions.
  *
- * `define('WPMGR_DISABLE_SITE_2FA', true)` in wp-config.php is this plugin's
- * last-resort escape hatch for an administrator it has locked out. Site2faModule,
- * PasswordPolicyModule and HardeningModule's auth appliers all honoured it; the
- * WAF gate did not. An admin whose own public IP had been auto-added to
- * deny_cidrs by the brute-force protection therefore still met a 403 before
- * WordPress booted, with the escape hatch set and nothing to tell them it had
- * done nothing.
+ * A recovery layer was added to wpmgr_waf_should_deny() and has since been
+ * removed. It was added on the belief that deny_cidrs was auto-populated by
+ * brute-force protection. It is not — it arrives from the control plane through
+ * SyncSecurityConfigCommand as "always-block ranges", and nothing in this plugin
+ * ever writes to it. Both lists this gate enforces (deny_cidrs and
+ * hardening_deny_cidrs) are therefore operator policy.
  *
- * The check sits BELOW the hardening_deny_cidrs layer, not above every layer.
- * Above them it released the operator's explicit IP ban list too, so a constant
- * named DISABLE_SITE_2FA silently disabled every IP ban on the site — the
- * blast-radius defect the tests below now hold shut in both directions.
+ * While the layer existed, `define('WPMGR_DISABLE_SITE_2FA', true)` in
+ * wp-config.php silently disabled the operator's always-block ranges on every
+ * request before WordPress booted. On a managed site the party who can edit
+ * wp-config.php is frequently NOT the operator — an agency's client, a host's
+ * tenant — so that let the managed party override the manager. A constant in
+ * wp-config.php proves local file access, never operator authority.
+ *
+ * The constant's legitimate job — releasing the escalating lockout this plugin
+ * computes out of its own {prefix}wpmgr_login_events rows — cannot be done here
+ * at all: this file has no access to those rows. It is done in
+ * LoginProtection::onAuthenticate() step 6b, proved by
+ * LoginProtectionRecoveryConstantTest.
  *
  * The constant is readable at mu-plugin time: wp-config.php runs to completion —
  * it is what requires wp-settings.php — so every define() in it exists before
  * wp-settings.php line 1, and the mu-plugin include loop is line 498 of the
- * WordPress 7.0.4 tree.
+ * WordPress 7.0.4 tree. Readability was never the issue; scope was.
  *
  * WHY THESE RUN IN SEPARATE PROCESSES. A constant cannot be undefined. Defining
  * WPMGR_DISABLE_SITE_2FA in the shared test process would switch the gate off
@@ -75,23 +81,69 @@ final class WafRecoveryConstantTest extends TestCase
     }
 
     /**
-     * The recovery constant releases the brute-force lockout — the auth policy
-     * it is named for — and nothing else.
+     * THE TENANCY GUARD, and the reason the recovery layer was removed from this
+     * gate entirely.
      *
-     * `@runInSeparateProcess`
-     * `@preserveGlobalState` disabled
+     * deny_cidrs is NOT auto-populated by brute-force protection. It arrives
+     * from the control plane through SyncSecurityConfigCommand as "always-block
+     * ranges" — the operator's policy, pushed to a site whose local
+     * administrator may be a different party (an agency's client, a host's
+     * tenant). A constant in wp-config.php proves local file access, never
+     * operator authority.
+     *
+     * While a recovery layer existed above this check, setting the constant
+     * silently disabled those ranges on every request before WordPress booted,
+     * letting the managed party override the manager. If this assertion ever
+     * flips, that hole is back.
      *
      * @runInSeparateProcess
      * @preserveGlobalState disabled
      */
-    public function test_recovery_constant_releases_the_brute_force_lockout(): void
+    public function test_recovery_constant_never_releases_control_plane_deny_cidrs(): void
     {
         define('WPMGR_DISABLE_SITE_2FA', true);
         self::loadWaf();
 
-        $this->assertFalse(
+        $this->assertTrue(
             wpmgr_waf_should_deny(self::config(), '203.0.113.10', 'protect'),
-            'with the recovery constant set, a brute-force deny_cidrs hit must pass'
+            'the recovery constant must NOT release a control-plane deny_cidrs range'
+        );
+    }
+
+    /**
+     * The corollary: this gate has no recovery bypass at all, because it
+     * enforces only operator policy. The event-backed lockout the constant DOES
+     * release is counted from {prefix}wpmgr_login_events, which this file cannot
+     * even read — that release lives in LoginProtection::onAuthenticate() step
+     * 6b and is proved by LoginProtectionRecoveryConstantTest.
+     *
+     * Asserted as behaviour rather than by grepping the source: with the
+     * constant set, every layer decides exactly as it does without it.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_recovery_constant_changes_no_decision_in_this_gate(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+        self::loadWaf();
+
+        // Same four probes as test_without_the_constant_the_gate_still_denies().
+        $this->assertTrue(
+            wpmgr_waf_should_deny(self::config(), '203.0.113.10', 'protect'),
+            'deny_cidrs in protect mode: unchanged by the constant'
+        );
+        $this->assertTrue(
+            wpmgr_waf_should_deny(self::config(), '198.51.100.7', 'off'),
+            'hardening ban in any mode: unchanged by the constant'
+        );
+        $this->assertFalse(
+            wpmgr_waf_should_deny(self::config(), '192.0.2.55', 'protect'),
+            'unrelated public IP: unchanged by the constant'
+        );
+        $this->assertFalse(
+            wpmgr_waf_should_deny(self::config(), '203.0.113.10', 'off'),
+            'deny_cidrs outside protect mode: unchanged by the constant'
         );
     }
 

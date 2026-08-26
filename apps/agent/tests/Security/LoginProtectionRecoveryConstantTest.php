@@ -15,27 +15,31 @@
  *
  * WHAT THE CONSTANT RELEASES HERE, AND WHAT IT MUST NOT
  * ----------------------------------------------------
- * Released — every deny this class can issue, all of them brute-force-owned:
- *   - step 4, deny_cidrs. Auto-populated from failed attempts and owned solely
- *     by the login-protection subsystem, despite the bare name.
- *   - steps 7, 8 and 9 — ALL_BLOCKED, TEMP_BLOCK, CAPTCHA_BLOCK — counted live
- *     out of {prefix}wpmgr_login_events, rows this plugin wrote itself.
- * All four are automatic, transient, self-inflicted, and aimed at whoever is
- * currently typing.
+ * Released — steps 7, 8 and 9: ALL_BLOCKED, TEMP_BLOCK, CAPTCHA_BLOCK, counted
+ * live out of {prefix}wpmgr_login_events. Those rows are the ONLY thing this
+ * plugin generates by itself. They are automatic, transient, self-inflicted and
+ * aimed at whoever is currently typing.
  *
- * NOT released: hardening_deny_cidrs, the operator's explicit IP ban list. This
- * class never reads that key at all — test_login_protection_never_consults_
- * hardening_deny_cidrs below pins that, so the blanket release above provably
- * cannot reach it. It is enforced one layer earlier by the WAF mu-plugin, whose
- * own recovery check sits BELOW the hardening layer;
- * WafRecoveryConstantTest::test_recovery_constant_never_releases_an_explicit_
- * hardening_ban is the proof that it still blocks with the constant set.
+ * NOT released — either deny list, because both are operator policy:
+ *   - deny_cidrs (step 4) arrives from the control plane via
+ *     SyncSecurityConfigCommand, whose wire contract calls them "always-block
+ *     ranges". Nothing in this plugin writes to it.
+ *   - hardening_deny_cidrs is written by HardeningModule::syncWafDenyCidrs()
+ *     and enforced only in the WAF mu-plugin. This class never reads it, which
+ *     test_login_protection_never_consults_hardening_deny_cidrs pins directly.
  *
- * WHY deny_cidrs RELEASES HERE, having first been scoped not to. With the gate
- * under step 4 the WAF released deny_cidrs before WordPress booted and this
- * method blocked the same list in PHP: the hatch opened the outer door and
- * locked the inner one. The names are the trap — the plainer key is the
- * automatic list and the qualified key is the deliberate one.
+ * READ THE WIRE CONTRACT, NOT THE NAMES. Three successive readings of this code
+ * concluded that deny_cidrs was machine-generated and should be released, twice
+ * shipping toward a change that let a wp-config.php constant bypass
+ * control-plane policy. HardeningModule's "the 'deny_cidrs' key remains owned
+ * solely by the login-protection / brute-force subsystem" is what misleads: in
+ * context it explains why the hardening module writes a SEPARATE key, i.e.
+ * "hardening does not own this key" — not "this key is machine-generated".
+ *
+ * WHY THIS IS NARROWER THAN A SINGLE-SITE PLUGIN WOULD BE. A constant in
+ * wp-config.php proves local file access, not operator authority, and on a
+ * managed site those are different parties. "Whoever can edit wp-config.php
+ * already owns the site" is true self-hosted and false in a fleet product.
  *
  * WHY THESE RUN IN SEPARATE PROCESSES. A constant cannot be undefined. Defining
  * WPMGR_DISABLE_SITE_2FA in the shared test process would release the tiers for
@@ -273,17 +277,25 @@ final class LoginProtectionRecoveryConstantTest extends TestCase
         $this->assertSame($user, $result, 'the login must pass through unchanged instead');
     }
 
+    // =========================================================================
+    // THE BOUNDARY: neither deny list is released. Both are operator policy.
+    // =========================================================================
+
     /**
-     * THE INNER DOOR. The WAF mu-plugin already releases deny_cidrs before
-     * WordPress boots. With this method still blocking the same list, the
-     * recovery constant opened the outer door and locked the inner one, and the
-     * admin it was written for met "Your IP address is blocked from logging in"
-     * anyway — an escape hatch that does not release what it claims to.
+     * THE TENANCY GUARD. deny_cidrs arrives from the control plane as
+     * "always-block ranges" (SyncSecurityConfigCommand's wire contract). It is
+     * the OPERATOR's policy, pushed to a site whose local administrator may be a
+     * different party — an agency's client, a host's tenant.
+     *
+     * A constant in wp-config.php proves local file access, not operator
+     * authority. If this assertion ever flips, the managed party can override
+     * the manager by editing a file on their own site, which is a privilege
+     * escalation across the tenancy boundary rather than a recovery.
      *
      * Zero failures on record here, so deny_cidrs is the ONLY thing that can
      * block; if this passes for any other reason the scripted counts are wrong.
      */
-    public function test_recovery_constant_releases_a_deny_cidr_hit(): void
+    public function test_recovery_constant_never_releases_a_deny_cidr_hit(): void
     {
         define('WPMGR_DISABLE_SITE_2FA', true);
 
@@ -291,23 +303,21 @@ final class LoginProtectionRecoveryConstantTest extends TestCase
         $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
         $GLOBALS['wpdb']        = $this->scriptedWpdb(successPerIp: 0, failureGlobal: 0, failurePerIp: 0);
 
-        $user   = new \stdClass();
-        $result = (new LoginProtection(null))->onAuthenticate($user, 'admin', 'correct-horse');
+        $result = (new LoginProtection(null))->onAuthenticate(new \stdClass(), 'admin', 'correct-horse');
 
-        $this->assertNotInstanceOf(
+        $this->assertInstanceOf(
             \WP_Error::class,
             $result,
-            'with the recovery constant set, a deny_cidrs hit must not return wpmgr_ip_blocked'
+            'the recovery constant must NOT release a control-plane deny_cidrs range'
         );
-        $this->assertSame($user, $result, 'the login must pass through unchanged');
+        $this->assertSame('wpmgr_ip_blocked', $result->get_error_code());
     }
 
     /**
-     * Same release in PROTECT mode, where the block is a wp_die() rather than a
-     * filter return. PROTECT is the mode that actually strands an
-     * administrator.
+     * Same boundary in PROTECT mode, where the block is a wp_die() rather than a
+     * filter return.
      */
-    public function test_recovery_constant_releases_a_deny_cidr_hit_in_protect_mode(): void
+    public function test_recovery_constant_never_releases_a_deny_cidr_in_protect_mode(): void
     {
         define('WPMGR_DISABLE_SITE_2FA', true);
 
@@ -315,28 +325,20 @@ final class LoginProtectionRecoveryConstantTest extends TestCase
         $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
         $GLOBALS['wpdb']        = $this->scriptedWpdb(successPerIp: 0, failureGlobal: 0, failurePerIp: 0);
 
+        $died = false;
         Functions\when('wp_die')->alias(static function ($message, $title = '', $args = []) {
             throw new \RuntimeException('wp_die called');
         });
         Functions\when('wp_kses')->alias(static fn($html, $allowed) => $html);
 
-        $user   = new \stdClass();
-        $died   = false;
-        $result = null;
         try {
-            $result = (new LoginProtection(null))->onAuthenticate($user, 'admin', 'correct-horse');
+            (new LoginProtection(null))->onAuthenticate(new \stdClass(), 'admin', 'correct-horse');
         } catch (\RuntimeException $e) {
             $died = $e->getMessage() === 'wp_die called';
         }
 
-        $this->assertFalse($died, 'PROTECT mode must not wp_die() a deny_cidrs hit under the recovery constant');
-        $this->assertSame($user, $result, 'the login must pass through unchanged');
+        $this->assertTrue($died, 'a deny_cidrs range must still terminate the request in PROTECT mode');
     }
-
-    // =========================================================================
-    // THE BOUNDARY: hardening_deny_cidrs, the operator's explicit ban list, is
-    // never released — and cannot be, because this class never reads it.
-    // =========================================================================
 
     /**
      * THE BLAST-RADIUS PIN. The release above is deliberately broad: it sits
