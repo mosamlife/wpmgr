@@ -50,14 +50,22 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
-    version: "0.61.145",
+    version: "0.61.146",
     date: "2026-08-26",
     summary:
-      "The most notable fix: a database restore could silently drop the dump's last SQL statement while still reporting success. It now aborts instead of guessing. Also fixed: resending a failed outgoing email, a WordPress agent crash on every user profile edit, and a crash in the disk-size check used by Site Health and multisite media uploads.",
+      "A database restore could silently drop the dump's last statement, or write into a site's live tables, while still reporting success. Both now abort instead of guessing. The application-password two-factor control now actually runs, which is a breaking change for integrations on a 2FA-enabled site. Also fixed: resending a failed outgoing email, a WordPress agent crash on every user profile edit, a user-agent ban that could lock administrators out of their own login page, and a cache toggle that could destroy a site's stored CDN credentials.",
     items: [
+      {
+        tag: "Security",
+        text: "The application-password two-factor control now actually runs; it was registered against a name nothing in WordPress ever fires, so it silently never took effect on any site. Breaking change for integrations: on update, a 2FA-enabled site will have application passwords stop working for a user who has a second factor enrolled or whose role requires one.",
+      },
       {
         tag: "Fixed",
         text: "A database restore could silently drop the dump's last SQL statement while still reporting success, when the restorer could not tell whether the very end of the dump was nothing but comments. Proven against two otherwise identical dumps that differed only in whether the last statement ended with a semicolon: the one that landed in the discarded tail lost a row, silently. It now aborts the restore instead of finishing on an uncertain guess.",
+      },
+      {
+        tag: "Fixed",
+        text: "A database restore could also write straight into a site's live tables while still reporting success, when the staging step could not tell which table a dump statement named. It now aborts rather than guessing, proven end to end against a live database with a sentinel row that survives the abort.",
       },
       {
         tag: "Fixed",
@@ -74,6 +82,14 @@ const RELEASES: ChangeEntry[] = [
       {
         tag: "Fixed",
         text: "A database-cleanup scan for orphaned options could fail outright with a fatal error every time it ran. It now completes.",
+      },
+      {
+        tag: "Fixed",
+        text: "A generic, operator-defined user-agent ban could 403 a site's own login page, with no recovery path. The login page is now exempt from user-agent bans, and an overly short or generic pattern is now refused outright. The documented recovery constant also now releases the automatic login lockout.",
+      },
+      {
+        tag: "Fixed",
+        text: "Enabling or disabling the page cache, or rotating a site's beacon key, could destroy that site's stored CDN credentials on a transient read failure while still reporting success. Control-plane only, and already deployed.",
       },
     ],
     featureLinks: [{ label: "Email deliverability", href: "/features/email-deliverability" }],
