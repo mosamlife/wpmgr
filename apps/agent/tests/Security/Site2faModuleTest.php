@@ -16,8 +16,10 @@
  *   C1. Session destruction is proven: wp_destroy_all_sessions + wp_clear_auth_cookie
  *       are both invoked BEFORE the interstitial renders (no half-auth window).
  *   H1. Application-password bypass is blocked: a 2FA-required user's app-password
- *       auth is rejected; a non-required user's app password still works; the agent's
- *       own /wpmgr/v1 channel is unaffected.
+ *       auth is rejected and a non-required user's app password still works. The
+ *       decision is made from the WP_User alone -- REQUEST_URI cannot exempt it
+ *       (#536), because it is client-supplied and the old substring exemption was
+ *       satisfiable with one spare query parameter.
  *   H2. Forced-change enforcement: a user with META_FORCE_CHANGE is intercepted on
  *       login; the flag is cleared on successful password change; autologin and the
  *       escape hatch bypass it; the new password is validated against the policy.
@@ -643,10 +645,13 @@ final class Site2faModuleTest extends TestCase
         );
     }
 
-    public function test_h1_app_password_allowed_for_agent_rest_request(): void
+    public function test_h1_request_uri_cannot_exempt_an_app_password(): void
     {
-        // Requests to /wpmgr/v1/* must always be exempted from app-password blocking,
-        // regardless of user role -- the agent's own REST channel uses Ed25519 auth.
+        // #536: there is no REQUEST_URI exemption any more. It used to be
+        // str_contains($uri, '/wpmgr/v1/') over the whole client-supplied
+        // request target, which any caller could satisfy with one spare query
+        // parameter. The agent's own channel is Ed25519-signed and never
+        // presents an application password, so the exemption bought nothing.
         $policy = SecurityPolicy::fromArray([
             'policy' => [
                 'two_factor_enabled'        => true,
@@ -657,22 +662,26 @@ final class Site2faModuleTest extends TestCase
 
         $user = $this->makeUser(1, ['administrator']);
 
-        // Core fires the action with no WP_REST_Request, and on the
-        // determine_current_user path REST routing has not run yet, so
-        // REQUEST_URI is the only signal the exemption can read.
-        $_SERVER['REQUEST_URI'] = '/wp-json/wpmgr/v1/command/sync_security_policy';
+        $uris = [
+            '/wp-json/wpmgr/v1/command/sync_security_policy',
+            '/wp-json/wp/v2/users/1?wpmgr=/wpmgr/v1/',
+            '/?rest_route=/wpmgr/v1/status',
+        ];
 
-        $error = new \WP_Error();
-        $module->blockAppPasswordFor2faUser($error, $user, null, 'app-pw');
+        foreach ($uris as $uri) {
+            $_SERVER['REQUEST_URI'] = $uri;
+
+            $error = new \WP_Error();
+            $module->blockAppPasswordFor2faUser($error, $user, null, 'app-pw');
+
+            $this->assertSame(
+                'wpmgr_2fa_app_password_blocked',
+                $error->get_error_code(),
+                'H1/#536: REQUEST_URI must not exempt a 2FA-required user; failed for ' . $uri
+            );
+        }
 
         unset($_SERVER['REQUEST_URI']);
-
-        // The agent channel is exempted: the WP_Error must come back untouched.
-        $this->assertSame(
-            [],
-            $error->errors,
-            'H1: agent /wpmgr/v1 requests must be exempted from app-password blocking'
-        );
     }
 
     // -------------------------------------------------------------------------

@@ -65,9 +65,28 @@
  * hook dispatched with core's own argument list, in
  * tests/Security/Site2faHookRegistrationTest.php.
  *
- * The agent's own /wpmgr/v1 REST channel and the autologin path are
- * explicitly exempted -- they carry their own Ed25519 credential and never
- * rely on application passwords.
+ * NO REQUEST-URI EXEMPTION:
+ * An earlier revision of this control exempted the agent's own REST channel by
+ * testing str_contains($_SERVER['REQUEST_URI'], '/wpmgr/v1/'). REQUEST_URI is
+ * the raw, client-supplied request target, and that was an unanchored
+ * substring match over the whole of it, query string included, so anyone
+ * holding a stolen application password for a 2FA-required administrator
+ * walked past the control by appending one unused parameter:
+ *
+ *     GET /wp-json/wp/v2/users/1?wpmgr=/wpmgr/v1/
+ *
+ * The exemption was deleted rather than repaired, because it was guarding
+ * nothing: the agent's /wpmgr/v1 routes authenticate with an Ed25519 signature
+ * verified in the REST permission callback, autologin treats the signed JWT
+ * itself as the authorization, and no application-password API is referenced
+ * anywhere in includes/ outside this file. Repairing the matcher would have
+ * kept a client-controlled input inside an auth decision for no benefit --
+ * and an anchored path/query matcher is itself reachable with
+ * `?x=rest_route=/wpmgr/v1/`. The only exemption left is the user-shaped one:
+ * a user who neither requires 2FA nor has a non-email method enrolled.
+ *
+ * The bypass and its regression guard are in
+ * tests/Security/Site2faHookRegistrationTest.php.
  *
  * FORCED-CHANGE INTERSTITIAL (H2 fix):
  * When PasswordPolicyModule sets META_FORCE_CHANGE on a user, onWpLogin
@@ -321,9 +340,11 @@ final class Site2faModule
      * argument list down to it before calling.
      *
      * EXEMPTED (must not be blocked):
-     *  - The agent's own /wpmgr/v1 REST routes (Ed25519-signed; never use app passwords).
-     *  - The autologin path (POST /wp-json/wpmgr/v1/autologin; also REST, also Ed25519).
      *  - Any user who does NOT require 2FA and has no non-email method enrolled.
+     *
+     * That is the ONLY exemption, and it is decided purely from the WP_User
+     * core hands us. There is deliberately no request-shape exemption: see
+     * NO REQUEST-URI EXEMPTION in the class docblock.
      *
      * Application passwords do NOT satisfy the second factor: they carry only
      * password-equivalent credentials and bypass wp_login entirely, so the 2FA
@@ -347,13 +368,6 @@ final class Site2faModule
             return;
         }
 
-        // Exempt the agent's own REST namespace (/wpmgr/v1/*). Those routes
-        // are authenticated via Ed25519 signatures at the REST permission callback
-        // and never rely on application passwords.
-        if ($this->isAgentRestRequest()) {
-            return;
-        }
-
         // Block if the user requires 2FA.
         if ($this->policy->requires2fa($user)) {
             $error->add(
@@ -372,34 +386,6 @@ final class Site2faModule
                 esc_html__('Application passwords are disabled for accounts with two-factor authentication enrolled. Use an alternative authentication method.', 'wpmgr-agent')
             );
         }
-    }
-
-    /**
-     * Check whether the current request targets the agent's own REST namespace.
-     * The agent's /wpmgr/v1 routes are exempted from app-password blocking.
-     *
-     * REQUEST_URI is the only signal available here: core fires
-     * wp_authenticate_application_password_errors with no WP_REST_Request, and
-     * on the determine_current_user path REST routing has not run yet, so
-     * neither a WP_REST_Request nor the REST_REQUEST constant exists to consult.
-     * Both URI forms carry the namespace as a literal path segment
-     * (/wp-json/wpmgr/v1/... and ?rest_route=/wpmgr/v1/...), and the rest_route
-     * form is checked decoded as well because a client may percent-encode it.
-     *
-     * @return bool
-     */
-    private function isAgentRestRequest(): bool
-    {
-        if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI'])) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- presence/type check only; sanitized below
-            return false;
-        }
-
-        $uri = sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized on this line
-        if (str_contains($uri, '/wpmgr/v1/')) {
-            return true;
-        }
-
-        return str_contains(rawurldecode($uri), '/wpmgr/v1/');
     }
 
     /**

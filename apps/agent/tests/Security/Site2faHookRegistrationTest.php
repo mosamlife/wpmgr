@@ -93,7 +93,12 @@ final class Site2faHookRegistrationTest extends TestCase
         Functions\when('esc_html__')->alias(fn ($t, $d = '') => $t);
         Functions\when('esc_html')->alias(fn ($t) => $t);
         Functions\when('__')->alias(fn ($t, $d = '') => $t);
-        Functions\when('sanitize_text_field')->alias(fn ($t) => $t);
+        // sanitize_text_field() is deliberately NOT stubbed to identity here.
+        // Core's _sanitize_text_fields() DELETES percent-encoded octets rather
+        // than decoding them, and an identity stub discards exactly that
+        // behaviour -- which is how a REQUEST_URI claim about `%2F` went
+        // unnoticed in review. tests/wp-stubs.php carries a faithful
+        // implementation, including the octet strip; let it stand.
         Functions\when('wp_unslash')->alias(fn ($t) => $t);
         Functions\when('get_user_meta')->justReturn('');
         Functions\when('update_user_meta')->justReturn(true);
@@ -344,6 +349,85 @@ final class Site2faHookRegistrationTest extends TestCase
         );
     }
 
+    /**
+     * THE BYPASS (#536 review). Until this commit the callback consulted
+     * REQUEST_URI and returned early on `str_contains($uri, '/wpmgr/v1/')` --
+     * an unanchored substring test over the WHOLE client-supplied request
+     * target, query string included. An attacker holding a stolen application
+     * password for a 2FA-required administrator appended one unused parameter
+     * and the control never fired:
+     *
+     *     control: /wp-json/wp/v2/users/1                  -> refused
+     *     attack:  /wp-json/wp/v2/users/1?wpmgr=/wpmgr/v1/ -> ALLOWED
+     *
+     * The exemption was REMOVED rather than repaired. The agent authenticates
+     * its own /wpmgr/v1 routes with an Ed25519 signature at the REST
+     * permission callback, and the autologin route treats the signed JWT
+     * itself as the authorization; neither presents an application password on
+     * any route, and no application-password API is referenced anywhere in
+     * includes/ outside this module. The exemption therefore protected nothing
+     * while creating the entire bypass. Deleting it also takes a
+     * client-controlled input out of an auth decision, which no matcher could
+     * have done: even the anchored path/query matcher in AuthHeaderShield is
+     * reachable with `?x=rest_route=/wpmgr/v1/`.
+     *
+     * Every shape below must be REFUSED, the agent's own route included.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_no_request_uri_can_exempt_a_2fa_required_user(): void
+    {
+        $module = new Site2faModule($this->policyRequiringAdmins(), $this->makeProviders());
+        $module->install();
+
+        $registration = $this->findRegistration(self::APP_PASSWORD_HOOK);
+        $this->assertNotNull(
+            $registration,
+            'the callback must be registered, or this test passes for the wrong reason'
+        );
+
+        $uris = [
+            // Control from the review: no exemption token anywhere.
+            '/wp-json/wp/v2/users/1',
+            // The working bypass: one unused query parameter.
+            '/wp-json/wp/v2/users/1?wpmgr=/wpmgr/v1/',
+            // The same trick on a redirect-shaped parameter.
+            '/wp-json/wp/v2/users/1?redirect_to=/wpmgr/v1/settings',
+            // Plain-permalink REST form, namespace smuggled into a second param.
+            '/?rest_route=/wp/v2/users/1&next=/wpmgr/v1/',
+            // Defeats even an anchored path+query matcher copied verbatim from
+            // AuthHeaderShield, because the query half really does contain the
+            // literal 'rest_route=/wpmgr/v1/'.
+            '/wp-json/wp/v2/users/1?x=rest_route=/wpmgr/v1/',
+            // Percent-encoded. sanitize_text_field() DELETES %XX octets rather
+            // than decoding them, so this shape never matched anything anyway.
+            '/?rest_route=%2Fwpmgr%2Fv1%2Fstatus',
+            // The agent's own channel, now equally refused.
+            '/wp-json/wpmgr/v1/command/sync_security_policy',
+        ];
+
+        $allowed = [];
+        foreach ($uris as $uri) {
+            $_SERVER['REQUEST_URI'] = $uri;
+
+            $error = new \WP_Error();
+            $this->fireAsCore($registration, [$error, $this->makeUser(1, ['administrator']), [], 'app-pw']);
+
+            if ($error->get_error_code() !== 'wpmgr_2fa_app_password_blocked') {
+                $allowed[] = $uri;
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $allowed,
+            '#536: REQUEST_URI is client-supplied and must not be able to exempt a'
+            . ' 2FA-required administrator from the application-password block.'
+            . ' Credential ALLOWED for: ' . implode(' | ', $allowed)
+        );
+    }
+
     // -------------------------------------------------------------------------
     // OVER-FIRE: application passwords must keep working for everyone else
     // -------------------------------------------------------------------------
@@ -381,14 +465,17 @@ final class Site2faHookRegistrationTest extends TestCase
     }
 
     /**
-     * DOES NOT OVER-FIRE: the agent's own /wpmgr/v1 REST channel is exempt even
-     * for a 2FA-required administrator. Those routes authenticate with an
-     * Ed25519 signature at the permission callback.
+     * The over-fire question the removed exemption was trying to answer is
+     * settled by the USER, not by the request: the agent's own /wpmgr/v1
+     * channel never presents an application password, so refusing one there
+     * costs the agent nothing. Asserted both ways round on the agent's own
+     * route, so a future reintroduction of a URI exemption fails here:
+     * a 2FA-required administrator is refused, and a user with no 2FA is not.
      *
      * @runInSeparateProcess
      * @preserveGlobalState disabled
      */
-    public function test_dispatching_the_core_hook_exempts_the_agent_rest_channel(): void
+    public function test_the_decision_is_made_from_the_user_not_the_request_uri(): void
     {
         $module = new Site2faModule($this->policyRequiringAdmins(), $this->makeProviders());
         $module->install();
@@ -398,13 +485,22 @@ final class Site2faHookRegistrationTest extends TestCase
 
         $_SERVER['REQUEST_URI'] = '/wp-json/wpmgr/v1/command/sync_security_policy';
 
-        $error = new \WP_Error();
-        $this->fireAsCore($registration, [$error, $this->makeUser(1, ['administrator']), [], 'app-pw']);
+        $blocked = new \WP_Error();
+        $this->fireAsCore($registration, [$blocked, $this->makeUser(1, ['administrator']), [], 'app-pw']);
+        $this->assertSame(
+            'wpmgr_2fa_app_password_blocked',
+            $blocked->get_error_code(),
+            '#536: the agent REST namespace must not exempt a 2FA-required administrator;'
+            . ' the agent authenticates that channel with Ed25519, never an application password'
+        );
 
+        $allowed = new \WP_Error();
+        $this->fireAsCore($registration, [$allowed, $this->makeUser(2, ['subscriber']), [], 'app-pw']);
         $this->assertSame(
             [],
-            $error->errors,
-            'over-fire: the agent /wpmgr/v1 channel must never be refused by the app-password block'
+            $allowed->errors,
+            'over-fire: the same URI must still allow a user who neither requires 2FA nor is enrolled,'
+            . ' proving the refusal above came from the user and not from the request'
         );
     }
 
