@@ -278,6 +278,14 @@ final class ServerConfigWriter
                 $lastIdx = count($safeUaBans) - 1;
                 $lines[] = '<IfModule mod_rewrite.c>';
                 $lines[] = '    RewriteEngine On';
+                // GH #529: exempt the recovery surfaces BEFORE the ban fires.
+                // Apache answers before PHP loads, so HardeningModule's
+                // isRecoverySurface() can never run for a request this block
+                // rejects — the exemption has to exist here too or the .htaccess
+                // layer locks the owner out of the door the PHP layer opens.
+                foreach ($this->recoveryExemptionConds() as $cond) {
+                    $lines[] = '    ' . $cond;
+                }
                 foreach ($safeUaBans as $idx => $ua) {
                     $escaped = preg_quote($ua, '!');
                     // Positive match per pattern. [OR] on every condition except the
@@ -296,6 +304,101 @@ final class ServerConfigWriter
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * The AND-combined RewriteCond lines that keep the user-agent ban off the
+     * two surfaces an administrator uses to get back into their own site
+     * (GH #529). Mirrors HardeningModule::isRecoverySurface() exactly: the login
+     * screen, and the agent's own autologin route in both permalink shapes.
+     *
+     * WHY THIS HAS TO EXIST HERE AND NOT ONLY IN PHP. .htaccess is the primary
+     * enforcement point on Apache and LiteSpeed, and `RewriteRule ^ - [F,L]`
+     * matches every path including wp-login.php. Apache answers that 403 before
+     * wp-settings.php runs, so the PHP-layer exemption is unreachable for
+     * exactly the request it exists to allow. A recovery exemption that only
+     * exists in PHP is not a recovery exemption on the servers that matter.
+     *
+     * HOW APACHE GROUPS THESE. [OR] binds tighter than the implicit AND, so a
+     * condition carrying [OR] is OR-combined with the one after it and the
+     * resulting groups are AND-combined. The four lines below therefore read:
+     *
+     *   NOT login
+     *     AND NOT autologin-path
+     *     AND ( NOT site-root OR NOT rest_route=autologin )
+     *
+     * The third group is De Morgan applied deliberately: what it means is
+     * NOT (site-root AND rest_route=autologin), i.e. the plain-permalink form
+     * /?rest_route=/wpmgr/v1/autologin is exempt only when it is actually
+     * addressed to the site root, never when the query is bolted onto an
+     * arbitrary path. Two AND-combined negations could not express that; a pair
+     * of negations inside one OR-group can.
+     *
+     * The ban's own OR-chain follows and forms its own group, so the emitted
+     * rule fires on (recovery-exempt = false) AND (any banned UA matched).
+     *
+     * ANCHORING. Every path pattern is anchored at ^ against %{REQUEST_URI},
+     * which in per-directory context is the full URL path including any
+     * subdirectory prefix — so the site's own home path is prepended and
+     * regex-escaped. `/xmlrpc.php/wp-json/wpmgr/v1/autologin` does not match a
+     * pattern anchored at the start, which is the same smuggling class the PHP
+     * layer refuses.
+     *
+     * @return array<int,string> RewriteCond lines, without indentation.
+     */
+    private function recoveryExemptionConds(): array
+    {
+        $home  = preg_quote($this->homePath(), '#');
+        $route = HardeningModule::AGENT_REST_NAMESPACE . HardeningModule::AGENT_AUTOLOGIN_PATH;
+
+        $restPrefix = 'wp-json';
+        if (function_exists('rest_get_url_prefix')) {
+            $candidate = rest_get_url_prefix();
+            if (is_string($candidate) && $candidate !== '') {
+                $restPrefix = $candidate;
+            }
+        }
+
+        $autologinPath = preg_quote('/' . trim($restPrefix, '/') . '/' . $route, '#');
+        $restRouteArg  = preg_quote('rest_route=/' . $route, '#');
+
+        return [
+            // 1. The login screen. ($|/) mirrors core's $pagenow regex, which
+            //    absorbs PATH_INFO, so /wp-login.php/foo is the login screen to
+            //    the PHP layer and must be the login screen to this one.
+            'RewriteCond %{REQUEST_URI} !^' . $home . '/wp-login\.php($|/) [NC]',
+            // 2. Pretty-permalink autologin, exact path.
+            'RewriteCond %{REQUEST_URI} !^' . $home . $autologinPath . '/?$ [NC]',
+            // 3+4. Plain-permalink autologin: site root AND the rest_route arg.
+            'RewriteCond %{REQUEST_URI} !^' . $home . '/(index\.php)?$ [NC,OR]',
+            'RewriteCond %{QUERY_STRING} !(^|&)' . $restRouteArg . '/?($|&) [NC]',
+        ];
+    }
+
+    /**
+     * The site's home URL path, with any trailing slash removed — '' for a root
+     * install, '/blog' for a subdirectory one.
+     *
+     * %{REQUEST_URI} carries the full request path in per-directory context, so
+     * every anchored pattern in {@see recoveryExemptionConds()} needs this
+     * prefix or it silently stops matching on subdirectory installs.
+     *
+     * Returns '' when WordPress is not loaded (the pure-transform test path).
+     * '' is the correct root-install prefix here, not a missing-value fallback:
+     * these strings are regex anchors for an exemption, never a filesystem path.
+     *
+     * @return string
+     */
+    private function homePath(): string
+    {
+        if (!function_exists('home_url') || !function_exists('wp_parse_url')) {
+            return '';
+        }
+        $path = wp_parse_url(home_url('/'), PHP_URL_PATH);
+        if (!is_string($path)) {
+            return '';
+        }
+        return rtrim($path, '/');
     }
 
     // -------------------------------------------------------------------------

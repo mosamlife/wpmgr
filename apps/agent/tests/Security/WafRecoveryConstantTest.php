@@ -1,14 +1,21 @@
 <?php
 /**
- * GH #529, layer (0): the WAF mu-plugin's IP gate must honour the operator's
- * documented recovery constant.
+ * GH #529, layer (4): the WAF mu-plugin's brute-force gate must honour the
+ * operator's documented recovery constant — and must not honour it anywhere
+ * else.
  *
  * `define('WPMGR_DISABLE_SITE_2FA', true)` in wp-config.php is this plugin's
  * last-resort escape hatch for an administrator it has locked out. Site2faModule,
  * PasswordPolicyModule and HardeningModule's auth appliers all honoured it; the
- * WAF gate did not. An admin whose ordinary public IP had landed in deny_cidrs
- * or hardening_deny_cidrs therefore still met a 403 before WordPress booted,
- * with the escape hatch set and nothing to tell them it had done nothing.
+ * WAF gate did not. An admin whose own public IP had been auto-added to
+ * deny_cidrs by the brute-force protection therefore still met a 403 before
+ * WordPress booted, with the escape hatch set and nothing to tell them it had
+ * done nothing.
+ *
+ * The check sits BELOW the hardening_deny_cidrs layer, not above every layer.
+ * Above them it released the operator's explicit IP ban list too, so a constant
+ * named DISABLE_SITE_2FA silently disabled every IP ban on the site — the
+ * blast-radius defect the tests below now hold shut in both directions.
  *
  * The constant is readable at mu-plugin time: wp-config.php runs to completion —
  * it is what requires wp-settings.php — so every define() in it exists before
@@ -19,7 +26,7 @@
  * WPMGR_DISABLE_SITE_2FA in the shared test process would switch the gate off
  * for every later test in the run — including WafGateHardeningTest, whose whole
  * job is to prove the gate denies — and PHPUnit's file order would decide
- * whether the suite passed. @runInSeparateProcess with @preserveGlobalState
+ * whether the suite passed. `@runInSeparateProcess` with `@preserveGlobalState`
  * disabled contains the define to one child process. Site2faModuleTest already
  * defines the same constant in the shared process, which is exactly why the
  * "still denies" assertions below must never share a process with anything.
@@ -68,12 +75,16 @@ final class WafRecoveryConstantTest extends TestCase
     }
 
     /**
-     * The recovery constant releases the gate — both deny layers, both modes.
+     * The recovery constant releases the brute-force lockout — the auth policy
+     * it is named for — and nothing else.
+     *
+     * `@runInSeparateProcess`
+     * `@preserveGlobalState` disabled
      *
      * @runInSeparateProcess
      * @preserveGlobalState disabled
      */
-    public function test_recovery_constant_releases_the_ip_gate(): void
+    public function test_recovery_constant_releases_the_brute_force_lockout(): void
     {
         define('WPMGR_DISABLE_SITE_2FA', true);
         self::loadWaf();
@@ -82,13 +93,61 @@ final class WafRecoveryConstantTest extends TestCase
             wpmgr_waf_should_deny(self::config(), '203.0.113.10', 'protect'),
             'with the recovery constant set, a brute-force deny_cidrs hit must pass'
         );
-        $this->assertFalse(
+    }
+
+    /**
+     * THE BLAST-RADIUS GUARD. Placed at layer (0) the constant returned false
+     * before any list was consulted, so a constant named DISABLE_SITE_2FA also
+     * deleted the operator's explicit IP ban list, in every mode, with no
+     * signal. On nginx those bans have no other enforcement path at all.
+     *
+     * hardening_deny_cidrs is the operator's standing instruction about traffic,
+     * not a lock on the owner's own door, and it is removed by removing it. This
+     * is the same boundary HardeningModule::authPolicyDisabled() draws: the
+     * constant gates who may log in, never the explicit bans.
+     *
+     * If either assertion flips, the recovery lever has become a kill switch.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_recovery_constant_never_releases_an_explicit_hardening_ban(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+        self::loadWaf();
+
+        $this->assertTrue(
             wpmgr_waf_should_deny(self::config(), '198.51.100.7', 'off'),
-            'with the recovery constant set, an operator hardening ban must pass'
+            'the recovery constant must NOT release an explicit operator hardening ban'
+        );
+        $this->assertTrue(
+            wpmgr_waf_should_deny(self::config(), '198.51.100.7', 'protect'),
+            'the recovery constant must NOT release a hardening ban in protect mode either'
+        );
+    }
+
+    /**
+     * The safety bypasses still outrank the hardening bans with the constant
+     * set, so narrowing the gate did not reorder layers (1) and (2) under it.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
+    public function test_allow_list_and_private_bypass_still_outrank_hardening_bans(): void
+    {
+        define('WPMGR_DISABLE_SITE_2FA', true);
+        self::loadWaf();
+
+        $config                = self::config();
+        $config['allow_cidrs'] = ['198.51.100.0/24'];
+
+        $this->assertFalse(
+            wpmgr_waf_should_deny($config, '198.51.100.7', 'off'),
+            'allow_cidrs must still win over a hardening ban'
         );
         $this->assertFalse(
-            wpmgr_waf_should_deny(self::config(), '198.51.100.7', 'protect'),
-            'with the recovery constant set, no layer may deny'
+            wpmgr_waf_should_deny(self::config(), '10.0.0.5', 'off'),
+            'private addresses must still bypass a hardening ban'
         );
     }
 

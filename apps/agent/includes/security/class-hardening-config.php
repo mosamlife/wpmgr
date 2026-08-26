@@ -82,6 +82,15 @@ final class HardeningConfig
      * (Googlebot, bingbot, AhrefsBot, …) are absent because banning one of
      * those is a legitimate operator choice this validator must not block.
      *
+     * COVERAGE IS THE WHOLE GUARANTEE. A browser missing from this list is a
+     * browser whose distinguishing token is accepted as a ban pattern, and
+     * every such token reproduces GH #529 for that browser's users — the review
+     * that caught this named CriOS, FxiOS, SamsungBrowser, OPR/ and Vivaldi,
+     * each of which was accepted while Chrome and Firefox were refused. The
+     * entries below therefore cover every engine and every vendor skin with
+     * non-trivial share, not just the four desktop names, and adding a browser
+     * here is the correct response to finding another gap.
+     *
      * @var array<int,string>
      */
     private const COMMON_BROWSER_AGENTS = [
@@ -100,6 +109,22 @@ final class HardeningConfig
         'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
         // Chrome on Android.
         'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36',
+        // Chrome on iOS — ships "CriOS", never "Chrome".
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Mobile/15E148 Safari/604.1',
+        // Firefox on iOS — ships "FxiOS", never "Firefox".
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/130.0 Mobile/15E148 Safari/605.1.15',
+        // Firefox on Android.
+        'Mozilla/5.0 (Android 14; Mobile; rv:130.0) Gecko/130.0 Firefox/130.0',
+        // Samsung Internet — the default browser on Galaxy devices.
+        'Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/27.0 Chrome/125.0.0.0 Mobile Safari/537.36',
+        // Opera — desktop and Android, both ship "OPR/".
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/126.0.0.0',
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 OPR/89.0.0.0',
+        // Vivaldi.
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Vivaldi/7.5.3735.54',
+        // Edge on Android and iOS — "EdgA" and "EdgiOS", neither of them "Edg/".
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 EdgA/141.0.0.0',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) EdgiOS/141.0.0.0 Version/18.0 Mobile/15E148 Safari/604.1',
     ];
 
     /** Toggle: add DISALLOW_FILE_EDIT to wp-config. */
@@ -153,10 +178,22 @@ final class HardeningConfig
      *
      * NOT part of {@see toArray()} and therefore never persisted. A refusal is
      * a property of one push, not of stored site state; re-reading the option
-     * later must not resurrect a stale complaint. The live surface is the
-     * sync_security_hardening command's `detail` string, which travels straight
-     * back to the control plane and into the operator's dashboard — see
-     * {@see \WPMgr\Agent\Commands\SyncSecurityHardeningCommand::execute()}.
+     * later must not resurrect a stale complaint.
+     *
+     * WHERE A REFUSAL ACTUALLY GOES TODAY, which is not yet all the way. The
+     * agent names it in the sync_security_hardening command's `detail` string
+     * ({@see \WPMgr\Agent\Commands\SyncSecurityHardeningCommand::execute()}),
+     * and that is the end of the agent's reach. The control plane receives the
+     * result and does not carry `detail` onto the ban it returns, so the
+     * dashboard has nothing to render and the operator sees an unqualified
+     * success: the ban was refused, and they were told it was created.
+     *
+     * So this is a fail-open for the operator's ATTENTION, and calling it
+     * anything else would be the more dangerous defect of the two — the next
+     * person to read this would assume someone had been told. What the refusal
+     * does NOT do is fail open for the site: a pattern refused here is refused
+     * in both enforcement layers, which is the lockout not happening. The
+     * missing half is the report, and it is missing on the control-plane side.
      *
      * @var array<int,array{value:string,reason:string}>
      */

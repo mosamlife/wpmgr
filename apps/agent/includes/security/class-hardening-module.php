@@ -31,11 +31,23 @@ final class HardeningModule
      */
     public const OPTION_CONFIG = 'wpmgr_hardening_config';
 
-    /** REST namespace the agent owns — never restricted. */
-    private const AGENT_REST_NAMESPACE = 'wpmgr/v1';
+    /**
+     * wp-options key holding the agent version whose ServerConfigWriter output
+     * is currently on disk. Autoloaded: {@see refreshServerConfigIfStale()}
+     * reads it on every boot, so it must not cost a query.
+     */
+    public const OPTION_SERVER_REV = 'wpmgr_hardening_server_rev';
+
+    /**
+     * REST namespace the agent owns — never restricted.
+     *
+     * Public because ServerConfigWriter renders the same route into the
+     * .htaccess recovery exemption. One definition, two enforcement layers.
+     */
+    public const AGENT_REST_NAMESPACE = 'wpmgr/v1';
 
     /** Autologin route path — never restricted. */
-    private const AGENT_AUTOLOGIN_PATH = '/autologin';
+    public const AGENT_AUTOLOGIN_PATH = '/autologin';
 
     /**
      * Informational note from the most recent {@see syncWpConfigFileEdit()}
@@ -69,25 +81,108 @@ final class HardeningModule
         update_option(self::OPTION_CONFIG, $encoded, false);
 
         // Refresh the server-config block immediately on sync.
-        $writer = new ServerConfigWriter();
-        if (!$writer->isNginx()) {
-            $hasAnyServerRule = $config->forceSsl
-                || $config->disableDirectoryBrowsing
-                || $config->disablePhpInUploads
-                || $config->protectSystemFiles
-                || $config->xmlrpcMode === HardeningConfig::XMLRPC_OFF
-                || $config->ipRangeBans() !== []
-                || $config->userAgentBans() !== [];
-
-            if ($hasAnyServerRule) {
-                $writer->install($config);
-            } else {
-                // All toggles off — remove any prior block cleanly.
-                $writer->uninstall();
-            }
-        }
+        $this->writeServerConfig($config);
+        $this->stampServerRev();
 
         return true;
+    }
+
+    /**
+     * Render the server-config block for $config, or remove it when no toggle
+     * needs one. No-op on nginx (no .htaccess auto-write).
+     *
+     * Extracted from applyConfig() so the upgrade path can re-render an already
+     * persisted config without going through a sync — see
+     * {@see refreshServerConfigIfStale()}.
+     *
+     * @param HardeningConfig $config
+     * @return void
+     */
+    private function writeServerConfig(HardeningConfig $config): void
+    {
+        $writer = new ServerConfigWriter();
+        if ($writer->isNginx()) {
+            return;
+        }
+
+        $hasAnyServerRule = $config->forceSsl
+            || $config->disableDirectoryBrowsing
+            || $config->disablePhpInUploads
+            || $config->protectSystemFiles
+            || $config->xmlrpcMode === HardeningConfig::XMLRPC_OFF
+            || $config->ipRangeBans() !== []
+            || $config->userAgentBans() !== [];
+
+        if ($hasAnyServerRule) {
+            $writer->install($config);
+        } else {
+            // All toggles off — remove any prior block cleanly.
+            $writer->uninstall();
+        }
+    }
+
+    /**
+     * Re-render the server-config block when the block on disk was written by a
+     * different agent version (GH #529).
+     *
+     * THE BUG THIS EXISTS FOR. Every path that wrote .htaccess ran from
+     * SyncSecurityHardeningCommand, so a site whose stored config already held a
+     * generic user-agent ban — `Chrome` — kept 403ing every request, including
+     * wp-login.php, after the upgrade that fixed the bug. HardeningConfig::load()
+     * now drops that pattern at the config boundary and applyBanFilters() now
+     * exempts the recovery surfaces, but neither touches the rule already
+     * rendered into the file, and Apache reads the file, not the option. The
+     * fix arrived and changed nothing for exactly the sites that needed it.
+     *
+     * The re-render is what repairs them, and it deliberately does NOT depend on
+     * the control plane reaching the site: a locked-out site may have no working
+     * inbound request at all, so waiting for the next sync is waiting for a
+     * message that a 403 is eating. This runs on plugins_loaded, from the site's
+     * own boot, on the first request after the files change.
+     *
+     * COST. One autoloaded option read per request, and a write only when the
+     * stamp differs. The stamp is written whether or not the .htaccess write
+     * succeeded: on a read-only filesystem retrying every request would be an
+     * I/O storm that still cannot succeed, and the PHP layer is the fallback
+     * there by design.
+     *
+     * @param HardeningConfig $config The config just loaded by install().
+     * @return void
+     */
+    private function refreshServerConfigIfStale(HardeningConfig $config): void
+    {
+        if (!function_exists('get_option') || !function_exists('update_option')) {
+            return;
+        }
+        if (!defined('WPMGR_AGENT_VERSION')) {
+            return;
+        }
+        $version = (string) constant('WPMGR_AGENT_VERSION');
+        if ($version === '') {
+            return;
+        }
+
+        $stored = get_option(self::OPTION_SERVER_REV, '');
+        if (is_string($stored) && $stored === $version) {
+            return;
+        }
+
+        $this->writeServerConfig($config);
+        $this->stampServerRev();
+    }
+
+    /**
+     * Record the agent version that produced the server-config block now on
+     * disk. Autoloaded so the boot-time staleness check costs no query.
+     *
+     * @return void
+     */
+    private function stampServerRev(): void
+    {
+        if (!function_exists('update_option') || !defined('WPMGR_AGENT_VERSION')) {
+            return;
+        }
+        update_option(self::OPTION_SERVER_REV, (string) constant('WPMGR_AGENT_VERSION'), true);
     }
 
     /**
@@ -114,6 +209,11 @@ final class HardeningModule
         $this->applyAuthorArchiveEnum($config);
         $this->applyForceSsl($config);
         $this->applyBanFilters($config);
+
+        // GH #529: repair a server-config block left behind by an older version.
+        // Must come after the hook binds, never instead of it — the PHP layer is
+        // the fallback when the .htaccess write cannot happen.
+        $this->refreshServerConfigIfStale($config);
     }
 
     /**
@@ -563,10 +663,41 @@ final class HardeningModule
      *  2. The agent's own autologin route, /wpmgr/v1/autologin. At `init`
      *     priority 1 the REST request has not been routed yet — $wp->query_vars
      *     ['rest_route'] is populated later, during parse_request — so the raw
-     *     request path is the only signal available, and it is matched ANCHORED
-     *     (a path SEGMENT and an exact rest_route value), never with a bare
-     *     strpos: '/blog/wp-json/wpmgr/v1/autologin' is the route, and
-     *     '/?x=/wp-json/wpmgr/v1/autologin' is not.
+     *     request path is the only signal available, and it is matched against
+     *     the site's OWN canonical autologin path, in full, from ^ to $.
+     *
+     * WHY A SUFFIX MATCH WAS NOT ENOUGH. str_ends_with($path, '/wp-json/…')
+     * anchors the tail and leaves the head unconstrained, so every one of
+     * '/anything/wp-json/wpmgr/v1/autologin',
+     * '/xmlrpc.php/wp-json/wpmgr/v1/autologin' and
+     * '//wp-json/wpmgr/v1/autologin' collected the exemption. The xmlrpc one is
+     * the sharp edge: under Apache mod_php and the standard nginx
+     * fastcgi_split_path_info, xmlrpc.php executes normally with the trailing
+     * segments delivered as PATH_INFO, so the ban was skipped on a live
+     * endpoint — system.multicall included. Three checks close it:
+     *
+     *   a. The request must have been served by the front controller.
+     *      SCRIPT_NAME is the resolved script, not client input, exactly like
+     *      the PHP_SELF that core derives $pagenow from. basename() !=
+     *      'index.php' means some other PHP file is answering, and no other PHP
+     *      file is the autologin route.
+     *   b. The path must EQUAL the site's own autologin path — home path,
+     *      REST prefix and route, no prefix and no suffix. rest_get_url_prefix()
+     *      is read rather than assuming 'wp-json', so a site that filtered the
+     *      prefix keeps its exemption instead of silently losing it.
+     *   c. sanitize_text_field() must not have altered the path. It DELETES
+     *      percent-encoded octets rather than decoding them
+     *      (wp-includes/formatting.php, _sanitize_text_fields()), which is how
+     *      '/wp-admin/options.php%3f/wp-json/wpmgr/v1/autologin' collapsed into
+     *      a matching string and how '…/autologin%00' did. Comparing the
+     *      sanitized path against the raw one and refusing on any difference
+     *      fails closed on the whole class instead of naming its members.
+     *      A real autologin URL contains no percent-encoding, so nothing
+     *      legitimate is refused.
+     *
+     * The plain-permalink form gets (a) and (c) too, plus the requirement that
+     * the path be the site root — '/wp-admin/?rest_route=/wpmgr/v1/autologin'
+     * is not the autologin route and no longer claims to be.
      *
      * NOT a general "logged-in users are exempt" rule, and not a blanket gate on
      * the recovery constant. Both would be wider than the problem: the first
@@ -596,36 +727,115 @@ final class HardeningModule
         if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI'])) {
             return false;
         }
-        $uri = sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized via sanitize_text_field(wp_unslash())
-        if ($uri === '') {
+        $rawUri = wp_unslash($_SERVER['REQUEST_URI']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- path portion is sanitized below and compared byte-for-byte against the raw form; any difference refuses the exemption
+        if (!is_string($rawUri) || $rawUri === '') {
             return false;
         }
 
-        $route      = self::AGENT_REST_NAMESPACE . self::AGENT_AUTOLOGIN_PATH;
-        $parts      = explode('?', $uri, 2);
-        $path       = rtrim($parts[0], '/');
+        // (a) Only the front controller serves the REST API. Anything else
+        //     answering is not this route, whatever the path spells.
+        if (!self::isFrontController()) {
+            return false;
+        }
+
+        $parts       = explode('?', $rawUri, 2);
+        $rawPath     = $parts[0];
         $queryString = $parts[1] ?? '';
 
-        // Pretty permalinks: /wp-json/wpmgr/v1/autologin, possibly under a
-        // subdirectory install. Anchored to the END of the path.
-        if (str_ends_with($path, '/wp-json/' . $route)) {
+        // (c) Fail closed when sanitizing rewrites the path: sanitize_text_field()
+        //     deletes percent-encoded octets, which turns several non-matching
+        //     paths into matching ones.
+        $path = sanitize_text_field($rawPath);
+        if ($path !== $rawPath) {
+            return false;
+        }
+
+        $homePath = self::homePath();
+
+        // (b) Pretty permalinks: the site's own canonical autologin path, whole.
+        $restPrefix = 'wp-json';
+        if (function_exists('rest_get_url_prefix')) {
+            $candidate = rest_get_url_prefix();
+            if (is_string($candidate) && $candidate !== '') {
+                $restPrefix = $candidate;
+            }
+        }
+        $route    = self::AGENT_REST_NAMESPACE . self::AGENT_AUTOLOGIN_PATH;
+        $expected = $homePath . '/' . trim($restPrefix, '/') . '/' . $route;
+        if (rtrim($path, '/') === $expected) {
             return true;
         }
 
-        // Plain permalinks: /?rest_route=/wpmgr/v1/autologin. Exact match on the
-        // decoded query argument, never a substring of the raw query string.
-        if ($queryString !== '') {
-            $args = [];
-            parse_str($queryString, $args);
-            if (isset($args['rest_route'])
-                && is_string($args['rest_route'])
-                && rtrim($args['rest_route'], '/') === '/' . $route
-            ) {
-                return true;
+        // Plain permalinks: /?rest_route=/wpmgr/v1/autologin, addressed to the
+        // site root. Exact match on the decoded query argument, never a
+        // substring of the raw query string, and never on an arbitrary path.
+        if ($queryString === '') {
+            return false;
+        }
+        $trimmedPath = rtrim($path, '/');
+        if ($trimmedPath !== $homePath && $trimmedPath !== $homePath . '/index.php') {
+            return false;
+        }
+        $args = [];
+        parse_str($queryString, $args);
+        return isset($args['rest_route'])
+            && is_string($args['rest_route'])
+            && rtrim($args['rest_route'], '/') === '/' . $route;
+    }
+
+    /**
+     * Whether this request was served by WordPress's front controller.
+     *
+     * SCRIPT_NAME is set by the SAPI from the script the server actually
+     * resolved, so it is the same class of signal as the PHP_SELF core derives
+     * $pagenow from and cannot be asserted by a client. Every REST request
+     * reaches WordPress through index.php under both permalink shapes; a
+     * REQUEST_URI that spells the autologin route while xmlrpc.php or
+     * options.php is answering is a smuggled path, not the route.
+     *
+     * Fails closed when SCRIPT_NAME is absent. Every HTTP SAPI sets it, so its
+     * absence means CLI or something unrecognised — neither of which is a
+     * browser following an autologin link.
+     *
+     * @return bool
+     */
+    private static function isFrontController(): bool
+    {
+        if (!isset($_SERVER['SCRIPT_NAME']) || !is_string($_SERVER['SCRIPT_NAME'])) {
+            return false;
+        }
+        $script = sanitize_text_field(wp_unslash($_SERVER['SCRIPT_NAME'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized via sanitize_text_field(wp_unslash())
+        return $script !== '' && basename($script) === 'index.php';
+    }
+
+    /**
+     * The site's home URL path with any trailing slash removed — '' for a root
+     * install, '/blog' for a subdirectory one.
+     *
+     * home_url() is the site's own answer to "where do my URLs start", so it is
+     * correct on subdirectory and multisite installs where dirname(SCRIPT_NAME)
+     * would be wrong. Falls back to the front controller's directory when
+     * WordPress is not far enough along to answer, which is the same value on
+     * every install where the two can disagree.
+     *
+     * @return string
+     */
+    private static function homePath(): string
+    {
+        if (function_exists('home_url') && function_exists('wp_parse_url')) {
+            $path = wp_parse_url(home_url('/'), PHP_URL_PATH);
+            if (is_string($path)) {
+                return rtrim($path, '/');
             }
         }
 
-        return false;
+        if (isset($_SERVER['SCRIPT_NAME']) && is_string($_SERVER['SCRIPT_NAME'])) {
+            $script = sanitize_text_field(wp_unslash($_SERVER['SCRIPT_NAME'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized via sanitize_text_field(wp_unslash())
+            $dir    = rtrim(str_replace('\\', '/', dirname($script)), '/');
+            return $dir === '.' ? '' : $dir;
+        }
+
+        return '';
     }
 
     /**

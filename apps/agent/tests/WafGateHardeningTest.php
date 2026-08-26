@@ -57,8 +57,8 @@ if (!function_exists('wpmgr_waf_should_deny')) {
  * gate and started testing the escape hatch — four tests passing green while
  * asserting nothing about what they name.
  *
- * @runTestsInSeparateProcesses is the CLASS-level form (the per-test spelling is
- * @runInSeparateProcess and is silently ignored on a class), applied here rather
+ * `@runTestsInSeparateProcesses` is the CLASS-level form (the per-test spelling
+ * is `@runInSeparateProcess` and is silently ignored on a class), applied here rather
  * than to the four affected tests so a test added later inherits the guarantee
  * instead of quietly rotting the moment someone else's suite defines the
  * constant first.

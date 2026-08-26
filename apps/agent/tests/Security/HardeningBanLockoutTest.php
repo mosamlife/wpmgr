@@ -50,6 +50,7 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use WPMgr\Agent\Security\HardeningConfig;
 use WPMgr\Agent\Security\HardeningModule;
+use WPMgr\Agent\Security\ServerConfigWriter;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -65,15 +66,23 @@ final class HardeningBanLockoutTest extends TestCase
     /** A genuinely hostile scanner user-agent. */
     private const HOSTILE_UA = 'sqlmap/1.7.2#stable (https://sqlmap.org)';
 
+    /** @var array<int,string> Temporary site roots to remove in tear_down. */
+    private array $tempRoots = [];
+
     protected function set_up(): void
     {
         parent::set_up();
         Monkey\setUp();
 
         Functions\when('is_user_logged_in')->justReturn(false);
-        Functions\when('sanitize_text_field')->alias(fn ($v) => $v);
+        Functions\when('sanitize_text_field')->alias([self::class, 'coreSanitizeTextField']);
         Functions\when('wp_unslash')->alias(fn ($v) => $v);
         Functions\when('headers_sent')->justReturn(false);
+
+        // A root install served by the front controller — the ordinary case.
+        // Individual tests override these to model a subdirectory install or a
+        // request some other PHP file answered.
+        $this->stubSite('https://example.test', '/index.php');
     }
 
     protected function tear_down(): void
@@ -81,10 +90,73 @@ final class HardeningBanLockoutTest extends TestCase
         unset(
             $_SERVER['HTTP_USER_AGENT'],
             $_SERVER['REQUEST_URI'],
+            $_SERVER['SCRIPT_NAME'],
+            $_SERVER['SERVER_SOFTWARE'],
             $GLOBALS['pagenow']
         );
+
+        foreach ($this->tempRoots as $root) {
+            $htaccess = $root . '/.htaccess';
+            if (is_file($htaccess)) {
+                unlink($htaccess);
+            }
+            if (is_dir($root)) {
+                rmdir($root);
+            }
+        }
+        $this->tempRoots = [];
+
         Monkey\tearDown();
         parent::tear_down();
+    }
+
+    /**
+     * Point the site at $homeUrl and make $scriptName the script the server
+     * resolved for this request.
+     *
+     * home_url() and rest_get_url_prefix() are stubbed for EVERY test in this
+     * class, never only the ones that care. Brain Monkey cannot un-define a
+     * function once defined, so a stub introduced by one test would otherwise
+     * leak into the next as a function that exists but has no behaviour, and
+     * isRecoverySurface() branches on function_exists().
+     */
+    private function stubSite(string $homeUrl, string $scriptName): void
+    {
+        $base = rtrim($homeUrl, '/');
+        Functions\when('home_url')->alias(
+            static fn (string $path = '') => $base . '/' . ltrim($path, '/')
+        );
+        Functions\when('rest_get_url_prefix')->justReturn('wp-json');
+        $_SERVER['SCRIPT_NAME'] = $scriptName;
+    }
+
+    /**
+     * WordPress core's sanitize_text_field(), reimplemented rather than stubbed
+     * to identity.
+     *
+     * The identity stub hid a live behaviour: _sanitize_text_fields()
+     * (wp-includes/formatting.php) DELETES percent-encoded octets rather than
+     * decoding them, so "%3f" vanishes and "/wp-admin/options.php%3f/wp-json/…"
+     * collapses into a string that matched the old suffix test. Every crafted
+     * URI in provideNonAutologinUris() depends on this being faithful; with the
+     * identity stub none of them proved anything.
+     */
+    public static function coreSanitizeTextField(string $str): string
+    {
+        $filtered = strip_tags($str);
+        $filtered = (string) preg_replace('/[\r\n\t ]+/', ' ', $filtered);
+        $filtered = trim($filtered);
+
+        $found = false;
+        while (preg_match('/%[a-f0-9]{2}/i', $filtered)) {
+            $filtered = (string) preg_replace('/%[a-f0-9]{2}/i', '', $filtered);
+            $found    = true;
+        }
+        if ($found) {
+            $filtered = trim((string) preg_replace('/ +/', ' ', $filtered));
+        }
+
+        return $filtered;
     }
 
     // -------------------------------------------------------------------------
@@ -199,6 +271,21 @@ final class HardeningBanLockoutTest extends TestCase
             'too short: NT'          => ['NT'],
             'too short: rv:'         => ['rv:'],
             'too short: 64'          => ['64'],
+            // Every one of these was ACCEPTED while Chrome and Firefox were
+            // refused, so each reproduced the #529 lockout for one browser's
+            // users. A denylist that names only the four desktop brands is not
+            // a genericity test, it is a list of the browsers someone thought of.
+            'Chrome on iOS'          => ['CriOS'],
+            'Firefox on iOS'         => ['FxiOS'],
+            'Samsung Internet'       => ['SamsungBrowser'],
+            'Opera'                  => ['OPR/'],
+            'Vivaldi'                => ['Vivaldi'],
+            'Edge on Android'        => ['EdgA/'],
+            'Edge on iOS'            => ['EdgiOS'],
+            'Edge on desktop'        => ['Edg/'],
+            'Samsung device token'   => ['SAMSUNG'],
+            'iPhone'                 => ['iPhone'],
+            'Android'                => ['Android'],
         ];
     }
 
@@ -315,8 +402,10 @@ final class HardeningBanLockoutTest extends TestCase
     /**
      * @dataProvider provideAutologinUris
      */
-    public function test_autologin_route_is_exempt(string $uri): void
+    public function test_autologin_route_is_exempt(string $uri, string $homeUrl, string $scriptName): void
     {
+        $this->stubSite($homeUrl, $scriptName);
+
         $cb = $this->captureInitCallback($this->configWithUaBan('EvilBot'));
         $this->assertInstanceOf(\Closure::class, $cb);
 
@@ -331,17 +420,21 @@ final class HardeningBanLockoutTest extends TestCase
     }
 
     /**
-     * @return array<string,array{0:string}>
+     * @return array<string,array{0:string,1:string,2:string}>
      */
     public static function provideAutologinUris(): array
     {
         return [
-            'pretty permalink'       => ['/wp-json/wpmgr/v1/autologin'],
-            'with a query string'    => ['/wp-json/wpmgr/v1/autologin?token=abc123'],
-            'trailing slash'         => ['/wp-json/wpmgr/v1/autologin/'],
-            'subdirectory install'   => ['/blog/wp-json/wpmgr/v1/autologin?token=abc123'],
-            'plain permalink'        => ['/?rest_route=/wpmgr/v1/autologin'],
-            'plain, trailing slash'  => ['/index.php?rest_route=/wpmgr/v1/autologin/'],
+            'pretty permalink'      => ['/wp-json/wpmgr/v1/autologin', 'https://example.test', '/index.php'],
+            'with a query string'   => ['/wp-json/wpmgr/v1/autologin?token=abc123', 'https://example.test', '/index.php'],
+            // A real autologin token is base64 and arrives percent-encoded. The
+            // path/query split has to happen before sanitizing or the fail-closed
+            // rule in (c) would refuse every genuine one-click login.
+            'percent-encoded token' => ['/wp-json/wpmgr/v1/autologin?token=YWJj%3D%3D', 'https://example.test', '/index.php'],
+            'trailing slash'        => ['/wp-json/wpmgr/v1/autologin/', 'https://example.test', '/index.php'],
+            'subdirectory install'  => ['/blog/wp-json/wpmgr/v1/autologin?token=abc123', 'https://example.test/blog', '/blog/index.php'],
+            'plain permalink'       => ['/?rest_route=/wpmgr/v1/autologin', 'https://example.test', '/index.php'],
+            'plain, trailing slash' => ['/index.php?rest_route=/wpmgr/v1/autologin/', 'https://example.test', '/index.php'],
         ];
     }
 
@@ -349,10 +442,20 @@ final class HardeningBanLockoutTest extends TestCase
      * OVER-FIRE GUARD. The autologin exemption is matched anchored, so a request
      * cannot smuggle the route into an unrelated URL and buy itself a pass.
      *
+     * The str_ends_with() form this replaced handed the exemption to every
+     * "crafted" case below. The xmlrpc one is the reason it mattered: under
+     * Apache mod_php and the standard nginx fastcgi_split_path_info,
+     * /xmlrpc.php/wp-json/wpmgr/v1/autologin executes xmlrpc.php normally, with
+     * system.multicall reachable and the user-agent ban skipped.
+     *
      * @dataProvider provideNonAutologinUris
      */
-    public function test_autologin_exemption_is_anchored_and_cannot_be_smuggled(string $uri): void
-    {
+    public function test_autologin_exemption_is_anchored_and_cannot_be_smuggled(
+        string $uri,
+        string $scriptName
+    ): void {
+        $this->stubSite('https://example.test', $scriptName);
+
         $cb = $this->captureInitCallback($this->configWithUaBan('EvilBot'));
         $this->assertInstanceOf(\Closure::class, $cb);
 
@@ -367,17 +470,29 @@ final class HardeningBanLockoutTest extends TestCase
     }
 
     /**
-     * @return array<string,array{0:string}>
+     * @return array<string,array{0:string,1:string}>
      */
     public static function provideNonAutologinUris(): array
     {
         return [
-            'route in a query value'   => ['/?x=/wp-json/wpmgr/v1/autologin'],
-            'route as a path prefix'   => ['/wp-json/wpmgr/v1/autologin/../../wp-admin/'],
-            'lookalike suffix'         => ['/wp-json/wpmgr/v1/autologin-not-really'],
-            'different namespace'      => ['/wp-json/other/v1/autologin'],
-            'not under wp-json'        => ['/evil/wpmgr/v1/autologin'],
-            'rest_route near-miss'     => ['/?rest_route=/wpmgr/v1/autologin-x'],
+            'route in a query value'  => ['/?x=/wp-json/wpmgr/v1/autologin', '/index.php'],
+            'route as a path prefix'  => ['/wp-json/wpmgr/v1/autologin/../../wp-admin/', '/index.php'],
+            'lookalike suffix'        => ['/wp-json/wpmgr/v1/autologin-not-really', '/index.php'],
+            'different namespace'     => ['/wp-json/other/v1/autologin', '/index.php'],
+            'not under wp-json'       => ['/evil/wpmgr/v1/autologin', '/index.php'],
+            'rest_route near-miss'    => ['/?rest_route=/wpmgr/v1/autologin-x', '/index.php'],
+            // Unconstrained prefix — the whole class the suffix match let through.
+            'arbitrary path prefix'   => ['/anything/wp-json/wpmgr/v1/autologin', '/index.php'],
+            'xmlrpc PATH_INFO'        => ['/xmlrpc.php/wp-json/wpmgr/v1/autologin', '/xmlrpc.php'],
+            'admin script PATH_INFO'  => ['/wp-admin/options.php%3f/wp-json/wpmgr/v1/autologin', '/wp-admin/options.php'],
+            'percent-encoded suffix'  => ['/wp-json/wpmgr/v1/autologin%00', '/index.php'],
+            'protocol-relative slash' => ['//wp-json/wpmgr/v1/autologin', '/index.php'],
+            // The query form smuggled onto a path that is not the site root.
+            'rest_route off-root'     => ['/wp-admin/?rest_route=/wpmgr/v1/autologin', '/wp-admin/index.php'],
+            'rest_route on xmlrpc'    => ['/xmlrpc.php?rest_route=/wpmgr/v1/autologin', '/xmlrpc.php'],
+            // Right path, wrong install: a root-install site must not hand the
+            // exemption to a subdirectory site's URL.
+            'foreign subdirectory'    => ['/blog/wp-json/wpmgr/v1/autologin', '/index.php'],
         ];
     }
 
@@ -513,5 +628,363 @@ final class HardeningBanLockoutTest extends TestCase
             'the count must be the real number refused'
         );
         $this->assertStringContainsString('(+2 more)', $result['detail'], 'the quoted list is capped, the count is not');
+    }
+
+    // =========================================================================
+    // 5. The .htaccess layer — the PRIMARY enforcement point on Apache and
+    //    LiteSpeed, which answers before PHP loads
+    // =========================================================================
+
+    /**
+     * Render the managed block for a config carrying $uaBans.
+     *
+     * @param array<int,string> $uaBans
+     */
+    private function renderBlock(array $uaBans, string $homeUrl = 'https://example.test'): string
+    {
+        $this->stubSite($homeUrl, '/index.php');
+        Functions\when('get_option')->justReturn('');
+        unset($_SERVER['SERVER_SOFTWARE']); // Apache, not nginx.
+
+        $bans = [];
+        foreach ($uaBans as $i => $value) {
+            $bans[] = ['id' => 'ua-' . $i, 'type' => 'user_agent', 'value' => $value];
+        }
+
+        return (new ServerConfigWriter())->renderInto('', HardeningConfig::fromArray(['bans' => $bans]));
+    }
+
+    /**
+     * Evaluate the rendered block's RewriteConds the way Apache does, and report
+     * whether the `RewriteRule ^ - [F,L]` would fire for this request.
+     *
+     * Asserting that a string is present in a config file proves the string is
+     * present. The bug in #529 was never a missing string — it was a rule whose
+     * MEANING excluded no path, so this models the semantics that decide the
+     * 403: `!` negates, [NC] is case-insensitive, and [OR] binds tighter than
+     * the implicit AND, so conditions form OR-groups that are then AND-combined.
+     */
+    private function blockDenies(string $block, string $uri, string $userAgent): bool
+    {
+        $parts       = explode('?', $uri, 2);
+        $requestUri  = $parts[0];
+        $queryString = $parts[1] ?? '';
+
+        $vars = [
+            'REQUEST_URI'     => $requestUri,
+            'QUERY_STRING'    => $queryString,
+            'HTTP_USER_AGENT' => $userAgent,
+        ];
+
+        // Collect the conditions guarding the ban rule.
+        $conds = [];
+        foreach (explode("\n", $block) as $line) {
+            $line = trim($line);
+            if (str_starts_with($line, 'RewriteCond ')) {
+                $conds[] = $line;
+                continue;
+            }
+            if ($line === 'RewriteRule ^ - [F,L]') {
+                break;
+            }
+        }
+        $this->assertNotSame([], $conds, 'the ban rule must be guarded by conditions');
+
+        // Group by [OR] (OR binds tighter than AND), then AND the groups.
+        $groups  = [];
+        $current = [];
+        foreach ($conds as $cond) {
+            $ok = preg_match(
+                '/^RewriteCond %\{([A-Z_]+)\} (!?)(\S+?)(?: \[([A-Z,]+)\])?$/',
+                $cond,
+                $m
+            );
+            $this->assertSame(1, $ok, sprintf('unparseable RewriteCond: %s', $cond));
+
+            $value    = $vars[$m[1]] ?? '';
+            $negate   = $m[2] === '!';
+            $flags    = explode(',', $m[4] ?? '');
+            $delim    = in_array('NC', $flags, true) ? '#i' : '#';
+            $matched  = preg_match('#' . $m[3] . $delim, $value) === 1;
+            $current[] = $negate ? !$matched : $matched;
+
+            if (!in_array('OR', $flags, true)) {
+                $groups[] = in_array(true, $current, true);
+                $current  = [];
+            }
+        }
+
+        foreach ($groups as $group) {
+            if ($group === false) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * THE #529 BUG AT THE LAYER THAT ACTUALLY SERVES IT. `RewriteRule ^ - [F,L]`
+     * matches every path, and Apache answers it before wp-settings.php runs, so
+     * HardeningModule::isRecoverySurface() is unreachable for exactly the
+     * request it exists to allow. A recovery exemption that lives only in PHP is
+     * not a recovery exemption on Apache or LiteSpeed.
+     *
+     * @dataProvider provideServerBlockRecoveryUris
+     */
+    public function test_rendered_server_block_exempts_the_recovery_surfaces(string $uri): void
+    {
+        $block = $this->renderBlock(['EvilBot']);
+
+        $this->assertFalse(
+            $this->blockDenies($block, $uri, 'EvilBot/1.0'),
+            sprintf('%s is a recovery surface and the .htaccess block must not 403 it', $uri)
+        );
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provideServerBlockRecoveryUris(): array
+    {
+        return [
+            'login page'              => ['/wp-login.php'],
+            'login with a query'      => ['/wp-login.php?action=lostpassword'],
+            'login with PATH_INFO'    => ['/wp-login.php/'],
+            'autologin, pretty'       => ['/wp-json/wpmgr/v1/autologin'],
+            'autologin with a token'  => ['/wp-json/wpmgr/v1/autologin?token=abc123'],
+            'autologin, trailing /'   => ['/wp-json/wpmgr/v1/autologin/'],
+            'autologin, plain'        => ['/?rest_route=/wpmgr/v1/autologin'],
+            'autologin, plain index'  => ['/index.php?rest_route=/wpmgr/v1/autologin'],
+        ];
+    }
+
+    /**
+     * OVER-FIRE GUARD, and the load-bearing half of B1. The exemption must not
+     * turn the ban off: ordinary traffic from a banned agent is still 403'd at
+     * Apache, which is the entire point of writing the rule.
+     *
+     * @dataProvider provideServerBlockBannedUris
+     */
+    public function test_rendered_server_block_still_bans_ordinary_traffic(string $uri): void
+    {
+        $block = $this->renderBlock(['EvilBot']);
+
+        $this->assertTrue(
+            $this->blockDenies($block, $uri, 'Mozilla/5.0 (compatible; EvilBot/1.0)'),
+            sprintf('%s is ordinary traffic from a banned agent and must still be 403d', $uri)
+        );
+    }
+
+    /**
+     * @return array<string,array{0:string}>
+     */
+    public static function provideServerBlockBannedUris(): array
+    {
+        return [
+            'front page'             => ['/'],
+            'a post'                 => ['/2026/08/hello-world/'],
+            'wp-admin'               => ['/wp-admin/'],
+            'xmlrpc'                 => ['/xmlrpc.php'],
+            'another REST route'     => ['/wp-json/wp/v2/posts'],
+            'autologin lookalike'    => ['/wp-json/wpmgr/v1/autologin-not-really'],
+            'smuggled autologin'     => ['/xmlrpc.php/wp-json/wpmgr/v1/autologin'],
+            'login lookalike'        => ['/wp-login.php.bak'],
+            'rest_route off-root'    => ['/wp-admin/?rest_route=/wpmgr/v1/autologin'],
+        ];
+    }
+
+    public function test_rendered_server_block_leaves_an_unbanned_visitor_alone(): void
+    {
+        $block = $this->renderBlock(['EvilBot']);
+
+        $this->assertFalse(
+            $this->blockDenies($block, '/', self::ADMIN_UA),
+            'a real visitor must not be 403d by an unrelated ban'
+        );
+    }
+
+    /**
+     * %{REQUEST_URI} carries the full path in per-directory context, so an
+     * exemption anchored at ^ silently stops matching on a subdirectory install
+     * unless the home path is prepended.
+     */
+    public function test_rendered_server_block_anchors_the_exemption_to_the_site_home_path(): void
+    {
+        $block = $this->renderBlock(['EvilBot'], 'https://example.test/blog');
+
+        $this->assertFalse(
+            $this->blockDenies($block, '/blog/wp-login.php', 'EvilBot/1.0'),
+            'the subdirectory install\'s own login page must be exempt'
+        );
+        $this->assertFalse(
+            $this->blockDenies($block, '/blog/wp-json/wpmgr/v1/autologin', 'EvilBot/1.0'),
+            'the subdirectory install\'s own autologin route must be exempt'
+        );
+        $this->assertTrue(
+            $this->blockDenies($block, '/wp-login.php', 'EvilBot/1.0'),
+            'a path outside this install is not this install\'s login page'
+        );
+    }
+
+    public function test_a_block_with_no_user_agent_ban_carries_no_exemption(): void
+    {
+        $this->stubSite('https://example.test', '/index.php');
+        Functions\when('get_option')->justReturn('');
+        unset($_SERVER['SERVER_SOFTWARE']);
+
+        $block = (new ServerConfigWriter())->renderInto('', HardeningConfig::fromArray([
+            'config' => ['disable_directory_browsing' => true],
+        ]));
+
+        $this->assertStringNotContainsString(
+            'wp-login',
+            $block,
+            'the exemption belongs to the user-agent ban and must not appear without one'
+        );
+    }
+
+    // =========================================================================
+    // 6. The upgrade path — a stale block is the reason the fix did not land
+    // =========================================================================
+
+    /**
+     * A pre-fix block: a bare generic ban, no exemption. This is what is sitting
+     * in .htaccess on every site that reported #529.
+     */
+    private const STALE_BLOCK = "# BEGIN WPMgr Security\n"
+        . "<IfModule mod_rewrite.c>\n"
+        . "    RewriteEngine On\n"
+        . "    RewriteCond %{HTTP_USER_AGENT} Chrome [NC]\n"
+        . "    RewriteRule ^ - [F,L]\n"
+        . "</IfModule>\n"
+        . "# END WPMgr Security\n";
+
+    /**
+     * Point the writer at a real temporary site root and stub the option store.
+     *
+     * @param array<string,mixed> $options
+     * @return array{0:string,1:string} [site root, .htaccess path]
+     */
+    private function stubSiteRoot(array &$options): array
+    {
+        // Must exist BEFORE the refresh runs: refreshServerConfigIfStale() has
+        // nothing to compare against without it and returns early.
+        self::agentVersion();
+
+        $root = sys_get_temp_dir() . '/wpmgr-529-' . bin2hex(random_bytes(8));
+        mkdir($root, 0777, true);
+        $this->tempRoots[] = $root;
+
+        Functions\when('get_home_path')->justReturn($root . '/');
+        Functions\when('get_option')->alias(
+            function ($key, $default = false) use (&$options) {
+                return $options[$key] ?? $default;
+            }
+        );
+        Functions\when('update_option')->alias(
+            function ($key, $value) use (&$options) {
+                $options[$key] = $value;
+                return true;
+            }
+        );
+        unset($_SERVER['SERVER_SOFTWARE']); // Apache.
+
+        return [$root, $root . '/.htaccess'];
+    }
+
+    /**
+     * THE HALF THAT REACHES THE PEOPLE WHO REPORTED IT. Every path that wrote
+     * .htaccess ran from the sync command, so a site already 403ing on a
+     * persisted `Chrome` rule stayed locked out after upgrading: the validator
+     * drops the pattern from the option and the PHP filter exempts the login
+     * page, but Apache reads the FILE, and nothing rewrote it.
+     *
+     * The re-render deliberately does not need the control plane to reach the
+     * site — on a locked-out site an inbound sync is exactly what the 403 is
+     * eating.
+     */
+    public function test_an_upgrade_rerenders_a_block_left_behind_by_an_older_version(): void
+    {
+        $options = [HardeningModule::OPTION_SERVER_REV => '0.60.0-stale'];
+        [, $htaccess] = $this->stubSiteRoot($options);
+        file_put_contents($htaccess, self::STALE_BLOCK);
+
+        $config = HardeningConfig::fromArray([
+            'bans' => [['id' => 'a', 'type' => 'user_agent', 'value' => 'Chrome']],
+        ]);
+        $this->assertSame([], $config->userAgentBans(), 'the generic pattern is refused at the boundary');
+
+        $ref = new \ReflectionMethod(HardeningModule::class, 'refreshServerConfigIfStale');
+        $ref->invoke(new HardeningModule(), $config);
+
+        $after = (string) file_get_contents($htaccess);
+
+        $this->assertStringNotContainsString(
+            'RewriteCond %{HTTP_USER_AGENT} Chrome',
+            $after,
+            'the rule that 403d the administrator must be gone from the file Apache reads'
+        );
+        $this->assertSame(
+            self::agentVersion(),
+            $options[HardeningModule::OPTION_SERVER_REV] ?? null,
+            'the block on disk must be stamped with the version that wrote it'
+        );
+    }
+
+    /**
+     * A site whose ban survives validation keeps the ban AND gains the
+     * exemption — the upgrade repairs the block rather than emptying it.
+     */
+    public function test_an_upgrade_adds_the_exemption_without_dropping_a_valid_ban(): void
+    {
+        $options = [HardeningModule::OPTION_SERVER_REV => '0.60.0-stale'];
+        [, $htaccess] = $this->stubSiteRoot($options);
+        file_put_contents($htaccess, self::STALE_BLOCK);
+
+        $ref = new \ReflectionMethod(HardeningModule::class, 'refreshServerConfigIfStale');
+        $ref->invoke(new HardeningModule(), $this->configWithUaBan('EvilBot'));
+
+        $after = (string) file_get_contents($htaccess);
+
+        $this->assertTrue(
+            $this->blockDenies($after, '/', 'EvilBot/1.0'),
+            'the operator\'s valid ban must survive the re-render'
+        );
+        $this->assertFalse(
+            $this->blockDenies($after, '/wp-login.php', 'EvilBot/1.0'),
+            'and the login page must now be exempt in the file Apache reads'
+        );
+    }
+
+    /**
+     * OVER-FIRE GUARD. This runs on plugins_loaded, on every request. A site
+     * already on the current version must not rewrite .htaccess on every hit.
+     */
+    public function test_a_current_stamp_does_not_touch_the_file(): void
+    {
+        $options = [HardeningModule::OPTION_SERVER_REV => self::agentVersion()];
+        [, $htaccess] = $this->stubSiteRoot($options);
+        file_put_contents($htaccess, self::STALE_BLOCK);
+
+        $ref = new \ReflectionMethod(HardeningModule::class, 'refreshServerConfigIfStale');
+        $ref->invoke(new HardeningModule(), $this->configWithUaBan('EvilBot'));
+
+        $this->assertSame(
+            self::STALE_BLOCK,
+            (string) file_get_contents($htaccess),
+            'an up-to-date stamp must short-circuit before any write'
+        );
+    }
+
+    /**
+     * The agent version this test process is running as. Read, never asserted:
+     * another test in the same process may have defined the constant first.
+     */
+    private static function agentVersion(): string
+    {
+        if (!defined('WPMGR_AGENT_VERSION')) {
+            define('WPMGR_AGENT_VERSION', '0.61.145-test');
+        }
+        return (string) constant('WPMGR_AGENT_VERSION');
     }
 }

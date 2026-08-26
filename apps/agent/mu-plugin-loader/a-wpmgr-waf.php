@@ -251,19 +251,42 @@ function wpmgr_waf_deny(): void
  * request; false when it would pass.
  *
  * Layer order (must be preserved exactly — tests assert on this order):
- *   (0) WPMGR_DISABLE_SITE_2FA      → no-deny (operator recovery constant)
  *   (1) allow_cidrs match           → no-deny (always wins)
  *   (2) private/loopback IP         → no-deny (operator lock-out guard)
  *   (3) hardening_deny_cidrs        → deny    (all modes, mode-independent)
- *   (4) mode != protect             → no-deny (brute-force gate is mode-gated)
- *   (5) deny_cidrs in protect mode  → deny
+ *   (4) WPMGR_DISABLE_SITE_2FA      → no-deny (operator recovery constant)
+ *   (5) mode != protect             → no-deny (brute-force gate is mode-gated)
+ *   (6) deny_cidrs in protect mode  → deny
  *
- * Layer (0) is GH #529. `define('WPMGR_DISABLE_SITE_2FA', true)` is the
+ * Layer (4) is GH #529. `define('WPMGR_DISABLE_SITE_2FA', true)` is the
  * documented last-resort escape hatch for an administrator this plugin has
  * locked out, and it was already honoured by Site2faModule, PasswordPolicyModule
- * and HardeningModule's auth appliers — but not here, so an admin whose ordinary
- * public IP had landed in a ban list still met a 403 before WordPress even
- * booted, with the escape hatch set and no way to tell it had done nothing.
+ * and HardeningModule's auth appliers — but not here, so an admin whose own
+ * public IP had been auto-added to deny_cidrs by the brute-force protection
+ * still met a 403 before WordPress even booted, with the escape hatch set and
+ * no way to tell it had done nothing.
+ *
+ * IT SITS AT (4), NOT AT (0), AND THAT POSITION IS THE WHOLE POINT. Placed
+ * first it released every IP deny in the file, hardening_deny_cidrs included —
+ * so a constant named DISABLE_SITE_2FA silently deleted the operator's explicit
+ * IP ban list, in all modes, with no signal. On nginx those bans have no other
+ * enforcement path at all, so an operator who set the constant during a
+ * recovery and forgot it would be running unbanned indefinitely.
+ *
+ * Placed at (4) it releases exactly one surface: deny_cidrs under protect mode,
+ * which is the brute-force login lockout — the auth policy the constant is
+ * named for. This is the same boundary HardeningModule draws with
+ * authPolicyDisabled(): the constant gates the appliers that decide who may log
+ * in, and never the operator's explicit bans. An explicit ban is a standing
+ * instruction about traffic, not a lock on the owner's own door, and the owner
+ * removes it by removing it.
+ *
+ * That boundary is also why the constant has no server-level blind spot.
+ * ServerConfigWriter renders only HardeningConfig::ipRangeBans() — the same
+ * list that reaches hardening_deny_cidrs — into .htaccess. deny_cidrs, the one
+ * list this constant now releases, is never written to server config and is
+ * enforced only here, in PHP, where the constant is read. There is no surface
+ * the constant claims to release that Apache decides first.
  *
  * The constant is readable at this point: wp-config.php runs to completion
  * (it is what requires wp-settings.php), so every define() in it exists before
@@ -273,10 +296,11 @@ function wpmgr_waf_deny(): void
  * Setting it costs an attacker nothing less than write access to wp-config.php,
  * at which point the site is already theirs; it costs a locked-out owner one
  * line over SFTP. That asymmetry is why this is the correct recovery lever for
- * the IP gate, and why the gate does NOT instead exempt wp-login.php by path:
- * blocking repeated login attempts by IP is the entire job of deny_cidrs in
- * protect mode, and a path exemption would delete the brute-force protection it
- * exists to provide. A request cannot assert this constant; only the owner can.
+ * the brute-force gate, and why the gate does NOT instead exempt wp-login.php
+ * by path: blocking repeated login attempts by IP is the entire job of
+ * deny_cidrs in protect mode, and a path exemption would delete the
+ * brute-force protection it exists to provide. A request cannot assert this
+ * constant; only the owner can.
  *
  * Extracting the decision into this pure function means:
  *   - Tests `require_once` this file and call wpmgr_waf_should_deny() directly,
@@ -290,12 +314,6 @@ function wpmgr_waf_deny(): void
  */
 function wpmgr_waf_should_deny(array $config, string $ip, string $mode): bool
 {
-    // (0) Operator recovery constant — GH #529. Set in wp-config.php, which has
-    // already run in full by the time any mu-plugin loads.
-    if (defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA) {
-        return false;
-    }
-
     if ($ip === '') {
         return false;
     }
@@ -334,7 +352,15 @@ function wpmgr_waf_should_deny(array $config, string $ip, string $mode): bool
         return true;
     }
 
-    // (4) Brute-force protect gate — only active when mode == protect.
+    // (4) Operator recovery constant — GH #529. Set in wp-config.php, which has
+    // already run in full by the time any mu-plugin loads. Deliberately BELOW
+    // (3): it releases the brute-force lockout it is named for and never the
+    // operator's explicit hardening bans. See the layer-order note above.
+    if (defined('WPMGR_DISABLE_SITE_2FA') && WPMGR_DISABLE_SITE_2FA) {
+        return false;
+    }
+
+    // (5) Brute-force protect gate — only active when mode == protect.
     if ($mode !== 'protect') {
         return false;
     }
@@ -343,7 +369,7 @@ function wpmgr_waf_should_deny(array $config, string $ip, string $mode): bool
         return false;
     }
 
-    // (5) deny_cidrs in protect mode.
+    // (6) deny_cidrs in protect mode.
     if (wpmgr_waf_matches_any_cidr($ip, $denyCidrs)) {
         return true;
     }
