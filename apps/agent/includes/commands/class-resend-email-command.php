@@ -14,7 +14,7 @@
  *   Body not stored: { "ok": false, "detail": "body_not_stored" }
  *   Row not found:   { "ok": false, "detail": "log_row_not_found" }
  *   Config missing:  { "ok": false, "detail": "no email config" }
- *   Identity check:  { "ok": false, "detail": "message_id_mismatch: …" }
+ *   Identity check:  { "ok": false, "detail": "message_id_mismatch" }
  *
  * The command:
  *   1. Looks up the buffered row by agent_seq in wpmgr_email_log.
@@ -41,12 +41,29 @@
  * exactly today's behaviour, because a resend is still better than no resend
  * and the pre-#528 CP has no id to offer.
  *
- * Empty compares as a value, not as "skip": an original send that failed is
- * logged with message_id='' and is mirrored to the CP as '', so ''-vs-'' is a
- * genuine match. ''-vs-non-empty in either direction is a genuine mismatch —
- * the CP's copy is a mirror of this row's own message_id, so presence on one
- * side and absence on the other means the two are not the same row. Only an
- * absent (or null) key skips verification.
+ * "Supplied" means a NON-EMPTY string. Absent, null and empty all mean the same
+ * thing — the control plane has no id to offer — and all three proceed without
+ * verifying. This matters more than it looks: message_id is NULL on the control
+ * plane for every send that failed at the time (all five provider handlers
+ * return '' on failure and the ingest only stores a non-empty pointer), and a
+ * failed send is the single most common thing an operator resends. Reading ''
+ * as "compare against empty" would refuse exactly the rows this fix exists to
+ * protect. The control plane omits the key outright for those rows; treating ''
+ * the same way means neither side can break the other by changing its mind
+ * about how it encodes "nothing".
+ *
+ * The reverse is NOT symmetric and must not be: when the control plane DOES
+ * supply an id and the local row has none, that is a refusal. The CP's copy is
+ * a mirror of this row's own message_id, so presence on one side with absence
+ * on the other means they are not the same row — which is precisely what a
+ * rolled-back counter re-issuing an id to a later failed send looks like.
+ *
+ * The refusal `detail` is the bare literal "message_id_mismatch" and nothing
+ * else. It is a contract string the control plane pins and maps to
+ * operator-facing wording ("this site's log row no longer matches the message
+ * you selected; the site's database may have been restored since — refresh the
+ * email log and try again"). Appending that sentence here instead would put raw
+ * agent text in front of a user, which is how GH #520 was reported.
  *
  * Note that this is why a successful resend no longer overwrites the row's
  * message_id: EmailLogReporter pages rows with `WHERE id > cursor`
@@ -74,15 +91,22 @@ use WPMgr\Agent\Schema;
 final class ResendEmailCommand implements CommandInterface {
 
 	/**
-	 * Stable `detail` prefix returned when the control plane named a message_id
-	 * that does not match the loaded log row. The control plane matches on the
-	 * prefix; the operator reads the sentence after it.
+	 * Exact `detail` returned when the control plane named a message_id that does
+	 * not match the loaded log row.
+	 *
+	 * This is the whole detail string, not a prefix. The control plane pins the
+	 * same literal (agentcmd.ResendDetailMessageIDMismatch) and owns the wording
+	 * the operator actually reads; the two sides must agree byte for byte.
 	 */
 	public const DETAIL_MISMATCH = 'message_id_mismatch';
 
 	/**
-	 * Stable `detail` prefix returned when message_id was present but was not a
-	 * string, i.e. a request we cannot verify against.
+	 * Exact `detail` returned when message_id was present and non-null but was
+	 * not a string — a request that cannot be verified and so is not sent.
+	 *
+	 * Unreachable from the control plane as built (it sends a string or omits
+	 * the key); it exists so a malformed caller fails closed and nameably rather
+	 * than falling through to an unverified send.
 	 */
 	public const DETAIL_INVALID = 'message_id_invalid';
 
@@ -119,21 +143,26 @@ final class ResendEmailCommand implements CommandInterface {
 			return array( 'ok' => false, 'detail' => 'agent_seq must be a positive integer', 'message_id' => '' );
 		}
 
-		// Validate the optional message_id (GH #528) before any work is done.
-		// null === array_key_exists()===false === "the control plane is not asking
-		// for verification" — that is the additive path an older CP takes. A
-		// present-but-not-a-string value is a request we cannot verify against,
-		// and an unverifiable resend is refused rather than sent.
+		// Resolve the optional message_id (GH #528) before any work is done.
+		// Absent, null and empty all mean "the control plane has no id to offer"
+		// and leave $expected_message_id null, which skips verification — that is
+		// the path an older control plane takes, and the path every failed send
+		// takes (its CP-side message_id is NULL). A present, non-null,
+		// non-string value is a request that cannot be verified at all, and an
+		// unverifiable resend is refused rather than sent.
 		$expected_message_id = null;
 		if ( array_key_exists( 'message_id', $params ) && $params['message_id'] !== null ) {
 			if ( ! is_string( $params['message_id'] ) ) {
 				return array(
 					'ok'         => false,
-					'detail'     => self::DETAIL_INVALID . ': message_id must be a string. Refusing to resend rather than send a message this site cannot verify.',
+					'detail'     => self::DETAIL_INVALID,
 					'message_id' => '',
 				);
 			}
-			$expected_message_id = trim( $params['message_id'] );
+			$supplied = trim( $params['message_id'] );
+			if ( $supplied !== '' ) {
+				$expected_message_id = $supplied;
+			}
 		}
 
 		// Load the email config, required before attempting a resend.
@@ -157,7 +186,7 @@ final class ResendEmailCommand implements CommandInterface {
 			if ( $stored_message_id !== $expected_message_id ) {
 				return array(
 					'ok'         => false,
-					'detail'     => self::DETAIL_MISMATCH . ': this site\'s log row no longer matches the message you selected. The site\'s database may have been restored since. Refresh the email log and try again.',
+					'detail'     => self::DETAIL_MISMATCH,
 					'message_id' => '',
 				);
 			}

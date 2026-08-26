@@ -297,10 +297,32 @@ class ResendEmailCommandTest extends TestCase
         $this->assertSame([], $spy->sent, 'the provider handler must have received nothing at all');
 
         $this->assertFalse($result['ok']);
-        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
-        $this->assertStringContainsString('restored', $result['detail']);
+        $this->assertSame('message_id_mismatch', $result['detail']);
         $this->assertSame('', $result['message_id']);
         $this->assertFalse($wpdb->update_called, 'a refused resend must not touch the log row');
+    }
+
+    /**
+     * The refusal detail is a contract string the control plane pins as
+     * agentcmd.ResendDetailMessageIDMismatch. It is the WHOLE detail, not a
+     * prefix with agent prose appended: raw agent text in front of a user is how
+     * GH #520 was reported. Pin the literal on this side too, so a well-meant
+     * reword here fails here rather than in a toast.
+     */
+    public function test_mismatch_detail_is_exactly_the_pinned_contract_literal(): void
+    {
+        $this->assertSame('message_id_mismatch', ResendEmailCommand::DETAIL_MISMATCH);
+
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>body</p>', 'sg-bob-password-reset'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-x', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        $this->assertSame('message_id_mismatch', $result['detail'], 'the detail must be the bare contract literal, with nothing appended');
     }
 
     /**
@@ -389,16 +411,21 @@ class ResendEmailCommandTest extends TestCase
 
         $this->assertSame(0, $spy->send_count, 'an unverifiable resend must not be sent');
         $this->assertFalse($result['ok']);
-        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+        $this->assertSame('message_id_mismatch', $result['detail']);
         $this->assertFalse($wpdb->update_called);
     }
 
     /**
-     * The mirror of the above: empty is compared as a value, not read as "skip".
-     * A send that failed is logged with message_id='' and mirrored to the CP as
-     * '', so ''-vs-'' is a genuine match and that resend must still work.
+     * Empty is NOT compared as a value — it means the same as an absent key.
+     *
+     * The control plane's message_id is NULL for every send that failed at the
+     * time (all five provider handlers return '' on failure, and ingest only
+     * stores a non-empty pointer), and a failed send is the most common thing an
+     * operator resends. The CP omits the key for those rows; treating an empty
+     * string the same way means neither side can break the other by changing how
+     * it encodes "nothing".
      */
-    public function test_empty_message_id_matches_a_row_logged_without_one(): void
+    public function test_empty_message_id_is_treated_as_not_supplied(): void
     {
         Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
         $this->install_email_config();
@@ -409,15 +436,16 @@ class ResendEmailCommandTest extends TestCase
 
         $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => '']);
 
-        $this->assertSame(1, $spy->send_count, 'a failed send mirrored as message_id="" must still be resendable');
+        $this->assertSame(1, $spy->send_count, 'a failed send whose CP-side message_id is NULL must still be resendable');
         $this->assertTrue($result['ok']);
     }
 
     /**
-     * ...and the same rule in the other direction: the CP holds no id, the local
-     * row does. Still not the same row. Still refuse.
+     * ...and it stays "not supplied" even when the local row does hold an id.
+     * An empty value is the absence of a claim, never a claim of absence, so it
+     * must not manufacture a refusal.
      */
-    public function test_empty_message_id_refuses_when_the_row_has_one(): void
+    public function test_empty_message_id_does_not_refuse_a_row_that_has_one(): void
     {
         Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
         $this->install_email_config();
@@ -428,9 +456,8 @@ class ResendEmailCommandTest extends TestCase
 
         $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => '']);
 
-        $this->assertSame(0, $spy->send_count);
-        $this->assertFalse($result['ok']);
-        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+        $this->assertSame(1, $spy->send_count);
+        $this->assertTrue($result['ok']);
     }
 
     /**
@@ -450,7 +477,7 @@ class ResendEmailCommandTest extends TestCase
 
         $this->assertSame(0, $spy->send_count);
         $this->assertFalse($result['ok']);
-        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_INVALID, $result['detail']);
+        $this->assertSame('message_id_invalid', $result['detail']);
     }
 
     /**
@@ -470,12 +497,46 @@ class ResendEmailCommandTest extends TestCase
         $result = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
 
         $this->assertSame(0, $spy->send_count);
-        $this->assertFalse($result['ok']);
-        $this->assertStringStartsWith(ResendEmailCommand::DETAIL_MISMATCH, $result['detail']);
+        $this->assertSame('message_id_mismatch', $result['detail']);
     }
 
     /**
-     * The guard must not redden correct work on the SECOND resend.
+     * REQUIRED over-fire proof: resend the same row twice in a row, and the
+     * second one must still send.
+     *
+     * This is the case the fix is most likely to break. The control plane's copy
+     * of message_id is frozen at the ORIGINAL send's value — EmailLogReporter
+     * pages rows with `WHERE id > cursor`, so an already-pushed row is never
+     * pushed again and the CP never learns a resend's new id. It therefore sends
+     * the same original id every time. If a successful resend rewrote the local
+     * row's message_id, the second resend would compare the CP's original
+     * against the agent's newer value and refuse a completely legitimate action
+     * — turning a restore-only defect into a permanent one.
+     */
+    public function test_repeat_resend_of_the_same_row_still_sends(): void
+    {
+        Functions\when('current_time')->justReturn('2026-08-26 00:00:00');
+        $this->install_email_config();
+        $this->install_wpdb($this->make_log_row(42, true, '<p>Invoice for Alice</p>', 'sg-alice-invoice'));
+
+        $spy = new RecordingProviderHandler(['ok' => true, 'message_id' => 'sg-resend-new', 'error' => '', 'provider_response' => '202']);
+        $cmd = new ResendEmailCommand($this->make_router_with_spy($spy));
+
+        // The CP sends the same original id both times, because that is the only
+        // value it will ever hold for this row.
+        $first  = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+        $second = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+        $third  = $cmd->execute([], ['agent_seq' => 42, 'message_id' => 'sg-alice-invoice']);
+
+        $this->assertTrue($first['ok']);
+        $this->assertTrue($second['ok'], 'the second resend of the same row must not refuse itself');
+        $this->assertTrue($third['ok'], 'nor the third');
+        $this->assertSame(3, $spy->send_count, 'all three resends must actually have been sent');
+        $this->assertSame('sg-resend-new', $second['message_id'], 'each resend still returns its own new provider id to the CP');
+    }
+
+    /**
+     * The mechanism the test above depends on: the row's message_id survives.
      *
      * EmailLogReporter pages rows with `WHERE id > cursor`, so a row that has
      * already been pushed is never pushed again and the control plane's copy of
@@ -581,8 +642,19 @@ class FakeResendWpdb
         $this->row = $row;
     }
 
+    /**
+     * Substitute placeholders the way wpdb::prepare() does, so query() below can
+     * see the VALUES a statement carries and not just its shape. Without this
+     * the double cannot model an UPDATE at all, and a test asserting that a
+     * resend leaves the row's message_id alone would pass no matter what the
+     * command wrote.
+     */
     public function prepare(string $query, ...$args): string
     {
+        foreach ($args as $arg) {
+            $replacement = is_int($arg) ? (string) $arg : "'" . (string) $arg . "'";
+            $query       = preg_replace('/%[ds]/', $replacement, $query, 1) ?? $query;
+        }
         return $query;
     }
 
@@ -604,6 +676,12 @@ class FakeResendWpdb
         $this->queries[] = $query;
         if (stripos($query, 'UPDATE') !== false) {
             $this->update_called = true;
+            // Model the write, so a subsequent get_row() sees what the command
+            // actually stored. This is what lets the repeat-resend test go red
+            // against an implementation that overwrites message_id on resend.
+            if ($this->row !== null && preg_match("/message_id\s*=\s*'([^']*)'/i", $query, $m) === 1) {
+                $this->row['message_id'] = $m[1];
+            }
             return 1;
         }
         return false;
