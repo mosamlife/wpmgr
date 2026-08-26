@@ -172,26 +172,35 @@ final class Site2faModuleTest extends TestCase
     /**
      * The WPMGR_DISABLE_SITE_2FA escape hatch is the fleet's way out of a 2FA
      * lockout, so its contract is not "install() does not crash" -- it is
-     * "install() leaves no hook behind". Asserting that requires recording the
-     * registrations rather than discarding them, and two things could make an
-     * empty result meaningless:
+     * "install() leaves no hook behind". Asserting that means recording the
+     * registrations rather than discarding them, and asserting the recording is
+     * empty; a recorder that captured nothing at all would make that pass for
+     * the wrong reason, so it is proven live first.
      *
-     *   1. a dead recorder, so nothing was ever captured -- ruled out by the
-     *      self-check below, which registers a probe and asserts it lands;
-     *   2. install()'s `static $installed` guard having already fired earlier
-     *      in this process, which would make install() return before it looks
-     *      at the constant at all -- ruled out by reading the static through
-     *      reflection and asserting it is still false.
+     * WHAT THIS TEST DELIBERATELY DOES NOT CLAIM:
+     * install() guards itself with a process-wide `static $installed`. If
+     * anything called install() earlier in this PHPUnit process it returns
+     * before it ever looks at the constant, and "registered nothing" would then
+     * be true for that reason instead. This test cannot rule that out from
+     * inside the shared process, and it must stay in the shared process because
+     * the constant it defines is process-global and several later tests in this
+     * file assert it is set. The non-vacuous version -- fresh process, fresh
+     * static, same assertion -- is
+     * Site2faHookRegistrationTest::test_disable_constant_makes_install_register_no_hooks.
      *
-     * The constant is process-global once defined and several later tests in
-     * this file assert it is set, so it is deliberately defined here in the
-     * shared process rather than under @runInSeparateProcess.
-     *
-     * The mirror of this test that proves the recorder DOES capture the
-     * module's real registrations lives in Site2faHookRegistrationTest.
+     * The constant is defined before anything here can fail, so a failure below
+     * can never cascade into those later tests by leaving it undefined.
      */
     public function test_safety_disable_constant_makes_install_register_no_hooks(): void
     {
+        if (!defined('WPMGR_DISABLE_SITE_2FA')) {
+            define('WPMGR_DISABLE_SITE_2FA', true);
+        }
+        $this->assertTrue(
+            defined('WPMGR_DISABLE_SITE_2FA') && (bool) WPMGR_DISABLE_SITE_2FA,
+            'the escape hatch must be defined and true in this process'
+        );
+
         $registered = [];
         $recorder   = function ($hook, $callback = null, $priority = 10, $acceptedArgs = 1) use (&$registered): bool {
             $registered[] = (string) $hook;
@@ -200,8 +209,8 @@ final class Site2faModuleTest extends TestCase
         Functions\when('add_action')->alias($recorder);
         Functions\when('add_filter')->alias($recorder);
 
-        // (1) Instrument self-check: a recorder that captures nothing would make
-        // the assertion at the end of this test pass for the wrong reason.
+        // Instrument self-check: a recorder that captures nothing would make the
+        // assertion at the end of this test pass for the wrong reason.
         add_action('wpmgr_recorder_self_check', 'wpmgr_recorder_self_check_cb', 7, 2);
         $this->assertSame(
             ['wpmgr_recorder_self_check'],
@@ -209,22 +218,6 @@ final class Site2faModuleTest extends TestCase
             'instrument self-check: the add_action recorder must capture registrations'
         );
         $registered = [];
-
-        // (2) The idempotence guard must not have fired yet, or install() would
-        // return early and register nothing regardless of the constant.
-        $installGuard = (new \ReflectionMethod(Site2faModule::class, 'install'))->getStaticVariables();
-        $this->assertFalse(
-            $installGuard['installed'] ?? true,
-            'install()\'s static guard must still be unset in this process, or the assertion below is vacuous'
-        );
-
-        if (!defined('WPMGR_DISABLE_SITE_2FA')) {
-            define('WPMGR_DISABLE_SITE_2FA', true);
-        }
-        $this->assertTrue(
-            defined('WPMGR_DISABLE_SITE_2FA') && (bool) WPMGR_DISABLE_SITE_2FA,
-            'the escape hatch must be defined and true in this process'
-        );
 
         // A policy that would otherwise register every hook the module owns.
         $policy = SecurityPolicy::fromArray([
