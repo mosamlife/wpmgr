@@ -45,8 +45,29 @@ if (!function_exists('wpmgr_waf_should_deny')) {
 }
 
 /**
+ * PROCESS ISOLATION IS LOAD-BEARING HERE (GH #529).
+ *
+ * wpmgr_waf_should_deny() now returns false whenever WPMGR_DISABLE_SITE_2FA is
+ * defined — the operator's documented recovery constant, honoured at the IP
+ * gate so a locked-out admin has a way back in. A constant cannot be undefined,
+ * and Site2faModuleTest defines this one in the SHARED test process
+ * (tests/Security/Site2faModuleTest.php, test_safety_disable_constant_makes_
+ * install_noop). PHPUnit's file order puts that before this file, so without
+ * isolation every "must block" assertion below silently stopped testing the
+ * gate and started testing the escape hatch — four tests passing green while
+ * asserting nothing about what they name.
+ *
+ * `@runTestsInSeparateProcesses` is the CLASS-level form (the per-test spelling
+ * is `@runInSeparateProcess` and is silently ignored on a class), applied here rather
+ * than to the four affected tests so a test added later inherits the guarantee
+ * instead of quietly rotting the moment someone else's suite defines the
+ * constant first.
+ *
  * @covers wpmgr_waf_should_deny
  * @covers \WPMgr\Agent\Security\HardeningModule::syncWafDenyCidrs
+ *
+ * @runTestsInSeparateProcesses
+ * @preserveGlobalState disabled
  */
 final class WafGateHardeningTest extends TestCase
 {

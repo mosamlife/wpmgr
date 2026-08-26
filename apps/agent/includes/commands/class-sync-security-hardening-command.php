@@ -30,6 +30,10 @@
  * Response (200 OK, wrapped by Router):
  *   { "ok": true, "detail": "applied" }
  *
+ * A push whose bans were partly refused still applies and still returns ok:true,
+ * with the refusal named in `detail` (GH #529):
+ *   { "ok": true, "detail": "applied; 1 ban(s) REFUSED and NOT applied: …" }
+ *
  * Auth: Router's permission_callback enforces the Ed25519 + anti-replay JWT
  * contract (Connector::verifyCommand) before execute() is called.
  *
@@ -136,6 +140,53 @@ final class SyncSecurityHardeningCommand implements CommandInterface
             }
         }
 
+        // GH #529: a refused ban must not vanish. The rest of the push is still
+        // applied — refusing the whole sync over one bad pattern would discard
+        // the operator's good bans too — but the refusal rides back on `detail`
+        // so the dashboard can tell them the ban they configured is NOT live.
+        $rejectionNote = self::describeRejectedBans($config->rejectedBans());
+        if ($rejectionNote !== null) {
+            $detail .= '; ' . $rejectionNote;
+        }
+
         return ['ok' => true, 'detail' => $detail];
+    }
+
+    /**
+     * Render refused bans into one operator-readable clause, or null when the
+     * push was clean.
+     *
+     * Caps the quoted values so a push of a hundred junk patterns cannot turn
+     * `detail` into an unbounded response body; the count is always exact and
+     * is computed here rather than being asserted anywhere as a literal.
+     *
+     * @param array<int,array{value:string,reason:string}> $rejected
+     * @return string|null
+     */
+    private static function describeRejectedBans(array $rejected): ?string
+    {
+        $rejected = array_values($rejected);
+        if ($rejected === []) {
+            return null;
+        }
+
+        $maxListed = 5;
+        $values    = [];
+        foreach (array_slice($rejected, 0, $maxListed) as $entry) {
+            $values[] = '"' . $entry['value'] . '"';
+        }
+
+        $note = sprintf(
+            '%d ban(s) REFUSED and NOT applied: %s',
+            count($rejected),
+            implode(', ', $values)
+        );
+        if (count($rejected) > $maxListed) {
+            $note .= sprintf(' (+%d more)', count($rejected) - $maxListed);
+        }
+
+        // Every refusal in one push shares a reason far more often than not;
+        // quote the first so the operator learns what to change.
+        return $note . ' — ' . $rejected[0]['reason'];
     }
 }

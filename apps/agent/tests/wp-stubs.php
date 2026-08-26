@@ -39,6 +39,66 @@ if (!function_exists('wp_parse_url')) {
     }
 }
 
+/*
+ * home_url(), rest_get_url_prefix() and get_home_path() live HERE rather than
+ * in any one test's set_up() because of what Brain Monkey cannot undo.
+ *
+ * Functions\when() on a function that does not yet exist DEFINES it, and
+ * tearDown cannot un-define a PHP function — it can only unregister the
+ * expectation. Every later test in the same process then sees
+ * function_exists() === true for a function that throws
+ * MissingFunctionExpectations the moment it is called. ServerConfigWriter and
+ * HardeningModule both branch on function_exists() for exactly these three, so
+ * one test stubbing them turned fifteen unrelated tests red purely on file
+ * order. Defined here they are real functions that Patchwork can transform, so
+ * Functions\when() overrides them for one test and tearDown restores this body.
+ */
+
+if (!function_exists('home_url')) {
+    /**
+     * Site home URL. Root install by default; tests that need a subdirectory
+     * install override this per-test via Brain Monkey.
+     *
+     * @param string      $path   Optional path appended to the home URL.
+     * @param string|null $scheme Ignored; present for signature parity.
+     * @return string
+     */
+    function home_url(string $path = '', ?string $scheme = null): string
+    {
+        return 'https://example.test/' . ltrim($path, '/');
+    }
+}
+
+if (!function_exists('rest_get_url_prefix')) {
+    /**
+     * The REST route prefix. Core defaults to 'wp-json' and filters it through
+     * `rest_url_prefix`.
+     *
+     * @return string
+     */
+    function rest_get_url_prefix(): string
+    {
+        return 'wp-json';
+    }
+}
+
+if (!function_exists('get_home_path')) {
+    /**
+     * Filesystem path of the site root, with a trailing slash.
+     *
+     * Returns ABSPATH, which is what ServerConfigWriter::htaccessPath() already
+     * fell back to while this function was undefined — so defining it changes
+     * no existing test's behaviour, it only stops the fallback from depending
+     * on whether some earlier test happened to stub it.
+     *
+     * @return string
+     */
+    function get_home_path(): string
+    {
+        return defined('ABSPATH') ? rtrim((string) constant('ABSPATH'), '/\\') . '/' : '';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
