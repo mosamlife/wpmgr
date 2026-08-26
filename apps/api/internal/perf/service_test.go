@@ -27,6 +27,9 @@ type fakeRepo struct {
 	configFound bool
 	ciphertext  []byte
 	provider    string
+	// GH #522 — forces GetCDNCredentialsCiphertext to fail the way the real
+	// repo does (a tenant-tx/query error, NOT "no credentials stored").
+	ciphertextErr error
 	purges      []RecordPurgeInput
 	upserts     []UpsertConfigInput
 	markedKinds []string // kinds passed to MarkCachePurged
@@ -68,6 +71,11 @@ func (r *fakeRepo) UpsertConfig(_ context.Context, in UpsertConfigInput) (Config
 func (r *fakeRepo) GetCDNCredentialsCiphertext(_ context.Context, _, _ uuid.UUID) ([]byte, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// GH #522: a genuine read failure must be distinguishable from "no
+	// credentials stored" — the real repo returns (nil, "", err) here.
+	if r.ciphertextErr != nil {
+		return nil, "", r.ciphertextErr
+	}
 	return r.ciphertext, r.provider, nil
 }
 
@@ -232,15 +240,26 @@ type fakeAgent struct {
 	purgeErr        error
 	lastSnapshotReq agentcmd.DbSnapshotRequest
 	snapshotErr     error
+	// GH #522 review follow-up — over-fire proof: an agent-side refusal must
+	// keep surfacing as-is (200 {"ok":false,"detail":<agent detail>}), not get
+	// swept into the new CDN-credentials sanitization.
+	cacheEnableErr  error
+	cacheDisableErr error
 }
 
 func (a *fakeAgent) SyncPerfConfig(context.Context, uuid.UUID, string, agentcmd.PerfConfigRequest) (agentcmd.PerfConfigResult, error) {
 	return agentcmd.PerfConfigResult{OK: true}, nil
 }
 func (a *fakeAgent) CacheEnable(context.Context, uuid.UUID, string, agentcmd.CacheEnableRequest) (agentcmd.CacheEnableResult, error) {
+	if a.cacheEnableErr != nil {
+		return agentcmd.CacheEnableResult{}, a.cacheEnableErr
+	}
 	return agentcmd.CacheEnableResult{OK: true, Detail: "enabled"}, nil
 }
 func (a *fakeAgent) CacheDisable(context.Context, uuid.UUID, string, agentcmd.CacheDisableRequest) (agentcmd.CacheDisableResult, error) {
+	if a.cacheDisableErr != nil {
+		return agentcmd.CacheDisableResult{}, a.cacheDisableErr
+	}
 	return agentcmd.CacheDisableResult{OK: true, Detail: "disabled"}, nil
 }
 func (a *fakeAgent) CachePurge(_ context.Context, _ uuid.UUID, _ string, req agentcmd.CachePurgeRequest) (agentcmd.CachePurgeResult, error) {
