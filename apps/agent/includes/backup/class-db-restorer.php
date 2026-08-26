@@ -91,9 +91,11 @@ final class DbRestorer
      *                                $tmpPrefix.
      * @param callable $progress     function(string $phase, array $detail): void
      * @return list<string> Names of the tmp tables that ended up populated.
-     * @throws \RuntimeException On fatal connection / read failure, or when
-     *      the dump's trailing fragment cannot be classified (see
-     *      looksLikeCommentOnly()) — aborting beats discarding SQL.
+     * @throws \RuntimeException On fatal connection / read failure; when the
+     *      dump's trailing fragment cannot be classified (see
+     *      looksLikeCommentOnly()) — aborting beats discarding SQL; and when a
+     *      statement's target table cannot be identified (see rewritePrefix())
+     *      — aborting beats replaying it at the live tables.
      */
     public function restore(string $sqlGzPath, string $tmpPrefix, string $sourcePrefix, callable $progress): array
     {
@@ -497,8 +499,19 @@ final class DbRestorer
                     'old_upload_url'   => '/# upload_url: (.*?) #/',
                     'old_table_prefix' => '/# table_prefix: (.*?) #/',
                 ];
+                // A preg_match() failure here is safe to absorb, unlike the
+                // one in rewritePrefix(). Nothing this method returns decides
+                // where data is written: the source/target table prefixes come
+                // from the CP params and the live $wpdb (RestoreRunner::
+                // sourcePrefix() / targetPrefix()), never from the banner. A
+                // missed banner field only leaves the OLD urls unknown, and the
+                // rewrite pass then falls back to the CP-supplied source_* URLs
+                // or short-circuits to a no-op — the restored site can end up
+                // still serving the source URLs, which is visible, recoverable
+                // and non-destructive. Failing the whole restore over an
+                // unreadable comment banner would be the worse trade.
                 foreach ($matchers as $key => $pattern) {
-                    if ($out[$key] === '' && preg_match($pattern, $line, $m)) {
+                    if ($out[$key] === '' && preg_match($pattern, $line, $m) === 1) {
                         $out[$key] = trim($m[1]);
                     }
                 }
@@ -1015,6 +1028,9 @@ final class DbRestorer
      * @param string $tmpPrefix    Replacement prefix (e.g. `tmpAB12_`).
      * @param string $currentTable In/out — current table name (updated).
      * @return string Rewritten statement. Empty string skips the statement.
+     * @throws \RuntimeException When PCRE cannot decide whether a statement
+     *      names a table — see the keyword loop below. Aborting beats
+     *      replaying an unrewritten statement against the LIVE tables.
      */
     public static function rewritePrefix(string $stmt, string $sourcePrefix, string $tmpPrefix, string &$currentTable): string
     {
@@ -1056,7 +1072,36 @@ final class DbRestorer
         ];
 
         foreach ($patterns as $p) {
-            if (!preg_match($p, $body, $m, PREG_OFFSET_CAPTURE)) {
+            // preg_match() has THREE outcomes and they are not interchangeable
+            // here: 1 = this statement names a table, 0 = it does not, false =
+            // PCRE gave up and we do not know. `!preg_match(...)` collapsed
+            // `false` into `0` — a PCRE failure was read as "no table name".
+            //
+            // That is the worst possible reading. Every pattern would fail the
+            // same way, the loop would fall through to the tail below, and the
+            // statement would be returned VERBATIM — still naming `wp_posts`
+            // instead of `tmp<rand>_posts`. The dump then replays straight
+            // into the LIVE tables, outside the staging discipline the tmp
+            // prefix exists to provide. $currentTable is never set either, so
+            // $touchedTbls stays empty, swap() takes its `$tmpTables === []`
+            // branch, emits 'done' => true, and the whole restore reports
+            // Completed having overwritten the live database and swapped
+            // nothing. The staging mechanism exists precisely so that a failed
+            // restore is non-destructive; this defeated it silently.
+            //
+            // "Cannot tell" must never resolve to "route it at the live
+            // tables". Abort: restore() never reaches its COMMIT, the caller
+            // fails the restore, and the live database is left alone.
+            $matched = preg_match($p, $body, $m, PREG_OFFSET_CAPTURE);
+            if ($matched === false) {
+                throw new \RuntimeException(
+                    'DbRestorer: cannot determine which table a dump statement targets (preg_match failed: '
+                    . esc_html(preg_last_error_msg()) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- thrown exception; message goes to server log/SSE, not browser output
+                    . '). Aborting the restore rather than replay unrewritten SQL against the live tables.'
+                    . ' Raise pcre.backtrack_limit / pcre.recursion_limit on this host and retry the restore.'
+                );
+            }
+            if ($matched === 0) {
                 continue;
             }
             $tableName = $m[2][0];
