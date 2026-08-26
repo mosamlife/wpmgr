@@ -37,12 +37,34 @@
  * It is ONLY written to META_SECRET by activatePendingSecret() when the user proves
  * a valid code. An abandoned setup never activates the secret.
  *
- * APPLICATION-PASSWORD BYPASS BLOCK (H1 fix):
- * WordPress Application Passwords authenticate via HTTP Basic or the
- * wp_authenticate_application_password filter WITHOUT firing wp_login,
- * so the interstitial hook above never sees them. For any user who requires
- * 2FA (or who has a non-email method enrolled), application-password auth is
- * rejected outright via the wp_authenticate_application_password filter.
+ * APPLICATION-PASSWORD BYPASS BLOCK (H1 fix; hook corrected for #523):
+ * WordPress Application Passwords authenticate over HTTP Basic WITHOUT firing
+ * wp_login, so the interstitial hook above never sees them. For any user who
+ * requires 2FA (or who has a non-email method enrolled), application-password
+ * auth is rejected.
+ *
+ * The interception point is core's wp_authenticate_application_password_errors
+ * ACTION (wp-includes/user.php), fired as
+ *     do_action( '...', $error, $user, $item, $password )
+ * once a supplied password has matched a stored application-password hash and
+ * before core records the password's use. Core documents it as the place "for
+ * plugins to add additional constraints to prevent an application password
+ * from being used": add to the passed WP_Error and core abandons the
+ * authentication and hands that error back to the caller. It is the only hook
+ * that fires on BOTH app-password entry points -- the `authenticate` filter
+ * chain and wp_validate_application_password() on determine_current_user --
+ * and it fires for no other credential type, so an ordinary wp-login.php form
+ * post never reaches it.
+ *
+ * There is no `wp_authenticate_application_password` FILTER. That name is a
+ * core function (wp-includes/user.php), which core registers on `authenticate`
+ * at priority 20 in wp-includes/default-filters.php. Until #523 the block was
+ * added to it as though it were a filter: add_filter() against a name nothing
+ * fires stores the callback, warns about nothing, and never invokes it, so the
+ * control had never executed on any site. Registration is asserted, and the
+ * hook dispatched with core's own argument list, in
+ * tests/Security/Site2faHookRegistrationTest.php.
+ *
  * The agent's own /wpmgr/v1 REST channel and the autologin path are
  * explicitly exempted -- they carry their own Ed25519 credential and never
  * rely on application passwords.
@@ -241,10 +263,15 @@ final class Site2faModule
         }
 
         // H1 fix: block application-password auth for 2FA-required users.
-        // This filter fires when WP resolves an HTTP-Basic / app-password credential.
-        // We gate it on twoFactorEnabled to avoid overhead when 2FA is off.
+        //
+        // wp_authenticate_application_password_errors is a core ACTION fired with
+        // ($error, $user, $item, $password) once a supplied password has matched a
+        // stored application-password hash; adding to $error makes core reject the
+        // credential. See the class docblock for why this is the interception point
+        // -- and for the filter name, corrected in #523, that core never fires.
+        // Gated on twoFactorEnabled to avoid overhead when 2FA is off.
         if ($has2fa) {
-            add_filter('wp_authenticate_application_password', [$this, 'blockAppPasswordFor2faUser'], 10, 5);
+            add_action('wp_authenticate_application_password_errors', [$this, 'blockAppPasswordFor2faUser'], 10, 4);
         }
 
         // XML-RPC block for 2FA users.
@@ -278,6 +305,21 @@ final class Site2faModule
      * Reject application-password authentication for users who require 2FA
      * or who have a non-email (real) 2FA method enrolled.
      *
+     * Registered on core's wp_authenticate_application_password_errors action
+     * (wp-includes/user.php), which core fires with ($error, $user, $item,
+     * $password) after the supplied password has matched a stored
+     * application-password hash. $error is a fresh WP_Error; if it carries any
+     * error when the action returns, core abandons the authentication and
+     * returns that WP_Error to the caller. WP_Error is an object, so mutating
+     * it here is what core observes -- this callback returns nothing, and a
+     * `return` is how it ALLOWS the credential.
+     *
+     * $item and $password are declared with defaults purely for robustness on
+     * hosts where some other plugin re-fires this action with a short argument
+     * list; core always passes all four. The declared arity (4) is asserted in
+     * tests/Security/Site2faHookRegistrationTest.php, because core slices the
+     * argument list down to it before calling.
+     *
      * EXEMPTED (must not be blocked):
      *  - The agent's own /wpmgr/v1 REST routes (Ed25519-signed; never use app passwords).
      *  - The autologin path (POST /wp-json/wpmgr/v1/autologin; also REST, also Ed25519).
@@ -287,89 +329,77 @@ final class Site2faModule
      * password-equivalent credentials and bypass wp_login entirely, so the 2FA
      * interstitial never fires for them.
      *
-     * @param \WP_Error|\WP_User|null $user        Result from earlier authenticate filters.
-     * @param \WP_User|false          $inputUser   Resolved user (or false).
-     * @param string                  $appPassword The raw application password.
-     * @param array<mixed>|null       $item        Application-password DB record.
-     * @param \WP_REST_Request|null   $request     The current REST request.
-     * @return \WP_Error|\WP_User|null
+     * @param mixed $error    WP_Error collecting extra constraints; mutated in place.
+     * @param mixed $user     WP_User the application password belongs to.
+     * @param mixed $item     Application-password DB record.
+     * @param mixed $password The raw application password (unused; never logged or stored).
+     * @return void
      */
     public function blockAppPasswordFor2faUser(
+        mixed $error,
         mixed $user,
-        mixed $inputUser,
-        string $appPassword,
-        ?array $item,
-        mixed $request
-    ): mixed {
-        // If a prior filter already produced an error, pass it through.
-        if (is_a($user, 'WP_Error')) {
-            return $user;
-        }
-
-        // Resolve the user we will be acting on.
-        $resolvedUser = ($user instanceof \WP_User) ? $user : $inputUser;
-        if (!($resolvedUser instanceof \WP_User)) {
-            return $user;
+        mixed $item = null,
+        mixed $password = ''
+    ): void {
+        // The action's whole contract is mutation of a WP_Error for a WP_User.
+        // Anything else is a caller that is not core: do nothing rather than guess.
+        if (!($error instanceof \WP_Error) || !($user instanceof \WP_User)) {
+            return;
         }
 
         // Exempt the agent's own REST namespace (/wpmgr/v1/*). Those routes
         // are authenticated via Ed25519 signatures at the REST permission callback
-        // and never reach application-password resolution.
-        if ($this->isAgentRestRequest($request)) {
-            return $user;
+        // and never rely on application passwords.
+        if ($this->isAgentRestRequest()) {
+            return;
         }
 
         // Block if the user requires 2FA.
-        if ($this->policy->requires2fa($resolvedUser)) {
-            return new \WP_Error(
+        if ($this->policy->requires2fa($user)) {
+            $error->add(
                 'wpmgr_2fa_app_password_blocked',
                 esc_html__('Application passwords are disabled for accounts that require two-factor authentication. Use an alternative authentication method.', 'wpmgr-agent')
             );
+            return;
         }
 
         // Block if the user has any non-email 2FA method enrolled.
         // Email is intentionally excluded: it is always "configured" for any user
         // with an email address and therefore cannot indicate deliberate 2FA enrollment.
-        if ($this->hasNonEmailMethodConfigured($resolvedUser)) {
-            return new \WP_Error(
+        if ($this->hasNonEmailMethodConfigured($user)) {
+            $error->add(
                 'wpmgr_2fa_app_password_blocked',
                 esc_html__('Application passwords are disabled for accounts with two-factor authentication enrolled. Use an alternative authentication method.', 'wpmgr-agent')
             );
         }
-
-        return $user;
     }
 
     /**
-     * Check whether the current REST request targets the agent's own namespace.
+     * Check whether the current request targets the agent's own REST namespace.
      * The agent's /wpmgr/v1 routes are exempted from app-password blocking.
      *
-     * @param mixed $request The WP_REST_Request or null.
+     * REQUEST_URI is the only signal available here: core fires
+     * wp_authenticate_application_password_errors with no WP_REST_Request, and
+     * on the determine_current_user path REST routing has not run yet, so
+     * neither a WP_REST_Request nor the REST_REQUEST constant exists to consult.
+     * Both URI forms carry the namespace as a literal path segment
+     * (/wp-json/wpmgr/v1/... and ?rest_route=/wpmgr/v1/...), and the rest_route
+     * form is checked decoded as well because a client may percent-encode it.
+     *
      * @return bool
      */
-    private function isAgentRestRequest(mixed $request): bool
+    private function isAgentRestRequest(): bool
     {
-        // WP_REST_Request carries the route; check it if available.
-        if ($request instanceof \WP_REST_Request) {
-            $route = '';
-            if (method_exists($request, 'get_route')) {
-                $route = (string) $request->get_route();
-            }
-            if (str_contains($route, '/wpmgr/v1/')) {
-                return true;
-            }
+        if (!isset($_SERVER['REQUEST_URI']) || !is_string($_SERVER['REQUEST_URI'])) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- presence/type check only; sanitized below
+            return false;
         }
 
-        // Fallback: inspect the request URI directly (for edge cases where
-        // WP_REST_Request is not passed through by the caller).
-        if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- read-only check; sanitized on next line
-            $uri = sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI']));
-            if (str_contains($uri, '/wpmgr/v1/')) {
-                return true;
-            }
+        $uri = sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized on this line
+        if (str_contains($uri, '/wpmgr/v1/')) {
+            return true;
         }
 
-        return false;
+        return str_contains(rawurldecode($uri), '/wpmgr/v1/');
     }
 
     /**
