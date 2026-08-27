@@ -295,6 +295,23 @@ a diff against the immediately prior version — field-level (added/removed
 list entries) for restriction fields, line-level for guidance fields, since
 those are the natural units of change for each kind.
 
+**A diff is only ever computed between two versions stamped to the same
+organisation.** A version whose immediately prior row carries a different
+organisation stamp has no eligible predecessor for diff purposes and is
+rendered as a baseline instead: nothing computed, nothing to compare, never
+a diff against a version the requester may not be entitled to see. This
+covers two cases the same way: the first version a site has after a
+transfer to a new organisation (Decision 12), where the immediately prior
+row is the last one the previous organisation wrote, and, at the other end
+of history, the very first version an organisation or site ever has, which
+has no prior row of any kind. Both render identically — a baseline entry,
+not a computed diff — because both are the same fact: nothing behind this
+version belongs to the story the requester is entitled to read. This is a
+property of what "diff" means over this schema, not a permission check
+layered onto it afterward: the operation is defined not to reach across an
+organisation-stamp boundary, the same way a direct read of a row on the
+far side of one already can't (Decision 12).
+
 Restore never mutates history. Restoring version N creates a new version
 whose snapshot equals version N's, attributed to the principal who asked
 for the restore, with provenance recorded as `restore` and a pointer to the
@@ -535,21 +552,22 @@ destination-organisation principal — however much fleet visibility it has
 over the site going forward — can list or view only versions stamped with
 its own organisation id, starting at the transfer.
 
-**`diff` checks the stamp on both sides of the comparison, not only the
-requested version.** A diff is always computed against the immediately
-prior version (Decision 5), and the transfer's own cleared version is, by
-construction, immediately preceded by the last version the source
-organisation wrote — so a naive diff of the first destination-stamped
-version would render that prior, sealed, source-stamped snapshot as
-"everything removed," disclosing its full content through the diff's
-comparison side even though direct list, item, and restore access to it is
-sealed. This is the same shape of leak the sealing above exists to close,
-reached by a different route, so the same rule applies: if the immediately
-prior version's stamp differs from the requested version's, `diff` refuses
-with a typed reason naming the transfer boundary, the same way `restore`
-already refuses below, rather than silently computing a comparison that
-leaks a sealed version's content through its "removed" side. Pre-transfer
-versions are **retained, never deleted**: the same append-only, no-TTL
+**The transfer's own cleared version is a baseline, not a diff target,
+by Decision 5's general rule.** A diff is always computed against the
+immediately prior version, and that cleared version's immediately prior
+row is, by construction, the last one the source organisation wrote — a
+different stamp. Decision 5 already defines what that means: no eligible
+predecessor, rendered as a baseline, not a computed comparison. Nothing
+adjacent has to special-case the transfer for this to hold — it falls out
+of "diff never crosses an organisation-stamp boundary" being a property of
+the operation itself, applied here rather than invented here. Getting this
+right matters specifically because the alternative failure is quiet: a
+comparison that rendered the sealed predecessor's full content as
+"everything removed" would disclose exactly what the sealing above exists
+to withhold, through a route — the diff view embedded in an ordinary
+list — nobody would think to check separately from the read access it
+looks like it's respecting. Pre-transfer versions are **retained, never
+deleted**: the same append-only, no-TTL
 posture the Retention paragraph above already takes for everything else in
 this history, and for the same kind of reason Decision 7 already gives the
 audit log — a durable record kept for accountability is not the same claim
@@ -664,13 +682,14 @@ latest version's full snapshot to build the new version's snapshot, so
 history and diff always operate on complete snapshots rather than deltas
 of deltas.
 
-For a site, the list, item, and diff history routes are additionally
-scoped to versions stamped with the site's current organisation once a
-transfer has occurred (Decision 12): a pre-transfer version is retained
-but excluded from list and item, and `diff` additionally refuses whenever
-the immediately prior version it would compare against carries a different
-stamp, rather than rendering that version's content through the
-comparison. `restore` against a pre-transfer version id
+For a site, the list and item history routes are additionally scoped to
+versions stamped with the site's current organisation once a transfer has
+occurred (Decision 12): a pre-transfer version is retained but excluded
+from both. `diff` follows Decision 5's general rule rather than a
+transfer-specific carve-out: a version whose immediately prior row carries
+a different stamp has no eligible predecessor and renders as a baseline,
+never a computed comparison against a version on the other side of the
+boundary. `restore` against a pre-transfer version id
 is refused unconditionally, for any caller.
 
 Error contracts, all with a machine-readable reason code:
@@ -900,11 +919,11 @@ explicitly rather than drift into it unannounced.
   forbids is refused at dispatch even when the fenced context the model was
   handed contained no hint of the restriction's wording (Decision 4); after
   a simulated site transfer, a principal in the destination organisation can
-  list only post-transfer versions, `diff` on the first post-transfer
-  version against its sealed, source-stamped predecessor is refused rather
-  than rendering that predecessor's content as "removed," and any restore
-  of a pre-transfer version id is refused for every caller, source
-  organisation included (Decision 12); two concurrent runs against the same site,
+  list only post-transfer versions, the first post-transfer version's
+  `diff` renders as a baseline rather than a computed comparison against
+  its sealed, source-stamped predecessor, and any restore of a
+  pre-transfer version id is refused for every caller, source organisation
+  included (Decision 12); two concurrent runs against the same site,
   supplied with different layer-6 session inputs, resolve to different
   effective context and neither run's session content appears in the
   other's result or in the cached layers either one reads (Decision 2 and
@@ -932,11 +951,12 @@ explicitly rather than drift into it unannounced.
   `apps/api/db/query/sites.sql` reassigns a site's organisation, no file
   under `apps/api/internal/site/` or `apps/api/internal/org/` implements
   one, and no other ADR or `CHANGELOG.md` entry describes one. Decision
-  12's transfer rules (clear the site layer, stamp and seal history,
-  refuse a boundary-crossing `diff` or `restore`) are a contract for
-  whatever eventually calls them, not a hook into something already
-  running — they have nothing to run against, and are untestable end to
-  end, until a real transfer mechanism exists and invokes them.
+  12's transfer rules (clear the site layer, stamp and seal history, treat
+  a stamp-boundary version as a diff baseline per Decision 5, refuse a
+  cross-boundary `restore`) are a contract for whatever eventually calls
+  them, not a hook into something already running — they have nothing to
+  run against, and are untestable end to end, until a real transfer
+  mechanism exists and invokes them.
 
 ---
 
