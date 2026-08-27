@@ -529,11 +529,26 @@ version row's organisation id is stamped at write time and never rewritten
 (Decision 3), the transfer's own cleared version is the first row stamped
 with the destination organisation, and every row before it stays stamped
 with the source organisation permanently. Decision 13's history routes
-authorize list, item, diff, and restore against a version row's *stamped*
+authorize list, item, and restore against a version row's *stamped*
 organisation, not against the site's current one, so a
 destination-organisation principal — however much fleet visibility it has
-over the site going forward — can list, view, or diff only versions
-stamped with its own organisation id, starting at the transfer. Pre-transfer
+over the site going forward — can list or view only versions stamped with
+its own organisation id, starting at the transfer.
+
+**`diff` checks the stamp on both sides of the comparison, not only the
+requested version.** A diff is always computed against the immediately
+prior version (Decision 5), and the transfer's own cleared version is, by
+construction, immediately preceded by the last version the source
+organisation wrote — so a naive diff of the first destination-stamped
+version would render that prior, sealed, source-stamped snapshot as
+"everything removed," disclosing its full content through the diff's
+comparison side even though direct list, item, and restore access to it is
+sealed. This is the same shape of leak the sealing above exists to close,
+reached by a different route, so the same rule applies: if the immediately
+prior version's stamp differs from the requested version's, `diff` refuses
+with a typed reason naming the transfer boundary, the same way `restore`
+already refuses below, rather than silently computing a comparison that
+leaks a sealed version's content through its "removed" side. Pre-transfer
 versions are **retained, never deleted**: the same append-only, no-TTL
 posture the Retention paragraph above already takes for everything else in
 this history, and for the same kind of reason Decision 7 already gives the
@@ -552,10 +567,19 @@ never met with "it's gone," but meeting that need runs through whatever
 privileged path this codebase already uses to read data no ordinary
 capability reaches, not through a route this ADR adds. **If the source
 organisation wants its own durable copy of its pre-transfer history, the
-Export path above is how** — taken before the transfer completes, while it
-still holds `context.site.read`, using the same read endpoints Export
-already calls; this ADR adds no new export mechanism for the case, only
-notes that the existing one has a deadline here it does not have elsewhere.
+concrete mechanism is the read endpoints in Decision 13 themselves** — `GET
+.../context/versions` and its item and diff routes — called directly,
+before the transfer completes, while `context.site.read` still holds; this
+is not the broader account-data export tool the Export paragraph above
+names as conditional on ever being built, because pointing at that tool
+specifically would overclaim a mechanism this codebase does not confirm
+exists. **Nothing in this ADR, or in the
+site-transfer workflow, guarantees that copy is actually taken before
+access is revoked** — transfer does not wait on it, prompt for it, or
+block on it, and whether it should is a site-transfer workflow question
+this ADR does not own (the transfer operation itself predates this ADR
+and is not being redesigned here); recorded as a named open question below
+rather than answered by assuming a mechanism this ADR would have to invent.
 Pre-transfer versions are also **sealed against restore**: `restore` on a
 pre-transfer version id is refused outright and unconditionally, for every
 caller, including a principal in the original authoring organisation,
@@ -615,7 +639,10 @@ of deltas.
 For a site, the list, item, and diff history routes are additionally
 scoped to versions stamped with the site's current organisation once a
 transfer has occurred (Decision 12): a pre-transfer version is retained
-but excluded from all three. `restore` against a pre-transfer version id
+but excluded from list and item, and `diff` additionally refuses whenever
+the immediately prior version it would compare against carries a different
+stamp, rather than rendering that version's content through the
+comparison. `restore` against a pre-transfer version id
 is refused unconditionally, for any caller.
 
 Error contracts, all with a machine-readable reason code:
@@ -845,9 +872,11 @@ explicitly rather than drift into it unannounced.
   forbids is refused at dispatch even when the fenced context the model was
   handed contained no hint of the restriction's wording (Decision 4); after
   a simulated site transfer, a principal in the destination organisation can
-  list and diff only post-transfer versions, and any restore of a
-  pre-transfer version id is refused for every caller, source organisation
-  included (Decision 12); two concurrent runs against the same site,
+  list only post-transfer versions, `diff` on the first post-transfer
+  version against its sealed, source-stamped predecessor is refused rather
+  than rendering that predecessor's content as "removed," and any restore
+  of a pre-transfer version id is refused for every caller, source
+  organisation included (Decision 12); two concurrent runs against the same site,
   supplied with different layer-6 session inputs, resolve to different
   effective context and neither run's session content appears in the
   other's result or in the cached layers either one reads (Decision 2 and
@@ -901,3 +930,17 @@ ADR as Proposed; both block it moving to **Accepted**.
    unmade is this ADR's job; the wire format is not. **Owner:**
    `backend-architect`, to decide and land before Decision 13's `PATCH`
    routes are built, not discovered after a concurrent-write incident.
+3. **Should site transfer require or prompt a pre-transfer copy of the
+   site's context history?** Decision 12 seals pre-transfer context from
+   the destination and closes the source organisation's own ordinary
+   access to it at the same moment transfer completes (see Site transfer,
+   above); the one way to keep an accessible copy is calling Decision 13's
+   read endpoints before that moment. Nothing today makes that happen —
+   the site-transfer operation itself predates this ADR, is not being
+   redesigned here, and this document does not own its workflow. Whether
+   transfer should block on, prompt for, or simply document this loss is a
+   transfer-workflow decision, not a context decision. **Owner:** whoever
+   owns the site-transfer workflow, to decide before this ADR's transfer
+   behaviour ships, since shipping it silently would be the first time an
+   organisation discovers the cutoff is by losing data it did not know to
+   copy.
