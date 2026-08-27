@@ -190,6 +190,20 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# GH #547: the agent declared MIT in its plugin header and GPLv2 or later in
+# the wp.org readme.txt at the same time. This reconciles every place in
+# apps/agent (plus the repo-root LICENSE-AGENT carve-out) that names the
+# agent's own license, by name, and fails if any is missing or any two
+# disagree. check-licenses-test is the guard's own regression suite; run it
+# after editing the guard.
+.PHONY: check-licenses
+check-licenses: ## Check every license-naming surface in the agent plugin
+	scripts/check-license-surfaces.sh
+
+.PHONY: check-licenses-test
+check-licenses-test: ## Run the license surface guard's regression suite
+	scripts/check-license-surfaces_test.sh
+
 # scripts/check-rls-cross-tenant.sh (GH #470) reconciles every cross-tenant RLS
 # policy against apps/api/db/rls-cross-tenant-policies.txt, the ledger that
 # says which access mode each one is MEANT to have. Run this before merging
