@@ -418,6 +418,31 @@ CREATE POLICY sites_client_read ON sites
           AND cl.archived_at IS NULL
     ));
 
+-- sites_site_scope (m19) — the RESTRICTIVE site-scope gate. Referred to by
+-- name three times in the comments above; declared here as of GH #470, having
+-- been live in every database since m19 and absent from this file until now.
+-- RESTRICTIVE, so it AND-combines with every permissive policy above and can
+-- only narrow: it is what stops sites_shared_read or sites_client_read
+-- widening a site-scoped principal's reach.
+CREATE POLICY sites_site_scope ON sites
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- users
 -- ---------------------------------------------------------------------------
@@ -967,6 +992,29 @@ CREATE POLICY agent_nonces_agent ON agent_nonces
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- agent_nonces_site_scope (m19) — RESTRICTIVE site-scope gate. Live since m19,
+-- declared here as of GH #470. See the note on update_tasks_site_scope for why
+-- the absence mattered: it made this file answer "not site-scoped" to a
+-- question where that is the dangerous direction to be wrong in.
+CREATE POLICY agent_nonces_site_scope ON agent_nonces
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- update_runs  (M3 — bulk plugin/theme/core updates with rollback)
 -- ---------------------------------------------------------------------------
@@ -1151,6 +1199,39 @@ CREATE POLICY update_tasks_tenant_isolation ON update_tasks
 CREATE POLICY update_tasks_agent ON update_tasks
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- update_tasks_site_scope (m19) — the RESTRICTIVE site-scope gate every
+-- site-keyed table carries. RESTRICTIVE, so it AND-combines with the
+-- permissive policies above and can only ever narrow, never grant: when
+-- app.site_scope is 'on' (set by InScopedTenantTx for a site-scoped
+-- principal) a row is reachable only if its site_id is in
+-- app.allowed_site_ids. When the GUC is unset the first disjunct is true and
+-- the policy is inert, so unscoped paths are unaffected.
+--
+-- DECLARED HERE AS OF GH #470. It has been live in every database since m19,
+-- and the m118 and m119 headers both refer to it by name, but this file never
+-- declared it — so grepping this file to decide whether update_tasks was
+-- site-scoped returned nothing and concluded it was not. That is the exact
+-- opposite of the truth, in the wrong direction for a tenant-boundary
+-- question. The migrations are authoritative; this file follows them.
+CREATE POLICY update_tasks_site_scope ON update_tasks
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- backup_chunks  (M4 — incremental, content-addressed dedup + GC)

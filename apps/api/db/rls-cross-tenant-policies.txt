@@ -1,0 +1,218 @@
+# apps/api/db/rls-cross-tenant-policies.txt
+#
+# Every RLS policy in this database that grants access ACROSS tenants, with the
+# access mode it is meant to have recorded as a DECISION rather than left to a
+# default nobody typed.
+#
+# Checked by scripts/check-rls-cross-tenant.sh against a live pg_policies.
+# Regression suite: scripts/check-rls-cross-tenant_test.sh.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE EXISTS (GH #470)
+# ---------------------------------------------------------------------------
+#
+# `CREATE POLICY` defaults to `FOR ALL`. A policy that is correctly FOR ALL and
+# one that is wrongly FOR SELECT are visually identical, because the clause the
+# bug turns on is the one nobody writes. Under FORCE ROW LEVEL SECURITY a
+# FOR SELECT policy admits the read and admits nothing to the write, so an
+# UPDATE or DELETE on that path matches ZERO ROWS WITH NO ERROR. PostgreSQL
+# applies the UPDATE policy to SELECT ... FOR UPDATE as well, so even the
+# locking read comes back empty.
+#
+# Not a failure -- a silence. It has shipped three times:
+#   m84/#96    backup_schedules   every backup schedule stopped advancing
+#   m89/#131   update_tasks       the stale-task reaper swept nothing
+#   m118/#463  update_runs        the deferred dispatcher claimed nothing
+#
+# Two of those post-mortems are written into db/schema.sql, next to the
+# policies they are about.
+#
+# The other half of #470 is that the construct is NOT CONSISTENTLY NAMED, so an
+# audit that greps a naming convention returns FALSE NEGATIVES -- the direction
+# that costs a tenant boundary. Run the guard and read the NAMING section: it
+# counts the variants against the live database rather than quoting a number
+# here that would rot. One of the outliers is backup_schedules_scheduler, which
+# IS the m84/#96 fix, so a name-based sweep misses the very policy the first
+# post-mortem is about.
+#
+# The guard therefore never greps a name. It enumerates from pg_policies and
+# classifies on the GUC each policy's expression tests.
+#
+# ---------------------------------------------------------------------------
+# WHAT COUNTS AS CROSS-TENANT
+# ---------------------------------------------------------------------------
+#
+# A PERMISSIVE policy whose USING expression does not bind tenant_id to
+# app.tenant_id. That is a property of the expression, not of the name.
+#
+# RESTRICTIVE policies are excluded deliberately: a restrictive policy can only
+# narrow the row set, never grant one. The site_scope policies are restrictive
+# and do not mention app.tenant_id, so a classifier that ignored `permissive`
+# would flag all of them as cross-tenant grants and bury the real signal.
+#
+# ---------------------------------------------------------------------------
+# FORMAT
+# ---------------------------------------------------------------------------
+#
+#   table|policy|guc|cmd|ops|rationale
+#
+# guc   The settings the policy's USING/WITH CHECK expressions read, sorted and
+#       comma-joined. '-' when the expression reads none (USING (true)).
+#       This is the field the audit is built on.
+#
+# cmd   The access mode the policy is MEANT to have: ALL, SELECT, INSERT,
+#       UPDATE or DELETE. The guard fails if the database disagrees, in either
+#       direction -- a policy that drifted, or a ledger edited without the
+#       migration.
+#
+# ops   The operations the code path behind this policy actually performs,
+#       comma-joined, from: select insert update delete lock
+#
+#       The guard fails when `cmd` does not cover `ops` -- that is the #96 bug,
+#       written down in the file rather than waiting to be noticed. `lock`
+#       means SELECT ... FOR UPDATE/SHARE and is covered only by ALL or UPDATE,
+#       because PostgreSQL applies the UPDATE policy to a locking read.
+#
+#       '-' means the path was not audited operation by operation. It is ONLY
+#       legal on a FOR ALL policy, where every verb is admitted and the
+#       silence cannot arise. The guard rejects '-' on any narrower mode: a
+#       policy narrower than ALL has to carry the evidence that the narrowing
+#       is safe.
+#
+# ---------------------------------------------------------------------------
+# THE DECISION ON STATING `FOR ALL` EXPLICITLY (#470 item 3)
+# ---------------------------------------------------------------------------
+#
+# The issue asks whether `FOR ALL` should be written out everywhere so a
+# reviewer sees the clause instead of inferring the default. Recorded answer:
+#
+#   * NEW migrations state the mode explicitly, always. m118 already does, and
+#     that is the standard from here.
+#
+#   * Existing policies are NOT rewritten just to add the word. An applied
+#     migration is immutable, so "everywhere" would mean a new migration that
+#     DROPs and reCREATEs most of the cross-tenant policies in this file for a
+#     purely cosmetic change -- a large, irreversible, self-inflicted diff over
+#     the tenant boundary, taking real locks at boot inside main(), to make a
+#     default visible.
+#
+#   * This file is what makes the mode visible instead, and unlike a clause in
+#     a migration it is CHECKED against the live database on every run. A
+#     migration's text is history; this is the current state, reconciled.
+#
+# Reviewed by security-reviewer as part of #470.
+#
+# ---------------------------------------------------------------------------
+# ADDING A ROW
+# ---------------------------------------------------------------------------
+#
+# When the guard reports a policy that is in no ledger row, do not just paste
+# the line it prints. Answer the question first: does anything running under
+# that GUC write to that table, or take a row lock on it? Then record the
+# answer. The value of this file is that somebody had to look.
+#
+# columns: table|policy|guc|cmd|ops|rationale
+agent_activity_log|agent_activity_log_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+agent_diagnostics|agent_diagnostics_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+agent_login_events|agent_login_events_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+agent_nonces|agent_nonces_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+agent_php_errors|agent_php_errors_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+alert_configs|alert_configs_evaluator|app.agent|SELECT|select|uptime/repo.go:652 ListAlertConfigsAllTenants reads every tenant's config for the evaluator; UpsertAlertConfig writes under InTenantTx (repo.go:690)
+api_keys|api_keys_prefix_lookup|app.apikey_lookup|SELECT|select|apikey/apikey.go:366 resolves a key by its unique prefix before the tenant is known; the last_used_at stamp is tenant-keyed (db/query/api_keys.sql:52) and runs under InTenantTx
+audit_log|audit_log_agent|app.agent|SELECT|select|admin billing panel reads only; the sole INSERT path is audit.go:479 via appendLocked, whose tx is InTenantTx (audit.go:507). UPDATE/DELETE are REVOKEd from wpmgr_app (m1) and the m35 purge runs SECURITY DEFINER under tenant scope
+autologin_policies|autologin_policies_agent|app.agent|SELECT|select|autologin/repo.go:155 GetPolicyForAgent reads; both writers run under InTenantTx (repo.go:87, :103)
+autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update|autologin/repo.go:127 ConsumeToken issues the consuming UPDATE under InAgentTx; this policy is FOR UPDATE precisely so that write is not silently zero-rowed
+autologin_tokens|autologin_tokens_agent|app.agent|SELECT|select|agent-side token read; the consume UPDATE has its own FOR UPDATE policy below
+backup_chunks|backup_chunks_agent|app.agent|SELECT|select|tenant_reclaim_worker.go:794 ChunkRowsExist and billing_repo.go:138 read; every chunk write (repo.go:1029, :1763, :1787 and the sqlc upsert/refcount/delete set) runs under InTenantTx or inTenantTxOnConn, and the only FOR UPDATE (repo.go:1643) is tenant-scoped
+backup_file_index|backup_file_index_agent|app.agent|SELECT|select|no InAgentTx closure references this table at all; both INSERTs (repo.go:1811, :2215) run under InTenantTx
+backup_schedule_runs|backup_schedule_runs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+backup_schedules|backup_schedules_scheduler|app.agent|ALL|select,update,lock|THIS IS THE m84/#96 FIX. The scheduler enumerates due schedules, claims them with FOR UPDATE and advances next_run_at, all inside InAgentTx. It shipped as FOR SELECT and every backup schedule stopped advancing, silently, because PostgreSQL applies the UPDATE policy to the locking read as well. Note the name: a grep for the '_agent' convention does not find this policy at all
+backup_snapshots|backup_snapshots_gc|app.agent|SELECT|select|the retention GC enumerates prunable snapshots cross-tenant (repo.go:752, :2862; main.go:1719) and then prunes per tenant under InTenantTx; no locking read runs under app.agent
+billing_events|billing_events_system|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+cache_purge_audit|cache_purge_audit_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+client_members|client_members_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+client_members|client_members_self_read|app.user_id|SELECT|select|a user reading the client rows they are a member of
+clients|clients_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+clients|clients_member_read|app.user_id|SELECT|select|a user reading the clients they are a member of
+email_alert_state|email_alert_state_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+email_log|email_log_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+email_notify_settings|email_notify_settings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+email_suppression|email_suppression_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+email_verification_tokens|email_verification_tokens_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+email_webhook_events|email_webhook_events_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+file_transfers|file_transfers_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+font_results|font_results_agent_access|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+font_transcode_results|agent_access|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+generated_reports|generated_reports_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+instance_settings|instance_settings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+invitations|invitations_token_lookup|app.invite_lookup|SELECT|select|invitation/service.go:193 resolves an invitation by token hash on the public accept endpoint, before any session exists; accepting it writes under InTenantTx
+media_optimization_jobs|media_optimization_jobs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+media_variant_results|media_variant_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+memberships|memberships_agent|app.agent|SELECT|select|org/delete_handler.go:245 DELETEs a membership inside an InAgentTx closure, but sets app.tenant_id at :242 first so memberships_tenant_isolation authorises it; this policy stays SELECT-only deliberately, because widening it to FOR ALL would grant cross-tenant membership deletion
+memberships|memberships_self_read|app.user_id|SELECT|select|a user reading their own membership rows
+pairing_codes|pairing_codes_enroll|app.enroll|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+password_reset_tokens|password_reset_tokens_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+plugin_signatures|plugin_signatures_read|-|SELECT|select|a public reference table; USING (true), no setting tested, read-only for everyone
+report_schedules|report_schedules_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+restore_run_events|restore_run_events_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+restore_runs|restore_runs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+rucss_jobs|rucss_jobs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+rucss_results|rucss_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+rum_events_raw|rum_events_raw_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|the anonymous browser beacon write path; FOR INSERT is the whole grant, and WITH CHECK pins tenant_id and site_id so a wrong id is refused by the database
+rum_rollup_daily|rum_rollup_daily_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|as rum_events_raw_rum_ingest
+rum_rollup_hourly|rum_rollup_hourly_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|as rum_events_raw_rum_ingest
+scan_findings|scan_findings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+scan_run_hashes|scan_run_hashes_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+scan_runs|scan_runs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_alert_state|site_alert_state_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_app_alert_state|site_app_alert_state_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_cache_hit_ratio_history|site_cache_hit_ratio_history_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_cache_stats|site_cache_stats_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_connection_history|conn_history_enroll|app.enroll|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_db_clean_results|site_db_clean_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_db_scan_results|site_db_scan_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_db_size_history|site_db_size_history_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_destinations|site_destinations_agent|app.agent|SELECT|select|internal/sitedestination/repo.go contains no InAgentTx call at all; all six methods use InTenantTx
+site_email_config|site_email_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_email_connection|site_email_connection_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_email_log|site_email_log_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_error_config|site_error_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_events|site_events_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_file_baseline|site_file_baseline_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_file_manager|site_file_manager_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_incidents|site_incidents_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_login_brand|site_login_brand_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_managed_files|site_managed_files_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_media_assets|site_media_assets_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_media_settings|site_media_settings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_object_cache_config|site_object_cache_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_object_cache_stats_history|site_object_cache_stats_history_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_object_reclaim|site_object_reclaim_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_perf_config|site_perf_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_perf_config|site_perf_config_rum_lookup|app.rum_lookup|SELECT|select|rum/beacon.go:77 resolves a beacon key hash to its site before the tenant is known
+site_screenshots|site_screenshots_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_security_bans|site_security_bans_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_security_config|site_security_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_security_hardening_config|site_security_hardening_config_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_security_policy_groups|site_security_policy_groups_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_security_policy|site_security_policy_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_shares|site_shares_self_read|app.user_id|SELECT|select|a user reading the site shares granted to them
+site_tags|site_tags_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_uptime_daily|site_uptime_daily_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_uptime_probes|site_uptime_probes_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_uptime_status|site_uptime_status_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+site_vulnerabilities|site_vulnerabilities_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+sites|sites_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+sites|sites_client_read|app.user_id|SELECT|select|a user reading sites through their client membership
+sites|sites_enroll|app.enroll|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+sites|sites_shared_read|app.user_id|SELECT|select|a user reading sites shared with them
+smtp_settings|smtp_settings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+tenant_app_alert_breaker|tenant_app_alert_breaker_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+tenant_object_reclaim|tenant_object_reclaim_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+trusted_devices|trusted_devices_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+two_factor_challenges|two_factor_challenges_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+update_runs|update_runs_agent|app.agent|ALL|select,update,lock|THIS IS THE m118/GH #463 FIX. The deferred dispatcher scans due runs and CLAIMS them ('scheduled' -> 'dispatching') under InAgentTx (update/dispatch_repo.go:181, :223, :267); ExpireDueRun terminalises a run and its tasks in one agent transaction. m3 shipped only tenant_isolation, so a cross-tenant tick satisfied no policy and claimed nothing, silently
+update_tasks|update_tasks_agent|app.agent|ALL|select,update|THIS IS THE m89/#131 FIX. The stale-task reaper sweeps every tenant in one pass (update/repo.go:561 ListStaleUpdateTasks) and ExpireDueRun expires the run's undispatched tasks in the same agent transaction (update/dispatch_repo.go:223). M3 shipped only tenant_isolation and the sweep found nothing
+user_recovery_codes|user_recovery_codes_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+webauthn_credentials|webauthn_credentials_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
+webauthn_registration_sessions|webauthn_registration_sessions_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
