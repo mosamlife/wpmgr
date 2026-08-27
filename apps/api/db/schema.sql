@@ -1,8 +1,24 @@
--- WPMgr database schema — single source of truth.
+-- WPMgr database schema — sqlc's input, and a reading copy of the end state.
 --
--- This file is consumed by BOTH sqlc (query codegen) and Atlas (versioned
--- migration diffing). Keep it declarative: it describes the desired end state
--- of the schema, not incremental changes.
+-- THIS FILE IS NOT AUTHORITATIVE, AND CALLING IT THE SINGLE SOURCE OF TRUTH
+-- (as this line did until GH #470) is what made the drift below dangerous.
+-- apps/api/migrations/*.sql is what actually runs, in lexical order, inside
+-- main() at boot. This file is consumed by sqlc for query codegen and by Atlas
+-- for migration diffing, and it lags the migrations.
+--
+-- The lag is not cosmetic when the missing statement is a POLICY. Grepping
+-- this file to decide whether a table is tenant- or site-scoped returns
+-- nothing for a table that is in fact protected, and "no policy found" reads
+-- as "unprotected" — the opposite of the truth, in the direction that costs a
+-- tenant boundary. GH #470 declared 11 RESTRICTIVE site_scope policies here
+-- that had been live in every database since m19 and were absent from this
+-- file. Others are still missing, for tables this file does not declare at
+-- all; see apps/api/db/rls-cross-tenant-policies.txt and
+-- scripts/check-rls-cross-tenant.sh, which reconcile against a live
+-- pg_policies rather than against this text.
+--
+-- Keep it declarative: it describes the desired end state of the schema, not
+-- incremental changes.
 --
 -- Multi-tenancy is enforced at the database layer via Postgres Row-Level
 -- Security (RLS). Every tenant-scoped table has RLS enabled with a policy
@@ -1680,6 +1696,28 @@ CREATE POLICY backup_snapshots_gc ON backup_snapshots
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
 
+-- backup_snapshots_site_scope (m19) — RESTRICTIVE site-scope gate. Live since
+-- m19, declared here as of GH #470. See update_tasks_site_scope for why the
+-- absence mattered.
+CREATE POLICY backup_snapshots_site_scope ON backup_snapshots
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- backup_file_index  (m44 — per-file delta tracking for incremental backups)
 -- ---------------------------------------------------------------------------
@@ -1755,6 +1793,35 @@ CREATE POLICY backup_manifest_entries_tenant_isolation ON backup_manifest_entrie
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 
+-- backup_manifest_entries_site_scope (m19) — RESTRICTIVE site-scope gate. Live
+-- since m19, declared here as of GH #470. Unlike its siblings this table has
+-- no site_id of its own, so it reaches the site through its snapshot; the
+-- subquery is the predicate m19 actually installed, not a paraphrase.
+CREATE POLICY backup_manifest_entries_site_scope ON backup_manifest_entries
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR snapshot_id IN (
+            SELECT backup_snapshots.id FROM backup_snapshots
+            WHERE backup_snapshots.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR snapshot_id IN (
+            SELECT backup_snapshots.id FROM backup_snapshots
+            WHERE backup_snapshots.site_id = ANY (
+                string_to_array(
+                    nullif(current_setting('app.allowed_site_ids', true), ''), ','
+                )::uuid[]
+            )
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- backup_schedules  (M4)
 -- ---------------------------------------------------------------------------
@@ -1826,6 +1893,28 @@ CREATE POLICY backup_schedules_scheduler ON backup_schedules
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- backup_schedules_site_scope (m19) — RESTRICTIVE site-scope gate. Live since
+-- m19, declared here as of GH #470. See update_tasks_site_scope for why the
+-- absence mattered.
+CREATE POLICY backup_schedules_site_scope ON backup_schedules
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- backup_schedule_runs  (M17 — materialized schedule queue)
 -- ---------------------------------------------------------------------------
@@ -1876,6 +1965,28 @@ CREATE POLICY backup_schedule_runs_agent ON backup_schedule_runs
     FOR ALL
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- backup_schedule_runs_site_scope (m19) — RESTRICTIVE site-scope gate. Live
+-- since m19, declared here as of GH #470. See update_tasks_site_scope for why
+-- the absence mattered.
+CREATE POLICY backup_schedule_runs_site_scope ON backup_schedule_runs
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- app_alert_rollout  (m108 - GH #291 Phase 3: app-health alerting rollout)
@@ -1992,6 +2103,28 @@ CREATE POLICY site_alert_state_tenant_isolation ON site_alert_state
 CREATE POLICY site_alert_state_agent ON site_alert_state
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
+
+-- site_alert_state_site_scope (m19) — RESTRICTIVE site-scope gate. Live since
+-- m19, declared here as of GH #470. See update_tasks_site_scope for why the
+-- absence mattered.
+CREATE POLICY site_alert_state_site_scope ON site_alert_state
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- site_app_alert_state  (m108 - GH #291 Phase 3: app-health alert state)
@@ -2138,12 +2271,32 @@ CREATE POLICY site_uptime_probes_tenant_isolation ON site_uptime_probes
 CREATE POLICY site_uptime_probes_agent ON site_uptime_probes
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
--- Note: the live schema also carries a site_uptime_probes_site_scope
--- RESTRICTIVE policy (m19 20260531050000_m19_orgs_sharing.sql section 5h) —
--- pre-existing drift versus this declarative file that predates this change
--- and is out of scope here; the two NEW tables below include the equivalent
--- policy inline since m19's own header convention requires it on every
--- direct site-keyed table.
+
+-- site_uptime_probes_site_scope (m19 section 5h) — RESTRICTIVE site-scope
+-- gate. A note here used to record that this policy was live in the database
+-- but undeclared in this file, and deferred it as out of scope. GH #470 is
+-- that scope: the drift was not confined to this table (11 site_scope policies
+-- were live and undeclared) and an undeclared RESTRICTIVE policy is the
+-- dangerous kind of absence, because grepping this file answers "not
+-- site-scoped" for a table that is.
+CREATE POLICY site_uptime_probes_site_scope ON site_uptime_probes
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- site_uptime_daily  (M99 — durable rollup replacing the interim keep-warm)
@@ -2428,6 +2581,28 @@ CREATE POLICY autologin_tokens_agent_consume ON autologin_tokens
     USING (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- autologin_tokens_site_scope (m19) — RESTRICTIVE site-scope gate. Live since
+-- m19, declared here as of GH #470. See update_tasks_site_scope for why the
+-- absence mattered.
+CREATE POLICY autologin_tokens_site_scope ON autologin_tokens
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
+
 -- ---------------------------------------------------------------------------
 -- autologin_policies  (Phase 5.5 — One-Click Login)
 -- ---------------------------------------------------------------------------
@@ -2464,6 +2639,28 @@ CREATE POLICY autologin_policies_tenant_isolation ON autologin_policies
 CREATE POLICY autologin_policies_agent ON autologin_policies
     FOR SELECT
     USING (current_setting('app.agent', true) = 'on');
+
+-- autologin_policies_site_scope (m19) — RESTRICTIVE site-scope gate. Live
+-- since m19, declared here as of GH #470. See update_tasks_site_scope for why
+-- the absence mattered.
+CREATE POLICY autologin_policies_site_scope ON autologin_policies
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(
+                nullif(current_setting('app.allowed_site_ids', true), ''), ','
+            )::uuid[]
+        )
+    );
 
 -- ---------------------------------------------------------------------------
 -- site_shares  (M19 — per-site collaborator grants)
