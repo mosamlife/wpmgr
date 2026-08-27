@@ -536,21 +536,33 @@ over the site going forward — can list, view, or diff only versions
 stamped with its own organisation id, starting at the transfer. Pre-transfer
 versions are **retained, never deleted**: the same append-only, no-TTL
 posture the Retention paragraph above already takes for everything else in
-this history, for the same reason — an auditor asking what a site's
-context said on a date before the transfer must still get a truthful
-answer. But they are **sealed, not merely access-reduced**: `restore` on a
+this history, and for the same kind of reason Decision 7 already gives the
+audit log — a durable record kept for accountability is not the same claim
+as a live self-service read anyone can still reach, and this ADR does not
+conflate the two. Once the transfer completes, **nobody reaches those rows
+through the ordinary site-scoped routes** — not the destination, sealed by
+the stamped-organisation check above, and not the source organisation
+either, whose access to those rows ends the same way its access to the rest
+of the site does on transfer, through the ordinary `context.site.read`
+capability check in Decision 6, which already requires access to the
+specific site and which transfer already revokes. Retention here means
+what it means for the audit log elsewhere in this document: nothing is
+destroyed, so a legitimate future need — a dispute, an investigation — is
+never met with "it's gone," but meeting that need runs through whatever
+privileged path this codebase already uses to read data no ordinary
+capability reaches, not through a route this ADR adds. **If the source
+organisation wants its own durable copy of its pre-transfer history, the
+Export path above is how** — taken before the transfer completes, while it
+still holds `context.site.read`, using the same read endpoints Export
+already calls; this ADR adds no new export mechanism for the case, only
+notes that the existing one has a deadline here it does not have elsewhere.
+Pre-transfer versions are also **sealed against restore**: `restore` on a
 pre-transfer version id is refused outright and unconditionally, for every
 caller, including a principal in the original authoring organisation,
 because this ADR has already decided the destination's active context
 starts empty, and a restore that reintroduced pre-transfer text would
 silently reopen the exact authorship-integrity gap clearing the layer was
-meant to close. The source organisation's own access to those rows ends
-the same way its access to the rest of the site does on transfer — through
-the ordinary `context.site.read`/`write` capability check in Decision 6,
-which already requires access to the specific site and which transfer
-already revokes — so sealing pre-transfer history from the destination
-introduces no new access-control mechanism beyond stamping the column
-correctly and checking it at every read.
+meant to close.
 
 **Multisite.** A managed WordPress installation is already one WPMgr site
 record regardless of whether that installation is itself a WordPress
