@@ -930,16 +930,29 @@ Neither path inherits markup safety from the service principal lacking
 `unfiltered_html`, because neither path runs through the filter that
 capability gates.
 
-**So the platform, not the principal's capability profile, is what has to
-sanitize those paths.** Every string field in `propose(ops)`'s operation
-vocabulary that can carry markup — an Elementor widget's rich-text or HTML
-setting, a custom field typed as HTML or WYSIWYG — is run through the same
-allow-list `wp_kses_post` already enforces, explicitly, by the adapter,
-immediately before the value reaches `apply()`'s write, whether that write
-lands in `post_content`, in post meta, or through a field plugin's API. A
-value that fails this check is refused the same way any other invalid
-`propose(ops)` operation is refused, not silently stripped and written
-anyway. With that in place, the two consequences below hold for every
+**So the platform, not the principal's capability profile and not each
+adapter individually, is what has to sanitize those paths.** This is the
+same rule [Snapshot is a platform property](#snapshot-is-a-platform-property-and-the-existing-precedent-is-fail-open)
+already states for `snapshot()`, `verify()` and `rollback()`, for the
+identical reason: where two adapters are built on near-identical code, one
+can carry a guard its sibling omits, and nothing in review catches it,
+because each file reads as complete on its own terms. Markup sanitization
+is not an adapter responsibility to remember — it is a single platform-layer
+chokepoint that every `propose(ops)` operation passes through, the same way
+Decision-shaped guards elsewhere in this ADR live at one place a write
+cannot bypass. Every string field in `propose(ops)`'s operation vocabulary
+that can carry markup — an Elementor widget's rich-text or HTML setting, a
+custom field typed as HTML or WYSIWYG — is run through the same allow-list
+`wp_kses_post` already enforces, by the platform, between `propose(ops)`
+accepting the operation and `apply()` handing anything to an adapter's own
+write path, whether that write lands in `post_content`, in post meta, or
+through a field plugin's API. No adapter decides whether this check runs;
+an adapter that cannot flag which of its own fields carry markup does not
+get write support for those fields, per the Builder Adapter Framework's own
+rule that an adapter unable to implement part of the contract does not ship
+that part. A value that fails this check is refused the same way any other
+invalid `propose(ops)` operation is refused, not silently stripped and
+written anyway. With that in place, the two consequences below hold for every
 adapter path this ADR supports, not only for `post_content`: the assistant
 cannot place a tracking pixel or a third-party embed into a page — if that
 capability is ever wanted it arrives as its own decision, with its own
