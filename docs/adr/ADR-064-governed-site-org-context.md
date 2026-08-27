@@ -1,0 +1,629 @@
+# ADR-064 — Governed per-site and organisation context
+
+**Status:** Proposed · **Date:** 2026-08-27
+**Supersedes/relates:** ADR-060 (unaffected; this work is internal and is not
+gated by its freeze clause — see Relationship, below), ADR-061 (extends the
+facts-vs-instructions boundary drawn in its Decision 3 into a stored,
+versioned, editable surface; reopens none of its seven decisions)
+
+This ADR records the decision to build governed, persistent, per-site and
+per-organisation context: human-authored information about a site or an
+organisation that every future model-facing surface — the assistant of
+ADR-061, and whatever reads or writes content after it — is handed as input
+alongside what it observes for itself. It fixes the vocabulary for four
+related but distinct kinds of context so they stop being blurred together,
+and it fixes the precedence order across all seven layers of information a
+model can end up holding, two of which ADR-061 already shipped and five of
+which this ADR is the first record of.
+
+---
+
+## Context
+
+Per-site context was previously deferred with no product reason attached to
+the deferral — it was simply not scheduled. That deferral is reversed here:
+governed per-site context ships with the **first usable assistant release**,
+not after it. Until this document, there was no ADR recording that context
+exists as a concept, what it contains, who may change it, or what happens
+when two sources of it disagree. That is the largest single gap in the
+assistant record — larger than any of the seven decisions ADR-061 made,
+because every one of those decisions assumes there is a body of site facts
+and rules for the model to read, and none of them says where that body
+lives, who is answerable for what is in it, or what stops a lower-privileged
+edit from quietly widening what a higher one intended to hold the line on.
+
+This document is that record.
+
+## Vocabulary
+
+Four terms get fixed here, for the whole project, not only for this
+feature. Blurring them is the default failure mode, and it hides a real
+security difference each time it happens.
+
+- **Persistent site context.** Human-managed information, entered by an
+  operator and kept until an operator changes it: brand voice, audience,
+  terminology, design rules, restrictions. It exists at two scopes —
+  organisation and site — described in Decision 1.
+- **Session context.** Information scoped to one conversation or one run.
+  Never persisted, never versioned, discarded when the run ends. It is layer
+  6 of the model below, and nothing in this ADR's storage ever sees it.
+- **Detected site facts.** What the control plane or the agent observes
+  about a site — builder, plugins, versions, theme, capabilities — reported,
+  not authored. Facts, never instructions: a plugin name is a data field the
+  model reads, and it does not get to change what the model is permitted to
+  do, in exactly the sense ADR-061 Decision 3 already established for tool
+  output. This ADR reuses that boundary rather than drawing a second one for
+  context specifically.
+- **Learned memory.** Information automatically inferred and saved from
+  previous work, with no human review of the specific claim before it starts
+  shaping a later run. **This is not being built.** See the dedicated
+  section below.
+
+The distinction that matters most: **static, human-authored instructions are
+not learned memory**, even though both end up as text a later run reads. The
+difference is not stylistic — it is who is answerable for the content. A
+line of persistent site context exists because a named person holding a
+write credential typed it; it is dated, versioned, and attributable, and the
+organisation that owns it can inspect and revoke it. A line of learned
+memory would exist because a model inferred it from something that
+happened, with no equivalent moment of human authorship behind it. Filing
+the second thing under the same name as the first is how a project ends up
+trusting inferred, unreviewed text with the same weight as an operator's own
+instruction — and the fact that a learned-memory system typically starts out
+seeded with human-written material is exactly what makes the two feel alike
+right up until they diverge. This ADR keeps them separate by construction:
+one is built, the other is not, and the line between them is the line drawn
+in this paragraph.
+
+---
+
+## Decision 1 — Seven layers, highest first; a lower layer can never widen a higher one
+
+1. **WPMgr security policy** — immutable; not editable by any customer, any
+   skill, or any model.
+2. **Organisation defaults** — set once by the organisation, applies across
+   every site in it.
+3. **Site overrides** — may narrow or specialise layer 2; may never grant
+   what layer 1 or layer 2 withheld.
+4. **Detected site facts** — delivered as data the model reads, never as
+   directions it follows.
+5. **Approved skill instructions** — fenced as untrusted; a skill is data
+   and can never grant permission, whatever its approval status says about
+   its provenance.
+6. **Session context** — this run only, discarded after.
+7. **Learned memory** — **not built.** Deferred to a named later release
+   behind an exit gate; see the dedicated section below.
+
+**A lower layer can never widen a higher one.** This is the one property in
+this document that outranks every other detail in it, and it is worth being
+precise about why.
+
+Every other decision below — the write-time check that rejects a widening
+edit, the fail-closed audit, the effective-context preview, the
+injection-safe fencing, the refuse-on-load-failure rule — exists only to
+protect this property. If it did not hold, an attacker who controls nothing
+but layer 4 (a crafted plugin name reported by a compromised site) could
+attempt to restore a permission layer 1 revoked; a careless or compromised
+site-level edit could silently undo an org-wide restriction the organisation
+never saw change; a quarantined skill, or injected content riding inside any
+layer, could try to turn "read-only" into "read-write" simply by asserting
+it in prose. None of those attempts have to be *detected* to be defeated —
+they have to be *structurally incapable of succeeding*, because the layer
+that would have to grant them ranks below the layer that withheld them.
+
+This is the same shape of guarantee ADR-061 Decision 2 already relies on for
+approval — "the proposer's credential cannot approve" is a statement that a
+lower-privileged actor cannot manufacture what only a higher one may grant.
+This ADR generalises that guarantee from two credential classes to seven
+context layers. It is what makes an organisation's policy, or a site
+operator's override, mean what it says, rather than mean "unless something
+further down the chain contradicts it" — which is not a policy at all.
+
+---
+
+## Decision 2 — The control plane is the source of truth; the agent caches, it does not decide
+
+Layers 1 through 3 are authored and stored on the control plane. The agent's
+role is layer 4: it reports what it observes about a site, and it may cache
+locally only what safe execution of its own work requires — enough to avoid
+re-probing a site's filesystem or database on every step of a single run.
+The agent never holds an opinion about layers 1 through 3, never merges
+them locally, and is never asked to resolve a conflict between them; that
+resolution happens once, on the control plane, per Decision 4.
+
+**What happens to a cache when context changes.** Every context row — an
+organisation's layer-2 row, a site's layer-3 row — carries a version number
+that increments on every accepted write. The control plane may hold a
+materialised "effective context" for a site to avoid re-running the
+seven-layer resolution on every request; that materialised copy is
+versioned against the same numbers, and any write to any layer beneath it —
+an org-policy edit, a site-override edit, or a fresh facts report from the
+agent — invalidates it immediately. The next read recomputes; nothing is
+ever served that predates a write to a layer it depends on. Symmetrically,
+the agent's own local fact cache is never patched or merged: each new
+inbound facts report supersedes the previous one wholesale at the version
+level, because a fact is a snapshot of what was observed, not an
+accumulating record the agent itself is trusted to reconcile.
+
+---
+
+## Decision 3 — Storage: tenant-scoped, append-only versions, and two kinds of field
+
+Context lives in two tenant-scoped tables, shaped alike: one keyed to an
+organisation (layer 2), one keyed to a site (layer 3, itself scoped to the
+site's organisation the way every other site-owned row in this codebase
+is). Neither table is ever updated or deleted in place. A write inserts a
+new version row carrying the full resulting snapshot, the version number,
+the author's principal id, a provenance tag (manual edit, restore, or a
+later machine-assisted import if one is ever built), and a timestamp. "The
+current context" is defined as "the latest version row for that
+organisation or site" — a read, not a separate mutable row — so restoring
+or diffing history never has two representations of the present to keep in
+sync.
+
+Fields on both tables split into two kinds, and the split is load-bearing
+for Decision 4:
+
+- **Restrictions** — a closed, structured set: allow/deny lists, named
+  boundaries a policy can set ("never do X"), the kind of rule where "does
+  this edit widen what a higher layer set" is a well-defined comparison a
+  machine can make.
+- **Guidance** — free text: brand voice, audience, terminology notes, style
+  preferences. "Wider" and "narrower" are not defined relations over
+  arbitrary prose, and this ADR does not pretend otherwise.
+
+Both kinds are versioned identically. Only restrictions get the mechanical
+never-widen check in Decision 4, because that check needs a defined
+comparison to mean anything, and claiming to enforce one over free text
+would be a check that always passes without ever having tested the thing it
+claims to test.
+
+---
+
+## Decision 4 — Conflict resolution: fixed layer order at read time, a rejection at write time
+
+Reading resolves deterministically: walk the seven layers in the order of
+Decision 1, and at each layer apply only what that layer is permitted to
+apply — a restriction may only be added to or left alone by every layer
+below the one that set it; guidance from a lower layer is always taken as
+additional context, never as a retraction of a higher layer's guidance.
+There is no merge heuristic, no "most specific wins" beyond the ordering
+itself — site overrides already exist expressly to be more specific than
+organisation defaults, and that is the only kind of specificity this design
+recognises.
+
+The more important half of this decision is where the check actually lives.
+**A widening attempt on a restriction field is rejected at the write path,
+not silently dropped at read time.** If a site-level edit would remove,
+loosen, or contradict a restriction the organisation's layer-2 policy set,
+the write fails outright, with a reason naming the restriction and the
+layer that set it, and no new version is created. The alternative — accept
+the edit, and simply have the read-time resolver ignore the part that
+overreached — is the shape this project's own working agreements name as
+its signature defect: a failure quietly coerced into a value that looks
+like success. An editor who typed a rejected restriction and got a green
+save screen would have no way to know their edit did nothing where it
+mattered most.
+
+---
+
+## Decision 5 — Version history, diff and restore are first-class
+
+Every accepted write is a new version row (Decision 3); nothing is ever
+edited in place, so history is exact by construction rather than by a
+separate audit trail bolted alongside it. The version list for an
+organisation or a site shows, per entry: author, timestamp, provenance, and
+a diff against the immediately prior version — field-level (added/removed
+list entries) for restriction fields, line-level for guidance fields, since
+those are the natural units of change for each kind.
+
+Restore never mutates history. Restoring version N creates a new version
+whose snapshot equals version N's, attributed to the principal who asked
+for the restore, with provenance recorded as `restore` and a pointer to the
+version restored. It is, in every respect the schema cares about, a write
+like any other, which means it goes through the same widen-check and the
+same audit transaction as Decision 4 and Decision 7 — a restore is not a
+back door around either.
+
+---
+
+## Decision 6 — Permission model: explicit capabilities, and the assistant never holds write
+
+Reading and editing context are entries in the same explicit capability
+registry ADR-061 Decision 5 introduced for API keys, not a new role tier —
+`context.org.read` / `context.org.write` at organisation scope,
+`context.site.read` / `context.site.write` at site scope. Read access
+follows existing fleet-read access: anyone who can already see a site's
+inventory can see the context that explains the rules governing it, at the
+organisation and the site scope that cover that site. Write access is
+narrower by default: organisation-scope write is held by organisation
+administrators; site-scope write additionally requires access to that
+specific site, mirroring how site-scoped API keys already work.
+
+**No assistant-kind principal is ever issued `context.org.write` or
+`context.site.write`, under any grant, at any tier.** This is not a
+configuration default that an operator could accidentally loosen; per
+ADR-061 Decision 5, a capability an assistant must never hold is handled by
+absence from the registry available to that principal type, not by a switch
+inside it. The reason is the same property Decision 1 exists to protect,
+applied to write access rather than to content: a model that could edit the
+context constraining it could widen its own leash, and the fact that layer
+7 (learned memory) is not built yet is precisely what keeps that path from
+opening by default the moment it is.
+
+---
+
+## Decision 7 — Audit is fail-closed here too, because the ledger entry is the product claim
+
+Every context write — org, site, or restore — produces one row in the
+existing hash-chained audit log, in the same transaction as the version
+row. **If the audit append fails, the version write fails with it; nothing
+commits.** This is the same posture ADR-061 Decision 2 adopted for
+approvals, and it departs from this codebase's best-effort audit convention
+for the same reason: on most paths, a lost audit row degrades an
+investigation after the fact, and refusing the underlying action over it
+would be a worse outcome than a gap in the log. That trade is wrong here.
+
+The differentiator this feature exists to support is that an operator, or
+an organisation's auditor, can later prove exactly what instruction set a
+model was given at a point in time. A context edit that committed without a
+verifiable ledger entry would be a governance-relevant change to a fleet's
+persistent context with no attributable record behind it — indistinguishable
+after the fact from a change nobody can attest to, which is the exact
+failure ADR-061 built the whole approval design to make impossible on the
+dispatch side. The same reasoning applies unchanged on the context side: the
+ledger entry is not a record of the edit, it is the claim that the edit is
+what it says it is.
+
+---
+
+## Decision 8 — Effective-context preview is a correctness requirement, not a nicety
+
+An operator can request the exact resolved text a given site's model-facing
+surface will be handed — every layer's surviving contribution, in the order
+of Decision 1, with what each layer added and what got narrowed or blocked
+by a higher one and why, plus the byte accounting from Decision 9.
+
+This is argued as correctness, not convenience, because of what it makes
+verifiable. Decisions 1, 4, and 7 are all claims about a resolution process
+an operator otherwise cannot see happen. Without a preview, "a lower layer
+can never widen a higher one" is an internal implementation assertion this
+document makes about code the operator has no way to check — exactly the
+gap ADR-061 Decision 2 closed for approvals by putting the human decision
+inside a hash-chained, independently verifiable ledger rather than asking
+the operator to trust that a confirmation step occurred. The preview is
+this feature's equivalent instrument: the thing an operator can point to
+instead of taking the design's word for it.
+
+For that equivalence to be real rather than cosmetic, **the preview must
+call the same resolution function the model-facing assembly path calls, not
+a second implementation of the same idea.** A preview built by re-deriving
+the seven-layer walk independently would drift from the real path the first
+time either one changed, and an operator reading a preview that no longer
+matches what the model actually receives is worse off than an operator with
+no preview at all, because they would believe they had checked something
+they had not.
+
+---
+
+## Decision 9 — Budgets are counted in bytes, not tokens
+
+Each layer's contribution to the resolved context, and the resolved context
+as a whole, is capped in bytes. This matches ADR-061 Decision 6's reasoning
+exactly and for the same reason: there is no tokenizer on this side of the
+boundary for whatever model ends up reading the result, and the
+byte-to-token ratio moves with the model. Bytes are the one unit this
+codebase can measure honestly on its own side of that boundary.
+
+Truncation happens at a field or record boundary, never mid-field, and is
+marked explicitly rather than silently dropped — the same discipline
+ADR-061 already applies to tool output. When the total exceeds budget,
+truncation starts at the **lowest** surviving layer and works upward:
+session context first, then skill instructions, then any facts overflow,
+then site overrides, then organisation defaults; layer 1 is never
+truncated. This is the same ordering that decides "widen" in Decision 4,
+applied to scarcity instead of permission — a higher layer was written with
+more deliberate, organisation-wide intent than a lower one, and a
+resource-constrained resolution should starve the layer with the least
+standing to complain, not the one with the most.
+
+---
+
+## Decision 10 — Secret detection on write, without echoing what it found
+
+Every write to a context field is scanned before it is accepted. A value
+shaped like a credential — an access key, a private key block, a
+connection string, a bearer token, a password-shaped string with the right
+entropy — is refused. **The refusal names the category of what was found
+and never echoes the matched text back to the caller, into a response body,
+or into a log line at a level anything downstream persists.** Echoing the
+match would relocate the secret into an error message or a log rather than
+keep it out of the system, which defeats the point of refusing the save in
+the first place.
+
+This check lives at the same single write chokepoint as the widen-check in
+Decision 4 and the audit transaction in Decision 7 — one place a write
+passes through, not a validation layer that a second entry point could miss.
+
+---
+
+## Decision 11 — Prompt-injection defence assumes injection succeeds
+
+The full resolved context — every layer that survived Decision 4's
+resolution — reaches the model inside a single quarantined block, marked
+untrusted, using the same per-response-nonce fencing ADR-061 already proved
+in production for site-origin text and skill content. This is a reuse of an
+existing, working mechanism, not a second bespoke one for context.
+
+**Every layer goes inside the fence, including the human-authored ones.**
+Layers 2 and 3 are written by an operator with a real write credential, and
+that is exactly why they are trusted as *content* — but they are not
+trusted as *instructions with authority over what the model may do*, for
+two reasons. First, once assembled into prose alongside facts and skill
+text, the model has no reliable way to tell which sentence came from which
+layer, so a single fencing discipline applied uniformly is simpler than one
+that depends on the model doing provenance-sensitive parsing correctly.
+Second, a human-authored field is not immune to becoming a laundering path
+for injected content — a compromised dashboard session, or a careless
+paste of text copied from an untrusted source into a "brand voice" field,
+puts attacker-authored text behind a legitimate credential. Treating even
+trusted-provenance layers as data the model reads, never authority the
+model obeys, costs nothing when the content is exactly what it claims to be,
+and it closes the one path where "authored by a human" would otherwise have
+been read as "therefore safe to follow."
+
+The system-level instruction the model is given states plainly that nothing
+inside the fence can grant a tool call, alter a capability, or change what
+the model is permitted to do — only the resolved capability set and tool
+registry from ADR-061 Decisions 5 and 6 determine that, and those are never
+assembled from anything inside the fenced block.
+
+---
+
+## Decision 12 — Export, deletion, retention, site transfer, and multisite
+
+**Export.** Context is small, textual, and already served whole by the
+read endpoints in Decision 13; a broader account-data export tool, if one
+is ever built, includes context by calling that same read path rather than
+touching the tables directly, so there remains exactly one way to read
+context regardless of caller.
+
+**Deletion.** Context tables are ordinary tenant-scoped relational rows —
+no object-storage blobs — so they are freed by the same tenant-purge path
+every other tenant-scoped table rides: a soft delete, a grace window, and
+the async sweep that runs the privileged cascade
+(`apps/api/internal/org/purge_worker.go`). That worker's own history is the
+reason this is called out rather than assumed: its file header records that
+an earlier build forgot five of seven object-storage roots and silently
+orphaned client data in them until an adversarial review caught it. Context
+storage does not add an eighth root — it has no object-storage component at
+all — and this ADR states that explicitly so the next person reading the
+purge worker's list does not have to wonder whether context belongs on it.
+
+**Retention.** Version history has no independent expiry in v1. It is
+retained for the life of the organisation or site, the same posture the
+audit log itself takes — append-only, no TTL — and is removed only when the
+organisation or site is removed, via the path above. An independent
+retention window for context history, if ever wanted, is a separate
+decision, not one this ADR invents speculatively.
+
+**Site transfer clears the site layer.** When a site moves to a different
+organisation, its layer-3 row is reset to empty; the site inherits only
+layers 1 and 2 of the organisation it now belongs to. Site-level context was
+authored under the old organisation's brand and policy assumptions, and
+carrying it into a new tenant would apply narrowing rules nobody in the new
+organisation wrote or reviewed — this is an authorship-integrity concern,
+not tidiness. The cleared version is itself a version (author: the transfer
+operation, provenance: `transfer`), so the reset is auditable and the prior
+organisation's history remains attributed to it rather than disappearing.
+
+**Multisite.** A managed WordPress installation is already one WPMgr site
+record regardless of whether that installation is itself a WordPress
+multisite network — `Multisite` is a boolean field on the existing site
+model, not a fan-out into per-subsite records:
+
+```sh
+grep -n "Multisite" apps/api/internal/site/model.go
+```
+
+Site-level context therefore attaches to that same site id and needs no
+separate design for multisite. Per-subsite context granularity, if ever
+wanted for a managed multisite network, is a future extension keyed to
+whatever subsite identifier the product introduces for that purpose, and is
+out of scope here.
+
+---
+
+## Decision 13 — API contracts
+
+All of the following are routes on the existing, already-authenticated
+dashboard API — not the externally-reachable assistant surface from
+ADR-061. See Relationship, below, for why that placement matters.
+
+```
+GET    /v1/orgs/{orgId}/context                              current org context (layer 2)
+PATCH  /v1/orgs/{orgId}/context                               partial field write -> new version
+GET    /v1/orgs/{orgId}/context/versions                     paginated history
+GET    /v1/orgs/{orgId}/context/versions/{versionId}         one version's full snapshot
+GET    /v1/orgs/{orgId}/context/versions/{versionId}/diff    diff against the prior version
+POST   /v1/orgs/{orgId}/context/versions/{versionId}/restore new version = that version's content
+
+GET    /v1/sites/{siteId}/context                             current site context (layer 3)
+PATCH  /v1/sites/{siteId}/context                              partial field write -> new version
+GET    /v1/sites/{siteId}/context/versions                     paginated history
+GET    /v1/sites/{siteId}/context/versions/{versionId}         one version's full snapshot
+GET    /v1/sites/{siteId}/context/versions/{versionId}/diff    diff against the prior version
+POST   /v1/sites/{siteId}/context/versions/{versionId}/restore new version = that version's content
+
+GET    /v1/sites/{siteId}/context/effective                    Decision 8's preview: all seven
+                                                                 layers resolved, per-layer byte
+                                                                 accounting against Decision 9
+```
+
+`PATCH` accepts a partial set of fields; the server applies them onto the
+latest version's full snapshot to build the new version's snapshot, so
+history and diff always operate on complete snapshots rather than deltas
+of deltas.
+
+Error contracts, all with a machine-readable reason code:
+
+- `409` — a write would widen a restriction a higher layer set (Decision 4);
+  the reason names the field and the layer that blocked it.
+- `422` — the write contains something shaped like a credential
+  (Decision 10); the reason names the category found, never the match.
+- a distinct `context_unavailable` domain error — effective-context
+  resolution could not complete; every caller of Decision 8's resolution
+  function, including the model-facing assembly path, treats this as a hard
+  failure per Decision 14, never as an empty result.
+
+Capabilities `context.org.read` / `context.org.write` /
+`context.site.read` / `context.site.write` gate these routes per Decision 6.
+No route in this list is reachable from an assistant-kind credential, both
+because that principal type is never granted the write capabilities and
+because these routes are not registered on the tool surface ADR-061
+Decision 6 defines — an assistant only ever receives the *output* of
+Decision 8's resolution, inside the fence of Decision 11, never a path to
+call these endpoints itself.
+
+---
+
+## Decision 14 — If context cannot be loaded, the call is refused
+
+If Decision 8's resolution cannot complete — a database error, a cache
+invalidated with no fresh copy yet computed, a corrupted version row — the
+caller that needed that context is refused outright. It is never given an
+empty, partial, or stale-but-unmarked result as a stand-in.
+
+This is stated explicitly because the tempting alternative is quieter and
+wrong in the way this project has been wrong before: falling back to "just
+layer 1," or to an empty layer 2 and 3, and letting the call proceed looks
+like resilience but is actually a different assistant than the one the
+operator configured, running under the operator's name, with the operator
+never told it happened. A refusal is loud, attributable, and correct; a
+silent substitution is exactly the failure mode this codebase's own working
+agreements name as its signature defect, applied to the surface this ADR
+governs.
+
+---
+
+## Learned memory is deferred, not "later"
+
+Learned memory — automatic inference and persistence from previous work,
+with no human review of the specific claim before it shapes a later run —
+is not scheduled inside this ADR's scope. It is deferred to the first
+release after the Skill Store ships, owned by `backend-architect` with
+`security-reviewer` review, and it does not start without an explicit exit
+gate:
+
+- a written threat model for agent-authored text re-entering the prompt on
+  a later run;
+- the fenced-content model already proven in production for skills
+  (Decision 11 reuses it rather than inventing a second one) — the same
+  mechanism must be the one that carries learned memory when it exists;
+- opt-in per organisation, never on by default for an existing tenant;
+- reviewable by a human before it takes effect on a later run, not after;
+- removable, at the granularity of a single inferred item, not only as an
+  all-or-nothing switch;
+- off by default.
+
+**What WPMgr offers instead, in the meantime, is what most of the real need
+turns out to be.** Human-curated persistent site context, as designed in
+this ADR, already covers it: "this client dislikes serif faces" is a
+context edit an operator makes once, dated and attributable, not an
+inferred memory a model decided to keep. The gap between that and learned
+memory is real but narrow, and it is exactly the gap the exit gate above is
+designed to close carefully rather than skip.
+
+---
+
+## Relationship to ADR-060 and ADR-061
+
+Nothing here reorders ADR-060's phase precedence or touches its freeze
+clause's applicability, and nothing here reopens any of ADR-061's seven
+decisions.
+
+**This work is internal and is therefore not gated by ADR-060's freeze
+clause, even during a phase where an auth-boundary item may be open.** The
+freeze clause reads: "No new externally-reachable surface ships while an
+auth-boundary item is open." Every route in Decision 13 sits behind the
+same authenticated dashboard-API perimeter every other organisation and
+site settings endpoint already sits behind — a new resource on an existing,
+already-audited boundary, not a new boundary. ADR-061's assistant route is
+treated as a new externally-reachable surface precisely because its caller
+class is fundamentally different — a model, not an authenticated dashboard
+session — and it remains subject to the freeze clause on its own terms,
+unchanged by this ADR. Building context storage and its APIs during a
+safety phase is exactly what the freeze clause's narrowness was written to
+permit: it does not freeze feature work in general, only a new perimeter,
+and this ADR does not add one.
+
+This ADR extends ADR-061 Decision 3's facts-are-data-not-instructions
+boundary into a stored, versioned, human-editable surface, and reuses
+ADR-061 Decision 5's capability-registry pattern and ADR-061 Decision 6's
+byte-budget reasoning rather than inventing parallel mechanisms for either.
+It does not touch ADR-061's site-scoping posture (Decision 4): context rows
+are scoped and resolved per site through the application-layer chokepoint
+that decision already established as this codebase's honest current state,
+not a database-level guarantee this ADR is claiming to add.
+
+---
+
+## Consequences
+
+**What this forecloses.**
+
+- No assistant-kind or other automation principal is ever issued
+  `context.org.write` or `context.site.write`, under any grant, without
+  superseding this ADR.
+- No merge-based conflict resolution. Precedence is positional and fixed by
+  Decision 1; a future "smart merge" needs its own ADR, not a patch to this
+  one.
+- No best-effort audit for a context write. Decision 7's posture cannot be
+  loosened to an asynchronous or queued append without superseding this ADR,
+  for the same reason ADR-061 Decision 2 already forecloses it for
+  approvals.
+- No serving of a resolved context that skipped the widen-check (Decision 4)
+  or the secret scan (Decision 10), regardless of caller or code path.
+- No promotion of session context into persistent context without a human
+  explicitly making that edit; there is no automatic "remember this for next
+  time" absent the learned-memory exit gate.
+
+**What it costs.**
+
+- Guidance fields have no mechanical widen-check, by design (Decision 3,
+  Decision 4). A site-level edit to free text can still read as pulling
+  against organisation intent even though it cannot touch a structured
+  restriction. This is accepted because a general-purpose text-widening
+  detector does not exist, and claiming to enforce one would be a check
+  that always passes without ever testing anything.
+- The effective-context preview (Decision 8) is only as trustworthy as its
+  identity with the real resolution path. Keeping the two from drifting
+  apart is an ongoing engineering discipline, not a one-time build cost.
+- A verbose organisation policy can crowd out a site's own guidance under
+  the byte budget in Decision 9. The truncation order favours higher layers
+  deliberately, which means the cost of scarcity is always paid by the
+  layer with the least standing to complain about it — an accepted
+  trade-off, not an oversight.
+
+**What has to exist before this ships.**
+
+- One resolution function that both the model-facing context assembly and
+  the effective-context preview call — not two implementations of the same
+  seven-layer walk.
+- Version, author, and provenance columns on both context tables, with
+  `UPDATE`/`DELETE` revoked from the application role at the privilege
+  level, the same way the audit log already enforces append-only.
+- The `context.*` capabilities added to the existing registry, with a
+  registry test asserting no assistant-kind principal can ever be granted a
+  context-write capability — the same test shape ADR-061 Decision 5 already
+  uses for capabilities an assistant must never reach.
+- Planted-failure proofs, each pasted with its command and its before/after
+  output: a save shaped like a credential is rejected, and the rejection is
+  asserted not to contain the matched text; a site-level edit that would
+  remove an organisation-set restriction is rejected, and the prior version
+  is asserted unchanged; a forced audit-append failure is asserted to leave
+  no new context version committed.
+- `make test-integration` coverage of tenant scoping on both new tables,
+  run before merge — context is exactly the shape of tenant-scoped data
+  ADR-061 Decision 4 already found this codebase gets wrong by default when
+  it is not checked.
