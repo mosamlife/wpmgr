@@ -468,6 +468,52 @@ if should_run "$NAME"; then
 fi
 
 # ===========================================================================
+# GROUP 6 -- the container the guard starts for itself must not leak.
+#
+# Extraction used to run as `do_extract | grep ...`. Every element of a bash
+# pipeline runs in a subshell, so the STARTED_CONTAINER=1 assignment happened
+# in a child, the parent's EXIT trap saw 0, and every full run left a postgres
+# container behind. Disk exhaustion has killed a build in this repo, and it
+# surfaces days later nowhere near the cause.
+#
+# These are source-level assertions on purpose: reproducing the leak needs
+# docker and about two minutes, which is not something a regression suite
+# should require to protect an invariant this cheap to state.
+# ===========================================================================
+
+NAME='leak: extraction does not run do_extract inside a pipeline'
+if should_run "$NAME"; then
+  # Comment lines are stripped FIRST. The guard's own header explains the bug
+  # and quotes the broken form verbatim, so a naive grep over the whole file
+  # matches the explanation and reddens the fixed code -- which is exactly the
+  # over-firing this suite exists to prevent, committed inside the suite.
+  code_hits="$(grep -vE '^[[:space:]]*#' "$GUARD" | grep -nE 'do_extract[[:space:]]*\|')"
+  if [ -n "$code_hits" ]; then
+    RC='n/a'; OUT="$code_hits"
+    fail "$NAME" 'do_extract is piped, so it runs in a subshell and the cleanup flag is lost'
+  else
+    pass "$NAME"
+  fi
+fi
+
+NAME='leak: cleanup removes the container unconditionally, not behind a flag'
+if should_run "$NAME"; then
+  # The removal must not be guarded by a test on STARTED_CONTAINER, because
+  # that variable cannot be trusted across a subshell. Removing a container
+  # that was never created is a harmless no-op.
+  body="$(awk '/^cleanup_container\(\)/, /^}/' "$GUARD")"
+  if printf '%s' "$body" | grep -q 'STARTED_CONTAINER'; then
+    RC='n/a'; OUT="$body"
+    fail "$NAME" 'cleanup_container still branches on STARTED_CONTAINER'
+  elif printf '%s' "$body" | grep -q 'docker rm -f'; then
+    pass "$NAME"
+  else
+    RC='n/a'; OUT="$body"
+    fail "$NAME" 'cleanup_container does not remove the container at all'
+  fi
+fi
+
+# ===========================================================================
 # Verdict
 # ===========================================================================
 

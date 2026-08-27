@@ -256,10 +256,21 @@ ORDER BY 1;
 CONTAINER='wpmgr-rls-guard'
 STARTED_CONTAINER=0
 
+# Remove the throwaway container unconditionally, not "if we started one".
+#
+# The flag cannot be trusted: extraction used to run as `do_extract | grep ...`,
+# and every element of a bash pipeline runs in a SUBSHELL, so the
+# STARTED_CONTAINER=1 assignment happened in a child and the parent's trap saw
+# 0 and cleaned up nothing. Every full run leaked a postgres container. The
+# pipeline is gone (see below) but the flag stays untrusted, because a leaked
+# container is a disk-exhaustion bug that shows up as somebody else's build
+# dying, days later, nowhere near here.
+#
+# Removing a container that does not exist is a no-op, so this is safe to call
+# on every exit path including the ones that never started one.
 cleanup_container() {
-  if [ "$STARTED_CONTAINER" = "1" ]; then
-    docker rm -f "$CONTAINER" >/dev/null 2>&1
-  fi
+  docker rm -f "$CONTAINER" >/dev/null 2>&1
+  return 0
 }
 trap cleanup_container EXIT INT TERM
 
@@ -339,7 +350,12 @@ if [ "$MODE" = 'analyse' ]; then
   grep -E '^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$' \
     "$EXTRACT_FILE" > "$ALL"
 else
-  do_extract | grep -E '^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$' > "$ALL"
+  # Deliberately NOT `do_extract | grep ... > "$ALL"`. A pipeline puts
+  # do_extract in a subshell, which is how this leaked a postgres container on
+  # every run; it would also swallow the exit status of the extraction itself.
+  do_extract > "$WORK/raw.txt"
+  grep -E '^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$' \
+    "$WORK/raw.txt" > "$ALL"
 fi
 
 TOTAL=$(count_lines "$ALL")
