@@ -161,10 +161,10 @@ stale line someone forgot to edit; it was a deliberate build step, so fixing
 `readme.txt` alone would not have closed it — the next build would have
 silently overwritten a corrected MIT header back to GPLv2.
 
-**The owner has ruled: the agent is MIT.** GH #547 (PR #556, open as of this
-revision) fixes both halves: `readme.txt:8` and its restatement at `:51` are
-corrected to MIT, and the `agent-zip-wporg` header rewrite is removed so the
-build stops overriding whatever the source declares. The same PR adds
+**The owner has ruled: the agent is MIT.** GH #547 (PR #556, merged) fixed
+both halves: `readme.txt:8` and its restatement at `:51` are corrected to
+MIT, and the `agent-zip-wporg` header rewrite is removed so the build stops
+overriding whatever the source declares. The same PR added
 `scripts/check-license-surfaces.sh` (`make check-licenses`, self-test `make
 check-licenses-test`), which reads every agent licence surface — the plugin
 header, both mu-plugin headers, `readme.txt`'s structured header and its
@@ -173,13 +173,14 @@ Description prose, `composer.json`, `apps/agent/NOTICE.md`,
 and fails if any is missing or any two disagree. That script, not the
 illustrative commands above, is the enforced, ongoing check that these
 surfaces continue to agree, the same role `scripts/check-version-surfaces.sh`
-already plays for version strings; running it against this tree confirms it
-catches both halves of the live bug at once (`Makefile rewrites the plugin
-header's License field during a build`, and `the agent declares more than one
-license`), exit 1. **Until PR #556 merges and a new agent release ships, the
-already-published wordpress.org zip stays `GPLv2 or later`, and every copy
-already distributed under it keeps that grant — a licence already given is
-not revocable by a later commit.** F1 below tracks what remains open.
+already plays for version strings; `make check-licenses` against this tree
+now passes (`License surfaces agree: MIT`), where it failed red on both
+counts before PR #556 merged. **That fix is in the tracked source, not yet
+in a released zip: the wordpress.org API still reports version 0.61.146 as
+current, the same version checked above, so the published zip stays `GPLv2
+or later` and every copy already distributed under it keeps that grant — a
+licence already given is not revocable by a later commit — until a new agent
+release actually ships.** F1 below tracks what remains open.
 
 **The repository is public.** Public is not permissive: publishing source grants
 nothing beyond what the licence files grant, and it gives this project no
@@ -496,15 +497,17 @@ accurate, internally consistent statement of what that *distributed package*
 was offered under — but it left "can GPL code enter the agent" unanswerable,
 because the answer flips depending on which licence is taken as true. **The
 owner has ruled: the agent is MIT.** §1 above states the ruling and its
-consequence as settled fact. What remains is mechanical, not a decision: GH
-#547 (PR #556, open as of this revision) corrects `readme.txt:8` and `:51`,
-removes the build-time header rewrite, and adds
+consequence as settled fact. GH #547 (PR #556) has merged: it corrected
+`readme.txt:8` and `:51`, removed the build-time header rewrite, and added
 `scripts/check-license-surfaces.sh` so the surfaces cannot drift apart again
-unnoticed. This item stays open until that PR merges *and* a new agent release
-publishes a zip that shows the corrected licence throughout — the currently
-live wordpress.org zip stays `GPLv2 or later` until then, and copies already
-distributed under it keep that grant regardless of when the fix ships. The
-ruling itself is closed.
+unnoticed — `make check-licenses` against the tracked source now agrees on
+MIT throughout. What remains is not a decision either, just a release: this
+item stays open until a new agent release publishes a zip that shows the
+corrected licence — the currently live wordpress.org zip is still version
+0.61.146 (confirmed against the wordpress.org API) and stays `GPLv2 or
+later` until a newer version ships, and copies already distributed under it
+keep that grant regardless of when the release happens. The ruling itself is
+closed.
 
 **F2 — keeping the MCP surface out of the plugin for licence reasons.** §2 sets
 out why option (b) is the recommended architecture, but the *decision* has three
@@ -535,9 +538,10 @@ been made by whoever was in a hurry.
   verify it. A future planning pass that reasons from a remembered premise can be
   checked against this in one command rather than one argument.
 - The MIT/AGPL split is now ratified in an ADR rather than living only in
-  `LICENSE-AGENT` and `NOTICE.md`; GH #547 (PR #556) brings `apps/agent/readme.txt`
-  and the `agent-zip-wporg` build step into agreement with it, and
-  `scripts/check-license-surfaces.sh` keeps them from drifting apart again.
+  `LICENSE-AGENT` and `NOTICE.md`; GH #547 (PR #556, merged) brought
+  `apps/agent/readme.txt` and the `agent-zip-wporg` build step into agreement
+  with it, and `scripts/check-license-surfaces.sh` keeps them from drifting
+  apart again.
 - Adding a dependency to `apps/agent` acquires a mandatory licence check against
   MIT. This is a small cost paid on every dependency bump, and it is the only
   mechanism that catches the relicensing case before it ships.

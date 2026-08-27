@@ -406,6 +406,32 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- License surfaces --------------------------------------------------
+      # GH #547: the agent declared MIT in its plugin header and GPLv2 or later
+      # in the wp.org readme.txt, live, at the same time. This reconciles every
+      # place in apps/agent (plus the repo-root LICENSE-AGENT carve-out) that
+      # names the agent's own license, by name: the plugin header, both
+      # mu-plugin headers, readme.txt's structured header AND its Description
+      # prose, composer.json, NOTICE.md, README.md and LICENSE-AGENT's own
+      # title line.
+      #
+      # THE LOGIC LIVES IN scripts/check-license-surfaces.sh, same reasoning as
+      # the version surface guard immediately above: it is a file you can run
+      # and test, not shell text buried in this YAML.
+      #
+      # A surface a guard's own pattern fails to find is an ERROR here, not a
+      # skip — a check that passes because it matched nothing is the same
+      # defect the version surface guard's header comment already spent three
+      # review rounds discovering, one level up.
+      #
+      # Self-test runs FIRST, same reasoning as the version surface guard:
+      # a broken guard must fail here, not pass by failing open.
+      - name: License surface guard self-test (GH #547)
+        run: scripts/check-license-surfaces_test.sh
+
+      - name: License surface guard (plugin header, mu-plugins, readme.txt, composer.json, NOTICE.md, README.md, LICENSE-AGENT)
+        run: scripts/check-license-surfaces.sh
+
       # ---- Agent release manifest guard ------------------------------------
       # scripts/release-agent.sh is the trust boundary release.yml calls to
       # build the agent's self-update manifest (GH #515: it used to publish a
