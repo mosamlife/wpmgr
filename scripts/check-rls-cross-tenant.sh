@@ -102,12 +102,19 @@
 # RUN IT
 # ---------------------------------------------------------------------------
 #
-#   make check-rls                     # extract from a throwaway DB, analyse
-#   make check-rls-test                # the guard's own regression suite
-#
-#   scripts/check-rls-cross-tenant.sh
+#   scripts/check-rls-cross-tenant_test.sh    # the regression suite; no DB needed
+#   scripts/check-rls-cross-tenant.sh         # extract from a throwaway DB, analyse
 #   scripts/check-rls-cross-tenant.sh --extract > /tmp/policies.txt
 #   scripts/check-rls-cross-tenant.sh --from-extract /tmp/policies.txt
+#
+# NOT YET WIRED INTO make OR ci.yml. Both the Makefile and .github/workflows
+# are devops-engineer's to edit, and this guard was written by
+# database-engineer, so the wiring is handed over rather than done here. Until
+# it lands, this is a local gate you have to remember to run -- run it before
+# merging anything that adds or narrows an RLS policy. When it is wired, the
+# self-test must run FIRST and as its own step, so a broken guard fails the
+# build instead of passing by failing open (the pattern ci.yml already uses for
+# scripts/check-version-surfaces_test.sh).
 #
 # WHERE THE DATABASE COMES FROM, in order:
 #   1. $WPMGR_RLS_DATABASE_URL, if set -- an already-migrated database.
