@@ -1,7 +1,7 @@
 # ADR-062 — Assistant surface, Phase 2: governed fleet content operations
 
 **Status:** Proposed · **Date:** 2026-08-27
-**Supersedes/relates:** Revisits ADR-061 Decision 7 (site generation conceded) directly, and its acceptance supersedes that decision's concession framing for the content-editing and page-generation capabilities scoped below — see [Consequences](#consequences). Relates to ADR-061 as Accepted (Decision 1's siting and signed-command channel, Decision 2's out-of-band approval state machine, Decision 3's control-plane-derived approval facts and quarantined-note contract, Decision 4's application-layer site scoping with database-level scoping named as its own deferred decision, Decision 5's capability-by-registry-absence model, Decision 6's flat tool set and its roughly-25-entry facade threshold) and ADR-060 (this work sits in the differentiation phase, rank 5, and does not outbid open higher-rank work).
+**Supersedes/relates:** Revisits ADR-061 Decision 7 (site generation conceded) directly, and its acceptance supersedes that decision's concession framing for the content-editing and page-generation capabilities scoped below — see [Consequences](#consequences). Relates to ADR-061 as Accepted (Decision 1's siting and signed-command channel, Decision 2's out-of-band approval state machine, Decision 3's control-plane-derived approval facts and quarantined-note contract, Decision 4's application-layer site scoping with database-level scoping named as its own deferred decision, Decision 5's capability-by-registry-absence model, Decision 6's flat tool set and its roughly-25-entry facade threshold) and ADR-060 (this work sits at position 5, Differentiation, in that ADR's precedence order, and does not outbid open earlier-position work for engineering time).
 
 **This ADR is Proposed and it blocks Phase 2.** No content-write code ships in
 `apps/agent` or in the control plane until it is Accepted. The items in
@@ -780,11 +780,45 @@ busy review can wave through:
 - Enumerate its capabilities → must equal the declared role exactly, with
   `unfiltered_html`, `manage_options`, `edit_files` and `install_plugins`
   all absent.
+- **Widen the role after enrolment** — edit the custom role in place, or
+  clone it under a new name and reassign the service user to the clone, to
+  restore `unfiltered_html` or any other withheld capability, the way a site
+  admin might "fix" a permissions complaint or a third-party plugin might
+  rewrite roles on activation → must be caught before the next write, not
+  merely logged after it.
 
 Each of those is planted as a *passing* attack first, watched go red,
 restored, and watched go green, with both outputs pasted alongside their
 commands. A suite nobody has seen fail is not known to test anything, and
 this is the suite the whole "not really privileged" claim rests on.
+
+**The sixth attack is different in kind from the first five, and it is the
+one the original five-attack gate never tested.** The first five ask whether
+the principal can be reached or impersonated; the sixth asks whether the
+principal, reached exactly as designed, still means what it meant when it
+was created. A site admin's own dashboard, or any third-party plugin running
+on that site, can edit or clone a WordPress role at any time — that is
+ordinary, unprivileged WordPress behaviour, not an exploit — and nothing
+about creating the role safely at enrolment stops it from being widened
+five minutes, or five months, later. A foreclosure checked once, at
+creation, and never again is not a foreclosure; it is a snapshot with a
+foreclosure's name on it.
+
+**So the runtime posture is: verify at use, not only at creation.** Every
+content command that sets the service user as `current_user` first reads
+that user's live capability set and compares it to the declared set this
+ADR names above. A match proceeds. Any drift — a capability present that
+should be absent, most importantly `unfiltered_html` — refuses the command
+outright with a typed `principal_capabilities_drifted` error naming the
+site, the extra capability found, and a remediation path (recreate the role
+from the declared set), before any content operation runs. **Never a silent
+continuation on the capabilities the role happens to have now**: a write
+that executes because the drift was not checked is the exact failure this
+ADR's whole "not really privileged" claim was built to prevent, arriving by
+a path the original five attacks did not cover. This check is cheap — one
+capability-set comparison already available from the WordPress role object,
+on the same request that is about to set `current_user` — so there is no
+performance argument for checking it only at creation.
 
 **It is deletable by the site's own admin, and that breaks content writes.**
 That is correct behaviour — the site owner is sovereign over their own
@@ -904,16 +938,25 @@ injection changes nothing about what is permitted. The model is not made
 safe by starving it; it is made safe by ensuring nothing it reads can change
 what it is allowed to do.
 
-**The fencing mechanism this relies on already exists in ADR-061, as
-Accepted, and needs no new decision here.** Under "Two things that were
-expensive to learn," ADR-061 already states: *"site-origin text is stripped
-and fenced with a per-response nonce before it reaches the model, and
-stripped again on a separate path before it reaches a human."* Page content,
-builder documents and every other site-originated string content operations
-touch fall under that existing rule, under a standing preamble stating that
-the enclosed material is reference text that cannot change what is
-permitted. Nothing about content operations widens or narrows that fence;
-it extends the population of strings that pass through it.
+**This ADR depends on a fencing mechanism that ADR-061 has decided but not
+yet built, and treats it as required new work rather than an inherited
+given.** Under "Two things that were expensive to learn," ADR-061 states the
+design: *"site-origin text is stripped and fenced with a per-response nonce
+before it reaches the model, and stripped again on a separate path before it
+reaches a human."* That design is Accepted, but the two sanitizers that
+implement it are listed in ADR-061 itself under "What has to exist before v1
+ships" (ADR-061:544,548-550), and ADR-061's own verification note records
+that the surface they belong to is unshipped (ADR-061:570-572). ADR-061 never
+mentions skill content at all — the word does not appear in that document —
+so nothing about how skill instructions will be fenced can be read off it
+either. Page content, builder documents and every other site-originated
+string content operations touch are intended to fall under that same
+mechanism once it exists, under a standing preamble stating that the
+enclosed material is reference text that cannot change what is permitted.
+Nothing about content operations widens or narrows that design; it extends
+the population of strings the fence is meant to cover. But "the design
+accounts for this" and "the mechanism exists" are different claims, and this
+ADR's ship gate below requires the second one, not just the first.
 
 The ship gate travels with the decision: a **planted hostile site name** — or,
 for content specifically, a planted hostile post title or field value — must
@@ -943,15 +986,18 @@ own internal shape.
    sentence at the top — *no content-write code ships until it is
    Accepted*. That sentence should be released when the work is ready to
    start, not when the argument is finished.
-2. **ADR-060's precedence puts this behind open higher-rank work.** Content
-   operations are differentiation, rank 5. ADR-061 Decision 4, as Accepted,
-   names database-level site scoping as explicitly deferred and "its own
-   decision" — a Gate-category item under ADR-060's precedence that is
-   still open on the day this document is written. Accepting a rank-5 ADR
-   while that sits open does not violate the freeze clause — this ADR adds
-   no externally-reachable surface by itself — but it advertises readiness
-   the precedence order does not support, and precedence gets reversed by
-   exactly this kind of drift.
+2. **ADR-060's precedence puts this behind open earlier-position work.**
+   Content operations sit at position 5, Differentiation, in ADR-060's
+   ordered list. ADR-061 Decision 4, as Accepted, names database-level site
+   scoping as explicitly deferred and "its own decision" — a Gate item
+   (position 1) that is still open on the day this document is written.
+   ADR-060 is explicit that this ordering is a precedence rule, not a
+   sequence of gates each blocking the next ("it is not a gate, and nothing
+   below is a second one" — ADR-060:38), so accepting a position-5 ADR while
+   a position-1 item sits open does not violate the freeze clause — this ADR
+   adds no externally-reachable surface by itself — but it advertises
+   readiness the precedence order does not support, and precedence gets
+   reversed by exactly this kind of drift.
 3. **Checklist items remain genuinely open, and none of them closes on
    argument alone.** Item 3's per-integration own/delegate table needs the
    first-wave machinery proved once before it can be written for the
@@ -1049,6 +1095,16 @@ permanent open marks.
   than borrowed from the file-write staging precedent, with a planted
   failure proof: force the snapshot step to fail and assert the write never
   happens, red then green, both pasted with their commands.
+- **The injection-fencing mechanism itself** — the two sanitizers ADR-061
+  lists under its own "What has to exist before v1 ships"
+  (ADR-061:544,548-550), one for text on its way to the model and one for
+  text on its way to a human. Content operations widen who feeds that fence
+  (page content, builder documents), not what the fence is, but the fence
+  does not exist yet and this ADR cannot ship ahead of it: a planted hostile
+  post title or field value must produce an approval screen that still
+  renders correctly, per the ship gate in
+  [Other open questions](#other-open-questions), and that proof needs a real
+  sanitizer to run against.
 - `security-reviewer` with `model: "opus"` on the principal decision, on the
   four-command token scoping, and on the snapshot and revert paths.
 - `database-engineer` on the proposal and staging schema before any Go or
