@@ -250,29 +250,21 @@ Why: to deliver this site's outgoing mail through a provider rather than the ser
 
 **matthiasmullie/minify (MIT)**
 
-CSS and JavaScript minification uses matthiasmullie/minify (^1.3, MIT license), a pure-PHP minification library included in the plugin's Composer dependencies. Source and license: https://github.com/matthiasmullie/minify
-
-Copyright (c) 2012 Matthias Mullie. Licensed under the MIT License.
+CSS and JavaScript minification uses matthiasmullie/minify (^1.3, MIT), a pure-PHP library in the plugin's Composer dependencies. Copyright (c) 2012 Matthias Mullie. Source: https://github.com/matthiasmullie/minify
 
 **matthiasmullie/path-converter (MIT)**
 
-matthiasmullie/path-converter (~1.1, MIT license) is a Composer dependency of matthiasmullie/minify above, used to rewrite relative paths in minified CSS, and is installed as part of the same vendor tree. Source and license: https://github.com/matthiasmullie/path-converter
-
-Copyright (c) 2015 Matthias Mullie. Licensed under the MIT License.
+matthiasmullie/path-converter (~1.1, MIT) is minify's own Composer dependency, rewriting relative paths in minified CSS, installed into the same vendor tree. Copyright (c) 2015 Matthias Mullie. Source: https://github.com/matthiasmullie/path-converter
 
 **bjeavons/zxcvbn-php (MIT)**
 
-Password-strength scoring in the password policy uses bjeavons/zxcvbn-php (^1.4, MIT license), a pure-PHP port of zxcvbn included in the plugin's Composer dependencies. Source and license: https://github.com/bjeavons/zxcvbn-php
-
-Copyright (c) 2013-2014 Benjamin Jeavons. Licensed under the MIT License.
+Password-strength scoring in the password policy uses bjeavons/zxcvbn-php (^1.4, MIT), a pure-PHP port of zxcvbn in the plugin's Composer dependencies. Copyright (c) 2013-2014 Benjamin Jeavons. Source: https://github.com/bjeavons/zxcvbn-php
 
 **symfony/polyfill-mbstring (MIT)**
 
-symfony/polyfill-mbstring (>=1.3.1, MIT license) is a Composer dependency of bjeavons/zxcvbn-php above, providing mbstring functions on PHP builds that lack the mbstring extension, and is installed as part of the same vendor tree. Source and license: https://github.com/symfony/polyfill-mbstring
+symfony/polyfill-mbstring (>=1.3.1, MIT) is zxcvbn-php's own Composer dependency, providing mbstring functions where the extension is absent, installed into the same vendor tree. Copyright (c) 2015-present Fabien Potencier and contributors. Source: https://github.com/symfony/polyfill-mbstring
 
-Copyright (c) 2015-present Fabien Potencier and contributors. Licensed under the MIT License.
-
-No other third-party PHP libraries are bundled in the plugin zip beyond those credited above. Image encoding and WOFF2 font transcoding run on the control-plane service, not inside this plugin. The bundled Real User Monitoring JavaScript also carries a third-party library; see Source code below.
+No other third-party PHP libraries are bundled beyond those credited above. Image encoding and WOFF2 font transcoding run on the control-plane service, not inside this plugin. The bundled Real User Monitoring JavaScript also carries a third-party library; see Source code below.
 
 == Source code ==
 
