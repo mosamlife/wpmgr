@@ -86,6 +86,66 @@ function changelogHref(item: AvailableUpdateItem): string {
   return `https://wordpress.org/plugins/${encodeURIComponent(slug)}/#developers`;
 }
 
+// GH #553. `as_of` used to be stamped from the 60s site heartbeat
+// (`sites.updated_at`), so it was practically never null and always looked
+// seconds old regardless of how stale the reported inventory actually was.
+// It now reads `sites.components_updated_at`, set only when the inventory is
+// genuinely (re)written, and it shipped with no backfill — inventing a
+// collection time that never happened would recreate the exact bug this
+// fixed, one layer up. So every site that existed before the fix reports
+// `as_of: null` here until its next sync, and that is common and temporary,
+// not an outage.
+//
+// This is the SINGLE render site for the freshness/age claim. It used to
+// also be rendered a second time inside the "all managed components are up
+// to date" empty state, which put the same sentence on screen twice
+// whenever a site had no outstanding updates. The header is the only spot
+// that renders in every query state (loading, error, loaded), so it is the
+// one that owns the claim; the empty state no longer repeats it.
+//
+// Three states, not two, and they must not collapse into each other:
+//   - loading: nothing has loaded yet, not even whether the inventory
+//     exists. No claim is made.
+//   - unavailable (isError): the request itself failed. The inventory list
+//     below is also missing, not just its timestamp, and nothing about a
+//     sync fixes a broken request -- that is different advice for a
+//     different problem, and the PageError body already says why.
+//   - unknown (asOf === null but the request succeeded): the inventory itself
+//     did load, and is real, but this control plane has no genuine
+//     collection time for it yet. Falling into FreshnessBadge's generic
+//     "Never" here would assert the inventory was never collected, which is
+//     false, and would read as an alarm across an entire fleet on the day
+//     this ships. "Unknown, and here is what clears it" is the true claim.
+function UpdatesAsOf({
+  isPending,
+  isError,
+  asOf,
+}: {
+  isPending: boolean;
+  isError: boolean;
+  asOf: string | null;
+}) {
+  if (isPending) return null;
+
+  if (isError) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        Inventory age unavailable. The update check did not load.
+      </span>
+    );
+  }
+
+  if (asOf === null) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        Inventory age unknown. Clears after this site&rsquo;s next sync,
+        usually within 30 minutes.
+      </span>
+    );
+  }
+  return <FreshnessBadge collectedAt={asOf} />;
+}
+
 export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
   const { data, isPending, isError, error, refetch, isFetching } =
     useAvailableUpdates(siteId);
@@ -172,7 +232,11 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
             ) : null}
           </div>
           <div className="text-xs">
-            <FreshnessBadge collectedAt={data?.as_of ?? null} />
+            <UpdatesAsOf
+              isPending={isPending}
+              isError={isError}
+              asOf={data?.as_of ?? null}
+            />
           </div>
         </div>
         <Button
@@ -272,7 +336,10 @@ function UpdatesBody({
           <p className="text-sm font-medium text-[var(--color-foreground)]">
             All managed components are up to date
           </p>
-          <FreshnessBadge collectedAt={data.as_of ?? null} />
+          {/* The freshness/age claim is rendered once, in the header above
+              (UpdatesAsOf), which is the only spot that renders in every
+              query state. Repeating it here would show the same sentence
+              twice on screen whenever a site has no outstanding updates. */}
         </div>
       ) : (
         <div className="space-y-3">
