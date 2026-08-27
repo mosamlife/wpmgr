@@ -94,6 +94,15 @@ func adr064SeedFixture(t *testing.T, pool *db.Pool, admin *db.Pool) adr064Fixtur
 	f.siteB = adr064SeedSite(t, admin, f.tenant)
 
 	if err := pool.InTenantTx(ctx, f.tenant, func(tx pgx.Tx) error {
+		// The fixture must be built by the APPLICATION role, not the superuser
+		// pool. This is the sharper half of the CodeRabbit finding: rows
+		// inserted by an owner or a BYPASSRLS role never run the policies'
+		// WITH CHECK on the way in, so the fixture would prove nothing about
+		// insert-time enforcement and a broken WITH CHECK could ship unnoticed.
+		// Seeding through InTenantTx as wpmgr_app means these very INSERTs are
+		// themselves an assertion that the write path works for a legitimate
+		// principal.
+		adr064AssertUnprivilegedRole(t, tx)
 		if _, e := tx.Exec(ctx,
 			`INSERT INTO org_context_versions
 			   (tenant_id, version, restrictions, guidance, author_type, author_id, provenance)
@@ -129,8 +138,80 @@ func adr064SeedFixture(t *testing.T, pool *db.Pool, admin *db.Pool) adr064Fixtur
 // RESTRICTIVE policy's first branch into a tautology and hands the caller the
 // whole organisation. Every assertion below must go red when that is done; any
 // that still passes is not testing the policy.
-func adr064AsCollaborator(pool *db.Pool, tenant uuid.UUID, sites []uuid.UUID, fn func(tx pgx.Tx) error) error {
-	return pool.InScopedTenantTx(context.Background(), tenant, uuid.Nil, sites, fn)
+func adr064AsCollaborator(t *testing.T, pool *db.Pool, tenant uuid.UUID, sites []uuid.UUID, fn func(tx pgx.Tx) error) error {
+	t.Helper()
+	return pool.InScopedTenantTx(context.Background(), tenant, uuid.Nil, sites, func(tx pgx.Tx) error {
+		// PRECONDITIONS, CHECKED INSIDE THE TRANSACTION THAT MAKES THE CLAIM.
+		// Raised by CodeRabbit on PR #562, and the point is sound even though
+		// both conditions already held: without these, every assertion in this
+		// file is conditional on setup it inherits and never verifies. A harness
+		// change that connected as the owner, or a helper that stopped setting
+		// app.site_scope, would leave the policies inert and the whole file
+		// green -- which is the exact failure this codebase has shipped before.
+		adr064AssertUnprivilegedRole(t, tx)
+		adr064AssertSiteScopeActive(t, tx, sites)
+		return fn(tx)
+	})
+}
+
+// adr064AssertUnprivilegedRole fails the test unless the transaction is running
+// as the real application role.
+//
+// A superuser, or any role holding BYPASSRLS, ignores every policy in this
+// file. Under that role each proof passes without exercising anything, and
+// passes LOUDLY -- there is no symptom to notice. The role is therefore checked
+// from inside the transaction doing the work rather than assumed from how the
+// pool was built.
+func adr064AssertUnprivilegedRole(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	var role string
+	var super, bypass bool
+	if err := tx.QueryRow(context.Background(),
+		`SELECT current_user, rolsuper, rolbypassrls
+		   FROM pg_roles WHERE rolname = current_user`).Scan(&role, &super, &bypass); err != nil {
+		t.Fatalf("read the connection's own role: %v", err)
+	}
+	if super || bypass {
+		t.Fatalf("this proof is running as %q with rolsuper=%v rolbypassrls=%v. "+
+			"Either one bypasses every RLS policy on these tables, so every assertion "+
+			"in this file would pass without testing anything", role, super, bypass)
+	}
+	if role != "wpmgr_app" {
+		t.Fatalf("this proof is running as %q, not wpmgr_app. wpmgr_app is the role every "+
+			"real install connects as, and the only one these proofs describe", role)
+	}
+}
+
+// adr064AssertSiteScopeActive fails the test unless the site-scope GUCs are
+// actually in force, with the allowlist the caller asked for.
+//
+// InScopedTenantTx sets them with set_config(..., true) -- transaction-local,
+// so they cannot leak between tests on a pooled connection. That is the
+// property being pinned: if the GUC were ever set session-wide, or the helper
+// stopped setting it, the RESTRICTIVE policies' first branch becomes a
+// tautology and every site-scope assertion here silently stops testing a
+// boundary.
+func adr064AssertSiteScopeActive(t *testing.T, tx pgx.Tx, want []uuid.UUID) {
+	t.Helper()
+	var scope, allowed string
+	if err := tx.QueryRow(context.Background(),
+		`SELECT coalesce(current_setting('app.site_scope', true), ''),
+		        coalesce(current_setting('app.allowed_site_ids', true), '')`).
+		Scan(&scope, &allowed); err != nil {
+		t.Fatalf("read the site-scope GUCs: %v", err)
+	}
+	if scope != "on" {
+		t.Fatalf("app.site_scope is %q, want \"on\". The RESTRICTIVE policies short-circuit to a "+
+			"tautology when it is anything else, so this proof would assert nothing", scope)
+	}
+	ids := make([]string, len(want))
+	for i, id := range want {
+		ids[i] = id.String()
+	}
+	if got := strings.Join(ids, ","); allowed != got {
+		t.Fatalf("app.allowed_site_ids is %q, want %q; the collaborator is not scoped to the "+
+			"sites this test believes it granted", allowed, got)
+	}
 }
 
 // These two tables are protected by TWO INDEPENDENT LAYERS, and the whole
@@ -260,7 +341,7 @@ func TestADR064_SiteScope_ReadIsConfinedToTheGrantedSite(t *testing.T) {
 
 	f := adr064SeedFixture(t, pool, admin)
 
-	if err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+	if err := adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 		if n := adr064CountVisible(t, tx, `SELECT count(*) FROM site_context_versions`); n != 1 {
 			t.Errorf("a collaborator invited to ONE site sees %d site context versions, want 1", n)
 		}
@@ -289,7 +370,7 @@ func TestADR064_SiteScope_CannotAuthorContextForAnotherSite(t *testing.T) {
 	f := adr064SeedFixture(t, pool, admin)
 
 	var insertErr error
-	_ = adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+	_ = adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 		_, insertErr = tx.Exec(ctx,
 			`INSERT INTO site_context_versions
 			   (tenant_id, site_id, version, restrictions, author_type, author_id, provenance)
@@ -334,7 +415,7 @@ func TestADR064_OrgContext_SiteScopedCollaboratorMayRead(t *testing.T) {
 
 	f := adr064SeedFixture(t, pool, admin)
 
-	if err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+	if err := adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 		n := adr064CountVisible(t, tx, `SELECT count(*) FROM org_context_versions`)
 		if n != 1 {
 			t.Errorf("a site-scoped collaborator sees %d organisation context versions, want 1. "+
@@ -357,7 +438,7 @@ func TestADR064_OrgContext_SiteScopedCollaboratorCannotAuthor(t *testing.T) {
 	f := adr064SeedFixture(t, pool, admin)
 
 	var insertErr error
-	_ = adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+	_ = adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 		_, insertErr = tx.Exec(ctx,
 			`INSERT INTO org_context_versions
 			   (tenant_id, version, restrictions, author_type, author_id, provenance)
@@ -580,7 +661,7 @@ func TestADR064_OrgContext_WriteGatesSurviveARestoredGrant(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var affected int64
-			err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+			err := adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 				tag, e := tx.Exec(ctx, tc.sql)
 				if e != nil {
 					return e
@@ -643,7 +724,7 @@ func TestADR064_SiteContext_WriteGatesSurviveARestoredGrant(t *testing.T) {
 	adr064GrantWriteBack(t, admin)
 
 	var affected int64
-	if err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+	if err := adr064AsCollaborator(t, pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
 		tag, e := tx.Exec(ctx,
 			`UPDATE site_context_versions SET guidance = '{"brand_voice":"seized"}'::jsonb
 			  WHERE site_id = $1`, f.siteB)
