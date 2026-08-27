@@ -193,6 +193,106 @@ final class MetadataCommandTest extends TestCase
         $this->assertArrayHasKey('core_update', $data);
     }
 
+    // ---- Network-activated plugins (multisite) -----------------------------
+
+    /**
+     * A plugin network-activated via
+     * `get_site_option('active_sitewide_plugins')` must be reported active
+     * even though it never appears in `get_option('active_plugins')` — that
+     * option only ever holds per-site activations, and network activation
+     * lives in a different option with a different shape (a map keyed by
+     * plugin file, not a list). Before the fix this asserted true and
+     * failed because plugins() consulted only active_plugins.
+     */
+    public function test_plugins_reports_active_for_network_activated_plugin(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(true);
+        Functions\when('get_option')->alias(static function ($name) {
+            // Network-activated plugin does NOT appear in active_plugins.
+            return $name === 'active_plugins' ? [] : false;
+        });
+        Functions\when('get_site_option')->alias(static function ($name, $default = false) {
+            return $name === 'active_sitewide_plugins'
+                ? ['network-builder/network-builder.php' => 1700000000]
+                : $default;
+        });
+        Functions\when('get_plugins')->justReturn([
+            'network-builder/network-builder.php' => ['Name' => 'Network Builder', 'Version' => '2.0'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_site_transient')->justReturn(false);
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertCount(1, $data['plugins']);
+        $this->assertTrue(
+            $data['plugins'][0]['active'],
+            'a network-activated plugin must report active=true even though active_plugins is empty'
+        );
+    }
+
+    /**
+     * Over-fire guard: a plugin active only on the current subsite (present
+     * in active_plugins, absent from active_sitewide_plugins) must still
+     * report active — adding the network-activation union must not disturb
+     * the existing per-site signal.
+     */
+    public function test_plugins_reports_active_for_subsite_only_plugin_on_multisite(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(true);
+        Functions\when('get_option')->alias(static function ($name) {
+            return $name === 'active_plugins' ? ['subsite-only/subsite-only.php'] : false;
+        });
+        Functions\when('get_site_option')->alias(static function ($name, $default = false) {
+            return $name === 'active_sitewide_plugins' ? [] : $default;
+        });
+        Functions\when('get_plugins')->justReturn([
+            'subsite-only/subsite-only.php' => ['Name' => 'Subsite Only', 'Version' => '1.0'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_site_transient')->justReturn(false);
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertCount(1, $data['plugins']);
+        $this->assertTrue($data['plugins'][0]['active']);
+    }
+
+    /**
+     * Over-fire guard: a plugin present in NEITHER active_plugins nor
+     * active_sitewide_plugins must still report inactive — the union must
+     * not flip every installed plugin to active on a multisite request.
+     */
+    public function test_plugins_reports_inactive_for_plugin_active_nowhere_on_multisite(): void
+    {
+        Functions\when('get_bloginfo')->justReturn('6.5.2');
+        Functions\when('is_multisite')->justReturn(true);
+        Functions\when('get_option')->alias(static function ($name) {
+            return $name === 'active_plugins' ? [] : false;
+        });
+        Functions\when('get_site_option')->alias(static function ($name, $default = false) {
+            return $name === 'active_sitewide_plugins' ? [] : $default;
+        });
+        Functions\when('get_plugins')->justReturn([
+            'dormant/dormant.php' => ['Name' => 'Dormant', 'Version' => '1.0'],
+        ]);
+        Functions\when('wp_get_themes')->justReturn([]);
+        Functions\when('get_stylesheet')->justReturn('twentytwentyfour');
+        Functions\when('get_site_transient')->justReturn(false);
+        Functions\when('get_core_updates')->justReturn([]);
+
+        $data = (new MetadataCommand())->collect();
+
+        $this->assertCount(1, $data['plugins']);
+        $this->assertFalse($data['plugins'][0]['active']);
+    }
+
     public function test_plugins_include_available_update_when_transient_has_entry(): void
     {
         Functions\when('get_bloginfo')->justReturn('6.5.2');
