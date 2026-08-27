@@ -848,21 +848,42 @@ five minutes, or five months, later. A foreclosure checked once, at
 creation, and never again is not a foreclosure; it is a snapshot with a
 foreclosure's name on it.
 
-**So the runtime posture is: verify at use, not only at creation.** Every
-content command that sets the service user as `current_user` first reads
-that user's live capability set and compares it to the declared set this
-ADR names above. A match proceeds. Any drift — a capability present that
-should be absent, most importantly `unfiltered_html` — refuses the command
-outright with a typed `principal_capabilities_drifted` error naming the
-site, the extra capability found, and a remediation path (recreate the role
-from the declared set), before any content operation runs. **Never a silent
+**So the runtime posture is: verify at use, not only at creation — and the
+check and the write share one capability snapshot, never two.** The order
+is fixed to close a gap a race would otherwise open: every content command
+calls `wp_set_current_user()` for the service user **first**, then reads
+the capability set off that same, now-instantiated user object — never a
+separate lookup taken before `current_user` is set. This matters because a
+WordPress user object's `allcaps` is computed once, at instantiation, from
+whatever the role tables say at that instant, and does not re-query the
+database for the rest of the request even if a role changes underneath it
+mid-request. Reading the check from anything other than that one object —
+a pre-check `get_userdata()` call, say, made before `current_user` is set —
+would open exactly the window a concurrent role edit could land in between
+the check and the write. Reading it from the object that is *already*
+`current_user` closes that window by construction: the same frozen
+snapshot both authorizes the check and executes the write, including
+whatever a third-party `save_post` hook's own `current_user_can()` call
+consults later in the same request, so nothing downstream can observe a
+role that mutated after this command started.
+
+A match proceeds. Any drift — a capability present that should be absent,
+most importantly `unfiltered_html` — refuses the command outright with a
+typed `principal_capabilities_drifted` error naming the site, the extra
+capability found, and a remediation path (recreate the role from the
+declared set), before any content operation runs. **Never a silent
 continuation on the capabilities the role happens to have now**: a write
 that executes because the drift was not checked is the exact failure this
 ADR's whole "not really privileged" claim was built to prevent, arriving by
 a path the original five attacks did not cover. This check is cheap — one
 capability-set comparison already available from the WordPress role object,
-on the same request that is about to set `current_user` — so there is no
-performance argument for checking it only at creation.
+on the same request that just set `current_user` — so there is no
+performance argument for checking it only at creation, and no correctness
+argument for checking it before `current_user` is set rather than after.
+The role-mutation attack in the list above is planted against this exact
+sequence: mutate the role, then invoke a content command, and assert the
+refusal fires from the live object's own capability set, not from a value
+read earlier in the request.
 
 **It is deletable by the site's own admin, and that breaks content writes.**
 That is correct behaviour — the site owner is sovereign over their own
