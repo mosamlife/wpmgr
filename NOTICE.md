@@ -21,6 +21,13 @@ CSS and JS minification uses
 [`matthiasmullie/minify`](https://github.com/matthiasmullie/minify) (^1.3, MIT), a
 small pure-PHP library bundled with the agent's Composer dependencies.
 
+### matthiasmullie/path-converter (MIT)
+
+[`matthiasmullie/path-converter`](https://github.com/matthiasmullie/path-converter)
+(~1.1, MIT) is a Composer dependency of `matthiasmullie/minify` above (relative
+path rewriting for minified CSS `url()` references), installed transitively into
+the agent's vendor tree. Copyright (c) 2015 Matthias Mullie.
+
 ### Remove Unused CSS (RUCSS)
 
 WPMgr's RUCSS engine is a pure-Go implementation on the control plane. There is no
@@ -51,6 +58,14 @@ The agent's password-strength policy uses
 [`bjeavons/zxcvbn-php`](https://github.com/bjeavons/zxcvbn-php) (^1.4, MIT), a
 pure-PHP port of zxcvbn, bundled with the agent's Composer dependencies.
 Copyright (c) 2013-2014 Benjamin Jeavons.
+
+### symfony/polyfill-mbstring (MIT)
+
+[`symfony/polyfill-mbstring`](https://github.com/symfony/polyfill-mbstring)
+(>=1.3.1, MIT) is a Composer dependency of `bjeavons/zxcvbn-php` above (mbstring
+functions on PHP builds without the extension), installed transitively into the
+agent's vendor tree. Copyright (c) 2015-present Fabien Potencier and
+contributors.
 
 ## Media Optimizer
 
