@@ -322,6 +322,15 @@ export type SiteAvailableUpdates = {
     tested?: string | null;
     requires_php?: string | null;
   }>;
+  /**
+   * GH #553 — sites.components_updated_at: the control-plane instant this
+   * inventory was last collected (stamped by the agent metadata push that
+   * wrote `components`, never by the connection heartbeat). Explicit null
+   * when the inventory has never been collected; never falls back to the
+   * site's general updated_at, which the heartbeat bumps independently of
+   * components and would silently overstate freshness.
+   *
+   */
   as_of?: string | null;
 };
 

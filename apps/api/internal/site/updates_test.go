@@ -17,7 +17,7 @@ import (
 //   - sorts plugins before themes; within each kind, active before inactive,
 //     ties broken by slug
 //   - attaches the optional CoreUpdate from the JSONB inventory
-//   - stamps as_of from sites.updated_at
+//   - stamps as_of from sites.components_updated_at (GH #553)
 //   - GH #211: drops a same-version phantom advisory (available_update.new_version
 //     == the component's own Version) from both Items and the item count, while
 //     a legitimate newer advisory still surfaces, and an advisory on a component
@@ -59,7 +59,11 @@ func TestBuildAvailableUpdatesFiltersAndSorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal inventory: %v", err)
 	}
-	s := Site{ID: siteID, Components: raw, UpdatedAt: updatedAt}
+	// UpdatedAt is deliberately different from ComponentsUpdatedAt so this test
+	// would catch a regression to the GH #553 fallback: as_of must come from
+	// the latter, never the former.
+	heartbeatAt := updatedAt.Add(5 * time.Minute)
+	s := Site{ID: siteID, Components: raw, UpdatedAt: heartbeatAt, ComponentsUpdatedAt: &updatedAt}
 
 	out := buildAvailableUpdates(s)
 	if out.SiteID != siteID {
@@ -141,6 +145,76 @@ func TestBuildAvailableUpdatesEmptyInventory(t *testing.T) {
 	}
 	if out.CoreUpdate.Set && !out.CoreUpdate.IsNull() {
 		t.Fatalf("core_update should be unset on empty inventory: %+v", out.CoreUpdate)
+	}
+}
+
+// GH #553 — as_of must report when the inventory was collected
+// (components_updated_at), never when the site last said hello (updated_at,
+// bumped every 60s by TouchSiteHeartbeat regardless of whether components
+// ever changes). Three states, proved individually:
+
+// TestBuildAvailableUpdatesAsOfFreshInventory: components_updated_at is set,
+// so as_of must carry it.
+func TestBuildAvailableUpdatesAsOfFreshInventory(t *testing.T) {
+	siteID := uuid.New()
+	collectedAt := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	s := Site{ID: siteID, ComponentsUpdatedAt: &collectedAt}
+
+	out := buildAvailableUpdates(s)
+
+	if !out.AsOf.Set || out.AsOf.IsNull() {
+		t.Fatalf("as_of must be a set, non-null value when the inventory has been collected: %+v", out.AsOf)
+	}
+	if !out.AsOf.Value.Equal(collectedAt) {
+		t.Fatalf("as_of = %v, want components_updated_at %v", out.AsOf.Value, collectedAt)
+	}
+}
+
+// TestBuildAvailableUpdatesAsOfNeverCollected: components_updated_at is NULL
+// (every pre-m121 row, and any site whose agent has never pushed metadata)
+// while updated_at is fresh, because the connection heartbeat keeps bumping it
+// on its own 60s cycle. as_of must surface the absence explicitly — not a zero
+// time, not an omitted field, and above all not the heartbeat's timestamp. A
+// fallback to UpdatedAt here IS the GH #553 defect, silently recreated.
+func TestBuildAvailableUpdatesAsOfNeverCollected(t *testing.T) {
+	siteID := uuid.New()
+	heartbeatAt := time.Now().UTC() // a live site's fresh row mtime
+	s := Site{ID: siteID, UpdatedAt: heartbeatAt, ComponentsUpdatedAt: nil}
+
+	out := buildAvailableUpdates(s)
+
+	if !out.AsOf.Set || !out.AsOf.IsNull() {
+		t.Fatalf("as_of must be an explicit wire null when the inventory has never been collected: %+v", out.AsOf)
+	}
+	// The whole bug: the field must not carry the heartbeat time under any
+	// name. IsNull() already implies a zeroed Value, but assert it by name
+	// too, since this is the exact regression a UpdatedAt fallback reintroduces.
+	if out.AsOf.Value.Equal(heartbeatAt) {
+		t.Fatalf("as_of must not be sites.updated_at (the heartbeat time): got %v", out.AsOf.Value)
+	}
+}
+
+// TestBuildAvailableUpdatesAsOfStaleInventory is the failure scenario from GH
+// #553 itself: components_updated_at is old (the agent's WP-Cron died months
+// ago) while updated_at is seconds old (the connection heartbeat never
+// stopped). as_of must report the old collection time, not the fresh
+// heartbeat — the case a fallback to UpdatedAt would silently get wrong.
+func TestBuildAvailableUpdatesAsOfStaleInventory(t *testing.T) {
+	siteID := uuid.New()
+	staleCollectedAt := time.Now().UTC().AddDate(0, -3, 0) // 3 months stale
+	freshHeartbeatAt := time.Now().UTC()                   // seconds old
+	s := Site{ID: siteID, UpdatedAt: freshHeartbeatAt, ComponentsUpdatedAt: &staleCollectedAt}
+
+	out := buildAvailableUpdates(s)
+
+	if !out.AsOf.Set || out.AsOf.IsNull() {
+		t.Fatalf("as_of must be a set, non-null value for a stale-but-collected inventory: %+v", out.AsOf)
+	}
+	if !out.AsOf.Value.Equal(staleCollectedAt) {
+		t.Fatalf("as_of = %v, want the stale components_updated_at %v", out.AsOf.Value, staleCollectedAt)
+	}
+	if out.AsOf.Value.Equal(freshHeartbeatAt) {
+		t.Fatalf("as_of must not report the fresh heartbeat time (updated_at) for a stale inventory")
 	}
 }
 

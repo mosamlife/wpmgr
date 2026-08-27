@@ -44633,7 +44633,12 @@ type SiteAvailableUpdates struct {
 	SiteID     uuid.UUID                            `json:"site_id"`
 	CoreUpdate OptNilSiteAvailableUpdatesCoreUpdate `json:"core_update"`
 	Items      []SiteAvailableUpdatesItemsItem      `json:"items"`
-	AsOf       OptNilDateTime                       `json:"as_of"`
+	// GH #553 — sites.components_updated_at: the control-plane instant this inventory was last collected
+	// (stamped by the agent metadata push that wrote `components`, never by the connection heartbeat).
+	// Explicit null when the inventory has never been collected; never falls back to the site's general
+	// updated_at, which the heartbeat bumps independently of components and would silently overstate
+	// freshness.
+	AsOf OptNilDateTime `json:"as_of"`
 }
 
 // GetSiteID returns the value of SiteID.

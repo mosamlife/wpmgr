@@ -1016,6 +1016,12 @@ func toModel(s sqlc.Site) Site {
 		t := s.MonitoringResumeAt.Time
 		m.MonitoringResumeAt = &t
 	}
+	// m121 / GH #553 — nil means the inventory has never been collected; do not
+	// default it to CreatedAt/UpdatedAt.
+	if s.ComponentsUpdatedAt.Valid {
+		t := s.ComponentsUpdatedAt.Time
+		m.ComponentsUpdatedAt = &t
+	}
 	return m
 }
 
@@ -1090,6 +1096,7 @@ func toModelFromGetSiteRow(row sqlc.GetSiteRow) Site {
 		Multisite:             row.Multisite,
 		ActiveTheme:           row.ActiveTheme,
 		Components:            row.Components,
+		ComponentsUpdatedAt:   row.ComponentsUpdatedAt,
 		Tags:                  row.Tags,
 		AgeRecipient:          row.AgeRecipient,
 		WpTimezone:            row.WpTimezone,
@@ -1139,6 +1146,7 @@ func toModelFromListSitesRow(row sqlc.ListSitesRow) Site {
 		Multisite:             row.Multisite,
 		ActiveTheme:           row.ActiveTheme,
 		Components:            row.Components,
+		ComponentsUpdatedAt:   row.ComponentsUpdatedAt,
 		Tags:                  row.Tags,
 		AgeRecipient:          row.AgeRecipient,
 		WpTimezone:            row.WpTimezone,
