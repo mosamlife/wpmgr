@@ -1,10 +1,12 @@
 # ADR-064 — Governed per-site and organisation context
 
 **Status:** Proposed · **Date:** 2026-08-27
-**Supersedes/relates:** ADR-060 (unaffected; this work is internal and is not
-gated by its freeze clause — see Relationship, below), ADR-061 (extends the
-facts-vs-instructions boundary drawn in its Decision 3 into a stored,
-versioned, editable surface; reopens none of its seven decisions)
+**Supersedes/relates:** ADR-060 (argued, under an interpretation of its
+undefined term "surface" rather than a settled reading, as not gated by its
+freeze clause — see Relationship, below, including the flag that this
+interpretation may belong in a superseding ADR-060 amendment), ADR-061
+(extends the facts-vs-instructions boundary drawn in its Decision 3 into a
+stored, versioned, editable surface; reopens none of its seven decisions)
 
 This ADR records the decision to build governed, persistent, per-site and
 per-organisation context: human-authored information about a site or an
@@ -13,8 +15,11 @@ ADR-061, and whatever reads or writes content after it — is handed as input
 alongside what it observes for itself. It fixes the vocabulary for four
 related but distinct kinds of context so they stop being blurred together,
 and it fixes the precedence order across all seven layers of information a
-model can end up holding, two of which ADR-061 already shipped and five of
-which this ADR is the first record of.
+model can end up holding, two of which ADR-061 already specified as part of
+its accepted design and five of which this ADR is the first record of. (As
+Decision 7 and Decision 11 below note, "ADR-061 specified it" and "it is
+running today" are different claims — the two inherited layers are decided,
+not deployed.)
 
 ---
 
@@ -51,9 +56,13 @@ security difference each time it happens.
   about a site — builder, plugins, versions, theme, capabilities — reported,
   not authored. Facts, never instructions: a plugin name is a data field the
   model reads, and it does not get to change what the model is permitted to
-  do, in exactly the sense ADR-061 Decision 3 already established for tool
-  output. This ADR reuses that boundary rather than drawing a second one for
-  context specifically.
+  do. ADR-061 Decision 3 establishes that same non-authority posture for the
+  approval screen specifically — control-plane-derived facts only, with
+  model-authored text confined to one quarantined slot (ADR-061:174-178) —
+  and this ADR generalises it from that one screen to detected facts
+  wherever they reach the model, rather than drawing a second, unrelated
+  boundary for context. ADR-061 does not itself make a general claim about
+  tool output; that generalisation is this ADR's, not an inherited one.
 - **Learned memory.** Information automatically inferred and saved from
   previous work, with no human review of the specific claim before it starts
   shaping a later run. **This is not being built.** See the dedicated
@@ -97,6 +106,22 @@ in this paragraph.
 **A lower layer can never widen a higher one.** This is the one property in
 this document that outranks every other detail in it, and it is worth being
 precise about why.
+
+**This property is mechanically enforced for restrictions and advisory only
+for guidance, and that split is itself part of what is being decided here,
+not a downstream cost of deciding it.** Decision 3 splits every field on the
+two context tables into two kinds: restrictions, a closed structured set
+where "does this edit widen what a higher layer set" is a well-defined
+comparison, and guidance, free text where "wider" and "narrower" are not
+defined relations. Decision 4's write-time rejection can only ever apply to
+the first kind — a machine can refuse a widening restriction because it can
+name the comparison it is making; it cannot refuse a widening *tone*,
+because no such comparison exists to run. A site's guidance can still read
+as pulling against an organisation's intent in prose, and nothing here
+catches that mechanically. Calling this a limitation discovered later, in
+the trade-offs, would misstate it: it is a boundary of what "never widen"
+can mean for free text, fixed by Decision 3's split, at the same moment the
+guarantee itself is stated.
 
 Every other decision below — the write-time check that rejects a widening
 edit, the fail-closed audit, the effective-context preview, the
@@ -255,13 +280,21 @@ opening by default the moment it is.
 
 ## Decision 7 — Audit is fail-closed here too, because the ledger entry is the product claim
 
-Every context write — org, site, or restore — produces one row in the
+Every context write — org, site, or restore — must produce one row in the
 existing hash-chained audit log, in the same transaction as the version
 row. **If the audit append fails, the version write fails with it; nothing
-commits.** This is the same posture ADR-061 Decision 2 adopted for
-approvals, and it departs from this codebase's best-effort audit convention
-for the same reason: on most paths, a lost audit row degrades an
-investigation after the fact, and refusing the underlying action over it
+commits.** This is the same posture ADR-061 Decision 2 adopted, on paper,
+for approvals — and in both places it is a decision, not yet a mechanism.
+`apps/api/internal/audit/audit.go:498-500` documents the recorder as
+best-effort today: "callers should log but not fail the request if Record
+errors, except where the audit trail is itself the point." No fail-closed
+variant of that recorder exists in the codebase, for approvals or for
+anything else. This ADR and ADR-061's approval path both need the identical
+new primitive — a transactional, fail-closed audit append — and neither one
+already has it; building it is required new work, not a reuse of something
+ADR-061 already shipped. This departs from this codebase's best-effort audit
+convention for a specific reason: on most paths, a lost audit row degrades
+an investigation after the fact, and refusing the underlying action over it
 would be a worse outcome than a gap in the log. That trade is wrong here.
 
 The differentiator this feature exists to support is that an operator, or
@@ -350,10 +383,18 @@ passes through, not a validation layer that a second entry point could miss.
 ## Decision 11 — Prompt-injection defence assumes injection succeeds
 
 The full resolved context — every layer that survived Decision 4's
-resolution — reaches the model inside a single quarantined block, marked
-untrusted, using the same per-response-nonce fencing ADR-061 already proved
-in production for site-origin text and skill content. This is a reuse of an
-existing, working mechanism, not a second bespoke one for context.
+resolution — must reach the model inside a single quarantined block, marked
+untrusted, using the per-response-nonce fencing scheme ADR-061 specifies for
+site-origin text. **That fencing does not exist yet.** ADR-061 lists the two
+sanitizers that implement it — one for text on its way to the model, one for
+text on its way to a human — under "What has to exist before v1 ships"
+(ADR-061:544,548-550), and its own verification note records the surface
+they belong to as unshipped (ADR-061:570-572). ADR-061 also never mentions
+skill content anywhere in its text, so nothing about how skill instructions
+would be fenced can be read off it. This ADR reuses the *design*, not an
+existing working mechanism — the fencing this decision depends on is
+required new work, shared with ADR-061 and with ADR-062's content-operations
+design, not a dependency this ADR can treat as already satisfied.
 
 **Every layer goes inside the fence, including the human-authored ones.**
 Layers 2 and 3 are written by an operator with a real write credential, and
@@ -441,23 +482,23 @@ dashboard API — not the externally-reachable assistant surface from
 ADR-061. See Relationship, below, for why that placement matters.
 
 ```
-GET    /v1/orgs/{orgId}/context                              current org context (layer 2)
-PATCH  /v1/orgs/{orgId}/context                               partial field write -> new version
-GET    /v1/orgs/{orgId}/context/versions                     paginated history
-GET    /v1/orgs/{orgId}/context/versions/{versionId}         one version's full snapshot
-GET    /v1/orgs/{orgId}/context/versions/{versionId}/diff    diff against the prior version
-POST   /v1/orgs/{orgId}/context/versions/{versionId}/restore new version = that version's content
+GET    /api/v1/orgs/{orgId}/context                              current org context (layer 2)
+PATCH  /api/v1/orgs/{orgId}/context                               partial field write -> new version
+GET    /api/v1/orgs/{orgId}/context/versions                     paginated history
+GET    /api/v1/orgs/{orgId}/context/versions/{versionId}         one version's full snapshot
+GET    /api/v1/orgs/{orgId}/context/versions/{versionId}/diff    diff against the prior version
+POST   /api/v1/orgs/{orgId}/context/versions/{versionId}/restore new version = that version's content
 
-GET    /v1/sites/{siteId}/context                             current site context (layer 3)
-PATCH  /v1/sites/{siteId}/context                              partial field write -> new version
-GET    /v1/sites/{siteId}/context/versions                     paginated history
-GET    /v1/sites/{siteId}/context/versions/{versionId}         one version's full snapshot
-GET    /v1/sites/{siteId}/context/versions/{versionId}/diff    diff against the prior version
-POST   /v1/sites/{siteId}/context/versions/{versionId}/restore new version = that version's content
+GET    /api/v1/sites/{siteId}/context                             current site context (layer 3)
+PATCH  /api/v1/sites/{siteId}/context                              partial field write -> new version
+GET    /api/v1/sites/{siteId}/context/versions                     paginated history
+GET    /api/v1/sites/{siteId}/context/versions/{versionId}         one version's full snapshot
+GET    /api/v1/sites/{siteId}/context/versions/{versionId}/diff    diff against the prior version
+POST   /api/v1/sites/{siteId}/context/versions/{versionId}/restore new version = that version's content
 
-GET    /v1/sites/{siteId}/context/effective                    Decision 8's preview: all seven
-                                                                 layers resolved, per-layer byte
-                                                                 accounting against Decision 9
+GET    /api/v1/sites/{siteId}/context/effective                    Decision 8's preview: all seven
+                                                                     layers resolved, per-layer byte
+                                                                     accounting against Decision 9
 ```
 
 `PATCH` accepts a partial set of fields; the server applies them onto the
@@ -517,9 +558,11 @@ gate:
 
 - a written threat model for agent-authored text re-entering the prompt on
   a later run;
-- the fenced-content model already proven in production for skills
-  (Decision 11 reuses it rather than inventing a second one) — the same
-  mechanism must be the one that carries learned memory when it exists;
+- the same fencing mechanism Decision 11 depends on and requires as new
+  work (it is specified by ADR-061 but not yet built there either, and
+  ADR-061 does not mention skill content at all) — that mechanism, once
+  built, must be the one that carries learned memory when it exists, not a
+  second bespoke one;
 - opt-in per organisation, never on by default for an existing tenant;
 - reviewable by a human before it takes effect on a later run, not after;
 - removable, at the granularity of a single inferred item, not only as an
@@ -542,29 +585,90 @@ Nothing here reorders ADR-060's phase precedence or touches its freeze
 clause's applicability, and nothing here reopens any of ADR-061's seven
 decisions.
 
-**This work is internal and is therefore not gated by ADR-060's freeze
-clause, even during a phase where an auth-boundary item may be open.** The
-freeze clause reads: "No new externally-reachable surface ships while an
-auth-boundary item is open." Every route in Decision 13 sits behind the
-same authenticated dashboard-API perimeter every other organisation and
-site settings endpoint already sits behind — a new resource on an existing,
-already-audited boundary, not a new boundary. ADR-061's assistant route is
-treated as a new externally-reachable surface precisely because its caller
-class is fundamentally different — a model, not an authenticated dashboard
-session — and it remains subject to the freeze clause on its own terms,
-unchanged by this ADR. Building context storage and its APIs during a
-safety phase is exactly what the freeze clause's narrowness was written to
-permit: it does not freeze feature work in general, only a new perimeter,
-and this ADR does not add one.
+**This work is argued here as not gated by ADR-060's freeze clause, even
+during a phase where an auth-boundary item may be open — but this is an
+interpretation of an undefined term, stated as one, not a settled fact.**
+The freeze clause reads: "No new externally-reachable surface ships while an
+auth-boundary item is open" (ADR-060:44). Its test is **surface**, and
+ADR-060 never defines that word; it also never uses "boundary" to name the
+test itself (the compound "auth-boundary" names which *category* of open
+item triggers the clause, per ADR-060's own five-item precedence list, not
+what the clause is testing for), and it never draws a caller-class
+distinction anywhere in its text. An earlier draft of this section argued
+the exemption on both of those absent grounds — "a new resource on an
+existing, already-audited boundary, not a new boundary" and a caller-class
+split from ADR-061's assistant route — and that argument is withdrawn here
+because it restated the clause in words ADR-060 does not use and then
+exempted this document from the restatement.
 
-This ADR extends ADR-061 Decision 3's facts-are-data-not-instructions
-boundary into a stored, versioned, human-editable surface, and reuses
-ADR-061 Decision 5's capability-registry pattern and ADR-061 Decision 6's
+The argument actually available is narrower, and rests on the word ADR-060
+does use. ADR-060 states its own scope explicitly: "This is deliberately
+narrow. It does not freeze feature work in general — internal work, and
+work that adds no new externally-reachable surface, is unaffected"
+(ADR-060:46-48), a boundary restated at :88-90 as "a standing check on any
+change that adds a new externally-reachable surface." Every route in
+Decision 13 is a new resource on the existing, already-authenticated
+dashboard API — the same perimeter every other organisation and site
+settings endpoint already answers on, using the same authentication this
+ADR adds no new mechanism for. Read against "does not freeze feature work in
+general," a new resource on an already-externally-reachable, already-audited
+perimeter is a plausible reading of *not* adding a new externally-reachable
+surface. ADR-061's assistant route is a new surface on any reading, because
+nothing answering on it today is externally reachable at all.
+
+**That plausible reading is still this document's interpretation of a term
+ADR-060 leaves undefined, not ADR-060 saying so.** Deciding what "surface"
+means for the freeze clause is a question about ADR-060, and answering it
+inside a section of ADR-064 sets a precedent that any later ADR could
+similarly interpret its way past the one absolute prohibition ADR-060
+states. If this reading is going to govern future cases beyond this one
+document, it belongs in a superseding ADR-060 amendment that defines
+"surface" once, reviewed as a change to ADR-060 itself — not settled
+ad hoc, document by document, by whichever ADR needs the exemption next.
+This document proceeds on the reading above for its own purposes, but does
+not treat that reading as binding on any future ADR; a later document
+claiming the same exemption should point at an ADR-060 amendment, not at
+this paragraph.
+
+This ADR's vocabulary leans on ADR-061 Decision 3, correctly attributed:
+that decision draws the line between control-plane-derived facts, which
+alone may appear on the approval surface, and model-authored text, which is
+confined to a single quarantined slot after the facts and before the
+controls (ADR-061:174-178). This ADR reuses that same discipline — a fixed,
+narrow rendering path for anything that is not control-plane-derived —
+rather than inventing a second one for context. It also reuses ADR-061
+Decision 5's capability-registry pattern and ADR-061 Decision 6's
 byte-budget reasoning rather than inventing parallel mechanisms for either.
 It does not touch ADR-061's site-scoping posture (Decision 4): context rows
 are scoped and resolved per site through the application-layer chokepoint
 that decision already established as this codebase's honest current state,
 not a database-level guarantee this ADR is claiming to add.
+
+**The two tables Decision 3 introduces are in scope for that same deferred
+migration, and are named here for that purpose.** ADR-061 Decision 4
+pre-commits the migration's scope to "adding site-scope restrictive policies
+to the tables above and to the proposal tables" (ADR-061:370-371); it does
+not and could not name this ADR's organisation-context and site-context
+tables, since they did not exist when it was written. Naming them here, in
+the ADR that creates them, is how that scope stays accurate without editing
+ADR-061 itself to add a forward reference to a document it predates. When
+the deferred migration lands, it is expected to add a restrictive site-scope
+policy — not merely tenant isolation — to both tables named in Decision 3,
+alongside everything ADR-061 already named.
+
+**Where resolved context reaches a human matters, and it is not the
+approval screen.** ADR-061:200-204 states that the proposal record's single
+quarantined note is "the only proposer-controlled free text anywhere in the
+schema" — a claim scoped to the proposal schema specifically. This ADR
+introduces a second body of operator-authored free text, the guidance
+fields of Decision 3 above, and that text is deliberately never rendered on
+ADR-061's approval screen: the human-facing surface for resolved context is
+Decision 8's effective-context preview, a separate, dashboard-only,
+operator-requested read, not a field on the proposal or approval record. A
+future change that let guidance text appear inline on the approval screen
+itself would put a second source of free text into the one schema ADR-061
+built around holding exactly one, and would need to revisit ADR-061:200-204
+explicitly rather than drift into it unannounced.
 
 ---
 
@@ -590,12 +694,13 @@ not a database-level guarantee this ADR is claiming to add.
 
 **What it costs.**
 
-- Guidance fields have no mechanical widen-check, by design (Decision 3,
-  Decision 4). A site-level edit to free text can still read as pulling
+- Guidance fields have no mechanical widen-check — this is a property of
+  Decision 1 itself, not a gap found afterward. The practical consequence
+  operators feel: a site-level edit to free text can still read as pulling
   against organisation intent even though it cannot touch a structured
-  restriction. This is accepted because a general-purpose text-widening
-  detector does not exist, and claiming to enforce one would be a check
-  that always passes without ever testing anything.
+  restriction, and a general-purpose text-widening detector does not exist
+  to catch it. Claiming to enforce one would be a check that always passes
+  without ever testing anything.
 - The effective-context preview (Decision 8) is only as trustworthy as its
   identity with the real resolution path. Keeping the two from drifting
   apart is an ongoing engineering discipline, not a one-time build cost.
@@ -627,3 +732,17 @@ not a database-level guarantee this ADR is claiming to add.
   run before merge — context is exactly the shape of tenant-scoped data
   ADR-061 Decision 4 already found this codebase gets wrong by default when
   it is not checked.
+- **A restrictive site-scope policy on both context tables, not only tenant
+  isolation**, delivered as part of the deferred migration ADR-061 Decision
+  4 named and this ADR extends to include them (see Relationship, above).
+  Tenant isolation alone would let any principal scoped to the tenant read
+  or resolve another site's context; the restrictive policy is what confines
+  a read to the sites a principal can actually see.
+- **The injection-fencing mechanism itself**, per Decision 11 — the two
+  sanitizers ADR-061 lists under its own "What has to exist before v1 ships"
+  (ADR-061:544,548-550). This ADR's quarantine in Decision 11 has nothing to
+  run against until that mechanism is built.
+- **A fail-closed audit-append path**, per Decision 7 — `Record()` in
+  `apps/api/internal/audit/audit.go` is best-effort today
+  (`apps/api/internal/audit/audit.go:498-500`), and no fail-closed variant
+  exists for this ADR's transaction or for ADR-061's approval path either.
