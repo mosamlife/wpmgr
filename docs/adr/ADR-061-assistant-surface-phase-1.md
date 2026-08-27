@@ -1,7 +1,7 @@
 # ADR-061 — Assistant surface, Phase 1: control-plane server and out-of-band approval
 
 **Status:** Accepted (amended 2026-08-23 and 2026-08-24) · **Date:** 2026-08-22
-**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation — and its freeze clause fixes the ordering *inside* this phase, per amendment A9, corroborated by ADR-060's own Amendment A1 defining "externally-reachable surface" for that clause), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — supersedes Decision 7 below, per amendment A7), ADR-063 (licensing and third-party reuse — its conclusion independently supports Decision 1's siting).
+**Supersedes/relates:** ADR-060 (this work sits in its "constrained automation" phase, ahead of differentiation — and its freeze clause fixes the ordering *inside* this phase, per amendment A9, corroborated by ADR-060's own Amendment A1 defining "externally-reachable surface" for that clause), ADR-057 (unaffected; the capability model here is a separate axis from per-site security policy), ADR-062 (Proposed — revisits Decision 7 below and will supersede it once Accepted, per amendment A7), ADR-063 (licensing and third-party reuse — its conclusion independently supports Decision 1's siting).
 
 This ADR records the locked Phase 1 design for the assistant surface: an
 endpoint on the control plane that lets an AI assistant read a fleet and
@@ -17,7 +17,8 @@ any part of it.
 on Decisions 1, 6 or 7.** The status stays Accepted and no decision text below
 was rewritten. Eight amendments are recorded at the end of this file: Decision 1
 is clarified rather than changed, Decision 6 is amended, Decision 7 is
-superseded by ADR-062, and four items ADR-061 was silent on are decided.
+revisited pending ADR-062's acceptance, and four items ADR-061 was silent on
+are decided.
 
 **Amended again 2026-08-24 — read [Amendments](#amendments-2026-08-24) before
 planning any Phase 1 work.** Five further amendments, A9 through A13. **A9 is the
@@ -476,14 +477,16 @@ prompt-level safety is not a boundary.
 
 ---
 
-## Decision 7 — Site generation is conceded — SUPERSEDED
+## Decision 7 — Site generation is conceded — REVISITED, PENDING ADR-062
 
-*Superseded 2026-08-23 by ADR-062 (Proposed), via amendment A7. The text below
-is kept as written and is no longer the standing decision. Its factual premise
-survives — Phase 1 writes no content, and no content write path exists in either
-process — but the conclusion drawn from that premise does not. Read
-[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md) instead;
-until ADR-062 is Accepted, no Phase 2 content code ships.*
+*Revisited 2026-08-23 by ADR-062 (Proposed), via amendment A7. The text below
+is kept as written and remains the standing decision: ADR-062 is Proposed, not
+Accepted, and a Proposed document supersedes nothing until it is accepted. Its
+factual premise survives — Phase 1 writes no content, and no content write path
+exists in either process — and the conclusion drawn from that premise is what
+[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md) argues
+against, for when it is accepted. Until then, no Phase 2 content code ships and
+this decision governs.*
 
 **Content writes and site generation are not scheduled, and this is a
 concession rather than a deferral.**
@@ -568,8 +571,9 @@ Amendments section below. The second sentence of the first bullet — per-site
 capability dispatched through the existing signed-command path — is activated
 rather than hypothetical (A1). The second bullet is bounded against scheduling:
 a scheduler that only proposes is permitted, and nothing scheduled may approve
-(A5). The last bullet is retired (A7); it remains true of Phase 1's scope and is
-no longer a statement about the product.*
+(A5). The last bullet is revisited, pending ADR-062's acceptance (A7); it
+remains true of Phase 1's scope, and stays a statement about the product until
+ADR-062's own acceptance narrows it.*
 
 **What it costs.**
 
@@ -938,31 +942,39 @@ not record. Closing that gap:
   Client handling of handshake instructions varies, and where an instruction
   budget is capped it is the tail that gets cut.
 
-### A7 — Decision 7 is superseded by ADR-062
+### A7 — Decision 7 is revisited by ADR-062, and will be superseded when ADR-062 is Accepted
 
 Decision 7 conceded content writes and site generation, and recorded the
 concession as permanent specifically so it would not be re-proposed each planning
-cycle by someone who had not read the reasoning. The reasoning is what failed.
+cycle by someone who had not read the reasoning. The reasoning is what this
+amendment challenges — it is not, itself, what retires the decision.
 
 Its premise was a fact about this tree — no content write path exists in either
 process — and that half is still true (A2). What Decision 7 drew from it was a
 *market* conclusion: that building one is "a product bet about entering a
-different market". That conclusion does not survive. Fleet content operations are
-already designed in this product's own published Phase 2 design surfaces, against
-a locked decision that forbids them; and the technical objection underneath the
+different market". That conclusion is what does not survive the argument in
+ADR-062: fleet content operations are designed there against exactly the locked
+decision that forbids them, and the technical objection underneath the
 concession rested on a test that was the wrong test, which ADR-062 states and
 replaces.
 
-**Decision 7 is superseded by
-[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md).** ADR-062
-is **Proposed**, not Accepted, and no Phase 2 content code ships until it is
-accepted. "Conceded rather than deferred" is retired and replaced by a scoped
-commitment recorded there.
+**Decision 7 is not superseded yet. It is revisited by
+[ADR-062](./ADR-062-assistant-surface-phase-2-content-operations.md), and will
+be superseded when ADR-062 is Accepted — not before.** ADR-062 is **Proposed**
+today, its own acceptance checklist carries open items, and a Proposed document
+does not retire a standing Accepted decision; only its own acceptance does.
+Until then, Decision 7's text above remains the standing decision, "conceded
+rather than deferred" included, and no Phase 2 content code ships. What this
+amendment records is the argument that will retire it on acceptance, so a
+future reader is pointed at ADR-062 rather than left to re-derive why the
+concession is being reconsidered at all.
 
 The Consequences bullet "Content and page-builder operations are outside this
-design entirely" is retired with it. It remains an accurate statement of *this*
-ADR's scope — Phase 1 writes no content — and it is no longer a statement about
-the product.
+design entirely" is under the same condition. It remains an accurate statement
+of *this* ADR's scope — Phase 1 writes no content — and it remains a statement
+about the product as a whole until ADR-062 is Accepted; ADR-062's own
+Consequences section says plainly that its acceptance, not its existence, is
+what retires that framing.
 
 ### A8 — Added to *Two things that were expensive to learn*
 
@@ -977,8 +989,9 @@ straight through it.
 
 A vendor documenting the limit of its own containment, on its own flagship
 feature, is better evidence than any argument we could construct: it is the
-claim's author conceding it. The exclusion stands unamended, and A3's Layer C is
-not a route back to it.
+claim's author conceding it. The exclusion stands unamended, and nothing in
+A3 — including the per-site dispatcher considered and rejected there — is a
+route back to it.
 
 ---
 
