@@ -125,6 +125,12 @@ normalize() {
 # like check-version-surfaces.sh's "missing" branch does not join its compare.
 SURFACES=''
 
+# The License URI declarations found so far, one per line: LABEL|FILE|URI.
+# Same rule as SURFACES: only a surface that passed its own checks joins this,
+# so an absent or self-inconsistent URI contributes nothing to the
+# cross-surface agreement check below.
+URI_SURFACES=''
+
 # add_surface NAME FILE RAW -> records RAW, or errors if RAW is empty.
 add_surface() {
   _name="$1"
@@ -205,6 +211,94 @@ check_readme_prose() {
   _v="$(grep -m1 -oE 'This plugin is .+ and the dashboard is' "$_f" 2>/dev/null |
     sed -E 's/^This plugin is //; s/ and the dashboard is$//')"
   add_surface "the readme.txt Description prose" "$_f" "$_v"
+}
+
+# ---------------------------------------------------------------------------
+# License URI companions.
+#
+# GH #547's reviewer found the next way this same bug reopens: a "License:"
+# name can agree everywhere while the "License URI:" beside it still points
+# at the wrong license. "License: MIT" paired with a GPL URL is not an
+# improvement on an outright name mismatch -- it is the identical defect one
+# field over, and a checker that only reads the name would call it clean.
+#
+# Two surfaces carry an explicit "License URI:" line: the plugin header and
+# readme.txt's own header (the two mu-plugin loaders and readme.txt's
+# Description prose never declare a URI at all, and are not asked to).
+#
+# Each is checked on two axes, both required:
+#   SELF-CONSISTENCY  its URI must match what THAT surface's own "License:"
+#                      name implies, read via expected_uri_for(). This is the
+#                      half-right case above, caught even if nothing else on
+#                      earth ever reads a second URI.
+#   CROSS-SURFACE      its URI must equal the other URI-bearing surface's,
+#                      the same agreement rule every name-only surface above
+#                      is already held to.
+# ---------------------------------------------------------------------------
+
+# expected_uri_for NAME -> the canonical URI for a license this repo has
+# actually declared, or empty for anything else. Empty is not a failure: it
+# means self-consistency cannot be judged for an unrecognized name, so only
+# the cross-surface compare still applies to that surface's URI.
+expected_uri_for() {
+  case "$1" in
+    MIT) printf 'https://opensource.org/licenses/MIT' ;;
+    'GPLv2 or later') printf 'https://www.gnu.org/licenses/gpl-2.0.html' ;;
+    *) printf '' ;;
+  esac
+}
+
+# check_license_uri_pair LABEL FILE NAME URI
+check_license_uri_pair() {
+  _label="$1"
+  _file="$2"
+  _name="$3"
+  _uri="$4"
+
+  # An absent NAME was already reported by this file's own license-name
+  # check above (check_php_header / check_readme_header); a second "missing
+  # license" error here about the same absence would only be confusing.
+  [ -n "$_name" ] || return
+
+  if [ -z "$_uri" ]; then
+    err "$_file declares a License but no License URI ($_label)."
+    detail "WordPress core and wordpress.org both read this field. A header or readme with a License and no License URI is incomplete, and one that used to carry a URI and silently lost it is exactly the kind of drift this guard exists to catch."
+    return
+  fi
+
+  _expected="$(expected_uri_for "$_name")"
+  if [ -n "$_expected" ] && [ "$_uri" != "$_expected" ]; then
+    err "$_label's License URI does not match its own declared license."
+    detail "$_file says \"License: $_name\" but \"License URI: $_uri\"."
+    detail "Expected $_expected for $_name. A URI that disagrees with the name right beside it is the half-right state GH #547 started as -- right name, wrong link (or vice versa)."
+    return
+  fi
+
+  URI_SURFACES="$URI_SURFACES$_label|$_file|$_uri
+"
+  ok "$_label License URI ($_file): $_uri"
+}
+
+check_main_header_license_uri() {
+  _f='apps/agent/wpmgr-agent.php'
+  if [ ! -f "$_f" ]; then
+    return # already reported by check_php_header
+  fi
+  _name="$(grep -m1 -E '^[[:space:]]*\*?[[:space:]]*License:' "$_f" 2>/dev/null |
+    sed -E 's/^[[:space:]]*\*?[[:space:]]*License:[[:space:]]*//')"
+  _uri="$(grep -m1 -E '^[[:space:]]*\*?[[:space:]]*License URI:' "$_f" 2>/dev/null |
+    sed -E 's/^[[:space:]]*\*?[[:space:]]*License URI:[[:space:]]*//')"
+  check_license_uri_pair "the main plugin header" "$_f" "$_name" "$_uri"
+}
+
+check_readme_header_license_uri() {
+  _f='apps/agent/readme.txt'
+  if [ ! -f "$_f" ]; then
+    return # already reported by check_readme_header
+  fi
+  _name="$(grep -m1 -E '^License:' "$_f" 2>/dev/null | sed -E 's/^License:[[:space:]]*//')"
+  _uri="$(grep -m1 -E '^License URI:' "$_f" 2>/dev/null | sed -E 's/^License URI:[[:space:]]*//')"
+  check_license_uri_pair "the readme.txt wp.org header" "$_f" "$_name" "$_uri"
 }
 
 # ---------------------------------------------------------------------------
@@ -336,6 +430,8 @@ main() {
   check_agent_readme_md
   check_license_agent
   check_makefile_no_license_override
+  check_main_header_license_uri
+  check_readme_header_license_uri
 
   uniq_licenses="$(printf '%s' "$SURFACES" | awk -F'|' 'NF{print $4}' | sort -u)"
   n_uniq="$(printf '%s' "$uniq_licenses" | grep -c . || true)"
@@ -344,6 +440,15 @@ main() {
     err "the agent declares more than one license:"
     printf '%s' "$SURFACES" | awk -F'|' 'NF{printf "  %s (%s): %s\n", $2, $1, $3}'
     detail "Every surface above must name the SAME license. Pick one (see the owner's ruling in the tracking issue) and fix every surface that disagrees with it."
+  fi
+
+  uniq_uris="$(printf '%s' "$URI_SURFACES" | awk -F'|' 'NF{print $3}' | sort -u)"
+  n_uniq_uris="$(printf '%s' "$uniq_uris" | grep -c . || true)"
+
+  if [ "${n_uniq_uris:-0}" -gt 1 ]; then
+    err "the agent declares more than one License URI:"
+    printf '%s' "$URI_SURFACES" | awk -F'|' 'NF{printf "  %s (%s): %s\n", $2, $1, $3}'
+    detail "Every License URI above must point at the SAME license text as every other surface's License name."
   fi
 
   if [ "$fail" -ne 0 ]; then

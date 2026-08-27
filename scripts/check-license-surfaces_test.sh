@@ -341,6 +341,81 @@ case_run "disagree: LICENSE-AGENT's title alone diverging fails" \
   fail "$t" "+LICENSE-AGENT): Apache License"
 
 # ===========================================================================
+# LICENSE URI: a reviewer's finding on top of the two above. A "License:"
+# name can agree everywhere while the "License URI:" beside it still points
+# at a different license -- "License: MIT" paired with a GPL URL is not an
+# improvement on a name mismatch, it is the identical defect one field over.
+# ===========================================================================
+
+# THE EXACT HALF-RIGHT STATE THE REVIEWER DESCRIBED: the name says MIT, the
+# URI right beside it still says GPL. A guard that only reads the name would
+# call this file clean.
+t="$(tree halfright-main-header-uri-still-gpl)"
+sub "$t/apps/agent/wpmgr-agent.php" 's|^ \* License URI:       https://opensource\.org/licenses/MIT$| * License URI:       https://www.gnu.org/licenses/gpl-2.0.html|'
+case_run "half-right: the main header says License: MIT but License URI still points at the GPL text - fails, self-consistency" \
+  fail "$t" "+main plugin header's License URI does not match its own declared license" "+Expected https://opensource.org/licenses/MIT for MIT"
+
+t="$(tree halfright-readme-header-uri-still-gpl)"
+sub "$t/apps/agent/readme.txt" 's|^License URI: https://opensource\.org/licenses/MIT$|License URI: https://www.gnu.org/licenses/gpl-2.0.html|'
+case_run "half-right: readme.txt says License: MIT but License URI still points at the GPL text - fails, self-consistency" \
+  fail "$t" "+readme.txt wp.org header's License URI does not match its own declared license"
+
+# The inverse half-right shape: URI correct, but a still-honest MIT everywhere
+# else with just the URI silently pointing somewhere unrelated (not even a
+# recognized license's URL) - still caught by self-consistency because MIT
+# has a known expected URI to compare against.
+t="$(tree halfright-main-header-uri-garbage)"
+sub "$t/apps/agent/wpmgr-agent.php" 's|^ \* License URI:       https://opensource\.org/licenses/MIT$| * License URI:       https://example.com/not-a-license|'
+case_run "half-right: the main header's License URI pointing at neither known URL fails against its own MIT name" \
+  fail "$t" "+main plugin header's License URI does not match its own declared license"
+
+# CROSS-SURFACE: the two URI-bearing surfaces disagreeing with each other,
+# even though each one individually still names MIT. Constructed by aiming
+# readme.txt's URI at a domain that is not a recognized license's canonical
+# URL either, so self-consistency alone (which cannot judge an unrecognized
+# value against MIT) does not already catch it -- only the cross-surface
+# compare does.
+t="$(tree disagree-license-uri-cross-surface)"
+sub "$t/apps/agent/wpmgr-agent.php" 's|^ \* License:           MIT$| * License:           Custom|'
+sub "$t/apps/agent/wpmgr-agent.php" 's|^ \* License URI:       https://opensource\.org/licenses/MIT$| * License URI:       https://example.com/license-a|'
+sub "$t/apps/agent/readme.txt" 's/^License: MIT$/License: Custom/'
+sub "$t/apps/agent/readme.txt" 's|^License URI: https://opensource\.org/licenses/MIT$|License URI: https://example.com/license-b|'
+sub "$t/apps/agent/readme.txt" 's/^This plugin is MIT-licensed and the dashboard is AGPL-3\.0\./This plugin is Custom-licensed and the dashboard is AGPL-3.0./'
+sub "$t/apps/agent/mu-plugin-loader/a-wpmgr-error-trap.php" 's/^ \* License:     MIT$/ * License:     Custom/'
+sub "$t/apps/agent/mu-plugin-loader/a-wpmgr-update-watchdog.php" 's/^ \* License:     MIT$/ * License:     Custom/'
+sub "$t/apps/agent/composer.json" 's/"license": "MIT"/"license": "Custom"/'
+sub "$t/apps/agent/NOTICE.md" 's/The WPMgr agent is MIT-licensed/The WPMgr agent is Custom-licensed/'
+sub "$t/apps/agent/README.md" 's/^MIT-licensed WordPress plugin/Custom-licensed WordPress plugin/'
+sub "$t/LICENSE-AGENT" 's/^MIT License$/Custom License/'
+case_run "cross-surface: two URI-bearing surfaces naming the same unrecognized license but different URIs still fails" \
+  fail "$t" "+more than one License URI" "+example.com/license-a" "+example.com/license-b"
+
+# ABSENCE: a License with no License URI beside it at all.
+t="$(tree absent-main-header-uri)"
+drop "$t/apps/agent/wpmgr-agent.php" '^ \* License URI:'
+case_run "absent: the main plugin header has a License but no License URI - fails, not a silent pass" \
+  fail "$t" "+apps/agent/wpmgr-agent.php declares a License but no License URI"
+
+t="$(tree absent-readme-header-uri)"
+drop "$t/apps/agent/readme.txt" '^License URI:'
+case_run "absent: readme.txt's header has a License but no License URI - fails, not a silent pass" \
+  fail "$t" "+apps/agent/readme.txt declares a License but no License URI"
+
+# OVER-FIRE: the mu-plugin loaders never carry a License URI line at all (only
+# License:), and that is fine - they are not asked to have one, so their
+# absence must never be reported.
+t="$(tree overfire-mu-plugins-have-no-uri-line)"
+case_run "over-fire: the mu-plugin loaders having no License URI line at all does not trip the guard" \
+  pass "$t" "-mu-plugin-loader/a-wpmgr-error-trap.php declares a License but no License URI" "-mu-plugin-loader/a-wpmgr-update-watchdog.php declares a License but no License URI"
+
+# HONEST REFORMAT: the URI still reads correctly through ordinary whitespace
+# variance, the same tolerance every name-only check above already has.
+t="$(tree reformat-main-header-uri-spacing)"
+sub "$t/apps/agent/wpmgr-agent.php" 's|^ \* License URI:       https://opensource\.org/licenses/MIT$| *   License URI:https://opensource.org/licenses/MIT|'
+case_run "reformat: squeezed spacing around the main header's License URI still reads correctly" \
+  pass "$t" "+main plugin header License URI"
+
+# ===========================================================================
 # THE REAL BUG THIS SUITE MISSED FIRST TIME: fixing readme.txt to MIT is not
 # enough on its own. The Makefile's wp.org build used to carry its own `sed`
 # rewrite forcing the STAGED plugin header back to "GPLv2 or later" on every
