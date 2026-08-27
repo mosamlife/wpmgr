@@ -75,7 +75,7 @@ write_extract() {
 autologin_tokens|autologin_tokens_agent_consume|PERMISSIVE|UPDATE|app.agent|CROSS
 backup_chunks|backup_chunks_agent|PERMISSIVE|SELECT|app.agent|CROSS
 backup_schedules|backup_schedules_scheduler|PERMISSIVE|ALL|app.agent|CROSS
-rum_events_raw|rum_events_raw_rum_ingest|PERMISSIVE|INSERT|app.rum_ingest,app.site_id,app.tenant_id|CROSS
+site_connection_history|conn_history_enroll|PERMISSIVE|INSERT|app.enroll|CROSS
 sites|sites_site_scope|RESTRICTIVE|ALL|app.allowed_site_ids,app.site_scope|CROSS
 sites|sites_tenant_isolation|PERMISSIVE|ALL|app.tenant_id|TENANT
 update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
@@ -90,7 +90,7 @@ write_ledger() {
 autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update|the consuming UPDATE runs under InAgentTx
 backup_chunks|backup_chunks_agent|app.agent|SELECT|select|reads only; every chunk write is tenant-scoped
 backup_schedules|backup_schedules_scheduler|app.agent|ALL|update,lock|claims due schedules with FOR UPDATE and advances them
-rum_events_raw|rum_events_raw_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|the anonymous beacon write path
+site_connection_history|conn_history_enroll|app.enroll|INSERT|insert|enrollment appends a connection record before any tenant scope exists
 update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
 LEDGER
 }
@@ -441,7 +441,7 @@ if should_run "$NAME"; then
   # FOR INSERT covers insert and nothing else, and the RUM beacon path only
   # inserts. Demanding FOR ALL here would widen a public write path.
   want_rc "$NAME" 0 &&
-    want_silent_about "$NAME" 'rum_events_raw_rum_ingest' &&
+    want_silent_about "$NAME" 'conn_history_enroll' &&
     pass "$NAME"
 fi
 
@@ -607,50 +607,94 @@ EOF
 fi
 
 # ===========================================================================
-# GROUP 4c -- the classifier's blind spot must announce itself.
+# GROUP 4c -- reading app.tenant_id is not the same as binding to it.
 #
-# Classification is a substring test: does USING mention app.tenant_id. A
-# policy that grants cross-tenant access through a disjunct while also
-# mentioning app.tenant_id classifies TENANT and leaves the audit entirely --
-# a false negative, the direction that costs a tenant boundary.
+# The dangerous shape is a predicate that READS the setting and constrains
+# nothing with it. The shape that must NOT be flagged is an honest policy that
+# binds tenant_id correctly AND reads a second setting -- a site scope, a role
+# flag. An earlier version errored on the mere presence of a second setting,
+# which reddens that perfectly ordinary policy.
 # ===========================================================================
 
-NAME='mixed: a tenant-bound policy that also tests another GUC is flagged'
+NAME='unbound: a policy that reads app.tenant_id without binding it is flagged'
 if should_run "$NAME"; then
   write_extract "$WORK/e50"
-  # "tenant_id = app.tenant_id OR app.agent = 'on'": grants across tenants,
-  # but mentions app.tenant_id so the classifier calls it TENANT.
-  printf 'smtp_settings|smtp_settings_mixed|PERMISSIVE|ALL|app.agent,app.tenant_id|TENANT\n' >> "$WORK/e50"
+  # USING (current_setting('app.tenant_id', true) <> ''): reads the setting,
+  # binds nothing, hands over every row. Classified CROSS by the extraction.
+  printf 'smtp_settings|smtp_settings_unbound|PERMISSIVE|ALL|app.tenant_id|CROSS\n' >> "$WORK/e50"
   write_ledger "$WORK/l50"
   run_guard "$WORK/e50" "$WORK/l50"
   want_rc "$NAME" 1 &&
-    want_says "$NAME" 'classifies tenant-bound and is NOT audited' &&
-    want_says "$NAME" 'smtp_settings_mixed' &&
+    want_says "$NAME" "does not bind the row's tenant_id to it" &&
+    want_says "$NAME" 'smtp_settings_unbound' &&
     pass "$NAME"
 fi
 
-NAME='mixed: an ordinary single-GUC tenant_isolation policy is NOT flagged'
+NAME='unbound: an HONEST multi-setting tenant policy is NOT flagged'
 if should_run "$NAME"; then
   write_extract "$WORK/e51"
+  # This is the over-fire case. A policy that binds tenant_id correctly AND
+  # reads a second setting is ordinary and narrower, not dangerous:
+  #   USING (tenant_id = current_setting('app.tenant_id')::uuid
+  #          AND coalesce(current_setting('app.site_scope', true), '') <> 'on')
+  # It binds, so the extraction classifies it TENANT and it is not a grant.
+  # Erroring on it -- as an earlier version did, purely for having a second
+  # GUC -- reddens correct work, and a guard that reddens correct work gets
+  # switched off.
+  printf 'site_email_config|site_email_config_tenant_isolation|PERMISSIVE|ALL|app.site_scope,app.tenant_id|TENANT\n' >> "$WORK/e51"
   write_ledger "$WORK/l51"
   run_guard "$WORK/e51" "$WORK/l51"
-  # sites_tenant_isolation tests app.tenant_id and nothing else. Every table in
-  # this repo has one; flagging them would redden the entire schema.
   want_rc "$NAME" 0 &&
-    want_silent_about "$NAME" 'MIXED PREDICATES' &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    want_silent_about "$NAME" 'site_email_config_tenant_isolation' &&
     pass "$NAME"
 fi
 
-NAME='mixed: a multi-GUC policy that is already CROSS is not double-reported'
+NAME='unbound: an ordinary single-setting tenant_isolation policy is NOT flagged'
 if should_run "$NAME"; then
   write_extract "$WORK/e52"
   write_ledger "$WORK/l52"
-  # rum_events_raw_rum_ingest tests three GUCs including app.tenant_id, but its
-  # USING does not bind tenant_id, so it is already classified CROSS and IS
-  # audited. It must not also be reported as escaping the audit.
+  # sites_tenant_isolation binds tenant_id and reads nothing else. Every table
+  # in this repo has one; flagging them would redden the whole schema.
   run_guard "$WORK/e52" "$WORK/l52"
   want_rc "$NAME" 0 &&
-    want_silent_about "$NAME" 'rum_events_raw_rum_ingest tests app.tenant_id together with' &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    pass "$NAME"
+fi
+
+NAME='unbound: a cross-tenant policy that never reads app.tenant_id is NOT flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e53"
+  write_ledger "$WORK/l53"
+  # backup_chunks_agent tests only app.agent. It is a cross-tenant grant and is
+  # audited as one, but it makes no claim about tenant scoping, so the unbound
+  # section has nothing to say about it.
+  run_guard "$WORK/e53" "$WORK/l53"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    pass "$NAME"
+fi
+
+NAME='insert: a tenant-bound FOR INSERT policy is not audited as a grant'
+if should_run "$NAME"; then
+  # A FOR INSERT policy has no USING; its whole condition lives in WITH CHECK.
+  # The extraction reads with_check when qual is NULL, so a tenant-bound INSERT
+  # policy classifies TENANT and needs no ledger row. Reading only qual made
+  # every INSERT policy look like a cross-tenant grant, which put rows in the
+  # ledger asserting grants that do not exist.
+  #
+  # If that regressed, this policy would classify CROSS and the guard would
+  # demand a ledger row for it -- so the silence below is the assertion.
+  cat > "$WORK/e54" <<'EOF'
+rum_events_raw|rum_events_raw_rum_ingest|PERMISSIVE|INSERT|app.rum_ingest,app.site_id,app.tenant_id|TENANT
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l54" <<'EOF'
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e54" "$WORK/l54"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'rum_events_raw_rum_ingest' &&
     pass "$NAME"
 fi
 

@@ -34,10 +34,37 @@
 -- one with no verification as strong as the shadow-install-and-compare used
 -- for the 11 above. It is deliberately left, not overlooked.
 --
--- Do not use this file to answer "is this table site-scoped". Use
--- apps/api/db/rls-cross-tenant-policies.txt and
--- scripts/check-rls-cross-tenant.sh, which reconcile against a live
--- pg_policies rather than against this text.
+-- SO: DO NOT USE THIS FILE TO ANSWER "is this table site-scoped".
+--
+-- And do not use apps/api/db/rls-cross-tenant-policies.txt or
+-- scripts/check-rls-cross-tenant.sh for it either. Both deliberately EXCLUDE
+-- restrictive policies — a restrictive policy can only narrow, never grant, so
+-- it is outside what a cross-tenant *grant* audit is about — and every
+-- site_scope gate is restrictive. Asking them yields no answer, which is the
+-- same shape of wrong as asking this file: silence read as "not protected".
+--
+-- The only authority is the migrations, and the only reliable check is a live
+-- catalog on a database with all of them applied:
+--
+--   SELECT tablename, policyname, permissive, cmd
+--     FROM pg_policies
+--    WHERE schemaname = 'public' AND policyname LIKE '%site\_scope%'
+--    ORDER BY tablename;
+--
+-- or, against the source, grep BOTH the quoted schema-qualified form the
+-- migrations use and the bare form this file uses:
+--
+--   grep -rhoE 'CREATE POLICY "?[a-z_0-9]+_site_scope[a-z_0-9]*"?' \
+--     apps/api/migrations/*.sql | sort -u | grep -c .
+--
+-- (End in `grep -c .`, never `wc -l`: `wc -l` prints 0 and exits 0 when the
+-- pattern matches nothing, and 0 here reads as "no table carries this policy",
+-- which is the opposite of the truth. A search that finds nothing must refuse,
+-- not answer.)
+--
+-- Nothing currently guards the site_scope gates against being dropped or
+-- weakened. That is a real and separate invariant — it is what m112 exists for
+-- — and it wants its own guard.
 --
 -- Keep it declarative: it describes the desired end state of the schema, not
 -- incremental changes.

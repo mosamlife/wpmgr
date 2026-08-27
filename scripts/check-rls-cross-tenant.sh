@@ -52,23 +52,29 @@
 # WHAT THIS GUARD DOES NOT SEE. Read this before trusting a green run.
 # ---------------------------------------------------------------------------
 #
-# 1. A MIXED PREDICATE IS CLASSIFIED TENANT-BOUND AND FALLS OUT OF THE AUDIT.
-#    The test is a substring test: does the USING expression mention
-#    app.tenant_id anywhere. A policy shaped
+# 1. A DISJUNCTIVE ESCAPE INSIDE AN OTHERWISE TENANT-BOUND PREDICATE.
+#    Classification is textual, not a parse of the boolean structure. A policy
+#    shaped
 #
 #        USING (tenant_id = current_setting('app.tenant_id')::uuid
 #               OR current_setting('app.agent', true) = 'on')
 #
-#    grants cross-tenant access through its second disjunct but mentions
-#    app.tenant_id, so it classifies TENANT and is never audited. That is a
-#    FALSE NEGATIVE, the costly direction, in a guard whose entire purpose is
-#    eliminating false negatives.
+#    grants cross-tenant access through its second disjunct, yet it does bind
+#    tenant_id, so it classifies TENANT and is not audited. That is a FALSE
+#    NEGATIVE, the costly direction, in a guard whose whole purpose is
+#    eliminating them.
 #
-#    No policy in this database has that shape today (every cross-tenant grant
-#    is written as a separate policy, which is the convention worth keeping).
-#    The MIXED PREDICATES section below reports any that appear, so the blind
-#    spot announces itself rather than waiting to be discovered. Parsing the
-#    boolean structure properly is the real fix if one ever lands.
+#    What IS caught, since the classifier now tests for a binding rather than a
+#    mention: a predicate that reads app.tenant_id and constrains nothing with
+#    it, such as USING (current_setting('app.tenant_id', true) <> ''). That is
+#    classified CROSS, audited as the grant it is, and called out by the
+#    UNBOUND TENANT SETTING section below.
+#
+#    No policy in this database has the disjunctive shape today -- every
+#    cross-tenant grant is written as its own separate policy, which is the
+#    convention worth keeping, and the reason a boolean parse has not been
+#    worth building. Run the counts in that section against a live database
+#    rather than trusting this paragraph.
 #
 # 2. IT IS BLIND TO A MISSING OR WEAKENED RESTRICTIVE POLICY, BY CONSTRUCTION.
 #    Excluding restrictive policies means a dropped or narrowed
@@ -141,14 +147,27 @@
 #   scripts/check-rls-cross-tenant.sh --extract > /tmp/policies.txt
 #   scripts/check-rls-cross-tenant.sh --from-extract /tmp/policies.txt
 #
-# NOT YET WIRED INTO make OR ci.yml. Both the Makefile and .github/workflows
-# are devops-engineer's to edit, and this guard was written by
-# database-engineer, so the wiring is handed over rather than done here. Until
-# it lands, this is a local gate you have to remember to run -- run it before
-# merging anything that adds or narrows an RLS policy. When it is wired, the
-# self-test must run FIRST and as its own step, so a broken guard fails the
-# build instead of passing by failing open (the pattern ci.yml already uses for
-# scripts/check-version-surfaces_test.sh).
+# WHERE THIS RUNS, and the boundary between the two halves.
+#
+#   make check-rls-cross-tenant-test  -> the self-test. Hermetic: it builds its
+#     own synthetic extraction and ledger, needs no database, and proves the
+#     guard's LOGIC. ci.yml runs it on every PR, as its own step inside the
+#     Security audit job, and ahead of the live reconciliation wherever both
+#     run -- so a broken guard fails the build rather than passing by failing
+#     open. Same pattern and same reason as
+#     scripts/check-version-surfaces_test.sh, which sits a few steps above it.
+#
+#   make check-rls-cross-tenant       -> the live reconciliation. Applies every
+#     migration to a throwaway Postgres and reads real pg_policies, so it needs
+#     Docker. That runs in .github/workflows/api-integration.yml, next to the
+#     other RLS proofs that already need a database.
+#
+# WHAT THAT MEANS IN PRACTICE: the self-test gates every PR; the LIVE check
+# does NOT, because api-integration.yml is manual-dispatch only -- the same
+# standing limitation the m112 site-scope proofs already carry. So CI proving
+# the guard's logic is sound is not CI proving THIS repository's policies
+# reconcile. Run `make check-rls-cross-tenant` locally, or dispatch that
+# workflow, before merging anything that adds or narrows an RLS policy.
 #
 # WHERE THE DATABASE COMES FROM, in order:
 #   1. $WPMGR_RLS_DATABASE_URL, if set -- an already-migrated database.
@@ -274,6 +293,34 @@ broken() {
 # scope is TENANT when the USING expression binds tenant_id to app.tenant_id,
 #       and CROSS when it does not.
 
+# THE PREDICATE IS qual, FALLING BACK TO with_check.
+#
+# A FOR INSERT policy has NO qual at all -- there is no existing row to test, so
+# PostgreSQL stores the whole condition in with_check. Reading only qual meant
+# every INSERT policy presented an empty predicate and was classified as a
+# cross-tenant grant, including the three RUM ingest policies whose with_check
+# pins tenant_id to app.tenant_id. Mislabelling a tenant-bound policy as a
+# cross-tenant grant is not a harmless over-flag: it puts a row in the ledger
+# asserting a grant that does not exist, and the ledger's only value is being
+# true.
+#
+# TENANT MEANS BOUND, NOT MENTIONED.
+#
+# This used to ask whether the predicate mentioned app.tenant_id anywhere, which
+# is a different and much weaker question. A predicate can read app.tenant_id
+# and never constrain the row's tenant to it --
+#
+#     USING (current_setting('app.tenant_id', true) <> '')
+#
+# grants every row in the table to anyone who has any tenant set, while looking
+# tenant-bound to a substring test. So the test is now whether the predicate
+# actually BINDS the row's tenant_id column to the setting. Anything that does
+# not is classified CROSS and audited as the grant it is, rather than excluded
+# from the audit for mentioning the right words.
+#
+# [^=] between the column and the setting keeps the match from stepping over an
+# intervening comparison and pairing a tenant_id on one side with an
+# app.tenant_id belonging to a different conjunct.
 EXTRACT_SQL="
 SELECT
   p.tablename || '|' || p.policyname || '|' || p.permissive || '|' || p.cmd || '|' ||
@@ -281,14 +328,44 @@ SELECT
             FROM regexp_matches(coalesce(p.qual,'') || ' ' || coalesce(p.with_check,''),
                                 'current_setting\(''([a-z_.]+)''', 'g') AS m), '-')
   || '|' ||
-  CASE WHEN coalesce(p.qual,'') ~ 'app\.tenant_id' THEN 'TENANT' ELSE 'CROSS' END
+  CASE WHEN coalesce(nullif(p.qual,''), p.with_check, '')
+            ~ 'tenant_id[[:space:]]*=[^=]*app\.tenant_id'
+       THEN 'TENANT' ELSE 'CROSS' END
 FROM pg_policies p
 WHERE p.schemaname = 'public'
 ORDER BY 1;
 "
 
-CONTAINER='wpmgr-rls-guard'
+# Docker resources are PER RUN, never fixed.
+#
+# A fixed container name and a fixed host port make two overlapping runs fight:
+# the second `docker run` fails on the name, and the cleanup trap of whichever
+# finishes first removes the other's database out from under it. That stopped
+# being hypothetical when the guard landed in two workflows -- ci.yml runs the
+# self-test and api-integration.yml runs the live check -- and it is just as
+# easy to hit locally by running `make check-rls-cross-tenant` in two shells.
+# A fixed port also collides with anything already on it, including this
+# repo's own compose stack, and that failure surfaces as "postgres never
+# became ready" rather than "your port is busy".
+#
+# The port can be pinned with WPMGR_RLS_GUARD_PORT when a sandbox needs a known
+# one; otherwise a free port is found and used.
+CONTAINER="wpmgr-rls-guard-$$"
 STARTED_CONTAINER=0
+
+# free_port -- a port nothing is listening on, or empty if we cannot tell.
+# Asking the kernel for an ephemeral port and then using it is a race in
+# principle; in practice the window is microseconds and the alternative (a
+# hard-coded port) collides deterministically rather than rarely. `docker run`
+# still fails loudly if it loses that race, and broken() reports it.
+free_port() {
+  python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()' 2>/dev/null && return 0
+  # No python3: fall back to a port derived from the PID, which at least
+  # differs between concurrent runs.
+  printf '%d' $(( 55440 + ($$ % 2000) ))
+}
+
+GUARD_PORT="${WPMGR_RLS_GUARD_PORT:-}"
 
 # Remove the throwaway container unconditionally, not "if we started one".
 #
@@ -337,12 +414,22 @@ extract_from_container() {
   command -v psql >/dev/null 2>&1 || broken "psql is not installed; the extraction cannot run and must not be skipped."
   [ -d "$MIGRATIONS_DIR" ] || broken "no migrations directory at $MIGRATIONS_DIR."
 
+  [ -n "$GUARD_PORT" ] || GUARD_PORT=$(free_port)
+  [ -n "$GUARD_PORT" ] || broken "could not allocate a host port for the throwaway postgres."
+
   docker rm -f "$CONTAINER" >/dev/null 2>&1
-  docker run -d --name "$CONTAINER" \
+  local run_err
+  run_err=$(docker run -d --name "$CONTAINER" \
     -e POSTGRES_PASSWORD=guard -e POSTGRES_DB=guard \
-    -p 55440:5432 postgres:16-alpine >/dev/null 2>&1 ||
-    broken "could not start the throwaway postgres container."
+    -p "127.0.0.1:${GUARD_PORT}:5432" postgres:16-alpine 2>&1 >/dev/null)
+  if [ $? -ne 0 ]; then
+    printf 'GUARD BROKEN: could not start the throwaway postgres container on port %s:\n  %s\n' \
+      "$GUARD_PORT" "$run_err" >&2
+    printf 'GUARD BROKEN: set WPMGR_RLS_GUARD_PORT to a free port, or point WPMGR_RLS_DATABASE_URL at a migrated database.\n' >&2
+    exit 2
+  fi
   STARTED_CONTAINER=1
+  printf 'started throwaway postgres %s on 127.0.0.1:%s\n' "$CONTAINER" "$GUARD_PORT" >&2
 
   local ready=0 i
   for i in $(seq 1 60); do
@@ -351,7 +438,7 @@ extract_from_container() {
   done
   [ "$ready" = "1" ] || broken "the throwaway postgres never became ready."
 
-  local url='postgres://postgres:guard@127.0.0.1:55440/guard?sslmode=disable'
+  local url="postgres://postgres:guard@127.0.0.1:${GUARD_PORT}/guard?sslmode=disable"
   local f applied=0 out
   # Lexical order, exactly what internal/db/migrate.go's sort.Strings does.
   for f in $(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort); do
@@ -456,36 +543,44 @@ printf '  (query: pg_policies, classified on the GUC each expression tests)\n'
 echo
 
 # ---------------------------------------------------------------------------
-# MIXED PREDICATES -- the classifier's known blind spot, made to announce itself
+# UNBOUND TENANT SETTING -- reads app.tenant_id, constrains nothing with it
 #
-# A policy is classified TENANT-bound, and so excluded from this audit, purely
-# because its USING expression mentions app.tenant_id. A policy that tests
-# app.tenant_id AND some other app.* GUC may be granting cross-tenant access
-# through a disjunct while looking tenant-bound to that test.
+# This fires on the actual danger, NOT on the mere presence of a second
+# setting. An earlier version errored on any permissive policy whose predicate
+# read app.tenant_id alongside another app.* GUC, which reddens a perfectly
+# ordinary shape: a policy that binds tenant_id correctly AND reads a second
+# setting (a site scope, a role flag) is honest and narrower, not dangerous.
+# The over-fire test below pins that.
 #
-# This is an ERROR rather than a warning: the consequence is a policy that
-# silently leaves the audit, which is the one failure mode this guard exists to
-# prevent. Whoever writes such a policy should either split it in two (the
-# convention every cross-tenant grant here already follows) or teach the
-# classifier to parse the boolean structure. Nothing in this database has the
-# shape today, so this cannot redden correct work as it stands.
+# The dangerous shape is a predicate that READS app.tenant_id without BINDING
+# the row's tenant_id to it:
+#
+#     USING (current_setting('app.tenant_id', true) <> '')
+#
+# which hands every row in the table to anyone with any tenant set, while
+# reading as tenant-scoped to a human skimming for the setting's name.
+#
+# Such a policy is already classified CROSS by the extraction above and so is
+# audited as the grant it is -- it does not escape. This section exists to say
+# so out loud, because "cross-tenant grant that mentions app.tenant_id" is far
+# more likely to be a broken tenant policy than an intended grant, and the
+# ledger row someone would otherwise add to silence the audit would enshrine
+# the bug as a decision.
 # ---------------------------------------------------------------------------
 MIXED="$WORK/mixed.txt"
-awk -F'|' '$3 == "PERMISSIVE" && $6 == "TENANT" && $5 ~ /app\.tenant_id/ && $5 ~ /,/' "$ALL" > "$MIXED"
+awk -F'|' '$3 == "PERMISSIVE" && $6 == "CROSS" && $5 ~ /app\.tenant_id/' "$ALL" > "$MIXED"
 MIXED_COUNT=$(count_lines "$MIXED")
 if [ "$MIXED_COUNT" -gt 0 ]; then
-  echo '--- MIXED PREDICATES: policies that may be escaping the audit ---'
+  echo '--- UNBOUND TENANT SETTING: reads app.tenant_id but binds nothing to it ---'
   while IFS='|' read -r tbl pol perm cmd gucs scope; do
     [ -n "$tbl" ] || continue
-    err "$tbl.$pol tests app.tenant_id together with [$gucs], so it classifies tenant-bound and is NOT audited."
-    detail 'The classifier asks only whether the USING expression mentions app.tenant_id.'
-    detail 'A predicate like "tenant_id = app.tenant_id OR app.agent = on" grants across'
-    detail 'tenants through its second disjunct while looking tenant-bound to that test --'
-    detail 'a false negative, in the direction that costs a tenant boundary.'
-    detail 'Fix: split it into a tenant_isolation policy and a separate cross-tenant'
-    detail 'policy, which is what every other cross-tenant grant here does. If the'
-    detail 'predicate is genuinely tenant-bound, the classifier needs to parse the'
-    detail 'boolean structure rather than substring-match.'
+    err "$tbl.$pol reads app.tenant_id (settings: $gucs) but does not bind the row's tenant_id to it."
+    detail 'A predicate that reads the setting without constraining the column grants'
+    detail 'every row in the table to any caller who has a tenant set, while reading as'
+    detail 'tenant-scoped to anyone skimming for the name.'
+    detail 'It is being audited as a cross-tenant grant, which is what it is. Do NOT'
+    detail 'silence that by adding a ledger row: if the policy was meant to be'
+    detail 'tenant-scoped, the fix is a NEW migration binding tenant_id to the setting.'
   done < "$MIXED"
   echo
 fi

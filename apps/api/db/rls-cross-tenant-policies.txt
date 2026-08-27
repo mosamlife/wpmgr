@@ -42,13 +42,32 @@
 # WHAT COUNTS AS CROSS-TENANT
 # ---------------------------------------------------------------------------
 #
-# A PERMISSIVE policy whose USING expression does not bind tenant_id to
-# app.tenant_id. That is a property of the expression, not of the name.
+# A PERMISSIVE policy whose predicate does not BIND the row's tenant_id column
+# to app.tenant_id. That is a property of the expression, not of the name.
+#
+# BOUND, NOT MENTIONED. Reading the setting is not the same as constraining the
+# row with it: USING (current_setting('app.tenant_id', true) <> '') reads it and
+# hands over every row in the table. Such a policy is a cross-tenant grant and
+# is audited as one; the guard's UNBOUND TENANT SETTING section calls it out
+# rather than letting a ledger row be added to silence it.
+#
+# THE PREDICATE IS `USING`, OR `WITH CHECK` WHEN THERE IS NO `USING`. A FOR
+# INSERT policy has no USING at all -- there is no existing row to test -- so
+# its whole condition lives in WITH CHECK. Reading only USING classified every
+# INSERT policy as a cross-tenant grant, including the three RUM ingest
+# policies whose WITH CHECK pins tenant_id to app.tenant_id. Those three were
+# in this file and are not any more: they are tenant-bound, and a ledger row
+# asserting a grant that does not exist costs the file the only thing it has,
+# which is being true.
 #
 # RESTRICTIVE policies are excluded deliberately: a restrictive policy can only
 # narrow the row set, never grant one. The site_scope policies are restrictive
 # and do not mention app.tenant_id, so a classifier that ignored `permissive`
 # would flag all of them as cross-tenant grants and bury the real signal.
+#
+# A CONSEQUENCE WORTH STATING: this file therefore does NOT answer "is this
+# table site-scoped". Neither does the guard. See the header of
+# apps/api/db/schema.sql for what does.
 #
 # ---------------------------------------------------------------------------
 # FORMAT
@@ -176,9 +195,6 @@ restore_run_events|restore_run_events_agent|app.agent|ALL|-|FOR ALL admits every
 restore_runs|restore_runs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 rucss_jobs|rucss_jobs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 rucss_results|rucss_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
-rum_events_raw|rum_events_raw_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|the anonymous browser beacon write path; FOR INSERT is the whole grant, and WITH CHECK pins tenant_id and site_id so a wrong id is refused by the database
-rum_rollup_daily|rum_rollup_daily_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|as rum_events_raw_rum_ingest
-rum_rollup_hourly|rum_rollup_hourly_rum_ingest|app.rum_ingest,app.site_id,app.tenant_id|INSERT|insert|as rum_events_raw_rum_ingest
 scan_findings|scan_findings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 scan_run_hashes|scan_run_hashes_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 scan_runs|scan_runs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
