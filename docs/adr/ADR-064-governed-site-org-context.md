@@ -963,8 +963,9 @@ explicitly rather than drift into it unannounced.
 ## Open questions
 
 Named and owned, rather than answered with an invented mechanism this
-document has not earned the right to assert. Neither blocks merging this
-ADR as Proposed; both block it moving to **Accepted**.
+document has not earned the right to assert. None of the questions below
+blocks merging this ADR as Proposed; all of them block it moving to
+**Accepted**.
 
 1. **What "surface" means for ADR-060's freeze clause.** Relationship,
    above, argues Decision 13's routes are not gated by ADR-060's freeze
@@ -1009,3 +1010,17 @@ ADR as Proposed; both block it moving to **Accepted**.
    whoever eventually builds site-to-organisation transfer, unassigned
    today; that build is itself a prerequisite this ADR depends on and
    does not provide (see "What has to exist before this ships").
+4. **Nothing bounds the size of a stored context row.** Decision 9 caps
+   each layer's contribution and the resolved whole in bytes, but
+   specifies *truncation at resolution* — at a field or record boundary,
+   marked, starting from the lowest surviving layer. That is a property
+   of the resolution function, not of storage, so m122 deliberately added
+   no write-time size `CHECK`: a write-time refusal is different
+   behaviour with a different error contract, and Decision 13 enumerates
+   exactly two write refusals (`409` widening, `422` credential-shaped).
+   Inventing a third, and a byte threshold this ADR never states, would
+   be designing past the specification. **Owner:** `backend-architect`,
+   alongside the resolution function — to decide whether an unbounded
+   stored row is acceptable given truncation always runs downstream of
+   it, or whether a storage cap and its reason code belong in Decision 9
+   and Decision 13.
