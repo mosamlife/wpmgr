@@ -173,6 +173,19 @@ The rest of this repository is licensed under AGPL-3.0 (see LICENSE).
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), ...
 MD
+
+  # A trimmed stand-in for the real agent-zip-wporg target: identity rewrites
+  # (Plugin Name, Text Domain) that are legitimate, and NO License rewrite —
+  # the post-#547 honest state. The regression case below re-adds exactly the
+  # kind of line that shipped the bug.
+  cat >"$_dir/Makefile" <<'MK'
+.PHONY: agent-zip-wporg
+agent-zip-wporg:
+	sed -i.bak \
+		-e "s|^ \* Plugin Name:.*| * Plugin Name:       Fleet Agent Site Manager|" \
+		-e "s|^ \* Text Domain:.*| * Text Domain:       fleet-agent-site-manager|" \
+		release/fleet-agent-site-manager/fleet-agent-site-manager.php
+MK
 }
 
 # tree NAME -> path to a fresh honest tree
@@ -326,6 +339,42 @@ t="$(tree disagree-license-agent)"
 sub "$t/LICENSE-AGENT" 's/^MIT License$/Apache License/'
 case_run "disagree: LICENSE-AGENT's title alone diverging fails" \
   fail "$t" "+LICENSE-AGENT): Apache License"
+
+# ===========================================================================
+# THE REAL BUG THIS SUITE MISSED FIRST TIME: fixing readme.txt to MIT is not
+# enough on its own. The Makefile's wp.org build used to carry its own `sed`
+# rewrite forcing the STAGED plugin header back to "GPLv2 or later" on every
+# build, regardless of what the source said -- every surface above reads only
+# the committed source tree, so all nine would have stayed green while the
+# actual wp.org zip kept shipping a header that disagreed with readme.txt.
+# `make agent-plugincheck` (real WordPress, via Docker) is what caught it.
+# This is what keeps it caught without a Docker run.
+# ===========================================================================
+t="$(tree regress-makefile-license-override-reintroduced)"
+cat >>"$t/Makefile" <<'MK'
+
+.PHONY: agent-zip-wporg-broken-again
+agent-zip-wporg-broken-again:
+	sed -i.bak \
+		-e "s|^ \* License:.*| * License:           GPLv2 or later|" \
+		release/fleet-agent-site-manager/fleet-agent-site-manager.php
+MK
+case_run "regress: reintroducing the Makefile License override fails, quoting the offending line (GH #547's actual shape)" \
+  fail "$t" "+Makefile rewrites the plugin header's License field" "+GPLv2 or later"
+
+t="$(tree absent-makefile)"
+rm -f "$t/Makefile"
+case_run "file absent: no Makefile at all is an error naming the file" \
+  fail "$t" "+Makefile does not exist"
+
+t="$(tree overfire-makefile-mentions-license-once)"
+cat >>"$t/Makefile" <<'MK'
+
+# Reminder: apps/agent is MIT-licensed (see LICENSE-AGENT). Nothing here
+# should rewrite that during packaging.
+MK
+case_run "over-fire: a Makefile comment mentioning 'License' once (not a sed rewrite) does not trip the guard" \
+  pass "$t"
 
 # ===========================================================================
 # ABSENCE: a surface whose declaration disappears is an ERROR, never a silent

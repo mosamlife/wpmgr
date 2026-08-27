@@ -415,16 +415,26 @@ agent-zip-wporg: agent-vendor ## Package the wp.org-distributable plugin zip (fl
 	rm -f release/fleet-agent-site-manager/readme.txt.bak
 	# Rewrite plugin-identity header fields in the staged main file:
 	#   Plugin Name  -> Fleet Agent Site Manager  (reviewer-accepted display name; no "WP" prefix)
-	#   License      -> GPLv2 or later            (§3 recommended posture)
-	#   License URI  -> gnu.org GPL-2.0 URL       (§3)
 	#   Text Domain  -> fleet-agent-site-manager  (matches new slug)
 	#   WPMGR_AGENT_DISPLAY_NAME -> Fleet Agent Site Manager (admin menu/page
 	#   title constant; keeps the wp.org admin screen name consistent with the
 	#   listing identity above instead of showing the self-hosted "WPMgr Agent")
+	#
+	# License / License URI are DELIBERATELY NOT rewritten here (GH #547). This
+	# target used to force the header to "GPLv2 or later" on the theory that
+	# wp.org expects it, while the source plugin header, composer.json,
+	# NOTICE.md and LICENSE-AGENT all say MIT (the owner's actual ruling, and
+	# MIT is fully GPL-compatible for a wp.org listing). That rewrite is what
+	# shipped the live bug #547 was filed against: readme.txt said GPLv2 while
+	# the header said MIT. Fixing readme.txt alone would have flipped the
+	# mismatch, not closed it — this sed line would still overwrite the
+	# freshly-agreed MIT header back to GPLv2 on every build. The header now
+	# carries whatever the source declares, unchanged, so it and readme.txt
+	# (and every other surface scripts/check-license-surfaces.sh reads) stay
+	# in agreement without the build pipeline being a 10th, unwatched place a
+	# license value could live.
 	sed -i.bak \
 		-e "s|^ \* Plugin Name:.*| * Plugin Name:       Fleet Agent Site Manager|" \
-		-e "s|^ \* License:.*| * License:           GPLv2 or later|" \
-		-e "s|^ \* License URI:.*| * License URI:       https://www.gnu.org/licenses/gpl-2.0.html|" \
 		-e "s|^ \* Text Domain:.*| * Text Domain:       fleet-agent-site-manager|" \
 		-e "s|define('WPMGR_AGENT_DISPLAY_NAME', 'WPMgr Agent');|define('WPMGR_AGENT_DISPLAY_NAME', 'Fleet Agent Site Manager');|" \
 		release/fleet-agent-site-manager/fleet-agent-site-manager.php

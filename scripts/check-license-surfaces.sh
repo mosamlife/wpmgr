@@ -24,6 +24,20 @@
 #   7. apps/agent/NOTICE.md                 - "The WPMgr agent is ...-licensed"
 #   8. apps/agent/README.md                 - "...-licensed WordPress plugin"
 #   9. LICENSE-AGENT                        - the license-text title line
+#  10. Makefile                             - the wp.org build must not
+#                                              override the header at all
+#
+# #10 exists because of how this exact bug shipped. Fixing readme.txt to MIT
+# is not sufficient on its own: Makefile's agent-zip-wporg target used to
+# carry a `sed` line that rewrote the STAGED plugin header's License field to
+# "GPLv2 or later" on every wp.org build, regardless of what the source
+# declared. Every check above reads the committed source tree, which agreed
+# on MIT throughout and would have stayed green, while the actual zip
+# uploaded to wordpress.org kept shipping a header that disagreed with
+# readme.txt - the literal defect #547 was filed against, reintroduced by the
+# build instead of the source. `make agent-plugincheck` (the authoritative
+# gate, real WordPress via Docker) is what caught it; this check is what
+# keeps it caught without a Docker run.
 #
 # NOT checked, deliberately: the matthiasmullie/minify third-party attribution
 # in readme.txt (a dependency's license, not the plugin's), and the lilliput
@@ -263,6 +277,54 @@ check_license_agent() {
 }
 
 # ---------------------------------------------------------------------------
+# 10. Makefile's wp.org build must not carry its own hard-coded rewrite of the
+# plugin header's License field. This is not a "declares X" surface like the
+# nine above it -- there is nothing legitimate for a packaging step to say
+# here, so the only correct state is ABSENT, and its presence is itself the
+# finding, independent of what value it hard-codes. A rewrite line always
+# contains the literal field name "License:" twice on one line: once as the
+# sed match (the field it targets) and once inside the literal replacement
+# text (the value it forces), which is what the pattern below keys on. It
+# does not fire on the plain-English Makefile comment describing the target,
+# because a comment states "License" and a value only once, not twice, and
+# never inside a sed s/// replacement.
+# ---------------------------------------------------------------------------
+#
+# grep's exit code is read explicitly, not swallowed into "no match" the way
+# add_surface's callers do (there is nothing to normalize into a license value
+# here). grep exits 1 for a clean "no match", which is the PASS case for this
+# check, and 0 when it found a hit. Anything else (2+) means the pattern
+# itself failed to run at all -- on this exact check, in an earlier revision,
+# an invalid empty-alternation group made both BSD grep and the ugrep-based
+# wrapper this repo's own shell uses error out, and a trailing `2>/dev/null ||
+# true` on the capture made that failure read as "found nothing", which
+# reported OK forever regardless of what the Makefile said. That is the same
+# defect this whole guard exists to catch, one level deeper: never let a
+# broken check's own tool error look like a clean pass.
+# ---------------------------------------------------------------------------
+check_makefile_no_license_override() {
+  _f='Makefile'
+  if [ ! -f "$_f" ]; then
+    err "$_f does not exist."
+    return
+  fi
+  _hit="$(grep -nE '\*[[:space:]]*(License|License URI):.*\*[[:space:]]*(License|License URI):' "$_f")"
+  _rc=$?
+  if [ "$_rc" -eq 0 ]; then
+    err "$_f rewrites the plugin header's License field during a build:"
+    printf '%s\n' "$_hit" | sed 's/^/  /'
+    detail "This is how GH #547 actually shipped a mismatched wp.org zip even after every source surface agreed on MIT: the build pipeline silently re-declared the header to a different license at package time. The source's declared license is the single source of truth; nothing may override it during packaging."
+    return
+  fi
+  if [ "$_rc" -gt 1 ]; then
+    err "$_f: the pattern this check uses to find a License override failed to run (grep exit $_rc), instead of cleanly finding zero or one matches."
+    detail "A broken pattern must not read as a clean pass. Fix the ERE in check_makefile_no_license_override before trusting this check again."
+    return
+  fi
+  ok "$_f's wp.org build does not override the plugin header's License field."
+}
+
+# ---------------------------------------------------------------------------
 main() {
   check_php_header "the main plugin header" 'apps/agent/wpmgr-agent.php'
   check_php_header "the a-wpmgr-error-trap.php mu-plugin header" 'apps/agent/mu-plugin-loader/a-wpmgr-error-trap.php'
@@ -273,6 +335,7 @@ main() {
   check_notice
   check_agent_readme_md
   check_license_agent
+  check_makefile_no_license_override
 
   uniq_licenses="$(printf '%s' "$SURFACES" | awk -F'|' 'NF{print $4}' | sort -u)"
   n_uniq="$(printf '%s' "$uniq_licenses" | grep -c . || true)"
