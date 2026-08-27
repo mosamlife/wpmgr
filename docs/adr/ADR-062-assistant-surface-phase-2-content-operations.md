@@ -892,16 +892,42 @@ executing principal stays fixed — attribution and execution become two
 fields, and only the display field moves. It never becomes a second
 execution principal.
 
-**It forecloses writing arbitrary HTML.** Without `unfiltered_html`,
-`wp_kses_post` runs over the content, so a content write cannot introduce a
-script tag, an iframe or an arbitrary embed. Two consequences, and both are
-features. The assistant cannot place a tracking pixel or a third-party embed
-into a page — if that capability is ever wanted it arrives as its own
-decision, with its own gate, not as a side effect of a content write. And a
-prompt-injection payload that reaches the content path cannot become
-executable markup on the site: the last conversion step from text to script
-is missing. This is worth saying in product copy in the terms ADR-061
-Decision 4 permits — describe what runs on a write, never claim a boundary.
+**It forecloses writing arbitrary HTML through `post_content` — and that
+guarantee is narrower than "every content write," which this ADR states
+explicitly rather than leaving implicit.** Without `unfiltered_html`,
+`wp_kses_post` runs over `post_content`, so a write through that path cannot
+introduce a script tag, an iframe or an arbitrary embed. But `wp_kses_post`
+is wired to WordPress's post-content save filters specifically; it is not
+invoked by `update_post_meta()`, by a field plugin's own write API, or by
+any other storage path, regardless of what capabilities the current user
+holds. Two of this ADR's own first-wave paths write outside `post_content`
+by design: Elementor's document is a hand-owned post-meta blob (see
+[Scope: builders in the first wave](#scope-builders-in-the-first-wave)),
+and custom-field values are written through a field plugin's own API (see
+[Own or delegate](#own-or-delegate-and-why-the-guard-is-a-platform-property)).
+Neither path inherits markup safety from the service principal lacking
+`unfiltered_html`, because neither path runs through the filter that
+capability gates.
+
+**So the platform, not the principal's capability profile, is what has to
+sanitize those paths.** Every string field in `propose(ops)`'s operation
+vocabulary that can carry markup — an Elementor widget's rich-text or HTML
+setting, a custom field typed as HTML or WYSIWYG — is run through the same
+allow-list `wp_kses_post` already enforces, explicitly, by the adapter,
+immediately before the value reaches `apply()`'s write, whether that write
+lands in `post_content`, in post meta, or through a field plugin's API. A
+value that fails this check is refused the same way any other invalid
+`propose(ops)` operation is refused, not silently stripped and written
+anyway. With that in place, the two consequences below hold for every
+adapter path this ADR supports, not only for `post_content`: the assistant
+cannot place a tracking pixel or a third-party embed into a page — if that
+capability is ever wanted it arrives as its own decision, with its own
+gate, not as a side effect of a content write — and a prompt-injection
+payload that reaches any content path cannot become executable markup on
+the site, because the last conversion step from text to script is missing
+everywhere this ADR writes, not only where core's own filter happens to
+run. This is worth saying in product copy in the terms ADR-061 Decision 4
+permits — describe what runs on a write, never claim a boundary.
 
 **It forecloses the mapped-operator-identity candidate as the v1 answer**,
 and the no-user-at-all candidate entirely for content. Both reasons are
@@ -1027,6 +1053,21 @@ has to span two of them. Define one internal representation — the
 Framework — and adapt at each integration's edge. No integration gets its
 own internal shape.
 
+**`apply()`'s durable idempotency state and atomic claim mechanism are
+named here, not designed here.** The Builder Adapter Framework decides that
+`apply()` must never double-apply a proposal, including across a crash mid-write
+and a replayed `content_promote`. What is not decided is the mechanism: how a
+concurrent or retried call claims a proposal atomically, what durable state
+records that a write is in flight versus committed, and how a retry resolves
+an outcome that is ambiguous after a crash (write may have committed, may
+not have). Those are database-schema and control-plane concurrency questions,
+not content-operations decisions, and inventing an answer here would be a
+claim tested against nothing. **Owner:** `database-engineer` for the durable
+state (proposal and staging schema, per the routing note under
+[The principal question](#the-principal-question)), with `backend-architect`
+for the claim transition built on it; both before any `content_promote`
+handler is written, not discovered after a double-apply incident.
+
 ---
 
 ## Why this is still Proposed
@@ -1092,11 +1133,17 @@ permanent open marks.
   `propose(ops)` vocabulary.
 - No content operation that requires a human-held browser session per site,
   and none that requires a machine-held one either.
-- **No content write that can produce executable markup.** The execution
-  principal has no `unfiltered_html`, so content passes through core's
-  post-content sanitizer. Script, iframes and arbitrary embeds are out of
-  reach of this surface, and putting them back in reach is a separate
-  decision with its own gate — never a side effect of a content feature.
+- **No content write that can produce executable markup, through any
+  adapter path.** `post_content` writes pass through core's post-content
+  sanitizer because the execution principal has no `unfiltered_html`; post
+  meta and field-plugin writes do not run through that filter at all, so
+  the platform applies the same allow-list explicitly to every markup-bearing
+  field in `propose(ops)` before `apply()` writes it, regardless of which
+  storage path receives it (see
+  [It forecloses writing arbitrary HTML](#what-it-forecloses-deliberately)).
+  Script, iframes and arbitrary embeds are out of reach of this surface, and
+  putting them back in reach is a separate decision with its own gate —
+  never a side effect of a content feature.
 - **No AI-authored change that looks human-authored.** The executing
   principal is fixed and the revision names it. A future per-site
   `post_author` override moves the display field only.
