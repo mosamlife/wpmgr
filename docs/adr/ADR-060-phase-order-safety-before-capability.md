@@ -9,10 +9,10 @@ records why that order is a decision rather than a scheduling preference.
 **Amended 2026-08-27 — read [Amendments](#amendments-2026-08-27) before
 deciding whether a change trips the freeze clause.** The status stays
 Accepted and no decision text below is rewritten. One amendment, A1, defines
-"externally-reachable surface" for the freeze clause at :44 — a term this
-document used but never defined, which two separate ADRs had each been left
-to interpret for themselves, reaching opposite conclusions by different
-routes.
+"externally-reachable surface" for the [Freeze clause](#freeze-clause)
+below — a term this document used but never defined, which two separate
+ADRs had each been left to interpret for themselves, reaching opposite
+conclusions by different routes.
 
 ---
 
@@ -118,10 +118,12 @@ dozen new routes on the existing, already-authenticated dashboard API. It
 argued these are not a new surface, said plainly that this was its own
 reading of an undefined term and not binding on any other document, and
 named the gap as an open question for whoever holds this ADR next to close.
-Separately, and earlier, an amendment to ADR-061 — its A9 — had already
+Separately, and earlier, a draft amendment to ADR-061 — its A9, in unmerged
+PR #519 and not on `main`, so it does not carry as an accepted decision —
 reached the opposite-shaped conclusion, that the assistant route *is* a new
-surface, and settled it inside an amendment section belonging to a different
-ADR rather than this one.
+surface, and did so inside an amendment section belonging to a different
+ADR rather than this one. The independent derivation below (see the edges,
+first bullet) does not depend on that draft landing.
 
 Both documents reasoned carefully, and, on their own facts, both reached the
 right answer (see the edges below). That does not make the pattern safe.
@@ -142,7 +144,8 @@ term sits inside.
 **A surface is fixed by three things: the transport or listener it answers
 on, the authentication a caller must satisfy to reach it, and the class of
 caller that authentication admits. A change is a *new* surface when it
-changes at least one of those three — a new transport or listener; an
+changes at least one of those three in a way that expands reachability — a
+new transport or listener; an
 authentication requirement that admits a class of caller that could not
 reach that perimeter before; or a route that becomes reachable to a class of
 caller that could not reach it before. A change that adds a route, resource
@@ -161,28 +164,30 @@ only adds a resource inside that perimeter — it is not.
 
 **This is reading (a), a genuinely new reachable entry point, not reading
 (b), any new route on an already-authenticated perimeter.** The choice is
-forced by this document's own text, not asserted fresh here. The Freeze
-clause section already says, two lines below the clause itself, that it
-"does not freeze feature work in general — internal work, and work that
-adds no new externally-reachable surface, is unaffected" (:46-48). Reading
-(b) makes that sentence false: essentially all feature work adds a route
-somewhere, so essentially all feature work would freeze the moment any
-auth-boundary item is open — the broad freeze the same passage calls itself
-"deliberately narrow" (:46) to avoid being, and returns to at :48-50 ("a
-broad freeze gets suspended informally and the lift is never recorded ...
-a narrow freeze is cheap enough to actually hold"). A definition that makes
-this document's own scope statement false is the wrong definition, whatever
-else might recommend it.
+forced by this document's own text, not asserted fresh here. The [Freeze
+clause](#freeze-clause) section already says, in the paragraph immediately
+below the clause itself, that it "does not freeze feature work in general —
+internal work, and work that adds no new externally-reachable surface, is
+unaffected." Reading (b) makes that sentence false: essentially all feature
+work adds a route somewhere, so essentially all feature work would freeze
+the moment any auth-boundary item is open — the broad freeze that same
+sentence calls itself "deliberately narrow" to avoid being, and the same
+paragraph goes on to say why: "a broad freeze gets suspended informally and
+the lift is never recorded ... a narrow freeze is cheap enough to actually
+hold." A definition that makes this document's own scope statement false is
+the wrong definition, whatever else might recommend it.
 
 **The edges, worked through rather than asserted:**
 
 - **A new route on an existing, already-authenticated perimeter, answering
   to a class of caller that could not reach that perimeter at all before.**
-  This is a new surface without qualification, on both grounds at once.
-  ADR-061's assistant route is exactly this case: it sits on the existing
-  API host, but nothing answering to an assistant-kind credential was
-  reachable there before it shipped — a new caller class — and (per its own
-  A6) it answers on a new protocol besides. Nothing answering to a wholly
+  This is a new surface without qualification. ADR-061's assistant route is
+  this case: it sits on the existing API host, but nothing answering to the
+  agent-kind key ADR-061 Decision 2 defines for the assistant proposer was
+  reachable there before it shipped — a new caller class, sufficient on its
+  own under the test above. (An unmerged draft amendment to ADR-061, its A6,
+  would add a new-transport ground as well; that draft is not on `main`,
+  and this amendment does not rely on it.) Nothing answering to a wholly
   new class of caller is "capability added to an existing surface" under
   either reading. Contrast ADR-064: a dozen routes added for a caller class
   already admitted on that perimeter (an existing dashboard session), under
@@ -245,8 +250,11 @@ relocates the rule the term sits inside.
 cite Amendment A1 rather than carry its own interpretation of "surface" —
 its own text already names this gap as the open question and this
 amendment as the resolution, rather than treating its own reading as
-binding on any later ADR. ADR-061's A9 reaches the same conclusion this
-amendment does for the assistant route, by the same reasoning (new
-transport, new caller class, either independently sufficient), so nothing
-there needs to change; a future document facing this question should still
-point here rather than re-argue the term in its own amendment section.
+binding on any later ADR. ADR-061 carries no amendment section on `main`
+today; its unmerged draft A9 (PR #519) reaches the same conclusion this
+amendment does for the assistant route, by the same reasoning, but that
+reference does not carry until #519 merges. This amendment does not depend
+on it: the caller-class ground alone, from ADR-061 Decision 2 as Accepted,
+already puts the assistant route on the new-surface side of the test above.
+A future document facing this question should still point here rather than
+re-argue the term in its own amendment section.
