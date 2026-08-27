@@ -565,21 +565,49 @@ what it means for the audit log elsewhere in this document: nothing is
 destroyed, so a legitimate future need — a dispute, an investigation — is
 never met with "it's gone," but meeting that need runs through whatever
 privileged path this codebase already uses to read data no ordinary
-capability reaches, not through a route this ADR adds. **If the source
-organisation wants its own durable copy of its pre-transfer history, the
-concrete mechanism is the read endpoints in Decision 13 themselves** — `GET
-.../context/versions` and its item and diff routes — called directly,
-before the transfer completes, while `context.site.read` still holds; this
-is not the broader account-data export tool the Export paragraph above
-names as conditional on ever being built, because pointing at that tool
-specifically would overclaim a mechanism this codebase does not confirm
-exists. **Nothing in this ADR, or in the
-site-transfer workflow, guarantees that copy is actually taken before
-access is revoked** — transfer does not wait on it, prompt for it, or
-block on it, and whether it should is a site-transfer workflow question
-this ADR does not own (the transfer operation itself predates this ADR
-and is not being redesigned here); recorded as a named open question below
-rather than answered by assuming a mechanism this ADR would have to invent.
+capability reaches, not through a route this ADR adds.
+
+**If the source organisation wants its own durable copy of its
+pre-transfer history, the concrete mechanism is the read endpoints in
+Decision 13 themselves** — `GET .../context/versions` and its item and diff
+routes — called directly, before the transfer completes, while
+`context.site.read` still holds; this is not the broader account-data
+export tool the Export paragraph above names as conditional on ever being
+built, because pointing at that tool specifically would overclaim a
+mechanism this codebase does not confirm exists. Decision 13's routes are
+at least a real, specified part of this ADR's own build — they do not exist
+yet because nothing in this Proposed ADR does, but "what has to exist
+before this ships" below already requires them for reasons independent of
+transfer.
+
+**The harder truth checked directly rather than assumed: no mechanism for
+moving a site to a different organisation exists anywhere in this
+codebase today, and this paragraph's own earlier claim that "the transfer
+operation itself predates this ADR" was wrong.** No query in
+`apps/api/db/query/sites.sql` updates a site's organisation — its full
+query list is `CreateSite`, `GetSite`, `ListSites`, `DeleteSite`, and a set
+of narrow setters (tags, age recipient, metadata, app health, connection
+state), never a reassignment of ownership; no `apps/api/internal/site/*.go`
+or `apps/api/internal/org/*.go` file names transfer, reassignment, or an
+organisation-id update on a site; `site_shares.sql` is a distinct
+mechanism (granting another tenant read access without changing
+ownership); and no other ADR, and no `CHANGELOG.md` entry, describes one
+either. **So this section is not a hook into a live workflow — it is a
+contract with nothing yet to attach to**, the same shape Decision 1 already
+uses honestly for layer 7 (learned memory): a rule this ADR commits to
+now, for a capability that does not exist, so that whoever eventually
+builds site-to-organisation transfer inherits a decided answer rather than
+having to invent one under deadline. Until that mechanism exists, calls it,
+and is the thing that actually creates the `transfer`-provenance version
+above, none of this section's rules have anything to run against — which
+also means **nothing in this ADR, or anywhere else in this codebase today,
+guarantees a pre-transfer copy is taken before access would be revoked**,
+because the event that would need to trigger that guarantee does not yet
+happen at all. Whether a future transfer mechanism should require, prompt
+for, or simply document this loss is recorded as a named open question
+below, owned by whoever eventually builds it — not assumed answered by a
+workflow that, checked directly, turns out not to exist.
+
 Pre-transfer versions are also **sealed against restore**: `restore` on a
 pre-transfer version id is refused outright and unconditionally, for every
 caller, including a principal in the original authoring organisation,
@@ -899,6 +927,16 @@ explicitly rather than drift into it unannounced.
   `apps/api/internal/audit/audit.go` is best-effort today
   (`apps/api/internal/audit/audit.go:498-500`), and no fail-closed variant
   exists for this ADR's transaction or for ADR-061's approval path either.
+- **A site-to-organisation transfer mechanism, which this ADR depends on
+  but does not build.** Verified this pass: no query in
+  `apps/api/db/query/sites.sql` reassigns a site's organisation, no file
+  under `apps/api/internal/site/` or `apps/api/internal/org/` implements
+  one, and no other ADR or `CHANGELOG.md` entry describes one. Decision
+  12's transfer rules (clear the site layer, stamp and seal history,
+  refuse a boundary-crossing `diff` or `restore`) are a contract for
+  whatever eventually calls them, not a hook into something already
+  running — they have nothing to run against, and are untestable end to
+  end, until a real transfer mechanism exists and invokes them.
 
 ---
 
@@ -930,17 +968,24 @@ ADR as Proposed; both block it moving to **Accepted**.
    unmade is this ADR's job; the wire format is not. **Owner:**
    `backend-architect`, to decide and land before Decision 13's `PATCH`
    routes are built, not discovered after a concurrent-write incident.
-3. **Should site transfer require or prompt a pre-transfer copy of the
-   site's context history?** Decision 12 seals pre-transfer context from
+3. **Should a future site-transfer mechanism require or prompt a
+   pre-transfer copy of the site's context history — and, first, who
+   builds site-to-organisation transfer at all?** Checked directly this
+   turn, not assumed: no query in `apps/api/db/query/sites.sql` reassigns
+   a site's organisation, no file under `apps/api/internal/site/` or
+   `apps/api/internal/org/` implements one, and no other ADR or
+   `CHANGELOG.md` entry describes one either — the capability Decision 12's
+   transfer rules attach to does not exist anywhere in this codebase
+   today, and has no owner. Decision 12 seals pre-transfer context from
    the destination and closes the source organisation's own ordinary
-   access to it at the same moment transfer completes (see Site transfer,
-   above); the one way to keep an accessible copy is calling Decision 13's
-   read endpoints before that moment. Nothing today makes that happen —
-   the site-transfer operation itself predates this ADR, is not being
-   redesigned here, and this document does not own its workflow. Whether
-   transfer should block on, prompt for, or simply document this loss is a
-   transfer-workflow decision, not a context decision. **Owner:** whoever
-   owns the site-transfer workflow, to decide before this ADR's transfer
-   behaviour ships, since shipping it silently would be the first time an
-   organisation discovers the cutoff is by losing data it did not know to
-   copy.
+   access to it at the moment a transfer would complete; the one way to
+   keep an accessible copy is calling Decision 13's read endpoints before
+   that moment. Nothing today makes that happen, because nothing today
+   makes a transfer happen at all. This document does not build
+   site-to-organisation transfer and does not appoint its owner — it can
+   only record that whoever eventually does inherits this question:
+   whether that mechanism should block on, prompt for, or simply document
+   the loss of ordinary access to pre-transfer history. **Owner:**
+   whoever eventually builds site-to-organisation transfer, unassigned
+   today; that build is itself a prerequisite this ADR depends on and
+   does not provide (see "What has to exist before this ships").
