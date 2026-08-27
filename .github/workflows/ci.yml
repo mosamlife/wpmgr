@@ -406,6 +406,45 @@ jobs:
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
 
+      # ---- RLS cross-tenant guard (GH #470) ---------------------------------
+      # scripts/check-rls-cross-tenant.sh enumerates every PERMISSIVE RLS
+      # policy that grants access across tenants (classified on the setting
+      # its expression tests, never on the policy's name) and reconciles it
+      # against apps/api/db/rls-cross-tenant-policies.txt, the ledger of what
+      # access mode each one is MEANT to have. Full details, including the two
+      # production incidents it is aimed at, are in the script's own header.
+      #
+      # ONLY THE SELF-TEST RUNS HERE, and that is a deliberate boundary, not
+      # a partial wiring. The self-test is hermetic: it writes its own
+      # synthetic extraction and ledger under a throwaway root and asserts the
+      # guard's classification and reconciliation logic against them, so it
+      # needs no database and never touches this repo's real migrations or
+      # its real ledger. What it proves: the guard's LOGIC is correct — every
+      # case in scripts/check-rls-cross-tenant_test.sh (naming variants,
+      # FOR SELECT on a write path, drifted/stale/unrecorded ledger rows, and
+      # the fail-closed paths themselves) still holds. What it does NOT prove:
+      # that this repository's ACTUAL cross-tenant policies, as they exist in
+      # the real schema today, reconcile against the real ledger. That
+      # requires reading real pg_policies off a database with all migrations
+      # applied, which this job does not have and should not pay for on every
+      # PR.
+      #
+      # THE LIVE CHECK runs in .github/workflows/api-integration.yml instead,
+      # next to the other RLS proofs (apps/api/tests, the m112 site-scope
+      # suite) that already require a throwaway Postgres. It applies every
+      # migration to a fresh container and reads pg_policies for real, so it
+      # is the only place either lane actually inspects this repo's live
+      # schema. That workflow is manual-dispatch only (see its own header for
+      # why), so the live guard does not run automatically on every PR either
+      # -- the same standing limitation the m112 proofs already carry. Run
+      # `make check-rls-cross-tenant` locally, or dispatch that workflow,
+      # before merging anything that adds or narrows an RLS policy.
+      #
+      # Self-test first, same reasoning as the version surface guard above: a
+      # broken guard must fail here, not pass by failing open.
+      - name: "RLS cross-tenant guard self-test (GH #470)"
+        run: scripts/check-rls-cross-tenant_test.sh
+
       # ---- Agent release manifest guard ------------------------------------
       # scripts/release-agent.sh is the trust boundary release.yml calls to
       # build the agent's self-update manifest (GH #515: it used to publish a

@@ -1,0 +1,901 @@
+#!/usr/bin/env bash
+# scripts/check-rls-cross-tenant_test.sh
+#
+# The regression suite for scripts/check-rls-cross-tenant.sh.
+#
+# WHY THIS EXISTS. The guard's whole job is to be trusted when it says nothing
+# is wrong. A guard nobody can run is a guard nobody can check, and the two
+# defects it exists to catch (GH #470) are both defects of SILENCE -- a policy
+# that admits the read and swallows the write, and a name-based sweep that
+# matches nothing and reports a clean bill of health. So the cases that matter
+# most here are not the ones where the guard finds a bug. They are:
+#
+#   * the guard finds NOTHING and must still go red (exit 2, never 0), and
+#   * the guard is shown CORRECT work and must stay green.
+#
+# The second is not optional politeness. A guard that reddens correct work gets
+# switched off, and then it guards nothing at all. Half the cases below are
+# honest configurations the guard MUST NOT block.
+#
+# HOW IT WORKS. Every case writes a small extraction capture and a small
+# ledger, runs the real guard against them with --from-extract, and asserts the
+# exit code plus what the output does and does not say. No database is needed:
+# extraction and analysis are separate modes in the guard precisely so this
+# suite can be hermetic and run anywhere, including a CI job with no postgres.
+#
+# RUN IT:
+#   scripts/check-rls-cross-tenant_test.sh          # everything
+#   scripts/check-rls-cross-tenant_test.sh empty    # only cases matching "empty"
+#
+# Point it at a different implementation to prove the suite is not vacuous
+# (reintroduce a hole in a copy, watch the suite go red):
+#   WPMGR_RLS_GUARD_SCRIPT=/tmp/guard-with-hole.sh \
+#     scripts/check-rls-cross-tenant_test.sh
+#
+# PORTABILITY. bash 3.2 (what macOS ships) and POSIX tools, so it behaves the
+# same on a darwin laptop with BSD grep/sed/awk and on an ubuntu runner with
+# the GNU ones. No mapfile, no associative arrays, no sed -i, no grep -P.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="${WPMGR_RLS_GUARD_SCRIPT:-$HERE/check-rls-cross-tenant.sh}"
+FILTER="${1:-}"
+
+if [ ! -f "$GUARD" ]; then
+  echo "no guard script at $GUARD" >&2
+  exit 2
+fi
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/wpmgr-rls-guard-test.XXXXXX")" || exit 2
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+PASSED=0
+FAILED=0
+FAILED_NAMES=''
+
+# ---------------------------------------------------------------------------
+# Fixtures
+#
+# A realistic-in-miniature extraction. It carries, deliberately:
+#   * a tenant-bound policy      (must never be counted as a cross-tenant grant)
+#   * a RESTRICTIVE site_scope   (does not mention app.tenant_id, but can only
+#                                 narrow, so it must never be counted either)
+#   * a FOR ALL agent policy     (the correct shape for a writing path)
+#   * a FOR SELECT agent policy  (correct for a genuinely read-only path)
+#   * a FOR INSERT policy        (correct for an append-only path)
+#   * a FOR UPDATE policy        (correct for a consuming path, and the only
+#                                 mode besides ALL that covers a locking read)
+#   * a policy named nothing like the convention, to keep the naming section
+#     honest
+# ---------------------------------------------------------------------------
+
+write_extract() {
+  cat > "$1" <<'EXTRACT'
+autologin_tokens|autologin_tokens_agent_consume|PERMISSIVE|UPDATE|app.agent|CROSS
+backup_chunks|backup_chunks_agent|PERMISSIVE|SELECT|app.agent|CROSS
+backup_schedules|backup_schedules_scheduler|PERMISSIVE|ALL|app.agent|CROSS
+site_connection_history|conn_history_enroll|PERMISSIVE|INSERT|app.enroll|CROSS
+sites|sites_site_scope|RESTRICTIVE|ALL|app.allowed_site_ids,app.site_scope|CROSS
+sites|sites_tenant_isolation|PERMISSIVE|ALL|app.tenant_id|TENANT
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EXTRACT
+}
+
+write_ledger() {
+  cat > "$1" <<'LEDGER'
+# a comment, and a blank line follow
+
+# columns: table|policy|guc|cmd|ops|rationale
+autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update|the consuming UPDATE runs under InAgentTx
+backup_chunks|backup_chunks_agent|app.agent|SELECT|select|reads only; every chunk write is tenant-scoped
+backup_schedules|backup_schedules_scheduler|app.agent|ALL|update,lock|claims due schedules with FOR UPDATE and advances them
+site_connection_history|conn_history_enroll|app.enroll|INSERT|insert|enrollment appends a connection record before any tenant scope exists
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+LEDGER
+}
+
+# ---------------------------------------------------------------------------
+# Harness
+# ---------------------------------------------------------------------------
+
+run_guard() {
+  # run_guard EXTRACT LEDGER -> sets OUT and RC
+  OUT="$("$GUARD" --from-extract "$1" --ledger "$2" --root "$WORK/emptyroot" 2>&1)"
+  RC=$?
+}
+
+pass() { PASSED=$((PASSED + 1)); printf 'ok   %s\n' "$1"; }
+fail() {
+  FAILED=$((FAILED + 1))
+  FAILED_NAMES="$FAILED_NAMES
+  - $1"
+  printf 'FAIL %s\n' "$1"
+  printf '     %s\n' "$2"
+  printf '     --- guard output (rc=%s) ---\n' "$RC"
+  printf '%s\n' "$OUT" | sed 's/^/     /'
+  printf '     --- end ---\n'
+}
+
+want_rc() {
+  # want_rc NAME EXPECTED
+  if [ "$RC" = "$2" ]; then return 0; fi
+  fail "$1" "expected exit $2, got $RC"
+  return 1
+}
+
+want_says() {
+  if printf '%s' "$OUT" | grep -qF "$2"; then return 0; fi
+  fail "$1" "expected the output to mention: $2"
+  return 1
+}
+
+want_silent_about() {
+  if printf '%s' "$OUT" | grep -qF "$2"; then
+    fail "$1" "expected the output NOT to mention: $2"
+    return 1
+  fi
+  return 0
+}
+
+should_run() {
+  [ -z "$FILTER" ] && return 0
+  case "$1" in *"$FILTER"*) return 0 ;; esac
+  return 1
+}
+
+mkdir -p "$WORK/emptyroot"
+
+# ===========================================================================
+# GROUP 1 -- the baseline. Correct work stays green.
+# ===========================================================================
+
+NAME='baseline: a correct extraction and a matching ledger pass'
+if should_run "$NAME"; then
+  write_extract "$WORK/e1"
+  write_ledger "$WORK/l1"
+  run_guard "$WORK/e1" "$WORK/l1"
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" 'every cross-tenant policy is recorded' &&
+    pass "$NAME"
+fi
+
+NAME='baseline: the tenant-bound policy is not counted as a cross-tenant grant'
+if should_run "$NAME"; then
+  write_extract "$WORK/e2"
+  write_ledger "$WORK/l2"
+  run_guard "$WORK/e2" "$WORK/l2"
+  # 7 extracted, 5 cross-tenant: sites_tenant_isolation is tenant-bound and
+  # sites_site_scope is RESTRICTIVE, so neither is a grant.
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" 'Extracted 7 policies; 5 are cross-tenant grants.' &&
+    pass "$NAME"
+fi
+
+NAME='baseline: a RESTRICTIVE policy that never mentions app.tenant_id is not a grant'
+if should_run "$NAME"; then
+  write_extract "$WORK/e3"
+  write_ledger "$WORK/l3"
+  run_guard "$WORK/e3" "$WORK/l3"
+  # sites_site_scope is in NO ledger row. If the classifier wrongly treated a
+  # restrictive policy as a grant, the guard would demand a ledger row for it.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'sites_site_scope' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 2 -- A SWEEP THAT FINDS NOTHING MUST GO RED.
+#
+# This is the requirement the guard exists to satisfy at one level up. Every
+# case here would, in a naive implementation, print nothing, find nothing and
+# exit 0 -- reporting a clean tenant boundary from a broken run.
+# ===========================================================================
+
+NAME='empty: an extraction with no rows exits 2, never 0'
+if should_run "$NAME"; then
+  : > "$WORK/e-empty"
+  write_ledger "$WORK/l4"
+  run_guard "$WORK/e-empty" "$WORK/l4"
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'GUARD BROKEN' &&
+    want_says "$NAME" '0 well-formed rows' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='empty: an extraction of only malformed lines exits 2, not 0'
+if should_run "$NAME"; then
+  printf 'psql: error: connection to server failed\nFATAL: database does not exist\n' > "$WORK/e-junk"
+  write_ledger "$WORK/l5"
+  run_guard "$WORK/e-junk" "$WORK/l5"
+  # A psql error banner on stdout must never be counted as a policy row. All
+  # rows malformed is the extreme case of the partial-drop check above, so it
+  # is caught there and the banner itself is echoed back to the operator.
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'but only 0 parsed as policies' &&
+    want_says "$NAME" 'connection to server' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='partial: a few malformed rows among good ones exits 2, not a quiet skip'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-partial"
+  printf 'this line is not a policy row\nneither|is|this\n' >> "$WORK/e-partial"
+  write_ledger "$WORK/l-partial"
+  run_guard "$WORK/e-partial" "$WORK/l-partial"
+  # The guard used to drop unparseable rows silently and fail only when EVERY
+  # row was malformed. Two junk lines on a 240-row extraction printed
+  # "Extracted 239 policies" and passed -- one policy gone from a
+  # tenant-boundary audit, unreported. Announcing success over its own errors,
+  # inside the guard written to stop exactly that.
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'but only' &&
+    want_says "$NAME" 'were not audited' &&
+    want_says "$NAME" 'this line is not a policy row' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='partial: a single dropped row is enough to exit 2'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-one"
+  # A plausible near-miss rather than obvious junk: lowercase command mode.
+  printf 'smtp_settings|smtp_settings_mailer|PERMISSIVE|all|app.agent|CROSS\n' >> "$WORK/e-one"
+  write_ledger "$WORK/l-one"
+  run_guard "$WORK/e-one" "$WORK/l-one"
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'smtp_settings_mailer' &&
+    pass "$NAME"
+fi
+
+NAME='partial: trailing blank lines are not counted as dropped rows'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-blank"
+  printf '\n\n   \n' >> "$WORK/e-blank"
+  write_ledger "$WORK/l-blank"
+  run_guard "$WORK/e-blank" "$WORK/l-blank"
+  # psql and shell redirection both leave trailing newlines. Treating those as
+  # lost policies would redden every honest run, which gets a guard switched
+  # off.
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" 'every cross-tenant policy is recorded' &&
+    pass "$NAME"
+fi
+
+NAME='empty: rows extracted but none classified cross-tenant exits 2'
+if should_run "$NAME"; then
+  cat > "$WORK/e-notenant" <<'EOF'
+sites|sites_tenant_isolation|PERMISSIVE|ALL|app.tenant_id|TENANT
+update_runs|update_runs_tenant_isolation|PERMISSIVE|ALL|app.tenant_id|TENANT
+EOF
+  write_ledger "$WORK/l6"
+  run_guard "$WORK/e-notenant" "$WORK/l6"
+  # This is the subtle one. The extraction worked, so a naive guard would say
+  # "no cross-tenant policy is wrong" and exit 0. But this repository HAS
+  # cross-tenant policies, so zero means the classifier broke.
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'classified 0 of them as cross-tenant grants' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='empty: a missing extraction file exits 2'
+if should_run "$NAME"; then
+  write_ledger "$WORK/l7"
+  run_guard "$WORK/nope-does-not-exist" "$WORK/l7"
+  want_rc "$NAME" 2 && want_says "$NAME" 'GUARD BROKEN' && pass "$NAME"
+fi
+
+NAME='empty: a missing ledger exits 2 rather than passing with nothing to check'
+if should_run "$NAME"; then
+  write_extract "$WORK/e8"
+  run_guard "$WORK/e8" "$WORK/nope-no-ledger"
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'no ledger at' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='empty: a ledger that parses to zero rows exits 2'
+if should_run "$NAME"; then
+  write_extract "$WORK/e9"
+  printf '# every line here is a comment\n# so the ledger parses to nothing\n' > "$WORK/l-empty"
+  run_guard "$WORK/e9" "$WORK/l-empty"
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'parsed to 0 rows' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 3 -- the real defects. The guard must go red.
+# ===========================================================================
+
+NAME='red: FOR SELECT on a path that updates is the #96 bug and fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e10"
+  write_ledger "$WORK/l10"
+  # backup_chunks_agent is FOR SELECT in the database. Record that its path
+  # actually updates -- the exact contradiction that shipped three times.
+  ed_tmp="$WORK/l10.tmp"
+  sed 's/^backup_chunks|backup_chunks_agent|app.agent|SELECT|select|/backup_chunks|backup_chunks_agent|app.agent|SELECT|update|/' \
+    "$WORK/l10" > "$ed_tmp" && mv "$ed_tmp" "$WORK/l10"
+  run_guard "$WORK/e10" "$WORK/l10"
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "a cross-tenant path performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_says "$NAME" 'zero rows WITH NO' &&
+    want_says "$NAME" 'never edit an applied one' &&
+    pass "$NAME"
+fi
+
+NAME='red: FOR SELECT on a path that takes a row lock fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e11"
+  write_ledger "$WORK/l11"
+  ed_tmp="$WORK/l11.tmp"
+  sed 's/^backup_chunks|backup_chunks_agent|app.agent|SELECT|select|/backup_chunks|backup_chunks_agent|app.agent|SELECT|lock|/' \
+    "$WORK/l11" > "$ed_tmp" && mv "$ed_tmp" "$WORK/l11"
+  run_guard "$WORK/e11" "$WORK/l11"
+  # PostgreSQL applies the UPDATE policy to SELECT ... FOR UPDATE, so a
+  # read-only policy makes even the locking read return nothing. That is
+  # precisely how Issue #96 stopped every backup schedule advancing.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "a cross-tenant path performs 'lock'" &&
+    pass "$NAME"
+fi
+
+NAME='red: a new unrecorded cross-tenant policy fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e12"
+  write_ledger "$WORK/l12"
+  printf 'smtp_settings|smtp_settings_mailer|PERMISSIVE|ALL|app.agent|CROSS\n' >> "$WORK/e12"
+  run_guard "$WORK/e12" "$WORK/l12"
+  # The omission the guard exists to catch: somebody adds a cross-tenant
+  # policy and nobody records what its access mode is meant to be.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'is in no ledger row' &&
+    want_says "$NAME" 'smtp_settings_mailer' &&
+    pass "$NAME"
+fi
+
+NAME='red: a policy whose mode drifted from the ledger fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e13"
+  write_ledger "$WORK/l13"
+  ed_tmp="$WORK/e13.tmp"
+  sed 's/^update_runs|update_runs_agent|PERMISSIVE|ALL|/update_runs|update_runs_agent|PERMISSIVE|SELECT|/' \
+    "$WORK/e13" > "$ed_tmp" && mv "$ed_tmp" "$WORK/e13"
+  run_guard "$WORK/e13" "$WORK/l13"
+  # GH #463 Phase 0 in miniature: update_runs_agent narrowed to FOR SELECT
+  # while the dispatcher still claims rows.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'is FOR SELECT in the database but the ledger records FOR ALL' &&
+    pass "$NAME"
+fi
+
+NAME='red: a stale ledger row for a policy that no longer exists fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e14"
+  write_ledger "$WORK/l14"
+  printf 'gone_table|gone_policy|app.agent|ALL|-|dropped in some later migration\n' >> "$WORK/l14"
+  run_guard "$WORK/e14" "$WORK/l14"
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'no such policy exists in the database' &&
+    pass "$NAME"
+fi
+
+NAME='red: a ledger row for a policy that stopped being cross-tenant fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e15"
+  write_ledger "$WORK/l15"
+  # The policy still exists, but is now RESTRICTIVE -- it can no longer grant.
+  ed_tmp="$WORK/e15.tmp"
+  sed 's/^backup_chunks|backup_chunks_agent|PERMISSIVE|/backup_chunks|backup_chunks_agent|RESTRICTIVE|/' \
+    "$WORK/e15" > "$ed_tmp" && mv "$ed_tmp" "$WORK/e15"
+  run_guard "$WORK/e15" "$WORK/l15"
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'is no longer a cross-tenant grant' &&
+    pass "$NAME"
+fi
+
+NAME='red: an unaudited ops set on a mode narrower than ALL fails'
+if should_run "$NAME"; then
+  write_extract "$WORK/e16"
+  write_ledger "$WORK/l16"
+  ed_tmp="$WORK/l16.tmp"
+  sed 's/^backup_chunks|backup_chunks_agent|app.agent|SELECT|select|/backup_chunks|backup_chunks_agent|app.agent|SELECT|-|/' \
+    "$WORK/l16" > "$ed_tmp" && mv "$ed_tmp" "$WORK/l16"
+  run_guard "$WORK/e16" "$WORK/l16"
+  # A mode narrower than ALL must carry the evidence that narrowing is safe.
+  # Letting '-' through here is how a FOR SELECT policy gets waved past.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "leaves ops unaudited" &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 4 -- OVER-FIRE. Correct work the guard must NOT block.
+#
+# A guard that reddens honest work gets switched off, and then it guards
+# nothing. Each case below is a shape that is genuinely right.
+# ===========================================================================
+
+NAME='green: a genuinely read-only path correctly using FOR SELECT stays green'
+if should_run "$NAME"; then
+  write_extract "$WORK/e20"
+  write_ledger "$WORK/l20"
+  run_guard "$WORK/e20" "$WORK/l20"
+  # backup_chunks_agent is FOR SELECT with ops=select. This is the honest
+  # read-only case and it must not be flagged just for being FOR SELECT.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='green: an append-only path correctly using FOR INSERT stays green'
+if should_run "$NAME"; then
+  write_extract "$WORK/e21"
+  write_ledger "$WORK/l21"
+  run_guard "$WORK/e21" "$WORK/l21"
+  # FOR INSERT covers insert and nothing else, and the RUM beacon path only
+  # inserts. Demanding FOR ALL here would widen a public write path.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'conn_history_enroll' &&
+    pass "$NAME"
+fi
+
+NAME='green: FOR UPDATE covers a locking read, so it must not be flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e22"
+  write_ledger "$WORK/l22"
+  ed_tmp="$WORK/l22.tmp"
+  sed 's/^autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update|/autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update,lock|/' \
+    "$WORK/l22" > "$ed_tmp" && mv "$ed_tmp" "$WORK/l22"
+  run_guard "$WORK/e22" "$WORK/l22"
+  # PostgreSQL applies the UPDATE policy to SELECT ... FOR UPDATE, so FOR
+  # UPDATE genuinely covers a lock. Insisting on ALL here would be wrong.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='green: FOR ALL with an unaudited ops set stays green'
+if should_run "$NAME"; then
+  write_extract "$WORK/e23"
+  write_ledger "$WORK/l23"
+  run_guard "$WORK/e23" "$WORK/l23"
+  # update_runs_agent is FOR ALL with ops='-'. Every verb is admitted, so the
+  # silence cannot arise and the path need not be audited verb by verb.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'update_runs_agent' &&
+    pass "$NAME"
+fi
+
+NAME='green: a FOR ALL path recorded with several ops stays green'
+if should_run "$NAME"; then
+  write_extract "$WORK/e24"
+  write_ledger "$WORK/l24"
+  run_guard "$WORK/e24" "$WORK/l24"
+  # backup_schedules_scheduler is FOR ALL with ops=update,lock -- the m84/#96
+  # fix itself. ALL covers everything, so this is the correct shape.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'backup_schedules_scheduler is FOR' &&
+    pass "$NAME"
+fi
+
+NAME='green: an unconventionally named policy is still audited, not skipped'
+if should_run "$NAME"; then
+  write_extract "$WORK/e25"
+  write_ledger "$WORK/l25"
+  run_guard "$WORK/e25" "$WORK/l25"
+  # backup_schedules_scheduler does not match the "<table>_agent" convention.
+  # The naming section must SAY so -- that is the evidence for why the audit
+  # is built on the setting and not the name.
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" 'backup_schedules_scheduler' &&
+    want_says "$NAME" 'would find' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 4b -- PER-TABLE coverage. PostgreSQL ORs permissive policies per table
+# per command, so coverage is a property of the TABLE, never of one policy.
+#
+# Getting this wrong reddens a correct split pair, and the "fix" it implies is
+# a migration that WIDENS a cross-tenant grant to silence a false positive.
+# ===========================================================================
+
+NAME='split: a FOR SELECT + FOR UPDATE pair covering one path stays green'
+if should_run "$NAME"; then
+  cat > "$WORK/e40" <<'EOF'
+autologin_tokens|autologin_tokens_agent|PERMISSIVE|SELECT|app.agent|CROSS
+autologin_tokens|autologin_tokens_agent_consume|PERMISSIVE|UPDATE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l40" <<'EOF'
+autologin_tokens|autologin_tokens_agent|app.agent|SELECT|select|the agent-side read
+autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|select,update|UPDATE ... RETURNING needs select too; the sibling supplies it
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e40" "$WORK/l40"
+  # The consume row records `select` because UPDATE ... RETURNING genuinely
+  # needs it. Its own FOR UPDATE policy does not admit select -- the FOR SELECT
+  # sibling does. Per-table union is what makes this correct pair pass.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='split: the m84/#96 shape still reddens when NO sibling covers the write'
+if should_run "$NAME"; then
+  cat > "$WORK/e41" <<'EOF'
+backup_schedules|backup_schedules_scheduler|PERMISSIVE|SELECT|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l41" <<'EOF'
+backup_schedules|backup_schedules_scheduler|app.agent|SELECT|select,update,lock|claims due schedules with FOR UPDATE and advances them
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e41" "$WORK/l41"
+  # This is Issue #96 exactly: one cross-tenant policy, FOR SELECT, while the
+  # scheduler claims rows with FOR UPDATE. Nothing on the table covers the
+  # write, so per-table union must still catch it. If this ever goes green the
+  # guard has stopped detecting the bug it was built for.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "a cross-tenant path performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_says "$NAME" "a cross-tenant path performs 'lock'" &&
+    want_says "$NAME" 'not a failure, a silence' &&
+    pass "$NAME"
+fi
+
+NAME='split: a sibling covering only SOME of the missing verbs still reddens'
+if should_run "$NAME"; then
+  cat > "$WORK/e42" <<'EOF'
+backup_schedules|backup_schedules_scheduler|PERMISSIVE|SELECT|app.agent|CROSS
+backup_schedules|backup_schedules_reap|PERMISSIVE|DELETE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l42" <<'EOF'
+backup_schedules|backup_schedules_scheduler|app.agent|SELECT|select,update|the scheduler advances next_run_at
+backup_schedules|backup_schedules_reap|app.agent|DELETE|delete|the reaper removes dead schedules
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e42" "$WORK/l42"
+  # A DELETE sibling covers `delete` but not `update`. Partial cover must not
+  # be mistaken for cover -- the union has to be evaluated per operation.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_silent_about "$NAME" "performs 'delete'" &&
+    pass "$NAME"
+fi
+
+NAME='split: FOR DELETE covering a delete-only path stays green'
+if should_run "$NAME"; then
+  cat > "$WORK/e43" <<'EOF'
+backup_chunks|backup_chunks_reclaim|PERMISSIVE|DELETE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l43" <<'EOF'
+backup_chunks|backup_chunks_reclaim|app.agent|DELETE|delete|the reclaim worker deletes chunk rows cross-tenant
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e43" "$WORK/l43"
+  # FOR DELETE was correct but untested until now.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='split: a FOR ALL sibling covers every verb for the whole table'
+if should_run "$NAME"; then
+  cat > "$WORK/e44" <<'EOF'
+sites|sites_agent|PERMISSIVE|ALL|app.agent|CROSS
+sites|sites_shared_read|PERMISSIVE|SELECT|app.user_id|CROSS
+EOF
+  cat > "$WORK/l44" <<'EOF'
+sites|sites_agent|app.agent|ALL|select,update|the agent updates site metadata
+sites|sites_shared_read|app.user_id|SELECT|select,update|deliberately over-recorded: the table is written, and sites_agent covers it
+EOF
+  run_guard "$WORK/e44" "$WORK/l44"
+  # sites_shared_read is FOR SELECT and its row records `update`. Per policy
+  # that reads as the #96 bug; per table it is covered by sites_agent, which is
+  # how PostgreSQL actually evaluates it.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 4d -- THE CLASSIFIER ITSELF, driven with raw predicates.
+#
+# WHY THIS GROUP EXISTS. Every other case here feeds --from-extract fixture
+# rows whose TENANT/CROSS column is hard-coded by the fixture, so none of them
+# ever executes the classification logic. The binding rule and the with_check
+# fallback could both be reverted and the whole suite would stay green -- a
+# test that cannot fail for the thing it is testing, which is this project's
+# signature defect wearing test clothes.
+#
+# These call `--classify QUAL WITH_CHECK`, the same function production uses,
+# with the real deparsed shapes pg_policies actually produces.
+# ===========================================================================
+
+classify() { "$GUARD" --classify "$1" "${2-}" 2>&1; }
+
+# The deparsed forms, written once so the cases read as shapes not noise.
+BOUND="(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+AGENT="(current_setting('app.agent'::text, true) = 'on'::text)"
+SITESCOPE="(COALESCE(current_setting('app.site_scope'::text, true), ''::text) <> 'on'::text)"
+
+want_classify() {
+  # want_classify NAME EXPECTED QUAL [WITH_CHECK]
+  local got
+  got="$(classify "$3" "${4-}")"
+  if [ "$got" = "$2" ]; then
+    pass "$1"
+  else
+    RC='n/a'; OUT="classify returned: $got"
+    fail "$1" "expected $2 for: $3 ${4-}"
+  fi
+}
+
+NAME='classify: a plain bound predicate is TENANT'
+should_run "$NAME" && want_classify "$NAME" TENANT "$BOUND"
+
+NAME='classify: THE OR-ESCAPE -- bound OR app.agent is CROSS'
+if should_run "$NAME"; then
+  # The hole that a binding-anywhere rule reopens. It binds tenant_id and then
+  # ORs straight past it, so a substring or binds-anywhere test calls it
+  # TENANT and it leaves the audit entirely.
+  want_classify "$NAME" CROSS "($BOUND OR $AGENT)"
+fi
+
+NAME='classify: an AND-joined multi-setting policy stays TENANT'
+if should_run "$NAME"; then
+  # The over-fire case. Reading a second setting inside an AND is not an OR
+  # branch, so this binds on its single branch and must stay out of the audit.
+  want_classify "$NAME" TENANT "($BOUND AND $SITESCOPE)"
+fi
+
+NAME='classify: IS NULL OR bound is CROSS'
+if should_run "$NAME"; then
+  # email_webhook_events_tenant_isolation. The NULL branch binds nothing, so
+  # unattributed rows are visible to every tenant.
+  want_classify "$NAME" CROSS "((tenant_id IS NULL) OR $BOUND)"
+fi
+
+NAME='classify: reads app.tenant_id but binds nothing is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "(current_setting('app.tenant_id'::text, true) <> ''::text)"
+
+NAME='classify: a predicate naming no setting at all is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "true"
+
+NAME='classify: an empty predicate is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS ""
+
+NAME='classify: WITH_CHECK is used when QUAL is empty (FOR INSERT)'
+if should_run "$NAME"; then
+  # A FOR INSERT policy has no qual at all. Reverting this fallback must turn
+  # this case red -- that is the proof the boundary is in the right place.
+  want_classify "$NAME" TENANT "" "((current_setting('app.rum_ingest'::text, true) = 'on'::text) AND $BOUND)"
+fi
+
+NAME='classify: QUAL wins over WITH_CHECK when both are present'
+if should_run "$NAME"; then
+  # An unbound qual must not be rescued by a bound with_check: reads are what
+  # qual governs.
+  want_classify "$NAME" CROSS "$AGENT" "$BOUND"
+fi
+
+NAME='classify: an OR inside parentheses is not a top-level branch'
+if should_run "$NAME"; then
+  # ((a OR b) AND tenant_id = ...) binds on its only top-level branch. Treating
+  # the nested OR as top-level would redden a correct policy.
+  want_classify "$NAME" TENANT "(($AGENT OR $SITESCOPE) AND $BOUND)"
+fi
+
+NAME='classify: an OR nested inside a bound branch still splits the outer OR'
+if should_run "$NAME"; then
+  want_classify "$NAME" CROSS "((($AGENT OR $SITESCOPE) AND $BOUND) OR $AGENT)"
+fi
+
+NAME='classify: the word OR inside a string literal is not an operator'
+if should_run "$NAME"; then
+  # A literal containing " OR " must not split the predicate. Splitting here
+  # would produce a non-binding second branch and redden a bound policy.
+  want_classify "$NAME" TENANT "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ' OR '::text))::uuid)"
+fi
+
+NAME='classify: unbalanced parentheses fall back to CROSS, never TENANT'
+if should_run "$NAME"; then
+  # When the split cannot be trusted, over-flagging into the ledger is the safe
+  # direction: the cost is a line of writing, and the reasoning gets recorded.
+  want_classify "$NAME" CROSS "((tenant_id = current_setting('app.tenant_id')::uuid"
+fi
+
+NAME='classify: an unterminated string literal falls back to CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "(tenant_id = 'oops)"
+
+NAME='classify: three OR branches all binding is TENANT'
+if should_run "$NAME"; then
+  want_classify "$NAME" TENANT "($BOUND OR $BOUND OR $BOUND)"
+fi
+
+NAME='classify: three OR branches with one unbound is CROSS'
+if should_run "$NAME"; then
+  want_classify "$NAME" CROSS "($BOUND OR $BOUND OR $AGENT)"
+fi
+
+# ===========================================================================
+# GROUP 4c -- reading app.tenant_id is not the same as binding to it.
+#
+# The dangerous shape is a predicate that READS the setting and constrains
+# nothing with it. The shape that must NOT be flagged is an honest policy that
+# binds tenant_id correctly AND reads a second setting -- a site scope, a role
+# flag. An earlier version errored on the mere presence of a second setting,
+# which reddens that perfectly ordinary policy.
+# ===========================================================================
+
+NAME='unbound: a policy that reads app.tenant_id without binding it is flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e50"
+  # USING (current_setting('app.tenant_id', true) <> ''): reads the setting,
+  # binds nothing, hands over every row. Classified CROSS by the extraction.
+  printf 'smtp_settings|smtp_settings_unbound|PERMISSIVE|ALL|app.tenant_id|CROSS\n' >> "$WORK/e50"
+  write_ledger "$WORK/l50"
+  run_guard "$WORK/e50" "$WORK/l50"
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'does not bind tenant_id in EVERY top-level OR branch' &&
+    want_says "$NAME" 'smtp_settings_unbound' &&
+    pass "$NAME"
+fi
+
+NAME='unbound: an HONEST multi-setting tenant policy is NOT flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e51"
+  # This is the over-fire case. A policy that binds tenant_id correctly AND
+  # reads a second setting is ordinary and narrower, not dangerous:
+  #   USING (tenant_id = current_setting('app.tenant_id')::uuid
+  #          AND coalesce(current_setting('app.site_scope', true), '') <> 'on')
+  # It binds, so the extraction classifies it TENANT and it is not a grant.
+  # Erroring on it -- as an earlier version did, purely for having a second
+  # GUC -- reddens correct work, and a guard that reddens correct work gets
+  # switched off.
+  printf 'site_email_config|site_email_config_tenant_isolation|PERMISSIVE|ALL|app.site_scope,app.tenant_id|TENANT\n' >> "$WORK/e51"
+  write_ledger "$WORK/l51"
+  run_guard "$WORK/e51" "$WORK/l51"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    want_silent_about "$NAME" 'site_email_config_tenant_isolation' &&
+    pass "$NAME"
+fi
+
+NAME='unbound: an ordinary single-setting tenant_isolation policy is NOT flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e52"
+  write_ledger "$WORK/l52"
+  # sites_tenant_isolation binds tenant_id and reads nothing else. Every table
+  # in this repo has one; flagging them would redden the whole schema.
+  run_guard "$WORK/e52" "$WORK/l52"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    pass "$NAME"
+fi
+
+NAME='unbound: a cross-tenant policy that never reads app.tenant_id is NOT flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e53"
+  write_ledger "$WORK/l53"
+  # backup_chunks_agent tests only app.agent. It is a cross-tenant grant and is
+  # audited as one, but it makes no claim about tenant scoping, so the unbound
+  # section has nothing to say about it.
+  run_guard "$WORK/e53" "$WORK/l53"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'UNBOUND TENANT SETTING' &&
+    pass "$NAME"
+fi
+
+NAME='insert: a tenant-bound FOR INSERT policy is not audited as a grant'
+if should_run "$NAME"; then
+  # A FOR INSERT policy has no USING; its whole condition lives in WITH CHECK.
+  # The extraction reads with_check when qual is NULL, so a tenant-bound INSERT
+  # policy classifies TENANT and needs no ledger row. Reading only qual made
+  # every INSERT policy look like a cross-tenant grant, which put rows in the
+  # ledger asserting grants that do not exist.
+  #
+  # If that regressed, this policy would classify CROSS and the guard would
+  # demand a ledger row for it -- so the silence below is the assertion.
+  cat > "$WORK/e54" <<'EOF'
+rum_events_raw|rum_events_raw_rum_ingest|PERMISSIVE|INSERT|app.rum_ingest,app.site_id,app.tenant_id|TENANT
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l54" <<'EOF'
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e54" "$WORK/l54"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'rum_events_raw_rum_ingest' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 5 -- the naming section, which is the evidence for the method.
+# ===========================================================================
+
+NAME='naming: the count of variants is computed, never hard-coded'
+if should_run "$NAME"; then
+  write_extract "$WORK/e30"
+  write_ledger "$WORK/l30"
+  # Four app.agent policies here, under three suffixes: _agent (update_runs),
+  # _agent_consume, _scheduler, and backup_chunks_agent -- so two match the
+  # convention and two do not.
+  run_guard "$WORK/e30" "$WORK/l30"
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" '4 policies test app.agent, under 3 distinct name suffixes.' &&
+    want_says "$NAME" 'would find 2 of 4 and miss 2' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 6 -- the container the guard starts for itself must not leak.
+#
+# Extraction used to run as `do_extract | grep ...`. Every element of a bash
+# pipeline runs in a subshell, so the STARTED_CONTAINER=1 assignment happened
+# in a child, the parent's EXIT trap saw 0, and every full run left a postgres
+# container behind. Disk exhaustion has killed a build in this repo, and it
+# surfaces days later nowhere near the cause.
+#
+# These are source-level assertions on purpose: reproducing the leak needs
+# docker and about two minutes, which is not something a regression suite
+# should require to protect an invariant this cheap to state.
+# ===========================================================================
+
+NAME='leak: extraction does not run do_extract inside a pipeline'
+if should_run "$NAME"; then
+  # Comment lines are stripped FIRST. The guard's own header explains the bug
+  # and quotes the broken form verbatim, so a naive grep over the whole file
+  # matches the explanation and reddens the fixed code -- which is exactly the
+  # over-firing this suite exists to prevent, committed inside the suite.
+  code_hits="$(grep -vE '^[[:space:]]*#' "$GUARD" | grep -nE 'do_extract[[:space:]]*\|')"
+  if [ -n "$code_hits" ]; then
+    RC='n/a'; OUT="$code_hits"
+    fail "$NAME" 'do_extract is piped, so it runs in a subshell and the cleanup flag is lost'
+  else
+    pass "$NAME"
+  fi
+fi
+
+NAME='leak: cleanup removes the container unconditionally, not behind a flag'
+if should_run "$NAME"; then
+  # The removal must not be guarded by a test on STARTED_CONTAINER, because
+  # that variable cannot be trusted across a subshell. Removing a container
+  # that was never created is a harmless no-op.
+  body="$(awk '/^cleanup_container\(\)/, /^}/' "$GUARD")"
+  if printf '%s' "$body" | grep -q 'STARTED_CONTAINER'; then
+    RC='n/a'; OUT="$body"
+    fail "$NAME" 'cleanup_container still branches on STARTED_CONTAINER'
+  elif printf '%s' "$body" | grep -q 'docker rm -f'; then
+    pass "$NAME"
+  else
+    RC='n/a'; OUT="$body"
+    fail "$NAME" 'cleanup_container does not remove the container at all'
+  fi
+fi
+
+# ===========================================================================
+# Verdict
+# ===========================================================================
+
+echo
+printf '%d passed, %d failed\n' "$PASSED" "$FAILED"
+if [ "$FAILED" -ne 0 ]; then
+  printf 'failing cases:%s\n' "$FAILED_NAMES"
+  exit 1
+fi
+if [ "$PASSED" -eq 0 ]; then
+  # The suite's own version of the rule it is testing: running no cases is not
+  # a pass.
+  echo 'no cases ran; that is a broken suite, not a clean one.' >&2
+  exit 2
+fi
+exit 0

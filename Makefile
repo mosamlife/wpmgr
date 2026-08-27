@@ -190,6 +190,22 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# scripts/check-rls-cross-tenant.sh (GH #470) reconciles every cross-tenant RLS
+# policy against apps/api/db/rls-cross-tenant-policies.txt, the ledger that
+# says which access mode each one is MEANT to have. Run this before merging
+# anything that adds or narrows an RLS policy: it needs a database (Docker for
+# a throwaway postgres, or $WPMGR_RLS_DATABASE_URL for one you already have)
+# because extraction reads pg_policies live. check-rls-cross-tenant-test is the
+# guard's own regression suite and needs neither; run it after editing the
+# guard itself.
+.PHONY: check-rls-cross-tenant
+check-rls-cross-tenant: ## Audit cross-tenant RLS policies against the ledger (Docker or $WPMGR_RLS_DATABASE_URL required)
+	scripts/check-rls-cross-tenant.sh
+
+.PHONY: check-rls-cross-tenant-test
+check-rls-cross-tenant-test: ## Run the RLS cross-tenant guard's regression suite (hermetic, no DB)
+	scripts/check-rls-cross-tenant_test.sh
+
 # ---- Agent harness (.claude) ------------------------------------------------
 # The shell guards that used to live in scripts/claude/ are gone: deciding what
 # a shell command will write by parsing its text is undecidable (eval, bash -c,
