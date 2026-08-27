@@ -49,6 +49,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -132,19 +133,46 @@ func adr064AsCollaborator(pool *db.Pool, tenant uuid.UUID, sites []uuid.UUID, fn
 	return pool.InScopedTenantTx(context.Background(), tenant, uuid.Nil, sites, fn)
 }
 
-// adr064IsRefusal reports whether err is Postgres refusing the statement
-// itself, rather than the statement failing for some unrelated reason.
+// These two tables are protected by TWO INDEPENDENT LAYERS, and the whole
+// point of the pair is that neither is load-bearing alone. Postgres reports
+// both as SQLSTATE 42501 insufficient_privilege, so the code is NOT enough to
+// tell them apart and a helper that checks only the code proves whichever one
+// happens to fire.
 //
-//	42501 insufficient_privilege -- a RESTRICTIVE policy's WITH CHECK, and also
-//	      a missing table privilege (the append-only REVOKE).
+// That is not hypothetical. The org table shipped with an RLS gate on INSERT
+// alone; UPDATE and DELETE were held off only by the REVOKE, and a test that
+// accepted any 42501 passed on the privilege layer while there was no policy
+// layer behind it at all. The messages differ, and were read off
+// postgres:16-alpine rather than assumed:
 //
-// A USING clause refuses by filtering rows instead, so the ordinary refusal on
-// a read is zero rows and no error at all. Counting any other SQLSTATE as a
-// refusal would let an assertion pass because the statement never reached the
-// policy.
-func adr064IsRefusal(err error) bool {
+//	policy    ERROR: new row violates row-level security policy "x" for table "t"
+//	privilege ERROR: permission denied for table t
+//
+// A third shape has no error at all: a RESTRICTIVE policy's USING clause on
+// UPDATE or DELETE FILTERS rows rather than raising, so the refusal is
+// "0 rows affected" and a successful-looking command tag. Proofs of a USING
+// gate must therefore assert RowsAffected, never an error -- see
+// adr064AssertNoRowsTouched.
+
+// adr064IsRowSecurityRefusal reports whether err is a POLICY refusing the row.
+// This is the assertion to make when the privilege is genuinely held, so that
+// the only thing left to refuse is row security.
+func adr064IsRowSecurityRefusal(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "42501"
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		return false
+	}
+	return strings.Contains(pgErr.Message, "row-level security policy")
+}
+
+// adr064IsPermissionDenied reports whether err is the GRANT layer refusing --
+// the append-only REVOKE, not a policy.
+func adr064IsPermissionDenied(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		return false
+	}
+	return strings.Contains(pgErr.Message, "permission denied")
 }
 
 // adr064CountVisible counts rows the given transaction can actually see.
@@ -273,10 +301,11 @@ func TestADR064_SiteScope_CannotAuthorContextForAnotherSite(t *testing.T) {
 		t.Error("a collaborator invited to siteA authored a context version for siteB. " +
 			"The RESTRICTIVE policy's WITH CHECK is missing or permissive, and a lower-privileged " +
 			"principal can now rewrite the rules another site's model-facing surface runs under")
-	} else if !adr064IsRefusal(insertErr) {
-		t.Fatalf("the INSERT was not refused by policy, it FAILED for another reason: %v.\n"+
-			"Only SQLSTATE 42501 is Postgres refusing the write; counting anything else as a "+
-			"refusal would let this assertion pass without testing the policy", insertErr)
+	} else if !adr064IsRowSecurityRefusal(insertErr) {
+		t.Fatalf("the INSERT was not refused by ROW SECURITY, it failed for another reason: %v.\n"+
+			"wpmgr_app holds INSERT on this table, so a permission-denied here would mean the "+
+			"grant refused it and the policy was never reached -- which would let this assertion "+
+			"pass without testing the policy at all", insertErr)
 	}
 
 	var n int
@@ -343,8 +372,9 @@ func TestADR064_OrgContext_SiteScopedCollaboratorCannotAuthor(t *testing.T) {
 			"principal that can write layer 2 does not need to widen anything -- it becomes the " +
 			"higher layer for every site in the organisation")
 	}
-	if !adr064IsRefusal(insertErr) {
-		t.Fatalf("the INSERT was not refused by policy, it FAILED for another reason: %v", insertErr)
+	if !adr064IsRowSecurityRefusal(insertErr) {
+		t.Fatalf("the INSERT was not refused by ROW SECURITY, it failed for another reason: %v.\n"+
+			"wpmgr_app holds INSERT on this table, so this must be the policy refusing", insertErr)
 	}
 
 	var n int
@@ -435,8 +465,12 @@ func TestADR064_HistoryIsAppendOnlyForTheApplicationRole(t *testing.T) {
 					"auditor can prove what instruction set a model was given at a point in time -- "+
 					"unprovable", tc.sql)
 			}
-			if !adr064IsRefusal(execErr) {
-				t.Fatalf("%q did not fail with insufficient_privilege but with: %v.\n"+
+			// This test is specifically about the PRIVILEGE layer, so it asserts
+			// permission-denied rather than any 42501. The policy layer behind it
+			// is proved separately, with the privileges granted back, by
+			// TestADR064_OrgContext_WriteGatesSurviveARestoredGrant.
+			if !adr064IsPermissionDenied(execErr) {
+				t.Fatalf("%q did not fail with permission denied but with: %v.\n"+
 					"Some other failure would let this assertion pass while the REVOKE was absent",
 					tc.sql, execErr)
 			}
@@ -451,6 +485,184 @@ func TestADR064_HistoryIsAppendOnlyForTheApplicationRole(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("%d site context versions survive the mutation attempts, want 2", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 5b. The org table's write gates must survive the privileges coming back
+//
+// FOUND BY SECURITY REVIEW ON PR #562, and this test is the reason the finding
+// cannot return.
+//
+// org_context_versions originally carried a RESTRICTIVE gate on INSERT alone,
+// on the reasoning that the table is append-only so INSERT is the entire write
+// surface. That reasoning was wrong in a specific way: it is the REVOKE that
+// makes INSERT the whole write surface, so the argument quietly made the REVOKE
+// the ONLY layer. The site table never depended on that luck -- its policy is
+// FOR ALL.
+//
+// The review granted UPDATE and DELETE back and found:
+//
+//	ORG  UPDATE by site-scoped principal -> SUCCEEDED, 1 row(s)
+//	ORG  DELETE by site-scoped principal -> SUCCEEDED, 1 row(s)
+//	SITE UPDATE of a sibling site        -> refused, 0 row(s)
+//
+// A blanket "GRANT ... ON ALL TABLES IN SCHEMA public TO wpmgr_app" is not an
+// exotic hypothetical: m1:120 already contains that exact statement, and the
+// harness in rls_integration_test.go runs it on every startPostgres. Any future
+// migration or operator runbook repeating it silently re-arms the gap.
+//
+// So this test does what the reviewer did. It grants the privileges back and
+// then asserts the POLICY refuses, which is the only assertion that can tell a
+// real gate from an absent one.
+//
+// WHY THE ASSERTION IS ROWS-AFFECTED AND NOT AN ERROR. A RESTRICTIVE policy's
+// USING clause filters rows rather than raising: with the privilege held and
+// the policy in place, the UPDATE succeeds and reports 0 rows. That is the
+// #470 silence shape appearing as the CORRECT outcome, so the test reads the
+// command tag and then re-reads the row to prove it is genuinely untouched.
+// ---------------------------------------------------------------------------
+
+// adr064GrantWriteBack restores UPDATE and DELETE on the two context tables,
+// simulating a future blanket GRANT, and revokes them again on cleanup.
+//
+// startPostgres gives every test its own container (tcpostgres.Run, terminated
+// by t.Cleanup), so this cannot leak into another test even without the
+// restore. The restore is here anyway, because a grant that outlived its test
+// would make the append-only proofs above pass or fail for reasons belonging to
+// this one.
+func adr064GrantWriteBack(t *testing.T, admin *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, tbl := range []string{"org_context_versions", "site_context_versions"} {
+		if _, err := admin.Exec(ctx,
+			"GRANT UPDATE, DELETE ON "+tbl+" TO wpmgr_app"); err != nil {
+			t.Fatalf("grant write back on %s: %v", tbl, err)
+		}
+		t.Cleanup(func() {
+			_, _ = admin.Exec(context.Background(),
+				"REVOKE UPDATE, DELETE ON "+tbl+" FROM wpmgr_app")
+		})
+	}
+
+	// The grant must actually have landed, or every assertion below passes on
+	// permission-denied and proves nothing -- which is the exact failure this
+	// whole test exists to rule out.
+	var canUpdate bool
+	if err := admin.QueryRow(ctx,
+		`SELECT has_table_privilege('wpmgr_app', 'org_context_versions', 'UPDATE')`).
+		Scan(&canUpdate); err != nil {
+		t.Fatalf("check restored privilege: %v", err)
+	}
+	if !canUpdate {
+		t.Fatal("wpmgr_app still lacks UPDATE after the GRANT; this test would pass on " +
+			"permission-denied without ever reaching a policy")
+	}
+}
+
+func TestADR064_OrgContext_WriteGatesSurviveARestoredGrant(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	f := adr064SeedFixture(t, pool, admin)
+	adr064GrantWriteBack(t, admin)
+
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{"update", `UPDATE org_context_versions SET guidance = '{"brand_voice":"seized"}'::jsonb`},
+		{"delete", `DELETE FROM org_context_versions`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var affected int64
+			err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+				tag, e := tx.Exec(ctx, tc.sql)
+				if e != nil {
+					return e
+				}
+				affected = tag.RowsAffected()
+				return nil
+			})
+			if err != nil {
+				// An error is acceptable ONLY if it is row security. It must not
+				// be permission-denied: the grant is back, so that would mean the
+				// test never reached a policy.
+				if adr064IsPermissionDenied(err) {
+					t.Fatalf("%q was refused by the GRANT layer, not by a policy: %v.\n"+
+						"adr064GrantWriteBack was supposed to restore the privilege; with it "+
+						"absent this assertion proves nothing about row security", tc.sql, err)
+				}
+				if !adr064IsRowSecurityRefusal(err) {
+					t.Fatalf("%q failed for an unrelated reason: %v", tc.sql, err)
+				}
+				return
+			}
+			if affected != 0 {
+				t.Fatalf("%q by a SITE-SCOPED principal affected %d organisation context row(s), "+
+					"want 0.\nThe REVOKE is not a substitute for a policy: a blanket "+
+					"GRANT ... ON ALL TABLES (m1:120 contains that statement, and the test harness "+
+					"runs it) hands the privilege straight back, and with no RESTRICTIVE gate on "+
+					"this command a per-site collaborator can rewrite or destroy the organisation's "+
+					"governing context for every site in it", tc.sql, affected)
+			}
+		})
+	}
+
+	// The rows are genuinely untouched -- not merely unreported.
+	var n int
+	var guidance string
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*), coalesce(max(guidance ->> 'brand_voice'), '')
+		   FROM org_context_versions WHERE tenant_id = $1`, f.tenant).Scan(&n, &guidance); err != nil {
+		t.Fatalf("read back org context: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("the organisation has %d context versions after the attack, want the 1 it started with", n)
+	}
+	if guidance != "org-level house style" {
+		t.Errorf("organisation guidance is now %q, want it unchanged at %q",
+			guidance, "org-level house style")
+	}
+}
+
+// The site table's FOR ALL policy must hold under the same restored grant. This
+// is the control: it passed in the review while the org table failed, and if it
+// ever stops passing the two tables have diverged again.
+func TestADR064_SiteContext_WriteGatesSurviveARestoredGrant(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	defer admin.Close()
+	ctx := context.Background()
+
+	f := adr064SeedFixture(t, pool, admin)
+	adr064GrantWriteBack(t, admin)
+
+	var affected int64
+	if err := adr064AsCollaborator(pool, f.tenant, []uuid.UUID{f.siteA}, func(tx pgx.Tx) error {
+		tag, e := tx.Exec(ctx,
+			`UPDATE site_context_versions SET guidance = '{"brand_voice":"seized"}'::jsonb
+			  WHERE site_id = $1`, f.siteB)
+		if e != nil {
+			return e
+		}
+		affected = tag.RowsAffected()
+		return nil
+	}); err != nil {
+		if adr064IsPermissionDenied(err) {
+			t.Fatalf("refused by the GRANT layer, not a policy: %v", err)
+		}
+		if !adr064IsRowSecurityRefusal(err) {
+			t.Fatalf("failed for an unrelated reason: %v", err)
+		}
+		return
+	}
+	if affected != 0 {
+		t.Fatalf("a collaborator invited to siteA rewrote %d of siteB's context rows, want 0", affected)
 	}
 }
 
