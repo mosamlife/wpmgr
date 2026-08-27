@@ -5379,6 +5379,16 @@ INSERT INTO agent_mirror_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 --     is deleted; ON DELETE CASCADE would delete an organisation's context
 --     history because a member left. audit_log makes the same call for the
 --     same reason (actor_type + a bare actor_id, no FK).
+--
+--     CONSEQUENCE S4 MUST CLOSE, both halves. With no foreign key,
+--     restored_from_version_id accepts a uuid NAMING NO ROW THAT EVER EXISTED,
+--     as well as one on the far side of an organisation stamp. Those are two
+--     different checks: ADR-064 Decision 12 requires refusing a restore across
+--     a stamp boundary, and nothing anywhere requires refusing one that names
+--     nothing. A dangling pointer yields a version row claiming to be a restore
+--     of something unfindable -- provenance that cannot be substantiated, which
+--     is the opposite of what Decision 7 exists to guarantee. Validate that the
+--     referenced version EXISTS and that its stamp matches.
 --   * NEITHER TABLE HAS AN app.agent POLICY, deliberately. ADR-064 Decision 2
 --     forbids the agent holding any opinion about layers 2 and 3, no
 --     cross-tenant worker reads context, and the tenant purge does not need
@@ -5450,13 +5460,44 @@ CREATE POLICY org_context_versions_tenant_isolation ON org_context_versions
 -- row, which took three review rounds and seven handler fixes to close for the
 -- email domain.
 --
--- The table is append-only, so INSERT is the entire write surface and this one
--- policy closes all of it. There is deliberately NO restrictive SELECT policy
--- here: its absence is the mechanism by which the layer-2 read keeps working.
--- Do not "complete the set".
+-- THREE command-specific policies, and the shape matters (m122 + m123).
+--
+-- m122 shipped the INSERT gate alone, reasoning that the table is append-only
+-- so INSERT is the whole write surface. Security review on PR #562 showed why
+-- that is wrong: it is the REVOKE at the bottom of this block that makes INSERT
+-- the whole write surface, so the argument quietly promoted the REVOKE from
+-- second layer to ONLY layer. Granting UPDATE and DELETE back -- which a
+-- blanket "GRANT ... ON ALL TABLES", the statement m1 already contains and the
+-- test harness runs, does silently -- let a site-scoped collaborator rewrite
+-- and then destroy the ORGANISATION's context, layer 2 for every site in it.
+-- m123 added the two missing gates.
+--
+-- There is deliberately NO policy for SELECT, and that omission is
+-- load-bearing rather than an oversight: ADR-064 Decision 6 gives read access
+-- at the organisation AND site scope covering a site, and Decision 8's preview
+-- renders layer 2. A site-scoped collaborator must be able to READ the
+-- organisation context governing their own site. Do not "complete the set" --
+-- and do not collapse these three into one FOR ALL policy either, because
+-- FOR ALL would be AND-combined onto SELECT and break exactly that read.
 CREATE POLICY org_context_versions_site_scope_insert ON org_context_versions
     AS RESTRICTIVE FOR INSERT
     WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+    );
+
+-- USING, not WITH CHECK: for UPDATE and DELETE the USING clause is what decides
+-- which existing rows the statement may touch, so a restrictive USING that is
+-- false for a site-scoped principal removes every row from its reach and the
+-- write matches nothing.
+CREATE POLICY org_context_versions_site_scope_update ON org_context_versions
+    AS RESTRICTIVE FOR UPDATE
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+    );
+
+CREATE POLICY org_context_versions_site_scope_delete ON org_context_versions
+    AS RESTRICTIVE FOR DELETE
+    USING (
         coalesce(current_setting('app.site_scope', true), '') <> 'on'
     );
 

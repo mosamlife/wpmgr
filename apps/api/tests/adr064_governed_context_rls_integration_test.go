@@ -774,7 +774,14 @@ func TestADR064_ContextTablesCarryTheExpectedPolicies(t *testing.T) {
 	want := []struct {
 		table, policy, permissive, cmd string
 	}{
+		// Three command-specific gates on the org table, never one FOR ALL:
+		// FOR ALL would be AND-combined onto SELECT and break the layer-2 read
+		// ADR-064 Decision 6 and Decision 8 both require. m122 shipped only the
+		// INSERT one; m123 added UPDATE and DELETE after security review found
+		// the REVOKE was the sole layer behind them.
 		{"org_context_versions", "org_context_versions_site_scope_insert", "RESTRICTIVE", "INSERT"},
+		{"org_context_versions", "org_context_versions_site_scope_update", "RESTRICTIVE", "UPDATE"},
+		{"org_context_versions", "org_context_versions_site_scope_delete", "RESTRICTIVE", "DELETE"},
 		{"org_context_versions", "org_context_versions_tenant_isolation", "PERMISSIVE", "ALL"},
 		{"site_context_versions", "site_context_versions_site_scope", "RESTRICTIVE", "ALL"},
 		{"site_context_versions", "site_context_versions_tenant_isolation", "PERMISSIVE", "ALL"},
@@ -798,6 +805,29 @@ func TestADR064_ContextTablesCarryTheExpectedPolicies(t *testing.T) {
 			t.Errorf("policy %s on %s is %s/%s, want %s/%s",
 				w.policy, w.table, permissive, cmd, w.permissive, w.cmd)
 		}
+	}
+
+	// The ABSENCE of a restrictive SELECT gate on the org table is as
+	// load-bearing as any policy present, so it is asserted rather than left to
+	// a comment somebody will helpfully "complete" one day. A RESTRICTIVE
+	// SELECT policy here -- or a FOR ALL one, which is AND-combined onto SELECT
+	// and amounts to the same thing -- would break ADR-064 Decision 6's
+	// organisation-scope read and Decision 8's effective-context preview for
+	// every site-scoped collaborator, and it would do it silently, because a
+	// USING gate filters rows rather than raising.
+	var restrictiveReadGates int
+	if err := admin.QueryRow(ctx,
+		`SELECT count(*) FROM pg_policies
+		  WHERE schemaname = 'public' AND tablename = 'org_context_versions'
+		    AND permissive = 'RESTRICTIVE' AND cmd IN ('SELECT', 'ALL')`).
+		Scan(&restrictiveReadGates); err != nil {
+		t.Fatalf("count restrictive read gates: %v", err)
+	}
+	if restrictiveReadGates != 0 {
+		t.Errorf("org_context_versions carries %d RESTRICTIVE policy/policies covering SELECT, want 0. "+
+			"A site-scoped collaborator must be able to READ the organisation context governing "+
+			"their own site; gating that read breaks ADR-064 Decision 6 and Decision 8 at once",
+			restrictiveReadGates)
 	}
 
 	// FORCE matters as much as ENABLE: without it the table owner -- which is
