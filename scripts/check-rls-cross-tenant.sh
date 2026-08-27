@@ -49,6 +49,40 @@
 # would flag all 40-odd of them as cross-tenant grants and drown the signal.
 #
 # ---------------------------------------------------------------------------
+# WHAT THIS GUARD DOES NOT SEE. Read this before trusting a green run.
+# ---------------------------------------------------------------------------
+#
+# 1. A MIXED PREDICATE IS CLASSIFIED TENANT-BOUND AND FALLS OUT OF THE AUDIT.
+#    The test is a substring test: does the USING expression mention
+#    app.tenant_id anywhere. A policy shaped
+#
+#        USING (tenant_id = current_setting('app.tenant_id')::uuid
+#               OR current_setting('app.agent', true) = 'on')
+#
+#    grants cross-tenant access through its second disjunct but mentions
+#    app.tenant_id, so it classifies TENANT and is never audited. That is a
+#    FALSE NEGATIVE, the costly direction, in a guard whose entire purpose is
+#    eliminating false negatives.
+#
+#    No policy in this database has that shape today (every cross-tenant grant
+#    is written as a separate policy, which is the convention worth keeping).
+#    The MIXED PREDICATES section below reports any that appear, so the blind
+#    spot announces itself rather than waiting to be discovered. Parsing the
+#    boolean structure properly is the real fix if one ever lands.
+#
+# 2. IT IS BLIND TO A MISSING OR WEAKENED RESTRICTIVE POLICY, BY CONSTRUCTION.
+#    Excluding restrictive policies means a dropped or narrowed
+#    <table>_site_scope gate is invisible here. That is a real and separate
+#    invariant of the tenant boundary -- m112 exists because four tables
+#    shipped without it -- and it needs its own guard. Do not read a green run
+#    from this one as "the site-scope gates are intact"; it has not looked.
+#
+# 3. IT AUDITS THE POLICY SET, NOT THE CALLERS. Whether a given code path
+#    actually runs under InAgentTx is recorded by a human in the ledger's `ops`
+#    column. The CODE PATHS section challenges the obvious contradictions, but
+#    it is a heuristic and deliberately only warns.
+#
+# ---------------------------------------------------------------------------
 # THE LEDGER: an access mode has to be a DECISION, not a default
 # ---------------------------------------------------------------------------
 #
@@ -420,6 +454,41 @@ fi
 printf 'Extracted %d policies; %d are cross-tenant grants.\n' "$TOTAL" "$XT_COUNT"
 printf '  (query: pg_policies, classified on the GUC each expression tests)\n'
 echo
+
+# ---------------------------------------------------------------------------
+# MIXED PREDICATES -- the classifier's known blind spot, made to announce itself
+#
+# A policy is classified TENANT-bound, and so excluded from this audit, purely
+# because its USING expression mentions app.tenant_id. A policy that tests
+# app.tenant_id AND some other app.* GUC may be granting cross-tenant access
+# through a disjunct while looking tenant-bound to that test.
+#
+# This is an ERROR rather than a warning: the consequence is a policy that
+# silently leaves the audit, which is the one failure mode this guard exists to
+# prevent. Whoever writes such a policy should either split it in two (the
+# convention every cross-tenant grant here already follows) or teach the
+# classifier to parse the boolean structure. Nothing in this database has the
+# shape today, so this cannot redden correct work as it stands.
+# ---------------------------------------------------------------------------
+MIXED="$WORK/mixed.txt"
+awk -F'|' '$3 == "PERMISSIVE" && $6 == "TENANT" && $5 ~ /app\.tenant_id/ && $5 ~ /,/' "$ALL" > "$MIXED"
+MIXED_COUNT=$(count_lines "$MIXED")
+if [ "$MIXED_COUNT" -gt 0 ]; then
+  echo '--- MIXED PREDICATES: policies that may be escaping the audit ---'
+  while IFS='|' read -r tbl pol perm cmd gucs scope; do
+    [ -n "$tbl" ] || continue
+    err "$tbl.$pol tests app.tenant_id together with [$gucs], so it classifies tenant-bound and is NOT audited."
+    detail 'The classifier asks only whether the USING expression mentions app.tenant_id.'
+    detail 'A predicate like "tenant_id = app.tenant_id OR app.agent = on" grants across'
+    detail 'tenants through its second disjunct while looking tenant-bound to that test --'
+    detail 'a false negative, in the direction that costs a tenant boundary.'
+    detail 'Fix: split it into a tenant_isolation policy and a separate cross-tenant'
+    detail 'policy, which is what every other cross-tenant grant here does. If the'
+    detail 'predicate is genuinely tenant-bound, the classifier needs to parse the'
+    detail 'boolean structure rather than substring-match.'
+  done < "$MIXED"
+  echo
+fi
 
 # ---------------------------------------------------------------------------
 # NAMING -- evidence for why this guard does not grep names

@@ -607,6 +607,54 @@ EOF
 fi
 
 # ===========================================================================
+# GROUP 4c -- the classifier's blind spot must announce itself.
+#
+# Classification is a substring test: does USING mention app.tenant_id. A
+# policy that grants cross-tenant access through a disjunct while also
+# mentioning app.tenant_id classifies TENANT and leaves the audit entirely --
+# a false negative, the direction that costs a tenant boundary.
+# ===========================================================================
+
+NAME='mixed: a tenant-bound policy that also tests another GUC is flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e50"
+  # "tenant_id = app.tenant_id OR app.agent = 'on'": grants across tenants,
+  # but mentions app.tenant_id so the classifier calls it TENANT.
+  printf 'smtp_settings|smtp_settings_mixed|PERMISSIVE|ALL|app.agent,app.tenant_id|TENANT\n' >> "$WORK/e50"
+  write_ledger "$WORK/l50"
+  run_guard "$WORK/e50" "$WORK/l50"
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" 'classifies tenant-bound and is NOT audited' &&
+    want_says "$NAME" 'smtp_settings_mixed' &&
+    pass "$NAME"
+fi
+
+NAME='mixed: an ordinary single-GUC tenant_isolation policy is NOT flagged'
+if should_run "$NAME"; then
+  write_extract "$WORK/e51"
+  write_ledger "$WORK/l51"
+  run_guard "$WORK/e51" "$WORK/l51"
+  # sites_tenant_isolation tests app.tenant_id and nothing else. Every table in
+  # this repo has one; flagging them would redden the entire schema.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'MIXED PREDICATES' &&
+    pass "$NAME"
+fi
+
+NAME='mixed: a multi-GUC policy that is already CROSS is not double-reported'
+if should_run "$NAME"; then
+  write_extract "$WORK/e52"
+  write_ledger "$WORK/l52"
+  # rum_events_raw_rum_ingest tests three GUCs including app.tenant_id, but its
+  # USING does not bind tenant_id, so it is already classified CROSS and IS
+  # audited. It must not also be reported as escaping the audit.
+  run_guard "$WORK/e52" "$WORK/l52"
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'rum_events_raw_rum_ingest tests app.tenant_id together with' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
 # GROUP 5 -- the naming section, which is the evidence for the method.
 # ===========================================================================
 
