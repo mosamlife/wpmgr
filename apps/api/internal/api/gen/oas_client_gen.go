@@ -1831,7 +1831,8 @@ type Invoker interface {
 	//
 	// Returns the cached list of plugins/themes (and core) that have an update available, derived from the
 	// agent's last metadata sync. Items are sorted core -> plugins -> themes, with active before inactive.
-	// `as_of` is the site's last update timestamp. Requires viewer+.
+	// `as_of` is when that inventory was collected (GH #553); null when it never has been. Requires
+	// viewer+.
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
@@ -22632,7 +22633,8 @@ func (c *Client) sendGetSiteAutologinPolicy(ctx context.Context, params GetSiteA
 //
 // Returns the cached list of plugins/themes (and core) that have an update available, derived from the
 // agent's last metadata sync. Items are sorted core -> plugins -> themes, with active before inactive.
-// `as_of` is the site's last update timestamp. Requires viewer+.
+// `as_of` is when that inventory was collected (GH #553); null when it never has been. Requires
+// viewer+.
 //
 // GET /api/v1/sites/{siteId}/updates/available
 func (c *Client) GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error) {

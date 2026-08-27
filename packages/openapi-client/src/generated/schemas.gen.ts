@@ -510,6 +510,8 @@ export const SiteAvailableUpdatesSchema = {
     as_of: {
       type: ["string", "null"],
       format: "date-time",
+      description:
+        "GH #553 — sites.components_updated_at: the control-plane instant this\ninventory was last collected (stamped by the agent metadata push that\nwrote `components`, never by the connection heartbeat). Explicit null\nwhen the inventory has never been collected; never falls back to the\nsite's general updated_at, which the heartbeat bumps independently of\ncomponents and would silently overstate freshness.\n",
     },
   },
 } as const;

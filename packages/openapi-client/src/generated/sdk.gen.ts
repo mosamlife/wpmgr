@@ -5355,8 +5355,9 @@ export const refreshSiteScreenshot = <ThrowOnError extends boolean = false>(
  *
  * Returns the cached list of plugins/themes (and core) that have an update
  * available, derived from the agent's last metadata sync. Items are sorted
- * core -> plugins -> themes, with active before inactive. `as_of` is the
- * site's last update timestamp. Requires viewer+.
+ * core -> plugins -> themes, with active before inactive. `as_of` is when
+ * that inventory was collected (GH #553); null when it never has been.
+ * Requires viewer+.
  *
  */
 export const getSiteAvailableUpdates = <ThrowOnError extends boolean = false>(

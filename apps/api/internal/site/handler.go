@@ -486,7 +486,8 @@ func (h *Handler) refreshUpdates(c *gin.Context) {
 
 // getAvailableUpdates returns the cached list of items with updates available
 // for the resolved site, sorted core -> plugins -> themes (active before
-// inactive). as_of is the site's last updated_at.
+// inactive). as_of is the site's components_updated_at (GH #553): null when
+// the inventory has never been collected.
 func (h *Handler) getAvailableUpdates(c *gin.Context) {
 	tenantID, ok := domain.TenantIDFromContext(c.Request.Context())
 	if !ok {
@@ -535,7 +536,8 @@ func actionableUpdate(c Component) bool {
 // buildAvailableUpdates projects a Site's JSONB inventory into the OpenAPI
 // SiteAvailableUpdates response: filters to components with an AvailableUpdate,
 // attaches the optional CoreUpdate, sorts core->plugins->themes (active before
-// inactive within each kind), and stamps as_of with the site's updated_at.
+// inactive within each kind), and stamps as_of with the site's
+// components_updated_at (GH #553).
 func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 	plugins, themes := s.ParsedComponents()
 	core := s.ParsedCoreUpdate()
@@ -574,8 +576,17 @@ func buildAvailableUpdates(s Site) gen.SiteAvailableUpdates {
 			CurrentVersion: core.CurrentVersion,
 		})
 	}
-	if !s.UpdatedAt.IsZero() {
-		out.AsOf = gen.NewOptNilDateTime(s.UpdatedAt)
+	// GH #553: as_of must answer "when was this inventory collected", not "when
+	// did this site last say hello". sites.updated_at is bumped by the 60s
+	// heartbeat, which never touches components, so it can only overstate
+	// freshness. components_updated_at (m121) is nil when the inventory has
+	// never been collected — surface that as an explicit wire null, never as a
+	// fallback to UpdatedAt: a fallback would silently recreate this exact bug,
+	// invisibly, because the response would still carry a plausible timestamp.
+	if s.ComponentsUpdatedAt != nil {
+		out.AsOf = gen.NewOptNilDateTime(*s.ComponentsUpdatedAt)
+	} else {
+		out.AsOf.SetToNull()
 	}
 	return out
 }
