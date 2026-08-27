@@ -408,47 +408,21 @@ jobs:
           if-no-files-found: warn
 
   # ---- RLS cross-tenant guard, live (GH #470) -------------------------------
-  # scripts/check-rls-cross-tenant.sh enumerates every cross-tenant RLS grant
-  # and reconciles it against apps/api/db/rls-cross-tenant-policies.txt. Full
-  # rationale, including the two production incidents (m84/#96, m89/#131,
-  # GH #463 Phase 0) it exists to catch, is in the script's own header.
+  # There used to be a job here (`rls-cross-tenant`) running
+  # scripts/check-rls-cross-tenant.sh's live half: apply every migration to a
+  # throwaway Postgres and reconcile the real pg_policies against
+  # apps/api/db/rls-cross-tenant-policies.txt. It lived here, manual-dispatch
+  # only, because this was the only workflow already paying for a throwaway
+  # Postgres on a PR.
   #
-  # THIS is the live half. ci.yml runs only the guard's hermetic self-test
-  # (synthetic fixtures, no database, proves the guard's LOGIC is sound) --
-  # it cannot afford what this job does, which is apply every migration under
-  # apps/api/migrations to a throwaway Postgres and read the real pg_policies.
-  # That is the only place either lane actually inspects this repo's live
-  # schema, so it belongs next to the m112 site-scope proofs above rather than
-  # in ci.yml: same reason (a real Postgres, migrated from scratch), same
-  # workflow, same manual-dispatch trade-off described at the top of this
-  # file. Run `make check-rls-cross-tenant` locally, or dispatch this
-  # workflow, before merging anything that adds or narrows an RLS policy --
-  # nothing runs this automatically on a PR.
-  rls-cross-tenant:
-    name: RLS cross-tenant guard (live pg_policies vs the ledger)
-    needs: changes
-    # Same fail-open shape as `integration` above and for the same reason: a
-    # skipped or failed `changes` job must not read as "nothing to check."
-    if: ${{ !cancelled() && needs.changes.outputs.api != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      # Self-test first, same reasoning as everywhere else this pattern is
-      # used: a broken guard must fail here, before it ever touches a real
-      # database, not pass by failing open.
-      - name: "RLS cross-tenant guard self-test (GH #470)"
-        run: scripts/check-rls-cross-tenant_test.sh
-
-      # No --from-extract here: this is the one place in either workflow that
-      # lets the script manage its own throwaway Postgres (docker run,
-      # apply every apps/api/migrations/*.sql file in lexical order, extract,
-      # analyse) and read real pg_policies. ubuntu-latest ships a running
-      # Docker daemon; if that is ever not true, or psql is missing, the
-      # script's own broken() path exits 2 with a named reason -- it does not
-      # skip and does not pass.
-      - name: "RLS cross-tenant guard (live, GH #470)"
-        run: scripts/check-rls-cross-tenant.sh
+  # It moved to ci.yml's `rls-cross-tenant` job, which now runs BOTH the
+  # self-test and the live check, unconditionally, on every PR and every push
+  # -- not gated on a dispatch. ci.yml's version is a strict superset of what
+  # this one covered (this workflow's `pull_request:` trigger is commented out
+  # above, so before this move the live check ran only when someone manually
+  # dispatched this workflow, which most PRs never did). A copy here would
+  # duplicate that coverage for no PR that does not already get it from
+  # ci.yml, so it was removed rather than kept as a second copy with no
+  # stated reason to exist. See the script's own header
+  # (scripts/check-rls-cross-tenant.sh, "WHERE THIS RUNS") and ci.yml's
+  # `rls-cross-tenant` job for the current wiring.
