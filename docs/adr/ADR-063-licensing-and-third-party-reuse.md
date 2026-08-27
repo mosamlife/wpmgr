@@ -394,30 +394,46 @@ immediately writing code that does the same thing risks reproducing its
 structure, its naming, and its sequence of operations unconsciously, even when
 every line is retyped from memory rather than copied — that is still how a
 derivative work gets made. Handing the specification to the actual
-implementation step, rather than the source, is what breaks that chain: the
-engineer who builds the feature is working from a description of *behaviour*,
-checked against the vendor's own docs, and has not read — and does not need to
-have read — the reference implementation at all.
+implementation step, rather than the source, is what meaningfully breaks that
+chain: the engineer who builds the feature is working from a description of
+*behaviour*, checked against the vendor's own docs, and has not read — and
+does not need to have read — the reference implementation at all. It reduces
+the risk of unconsciously reproducing someone else's structure; it is not a
+guarantee that no output could ever be judged too close, which is why an
+uncertain case still goes to rule 7 in §5 rather than being assumed clear.
 
 ### The trap that makes this non-optional, not aspirational
 
 GPL-family licences condition reuse on attribution: taking code under
-GPL-2.0-or-later or AGPL-3.0-or-later and using it here requires crediting where
-it came from. Rule 4 (§5 below) forbids naming a competitor product in any
-committed file. An engineer cannot satisfy both obligations on the same piece of
-text at the same time — attributing the source names it, and naming it breaches
-rule 4.
+GPL-2.0-or-later or AGPL-3.0-or-later and using it here requires crediting
+where it came from. Rule 4 (§5 below) forbids naming a competitor product in
+any committed file, and that prohibition is not scoped to `apps/agent` or to
+any other destination — it applies repository-wide. The two obligations
+collide only when the source being credited *is* a competitor's: attributing
+it names it, and naming it breaches rule 4. Attributing an ordinary
+GPL-family dependency that is not a competitor — `wordpress/mcp-adapter` in
+§2 above is exactly this case — names no one rule 4 forbids naming, and §3's
+ADOPT UPSTREAM disposition covers it like any other upstream package, checked
+against the destination as §2 already sets out.
 
-**There is no compliant path that copies GPL-family source into this repository,
-independent of anyone's intent to follow the licence correctly.** This is the
-strongest argument in this document, and it is worth stating plainly rather than
-leaving it implied: it is not a policy this project could relax by deciding to
-be more careful, because the two obligations contradict each other the instant
-actual source text crosses over, before intent enters into it at all. The
-specification-first practice above is not a workaround for that trap — nothing
-is, on source text. It is the only shape of reuse that avoids the trap entirely,
-because a behavioural specification, sourced from the vendor's own
-documentation, carries no licence to attribute in the first place.
+**There is no compliant path that copies *competitor* source, under a
+GPL-family licence, into this repository — in `apps/api` as much as in
+`apps/agent`, because rule 4 is not destination-scoped.** This is the
+strongest argument in this document, and it is worth stating plainly rather
+than leaving it implied: it is not a policy this project could relax by
+deciding to be more careful, because the two obligations contradict each
+other the instant actual competitor source text crosses over, before intent
+enters into it at all. **This does not reach ordinary third-party GPL-family
+or MIT reuse with normal attribution** — this repository already ships
+`matthiasmullie/minify` under MIT with proper credit, per §3 — **nor does it
+reach `apps/agent`'s separate, narrower problem from §2**: any GPL-family
+dependency there, competitor-sourced or not, forces a relicensing choice,
+which is a strategic cost to accept or decline, not an attribution
+impossibility. The specification-first practice above is not a workaround for
+the competitor-source trap — nothing is, on actual source text. It is the
+only shape of reuse that avoids the trap entirely, because a behavioural
+specification, sourced from the vendor's own documentation, carries no
+licence to attribute in the first place.
 
 ---
 
