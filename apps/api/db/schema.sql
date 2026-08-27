@@ -5339,3 +5339,204 @@ CREATE TABLE agent_mirror_state (
 
 -- Seed the single row so every write is a plain UPDATE ... WHERE id = 1.
 INSERT INTO agent_mirror_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- org_context_versions / site_context_versions  (m122, ADR-064)
+-- ---------------------------------------------------------------------------
+-- Governed per-organisation (layer 2) and per-site (layer 3) context: human-
+-- authored instructions a future model-facing surface is handed alongside what
+-- it observes for itself. Both tables are APPEND-ONLY VERSION LOGS, not
+-- settings rows. ADR-064 Decision 3 defines "the current context" as "the
+-- latest version row", a read rather than a second mutable representation, so
+-- restore and diff never have two copies of the present to keep in sync.
+--
+-- The full argument for every column, constraint, policy and grant is in
+-- apps/api/migrations/20260824000000_m122_governed_context.sql. The headlines,
+-- because they are the ones a reader of THIS file would otherwise get wrong:
+--
+--   * restrictions and guidance are TWO COLUMNS ON PURPOSE. ADR-064 Decision 4
+--     runs a never-widen check over restrictions and explicitly does NOT over
+--     guidance, because "wider" is not a defined relation over free prose.
+--     Separate columns are what make that split mechanical rather than a
+--     naming convention; folding them into one document would let the check be
+--     handed prose, or let a restriction take the path that does not check.
+--   * APPEND-ONLY IS A PRIVILEGE, NOT A CONVENTION. wpmgr_app holds SELECT and
+--     INSERT only; UPDATE, DELETE and TRUNCATE are revoked, exactly as
+--     audit_log is. m1's ALTER DEFAULT PRIVILEGES grants UPDATE and DELETE on
+--     every new table in this schema, so the revoke is what withholds them --
+--     omitting the grant would not.
+--   * site_context_versions.tenant_id IS A STAMP, not a live view of the
+--     site's owner: the organisation that owned the site when the row was
+--     written, set once and never rewritten by a transfer (ADR-064 Decision 3,
+--     on which Decision 12's transfer sealing depends). DO NOT add the
+--     composite FOREIGN KEY (site_id, tenant_id) REFERENCES sites (id,
+--     tenant_id) that sites_id_tenant_key makes available -- it would force the
+--     stamp to equal the current owner, which is the property Decision 3
+--     forbids, and would refuse every pre-transfer row the day transfer ships.
+--   * author_id and restored_from_version_id carry NO foreign key, and that is
+--     load-bearing rather than an omission. ON DELETE SET NULL would mutate an
+--     append-only row and erase authorship of a governance record when a user
+--     is deleted; ON DELETE CASCADE would delete an organisation's context
+--     history because a member left. audit_log makes the same call for the
+--     same reason (actor_type + a bare actor_id, no FK).
+--   * NEITHER TABLE HAS AN app.agent POLICY, deliberately. ADR-064 Decision 2
+--     forbids the agent holding any opinion about layers 2 and 3, no
+--     cross-tenant worker reads context, and the tenant purge does not need
+--     one because PostgreSQL's referential actions bypass row security (probed
+--     on 16.4 as a NOSUPERUSER NOBYPASSRLS role; the migration header records
+--     the measurement). Consequence: neither table is reachable from
+--     InAgentTx. That is a constraint on callers, not an accident.
+
+CREATE TABLE org_context_versions (
+    id        uuid   PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- An organisation IS a tenant in this schema, so this is both the subject
+    -- key and the tenant-isolation key.
+    tenant_id uuid   NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    version   bigint NOT NULL
+        CONSTRAINT org_context_versions_version_positive_check CHECK (version >= 1),
+
+    -- Structured and mechanically comparable. The widen-check reads this.
+    restrictions jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT org_context_versions_restrictions_object_check
+        CHECK (jsonb_typeof(restrictions) = 'object'),
+    -- Free text. No mechanical check applies, and ADR-064 says so rather than
+    -- claiming one that would always pass.
+    guidance     jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT org_context_versions_guidance_object_check
+        CHECK (jsonb_typeof(guidance) = 'object'),
+
+    author_type text NOT NULL
+        CONSTRAINT org_context_versions_author_type_check
+        CHECK (author_type IN ('user', 'api_key', 'system')),
+    -- NULL exactly when the author has no principal id, which today means
+    -- ADR-064 Decision 12's transfer operation. No FK -- see the header.
+    author_id   uuid NULL,
+    CONSTRAINT org_context_versions_author_id_matches_type_check
+        CHECK ((author_type = 'system') = (author_id IS NULL)),
+
+    -- Closed set. 'import' is deliberately absent: ADR-064 calls it a
+    -- hypothetical ("if one is ever built"), and a value nothing can write is
+    -- manufactured vocabulary.
+    provenance text NOT NULL
+        CONSTRAINT org_context_versions_provenance_check
+        CHECK (provenance IN ('manual', 'restore', 'transfer')),
+    restored_from_version_id uuid NULL,
+    CONSTRAINT org_context_versions_restore_pointer_check
+        CHECK ((provenance = 'restore') = (restored_from_version_id IS NOT NULL)),
+
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Subject key, concurrency guard and latest-version read path in one index.
+-- ADR-064 open question 2 leaves PATCH concurrency undecided; this index is
+-- what makes two concurrent writers a 23505 instead of a lost update and two
+-- rows both claiming to be version N+1. tenant_id leads, so it also serves
+-- tenant lookups and the purge cascade -- hence no separate tenant_id index.
+CREATE UNIQUE INDEX org_context_versions_version_key
+    ON org_context_versions (tenant_id, version);
+
+ALTER TABLE org_context_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE org_context_versions FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY org_context_versions_tenant_isolation ON org_context_versions
+    FOR ALL
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- A site-scoped collaborator may READ the organisation context governing their
+-- own site -- ADR-064 Decision 6 requires it and Decision 8's effective-context
+-- preview renders it -- but may never AUTHOR a version of it. That write is the
+-- m112 defect class exactly: a per-site principal reaching the organisation
+-- row, which took three review rounds and seven handler fixes to close for the
+-- email domain.
+--
+-- The table is append-only, so INSERT is the entire write surface and this one
+-- policy closes all of it. There is deliberately NO restrictive SELECT policy
+-- here: its absence is the mechanism by which the layer-2 read keeps working.
+-- Do not "complete the set".
+CREATE POLICY org_context_versions_site_scope_insert ON org_context_versions
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+    );
+
+CREATE TABLE site_context_versions (
+    id        uuid   PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- THE ORGANISATION STAMP: who owned this site when this row was written.
+    -- Set once, never rewritten by a transfer. Not a live view of the current
+    -- owner. See the header before adding any composite key over it.
+    tenant_id uuid   NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    site_id   uuid   NOT NULL REFERENCES sites (id)   ON DELETE CASCADE,
+    -- Monotonic per SITE, not per (site, organisation): the sequence continues
+    -- across a transfer so "restore version 4" names one snapshot, not two.
+    version   bigint NOT NULL
+        CONSTRAINT site_context_versions_version_positive_check CHECK (version >= 1),
+
+    restrictions jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT site_context_versions_restrictions_object_check
+        CHECK (jsonb_typeof(restrictions) = 'object'),
+    guidance     jsonb NOT NULL DEFAULT '{}'::jsonb
+        CONSTRAINT site_context_versions_guidance_object_check
+        CHECK (jsonb_typeof(guidance) = 'object'),
+
+    author_type text NOT NULL
+        CONSTRAINT site_context_versions_author_type_check
+        CHECK (author_type IN ('user', 'api_key', 'system')),
+    author_id   uuid NULL,
+    CONSTRAINT site_context_versions_author_id_matches_type_check
+        CHECK ((author_type = 'system') = (author_id IS NULL)),
+
+    provenance text NOT NULL
+        CONSTRAINT site_context_versions_provenance_check
+        CHECK (provenance IN ('manual', 'restore', 'transfer')),
+    restored_from_version_id uuid NULL,
+    CONSTRAINT site_context_versions_restore_pointer_check
+        CHECK ((provenance = 'restore') = (restored_from_version_id IS NOT NULL)),
+
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX site_context_versions_version_key
+    ON site_context_versions (site_id, version);
+-- tenant_id leads no other index here, and the tenant purge cascade would
+-- otherwise sequentially scan this table.
+CREATE INDEX site_context_versions_tenant_idx
+    ON site_context_versions (tenant_id);
+
+ALTER TABLE site_context_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_context_versions FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY site_context_versions_tenant_isolation ON site_context_versions
+    FOR ALL
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The m19/m113 exemplar shape. USING confines the collaborator's read to the
+-- sites they were granted; WITH CHECK stops them authoring a context version
+-- naming a site they were not. site_id is NOT NULL, so unlike m112's email
+-- tables there is no inheriting organisation row to keep readable and no reason
+-- to split read from write -- ADR-064 Decision 3 puts layer 2 in its own table
+-- above instead of as a null-keyed row in this one.
+CREATE POLICY site_context_versions_site_scope ON site_context_versions
+    AS RESTRICTIVE FOR ALL
+    USING (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    )
+    WITH CHECK (
+        coalesce(current_setting('app.site_scope', true), '') <> 'on'
+        OR site_id = ANY (
+            string_to_array(nullif(current_setting('app.allowed_site_ids', true), ''), ',')::uuid[]
+        )
+    );
+
+-- Append-only at the privilege level, the audit_log posture ADR-064 requires
+-- by name. The REVOKE is the load-bearing half: m1's ALTER DEFAULT PRIVILEGES
+-- already granted UPDATE and DELETE on every future table in this schema.
+GRANT SELECT, INSERT ON org_context_versions  TO wpmgr_app;
+GRANT SELECT, INSERT ON site_context_versions TO wpmgr_app;
+
+REVOKE UPDATE, DELETE, TRUNCATE ON org_context_versions  FROM wpmgr_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON site_context_versions FROM wpmgr_app;
