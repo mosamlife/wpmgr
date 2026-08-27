@@ -68,10 +68,28 @@
 # ops   The operations the code path behind this policy actually performs,
 #       comma-joined, from: select insert update delete lock
 #
-#       The guard fails when `cmd` does not cover `ops` -- that is the #96 bug,
-#       written down in the file rather than waiting to be noticed. `lock`
-#       means SELECT ... FOR UPDATE/SHARE and is covered only by ALL or UPDATE,
-#       because PostgreSQL applies the UPDATE policy to a locking read.
+#       RECORD THIS HONESTLY AND PER POLICY. Write down what the path does, not
+#       what this policy happens to admit. Do NOT trim an operation because a
+#       sibling policy covers it -- the guard understands siblings, and a
+#       trimmed entry is a lie that survives until the sibling is dropped.
+#
+#       `lock` means SELECT ... FOR UPDATE/SHARE. It is covered only by ALL or
+#       UPDATE, because PostgreSQL applies the UPDATE policy to a locking read.
+#       Note also that UPDATE ... RETURNING needs `select` as well as `update`:
+#       SELECT policies apply to the returned rows.
+#
+#       COVERAGE IS CHECKED PER TABLE, NOT PER POLICY, because PostgreSQL ORs
+#       permissive policies per table per command. The guard takes the union of
+#       `ops` across a table's cross-tenant policies and requires every one to
+#       be covered by at least one of the modes those policies carry.
+#
+#       That is what makes a SPLIT PAIR legal: autologin_tokens carries a FOR
+#       SELECT policy for the read and a FOR UPDATE policy for the consuming
+#       write, and together they cover the path. A per-policy check would
+#       redden that correct pair, and the "fix" it implies is a migration
+#       widening a cross-tenant grant to silence a false positive. Splitting is
+#       also the tighter remedy for a real #96 finding -- it grants exactly one
+#       extra verb -- so the guard has to understand the shape it recommends.
 #
 #       '-' means the path was not audited operation by operation. It is ONLY
 #       legal on a FOR ALL policy, where every verb is admitted and the
@@ -121,7 +139,7 @@ alert_configs|alert_configs_evaluator|app.agent|SELECT|select|uptime/repo.go:652
 api_keys|api_keys_prefix_lookup|app.apikey_lookup|SELECT|select|apikey/apikey.go:366 resolves a key by its unique prefix before the tenant is known; the last_used_at stamp is tenant-keyed (db/query/api_keys.sql:52) and runs under InTenantTx
 audit_log|audit_log_agent|app.agent|SELECT|select|admin billing panel reads only; the sole INSERT path is audit.go:479 via appendLocked, whose tx is InTenantTx (audit.go:507). UPDATE/DELETE are REVOKEd from wpmgr_app (m1) and the m35 purge runs SECURITY DEFINER under tenant scope
 autologin_policies|autologin_policies_agent|app.agent|SELECT|select|autologin/repo.go:155 GetPolicyForAgent reads; both writers run under InTenantTx (repo.go:87, :103)
-autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|update|autologin/repo.go:127 ConsumeToken issues the consuming UPDATE under InAgentTx; this policy is FOR UPDATE precisely so that write is not silently zero-rowed
+autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|select,update|autologin/repo.go:127 ConsumeToken runs UPDATE ... RETURNING under InAgentTx (db/query/autologin.sql:27). PostgreSQL applies SELECT policies to RETURNING rows as well as the UPDATE policy, so this path needs BOTH verbs. This is the SPLIT PAIR the guard's per-table union check exists for: FOR UPDATE here supplies the write, the FOR SELECT sibling below supplies the read, and the pair is correct. A per-policy coverage check would redden it and suggest widening a cross-tenant grant to silence itself
 autologin_tokens|autologin_tokens_agent|app.agent|SELECT|select|agent-side token read; the consume UPDATE has its own FOR UPDATE policy below
 backup_chunks|backup_chunks_agent|app.agent|SELECT|select|tenant_reclaim_worker.go:794 ChunkRowsExist and billing_repo.go:138 read; every chunk write (repo.go:1029, :1763, :1787 and the sqlc upsert/refcount/delete set) runs under InTenantTx or inTenantTxOnConn, and the only FOR UPDATE (repo.go:1643) is tenant-scoped
 backup_file_index|backup_file_index_agent|app.agent|SELECT|select|no InAgentTx closure references this table at all; both INSERTs (repo.go:1811, :2215) run under InTenantTx

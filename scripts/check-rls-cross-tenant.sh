@@ -441,38 +441,93 @@ while IFS='|' read -r tbl pol perm cmd gucs scope; do
     continue
   fi
 
-  # C: the #96 / m89 / #463 bug -- the mode does not cover what the path does.
-  if [ "$l_ops" != '-' ]; then
-    for op in $(printf '%s' "$l_ops" | tr ',' ' '); do
-      covered=0
-      case "$cmd" in
-        ALL) covered=1 ;;
-        SELECT) [ "$op" = 'select' ] && covered=1 ;;
-        INSERT) [ "$op" = 'insert' ] && covered=1 ;;
-        # PostgreSQL applies the UPDATE policy to SELECT ... FOR UPDATE, so a
-        # FOR UPDATE policy is what makes a locking read return rows at all.
-        UPDATE) { [ "$op" = 'update' ] || [ "$op" = 'lock' ]; } && covered=1 ;;
-        DELETE) [ "$op" = 'delete' ] && covered=1 ;;
-      esac
-      if [ "$covered" -eq 0 ]; then
-        err "$tbl.$pol is FOR $cmd, which does not cover '$op' -- and its code path performs it (ledger ops: $l_ops)."
-        detail 'Under FORCE ROW LEVEL SECURITY this admits what the mode covers and admits'
-        detail 'nothing else, so that operation matches zero rows WITH NO ERROR. PostgreSQL'
-        detail 'applies the UPDATE policy to SELECT ... FOR UPDATE too, so even a locking'
-        detail 'read comes back empty. This is the m84/#96, m89/#131 and GH #463 bug.'
-        detail "Fix: a NEW migration recreating $pol with a mode that covers $l_ops,"
-        detail 'with WITH CHECK mirroring USING. Never edit the applied migration.'
-      fi
-    done
-  fi
-
   if [ "$l_guc" != "$gucs" ]; then
     warn "$tbl.$pol tests [$gucs] but the ledger records [$l_guc]."
     detail 'The policy expression reads a different set of settings than recorded.'
   fi
 done < "$XT"
 
-# C: stale ledger rows -- recorded, but no such cross-tenant policy any more.
+# ---------------------------------------------------------------------------
+# C: the #96 / m89 / #463 bug -- PER TABLE, not per policy.
+#
+# PostgreSQL ORs PERMISSIVE policies together per table, PER COMMAND. A row is
+# admitted for operation `op` if ANY permissive policy on that table whose mode
+# covers `op` admits it. So the question is never "does THIS policy cover the
+# operation" -- it is "does anything on this table cover it".
+#
+# Getting that wrong is not a harmless extra warning. A table carrying a
+# deliberately SPLIT pair -- one FOR SELECT policy for the read and one FOR
+# UPDATE policy for the write -- is CORRECT, and a per-policy check reddens it.
+# autologin_tokens is exactly that shape today (autologin_tokens_agent for the
+# read, autologin_tokens_agent_consume for the consuming UPDATE). Worse, the
+# remedy such an error suggests is "widen this policy", which is a migration
+# that widens a grant across the tenant boundary to silence a false positive.
+#
+# Splitting a policy is also precisely the remedy a future author reaches for
+# when fixing a REAL #96 finding, so the guard has to understand the shape it
+# is telling people to produce.
+#
+# The check therefore compares, for each table:
+#     ops_needed  = union of the ledger `ops` across that table's cross-tenant
+#                   policies -- every operation some cross-tenant path performs
+#     cmds_have   = the set of modes those policies actually carry
+# and requires every op in ops_needed to be covered by at least one mode.
+#
+# #96 DETECTION SURVIVES because in the m84 case no sibling covered the write:
+# backup_schedules carried one cross-tenant policy, FOR SELECT, while the
+# scheduler claimed rows with FOR UPDATE and advanced them. cmds_have={SELECT}
+# does not cover update or lock, so it still reddens. Proven by test.
+# ---------------------------------------------------------------------------
+
+# cmd_covers MODE OP -- does a policy of this mode admit this operation?
+cmd_covers() {
+  case "$1" in
+    ALL) return 0 ;;
+    SELECT) [ "$2" = 'select' ] && return 0 ;;
+    INSERT) [ "$2" = 'insert' ] && return 0 ;;
+    # PostgreSQL applies the UPDATE policy to SELECT ... FOR UPDATE/FOR SHARE,
+    # so a FOR UPDATE policy is what makes a locking read return rows at all.
+    # That is the exact mechanism of Issue #96.
+    UPDATE) { [ "$2" = 'update' ] || [ "$2" = 'lock' ]; } && return 0 ;;
+    DELETE) [ "$2" = 'delete' ] && return 0 ;;
+  esac
+  return 1
+}
+
+for tbl in $(awk -F'|' '{ print $1 }' "$XT" | sort -u); do
+  # Modes this table's cross-tenant policies actually carry, from the database.
+  cmds_have=$(awk -F'|' -v t="$tbl" '$1 == t { print $4 }' "$XT" | sort -u)
+  [ -n "$cmds_have" ] || continue
+
+  # Every operation any cross-tenant path performs on this table, from the
+  # ledger. '-' contributes nothing: it is only legal on FOR ALL, which the
+  # per-policy check above already enforces.
+  ops_needed=$(awk -F'|' -v t="$tbl" '$1 == t && $5 != "-" { gsub(/,/, "\n", $5); print $5 }' \
+    "$LEDGER_ROWS" | sed '/^$/d' | sort -u)
+  [ -n "$ops_needed" ] || continue
+
+  for op in $ops_needed; do
+    covered=0
+    for c in $cmds_have; do
+      if cmd_covers "$c" "$op"; then covered=1; break; fi
+    done
+    [ "$covered" -eq 1 ] && continue
+
+    pol_list=$(awk -F'|' -v t="$tbl" '$1 == t { printf "%s (FOR %s) ", $2, $4 }' "$XT")
+    err "$tbl: a cross-tenant path performs '$op', and no cross-tenant policy on the table covers it."
+    detail "policies present: $pol_list"
+    detail "modes present:    $(printf '%s' "$cmds_have" | tr '\n' ' ')"
+    detail 'Under FORCE ROW LEVEL SECURITY the operation matches zero rows WITH NO'
+    detail 'ERROR -- not a failure, a silence. PostgreSQL applies the UPDATE policy to'
+    detail 'SELECT ... FOR UPDATE too, so even a locking read comes back empty.'
+    detail 'This is the m84/#96, m89/#131 and GH #463 bug.'
+    detail "Fix, in a NEW migration (never edit an applied one): either widen one of"
+    detail "the policies above to cover '$op', or add a sibling policy FOR that command."
+    detail 'A sibling is the tighter choice -- it grants exactly the one extra verb.'
+  done
+done
+
+# D: stale ledger rows -- recorded, but no such cross-tenant policy any more.
 while IFS='|' read -r tbl pol guc cmd wr rationale; do
   [ -n "$tbl" ] || continue
   if ! awk -F'|' -v t="$tbl" -v p="$pol" '$1 == t && $2 == p { found = 1 } END { exit !found }' "$XT"; then

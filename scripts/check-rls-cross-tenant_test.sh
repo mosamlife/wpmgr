@@ -274,9 +274,9 @@ if should_run "$NAME"; then
     "$WORK/l10" > "$ed_tmp" && mv "$ed_tmp" "$WORK/l10"
   run_guard "$WORK/e10" "$WORK/l10"
   want_rc "$NAME" 1 &&
-    want_says "$NAME" "is FOR SELECT, which does not cover 'update'" &&
-    want_says "$NAME" 'zero rows WITH NO ERROR' &&
-    want_says "$NAME" 'Never edit the applied migration.' &&
+    want_says "$NAME" "a cross-tenant path performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_says "$NAME" 'zero rows WITH NO' &&
+    want_says "$NAME" 'never edit an applied one' &&
     pass "$NAME"
 fi
 
@@ -292,7 +292,7 @@ if should_run "$NAME"; then
   # read-only policy makes even the locking read return nothing. That is
   # precisely how Issue #96 stopped every backup schedule advancing.
   want_rc "$NAME" 1 &&
-    want_says "$NAME" "does not cover 'lock'" &&
+    want_says "$NAME" "a cross-tenant path performs 'lock'" &&
     pass "$NAME"
 fi
 
@@ -446,6 +446,114 @@ if should_run "$NAME"; then
   want_rc "$NAME" 0 &&
     want_says "$NAME" 'backup_schedules_scheduler' &&
     want_says "$NAME" 'would find' &&
+    pass "$NAME"
+fi
+
+# ===========================================================================
+# GROUP 4b -- PER-TABLE coverage. PostgreSQL ORs permissive policies per table
+# per command, so coverage is a property of the TABLE, never of one policy.
+#
+# Getting this wrong reddens a correct split pair, and the "fix" it implies is
+# a migration that WIDENS a cross-tenant grant to silence a false positive.
+# ===========================================================================
+
+NAME='split: a FOR SELECT + FOR UPDATE pair covering one path stays green'
+if should_run "$NAME"; then
+  cat > "$WORK/e40" <<'EOF'
+autologin_tokens|autologin_tokens_agent|PERMISSIVE|SELECT|app.agent|CROSS
+autologin_tokens|autologin_tokens_agent_consume|PERMISSIVE|UPDATE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l40" <<'EOF'
+autologin_tokens|autologin_tokens_agent|app.agent|SELECT|select|the agent-side read
+autologin_tokens|autologin_tokens_agent_consume|app.agent|UPDATE|select,update|UPDATE ... RETURNING needs select too; the sibling supplies it
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e40" "$WORK/l40"
+  # The consume row records `select` because UPDATE ... RETURNING genuinely
+  # needs it. Its own FOR UPDATE policy does not admit select -- the FOR SELECT
+  # sibling does. Per-table union is what makes this correct pair pass.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='split: the m84/#96 shape still reddens when NO sibling covers the write'
+if should_run "$NAME"; then
+  cat > "$WORK/e41" <<'EOF'
+backup_schedules|backup_schedules_scheduler|PERMISSIVE|SELECT|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l41" <<'EOF'
+backup_schedules|backup_schedules_scheduler|app.agent|SELECT|select,update,lock|claims due schedules with FOR UPDATE and advances them
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e41" "$WORK/l41"
+  # This is Issue #96 exactly: one cross-tenant policy, FOR SELECT, while the
+  # scheduler claims rows with FOR UPDATE. Nothing on the table covers the
+  # write, so per-table union must still catch it. If this ever goes green the
+  # guard has stopped detecting the bug it was built for.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "a cross-tenant path performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_says "$NAME" "a cross-tenant path performs 'lock'" &&
+    want_says "$NAME" 'not a failure, a silence' &&
+    pass "$NAME"
+fi
+
+NAME='split: a sibling covering only SOME of the missing verbs still reddens'
+if should_run "$NAME"; then
+  cat > "$WORK/e42" <<'EOF'
+backup_schedules|backup_schedules_scheduler|PERMISSIVE|SELECT|app.agent|CROSS
+backup_schedules|backup_schedules_reap|PERMISSIVE|DELETE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l42" <<'EOF'
+backup_schedules|backup_schedules_scheduler|app.agent|SELECT|select,update|the scheduler advances next_run_at
+backup_schedules|backup_schedules_reap|app.agent|DELETE|delete|the reaper removes dead schedules
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e42" "$WORK/l42"
+  # A DELETE sibling covers `delete` but not `update`. Partial cover must not
+  # be mistaken for cover -- the union has to be evaluated per operation.
+  want_rc "$NAME" 1 &&
+    want_says "$NAME" "performs 'update', and no cross-tenant policy on the table covers it" &&
+    want_silent_about "$NAME" "performs 'delete'" &&
+    pass "$NAME"
+fi
+
+NAME='split: FOR DELETE covering a delete-only path stays green'
+if should_run "$NAME"; then
+  cat > "$WORK/e43" <<'EOF'
+backup_chunks|backup_chunks_reclaim|PERMISSIVE|DELETE|app.agent|CROSS
+update_runs|update_runs_agent|PERMISSIVE|ALL|app.agent|CROSS
+EOF
+  cat > "$WORK/l43" <<'EOF'
+backup_chunks|backup_chunks_reclaim|app.agent|DELETE|delete|the reclaim worker deletes chunk rows cross-tenant
+update_runs|update_runs_agent|app.agent|ALL|-|FOR ALL admits every verb
+EOF
+  run_guard "$WORK/e43" "$WORK/l43"
+  # FOR DELETE was correct but untested until now.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
+    pass "$NAME"
+fi
+
+NAME='split: a FOR ALL sibling covers every verb for the whole table'
+if should_run "$NAME"; then
+  cat > "$WORK/e44" <<'EOF'
+sites|sites_agent|PERMISSIVE|ALL|app.agent|CROSS
+sites|sites_shared_read|PERMISSIVE|SELECT|app.user_id|CROSS
+EOF
+  cat > "$WORK/l44" <<'EOF'
+sites|sites_agent|app.agent|ALL|select,update|the agent updates site metadata
+sites|sites_shared_read|app.user_id|SELECT|select,update|deliberately over-recorded: the table is written, and sites_agent covers it
+EOF
+  run_guard "$WORK/e44" "$WORK/l44"
+  # sites_shared_read is FOR SELECT and its row records `update`. Per policy
+  # that reads as the #96 bug; per table it is covered by sites_agent, which is
+  # how PostgreSQL actually evaluates it.
+  want_rc "$NAME" 0 &&
+    want_silent_about "$NAME" 'ERROR' &&
     pass "$NAME"
 fi
 
