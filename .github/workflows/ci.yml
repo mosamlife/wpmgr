@@ -419,14 +419,15 @@ jobs:
       # synthetic extraction and ledger under a throwaway root and asserts the
       # guard's classification and reconciliation logic against them, so it
       # needs no database and never touches this repo's real migrations or
-      # its real ledger. What it proves: the guard's LOGIC is correct — the
-      # 25+ documented cases (naming variants, FOR SELECT on a write path,
-      # drifted/stale/unrecorded ledger rows, and the fail-closed paths
-      # themselves) still hold. What it does NOT prove: that this repository's
-      # ACTUAL cross-tenant policies, as they exist in the real schema today,
-      # reconcile against the real ledger. That requires reading real
-      # pg_policies off a database with all migrations applied, which this job
-      # does not have and should not pay for on every PR.
+      # its real ledger. What it proves: the guard's LOGIC is correct — every
+      # case in scripts/check-rls-cross-tenant_test.sh (naming variants,
+      # FOR SELECT on a write path, drifted/stale/unrecorded ledger rows, and
+      # the fail-closed paths themselves) still holds. What it does NOT prove:
+      # that this repository's ACTUAL cross-tenant policies, as they exist in
+      # the real schema today, reconcile against the real ledger. That
+      # requires reading real pg_policies off a database with all migrations
+      # applied, which this job does not have and should not pay for on every
+      # PR.
       #
       # THE LIVE CHECK runs in .github/workflows/api-integration.yml instead,
       # next to the other RLS proofs (apps/api/tests, the m112 site-scope
