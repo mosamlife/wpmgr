@@ -307,6 +307,35 @@ CREATE TABLE sites (
     -- components holds the installed plugins/themes inventory as JSONB (M2): a
     -- normalized child table can come later; JSONB is sufficient for M2.
     components  jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    -- m121 (GH #553): when the control plane last WROTE components, whether or
+    -- not the document changed. The inventory's own age, which updated_at is
+    -- not: TouchSiteHeartbeat bumps updated_at every 60s and never touches
+    -- components, so as_of stamped from updated_at can only ever OVERSTATE
+    -- freshness -- a site whose WP-Cron died keeps heartbeating while its
+    -- inventory freezes for months.
+    --
+    -- NULLABLE WITH NO DEFAULT, ON PURPOSE. NULL means "we have never recorded
+    -- this", which is the truth for every row predating m121, and there is no
+    -- backfill. Backfilling from updated_at or last_seen_at would write the
+    -- heartbeat instant this column exists to stop reporting; backfilling from
+    -- now() would claim the whole fleet was collected at boot. All three
+    -- manufacture an observation that was never taken -- GH #509's defect, where
+    -- NOT NULL DEFAULT 0 on a measurement column made "never measured"
+    -- indistinguishable from a real zero. A default is right for a setting, a
+    -- counter or a flag; this is an observation.
+    --
+    -- It is the CONTROL-PLANE WRITE instant, not the agent's collection instant:
+    -- the metadata payload carries no collection timestamp, so that fact is not
+    -- knowable here. Hence "updated_at" and not "collected_at".
+    --
+    -- Written ONLY by UpdateSiteMetadata (db/query/sites.sql), the only
+    -- statement in the tree that writes components, and written on every push
+    -- even when the document is byte-identical (freshness is when the claim was
+    -- last confirmed, not when it last changed). A disconnecting site is left
+    -- alone: the stamp goes stale and the staleness IS the signal. Nulling it
+    -- would erase a fact that happened while leaving components itself
+    -- populated, i.e. undated inventory data.
+    components_updated_at timestamptz,
     tags        text[]      NOT NULL DEFAULT '{}',
     -- M4 backups: the age PUBLIC recipient (X25519, "age1...") backups for this
     -- site are encrypted to. Client-side encryption is on the AGENT; the control
