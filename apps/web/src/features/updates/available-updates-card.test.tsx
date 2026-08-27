@@ -201,3 +201,35 @@ describe("AvailableUpdatesCard agent honesty (GH #314)", () => {
     expect(within(list).queryByText("WPMgr agent")).not.toBeInTheDocument();
   });
 });
+
+// GH #553: `as_of` used to be stamped from the 60s site heartbeat, so it was
+// practically never null. It now reads `components_updated_at`, which is only
+// set when the inventory is genuinely (re)written, and it shipped with no
+// backfill, so every site that existed before the fix reports `as_of: null`
+// until its next sync. `null` is a real, common, temporary state here, not an
+// absence to paper over with a generic "Never".
+describe("AvailableUpdatesCard as_of honesty (GH #553)", () => {
+  it("tells the operator the collection time is unknown, and how it resolves, instead of claiming it was never collected", () => {
+    setup(payload({ as_of: null }), null);
+    renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+
+    // Distinct from FreshnessBadge's generic "Never", which would wrongly
+    // assert this site's inventory was never collected -- it was, we just
+    // don't have a genuine collection time for it yet.
+    const unknownCopy = screen.getAllByText(/inventory age unknown/i);
+    expect(unknownCopy.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^Never$/)).not.toBeInTheDocument();
+
+    // States what resolves it, in operator terms, with no raw field names.
+    expect(screen.getAllByText(/next sync/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/as_of/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/components_updated_at/i)).not.toBeInTheDocument();
+  });
+
+  it("does not show the unknown-age copy when a real collection time is present", () => {
+    setup(payload({ as_of: "2026-08-04T10:00:00Z" }), null);
+    renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+
+    expect(screen.queryAllByText(/inventory age unknown/i).length).toBe(0);
+  });
+});

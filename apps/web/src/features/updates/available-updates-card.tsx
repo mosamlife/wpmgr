@@ -86,6 +86,33 @@ function changelogHref(item: AvailableUpdateItem): string {
   return `https://wordpress.org/plugins/${encodeURIComponent(slug)}/#developers`;
 }
 
+// GH #553. `as_of` used to be stamped from the 60s site heartbeat
+// (`sites.updated_at`), so it was practically never null and always looked
+// seconds old regardless of how stale the reported inventory actually was.
+// It now reads `sites.components_updated_at`, set only when the inventory is
+// genuinely (re)written, and it shipped with no backfill — inventing a
+// collection time that never happened would recreate the exact bug this
+// fixed, one layer up. So every site that existed before the fix reports
+// `as_of: null` here until its next sync, and that is common and temporary,
+// not an outage.
+//
+// `null` gets its own honest state rather than falling into FreshnessBadge's
+// generic "Never": "Never" asserts this site's inventory was never collected,
+// which is false for these sites (the list below is real data) and would
+// read as an alarm across an entire fleet on the day this ships. "Unknown, and
+// here is what clears it" is the true claim.
+function UpdatesAsOf({ asOf }: { asOf: string | null }) {
+  if (asOf === null) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        Inventory age unknown. Clears after this site&rsquo;s next sync,
+        usually within 30 minutes.
+      </span>
+    );
+  }
+  return <FreshnessBadge collectedAt={asOf} />;
+}
+
 export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
   const { data, isPending, isError, error, refetch, isFetching } =
     useAvailableUpdates(siteId);
@@ -172,7 +199,7 @@ export function AvailableUpdatesCard({ siteId }: { siteId: string }) {
             ) : null}
           </div>
           <div className="text-xs">
-            <FreshnessBadge collectedAt={data?.as_of ?? null} />
+            <UpdatesAsOf asOf={data?.as_of ?? null} />
           </div>
         </div>
         <Button
@@ -272,7 +299,7 @@ function UpdatesBody({
           <p className="text-sm font-medium text-[var(--color-foreground)]">
             All managed components are up to date
           </p>
-          <FreshnessBadge collectedAt={data.as_of ?? null} />
+          <UpdatesAsOf asOf={data.as_of ?? null} />
         </div>
       ) : (
         <div className="space-y-3">
