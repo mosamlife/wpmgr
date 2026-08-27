@@ -573,6 +573,24 @@ extract_from_container() {
   [ "$ready" = "1" ] || broken "the throwaway postgres never became ready."
 
   local url="postgres://postgres:guard@127.0.0.1:${GUARD_PORT}/guard?sslmode=disable"
+
+  # pg_isready above answers too early on a FRESH data directory. The
+  # official postgres image runs a temporary bootstrap server to execute
+  # initdb, stops it, then starts the real one -- and pg_isready can catch
+  # the bootstrap server's brief accepting window moments before it shuts
+  # down for that restart. Observed here in CI (not on a developer machine,
+  # where the race window is usually too narrow to hit): pg_isready passed,
+  # and the very next `psql -f` applying the first migration got "server
+  # closed the connection unexpectedly". So readiness is reproven with an
+  # actual SQL round-trip -- not just a TCP-level ping -- before any
+  # migration is applied, bounded the same way as the pg_isready loop above.
+  local sql_ready=0
+  for i in $(seq 1 60); do
+    if psql "$url" -At -c 'SELECT 1' >/dev/null 2>&1; then sql_ready=1; break; fi
+    sleep 1
+  done
+  [ "$sql_ready" = "1" ] || broken "the throwaway postgres accepted TCP but never answered a real query."
+
   local f applied=0 out
   # Lexical order, exactly what internal/db/migrate.go's sort.Strings does.
   for f in $(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort); do
