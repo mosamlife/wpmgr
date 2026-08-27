@@ -4,6 +4,13 @@ The WPMgr agent is MIT-licensed (see the repository `LICENSE`).
 
 ## Third-party attribution
 
+### bjeavons/zxcvbn-php (MIT)
+
+Password-strength scoring in the Security module's password policy uses
+[`bjeavons/zxcvbn-php`](https://github.com/bjeavons/zxcvbn-php) (^1.4, MIT), a
+pure-PHP port of zxcvbn, in the agent's Composer dependencies. Copyright (c)
+2013-2014 Benjamin Jeavons.
+
 ### lilliput (Discord, MIT)
 
 `github.com/discord/lilliput` is MIT-licensed and used by the control-plane
@@ -15,6 +22,15 @@ agent plugin (the agent performs no encoding).
 CSS and JS minification uses
 [`matthiasmullie/minify`](https://github.com/matthiasmullie/minify) (^1.3, MIT), a
 small pure-PHP library in the agent's Composer dependencies.
+
+### web-vitals (Google, Apache-2.0)
+
+The Real User Monitoring collector bundles
+[`web-vitals`](https://github.com/GoogleChrome/web-vitals) (^5.3.0,
+Apache-2.0), Copyright 2020 Google LLC, via an esbuild build in
+`apps/tracker`. The bundle ships inside the plugin zip as
+`assets/wpmgr-rum.js` / `assets/wpmgr-rum.min.js`. Source and license:
+https://github.com/GoogleChrome/web-vitals/blob/main/LICENSE
 
 ## Implementation notes
 

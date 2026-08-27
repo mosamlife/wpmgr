@@ -34,6 +34,24 @@ open-source Go libraries:
 - [`github.com/andybalholm/cascadia`](https://github.com/andybalholm/cascadia)
   (BSD-2-Clause) — compile CSS selectors and test them against the parsed DOM.
 
+### web-vitals (Google, Apache-2.0)
+
+Real User Monitoring's Core Web Vitals collection bundles
+[`web-vitals`](https://github.com/GoogleChrome/web-vitals) (^5.3.0,
+Apache-2.0), Copyright 2020 Google LLC, via an esbuild build in
+`apps/tracker`. The bundle ships inside the agent plugin zip as
+`assets/wpmgr-rum.js` / `assets/wpmgr-rum.min.js`. Source and license:
+https://github.com/GoogleChrome/web-vitals/blob/main/LICENSE
+
+## Security
+
+### bjeavons/zxcvbn-php (MIT)
+
+The agent's password-strength policy uses
+[`bjeavons/zxcvbn-php`](https://github.com/bjeavons/zxcvbn-php) (^1.4, MIT), a
+pure-PHP port of zxcvbn, bundled with the agent's Composer dependencies.
+Copyright (c) 2013-2014 Benjamin Jeavons.
+
 ## Media Optimizer
 
 The Media Optimizer's attribution (including Discord's `lilliput`, MIT, for

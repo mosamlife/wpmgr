@@ -254,7 +254,13 @@ CSS and JavaScript minification uses matthiasmullie/minify (^1.3, MIT license), 
 
 Copyright (c) 2012 Matthias Mullie. Licensed under the MIT License.
 
-No other third-party libraries are bundled in the plugin zip. Image encoding and WOFF2 font transcoding run on the control-plane service, not inside this plugin.
+**bjeavons/zxcvbn-php (MIT)**
+
+Password-strength scoring in the password policy uses bjeavons/zxcvbn-php (^1.4, MIT license), a pure-PHP port of zxcvbn included in the plugin's Composer dependencies. Source and license: https://github.com/bjeavons/zxcvbn-php
+
+Copyright (c) 2013-2014 Benjamin Jeavons. Licensed under the MIT License.
+
+No other third-party PHP libraries are bundled in the plugin zip beyond the two credited above. Image encoding and WOFF2 font transcoding run on the control-plane service, not inside this plugin. The bundled Real User Monitoring JavaScript also carries a third-party library; see Source code below.
 
 == Source code ==
 
