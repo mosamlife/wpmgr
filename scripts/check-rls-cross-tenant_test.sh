@@ -607,6 +607,126 @@ EOF
 fi
 
 # ===========================================================================
+# GROUP 4d -- THE CLASSIFIER ITSELF, driven with raw predicates.
+#
+# WHY THIS GROUP EXISTS. Every other case here feeds --from-extract fixture
+# rows whose TENANT/CROSS column is hard-coded by the fixture, so none of them
+# ever executes the classification logic. The binding rule and the with_check
+# fallback could both be reverted and the whole suite would stay green -- a
+# test that cannot fail for the thing it is testing, which is this project's
+# signature defect wearing test clothes.
+#
+# These call `--classify QUAL WITH_CHECK`, the same function production uses,
+# with the real deparsed shapes pg_policies actually produces.
+# ===========================================================================
+
+classify() { "$GUARD" --classify "$1" "${2-}" 2>&1; }
+
+# The deparsed forms, written once so the cases read as shapes not noise.
+BOUND="(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+AGENT="(current_setting('app.agent'::text, true) = 'on'::text)"
+SITESCOPE="(COALESCE(current_setting('app.site_scope'::text, true), ''::text) <> 'on'::text)"
+
+want_classify() {
+  # want_classify NAME EXPECTED QUAL [WITH_CHECK]
+  local got
+  got="$(classify "$3" "${4-}")"
+  if [ "$got" = "$2" ]; then
+    pass "$1"
+  else
+    RC='n/a'; OUT="classify returned: $got"
+    fail "$1" "expected $2 for: $3 ${4-}"
+  fi
+}
+
+NAME='classify: a plain bound predicate is TENANT'
+should_run "$NAME" && want_classify "$NAME" TENANT "$BOUND"
+
+NAME='classify: THE OR-ESCAPE -- bound OR app.agent is CROSS'
+if should_run "$NAME"; then
+  # The hole that a binding-anywhere rule reopens. It binds tenant_id and then
+  # ORs straight past it, so a substring or binds-anywhere test calls it
+  # TENANT and it leaves the audit entirely.
+  want_classify "$NAME" CROSS "($BOUND OR $AGENT)"
+fi
+
+NAME='classify: an AND-joined multi-setting policy stays TENANT'
+if should_run "$NAME"; then
+  # The over-fire case. Reading a second setting inside an AND is not an OR
+  # branch, so this binds on its single branch and must stay out of the audit.
+  want_classify "$NAME" TENANT "($BOUND AND $SITESCOPE)"
+fi
+
+NAME='classify: IS NULL OR bound is CROSS'
+if should_run "$NAME"; then
+  # email_webhook_events_tenant_isolation. The NULL branch binds nothing, so
+  # unattributed rows are visible to every tenant.
+  want_classify "$NAME" CROSS "((tenant_id IS NULL) OR $BOUND)"
+fi
+
+NAME='classify: reads app.tenant_id but binds nothing is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "(current_setting('app.tenant_id'::text, true) <> ''::text)"
+
+NAME='classify: a predicate naming no setting at all is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "true"
+
+NAME='classify: an empty predicate is CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS ""
+
+NAME='classify: WITH_CHECK is used when QUAL is empty (FOR INSERT)'
+if should_run "$NAME"; then
+  # A FOR INSERT policy has no qual at all. Reverting this fallback must turn
+  # this case red -- that is the proof the boundary is in the right place.
+  want_classify "$NAME" TENANT "" "((current_setting('app.rum_ingest'::text, true) = 'on'::text) AND $BOUND)"
+fi
+
+NAME='classify: QUAL wins over WITH_CHECK when both are present'
+if should_run "$NAME"; then
+  # An unbound qual must not be rescued by a bound with_check: reads are what
+  # qual governs.
+  want_classify "$NAME" CROSS "$AGENT" "$BOUND"
+fi
+
+NAME='classify: an OR inside parentheses is not a top-level branch'
+if should_run "$NAME"; then
+  # ((a OR b) AND tenant_id = ...) binds on its only top-level branch. Treating
+  # the nested OR as top-level would redden a correct policy.
+  want_classify "$NAME" TENANT "(($AGENT OR $SITESCOPE) AND $BOUND)"
+fi
+
+NAME='classify: an OR nested inside a bound branch still splits the outer OR'
+if should_run "$NAME"; then
+  want_classify "$NAME" CROSS "((($AGENT OR $SITESCOPE) AND $BOUND) OR $AGENT)"
+fi
+
+NAME='classify: the word OR inside a string literal is not an operator'
+if should_run "$NAME"; then
+  # A literal containing " OR " must not split the predicate. Splitting here
+  # would produce a non-binding second branch and redden a bound policy.
+  want_classify "$NAME" TENANT "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ' OR '::text))::uuid)"
+fi
+
+NAME='classify: unbalanced parentheses fall back to CROSS, never TENANT'
+if should_run "$NAME"; then
+  # When the split cannot be trusted, over-flagging into the ledger is the safe
+  # direction: the cost is a line of writing, and the reasoning gets recorded.
+  want_classify "$NAME" CROSS "((tenant_id = current_setting('app.tenant_id')::uuid"
+fi
+
+NAME='classify: an unterminated string literal falls back to CROSS'
+should_run "$NAME" && want_classify "$NAME" CROSS "(tenant_id = 'oops)"
+
+NAME='classify: three OR branches all binding is TENANT'
+if should_run "$NAME"; then
+  want_classify "$NAME" TENANT "($BOUND OR $BOUND OR $BOUND)"
+fi
+
+NAME='classify: three OR branches with one unbound is CROSS'
+if should_run "$NAME"; then
+  want_classify "$NAME" CROSS "($BOUND OR $BOUND OR $AGENT)"
+fi
+
+# ===========================================================================
 # GROUP 4c -- reading app.tenant_id is not the same as binding to it.
 #
 # The dangerous shape is a predicate that READS the setting and constrains
@@ -625,7 +745,7 @@ if should_run "$NAME"; then
   write_ledger "$WORK/l50"
   run_guard "$WORK/e50" "$WORK/l50"
   want_rc "$NAME" 1 &&
-    want_says "$NAME" "does not bind the row's tenant_id to it" &&
+    want_says "$NAME" 'does not bind tenant_id in EVERY top-level OR branch' &&
     want_says "$NAME" 'smtp_settings_unbound' &&
     pass "$NAME"
 fi

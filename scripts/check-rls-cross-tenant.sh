@@ -217,6 +217,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -h | --help) usage; exit 0 ;;
     --extract) MODE='extract'; shift ;;
+    # The test boundary for the classifier. Prints TENANT or CROSS for a raw
+    # predicate pair, so the hermetic suite can exercise the real
+    # classification logic instead of asserting against fixture rows that
+    # already carry the answer.
+    --classify)
+      CLASSIFY_QUAL="${2-}"
+      CLASSIFY_WC="${3-}"
+      MODE='classify'
+      shift 3 2>/dev/null || shift $#
+      ;;
     --from-extract)
       MODE='analyse'
       EXTRACT_FILE="${2:-}"
@@ -304,23 +314,28 @@ broken() {
 # asserting a grant that does not exist, and the ledger's only value is being
 # true.
 #
-# TENANT MEANS BOUND, NOT MENTIONED.
+# THE SQL FETCHES; IT DOES NOT CLASSIFY. Classification used to live in a CASE
+# expression right here, which meant the only way to exercise it was to run a
+# real database -- so the hermetic suite, which feeds pre-classified fixture
+# rows through --from-extract, never executed it at all. Every classification
+# test was asserting against a value the fixture had hard-coded. A test that
+# cannot fail for the thing it is testing is this project's signature defect
+# wearing test clothes.
 #
-# This used to ask whether the predicate mentioned app.tenant_id anywhere, which
-# is a different and much weaker question. A predicate can read app.tenant_id
-# and never constrain the row's tenant to it --
+# So this query now returns the RAW predicate and classify_scope() below does
+# the work, reachable directly as `--classify QUAL WITH_CHECK`. Production and
+# the suite call the same function.
 #
-#     USING (current_setting('app.tenant_id', true) <> '')
+# qual AND with_check are emitted SEPARATELY, so the fallback between them is
+# classify_scope's decision and not the query's. That matters for testability:
+# if the fallback lived here, reverting it could not redden a hermetic test.
 #
-# grants every row in the table to anyone who has any tenant set, while looking
-# tenant-bound to a substring test. So the test is now whether the predicate
-# actually BINDS the row's tenant_id column to the setting. Anything that does
-# not is classified CROSS and audited as the grant it is, rather than excluded
-# from the audit for mentioning the right words.
-#
-# [^=] between the column and the setting keeps the match from stepping over an
-# intervening comparison and pairing a tenant_id on one side with an
-# app.tenant_id belonging to a different conjunct.
+# Both are base64'd. Predicates contain no pipes in this schema today and 10 of
+# them contain newlines, but a format that only works until someone writes `||`
+# in a policy is a format that fails silently later. base64 is [A-Za-z0-9+/=],
+# so no predicate can ever forge a field separator or a line break. The
+# replace() strips the newlines Postgres inserts every 76 characters, which
+# would otherwise break a line-oriented format the moment a predicate got long.
 EXTRACT_SQL="
 SELECT
   p.tablename || '|' || p.policyname || '|' || p.permissive || '|' || p.cmd || '|' ||
@@ -328,9 +343,9 @@ SELECT
             FROM regexp_matches(coalesce(p.qual,'') || ' ' || coalesce(p.with_check,''),
                                 'current_setting\(''([a-z_.]+)''', 'g') AS m), '-')
   || '|' ||
-  CASE WHEN coalesce(nullif(p.qual,''), p.with_check, '')
-            ~ 'tenant_id[[:space:]]*=[^=]*app\.tenant_id'
-       THEN 'TENANT' ELSE 'CROSS' END
+  replace(encode(convert_to(regexp_replace(coalesce(p.qual,''), '\s+', ' ', 'g'), 'UTF8'), 'base64'), E'\n', '')
+  || '|' ||
+  replace(encode(convert_to(regexp_replace(coalesce(p.with_check,''), '\s+', ' ', 'g'), 'UTF8'), 'base64'), E'\n', '')
 FROM pg_policies p
 WHERE p.schemaname = 'public'
 ORDER BY 1;
@@ -350,6 +365,110 @@ ORDER BY 1;
 #
 # The port can be pinned with WPMGR_RLS_GUARD_PORT when a sandbox needs a known
 # one; otherwise a free port is found and used.
+# ---------------------------------------------------------------------------
+# classify_scope QUAL WITH_CHECK -> prints TENANT or CROSS
+#
+# TENANT means EVERY top-level OR branch binds the row's tenant_id column to
+# app.tenant_id. Anything else is CROSS.
+#
+# WHY BRANCHES AND NOT A SUBSTRING. Two weaker rules were tried here and each
+# closed one hole while opening another:
+#
+#   "mentions app.tenant_id"  -- USING (current_setting('app.tenant_id',true) <> '')
+#                                mentions it, binds nothing, and hands every row
+#                                in the table to anyone with a tenant set.
+#
+#   "binds tenant_id anywhere" -- fixes that, but
+#
+#       USING (tenant_id = current_setting('app.tenant_id')::uuid
+#              OR current_setting('app.agent', true) = 'on')
+#
+#                                binds tenant_id and then ORs straight past it.
+#                                It classifies TENANT and leaves the audit.
+#
+# Per-branch binding catches both, and it leaves an honest multi-setting policy
+# green: reading a second setting inside an AND is not an OR branch, so a
+# predicate like "tenant_id = <setting> AND app.site_scope <> 'on'" is one
+# branch that binds.
+#
+# WHY THE PREDICATE IS qual, OR with_check WHEN THERE IS NO qual. A FOR INSERT
+# policy has no qual -- there is no existing row to test -- so its whole
+# condition lives in with_check. Reading only qual gave every INSERT policy an
+# empty predicate and classified it as a cross-tenant grant, which put ledger
+# rows in asserting grants that do not exist.
+#
+# WHEN IN DOUBT, CROSS. Unbalanced parentheses or an unterminated string
+# literal mean the split cannot be trusted, so the policy is classified CROSS
+# and lands in the audit needing a ledger row. Over-flagging into the ledger is
+# the safe direction: the cost is one line of writing, and the reasoning gets
+# recorded. Under-flagging silently removes a policy from a tenant-boundary
+# audit.
+#
+# This is a scanner, not a SQL parser. It tracks parenthesis depth and single-
+# quoted literals, which is what the deparsed output of pg_policies actually
+# contains. It does not understand NOT, and it does not need to: a NOT around a
+# binding does not produce a binding, so it falls to CROSS.
+# ---------------------------------------------------------------------------
+classify_scope() {
+  awk -v qual="${1-}" -v wc="${2-}" '
+    function strip_outer(s,   d, i, c, inq, ok) {
+      # Postgres deparses a top-level OR wrapped in its own parentheses, as in
+      # "((a) OR (b))", so the OR sits at depth 1. Peel fully-enclosing pairs
+      # until the outermost operator is exposed at depth 0.
+      while (length(s) >= 2 && substr(s, 1, 1) == "(") {
+        d = 0; inq = 0; ok = 0
+        for (i = 1; i <= length(s); i++) {
+          c = substr(s, i, 1)
+          if (inq) { if (c == "\047") inq = 0; continue }
+          if (c == "\047") { inq = 1; continue }
+          if (c == "(") d++
+          else if (c == ")") { d--; if (d == 0) { ok = (i == length(s)); break } }
+        }
+        if (ok) s = substr(s, 2, length(s) - 2); else break
+      }
+      return s
+    }
+    # Returns 0 when the text cannot be scanned safely.
+    function balanced(s,   d, i, c, inq) {
+      d = 0; inq = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq) { if (c == "\047") inq = 0; continue }
+        if (c == "\047") { inq = 1; continue }
+        if (c == "(") d++
+        else if (c == ")") { d--; if (d < 0) return 0 }
+      }
+      return (d == 0 && inq == 0)
+    }
+    function binds(s) {
+      return (s ~ /tenant_id[ \t]*=[^=]*app\.tenant_id/)
+    }
+    BEGIN {
+      pred = (qual != "") ? qual : wc
+      if (pred == "")            { print "CROSS"; exit }
+      if (!balanced(pred))       { print "CROSS"; exit }
+      pred = strip_outer(pred)
+      d = 0; inq = 0; start = 1
+      for (i = 1; i <= length(pred); i++) {
+        c = substr(pred, i, 1)
+        if (inq) { if (c == "\047") inq = 0; continue }
+        if (c == "\047") { inq = 1; continue }
+        if (c == "(") { d++; continue }
+        if (c == ")") { d--; continue }
+        # " OR " with both spaces, at depth 0 and outside any literal. The
+        # spaces matter: they keep this from firing inside FOR / ORDER / a
+        # column called "color".
+        if (d == 0 && toupper(substr(pred, i, 4)) == " OR ") {
+          if (!binds(substr(pred, start, i - start))) { print "CROSS"; exit }
+          start = i + 4
+          i = i + 3
+        }
+      }
+      print binds(substr(pred, start)) ? "TENANT" : "CROSS"
+    }
+  ' </dev/null
+}
+
 CONTAINER="wpmgr-rls-guard-$$"
 STARTED_CONTAINER=0
 
@@ -463,8 +582,49 @@ do_extract() {
   fi
 }
 
+if [ "$MODE" = 'classify' ]; then
+  classify_scope "${CLASSIFY_QUAL-}" "${CLASSIFY_WC-}"
+  exit 0
+fi
+
+# classify_rows -- raw extraction (base64 qual + with_check) to the classified
+# six-field form everything downstream reads:
+#
+#   table|policy|permissive|cmd|gucs|SCOPE
+#
+# Anything that is not a well-formed raw row is passed through untouched, so a
+# psql error banner still reaches the drop-detection below and is reported
+# rather than silently swallowed here.
+classify_rows() {
+  local line rest tbl pol perm cmd gucs q64 w64 qual wc
+  while IFS= read -r line; do
+    case "$line" in
+      *'|'*'|'*'|'*'|'*'|'*'|'*) ;;
+      *) printf '%s\n' "$line"; continue ;;
+    esac
+    tbl=$(printf '%s' "$line" | cut -d'|' -f1)
+    pol=$(printf '%s' "$line" | cut -d'|' -f2)
+    perm=$(printf '%s' "$line" | cut -d'|' -f3)
+    cmd=$(printf '%s' "$line" | cut -d'|' -f4)
+    gucs=$(printf '%s' "$line" | cut -d'|' -f5)
+    q64=$(printf '%s' "$line" | cut -d'|' -f6)
+    w64=$(printf '%s' "$line" | cut -d'|' -f7)
+    qual=$(printf '%s' "$q64" | base64 --decode 2>/dev/null)
+    wc=$(printf '%s' "$w64" | base64 --decode 2>/dev/null)
+    printf '%s|%s|%s|%s|%s|%s\n' \
+      "$tbl" "$pol" "$perm" "$cmd" "$gucs" "$(classify_scope "$qual" "$wc")"
+  done
+}
+
 if [ "$MODE" = 'extract' ]; then
-  raw="$(do_extract)"
+  # Not `do_extract | classify_rows`: a pipeline runs do_extract in a subshell,
+  # so a broken() inside it would exit only that subshell and the pipeline's
+  # status would be classify_rows' -- an extraction failure reported as a
+  # success. Same reason the full path below writes to a file first.
+  extract_tmp="$(mktemp "${TMPDIR:-/tmp}/wpmgr-rls-extract.XXXXXX")" || exit 2
+  do_extract > "$extract_tmp"
+  raw="$(classify_rows < "$extract_tmp")"
+  rm -f "$extract_tmp"
   # Even in --extract mode an empty result is a broken run, not an empty file
   # for somebody downstream to mistake for "no policies".
   printf '%s\n' "$raw" | grep -q '.' || broken "the extraction returned no rows."
@@ -492,7 +652,9 @@ else
   # Deliberately NOT `do_extract | grep ... > "$ALL"`. A pipeline puts
   # do_extract in a subshell, which is how this leaked a postgres container on
   # every run; it would also swallow the exit status of the extraction itself.
-  do_extract > "$RAW"
+  # classify_rows is applied afterwards, reading a file, for the same reason.
+  do_extract > "$WORK/rawsql.txt"
+  classify_rows < "$WORK/rawsql.txt" > "$RAW"
 fi
 
 # Keep only well-formed rows; a psql error banner or a stray blank line must
@@ -571,16 +733,19 @@ MIXED="$WORK/mixed.txt"
 awk -F'|' '$3 == "PERMISSIVE" && $6 == "CROSS" && $5 ~ /app\.tenant_id/' "$ALL" > "$MIXED"
 MIXED_COUNT=$(count_lines "$MIXED")
 if [ "$MIXED_COUNT" -gt 0 ]; then
-  echo '--- UNBOUND TENANT SETTING: reads app.tenant_id but binds nothing to it ---'
+  echo '--- TENANT SETTING READ BUT NOT BOUND IN EVERY BRANCH ---'
   while IFS='|' read -r tbl pol perm cmd gucs scope; do
     [ -n "$tbl" ] || continue
-    err "$tbl.$pol reads app.tenant_id (settings: $gucs) but does not bind the row's tenant_id to it."
-    detail 'A predicate that reads the setting without constraining the column grants'
-    detail 'every row in the table to any caller who has a tenant set, while reading as'
-    detail 'tenant-scoped to anyone skimming for the name.'
-    detail 'It is being audited as a cross-tenant grant, which is what it is. Do NOT'
-    detail 'silence that by adding a ledger row: if the policy was meant to be'
-    detail 'tenant-scoped, the fix is a NEW migration binding tenant_id to the setting.'
+    warn "$tbl.$pol reads app.tenant_id (settings: $gucs) but does not bind tenant_id in EVERY top-level OR branch."
+    detail 'Two shapes land here. Either the predicate reads the setting and constrains'
+    detail 'nothing with it, or it binds in one branch and ORs past it in another. Both'
+    detail 'hand rows to callers the name suggests they are withheld from.'
+    detail 'This is a WARNING, not an error, because the shape can be deliberate -- a'
+    detail 'NULL-tenant row that every tenant must see is a real design. What is NOT'
+    detail 'optional is recording it: the policy is audited as the cross-tenant grant it'
+    detail 'is, so it needs a ledger row, and the ledger check above errors until it has'
+    detail 'one. If it was instead meant to be tenant-scoped, do not write that row --'
+    detail 'the fix is a NEW migration binding tenant_id in every branch.'
   done < "$MIXED"
   echo
 fi
