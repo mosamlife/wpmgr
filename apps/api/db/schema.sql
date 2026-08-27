@@ -12,8 +12,30 @@
 -- as "unprotected" — the opposite of the truth, in the direction that costs a
 -- tenant boundary. GH #470 declared 11 RESTRICTIVE site_scope policies here
 -- that had been live in every database since m19 and were absent from this
--- file. Others are still missing, for tables this file does not declare at
--- all; see apps/api/db/rls-cross-tenant-policies.txt and
+-- file.
+--
+-- THE RECONCILIATION IS NOT FINISHED, and here is exactly what is left, so
+-- nobody has to rediscover it. 21 tables are absent from this file altogether,
+-- and 54 live policies with them. THIRTEEN of those 54 are RESTRICTIVE
+-- site_scope gates — the same kind just added, most of them from the same m19:
+--
+--   agent_activity_log      agent_diagnostics       agent_login_events
+--   agent_php_errors        restore_runs            restore_run_events
+--   scan_runs               scan_findings           scan_run_hashes
+--   site_backup_settings    site_error_config       site_login_brand
+--   site_security_config
+--
+-- restore_runs and restore_run_events are on the restore path. Every one of
+-- these gates IS live in the database; the gap is in this file's description
+-- of reality, not in the tenant boundary itself.
+--
+-- Closing it means transcribing 13 whole table definitions, not 13 policy
+-- statements, which is a different and much larger job than #470 took on — and
+-- one with no verification as strong as the shadow-install-and-compare used
+-- for the 11 above. It is deliberately left, not overlooked.
+--
+-- Do not use this file to answer "is this table site-scoped". Use
+-- apps/api/db/rls-cross-tenant-policies.txt and
 -- scripts/check-rls-cross-tenant.sh, which reconcile against a live
 -- pg_policies rather than against this text.
 --
