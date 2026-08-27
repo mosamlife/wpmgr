@@ -209,9 +209,58 @@ if should_run "$NAME"; then
   printf 'psql: error: connection to server failed\nFATAL: database does not exist\n' > "$WORK/e-junk"
   write_ledger "$WORK/l5"
   run_guard "$WORK/e-junk" "$WORK/l5"
-  # A psql error banner on stdout must never be counted as a policy row.
+  # A psql error banner on stdout must never be counted as a policy row. All
+  # rows malformed is the extreme case of the partial-drop check above, so it
+  # is caught there and the banner itself is echoed back to the operator.
   want_rc "$NAME" 2 &&
-    want_says "$NAME" '0 well-formed rows' &&
+    want_says "$NAME" 'but only 0 parsed as policies' &&
+    want_says "$NAME" 'connection to server' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='partial: a few malformed rows among good ones exits 2, not a quiet skip'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-partial"
+  printf 'this line is not a policy row\nneither|is|this\n' >> "$WORK/e-partial"
+  write_ledger "$WORK/l-partial"
+  run_guard "$WORK/e-partial" "$WORK/l-partial"
+  # The guard used to drop unparseable rows silently and fail only when EVERY
+  # row was malformed. Two junk lines on a 240-row extraction printed
+  # "Extracted 239 policies" and passed -- one policy gone from a
+  # tenant-boundary audit, unreported. Announcing success over its own errors,
+  # inside the guard written to stop exactly that.
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'but only' &&
+    want_says "$NAME" 'were not audited' &&
+    want_says "$NAME" 'this line is not a policy row' &&
+    want_silent_about "$NAME" 'OK: every cross-tenant policy' &&
+    pass "$NAME"
+fi
+
+NAME='partial: a single dropped row is enough to exit 2'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-one"
+  # A plausible near-miss rather than obvious junk: lowercase command mode.
+  printf 'smtp_settings|smtp_settings_mailer|PERMISSIVE|all|app.agent|CROSS\n' >> "$WORK/e-one"
+  write_ledger "$WORK/l-one"
+  run_guard "$WORK/e-one" "$WORK/l-one"
+  want_rc "$NAME" 2 &&
+    want_says "$NAME" 'smtp_settings_mailer' &&
+    pass "$NAME"
+fi
+
+NAME='partial: trailing blank lines are not counted as dropped rows'
+if should_run "$NAME"; then
+  write_extract "$WORK/e-blank"
+  printf '\n\n   \n' >> "$WORK/e-blank"
+  write_ledger "$WORK/l-blank"
+  run_guard "$WORK/e-blank" "$WORK/l-blank"
+  # psql and shell redirection both leave trailing newlines. Treating those as
+  # lost policies would redden every honest run, which gets a guard switched
+  # off.
+  want_rc "$NAME" 0 &&
+    want_says "$NAME" 'every cross-tenant policy is recorded' &&
     pass "$NAME"
 fi
 

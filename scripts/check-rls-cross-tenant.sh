@@ -276,7 +276,25 @@ trap cleanup_container EXIT INT TERM
 
 extract_from_url() {
   command -v psql >/dev/null 2>&1 || broken "psql is not installed; the extraction cannot run and must not be skipped."
-  psql "$1" -A -t -v ON_ERROR_STOP=1 -c "$EXTRACT_SQL" 2>/dev/null
+  # psql's stderr is captured rather than discarded, and its exit status is
+  # checked. Both matter for the operator, not for correctness: without them an
+  # unreachable database, a bad password or a missing relation all arrived here
+  # as an empty result and were reported as "produced 0 well-formed rows",
+  # which fails closed but sends the reader looking for a policy problem that
+  # does not exist. A gate that cannot reach its input should say so.
+  local err_file out rc
+  err_file="$(mktemp "${TMPDIR:-/tmp}/wpmgr-rls-psql.XXXXXX")" || return 1
+  out=$(psql "$1" -A -t -v ON_ERROR_STOP=1 -c "$EXTRACT_SQL" 2>"$err_file")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'GUARD BROKEN: could not read pg_policies from the database (psql exit %d).\n' "$rc" >&2
+    sed 's/^/  /' "$err_file" >&2
+    rm -f "$err_file"
+    printf 'GUARD BROKEN: this is a gate that could not reach its input, not a clean result.\n' >&2
+    exit 2
+  fi
+  rm -f "$err_file"
+  printf '%s\n' "$out"
 }
 
 extract_from_container() {
@@ -343,22 +361,48 @@ trap cleanup_all EXIT INT TERM
 
 ALL="$WORK/all.txt"
 
+RAW="$WORK/raw.txt"
+WELLFORMED='^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$'
+
 if [ "$MODE" = 'analyse' ]; then
   [ -f "$EXTRACT_FILE" ] || broken "no extraction file at $EXTRACT_FILE."
-  # Keep only well-formed rows; a psql error banner or a stray blank line must
-  # not be counted as a policy.
-  grep -E '^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$' \
-    "$EXTRACT_FILE" > "$ALL"
+  cp "$EXTRACT_FILE" "$RAW"
 else
   # Deliberately NOT `do_extract | grep ... > "$ALL"`. A pipeline puts
   # do_extract in a subshell, which is how this leaked a postgres container on
   # every run; it would also swallow the exit status of the extraction itself.
-  do_extract > "$WORK/raw.txt"
-  grep -E '^[a-z_0-9]+\|[^|]+\|(PERMISSIVE|RESTRICTIVE)\|[A-Z]+\|[^|]*\|(TENANT|CROSS)$' \
-    "$WORK/raw.txt" > "$ALL"
+  do_extract > "$RAW"
 fi
 
+# Keep only well-formed rows; a psql error banner or a stray blank line must
+# not be counted as a policy.
+grep -E "$WELLFORMED" "$RAW" > "$ALL"
+
 TOTAL=$(count_lines "$ALL")
+
+# EVERY dropped row is accounted for. This guard used to filter silently and
+# fail only when EVERY row was malformed, so appending two junk lines to a real
+# 240-row extraction printed "Extracted 239 policies" and passed -- one policy
+# vanished from a tenant-boundary audit and nothing said so.
+#
+# That is this project's signature defect ("announcing success over its own
+# errors") occurring one level up, inside the guard written to stop it. A
+# policy this guard cannot parse is a policy it is not auditing, and an audit
+# that quietly skips rows is worth less than no audit, because it is believed.
+#
+# So: any discrepancy between the non-blank input and what parsed is fatal.
+RAW_ROWS=$(grep -c '[^[:space:]]' "$RAW" 2>/dev/null)
+[ -n "$RAW_ROWS" ] || RAW_ROWS=0
+if [ "$RAW_ROWS" -ne "$TOTAL" ]; then
+  printf 'GUARD BROKEN: %d non-blank line(s) in the extraction, but only %d parsed as policies.\n' \
+    "$RAW_ROWS" "$TOTAL" >&2
+  printf 'The %d line(s) below were not audited. A policy this guard cannot parse is a\n' \
+    "$((RAW_ROWS - TOTAL))" >&2
+  printf 'policy it is not checking, and silently skipping it is the defect this guard exists to catch.\n' >&2
+  grep -v -E "$WELLFORMED" "$RAW" | grep '[^[:space:]]' | sed 's/^/  /' >&2
+  exit 2
+fi
+
 if [ "$TOTAL" -eq 0 ]; then
   broken "the policy extraction produced 0 well-formed rows."
 fi
