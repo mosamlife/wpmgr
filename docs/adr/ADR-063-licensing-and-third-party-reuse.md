@@ -36,24 +36,34 @@ Two licence files exist in the tracked tree, and no more. The command, and what
 it returned when this ADR was written:
 
 ```sh
-git ls-files | grep -iE '(^|/)LICENSE' \
-  | grep -c . \
-  || { echo "FAIL: no tracked LICENSE file matched -- moved or renamed, which is not 'unlicensed'" >&2; exit 1; }
+n=$(git ls-files | grep -icE '(^|/)LICENSE')
+[ "$n" -eq 2 ] \
+  || { echo "FAIL: expected exactly 2 tracked LICENSE files, found $n -- a moved, renamed or newly added licence file all change this ADR's premise" >&2; exit 1; }
+echo "$n"
 #   2
 ```
 
 Re-run it rather than trusting the figure; a third licence file appearing is
-exactly the event this ADR needs someone to notice. The refusal on zero is
-deliberate for the standing reason: `grep … | wc -l` takes its exit status from
-`wc`, so a renamed path prints `0` and exits `0`, and "this repository has no
-licence" is not a claim to arrive at by accident.
+exactly the event this ADR needs someone to notice, and the assertion above
+now fails on that event too, not only on zero. `grep -c` alone already refused
+to read a renamed path as "unlicensed" for the standing reason: `grep … | wc
+-l` takes its exit status from `wc`, so a renamed path prints `0` and exits
+`0`, and "this repository has no licence" is not a claim to arrive at by
+accident. It did not, on its own, refuse a *third* file the same way — a count
+above 2 still printed and returned success. The `-eq 2` above closes that gap.
 
 **The root `LICENSE` is AGPL-3.0, and it covers `apps/api`.**
 
 ```sh
-grep -nE 'GNU AFFERO GENERAL PUBLIC LICENSE|Version 3, 19 November 2007' LICENSE | head -2
-#   1:                    GNU AFFERO GENERAL PUBLIC LICENSE
-#   2:                       Version 3, 19 November 2007
+exp1='                    GNU AFFERO GENERAL PUBLIC LICENSE'
+exp2='                       Version 3, 19 November 2007'
+got1=$(sed -n '1p' LICENSE); got2=$(sed -n '2p' LICENSE)
+[ "$got1" = "$exp1" ] && [ "$got2" = "$exp2" ] \
+  || { echo "FAIL: LICENSE's opening two lines no longer read as the AGPL-3.0 title block -- got '$got1' / '$got2'" >&2; exit 1; }
+echo "$got1"
+echo "$got2"
+#                     GNU AFFERO GENERAL PUBLIC LICENSE
+#                        Version 3, 19 November 2007
 ```
 
 There is no separate licence file under `apps/api/`, so the root file governs it,
@@ -63,17 +73,27 @@ carve-out below does not name.
 **`LICENSE-AGENT` is MIT, and it covers `apps/agent` and `apps/tracker`.**
 
 ```sh
-grep -nE '^MIT License|^Applies to:|^The rest of this repository' LICENSE-AGENT
-#   1:MIT License
-#   5:Applies to: apps/agent (WordPress plugin) and apps/tracker (JS web-vitals).
-#   6:The rest of this repository is licensed under AGPL-3.0 (see LICENSE).
+exp1='MIT License'
+exp5='Applies to: apps/agent (WordPress plugin) and apps/tracker (JS web-vitals).'
+exp6='The rest of this repository is licensed under AGPL-3.0 (see LICENSE).'
+got1=$(sed -n '1p' LICENSE-AGENT); got5=$(sed -n '5p' LICENSE-AGENT); got6=$(sed -n '6p' LICENSE-AGENT)
+[ "$got1" = "$exp1" ] && [ "$got5" = "$exp5" ] && [ "$got6" = "$exp6" ] \
+  || { echo "FAIL: LICENSE-AGENT's title or carve-out lines changed -- got '$got1' / '$got5' / '$got6'" >&2; exit 1; }
+printf '%s\n%s\n%s\n' "$got1" "$got5" "$got6"
+#   MIT License
+#   Applies to: apps/agent (WordPress plugin) and apps/tracker (JS web-vitals).
+#   The rest of this repository is licensed under AGPL-3.0 (see LICENSE).
 ```
 
 `NOTICE.md` states the same split in one sentence:
 
 ```sh
-grep -n 'control plane is AGPL' NOTICE.md
-#   3:WPMgr's control plane is AGPL-3.0; the WordPress agent is MIT-licensed. See the
+exp3="WPMgr's control plane is AGPL-3.0; the WordPress agent is MIT-licensed. See the"
+got3=$(sed -n '3p' NOTICE.md)
+[ "$got3" = "$exp3" ] \
+  || { echo "FAIL: NOTICE.md line 3 no longer states the AGPL/MIT split -- got '$got3'" >&2; exit 1; }
+echo "$got3"
+#   WPMgr's control plane is AGPL-3.0; the WordPress agent is MIT-licensed. See the
 ```
 
 **This split is an owner ruling, not an inference from the files above: the
@@ -85,31 +105,81 @@ cannot enter the MIT-licensed agent without relicensing the whole plugin**, and
 relicensing a plugin already listed on wordpress.org under MIT is a strategic
 change to a public listing, not a dependency bump.
 
-**The plugin as distributed currently declares two different licences**, which
-is the contradiction that made the ruling above necessary to write down rather
-than assume. The wordpress.org listing page says GPLv2-or-later:
+**The plugin's tracked source declares two different licences**, which is the
+contradiction that made the ruling above necessary to write down rather than
+assume. `apps/agent/readme.txt`, the wordpress.org listing page, says
+GPLv2-or-later:
 
 ```sh
-grep -nE '^License' apps/agent/readme.txt
+exp8='License: GPLv2 or later'
+exp9='License URI: https://www.gnu.org/licenses/gpl-2.0.html'
+got8=$(sed -n '8p' apps/agent/readme.txt); got9=$(sed -n '9p' apps/agent/readme.txt)
+[ "$got8" = "$exp8" ] && [ "$got9" = "$exp9" ] \
+  || { echo "FAIL: readme.txt:8-9 no longer read as expected -- got '$got8' / '$got9'" >&2; exit 1; }
+printf '%s\n%s\n' "$got8" "$got9"
+#   License: GPLv2 or later
+#   License URI: https://www.gnu.org/licenses/gpl-2.0.html
+```
+
+while `apps/agent/wpmgr-agent.php`, the plugin header, says MIT:
+
+```sh
+exp10=' * License:           MIT'
+exp11=' * License URI:       https://opensource.org/licenses/MIT'
+got10=$(sed -n '10p' apps/agent/wpmgr-agent.php); got11=$(sed -n '11p' apps/agent/wpmgr-agent.php)
+[ "$got10" = "$exp10" ] && [ "$got11" = "$exp11" ] \
+  || { echo "FAIL: wpmgr-agent.php:10-11 no longer read as expected -- got '$got10' / '$got11'" >&2; exit 1; }
+printf '%s\n%s\n' "$got10" "$got11"
+#    * License:           MIT
+#    * License URI:       https://opensource.org/licenses/MIT
+```
+
+That is two different strings in two tracked files a user reads side by side.
+It was never a licence violation in the tracked source — MIT permits
+redistributing under a GPL-compatible licence, so the readme's line is not
+false, only misleading next to the header — but **the split is worse on the
+distributed artifact than the tracked tree alone shows.** `Makefile`'s
+`agent-zip-wporg` target, which builds the zip actually uploaded to
+wordpress.org, force-rewrote the staged plugin header's `License` field to
+`GPLv2 or later` on every build, independent of what `wpmgr-agent.php` said.
+Downloading and grepping the published zip confirms the consequence:
+
+```sh
+curl -sL 'https://downloads.wordpress.org/plugin/fleet-agent-site-manager.zip' -o /tmp/fasm.zip
+unzip -p /tmp/fasm.zip fleet-agent-site-manager/fleet-agent-site-manager.php | grep -nE '^ \* License'
+unzip -p /tmp/fasm.zip fleet-agent-site-manager/readme.txt | grep -nE '^License'
+#   10: * License:           GPLv2 or later
+#   11: * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 #   8:License: GPLv2 or later
 #   9:License URI: https://www.gnu.org/licenses/gpl-2.0.html
 ```
 
-while the plugin header says MIT:
+— version 0.61.146, checked when this revision was written: `GPLv2 or later`
+in *both* the header and `readme.txt`, internally consistent as shipped, and
+consistent with neither `LICENSE-AGENT` nor the ruling above. This was not a
+stale line someone forgot to edit; it was a deliberate build step, so fixing
+`readme.txt` alone would not have closed it — the next build would have
+silently overwritten a corrected MIT header back to GPLv2.
 
-```sh
-grep -nE '^ \* License' apps/agent/wpmgr-agent.php
-#   10: * License:           MIT
-#   11: * License URI:       https://opensource.org/licenses/MIT
-```
-
-That is two different strings in two files a user reads side by side. It was
-never a licence violation — MIT permits redistributing under a GPL-compatible
-licence, so the readme's line is not false, only misleading next to the header
-— but it is exactly the ambiguity that let the wrong premise in the Context
-section above go unchecked, and it is why F1 below is no longer left open for
-someone to rediscover: `readme.txt:8` and its restatement at `readme.txt:51`
-are being corrected to MIT, tracked in GH #547.
+**The owner has ruled: the agent is MIT.** GH #547 (PR #556, open as of this
+revision) fixes both halves: `readme.txt:8` and its restatement at `:51` are
+corrected to MIT, and the `agent-zip-wporg` header rewrite is removed so the
+build stops overriding whatever the source declares. The same PR adds
+`scripts/check-license-surfaces.sh` (`make check-licenses`, self-test `make
+check-licenses-test`), which reads every agent licence surface — the plugin
+header, both mu-plugin headers, `readme.txt`'s structured header and its
+Description prose, `composer.json`, `apps/agent/NOTICE.md`,
+`apps/agent/README.md`, `LICENSE-AGENT`, and the Makefile override itself —
+and fails if any is missing or any two disagree. That script, not the
+illustrative commands above, is the enforced, ongoing check that these
+surfaces continue to agree, the same role `scripts/check-version-surfaces.sh`
+already plays for version strings; running it against this tree confirms it
+catches both halves of the live bug at once (`Makefile rewrites the plugin
+header's License field during a build`, and `the agent declares more than one
+license`), exit 1. **Until PR #556 merges and a new agent release ships, the
+already-published wordpress.org zip stays `GPLv2 or later`, and every copy
+already distributed under it keeps that grant — a licence already given is
+not revocable by a later commit.** F1 below tracks what remains open.
 
 **The repository is public.** Public is not permissive: publishing source grants
 nothing beyond what the licence files grant, and it gives this project no
@@ -121,13 +191,22 @@ message, comment and committed document permanently visible.
 
 ## 2. What follows: the constraint is on the plugin, not on the control plane
 
-**Adding AGPL-3.0-or-later code to `apps/api` creates no new licence obligation.**
-The network clause extends copyleft past distribution to network interaction, and
-for a proprietary hosted service that is fatal — it would compel publication of
-the whole service. This service is already AGPL-3.0 and its source is already
-public, so the obligation is already discharged. This is the single most
-important licensing fact in this record and it points the opposite way from the
-one everybody expects.
+**Adding AGPL-3.0-or-later code to `apps/api` creates no new relicensing
+conflict.** The network clause (AGPL §13) extends copyleft past distribution
+to network interaction — a modified AGPL work must offer users who reach it
+over a network the same corresponding-source access a distributed copy would
+carry — and for a proprietary hosted service that would ordinarily be fatal,
+compelling publication of the whole service's source. `apps/api` is already
+AGPL-3.0 and its source is already public, so §13's network-interaction duty
+already applies to the service as a whole; a new AGPL-3.0-or-later dependency
+does not make that duty apply where it did not apply before. This is the
+single most important relicensing fact in this record and it points the
+opposite way from the one everybody expects. **It does not waive the ordinary
+obligations that travel with any dependency regardless of relicensing risk**:
+retain the package's own notice text and add it to `NOTICE.md`, per §3's
+ADOPT UPSTREAM disposition below, and where §13's second paragraph combines
+in a GPL-3.0-licensed (not AGPL) component, that component keeps its own
+GPL-3.0 terms rather than being absorbed into `apps/api`'s AGPL-3.0.
 
 **Adding GPL-2.0-or-later or AGPL code to `apps/agent` relicenses the plugin.**
 MIT is permissive; a copyleft dependency makes the combined distributed work
@@ -157,6 +236,12 @@ An architecture that keeps the MCP surface in the control plane and lets the age
 keep speaking the existing signed-command protocol is therefore also the cheapest
 licensing outcome, and the two arguments do not depend on each other.
 
+**This section supplies one of F2's two independent arguments; it does not
+settle F2.** Whether the MCP surface ships at all, and which of F2's three
+options builds it, is the owner's ruling below — this section explains why
+option (b) is the cheapest licensing outcome, not that (b) has already been
+chosen.
+
 The point of writing this down is narrower than it looks: it stops a licence
 consideration from being discovered *by* a `composer require` in the agent's
 `composer.json`, at which point the change has already been made and the argument
@@ -177,13 +262,25 @@ that exists independently of wherever it was first seen.
 - Check the licence against the **destination** first, per §2. MIT and BSD are
   fine anywhere. GPL-2.0-or-later and AGPL are fine in `apps/api` and are a
   relicensing event in `apps/agent`.
-- Retain the package's own notice text, and add an entry to `NOTICE.md` **and**
-  the third-party section of `apps/agent/readme.txt` in the same PR. The existing
-  `matthiasmullie/minify` entries in both files are the template.
-- Where an independently-licensed artifact is taken and modified, mark it with a
-  sidecar file naming the upstream and its SPDX identifier. Apache-2.0 also
-  requires stating significant changes in modified files, and a sidecar satisfies
-  both obligations in one place.
+- Retain the package's own notice text, and add an entry to the root
+  `NOTICE.md` in the same PR. If the package is bundled inside the plugin zip
+  (added to `apps/agent`), also add it to `apps/agent/NOTICE.md` and to the
+  Third-party/Credits section of `apps/agent/readme.txt` — that section is the
+  public wordpress.org listing of what the zip actually contains, and it
+  already states plainly that nothing else is bundled, so an entry there is a
+  claim about the zip, not about what the control plane uses. A control-plane-
+  only dependency the agent merely calls into (the RUCSS Go libraries recorded
+  only in the root `NOTICE.md` are the standing example) stops at that one
+  entry; listing it in `apps/agent/readme.txt` would misdescribe the zip.
+  `matthiasmullie/minify` — recorded in all three files because it is actually
+  bundled — is the template for a bundled dependency.
+- Where an independently-licensed artifact is taken and modified, mark it with
+  a sidecar file naming the upstream and its SPDX identifier — that covers
+  provenance and, for Apache-2.0, the §4(d) NOTICE-file attribution
+  obligation. It does not cover Apache-2.0 §4(b): that section requires the
+  modified file itself to carry a prominent notice that it was changed, which
+  a sidecar elsewhere cannot do on the file's behalf. Add that notice inside
+  the modified file, in addition to the sidecar, not instead of it.
 - Never copy a package out of a local reference tree. Fetch it from its own
   upstream, so what is in the lockfile is what the upstream published.
 
@@ -228,8 +325,15 @@ protocol to `security-reviewer` regardless of how small it looks.
 A note on porting, because it is the shape most likely to be mistaken for
 reimplementation: **a translation is a derivative work.** Rewriting somebody's PHP
 as Go line by line carries the original's licence with it. Reading it to
-understand what it does, then writing Go that behaves the same way, does not. The
-difference is whether the source is open next to yours while you type.
+understand what it does, then writing Go that behaves the same way, reduces
+that risk — it does not eliminate it by itself. Structure, naming and the
+sequence of operations can themselves carry protected expression even when no
+line is copied, and how close a resulting implementation can safely land is
+fact-specific, not a line this document can draw in advance. The difference
+between the two ends of this spectrum is whether the source is open next to
+yours while you type; the middle of it is a judgement call, and rule 7 in §5
+— ask before writing the code — is what to do with an uncertain case, not an
+assumption that the practice alone clears it.
 
 ### DO NOT USE
 
@@ -322,8 +426,11 @@ documentation, carries no licence to attribute in the first place.
 1. **Check the licence against the destination before adding any dependency.**
    `apps/agent` is MIT and a copyleft dependency relicenses it. `apps/api` is
    AGPL-3.0 and has no such conflict.
-2. **Add every new dependency to `NOTICE.md` and to `apps/agent/readme.txt`'s
-   third-party section in the same PR**, following the existing entries.
+2. **Add every new dependency to the root `NOTICE.md` in the same PR.** If it
+   is bundled inside the plugin zip, also add it to `apps/agent/NOTICE.md` and
+   to `apps/agent/readme.txt`'s Third-party/Credits section — that page lists
+   what ships in the zip, not what the control plane uses. Follow the existing
+   entries, per §3.
 3. **Take libraries from their own upstream**, never out of a local reference
    copy.
 4. **Never name a competitor product as a source of design or code** — in code,
@@ -364,17 +471,24 @@ documentation, carries no licence to attribute in the first place.
 
 **F1 — the agent declared two different licences. Ruled; fix in flight.** The
 plugin header said `MIT` (`apps/agent/wpmgr-agent.php:10`) and the wordpress.org
-listing said `GPLv2 or later` (`apps/agent/readme.txt:8`, restated at `:51`).
-This was never a violation — MIT permits redistribution under a GPL-compatible
-licence, so the readme's line was an accurate statement of what the distributed
-*package* was offered under — but it left "can GPL code enter the agent"
-unanswerable, because the answer flips depending on which licence is taken as
-true. **The owner has ruled: the agent is MIT.** §1 above states the ruling and
-its consequence as settled fact. The one remaining step is mechanical, not a
-decision: correcting `readme.txt:8` and `:51` to match, tracked in GH #547 and
-routed to `wp-agent-engineer` for the plugin files and `docs-writer` for the
-listing text. This item stays open only until that PR merges and the public
-listing shows the corrected licence; the ruling itself is closed.
+listing said `GPLv2 or later` (`apps/agent/readme.txt:8`, restated at `:51`) —
+and the published zip's header agreed with the listing, not with the tracked
+source, because `Makefile`'s `agent-zip-wporg` target was rewriting it to
+`GPLv2 or later` on every build. This was never a violation — MIT permits
+redistribution under a GPL-compatible licence, so what actually shipped was an
+accurate, internally consistent statement of what that *distributed package*
+was offered under — but it left "can GPL code enter the agent" unanswerable,
+because the answer flips depending on which licence is taken as true. **The
+owner has ruled: the agent is MIT.** §1 above states the ruling and its
+consequence as settled fact. What remains is mechanical, not a decision: GH
+#547 (PR #556, open as of this revision) corrects `readme.txt:8` and `:51`,
+removes the build-time header rewrite, and adds
+`scripts/check-license-surfaces.sh` so the surfaces cannot drift apart again
+unnoticed. This item stays open until that PR merges *and* a new agent release
+publishes a zip that shows the corrected licence throughout — the currently
+live wordpress.org zip stays `GPLv2 or later` until then, and copies already
+distributed under it keep that grant regardless of when the fix ships. The
+ruling itself is closed.
 
 **F2 — keeping the MCP surface out of the plugin for licence reasons.** §2 sets
 out why this is also the architecture already chosen, but the *decision* has three
@@ -405,8 +519,9 @@ been made by whoever was in a hurry.
   verify it. A future planning pass that reasons from a remembered premise can be
   checked against this in one command rather than one argument.
 - The MIT/AGPL split is now ratified in an ADR rather than living only in
-  `LICENSE-AGENT` and `NOTICE.md`; GH #547 brings `apps/agent/readme.txt` into
-  agreement with it, closing the one file that still contradicted the ruling.
+  `LICENSE-AGENT` and `NOTICE.md`; GH #547 (PR #556) brings `apps/agent/readme.txt`
+  and the `agent-zip-wporg` build step into agreement with it, and
+  `scripts/check-license-surfaces.sh` keeps them from drifting apart again.
 - Adding a dependency to `apps/agent` acquires a mandatory licence check against
   MIT. This is a small cost paid on every dependency bump, and it is the only
   mechanism that catches the relicensing case before it ships.
@@ -415,8 +530,10 @@ been made by whoever was in a hurry.
 - §4 gives an engineer a three-way test — fact, method, or source — for the
   question that comes up more often than a new dependency: what may be taken
   from reading a competing plugin. It also states, rather than leaves implied,
-  that GPL-family source cannot be compliantly copied into this repository at
-  all, because attribution and the anti-naming rule cannot both be satisfied.
+  that *competitor*-sourced GPL-family material cannot be compliantly copied
+  into this repository at all, because attribution and the anti-naming rule
+  cannot both be satisfied — a narrower claim than blocking GPL-family reuse
+  generally, which §3 already permits in `apps/api`.
 - Rule 4 (§5) now states the integration-target exemption explicitly, matching
   what `ci.yml` already enforces and documents in its own preamble. A newly
   accepted rule that its own sibling ADR breaches in the same PR is the kind
