@@ -44,6 +44,7 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 060 | Phase order: safety and truth before capability | Accepted (amended 2026-08-27) | 2026-08-18 | [ADR-060-phase-order-safety-before-capability.md](./ADR-060-phase-order-safety-before-capability.md) |
 | 061 | Assistant surface, Phase 1: control-plane server and out-of-band approval | Accepted | 2026-08-22 | [ADR-061-assistant-surface-phase-1.md](./ADR-061-assistant-surface-phase-1.md) |
 | 062 | Assistant surface, Phase 2: governed fleet content operations | Proposed | 2026-08-27 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
+| 064 | Governed per-site and organisation context | Proposed | 2026-08-27 | [ADR-064-governed-site-org-context.md](./ADR-064-governed-site-org-context.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
@@ -72,10 +73,11 @@ Two files don't fit any of the three and are findings, not table artifacts:
 ## Numbering
 
 Numbers are allocated in this file and are never reused, including the ones
-below that have no file. **The next free number is 063.**
+below that have no file. **The next free number is 065.**
 
 | Number(s) | What happened |
 |---|---|
+| 063 | Claimed by an open, unmerged PR (#554, `docs/adr-063-licensing-and-third-party-reuse`) at the time ADR-064 landed: licensing and third-party reuse. No file on `main` yet, so ADR-064 was filed ahead of it rather than reused once it lands — run `gh pr view 554 --json files -q '.files[].path'` to confirm what that PR currently adds. ADR-062 (previously grouped with 063 in this row, both originally proposed together under the now-superseded #519) has since landed on `main` with its own file and no longer needs an entry here. |
 | 034 | Reserved, no `docs/adr/` file and no entry in `DECISIONS.md`. Subject: the M5.6 restore engine (staged-prefix DB restore, atomic file/directory swap, the restore state-machine driver and its watchdog). Cited from: `apps/api/internal/backup/service.go:797`, `apps/api/internal/agentcmd/backup_contract.go:347`, `apps/agent/includes/commands/class-restore-command.php:3`, `apps/agent/includes/backup/class-restore-runner.php:3`, and dozens more across `apps/agent/includes/backup/**`, `apps/api/internal/backup/**` and their tests — run `git grep -n 'ADR-034'` for the complete set. Reserved, never reused. |
 | 035 | Reserved — a gap with no file, no `DECISIONS.md` entry, and (like 058) no citation found anywhere: not in the tracked tree (`git grep -n "ADR-035"`), not in any commit message (`git log --all --grep="ADR-035"`), and not in any historical diff (`git log --all -S"ADR-035"`) — all three came back empty at the time this index was written. Reserved and never reused regardless. |
 | 036 | Reserved, no `docs/adr/` file and no entry in `DECISIONS.md`. Subject: the M7 storage-adapter / backup-destination foundation and the URL rewriter. Cited from: `apps/api/migrations/20260530000001_m7_site_destinations.sql:1`, `apps/api/migrations/20260530010000_m7_url_rewriter.sql:1`, `apps/agent/includes/backup/destinations/class-backup-destination.php:3`, `docs/adr/ADR-037-wpmgr-feature-parity-roadmap.md:5,17,98` (ADR-037 itself cites it as a separate doc), and dozens more across `apps/agent/includes/backup/**`, `apps/api/internal/backup/**`, `apps/api/internal/sitedestination/**` and generated OpenAPI code — run `git grep -n 'ADR-036'` for the complete set. Reserved, never reused. |
