@@ -147,27 +147,41 @@
 #   scripts/check-rls-cross-tenant.sh --extract > /tmp/policies.txt
 #   scripts/check-rls-cross-tenant.sh --from-extract /tmp/policies.txt
 #
-# WHERE THIS RUNS, and the boundary between the two halves.
+# WHERE THIS RUNS. Both halves gate every PR, in the same job.
 #
 #   make check-rls-cross-tenant-test  -> the self-test. Hermetic: it builds its
 #     own synthetic extraction and ledger, needs no database, and proves the
-#     guard's LOGIC. ci.yml runs it on every PR, as its own step inside the
-#     Security audit job, and ahead of the live reconciliation wherever both
-#     run -- so a broken guard fails the build rather than passing by failing
-#     open. Same pattern and same reason as
-#     scripts/check-version-surfaces_test.sh, which sits a few steps above it.
+#     guard's LOGIC. Runs first, so a broken guard fails the build rather than
+#     passing by failing open. Same pattern and same reason as
+#     scripts/check-version-surfaces_test.sh.
 #
 #   make check-rls-cross-tenant       -> the live reconciliation. Applies every
-#     migration to a throwaway Postgres and reads real pg_policies, so it needs
-#     Docker. That runs in .github/workflows/api-integration.yml, next to the
-#     other RLS proofs that already need a database.
+#     migration to a throwaway Postgres and reads real pg_policies, so it
+#     needs Docker.
 #
-# WHAT THAT MEANS IN PRACTICE: the self-test gates every PR; the LIVE check
-# does NOT, because api-integration.yml is manual-dispatch only -- the same
-# standing limitation the m112 site-scope proofs already carry. So CI proving
-# the guard's logic is sound is not CI proving THIS repository's policies
-# reconcile. Run `make check-rls-cross-tenant` locally, or dispatch that
-# workflow, before merging anything that adds or narrows an RLS policy.
+# ci.yml runs both, as two steps of one job (`RLS cross-tenant guard (live)`),
+# unconditionally on every PR and every push -- no path filter, because a
+# path-filtered job that later becomes a required status check can leave a PR
+# pending forever the moment the filter skips it. Measured on a developer
+# machine (`time scripts/check-rls-cross-tenant.sh`) at about 23 seconds for
+# the live half, throwaway Postgres and all 129 migrations included, plus
+# about 5 seconds for the self-test -- cheap enough that there was no case for
+# leaving it off every PR. Read a CI run's own step timing for the current
+# number; a hand-copied one here would go stale the way this section's
+# previous "gates every PR; the live check does not" claim did (GH #470's own
+# CI-wiring follow-up).
+#
+# THIS USED TO BE SPLIT: only the self-test ran on every PR (inside ci.yml's
+# Security audit job); the live half ran only in
+# .github/workflows/api-integration.yml, which is workflow_dispatch only, so a
+# PR adding an unrecorded cross-tenant policy could merge without the live
+# reconciliation ever running. That workflow's copy of this job has been
+# removed as redundant now that ci.yml runs the live check on every PR
+# unconditionally -- dispatching api-integration.yml no longer bought any
+# coverage ci.yml had not already produced on the same commit.
+#
+# `make check-rls-cross-tenant` still works locally the same way, for anyone
+# who wants the result before pushing.
 #
 # WHERE THE DATABASE COMES FROM, in order:
 #   1. $WPMGR_RLS_DATABASE_URL, if set -- an already-migrated database.
@@ -355,10 +369,11 @@ ORDER BY 1;
 #
 # A fixed container name and a fixed host port make two overlapping runs fight:
 # the second `docker run` fails on the name, and the cleanup trap of whichever
-# finishes first removes the other's database out from under it. That stopped
-# being hypothetical when the guard landed in two workflows -- ci.yml runs the
-# self-test and api-integration.yml runs the live check -- and it is just as
-# easy to hit locally by running `make check-rls-cross-tenant` in two shells.
+# finishes first removes the other's database out from under it. That is not
+# hypothetical: ci.yml runs this guard on every push, so two PRs' runs, or a
+# PR's run alongside a direct push to a branch, land on the same runner
+# fleet at once, and it is just as easy to hit locally by running
+# `make check-rls-cross-tenant` in two shells.
 # A fixed port also collides with anything already on it, including this
 # repo's own compose stack, and that failure surfaces as "postgres never
 # became ready" rather than "your port is busy".
