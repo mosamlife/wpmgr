@@ -5,8 +5,8 @@ Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
 Stable tag: 0.61.146
-License: GPLv2 or later
-License URI: https://www.gnu.org/licenses/gpl-2.0.html
+License: MIT
+License URI: https://opensource.org/licenses/MIT
 
 Securely connects this site to a WPMgr dashboard, self-hosted or hosted, so backups, updates, security and speed all run from one screen.
 
@@ -48,7 +48,7 @@ Cache purge reaches the layer in front of WordPress too, detected automatically:
 
 The expensive work runs on the dashboard rather than on your server: unused-CSS computation, image and font encoding, vulnerability matching against a managed feed, uptime probing and site screenshots.
 
-This plugin is GPLv2 or later and the dashboard is AGPL-3.0. Source for both: https://github.com/mosamlife/wpmgr
+This plugin is MIT-licensed and the dashboard is AGPL-3.0. Source for both: https://github.com/mosamlife/wpmgr
 
 == Installation ==
 
