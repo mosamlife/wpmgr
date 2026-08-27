@@ -18,20 +18,46 @@ gets re-proposed every planning cycle by whoever has not read the reasoning.
 That instinct was right. The reasoning underneath it was not, and revisiting
 it is the point of this document.
 
-**Its premise was a fact about this repository, and that half is still
-true.** No post, page, block, taxonomy or menu write path exists in the
-control plane or in the agent today. Re-verified this pass, directly against
-the agent's own command list rather than against a description of it:
+**Its premise was a fact about this repository regarding content
+*authoring*, and that half is still true — no command treats a post as a
+structured object, composes a headline, or edits a block tree. The
+verification method that supported it was not strong enough, and is
+corrected here rather than quietly kept.** An earlier draft of this pass
+checked the premise by grepping command *filenames* for content-shaped
+words, which is a check on naming, not on behaviour, and it has exactly the
+blind spot naming checks have:
 
 ```sh
-ls apps/agent/includes/commands/ | grep -iE "post|page|content|block|meta"
+grep -n "SearchReplaceCommand()" apps/agent/includes/class-plugin.php
+grep -n "colName === 'guid'" apps/agent/includes/commands/class-search-replace-command.php
 ```
 
-The only hit is `class-metadata-command.php`, and reading it settles the
-question: it collects site inventory — WP and PHP version, active theme,
-every installed plugin and theme with its version, the multisite flag — for
-the control plane's `/agent/v1/metadata` endpoint. It is not a post or page
-content path. Nothing in the command list is a content verb.
+`class-plugin.php:2123` registers `SearchReplaceCommand` in the same
+dispatch table as every other signed command, and
+`class-search-replace-command.php` names none of `post`, `page`, `content`,
+`block`, or `meta` — so it does not appear in a filename grep. Run with
+`dry_run=false` and no table allowlist, it issues `UPDATE` statements over
+arbitrary WordPress tables and, per its own excludes, skips `posts.guid` and
+binary-typed columns but not `post_content`: a matching substring inside a
+post's content is rewritten like any other column value. This is a real,
+dispatchable write path that touches `post_content` today, and the filename
+grep above would not have found it.
+
+**What the premise actually rests on, restated precisely: nothing in this
+agent's command list authors or edits content as content.**
+`search_replace` is not that — it is a blind, table-wide byte substitution
+built for one purpose, rewriting URLs after a domain or path change, with no
+concept of a post, a field, a builder document, or what "the fifth
+paragraph" means; it cannot be aimed at a single post, cannot express "change
+this headline," and carries none of the governance this ADR proposes —
+no per-operation snapshot, no semantic verify, no scoped rollback, no
+builder awareness. That gap between "rewrites bytes wherever they occur" and
+"authors content" is exactly what this ADR exists to fill, and the two are
+not the same capability even though both can change what is stored in
+`post_content`. Reading it as evidence that a content-authoring path already
+exists would be a misreading; reading the earlier filename grep as proof
+that *no write path of any kind* touches `post_content` was, however, wrong,
+and is corrected above rather than left standing.
 
 **What Decision 7 drew from that premise was a claim about the market, and
 that half does not hold.** It concluded that building a content model to
@@ -137,16 +163,24 @@ for the parts it cannot.
   which is the one section of this ADR that exists because an earlier
   reasoning step got this wrong.
 - **`stage()`** — produces a preview from the staged copy the snapshot
-  already took. Never the live page. An operator approving a change is
-  looking at what the change will produce, not at the site as it currently
-  stands with an assertion layered on top.
+  already took, and records the live document's revision at the moment of
+  staging as part of the proposal. Never the live page. An operator
+  approving a change is looking at what the change will produce, not at the
+  site as it currently stands with an assertion layered on top.
 - **`validate()`** — semantic, not structural-only: does this document, as
   proposed, mean what the operation said it should mean, checked against the
   target builder's own rules (for Gutenberg, this is the block registry —
   see [Gutenberg validates server-side](#gutenberg-validates-server-side-and-never-through-a-browser)).
 - **`apply()`** — idempotent and keyed to the proposal, so a replayed
   `content_promote` against an already-applied proposal is a no-op rather
-  than a second write. A retry after a crash must never double-apply.
+  than a second write. **It also refuses, rather than applies, if the live
+  document's revision no longer matches the revision `stage()` recorded** —
+  a typed stale-proposal refusal naming the proposal, rather than silently
+  applying onto a document that changed underneath the preview a human
+  approved; the remedy is a fresh `content_stage`, not a forced apply. A
+  retry after a crash must never double-apply; the durable idempotency state
+  and the atomic claim mechanism that guarantee is built on are named as an
+  open question below, not invented here.
 - **`verify()`** — checked **from outside the site** wherever the operation
   produces something externally observable (a public page's rendered
   title, for instance); where nothing is externally observable, verify()
@@ -313,7 +347,12 @@ quietly fix: **the existing mechanism is not fail-closed, and its own
 documentation says so.**
 
 ```sh
-sed -n '255,260p' apps/agent/includes/commands/class-file-write-command.php
+f=apps/agent/includes/commands/class-file-write-command.php
+grep -Fq 'Errors are silenced' "$f" || {
+  echo "FAIL: expected fail-open backup documentation is missing" >&2
+  exit 1
+}
+sed -n '255,260p' "$f"
 ```
 
 ```
@@ -729,10 +768,15 @@ that won.
 ### What is created, and what it can do
 
 - **One WordPress user per site, created by the agent idempotently at
-  enrolment**, and re-created if it is found missing. It has no password, no
-  application password, no interactive login path and no session. It exists
-  to be the `current_user` for the duration of one signed content command
-  and nothing else.
+  enrolment, and re-created only as part of that same enrolment step if a
+  retry finds it missing.** Once enrolment has completed, discovering the
+  principal missing is never grounds for a content command to silently
+  recreate it — that path is closed below (see "It is deletable by the
+  site's own admin"), and this bullet describes enrolment-time idempotency
+  only, not a standing behaviour of `content_promote` or any other content
+  command. It has no password, no application password, no interactive login
+  path and no session. It exists to be the `current_user` for the duration of
+  one signed content command and nothing else.
 - **Its role is ours, not `editor` and not `administrator`.** It carries
   exactly the WordPress capabilities the enabled content commands need, and
   it never carries `manage_options`, `edit_users`, `install_plugins`,
@@ -823,7 +867,12 @@ performance argument for checking it only at creation.
 **It is deletable by the site's own admin, and that breaks content writes.**
 That is correct behaviour — the site owner is sovereign over their own
 users — and the failure must surface as a typed `principal_missing` refusal
-with a one-click recreate remedy. **Never a silent fallback to a different
+with a one-click recreate remedy. **`content_promote`, and every other
+content command, never recreates the principal itself on finding it
+missing.** Recreation happens only through the enrolment-time idempotent
+create described above, or through this explicit, operator-initiated remedy
+action — never as a side effect of a content command discovering the
+principal absent mid-flight. **Never a silent fallback to a different
 principal**: a write that quietly executes as somebody else is worse than a
 write that refuses.
 
