@@ -1,0 +1,257 @@
+-- m121 - GH #553: the site inventory gets an age of its own.
+--
+-- Adds ONE nullable column to sites: components_updated_at. Nothing is
+-- backfilled, nothing is dropped, no existing row is written, and no reader
+-- changes today. The API half (stamping as_of from this column instead of from
+-- sites.updated_at) is backend-architect's slice and lands after this one; a
+-- change spanning a migration and Go code is two agents in sequence.
+--
+-- ---------------------------------------------------------------------------
+-- THE DEFECT
+-- ---------------------------------------------------------------------------
+--
+-- GET /sites/{id}/updates answers "how fresh is this inventory?" with
+-- sites.updated_at (internal/site/handler.go, out.AsOf). sites.updated_at is
+-- bumped every 60 seconds by the heartbeat - TouchSiteHeartbeat,
+-- db/query/site_connection.sql:
+--
+--     UPDATE sites
+--     SET last_seen_at      = now(),
+--         missed_heartbeats = 0,
+--         updated_at        = now()
+--
+-- That statement never touches components. So as_of reports "when did this site
+-- last say hello", not "when was this inventory recorded", and the two are
+-- unrelated facts.
+--
+-- THE ERROR RUNS ONE WAY ONLY. It can overstate freshness and can never
+-- understate it, because updated_at is always >= any instant components was
+-- written. The failure that makes it concrete: a site's WP-Cron dies, so the
+-- agent's 30-minute metadata refresh stops and components freezes, while the
+-- heartbeat keeps working and updated_at keeps advancing. The dashboard then
+-- shows an inventory timestamp seconds old over plugin data that may be months
+-- stale. The connection sweeper does not catch it either - it degrades at 300s
+-- and disconnects at 900s on AGENT REACHABILITY, which is the one thing still
+-- healthy in that scenario. There is no control-plane-side inventory refresh at
+-- all; the refresh is entirely agent-driven.
+--
+-- A stale inventory is not cosmetic. It drives the update list an operator acts
+-- on, and it is the only source for any fleet-wide "how many of my sites run X
+-- at version Y" question. Such a number carries no defensible as-of today
+-- because the column that would date it does not exist.
+--
+-- ---------------------------------------------------------------------------
+-- DECISION 1: nullable, NO DEFAULT, NO BACKFILL. This is the whole migration.
+-- ---------------------------------------------------------------------------
+--
+-- Every existing row lands with components_updated_at = NULL, and NULL means
+-- exactly "we have never recorded when this inventory was collected". That is
+-- the truth for every row that exists when this applies, because the fact was
+-- never captured. It is not an inconvenience to be tidied away.
+--
+-- The three tempting backfills, and why each manufactures a measurement that
+-- was never taken:
+--
+--   updated_at    is the defect itself. Backfilling from it would write the
+--                 exact wrong number this migration exists to stop reporting,
+--                 and it would write it as though it were a real observation -
+--                 permanently, with no way for any later reader to tell a
+--                 backfilled guess from a genuine stamp.
+--   last_seen_at  is heartbeat liveness. Same substitution, same one-way error:
+--                 it says when the agent last spoke, not when it last sent an
+--                 inventory.
+--   now()         claims every site's inventory was collected at the instant
+--                 this migration ran. That is false for all of them and it is
+--                 maximally flattering: it would report the entire fleet as
+--                 perfectly fresh at boot, which is the single most misleading
+--                 value available.
+--
+-- All three are the GH #509 defect one table over. #509 is
+-- site_object_cache_stats.oc_latency_ms / oc_used_memory_bytes declared
+-- NOT NULL DEFAULT 0, which makes "no heartbeat has arrived yet" indistinguish-
+-- able from a genuine zero reading, so the panel renders 0.0 ms for a site that
+-- has never reported. The nullable sibling three lines down,
+-- oc_hit_ratio_pct numeric(5,2), renders as an absence, correctly, because it
+-- can actually be absent. #509 names the class: a default is right for a
+-- SETTING, a COUNTER or a FLAG, and wrong for an OBSERVATION. A default on an
+-- observation destroys the information before any layer above can see it, and
+-- no amount of care in the API or the dashboard recovers the distinction.
+--
+-- This column is an observation. It gets no default.
+--
+-- A reader that wants "unknown" rendered as something has to decide that in the
+-- API or the UI, where the decision is visible and reversible, not here where it
+-- would be baked into the stored bytes.
+--
+-- ---------------------------------------------------------------------------
+-- DECISION 2: what the value MEANS - control-plane write instant, not agent
+--             collection instant
+-- ---------------------------------------------------------------------------
+--
+-- The value is now() evaluated on the CONTROL PLANE at the moment it persisted
+-- the inventory document. It is NOT the instant the agent walked the plugin and
+-- theme list on the WordPress host.
+--
+-- The distinction is small in the normal case (the two are separated by one
+-- HTTP round trip) and it is not small when it matters: a queued or retried
+-- push, a clock-skewed host, or a future store-and-forward path would widen it
+-- without warning. The agent's metadata payload carries no collection timestamp
+-- today, so the collection instant is simply not knowable here. Writing now()
+-- and CALLING it the collection time would be the same class of manufacture
+-- DECISION 1 refuses, just with a smaller error bar.
+--
+-- Hence the name. components_updated_at says "when we last wrote this column",
+-- which is precisely what is true, and it matches the house convention for a
+-- when-did-we-last-look field (sites.host_provider_checked_at, m28). It
+-- deliberately is not components_collected_at, which would assert a fact about
+-- the remote host that the control plane does not have.
+--
+-- It is written on EVERY metadata push, whether or not the inventory document
+-- changed. That is intended and it is the point: "as of T this was the
+-- inventory" is a newer and truer statement than the previous stamp even when
+-- the plugin list is byte-identical. Freshness is about when the claim was last
+-- confirmed, not about when it last changed. A write-only-if-different rule
+-- would freeze the timestamp on a stable site and reinvent the staleness bug
+-- for exactly the fleet that is behaving correctly.
+--
+-- ---------------------------------------------------------------------------
+-- DECISION 3: a disconnecting site is LEFT ALONE - the stamp is not cleared,
+--             not flagged, and not advanced
+-- ---------------------------------------------------------------------------
+--
+-- GH #553 asks what happens when a site goes disconnected. The answer is
+-- nothing, and it is recorded here because the column outlives the issue and a
+-- later phase will be tempted to "clean up".
+--
+-- No connection transition touches this column. It goes stale, and its
+-- staleness is the signal: any reader computes now() - components_updated_at
+-- and gets the truth about this inventory regardless of connection_state.
+--
+-- The two alternatives, and why both are worse:
+--
+--   NULL IT ON DISCONNECT would erase a fact that really happened. "We recorded
+--   this inventory at T" does not stop being true when the agent goes away.
+--   Worse, it collapses "recorded three months ago" into "never recorded",
+--   which is DECISION 1's conflation running backwards - and it would do so
+--   while LEAVING components ITSELF POPULATED, since nothing clears that column
+--   on disconnect either. The result is undated inventory data: strictly worse
+--   than dated stale data, because stale-and-dated can be reasoned about and
+--   stale-and-undated cannot.
+--
+--   ADD A SEPARATE STALE FLAG would be a second column that can disagree with
+--   the first, for a question the first column already answers exactly. It is
+--   m117's monitoring_paused_at argument: one nullable timestamp carries both
+--   the fact and the when, and a flag plus a timestamp can drift apart. A
+--   threshold ("how old is too old?") is a policy that belongs in the layer that
+--   renders or alerts, where it can be tuned per caller, not frozen into a
+--   boolean at write time.
+--
+-- Re-enrollment (AttachAgentToSite) does not touch it either, for the same
+-- reason: that statement does not rewrite components, so the surviving
+-- inventory keeps its true, older stamp until the next metadata push replaces
+-- both together. The column and the data it dates always move as a pair.
+--
+-- GH #553 item 4 - a control-plane-side staleness signal, since a dead agent
+-- cron is currently invisible - is a real gap and is deliberately NOT closed
+-- here. It needs a sweep, a threshold and an alert route. This migration is the
+-- column that would make such a sweep possible; it is not the sweep.
+--
+-- ---------------------------------------------------------------------------
+-- DECISION 4: no index
+-- ---------------------------------------------------------------------------
+--
+-- Following m117's DECISION 2 rather than reflex. The only reader that exists
+-- after this lands is the per-site detail path, which finds its row by primary
+-- key and reads the column off it; an index on a column you have already
+-- fetched the row for is pure write cost. And sites is the hottest-written
+-- table in this schema - the heartbeat writes it per site per interval, and the
+-- sweeper, the prober and the metadata push all UPDATE it - so a needless index
+-- here is paid on every one of those.
+--
+-- The query that WOULD justify one is the fleet-wide staleness sweep DECISION 3
+-- defers. It does not exist, and when it does it will look like this schema's
+-- other fleet enumerations (ListEnrolledSitesAllTenants,
+-- ListEnrolledSitesForProbe, ListConnectedSiteIDsForScreenshot in
+-- db/query/sites.sql), which are uncapped whole-fleet sequential scans with no
+-- index on enrolled_at at all. A "stale inventory" predicate would match a
+-- LARGE fraction of rows by construction - that is what makes it worth
+-- alerting on - and a partial index matching most of the table is a full-size
+-- index wearing a WHERE clause.
+--
+-- Whoever adds that sweep should measure with EXPLAIN ANALYZE as wpmgr_app
+-- before adding an index, not assume one. Also note migrate.go runs each
+-- migration in a single transaction and therefore cannot use CREATE INDEX
+-- CONCURRENTLY, so any later index takes a real lock on a live sites table.
+--
+-- ---------------------------------------------------------------------------
+-- RLS: nothing to add, and this was read rather than assumed
+-- ---------------------------------------------------------------------------
+--
+-- Row-level security is ROW level: a policy admits or refuses a row, so every
+-- column on an admitted row is covered by the policies the table already
+-- carries. A new column on an existing table inherits them with no new policy
+-- and no new grant. sites already carries, verified against the migrations
+-- (which are authoritative for RLS - db/schema.sql is sqlc's input and lags
+-- badly; the two counts are in this change's report):
+--
+--   ENABLE + FORCE ROW LEVEL SECURITY        20260527115454_initial.sql:32-33
+--   sites_tenant_isolation   PERMISSIVE      20260527115454_initial.sql:34
+--   sites_enroll             PERMISSIVE      m2  (20260527172114:48)
+--   sites_agent              PERMISSIVE      m2  (20260527172114:51)
+--   sites_site_scope         RESTRICTIVE     m19 (20260531050000:330)
+--   sites_shared_read        PERMISSIVE      m22 (20260531100000:16)
+--   sites_client_read        PERMISSIVE      m66 (20260629000000:188)
+--
+-- FORCE is on, so the policies apply to the table owner too - the role the
+-- application connects as. The RESTRICTIVE sites_site_scope policy is the one
+-- m112's lesson is about, and sites has carried it since m19: a collaborator
+-- scoped to one site cannot read another site's row, so it cannot read another
+-- site's inventory age either. That policy is FOR ALL, so it constrains the
+-- metadata-push UPDATE that writes this column as well as reads of it.
+--
+-- No table is created here, so the site-keyed-table checklist (tenant_id + its
+-- index, ENABLE and FORCE, _tenant_isolation, _agent, RESTRICTIVE _site_scope)
+-- does not apply: sites IS the site table and already satisfies all of it.
+--
+-- There is nothing to GRANT. The grants on sites are table-level, and a
+-- table-level GRANT covers columns added later; there are no column-level
+-- grants anywhere on this table.
+--
+-- ---------------------------------------------------------------------------
+-- IDEMPOTENCE AND CONVERGE PATH
+-- ---------------------------------------------------------------------------
+--
+-- Fully idempotent - ADD COLUMN IF NOT EXISTS, the convention here for a column
+-- addition (m101, m103, m107, m108, m117). Nothing is dropped, no existing row
+-- is written, and there is no backfill to get wrong, so there is no m110/m111
+-- shape available to repeat. internal/db/migrate.go applies this inside main()
+-- at boot in one transaction, so a failure here is a control-plane outage on
+-- every install at once; the single statement below is a no-op on second
+-- application.
+--
+-- CONVERGE PATH: none is required, and this is a positive statement rather than
+-- an omission. No earlier version of this migration has ever been applied to any
+-- database. The ordinal 20260823000000 is new and unique - the highest ordinal
+-- on any ref at the time of writing was m120's 20260822000000 - it corrects no
+-- earlier migration, and it edits no applied file. An applied migration is
+-- immutable (migrate.go skips any version already in schema_migrations, so
+-- editing one is a silent no-op that looks like a fix); a correction would need
+-- a new ordinal plus a converge path, which is what m114 and m115 are. This is
+-- neither.
+
+-- ---------------------------------------------------------------------------
+-- The column
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE "public"."sites"
+    -- When the control plane last WROTE sites.components, whether or not the
+    -- document changed. NULL means "we have never recorded this" and is the
+    -- correct value for every row existing when m121 applies - no default and
+    -- no backfill, because a manufactured observation is worse than an admitted
+    -- absence (GH #509). NOT the instant the agent collected the inventory: the
+    -- payload carries no such timestamp, so that fact is not knowable here.
+    -- Written only by UpdateSiteMetadata (db/query/sites.sql), which is the only
+    -- statement in the tree that writes components. Deliberately NOT written by
+    -- the heartbeat, by any connection-state transition, or by re-enrollment -
+    -- see DECISION 3.
+    ADD COLUMN IF NOT EXISTS "components_updated_at" timestamptz NULL;

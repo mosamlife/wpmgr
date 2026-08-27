@@ -197,6 +197,23 @@ RETURNING *;
 -- name: UpdateSiteMetadata :one
 -- Tenant-scoped metadata update (used by the agent path inside the resolved
 -- site's own tenant scope).
+--
+-- m121 (GH #553): this is the ONLY statement in the tree that writes
+-- sites.components, so it is the only one that may write
+-- components_updated_at. Verified by grepping every db/query/*.sql and every
+-- raw UPDATE/INSERT on sites in non-test Go; the other two raw writers
+-- (diagnostics.UpdateSiteTimezone, diagnostics.SetSiteHostProvider) touch
+-- neither column. The two must move together: a write of components without
+-- its stamp re-creates the undated-inventory bug, and a write of the stamp
+-- without components would date an inventory that was not refreshed.
+--
+-- It is now() on the CONTROL PLANE, not the agent's collection instant, and it
+-- is written on every push even when the document is unchanged -- "as of T this
+-- was the inventory" is a truer statement than the previous stamp regardless.
+--
+-- NOTE FOR THE HEARTBEAT: TouchSiteHeartbeat (db/query/site_connection.sql)
+-- must NEVER add this column. Bumping updated_at on a 60s heartbeat that does
+-- not touch components is the whole of GH #553.
 UPDATE sites
 SET wp_version   = $3,
     php_version  = $4,
@@ -205,6 +222,7 @@ SET wp_version   = $3,
     active_theme = $7,
     agent_version = $8,
     components   = $9,
+    components_updated_at = now(),
     last_seen_at = now(),
     health_status = 'healthy',
     updated_at   = now()

@@ -608,6 +608,7 @@ type Site struct {
 	Multisite              bool               `json:"multisite"`
 	ActiveTheme            string             `json:"active_theme"`
 	Components             []byte             `json:"components"`
+	ComponentsUpdatedAt    pgtype.Timestamptz `json:"components_updated_at"`
 	Tags                   []string           `json:"tags"`
 	AgeRecipient           string             `json:"age_recipient"`
 	WpTimezone             string             `json:"wp_timezone"`
