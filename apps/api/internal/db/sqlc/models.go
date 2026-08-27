@@ -460,6 +460,19 @@ type Membership struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type OrgContextVersion struct {
+	ID                    uuid.UUID   `json:"id"`
+	TenantID              uuid.UUID   `json:"tenant_id"`
+	Version               int64       `json:"version"`
+	Restrictions          []byte      `json:"restrictions"`
+	Guidance              []byte      `json:"guidance"`
+	AuthorType            string      `json:"author_type"`
+	AuthorID              pgtype.UUID `json:"author_id"`
+	Provenance            string      `json:"provenance"`
+	RestoredFromVersionID pgtype.UUID `json:"restored_from_version_id"`
+	CreatedAt             time.Time   `json:"created_at"`
+}
+
 type PairingCode struct {
 	ID             uuid.UUID          `json:"id"`
 	TenantID       uuid.UUID          `json:"tenant_id"`
@@ -690,6 +703,20 @@ type SiteConnectionHistory struct {
 	Generation  int32       `json:"generation"`
 	OccurredAt  time.Time   `json:"occurred_at"`
 	Metadata    []byte      `json:"metadata"`
+}
+
+type SiteContextVersion struct {
+	ID                    uuid.UUID   `json:"id"`
+	TenantID              uuid.UUID   `json:"tenant_id"`
+	SiteID                uuid.UUID   `json:"site_id"`
+	Version               int64       `json:"version"`
+	Restrictions          []byte      `json:"restrictions"`
+	Guidance              []byte      `json:"guidance"`
+	AuthorType            string      `json:"author_type"`
+	AuthorID              pgtype.UUID `json:"author_id"`
+	Provenance            string      `json:"provenance"`
+	RestoredFromVersionID pgtype.UUID `json:"restored_from_version_id"`
+	CreatedAt             time.Time   `json:"created_at"`
 }
 
 type SiteDbCleanResult struct {
