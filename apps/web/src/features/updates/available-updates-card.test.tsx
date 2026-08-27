@@ -215,13 +215,14 @@ describe("AvailableUpdatesCard as_of honesty (GH #553)", () => {
 
     // Distinct from FreshnessBadge's generic "Never", which would wrongly
     // assert this site's inventory was never collected -- it was, we just
-    // don't have a genuine collection time for it yet.
-    const unknownCopy = screen.getAllByText(/inventory age unknown/i);
-    expect(unknownCopy.length).toBeGreaterThan(0);
+    // don't have a genuine collection time for it yet. Exactly once: the
+    // header owns this state, the empty-state block below must not repeat it
+    // (a site with no updates renders both regions at once).
+    expect(screen.getAllByText(/inventory age unknown/i)).toHaveLength(1);
     expect(screen.queryByText(/^Never$/)).not.toBeInTheDocument();
 
     // States what resolves it, in operator terms, with no raw field names.
-    expect(screen.getAllByText(/next sync/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/next sync/i)).toHaveLength(1);
     expect(screen.queryByText(/as_of/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/components_updated_at/i)).not.toBeInTheDocument();
   });
@@ -231,5 +232,74 @@ describe("AvailableUpdatesCard as_of honesty (GH #553)", () => {
     renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
 
     expect(screen.queryAllByText(/inventory age unknown/i).length).toBe(0);
+  });
+
+  // The header is the single owner of the freshness/age claim: it is the
+  // only place that renders in every query state (loading, error, loaded),
+  // so a second copy in the "all managed components are up to date" block
+  // would either duplicate it or, worse, drift from it.
+  it("shows the unknown-age copy exactly once even when the empty state also renders", () => {
+    setup(payload({ as_of: null, items: [], core_update: null }), null);
+    renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+
+    // Sanity: this is genuinely the empty-state branch.
+    expect(
+      screen.getByText("All managed components are up to date"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/inventory age unknown/i)).toHaveLength(1);
+  });
+
+  // A query that is still loading has not established anything about the
+  // inventory yet -- not its age, and not whether it is unknown. Claiming
+  // "unknown, clears after next sync" here would be a guess dressed up as a
+  // fact, the same failure mode this whole fix is about, just earlier.
+  it("makes no age claim while the query is still loading", () => {
+    mockedUseAvailableUpdates.mockReturnValue(
+      mockQueryResult<SiteAvailableUpdates>({
+        data: undefined,
+        isPending: true,
+        isSuccess: false,
+        status: "pending",
+      }),
+    );
+    mockedUseRefresh.mockReturnValue(mockMutationResult<void, void>({}));
+    mockedUseSiteAgentUpdate.mockReturnValue(null);
+    renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+
+    expect(screen.queryByText(/inventory age unknown/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/inventory age unavailable/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Never$/)).not.toBeInTheDocument();
+  });
+
+  // A failed request never loaded the inventory at all -- not the list, not
+  // an age for it. That is a different fact from "we have the inventory but
+  // not its collection time" (the unknown-age case above), and "clears after
+  // the next sync" is actively wrong advice here: a sync is not what fixes a
+  // request that did not load.
+  it("shows a distinct unavailable state, never the unknown-age copy, when the request itself fails", () => {
+    mockedUseAvailableUpdates.mockReturnValue(
+      mockQueryResult<SiteAvailableUpdates>({
+        data: undefined,
+        isPending: false,
+        isError: true,
+        isSuccess: false,
+        status: "error",
+        error: new Error("network down"),
+      }),
+    );
+    mockedUseRefresh.mockReturnValue(mockMutationResult<void, void>({}));
+    mockedUseSiteAgentUpdate.mockReturnValue(null);
+    renderWithProviders(<AvailableUpdatesCard siteId="site-1" />);
+
+    expect(screen.getByText(/inventory age unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/inventory age unknown/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/next sync/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Never$/)).not.toBeInTheDocument();
+
+    // The body's own load-failure message still owns the "why" -- the header
+    // state above says only that no age is available, not says why twice.
+    expect(
+      screen.getByText("Could not load available updates"),
+    ).toBeInTheDocument();
   });
 });
