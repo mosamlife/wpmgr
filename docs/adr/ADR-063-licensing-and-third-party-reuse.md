@@ -507,7 +507,7 @@ distributed under it keep that grant regardless of when the fix ships. The
 ruling itself is closed.
 
 **F2 — keeping the MCP surface out of the plugin for licence reasons.** §2 sets
-out why this is also the architecture already chosen, but the *decision* has three
+out why option (b) is the recommended architecture, but the *decision* has three
 real options and the owner picks one:
 
 - **(b) Keep the entire MCP surface in `apps/api`** and let the agent keep
