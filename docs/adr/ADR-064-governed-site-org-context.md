@@ -170,21 +170,44 @@ inbound facts report supersedes the previous one wholesale at the version
 level, because a fact is a snapshot of what was observed, not an
 accumulating record the agent itself is trusted to reconcile.
 
+**This materialised cache never holds layer 6.** Only layers this ADR's
+storage actually sees — the versioned rows of layers 2 and 3, and the
+agent's own versioned fact reports (layer 4) — ever participate in it;
+session context (layer 6) is, by the Vocabulary section's own definition,
+never persisted, so it is structurally excluded from any cache keyed on
+stored version numbers, not merely excluded by convention. The
+model-facing assembly path takes the materialised (or freshly resolved)
+layers 1 through 5 and 7 as one input and the calling run's own live
+session state as a second, separate input, and unions the two at call
+time; no cached artifact is ever shared between two runs' session content,
+because no cached artifact ever contains session content in the first
+place.
+
 ---
 
 ## Decision 3 — Storage: tenant-scoped, append-only versions, and two kinds of field
 
 Context lives in two tenant-scoped tables, shaped alike: one keyed to an
-organisation (layer 2), one keyed to a site (layer 3, itself scoped to the
-site's organisation the way every other site-owned row in this codebase
-is). Neither table is ever updated or deleted in place. A write inserts a
-new version row carrying the full resulting snapshot, the version number,
-the author's principal id, a provenance tag (manual edit, restore, or a
-later machine-assisted import if one is ever built), and a timestamp. "The
+organisation (layer 2), one keyed to a site (layer 3). Neither table is
+ever updated or deleted in place. A write inserts a new version row
+carrying the full resulting snapshot, the version number, the author's
+principal id, a provenance tag (manual edit, restore, or a later
+machine-assisted import if one is ever built), and a timestamp. "The
 current context" is defined as "the latest version row for that
 organisation or site" — a read, not a separate mutable row — so restoring
 or diffing history never has two representations of the present to keep in
 sync.
+
+**The site table's tenant scope is stamped per version row, not derived
+live from the site's current owner.** Every other site-owned row in this
+codebase is scoped by a live foreign key to `site.organisation_id`, correct
+because those rows have no history to protect: the row means "as of now,"
+and "now" tracks whoever currently owns the site. A context version row
+means "as of when this was written," so it stores the organisation id that
+owned the site *at the time of that write*, set once and never rewritten by
+a later transfer. Decision 12 depends on this: it is what lets a transfer
+reset the site's active context without also retroactively reassigning
+authorship of everything written before it.
 
 Fields on both tables split into two kinds, and the split is load-bearing
 for Decision 4:
@@ -219,16 +242,46 @@ recognises.
 
 The more important half of this decision is where the check actually lives.
 **A widening attempt on a restriction field is rejected at the write path,
-not silently dropped at read time.** If a site-level edit would remove,
-loosen, or contradict a restriction the organisation's layer-2 policy set,
-the write fails outright, with a reason naming the restriction and the
-layer that set it, and no new version is created. The alternative — accept
-the edit, and simply have the read-time resolver ignore the part that
-overreached — is the shape this project's own working agreements name as
-its signature defect: a failure quietly coerced into a value that looks
-like success. An editor who typed a rejected restriction and got a green
-save screen would have no way to know their edit did nothing where it
-mattered most.
+not silently dropped at read time — at every writable layer, against every
+layer above it, not only against the nearest one.** A site-level edit is
+checked against both its organisation's layer-2 policy and WPMgr's layer-1
+policy; an organisation-level edit is checked against WPMgr's layer-1
+policy. WPMgr's layer-1 policy is not a row in either context table
+(Decision 3 names exactly two, for layers 2 and 3) — it is the same fixed,
+structured restriction set this Decision's read-time walk already applies
+first, and the write path loads and checks the proposed snapshot against
+that same set rather than against a database row, so the absence of a
+layer-1 table row is not the absence of a layer-1 check. Any one of these
+checks failing fails the write outright, with a reason naming the
+restriction and the layer that set it, and no new version is created. The
+alternative — accept the edit, and simply have the read-time resolver
+ignore the part that overreached — is the shape this project's own working
+agreements name as its signature defect: a failure quietly coerced into a
+value that looks like success. An editor who typed a rejected restriction
+and got a green save screen would have no way to know their edit did
+nothing where it mattered most.
+
+**Restrictions must reach enforcement, not merely storage.** Decision 11
+quarantines the full resolved context, restrictions included, inside a
+fence where "nothing... can grant a tool call, alter a capability, or
+change what the model is permitted to do" — which means a restriction that
+only ever reaches the model as fenced prose has no mechanical force of its
+own; a model that disregarded it would not be tripping anything the
+control plane could detect. Restrictions therefore reach enforcement
+through a second, independent path from the write-time check described
+above: the same tool-dispatch chokepoint that already computes the
+capability and tool registry a request may use (ADR-061 Decisions 5 and 6)
+consults this Decision's resolved restriction set before invocation, as an
+additional deny input alongside the capability grant it already checks —
+not as something the model is trusted to honour after reading it. A tool
+call or write that a resolved restriction forbids is refused at dispatch,
+with a typed reason naming the restriction and the layer that set it, the
+same shape Decision 13's `409` already uses for a blocked context write;
+it is never permitted and merely left unreported. This is what makes
+Decision 3's restrictions/guidance split load-bearing rather than
+cosmetic: restrictions are the subset of context a chokepoint outside the
+model's own compliance actually consults before the model can act, and
+guidance is not, and is never claimed to be.
 
 ---
 
@@ -336,6 +389,18 @@ time either one changed, and an operator reading a preview that no longer
 matches what the model actually receives is worse off than an operator with
 no preview at all, because they would believe they had checked something
 they had not.
+
+**The preview never carries live session content, because none exists at
+preview time.** A preview request is operator-initiated from the
+dashboard, independent of any running assistant session, so layer 6 has
+nothing to contribute when it is called — the preview resolves and
+displays layers 1 through 5 and 7, with layer 6 shown as not applicable
+outside a live run. This is the same resolution function the model-facing
+path calls (above), called with an empty layer-6 input; it is not a
+different function or a second code path for the no-session case, and it
+is the reason Decision 2's materialised cache can be keyed on layers 1
+through 5 and 7 alone (see Decision 2) without ever needing to account for
+which run is asking.
 
 ---
 
@@ -448,7 +513,8 @@ organisation or site is removed, via the path above. An independent
 retention window for context history, if ever wanted, is a separate
 decision, not one this ADR invents speculatively.
 
-**Site transfer clears the site layer.** When a site moves to a different
+**Site transfer clears the site layer, and seals — never deletes — the
+history written before it.** When a site moves to a different
 organisation, its layer-3 row is reset to empty; the site inherits only
 layers 1 and 2 of the organisation it now belongs to. Site-level context was
 authored under the old organisation's brand and policy assumptions, and
@@ -457,6 +523,34 @@ organisation wrote or reviewed — this is an authorship-integrity concern,
 not tidiness. The cleared version is itself a version (author: the transfer
 operation, provenance: `transfer`), so the reset is auditable and the prior
 organisation's history remains attributed to it rather than disappearing.
+
+That attribution is a mechanism here, not only a record. Because every
+version row's organisation id is stamped at write time and never rewritten
+(Decision 3), the transfer's own cleared version is the first row stamped
+with the destination organisation, and every row before it stays stamped
+with the source organisation permanently. Decision 13's history routes
+authorize list, item, diff, and restore against a version row's *stamped*
+organisation, not against the site's current one, so a
+destination-organisation principal — however much fleet visibility it has
+over the site going forward — can list, view, or diff only versions
+stamped with its own organisation id, starting at the transfer. Pre-transfer
+versions are **retained, never deleted**: the same append-only, no-TTL
+posture the Retention paragraph above already takes for everything else in
+this history, for the same reason — an auditor asking what a site's
+context said on a date before the transfer must still get a truthful
+answer. But they are **sealed, not merely access-reduced**: `restore` on a
+pre-transfer version id is refused outright and unconditionally, for every
+caller, including a principal in the original authoring organisation,
+because this ADR has already decided the destination's active context
+starts empty, and a restore that reintroduced pre-transfer text would
+silently reopen the exact authorship-integrity gap clearing the layer was
+meant to close. The source organisation's own access to those rows ends
+the same way its access to the rest of the site does on transfer — through
+the ordinary `context.site.read`/`write` capability check in Decision 6,
+which already requires access to the specific site and which transfer
+already revokes — so sealing pre-transfer history from the destination
+introduces no new access-control mechanism beyond stamping the column
+correctly and checking it at every read.
 
 **Multisite.** A managed WordPress installation is already one WPMgr site
 record regardless of whether that installation is itself a WordPress
@@ -481,7 +575,7 @@ All of the following are routes on the existing, already-authenticated
 dashboard API — not the externally-reachable assistant surface from
 ADR-061. See Relationship, below, for why that placement matters.
 
-```
+```http
 GET    /api/v1/orgs/{orgId}/context                              current org context (layer 2)
 PATCH  /api/v1/orgs/{orgId}/context                               partial field write -> new version
 GET    /api/v1/orgs/{orgId}/context/versions                     paginated history
@@ -505,6 +599,12 @@ GET    /api/v1/sites/{siteId}/context/effective                    Decision 8's 
 latest version's full snapshot to build the new version's snapshot, so
 history and diff always operate on complete snapshots rather than deltas
 of deltas.
+
+For a site, the list, item, and diff history routes are additionally
+scoped to versions stamped with the site's current organisation once a
+transfer has occurred (Decision 12): a pre-transfer version is retained
+but excluded from all three. `restore` against a pre-transfer version id
+is refused unconditionally, for any caller.
 
 Error contracts, all with a machine-readable reason code:
 
@@ -628,7 +728,9 @@ ad hoc, document by document, by whichever ADR needs the exemption next.
 This document proceeds on the reading above for its own purposes, but does
 not treat that reading as binding on any future ADR; a later document
 claiming the same exemption should point at an ADR-060 amendment, not at
-this paragraph.
+this paragraph. **That amendment does not exist yet, and until it does this
+document can be merged and read as Proposed but cannot move to Accepted**
+— see Open questions, below.
 
 This ADR's vocabulary leans on ADR-061 Decision 3, correctly attributed:
 that decision draws the line between control-plane-derived facts, which
@@ -727,7 +829,17 @@ explicitly rather than drift into it unannounced.
   asserted not to contain the matched text; a site-level edit that would
   remove an organisation-set restriction is rejected, and the prior version
   is asserted unchanged; a forced audit-append failure is asserted to leave
-  no new context version committed.
+  no new context version committed; a tool call that a resolved restriction
+  forbids is refused at dispatch even when the fenced context the model was
+  handed contained no hint of the restriction's wording (Decision 4); after
+  a simulated site transfer, a principal in the destination organisation can
+  list and diff only post-transfer versions, and any restore of a
+  pre-transfer version id is refused for every caller, source organisation
+  included (Decision 12); two concurrent runs against the same site,
+  supplied with different layer-6 session inputs, resolve to different
+  effective context and neither run's session content appears in the
+  other's result or in the cached layers either one reads (Decision 2 and
+  Decision 8).
 - `make test-integration` coverage of tenant scoping on both new tables,
   run before merge — context is exactly the shape of tenant-scoped data
   ADR-061 Decision 4 already found this codebase gets wrong by default when
@@ -746,3 +858,34 @@ explicitly rather than drift into it unannounced.
   `apps/api/internal/audit/audit.go` is best-effort today
   (`apps/api/internal/audit/audit.go:498-500`), and no fail-closed variant
   exists for this ADR's transaction or for ADR-061's approval path either.
+
+---
+
+## Open questions
+
+Named and owned, rather than answered with an invented mechanism this
+document has not earned the right to assert. Neither blocks merging this
+ADR as Proposed; both block it moving to **Accepted**.
+
+1. **What "surface" means for ADR-060's freeze clause.** Relationship,
+   above, argues Decision 13's routes are not gated by ADR-060's freeze
+   clause, but states plainly that this is this document's interpretation
+   of a term ADR-060 leaves undefined, not a settled reading, and that a
+   reading meant to bind later ADRs belongs in a superseding ADR-060
+   amendment, not in this one. That amendment does not exist yet.
+   **Owner:** whoever holds ADR-060 next (its author or a designated
+   successor). **Resolution:** a change to ADR-060, not to this document —
+   this ADR does not re-argue the point further and is not the place to
+   settle it.
+2. **Concurrency control on `PATCH` (Decision 13).** `PATCH` applies a
+   partial field set onto the latest version's snapshot. Two concurrent
+   `PATCH` calls touching disjoint fields can both read version N and both
+   succeed, and the later write's snapshot will not carry whichever fields
+   the earlier write changed unless the later caller happened to resend
+   them too. Whether to require a client-supplied base version, an `ETag`,
+   or an equivalent conditional-write mechanism, and what the reason code
+   and response shape for a stale write look like, is an HTTP-contract
+   choice this ADR does not carry — recording that the choice is
+   unmade is this ADR's job; the wire format is not. **Owner:**
+   `backend-architect`, to decide and land before Decision 13's `PATCH`
+   routes are built, not discovered after a concurrent-write incident.
