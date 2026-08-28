@@ -249,7 +249,13 @@ type layerContributionDTO struct {
 	// means the load succeeded, whatever it found — including nothing, which
 	// is then a verified, known-empty result. See LayerContribution's doc
 	// comment (model.go).
-	FactsUnavailable bool   `json:"facts_unavailable,omitempty"`
+	// No omitempty: this field exists specifically to distinguish "known
+	// false" (facts loaded successfully, this site genuinely has none) from
+	// absence. With omitempty, false is never emitted, so the wire could not
+	// tell "known empty" apart from "an older server" or "the field got
+	// dropped somewhere in the DTO mapping" — the exact conflation this field
+	// was added to prevent, recreated one layer up.
+	FactsUnavailable bool   `json:"facts_unavailable"`
 	Session          string `json:"session,omitempty"`
 	Bytes            int    `json:"bytes"`
 	Truncated        bool   `json:"truncated"`

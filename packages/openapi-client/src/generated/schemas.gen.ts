@@ -15068,7 +15068,15 @@ export const GovContextDiffSchema = {
 
 export const GovContextLayerContributionSchema = {
   type: "object",
-  required: ["layer", "name", "restrictions", "guidance", "bytes", "truncated"],
+  required: [
+    "layer",
+    "name",
+    "restrictions",
+    "guidance",
+    "facts_unavailable",
+    "bytes",
+    "truncated",
+  ],
   properties: {
     layer: {
       type: "integer",
@@ -15105,7 +15113,7 @@ export const GovContextLayerContributionSchema = {
     facts_unavailable: {
       type: "boolean",
       description:
-        'Populated only for layer 4. true means layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never to be read as "this site has no facts". false (or absent) means the load succeeded, whatever it found, including a verified, known-empty result.',
+        'Always present (never omitted, even when false — the field exists specifically to distinguish "known false" from absence). Meaningful for layer 4 only; false on every other layer. true means layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never to be read as "this site has no facts". false means the load succeeded, whatever it found, including a verified, known-empty result.',
     },
     session: {
       type: "string",

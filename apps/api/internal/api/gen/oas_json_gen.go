@@ -65538,10 +65538,8 @@ func (s *GovContextLayerContribution) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
-		if s.FactsUnavailable.Set {
-			e.FieldStart("facts_unavailable")
-			s.FactsUnavailable.Encode(e)
-		}
+		e.FieldStart("facts_unavailable")
+		e.Bool(s.FactsUnavailable)
 	}
 	{
 		if s.Session.Set {
@@ -65635,9 +65633,11 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"facts\"")
 			}
 		case "facts_unavailable":
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
-				s.FactsUnavailable.Reset()
-				if err := s.FactsUnavailable.Decode(d); err != nil {
+				v, err := d.Bool()
+				s.FactsUnavailable = bool(v)
+				if err != nil {
 					return err
 				}
 				return nil
@@ -65688,7 +65688,7 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [2]uint8{
-		0b10001111,
+		0b10101111,
 		0b00000001,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {

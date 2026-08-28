@@ -23307,10 +23307,12 @@ type GovContextLayerContribution struct {
 	Guidance     GuidanceSet    `json:"guidance"`
 	// Populated only for layer 4 (detected site facts).
 	Facts OptNilGovContextLayerContributionFacts `json:"facts"`
-	// Populated only for layer 4. true means layer 4 could not be loaded (no facts source wired, or the
-	// load failed) — an unknown state, never to be read as "this site has no facts". false (or absent)
-	// means the load succeeded, whatever it found, including a verified, known-empty result.
-	FactsUnavailable OptBool `json:"facts_unavailable"`
+	// Always present (never omitted, even when false — the field exists specifically to distinguish
+	// "known false" from absence). Meaningful for layer 4 only; false on every other layer. true means
+	// layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never
+	// to be read as "this site has no facts". false means the load succeeded, whatever it found, including
+	// a verified, known-empty result.
+	FactsUnavailable bool `json:"facts_unavailable"`
 	// Populated only for layer 6 (session context). Always empty on the effective-context preview
 	// (Decision 8).
 	Session   OptString `json:"session"`
@@ -23344,7 +23346,7 @@ func (s *GovContextLayerContribution) GetFacts() OptNilGovContextLayerContributi
 }
 
 // GetFactsUnavailable returns the value of FactsUnavailable.
-func (s *GovContextLayerContribution) GetFactsUnavailable() OptBool {
+func (s *GovContextLayerContribution) GetFactsUnavailable() bool {
 	return s.FactsUnavailable
 }
 
@@ -23389,7 +23391,7 @@ func (s *GovContextLayerContribution) SetFacts(val OptNilGovContextLayerContribu
 }
 
 // SetFactsUnavailable sets the value of FactsUnavailable.
-func (s *GovContextLayerContribution) SetFactsUnavailable(val OptBool) {
+func (s *GovContextLayerContribution) SetFactsUnavailable(val bool) {
 	s.FactsUnavailable = val
 }
 
