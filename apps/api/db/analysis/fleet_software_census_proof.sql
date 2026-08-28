@@ -473,6 +473,36 @@ BEGIN
     SELECT ships_plugin::int + ships_theme::int * 2 INTO got FROM census_target_kinds WHERE target = 'Beaver Builder';
     IF got <> 3 THEN fail := fail || format('Beaver Builder must be classified plugin+theme (expected 3), got %s; ', got); END IF;
 
+    -- ---- Zero-adoption targets must be PRINTED, not dropped ---------------
+    -- census_adoption is driven from the target list with a LEFT JOIN, so a
+    -- target nobody runs still gets a row. An inner join against census_hits
+    -- would drop it, and then "nobody runs Oxygen" and "the Oxygen slug is
+    -- wrong and never matched anything" become indistinguishable.
+    --
+    -- These are deliberately NOT tenant-scoped: census_adoption aggregates
+    -- fleet-wide by construction, so the properties asserted here are the
+    -- structural ones, which hold whatever else the database contains.
+    SELECT count(*) INTO got FROM census_adoption;
+    IF got <> (SELECT count(DISTINCT target) FROM census_targets) THEN
+        fail := fail || format('census_adoption must have exactly one row per configured target (%s), got %s -- a target is being dropped or duplicated; ',
+                               (SELECT count(DISTINCT target) FROM census_targets), got);
+    END IF;
+
+    -- Oxygen is a configured target that no fixture installs. It must appear.
+    SELECT count(*) INTO got FROM census_adoption WHERE target = 'Oxygen';
+    IF got <> 1 THEN fail := fail || format('zero-adoption target Oxygen must still appear exactly once, got %s rows; ', got); END IF;
+
+    SELECT sites_active INTO got FROM census_adoption WHERE target = 'Oxygen';
+    IF got <> 0 THEN fail := fail || format('Oxygen should have 0 active sites, got %s; ', got); END IF;
+
+    -- ...and it must carry a real denominator, or the 0 is unreadable: "0 of 0"
+    -- says nothing, "0 of 10 that could have reported it" is a finding.
+    SELECT denom_sites INTO got FROM census_adoption WHERE target = 'Oxygen';
+    IF got IS NULL OR got = 0 THEN fail := fail || format('zero-adoption target must still carry its applicable denominator, got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_adoption WHERE denom_sites IS NULL OR ships_as IS NULL OR sites_active IS NULL;
+    IF got <> 0 THEN fail := fail || format('%s census_adoption row(s) have NULL where a LEFT JOIN should have COALESCEd to 0; ', got); END IF;
+
     -- ---- Exclusions and parsing -------------------------------------------
     -- The archived site carried an active Elementor. If it leaked in, the
     -- Elementor count above would be 4.

@@ -288,6 +288,7 @@ SELECT * FROM (VALUES
 -- pick a denominator per target instead of one global one.
 CREATE OR REPLACE TEMP VIEW census_target_kinds AS
 SELECT target,
+       min(category)            AS category,
        bool_or(kind = 'plugin') AS ships_plugin,
        bool_or(kind = 'theme')  AS ships_theme
 FROM census_targets
@@ -359,6 +360,59 @@ SELECT f.id, f.tenant_id, f.multisite, f.inventory_provably_stale, f.inventory_a
            ELSE 'Gutenberg (no builder present)'
        END AS bucket
 FROM census_fleet f;
+
+-- Per-target adoption. Section 4 reports this and the proof harness asserts
+-- against it, for the same reason census_classified is a view.
+--
+-- IT IS DRIVEN FROM census_target_kinds, NOT FROM census_hits, and the join is a
+-- LEFT JOIN. A target with no installations anywhere produces no hit rows, so an
+-- inner join silently DROPS it from the report -- and then "nobody runs Oxygen"
+-- and "the Oxygen slug is wrong and matched nothing" look identical, which is
+-- this project's signature defect wearing a report's clothes. A zero is a
+-- finding and it has to be printed. Every configured target therefore appears
+-- exactly once, with its applicable denominator and 0% where that is the answer.
+CREATE OR REPLACE TEMP VIEW census_adoption AS
+WITH denom AS (
+    SELECT count(*) FILTER (WHERE has_plugin_inventory)                        AS plugin_denom,
+           count(*) FILTER (WHERE has_theme_inventory)                         AS theme_denom,
+           count(*) FILTER (WHERE has_plugin_inventory OR has_theme_inventory)  AS either_denom
+    FROM census_fleet
+),
+per_target AS (
+    SELECT h.target,
+           count(DISTINCT h.site_id) FILTER (WHERE h.active)                    AS sites_active,
+           count(DISTINCT h.site_id) FILTER (WHERE NOT h.active)                AS sites_installed_inactive,
+           count(DISTINCT h.site_id)                                            AS sites_installed_any,
+           count(DISTINCT h.site_id) FILTER (WHERE h.active AND h.inventory_provably_stale) AS active_but_provably_stale,
+           count(DISTINCT h.site_id) FILTER (WHERE h.active AND NOT h.inventory_age_known)  AS active_age_unknown,
+           count(DISTINCT h.site_id) FILTER (WHERE h.multisite)                 AS on_multisite
+    FROM census_hits h
+    GROUP BY h.target
+),
+sized AS (
+    SELECT k.category,
+           k.target,
+           CASE WHEN k.ships_plugin AND k.ships_theme THEN 'plugin+theme'
+                WHEN k.ships_theme                    THEN 'theme'
+                ELSE                                       'plugin' END AS ships_as,
+           -- The denominator is per target: only sites that could have reported
+           -- this artifact kind belong in it.
+           CASE WHEN k.ships_plugin AND k.ships_theme THEN d.either_denom
+                WHEN k.ships_theme                    THEN d.theme_denom
+                ELSE                                       d.plugin_denom END AS denom_sites,
+           COALESCE(p.sites_active, 0)                AS sites_active,
+           COALESCE(p.sites_installed_inactive, 0)    AS sites_installed_inactive,
+           COALESCE(p.sites_installed_any, 0)         AS sites_installed_any,
+           COALESCE(p.active_but_provably_stale, 0)   AS active_but_provably_stale,
+           COALESCE(p.active_age_unknown, 0)          AS active_age_unknown,
+           COALESCE(p.on_multisite, 0)                AS on_multisite
+    FROM census_target_kinds k
+    LEFT JOIN per_target p ON p.target = k.target
+    CROSS JOIN denom d
+)
+SELECT s.*,
+       round(100.0 * s.sites_active / nullif(s.denom_sites, 0), 1) AS pct_of_denom
+FROM sized s;
 
 -- ===========================================================================
 -- REFUSE ON AN EMPTY SCOPE.
@@ -492,45 +546,18 @@ ORDER BY sites DESC;
 --   theme-only target  (Bricks)     -> sites with a themes array
 --   both (Divi, Beaver Builder)     -> sites with either array
 -- denom_sites is a column so the reader can see which one was used.
-WITH denom AS (
-    SELECT count(*) FILTER (WHERE has_plugin_inventory)                        AS plugin_denom,
-           count(*) FILTER (WHERE has_theme_inventory)                         AS theme_denom,
-           count(*) FILTER (WHERE has_plugin_inventory OR has_theme_inventory)  AS either_denom
-    FROM census_fleet
-),
-per_target AS (
-    SELECT h.category,
-           h.target,
-           count(DISTINCT h.site_id) FILTER (WHERE h.active)                    AS sites_active,
-           count(DISTINCT h.site_id) FILTER (WHERE NOT h.active)                AS sites_installed_inactive,
-           count(DISTINCT h.site_id)                                            AS sites_installed_any,
-           count(DISTINCT h.site_id) FILTER (WHERE h.active AND h.inventory_provably_stale) AS active_but_provably_stale,
-           count(DISTINCT h.site_id) FILTER (WHERE h.active AND NOT h.inventory_age_known)  AS active_age_unknown,
-           count(DISTINCT h.site_id) FILTER (WHERE h.multisite)                 AS on_multisite
-    FROM census_hits h
-    GROUP BY h.category, h.target
-)
-SELECT p.category,
-       p.target,
-       CASE WHEN k.ships_plugin AND k.ships_theme THEN 'plugin+theme'
-            WHEN k.ships_theme                    THEN 'theme'
-            ELSE                                       'plugin' END AS ships_as,
-       p.sites_active,
-       p.sites_installed_inactive,
-       CASE WHEN k.ships_plugin AND k.ships_theme THEN d.either_denom
-            WHEN k.ships_theme                    THEN d.theme_denom
-            ELSE                                       d.plugin_denom END AS denom_sites,
-       round(100.0 * p.sites_active
-             / nullif(CASE WHEN k.ships_plugin AND k.ships_theme THEN d.either_denom
-                           WHEN k.ships_theme                    THEN d.theme_denom
-                           ELSE                                       d.plugin_denom END, 0), 1) AS pct_of_denom,
-       p.active_but_provably_stale,
-       p.active_age_unknown,
-       p.on_multisite
-FROM per_target p
-JOIN census_target_kinds k ON k.target = p.target
-CROSS JOIN denom d
-ORDER BY p.category, p.sites_active DESC;
+SELECT category,
+       target,
+       ships_as,
+       sites_active,
+       sites_installed_inactive,
+       denom_sites,
+       pct_of_denom,
+       active_but_provably_stale,
+       active_age_unknown,
+       on_multisite
+FROM census_adoption
+ORDER BY category, sites_active DESC, target;
 
 \echo ''
 \echo '=== 5. Version spread (major.minor) =================================='
