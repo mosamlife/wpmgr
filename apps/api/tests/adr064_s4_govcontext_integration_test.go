@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
@@ -251,8 +252,56 @@ func TestADR064S4_PatchOrgContext_SiteScopedCollaboratorRefusedEvenBypassingTheA
 	if err == nil {
 		t.Fatal("a site-scoped collaborator authored an ORGANISATION context version — m123's policy did not fire")
 	}
+	// Security-review finding: "err != nil" alone passes for the wrong
+	// reason too — a dropped connection, a typo'd column name, or any other
+	// unrelated failure would ALSO satisfy it, and the test would still
+	// claim m123's policy fired. adr064IsRowSecurityRefusal (same package,
+	// adr064_governed_context_rls_integration_test.go) is the exact helper
+	// that file's own header explains is necessary because Postgres reports
+	// BOTH the RESTRICTIVE policy refusing the row and the append-only
+	// REVOKE refusing the privilege as the identical SQLSTATE 42501 — only
+	// the message text tells them apart, and repo.go's CreateOrgVersion
+	// preserves the underlying *pgconn.PgError via domain.Error.WithCause,
+	// which errors.As (inside the helper) walks through Unwrap
+	// transparently.
+	if !adr064IsRowSecurityRefusal(err) {
+		t.Fatalf("got %v, want SQLSTATE 42501 with \"row-level security policy\" in the message "+
+			"(m123's RESTRICTIVE INSERT policy specifically, not some other failure)", err)
+	}
 	if _, gerr := repo.LatestOrgVersion(context.Background(), tenant); !errors.Is(gerr, govcontext.ErrNotFound) {
 		t.Errorf("LatestOrgVersion = %v, want ErrNotFound", gerr)
+	}
+}
+
+// TestADR064S4_RowSecurityRefusalCheck_DoesNotAcceptAnyError is a fast,
+// DB-free companion to the test above: it proves adr064IsRowSecurityRefusal
+// genuinely discriminates "the RESTRICTIVE policy refused this row" from any
+// other failure, rather than accepting err != nil generally. Without this,
+// TestADR064S4_PatchOrgContext_SiteScopedCollaboratorRefusedEvenBypassing
+// TheAppLayerGate's tightened assertion would itself be an unverified claim.
+func TestADR064S4_RowSecurityRefusalCheck_DoesNotAcceptAnyError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"generic error", errors.New("boom"), false},
+		{"govcontext.ErrNotFound (a real, different, expected sentinel with no wrapped pgconn.PgError at all)",
+			govcontext.ErrNotFound, false},
+		{"42501 permission denied (the REVOKE, not a policy)",
+			&pgconn.PgError{Code: "42501", Message: `permission denied for table org_context_versions`}, false},
+		{"42501 row-level security policy (the actual target)",
+			&pgconn.PgError{Code: "42501", Message: `new row violates row-level security policy "org_context_versions_site_scope_insert" for table "org_context_versions"`}, true},
+		{"23505 unique violation (a different SQLSTATE entirely)",
+			&pgconn.PgError{Code: "23505", Message: `duplicate key value violates unique constraint`}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := adr064IsRowSecurityRefusal(c.err); got != c.want {
+				t.Errorf("adr064IsRowSecurityRefusal(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
 	}
 }
 
