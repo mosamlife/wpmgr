@@ -382,7 +382,10 @@ func TestExchange_ConsumedCodeCannotBeReplayed(t *testing.T) {
 		redirect = "https://claude.ai/cb"
 		clientID = "client-abc"
 	)
-	store := &fakeStore{codeOK: true, code: redeemableCode(t, verifier, redirect, clientID)}
+	store := &fakeStore{
+		codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
+		clientOK: true, client: liveClient(redirect),
+	}
 	svc := NewService(store)
 
 	req := TokenRequest{
@@ -443,6 +446,7 @@ func TestExchange_LosingCompareAndSetIsRefusedNotShrugged(t *testing.T) {
 		codeOK:   true,
 		code:     redeemableCode(t, verifier, redirect, clientID),
 		raceLost: true,
+		clientOK: true, client: liveClient(redirect),
 	}
 	svc := NewService(store)
 
@@ -491,7 +495,10 @@ func TestExchange_RefusesBeforeConsumingOnEveryBindingFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &fakeStore{codeOK: true, code: redeemableCode(t, verifier, redirect, clientID)}
+			store := &fakeStore{
+				codeOK: true, code: redeemableCode(t, verifier, redirect, clientID),
+				clientOK: true, client: liveClient(redirect),
+			}
 			svc := NewService(store)
 			if _, err := svc.Exchange(context.Background(), tc.req); err == nil {
 				t.Fatal("exchange succeeded on a binding failure")

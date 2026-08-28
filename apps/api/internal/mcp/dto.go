@@ -110,6 +110,7 @@ type tokenRequestDTO struct {
 	Code         string `json:"code" form:"code"`
 	RedirectURI  string `json:"redirect_uri" form:"redirect_uri"`
 	ClientID     string `json:"client_id" form:"client_id"`
+	ClientSecret string `json:"client_secret" form:"client_secret"`
 	CodeVerifier string `json:"code_verifier" form:"code_verifier"`
 }
 

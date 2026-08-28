@@ -168,11 +168,20 @@ func (h *Handler) token(c *gin.Context) {
 		return
 	}
 
+	// RFC 6749 2.3.1 prefers HTTP Basic for client_secret_basic and permits the
+	// body for client_secret_post. Basic wins when both are present, so a body
+	// parameter cannot override a header the client actually authenticated with.
+	clientID, clientSecret := body.ClientID, body.ClientSecret
+	if id, secret, ok := c.Request.BasicAuth(); ok {
+		clientID, clientSecret = id, secret
+	}
+
 	out, err := h.svc.Exchange(c.Request.Context(), TokenRequest{
 		GrantType:    body.GrantType,
 		Code:         body.Code,
 		RedirectURI:  body.RedirectURI,
-		ClientID:     body.ClientID,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		CodeVerifier: body.CodeVerifier,
 	})
 	if err != nil {

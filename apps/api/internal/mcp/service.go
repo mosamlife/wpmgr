@@ -101,9 +101,15 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 
 	// RFC 7591 section 2: an omitted token_endpoint_auth_method defaults to
 	// client_secret_basic. That default is the RFC's and it is the RESTRICTIVE
-	// direction -- it mints a secret the client must then present -- so
-	// honouring it does not widen anything. 'none' must be asked for explicitly,
-	// which is the case that matters, because 'none' is the no-secret path.
+	// direction -- it mints a secret that Exchange then REQUIRES the client to
+	// present, over HTTP Basic or in the body, and verifies against the stored
+	// hash in constant time. 'none' must be asked for explicitly, which is the
+	// case that matters, because 'none' is the no-secret PKCE-only path.
+	//
+	// That claim was false when it was first written: the token endpoint read no
+	// secret at all, so the default minted a credential nothing ever asked for
+	// and the sentence described a mode that did not exist (review finding H3).
+	// The check now exists; if it is ever removed, this comment must go with it.
 	method := req.TokenEndpointAuthMethod
 	if method == "" {
 		method = "client_secret_basic"
@@ -349,6 +355,35 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			"the approved request carries no S256 PKCE challenge")
 	}
 
+	// RE-RESOLVE THE CLIENT AND RE-MATCH THE REDIRECT, AGAINST THE STORED ARRAY.
+	//
+	// This is the minting path, and it is the one that has to hold. Everything
+	// in req.Consent arrives in the approval POST body, so the checks Authorize
+	// ran a request earlier are worth nothing here -- a body naming an
+	// unregistered client_id and an attacker's redirect_uri would otherwise mint
+	// a real code carrying the approving operator's tenant, and Exchange would
+	// then honour it because it compares the presented redirect against the one
+	// STORED ON THE CODE ROW. There is no foreign key to catch it either:
+	// mcp_authorization_codes.client_id deliberately carries none (m124
+	// DECISION 12), because the column records a historical fact.
+	//
+	// The invariant this restores is "this code may only travel to a URI this
+	// client registered", not merely "a consent screen was shown once".
+	client, err := s.store.LookupClient(ctx, req.Consent.ClientID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Approval{}, domain.Unauthorized(ErrCodeInvalidClient, "unknown client_id")
+		}
+		return Approval{}, fmt.Errorf("lookup client: %w", err)
+	}
+	// Exact match, against client.RedirectUris -- never against anything that
+	// came in with the request. A prefix, suffix or host-only comparison here is
+	// an open redirector, and so is trusting the body's own copy of the array.
+	if !exactMatchRedirectURI(client.RedirectUris, req.Consent.RedirectURI) {
+		return Approval{}, domain.Validation(ErrCodeInvalidRedirectURI,
+			"redirect_uri does not exactly match a registered redirect URI")
+	}
+
 	code, err := randomToken(32)
 	if err != nil {
 		return Approval{}, fmt.Errorf("generate authorization code: %w", err)
@@ -364,15 +399,16 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			SiteScopeMode:   string(req.SiteScope.Mode),
 			ScopeTagIds:     orEmpty(req.SiteScope.TagIDs),
 			ScopeSiteIds:    orEmpty(req.SiteScope.SiteIDs),
-			ClientID:        nullableText(req.Consent.ClientID),
+			// The RESOLVED client id, not the body's copy of it.
+			ClientID:        nullableText(client.ClientID),
 			CreatedByUserID: uuidToPG(req.UserID),
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
-				TenantID:            req.TenantID,
-				GrantID:             grantID,
-				ClientID:            req.Consent.ClientID,
-				CodeHash:            codeHash,
+				TenantID: req.TenantID,
+				GrantID:  grantID,
+				ClientID: client.ClientID,
+				CodeHash: codeHash,
 				CodeChallenge:       req.Consent.CodeChallenge,
 				CodeChallengeMethod: req.Consent.CodeChallengeMethod,
 				RedirectUri:         req.Consent.RedirectURI,
@@ -401,6 +437,7 @@ type TokenRequest struct {
 	Code         string
 	RedirectURI  string
 	ClientID     string
+	ClientSecret string
 	CodeVerifier string
 }
 
@@ -443,9 +480,56 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 
 	// 2. Bind the code to the client and the redirect it was issued for
 	// (RFC 6749 4.1.3). Both are exact comparisons.
-	if req.ClientID != "" && req.ClientID != row.ClientID {
+	//
+	// client_id IS REQUIRED, unconditionally. It used to be checked only when
+	// present, which meant OMITTING it skipped the code-to-client binding
+	// entirely -- absence read as permission, which is the shape this whole
+	// surface is built to refuse. RFC 6749 4.1.3 requires it whenever the
+	// client is not authenticating, and requiring it always is stricter than
+	// the RFC rather than looser.
+	if strings.TrimSpace(req.ClientID) == "" {
+		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant, "client_id is required")
+	}
+	if req.ClientID != row.ClientID {
 		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
 			"the authorization code was not issued to this client")
+	}
+
+	// 2b. AUTHENTICATE THE CLIENT WHEN IT REGISTERED A SECRET.
+	//
+	// A client registered client_secret_basic or client_secret_post has a
+	// secret minted, hashed and stored under a CHECK. Never asking for it makes
+	// that whole apparatus decorative, and the registration default is
+	// client_secret_basic -- so the common case was the unauthenticated one.
+	// PKCE already limits the practical exploit; this is the defence in depth
+	// the registration path already believes it has.
+	client, err := s.store.LookupClient(ctx, req.ClientID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient, "unknown client_id")
+		}
+		return IssuedToken{}, fmt.Errorf("lookup client: %w", err)
+	}
+	if client.TokenEndpointAuthMethod != "none" {
+		// The schema's secret_matches_method_check guarantees a non-'none'
+		// client HAS a hash, so a nil here is an impossible row rather than a
+		// public client. Refuse rather than treat it as "no secret required" --
+		// that is the absence-means-permitted reflex m124 DECISION 11 names.
+		if client.ClientSecretHash == nil {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+				"this client is misconfigured and cannot authenticate")
+		}
+		if strings.TrimSpace(req.ClientSecret) == "" {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+				"client_secret is required for this client")
+		}
+		if subtle.ConstantTimeCompare(
+			[]byte(hashCredential(req.ClientSecret)),
+			[]byte(*client.ClientSecretHash),
+		) != 1 {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+				"client authentication failed")
+		}
 	}
 	if req.RedirectURI != row.RedirectUri {
 		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
