@@ -76,6 +76,74 @@
 #      second mkdir mutex and re-derives staleness from scratch inside it. See
 #      the RECLAIM section.
 #
+# A SECOND REVIEW ROUND THEN FOUND BOTH OF THOSE AGAIN, ONE STEP IN, which is
+# the interesting part and the reason for the design note below:
+#
+#   4. Recording the child AFTER spawning it left a spawn-to-record window. Fix
+#      1 shrank the exposure from "the whole run" to "the microseconds between
+#      `&` and the append", but shrinking a window is not closing it. See
+#      IDENTIFYING THE RUN BEFORE IT EXISTS.
+#   5. The reclaim marker's write was suppressed and unchecked — defect 2
+#      verbatim, in the path added by fix 3. It now fails closed the same way.
+#
+# Two rounds, same two defects, narrower each time. That is the signature of an
+# approach that patches windows instead of removing them, so the ordering
+# problem is addressed directly rather than a third time.
+#
+# IDENTIFYING THE RUN BEFORE IT EXISTS.
+#
+# The bug in "spawn, then record the pid" is ordering: the identifier is
+# learned only after the thing it identifies already exists, so a kill in
+# between leaves a running command that nothing in the lock names. No amount of
+# moving the write earlier fixes that, because the pid does not exist earlier.
+# The fix has to be an identifier chosen BEFORE the fork.
+#
+# PROCESS GROUP: EVALUATED AND REJECTED, with the measurement, because it is
+# the obvious candidate and the next reader will wonder. The idea is sound —
+# a pgid is known before any fork — but this wrapper cannot own one:
+#
+#   command -v setsid   ABSENT on this machine (darwin). Same story as flock
+#                       and timeout; it is util-linux. So the wrapper cannot
+#                       put itself into a process group of its own, and bash
+#                       has no setpgid builtin.
+#   pgrep               PRESENT at /usr/bin/pgrep, on darwin and ubuntu both.
+#
+# Without setsid the wrapper INHERITS its caller's group, and "is any process
+# in that group alive" then answers for the caller, not for the run. Measured
+# here rather than assumed — a probe script reporting its own pgid membership:
+#
+#     wrapper pid : 5343
+#     wrapper pgid: 5341
+#     am I the group leader (pgid == pid)?  NO — the group is somebody else's
+#     every process currently in that group:
+#          5341  5341 /bin/zsh
+#          5343  5341 bash
+#
+# The group belongs to the calling shell, which outlives every run in the
+# session. A lock keyed on it would read as held forever: every later run waits
+# out WPMGR_LOCK_TIMEOUT and exits 75. That is an over-fire, and an over-firing
+# guard gets switched off, which is the one failure this script cannot survive.
+#
+# TOKEN: WHAT IS USED INSTEAD. A random token is generated, written into the
+# metadata and VERIFIED there, all before anything is forked. The command is
+# then launched with that token in its argv, so `pgrep -f TOKEN` answers "is
+# this run still alive" against an identifier that already existed when the
+# child did not. The orderings are now exhaustive, and none of them admits a
+# second run:
+#
+#   killed before the fork   token in meta, pgrep finds nothing, no child
+#                            recorded -> correctly stale, nothing was running.
+#   killed after the fork    pgrep finds the command by its token -> LIVE. This
+#                            is the window defect 4 reported, and it is closed
+#                            by evidence rather than by being made smaller.
+#   killed after the append  child pid recorded too -> LIVE, as since fix 1.
+#
+# The one remaining gap is between fork() and exec(), while the child still
+# carries the parent's argv and the token is not yet visible in it — microseconds,
+# and unobservable in practice because declaring a lock stale requires a SECOND
+# assessment taken later, under the reclaim mutex. `child`/`clstart` are kept
+# alongside the token for exactly that corroboration; either one alive is enough.
+#
 # EXIT CODES.
 #   *   The command's own status, passed through unchanged, whatever it was.
 #   64  Usage error (EX_USAGE): bad arguments, bad lock name, no command.
@@ -163,7 +231,7 @@ esac
 # it is `ps` that provides it. Without `ps` we would have to either assume every
 # lock is live (deadlock) or assume it is dead (no mutex at all). Both are
 # worse than refusing.
-for tool in mkdir ps date rm mv chmod; do
+for tool in mkdir ps date rm mv chmod pgrep; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "$ME: required tool '$tool' not found on PATH; refusing to run unlocked" >&2
     exit 69
@@ -225,9 +293,41 @@ is_pid_live() {
   [ "$_recorded" = "$_current" ]                # differs => the pid was recycled
 }
 
+# The identifier that exists before the child does. Restricted to [A-Za-z0-9-]
+# so it is safe as the ERE that `pgrep -f` treats it as, with no metacharacter
+# able to widen the match onto an unrelated process.
+TOKEN="wpmgrlock-$$-$(date +%s)-${RANDOM}${RANDOM}"
+
+# is_token_live TOKEN -> 0 if a process launched under this token is running.
+#
+# Unlike a pid this cannot be recycled into a false positive: the token is
+# unique per acquire, so a match is this run and nothing else.
+is_token_live() {
+  _t="${1:-}"
+  [ -n "$_t" ] || return 1
+  pgrep -f "$_t" >/dev/null 2>&1
+}
+
 meta_field() { # meta_field KEY
   [ -f "$META" ] || return 1
   sed -n "s/^$1=//p" "$META" 2>/dev/null | head -1
+}
+
+# remove_dir_hard DIR -> 0 if DIR is gone afterwards.
+#
+# `rm -rf` cannot descend a directory it has no execute permission on, and it
+# reports that on stderr, which the first draft discarded — so a release could
+# print "released" over its own failure and leave the lock standing. Both the
+# lock and the reclaim marker can end up mode 000 (a caller with a hostile
+# umask creates them that way), so the retry lives in one place rather than
+# being got right in one caller and forgotten in the next.
+remove_dir_hard() {
+  rm -rf "$1" 2>/dev/null
+  if [ -d "$1" ]; then
+    chmod u+rwx "$1" 2>/dev/null
+    rm -rf "$1" 2>/dev/null
+  fi
+  [ ! -d "$1" ]
 }
 
 human_secs() { # human_secs N  ->  "3m12s"
@@ -246,7 +346,9 @@ CHILD=""
 
 release() {
   if [ "$RECLAIM_HELD" = "1" ]; then
-    rm -rf "$RECLAIM_DIR" 2>/dev/null
+    if ! remove_dir_hard "$RECLAIM_DIR"; then
+      echo "$ME: FAILED to remove $RECLAIM_DIR — remove it by hand or reclaims on this machine will wedge" >&2
+    fi
     RECLAIM_HELD=0
   fi
   [ "$HELD" = "1" ] || return 0
@@ -263,12 +365,7 @@ release() {
   # metadata — reclaims it after the grace period. Caught by the metadata
   # failure case in the suite, where the lock directory is mode 000 and `rm -rf`
   # cannot descend it, so the first attempt fails with the error suppressed.
-  rm -rf "$LOCK_DIR" 2>/dev/null
-  if [ -d "$LOCK_DIR" ]; then
-    chmod u+rwx "$LOCK_DIR" 2>/dev/null
-    rm -rf "$LOCK_DIR" 2>/dev/null
-  fi
-  if [ -d "$LOCK_DIR" ]; then
+  if ! remove_dir_hard "$LOCK_DIR"; then
     echo "$ME: FAILED to release $LOCK_DIR — remove it by hand, or later runs will wait on a lock nobody holds" >&2
     HELD=0
     return 1
@@ -335,8 +432,11 @@ write_meta() {
   # `child=` line naming a live pid, which would make this lock permanent — so
   # the recorded command is flattened to one line.
   _cmd="$(printf '%s' "$*" | tr '\n\r' '  ')"
-  if ! printf 'pid=%s\nacquired=%s\nlstart=%s\nhost=%s\ncwd=%s\ncmd=%s\n' \
-      "$$" "$(now)" "$(lstart_of $$)" "$(hostname 2>/dev/null || echo unknown)" "$PWD" "$_cmd" \
+  # `token` goes in HERE, before anything is forked, and is verified below.
+  # That ordering is the whole point: after this function returns successfully,
+  # the lock can identify the run even though the run does not exist yet.
+  if ! printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=%s\nhost=%s\ncwd=%s\ncmd=%s\n' \
+      "$$" "$(now)" "$(lstart_of $$)" "$TOKEN" "$(hostname 2>/dev/null || echo unknown)" "$PWD" "$_cmd" \
       > "$_tmp"; then
     echo "$ME: cannot write lock metadata to $_tmp" >&2
     return 1
@@ -350,6 +450,13 @@ write_meta() {
   fi
   if [ "$(meta_field pid 2>/dev/null || true)" != "$$" ]; then
     echo "$ME: lock metadata at $META did not read back as mine (pid $$)" >&2
+    return 1
+  fi
+  # The token is what closes the spawn-to-record window, so an unverified token
+  # is not good enough: if it did not land, this run would be unidentifiable
+  # for exactly the interval the fix exists to cover.
+  if [ "$(meta_field token 2>/dev/null || true)" != "$TOKEN" ]; then
+    echo "$ME: lock metadata at $META did not read back with my token" >&2
     return 1
   fi
   return 0
@@ -394,6 +501,7 @@ ANNOUNCED_RECLAIM_WAIT=0
 assess_holder() {
   holder_pid="$(meta_field pid || true)"
   holder_lstart="$(meta_field lstart || true)"
+  holder_token="$(meta_field token || true)"
   holder_child="$(meta_field child || true)"
   holder_clstart="$(meta_field clstart || true)"
   holder_since="$(meta_field acquired || true)"
@@ -422,8 +530,16 @@ assess_holder() {
 
   # PROPERTY 1. A live test process means the lock is not stale, regardless of
   # what happened to the wrapper. The wrapper can be SIGKILLed — it cannot trap
-  # that — while `go test` and its containers keep running, so the child is
-  # checked independently and either one alive is enough to keep the lock.
+  # that — while `go test` and its containers keep running.
+  #
+  # The TOKEN is checked first and is the load-bearing one: it was written and
+  # verified before the fork, so it covers the interval in which a child exists
+  # but its pid has not been recorded yet. The pid checks corroborate it from
+  # the other side (they cover the fork-to-exec instant, where the token is not
+  # yet in the child's argv). Any one of the three alive keeps the lock.
+  if is_token_live "$holder_token"; then
+    return 0
+  fi
   if is_pid_live "$holder_child" "$holder_clstart"; then
     return 0
   fi
@@ -431,7 +547,9 @@ assess_holder() {
     return 0
   fi
 
-  if [ -n "$holder_child" ]; then
+  if [ -n "$holder_token" ]; then
+    STALE_REASON="nothing is running under holder token $holder_token, and pid $holder_pid is gone"
+  elif [ -n "$holder_child" ]; then
     STALE_REASON="holder pid $holder_pid and its command pid $holder_child are both gone"
   elif ! ps -p "$holder_pid" >/dev/null 2>&1; then
     STALE_REASON="holder pid $holder_pid is no longer running"
@@ -477,7 +595,33 @@ while :; do
     # and another reclaimer (excluded, by this mutex).
     if mkdir "$RECLAIM_DIR" 2>/dev/null; then
       RECLAIM_HELD=1
-      printf 'pid=%s\nlstart=%s\n' "$$" "$(lstart_of $$)" > "$RECLAIM_META" 2>/dev/null
+
+      # DEFECT 5, and it is defect 2 in a second location: this write used to
+      # be suppressed and unchecked. An unwritten marker is worse here than a
+      # missing lock metadata file, because the abandoned-marker recovery below
+      # keys on the pid INSIDE it: with no pid to read, `[ -n "$r_pid" ]` is
+      # false, nothing ever clears it, and every future reclaimer on this
+      # machine wedges permanently. So it fails closed and loudly, the same way
+      # write_meta does, and read-back is what proves it rather than the exit
+      # status alone.
+      if ! printf 'pid=%s\nlstart=%s\n' "$$" "$(lstart_of $$)" > "$RECLAIM_META"; then
+        echo "$ME: cannot write the reclaim marker at $RECLAIM_META" >&2
+        echo "$ME: releasing it rather than leaving one no other reclaimer could ever clear" >&2
+        if ! remove_dir_hard "$RECLAIM_DIR"; then
+          echo "$ME: FAILED to remove $RECLAIM_DIR — remove it by hand or reclaims on this machine will wedge" >&2
+        fi
+        RECLAIM_HELD=0
+        exit 69
+      fi
+      if [ "$(sed -n 's/^pid=//p' "$RECLAIM_META" 2>/dev/null | head -1)" != "$$" ]; then
+        echo "$ME: the reclaim marker at $RECLAIM_META did not read back as mine (pid $$)" >&2
+        echo "$ME: releasing it rather than leaving one no other reclaimer could ever clear" >&2
+        if ! remove_dir_hard "$RECLAIM_DIR"; then
+          echo "$ME: FAILED to remove $RECLAIM_DIR — remove it by hand or reclaims on this machine will wedge" >&2
+        fi
+        RECLAIM_HELD=0
+        exit 69
+      fi
 
       # Re-derive the verdict from scratch. The lock may have been reclaimed
       # and re-taken by a live holder while we were getting here, and acting on
@@ -494,7 +638,9 @@ while :; do
         fi
       fi
 
-      rm -rf "$RECLAIM_DIR" 2>/dev/null
+      if ! remove_dir_hard "$RECLAIM_DIR"; then
+        echo "$ME: FAILED to remove $RECLAIM_DIR — remove it by hand or reclaims on this machine will wedge" >&2
+      fi
       RECLAIM_HELD=0
 
       # Retry the mkdir immediately rather than sleeping a whole poll interval,
@@ -515,7 +661,9 @@ while :; do
       r_lstart="$(sed -n 's/^lstart=//p' "$RECLAIM_META" 2>/dev/null | head -1)"
       if [ -n "$r_pid" ] && ! is_pid_live "$r_pid" "$r_lstart"; then
         echo "$ME: clearing an abandoned reclaim marker left by dead pid $r_pid" >&2
-        rm -rf "$RECLAIM_DIR" 2>/dev/null
+        if ! remove_dir_hard "$RECLAIM_DIR"; then
+          echo "$ME: FAILED to clear $RECLAIM_DIR — remove it by hand or reclaims on this machine will wedge" >&2
+        fi
       fi
       BLOCKED_ON_RECLAIM=1
       # Deliberately NOT `continue`: fall through to the bounded wait below so
@@ -565,11 +713,32 @@ done
 
 # ---- Run -------------------------------------------------------------------
 #
-# Bare invocation, backgrounded only so its pid can be recorded. `<&0` keeps
-# the caller's stdin attached, which POSIX would otherwise replace with
-# /dev/null for an asynchronous command. Status read with a bare `wait` on the
-# next line. No pipe, no chain, no subshell.
-"$@" <&0 &
+# The command is launched through a `sh -c` whose $0 is the TOKEN, which is
+# what puts the token into the child's argv where `pgrep -f` can find it.
+# `sh -c '...' TOKEN cmd args...` sets $0=TOKEN and runs cmd with args, so the
+# command is unchanged and its status is sh's status.
+#
+# `; exit $?` IS LOAD-BEARING AND MUST NOT BE "SIMPLIFIED" AWAY. Written as the
+# obvious `sh -c '"$@"' TOKEN cmd`, the body is a single simple command, so the
+# shell exec-optimizes it: sh replaces itself with the command and the argv —
+# token included — is gone. Measured, not assumed:
+#
+#   sh -c '"$@"'          TOKEN sleep 5  -> argv: `sleep 5`   pgrep: NO MATCH
+#   sh -c '"$@"; exit $?' TOKEN sleep 5  -> argv: `sh -c "$@"; exit $? TOKEN sleep 5`
+#
+# The second statement gives sh something to do after the command, so it forks
+# instead of exec'ing and stays alive holding the token for the whole run. The
+# status still passes through untouched (`exit 42` -> 42, a missing command ->
+# 127, both measured).
+#
+# The cost is one extra `sh` in the tree, which costs nothing in practice: the
+# real target already invokes `sh -c 'cd apps/api && go test ...'`, so the
+# command was a grandchild either way.
+#
+# `<&0` keeps the caller's stdin attached, which POSIX would otherwise replace
+# with /dev/null for an asynchronous command. Status read with a bare `wait` on
+# the next line. No pipe, no chain, no subshell.
+sh -c '"$@"; exit $?' "$TOKEN" "$@" <&0 &
 CHILD=$!
 
 if ! record_child; then

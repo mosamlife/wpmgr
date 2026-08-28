@@ -465,6 +465,130 @@ if ! skip_case; then
 fi
 
 # ============================================================================
+# 5c. The second review round, which found defects 1 and 2 again one step in.
+#     Same two shapes, narrower windows. These assert the ORDERING fix, not a
+#     smaller gap: the identifier now exists before the thing it identifies.
+# ============================================================================
+
+begin "spawn-before-record-window"
+if ! skip_case; then
+  # DEFECT 4. Recording the command's pid AFTER spawning it leaves a window: a
+  # SIGKILL between `&` and the append leaves a running command that nothing in
+  # the lock names, and the next invocation reclaims and starts a second suite.
+  #
+  # Reconstructing that state deterministically rather than racing for it: run
+  # a real holder, then strip `child=`/`clstart=` from its metadata. What is
+  # left is byte-for-byte the state the lock is in during that window — the
+  # wrapper's pid is recorded, the command's is not, and the command is running.
+  # Then SIGKILL the wrapper, exactly as the finding describes.
+  #
+  # The lock must still refuse, and it can only do so via the token, which was
+  # written before the fork.
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 30 > "$ROOT/holder" 2>&1 &
+  wp=$!
+
+  tok=""
+  i=0
+  while [ "$i" -lt 10 ]; do
+    tok="$(sed -n 's/^token=//p' "$ROOT/itest.lock/meta" 2>/dev/null | head -1)"
+    [ -n "$tok" ] && break
+    sleep 1
+    i=$(( i + 1 ))
+  done
+
+  if [ -z "$tok" ]; then
+    fail "the lock recorded no token, so it cannot identify a run it has not yet recorded the pid of"
+  else
+    ok "the lock recorded a token ($tok) before forking anything"
+
+    # Collapse to the pre-append state.
+    grep -v '^child=' "$ROOT/itest.lock/meta" | grep -v '^clstart=' > "$ROOT/meta.stripped"
+    cp "$ROOT/meta.stripped" "$ROOT/itest.lock/meta"
+    if grep -q '^child=' "$ROOT/itest.lock/meta" 2>/dev/null; then
+      fail "the child pid was not stripped — this case would prove nothing"
+    else
+      ok "metadata reduced to the spawn-to-record window (wrapper recorded, command not)"
+    fi
+
+    kill -9 "$wp" 2>/dev/null
+    wait "$wp" 2>/dev/null
+
+    if ps -p "$wp" >/dev/null 2>&1; then
+      fail "the wrapper survived SIGKILL — this case proves nothing as written"
+    else
+      ok "the wrapper is gone (pid $wp), and nothing in the metadata names the command"
+    fi
+
+    WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+      "$LOCK" itest -- echo ADMITTED-IN-SPAWN-WINDOW > "$ROOT/o" 2>&1
+    st=$?
+    expect_status 75 "$st" "a run killed inside the spawn-to-record window still holds the lock"
+    expect_absent "$ROOT/o" "ADMITTED-IN-SPAWN-WINDOW" "no second suite started in the spawn-to-record window"
+    expect_absent "$ROOT/o" "RECLAIM" "the token kept the lock from being read as stale"
+
+    pkill -f "$tok" 2>/dev/null
+  fi
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "token-gone-is-still-reclaimable"
+if ! skip_case; then
+  # The over-fire complement. The token must not make locks immortal: when the
+  # token names nothing running and the wrapper is dead, the lock is stale and
+  # must still be reclaimed, or a killed run wedges the machine for
+  # WPMGR_LOCK_TIMEOUT and the lock gets switched off.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\ntoken=wpmgrlock-nothing-runs-under-this-0000\nhost=test\ncwd=/nowhere\ncmd=dead-holder\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 \
+    "$LOCK" itest -- echo RECLAIMED-TOKEN-DEAD > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "a lock whose token names nothing running is still reclaimable"
+  expect_contains "$ROOT/o" "nothing is running under holder token" "the reclaim says the token was checked"
+  expect_contains "$ROOT/o" "RECLAIMED-TOKEN-DEAD" "the command ran after the reclaim"
+fi
+
+begin "reclaim-marker-unwritable"
+if ! skip_case; then
+  # DEFECT 5, which is defect 2 in the path added by fix 3. An unwritten marker
+  # is worse than unwritten lock metadata: the abandoned-marker recovery keys
+  # on the pid inside it, so a marker with no pid is one that nothing can ever
+  # clear, and every future reclaimer on the machine wedges permanently.
+  #
+  # Same forcing trick as meta-write-unwritable: `umask 0777` makes the marker
+  # directory mode 000, so mkdir succeeds and the write inside it cannot.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\nhost=test\ncwd=/nowhere\ncmd=dead-holder\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  : > "$ROOT/o"
+  ( umask 0777
+    WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=4 WPMGR_LOCK_POLL=1 \
+      "$LOCK" itest -- echo RECLAIMED-WITHOUT-MARKER ) > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 69 "$st" "a reclaim whose marker cannot be written refuses rather than proceeding"
+  expect_absent "$ROOT/o" "RECLAIMED-WITHOUT-MARKER" "the command did not run behind an unwritable marker"
+  expect_contains "$ROOT/o" "cannot write the reclaim marker" "the marker write failure is reported, never suppressed"
+
+  # And it must not leave a marker nothing can ever clear.
+  if [ -d "$ROOT/itest.reclaim" ]; then
+    fail "left a reclaim marker at $ROOT/itest.reclaim that no other reclaimer could clear"
+    chmod u+rwx "$ROOT/itest.reclaim" 2>/dev/null
+    rm -rf "$ROOT/itest.reclaim" 2>/dev/null
+  else
+    ok "the failed reclaim removed its own marker instead of wedging every future reclaimer"
+  fi
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+# ============================================================================
 # 6. It must NOT over-fire. A guard that blocks correct work gets switched off,
 #    and then it guards nothing. These are the cases that must stay green.
 # ============================================================================
