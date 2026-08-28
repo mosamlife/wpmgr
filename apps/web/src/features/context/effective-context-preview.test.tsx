@@ -51,6 +51,7 @@ function buildLayer(
     name: "WPMgr security policy",
     restrictions: {},
     guidance: {},
+    facts_unavailable: false,
     bytes: 12,
     truncated: false,
     ...overrides,
