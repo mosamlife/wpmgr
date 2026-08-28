@@ -498,15 +498,14 @@ type McpGrant struct {
 }
 
 type McpOauthClient struct {
-	ID                      uuid.UUID          `json:"id"`
-	ClientID                string             `json:"client_id"`
-	ClientSecretHash        *string            `json:"client_secret_hash"`
-	TokenEndpointAuthMethod string             `json:"token_endpoint_auth_method"`
-	RedirectUris            []string           `json:"redirect_uris"`
-	ClientName              *string            `json:"client_name"`
-	ClientUri               *string            `json:"client_uri"`
-	CreatedAt               time.Time          `json:"created_at"`
-	LastUsedAt              pgtype.Timestamptz `json:"last_used_at"`
+	ID                      uuid.UUID `json:"id"`
+	ClientID                string    `json:"client_id"`
+	ClientSecretHash        *string   `json:"client_secret_hash"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method"`
+	RedirectUris            []string  `json:"redirect_uris"`
+	ClientName              *string   `json:"client_name"`
+	ClientUri               *string   `json:"client_uri"`
+	CreatedAt               time.Time `json:"created_at"`
 }
 
 type Membership struct {
