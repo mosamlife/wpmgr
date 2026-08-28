@@ -167,8 +167,31 @@ test-api: ## Run Go tests (unit plus integration; needs Docker for the integrati
 # cached. (test-api, above, has the same flag for the same reason; the other
 # test targets in this file — test-web, check-versions-test — do not invoke
 # `go test` at all, so Go's result cache does not apply to them.)
-test-integration: ## Run the Go integration tests (Docker required, about 9 minutes; never cached, see -count=1)
-	cd apps/api && go test -count=1 -timeout 45m ./tests/...
+# SERIALISED MACHINE-WIDE (GH #565). Every test in this package starts a fresh
+# Postgres testcontainer, and several agents work in parallel git worktrees on
+# one machine. Two suites running at once contend for ports: measured, two
+# overlapping runs at 14m36s and 11m39s from two worktrees, and #565 records
+# this suite failing 2 of 3 runs in one slice, one with `port "5432/tcp" not
+# found`. The wasted minutes are not the problem. The problem is that a
+# contention failure and a real regression LOOK IDENTICAL, so a genuine RLS
+# regression gets waved through as "that flake again" — in the one package CI
+# never runs, where this command is the only gate.
+#
+# So a second invocation now WAITS for the first instead of racing it. It says
+# who it is waiting for and for how long, it gives up after an hour with exit
+# 75 rather than hanging, and it reclaims (noisily) a lock whose holder died.
+# The suite's own exit status passes through untouched — see the long comment
+# in the script about why that is not routed through a pipe.
+#
+# scripts/with-machine-lock_test.sh is its regression suite; `make test-lock`.
+# To run without the lock (single worktree, or debugging the lock itself):
+#   cd apps/api && go test -count=1 -timeout 45m ./tests/...
+test-integration: ## Run the Go integration tests, serialised machine-wide (Docker required; never cached, see -count=1)
+	scripts/with-machine-lock.sh api-integration -- sh -c 'cd apps/api && go test -count=1 -timeout 45m ./tests/...'
+
+.PHONY: test-lock
+test-lock: ## Run the machine-wide lock's regression suite (seconds; no Docker, no integration run)
+	scripts/with-machine-lock_test.sh
 
 .PHONY: test-web
 test-web: ## Run frontend tests

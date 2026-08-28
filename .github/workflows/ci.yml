@@ -400,6 +400,23 @@ jobs:
       #
       # The suite runs FIRST: if the guard's own behaviour has regressed, that
       # is the more useful failure to read.
+      # GH #565: `make test-integration` is serialised machine-wide by
+      # scripts/with-machine-lock.sh, because parallel worktrees on one
+      # developer machine contend for testcontainer ports and a contention
+      # failure is indistinguishable from a real regression.
+      #
+      # CI never takes that lock — it runs one job in a clean container with
+      # nothing to contend with, and this workflow does not run the integration
+      # package at all. What runs here is the lock's SELF-TEST, because the lock
+      # guards the one package CI does not, so nothing else would ever notice it
+      # rotting. The suite uses `echo`, `false` and `sleep 2` as its payload:
+      # seconds, no Docker, no integration run. It is also why the lock is built
+      # on mkdir rather than the flock or shlock a developer machine might
+      # offer — mkdir is the only one of the three present on both darwin and
+      # this runner.
+      - name: Machine-wide lock self-test
+        run: scripts/with-machine-lock_test.sh
+
       - name: Version surface guard self-test
         run: scripts/check-version-surfaces_test.sh
 
