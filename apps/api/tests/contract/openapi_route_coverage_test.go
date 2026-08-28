@@ -52,6 +52,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
 	"github.com/mosamlife/wpmgr/apps/api/internal/files"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
@@ -339,6 +340,12 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 	fontResultsAgentH := perf.NewFontResultsAgentHandler(perf.NewRepo(pool))
 	ocH := objectcache.NewHandler(objectcache.NewService(objectcache.NewRepo(pool), nil, nil, nil, nil), auditRec)
 
+	// --- ADR-064 S4 governed org/site context ----------------------------------
+	// Mirrors cmd/wpmgr/main.go's wiring exactly: Facts (layer 4) left nil,
+	// same as production leaves it unwired in this slice.
+	govContextRepo := govcontext.NewRepo(pool)
+	govContextH := govcontext.NewHandler(govcontext.NewService(govContextRepo, auditRec, &govcontext.Resolver{Store: govContextRepo}))
+
 	// --- settings / files / screenshots -----------------------------------
 	settingsH := settings.NewHandler(settings.NewService(settings.NewRepo(pool), nil, nil, logger), auditRec)
 	filesH := files.NewHandler(files.NewService(pool), auditRec)
@@ -434,6 +441,7 @@ func buildFullEngine(t *testing.T, pool *db.Pool) *gin.Engine {
 		OrgH:                   orgH,
 		SharingH:               sharingH,
 		InvitationH:            invitationH,
+		GovContextH:            govContextH,
 		MediaH:                 mediaH,
 		MediaAgentH:            mediaAgentH,
 		PerfH:                  perfH,
