@@ -259,19 +259,27 @@ export function GovContextEditor({
         <GuidanceField
           id={`ctx-${scopeLabel}-brand_voice`}
           label="Brand voice"
+          errorMessage={errors.guidance?.brand_voice?.message}
           {...register("guidance.brand_voice")}
         />
         <GuidanceField
           id={`ctx-${scopeLabel}-audience`}
           label="Audience"
+          errorMessage={errors.guidance?.audience?.message}
           {...register("guidance.audience")}
         />
         <GuidanceField
           id={`ctx-${scopeLabel}-terminology`}
           label="Terminology"
+          errorMessage={errors.guidance?.terminology?.message}
           {...register("guidance.terminology")}
         />
-        <GuidanceField id={`ctx-${scopeLabel}-style`} label="Style" {...register("guidance.style")} />
+        <GuidanceField
+          id={`ctx-${scopeLabel}-style`}
+          label="Style"
+          errorMessage={errors.guidance?.style?.message}
+          {...register("guidance.style")}
+        />
       </fieldset>
 
       <div className="flex items-center gap-3">
@@ -369,17 +377,25 @@ function RestrictionListField({
 function GuidanceField({
   id,
   label,
+  errorMessage,
   ...registerProps
-}: { id: string; label: string } & React.ComponentPropsWithRef<"textarea">) {
+}: { id: string; label: string; errorMessage?: string } & React.ComponentPropsWithRef<"textarea">) {
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <textarea
         id={id}
         rows={2}
+        aria-invalid={errorMessage ? true : undefined}
+        aria-describedby={errorMessage ? `${id}-err` : undefined}
         className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm placeholder:text-[var(--color-muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
         {...registerProps}
       />
+      {errorMessage ? (
+        <p id={`${id}-err`} role="alert" className="text-sm text-[var(--color-destructive)]">
+          {errorMessage}
+        </p>
+      ) : null}
     </div>
   );
 }

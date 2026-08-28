@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import type { GovContext } from "@wpmgr/api";
 
 import { renderWithProviders } from "@/test/render";
@@ -139,5 +139,62 @@ describe("GovContextEditor — no false positives when there is no error", () =>
     expect(
       screen.queryByRole("button", { name: /reload the latest version/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("GovContextEditor — a rejected guidance value tells the operator why", () => {
+  // CodeRabbit finding on #566: contextFormSchema rejects a guidance value
+  // over 2,000 characters, handleSubmit correctly never calls onSave for it —
+  // but GuidanceField rendered no error at all, so the operator just saw the
+  // save silently do nothing.
+  it("shows a validation error on the specific field that failed, with aria-invalid/aria-describedby wired", async () => {
+    const onSave = vi.fn();
+    renderWithProviders(
+      <GovContextEditor
+        scopeLabel="site"
+        current={buildContext()}
+        onSave={onSave}
+        onReloadLatest={vi.fn()}
+        saveError={null}
+        isSaving={false}
+        canWrite
+      />,
+    );
+
+    const brandVoice = screen.getByLabelText("Brand voice");
+    fireEvent.change(brandVoice, { target: { value: "x".repeat(2001) } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const error = await screen.findByText(/expected string to have <=2000 characters/i);
+    expect(error).toBeInTheDocument();
+    expect(error).toHaveAttribute("role", "alert");
+    expect(brandVoice).toHaveAttribute("aria-invalid", "true");
+    expect(brandVoice).toHaveAttribute("aria-describedby", error.id);
+    // Non-vacuous: the save must genuinely be blocked, not just decorated
+    // with an error while still submitting.
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("shows no guidance errors when every field is valid (must not over-fire)", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(
+      <GovContextEditor
+        scopeLabel="site"
+        current={buildContext()}
+        onSave={onSave}
+        onReloadLatest={vi.fn()}
+        saveError={null}
+        isSaving={false}
+        canWrite
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Brand voice"), {
+      target: { value: "Friendly and direct." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
