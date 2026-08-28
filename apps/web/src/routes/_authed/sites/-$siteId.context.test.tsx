@@ -102,8 +102,17 @@ describe("site context tab — canWrite follows Decision 6, not the org-admin ce
     );
   });
 
-  it("owner and admin remain writable (must not regress)", async () => {
+  // CodeRabbit finding on #566: these two used to share one test, mounting a
+  // second tree without unmounting the first — `screen.findByTestId` then
+  // has two matching elements in the document at once, which is undefined
+  // behaviour for a `getBy*`-style query even on a run where it happens not
+  // to throw. Split into separate tests so each gets its own render/cleanup
+  // cycle, same as every other case in this file.
+  it("an OWNER remains writable (must not regress)", async () => {
     expect(await renderAs("owner")).toHaveTextContent("canWrite=true");
+  });
+
+  it("an ADMIN remains writable (must not regress)", async () => {
     expect(await renderAs("admin")).toHaveTextContent("canWrite=true");
   });
 
