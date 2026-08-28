@@ -268,14 +268,15 @@ func toEffectiveContextDTO(rc ResolvedContext) effectiveContextDTO {
 	layers := make([]layerContributionDTO, 0, len(rc.Layers))
 	for _, l := range rc.Layers {
 		layers = append(layers, layerContributionDTO{
-			Layer:        l.Layer,
-			Name:         l.Name,
-			Restrictions: l.Restrictions,
-			Guidance:     l.Guidance,
-			Facts:        l.Facts,
-			Session:      l.Session,
-			Bytes:        l.Bytes,
-			Truncated:    l.Truncated,
+			Layer:            l.Layer,
+			Name:             l.Name,
+			Restrictions:     l.Restrictions,
+			Guidance:         l.Guidance,
+			Facts:            l.Facts,
+			FactsUnavailable: l.FactsUnavailable,
+			Session:          l.Session,
+			Bytes:            l.Bytes,
+			Truncated:        l.Truncated,
 		})
 	}
 	return effectiveContextDTO{
