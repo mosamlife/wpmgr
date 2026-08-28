@@ -70,6 +70,11 @@ type fakeStore struct {
 	// revealed.
 	raceLost bool
 
+	// tokenPersistErr makes the token INSERT fail inside the redeem
+	// transaction. The consume rolls back with it, which is the property the
+	// atomicity proof asserts.
+	tokenPersistErr error
+
 	recheck   sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow
 	recheckOK bool
 
@@ -144,16 +149,32 @@ func (f *fakeStore) LookupAuthorizationCode(_ context.Context, _ string) (sqlc.G
 	return row, nil
 }
 
-func (f *fakeStore) ConsumeAuthorizationCode(_ context.Context, _, _ uuid.UUID) (sqlc.McpAuthorizationCode, error) {
-	f.note("ConsumeAuthorizationCode")
+// RedeemAuthorizationCode models ONE TRANSACTION: the compare-and-set and the
+// token insert either both land or neither does.
+//
+// The rollback is what makes this fake honest. When tokenPersistErr is set the
+// insert fails, so `consumed` is NOT flipped -- exactly as the real transaction
+// would roll the UPDATE back. A fake that marked the code consumed and then
+// returned the error would model two commits, which is the defect being fixed,
+// and the test would pass against the broken code.
+func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
+	f.note("RedeemAuthorizationCode")
 	f.consumeCalls++
+
+	// The compare-and-set runs first, inside the transaction.
 	if f.raceLost || f.consumed {
-		// The predicate `consumed_at IS NULL` matched nothing. :one turns that
-		// into ErrNoRows. This is the loser of a concurrent exchange.
-		return sqlc.McpAuthorizationCode{}, pgx.ErrNoRows
+		// `consumed_at IS NULL` matched nothing; :one turns that into ErrNoRows.
+		return sqlc.McpConnectionToken{}, pgx.ErrNoRows
 	}
+	// Then the insert. If it fails the whole transaction rolls back, so the
+	// consume never becomes visible and the code remains redeemable.
+	if f.tokenPersistErr != nil {
+		return sqlc.McpConnectionToken{}, f.tokenPersistErr
+	}
+
 	f.consumed = true
-	return sqlc.McpAuthorizationCode{ID: f.code.ID, TenantID: f.code.TenantID}, nil
+	f.tokensMinted++
+	return sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID}, nil
 }
 
 func (f *fakeStore) CreateGrantWithCode(_ context.Context, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
@@ -162,12 +183,6 @@ func (f *fakeStore) CreateGrantWithCode(_ context.Context, g sqlc.CreateMCPGrant
 	cp := mk(id)
 	return sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name},
 		sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
-}
-
-func (f *fakeStore) CreateConnectionToken(_ context.Context, arg sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
-	f.note("CreateConnectionToken")
-	f.tokensMinted++
-	return sqlc.McpConnectionToken{ID: uuid.New(), TenantID: arg.TenantID, GrantID: arg.GrantID}, nil
 }
 
 func (f *fakeStore) LookupConnectionToken(_ context.Context, _ string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error) {

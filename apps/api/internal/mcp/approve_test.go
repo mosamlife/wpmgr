@@ -418,9 +418,13 @@ func TestExchange_ConfidentialClientMustPresentItsSecret(t *testing.T) {
 			clientOK: true, client: confidentialClient(secret),
 		}
 	}
+	// ClientAuthVia is set to the REGISTERED transport throughout, so each
+	// subtest isolates the property it names rather than being refused by the
+	// transport check before reaching it.
 	base := TokenRequest{
 		GrantType: "authorization_code", Code: "c", RedirectURI: registeredRedirect,
 		ClientID: registeredClientID, CodeVerifier: verifier,
+		ClientAuthVia: "client_secret_basic",
 	}
 
 	t.Run("no secret at all", func(t *testing.T) {

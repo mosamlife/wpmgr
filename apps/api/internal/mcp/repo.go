@@ -27,10 +27,14 @@ type Store interface {
 	LookupClient(ctx context.Context, clientID string) (sqlc.McpOauthClient, error)
 
 	LookupAuthorizationCode(ctx context.Context, codeHash string) (sqlc.GetMCPAuthorizationCodeByHashForLookupRow, error)
-	ConsumeAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID) (sqlc.McpAuthorizationCode, error)
+
+	// RedeemAuthorizationCode consumes the code AND issues the token in ONE
+	// transaction. There is deliberately no way to do only half of it: a
+	// separate consume would let a failure between the two commits burn a code
+	// that never produced a token, stranding a client that did nothing wrong.
+	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error)
 
 	CreateGrantWithCode(ctx context.Context, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
-	CreateConnectionToken(ctx context.Context, arg sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error)
 
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
@@ -123,21 +127,45 @@ func (r *Repo) LookupAuthorizationCode(ctx context.Context, codeHash string) (sq
 	return out, err
 }
 
-// ConsumeAuthorizationCode performs the atomic compare-and-set, in its own
-// InTenantTx, as m124 obligation 1 requires.
+// RedeemAuthorizationCode consumes the code and issues the connection token in
+// ONE InTenantTx. Either both land or neither does.
 //
-// The query is :one over a predicate carrying `consumed_at IS NULL AND
-// expires_at > now()`, so pgx.ErrNoRows means the code was NOT consumed --
-// redeemed by a racing exchange, expired between the two transactions, or
-// refused by RLS. All three mean refuse, and the caller must never read "no
-// row" as "already fine".
-func (r *Repo) ConsumeAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID) (sqlc.McpAuthorizationCode, error) {
-	var out sqlc.McpAuthorizationCode
+// THE CONSUME IS STILL THE COMPARE-AND-SET, and it still runs in a transaction
+// separate from the LOOKUP -- that separation is m124 obligation 1 and it is
+// not what changed here. The query is :one over a predicate carrying
+// `consumed_at IS NULL AND expires_at > now()`, so pgx.ErrNoRows means the code
+// was NOT consumed: redeemed by a racing exchange, expired between the lookup
+// and now, or refused by RLS. All three mean refuse, and the caller must never
+// read "no row" as "already fine".
+//
+// WHY THE TOKEN INSERT JOINED IT. These were two commits. Burning the code
+// before minting the token is the correct ORDER -- the reverse risks two tokens
+// from one code -- but as separate commits a failure in between left a state
+// that is safe and useless: the code permanently consumed, no token issued, and
+// a client that did nothing wrong unable to retry and forced to restart the
+// whole browser flow with nothing explaining why. One transaction removes the
+// window rather than documenting it.
+//
+// Ordering inside the transaction is unchanged and still matters: the
+// compare-and-set runs FIRST, so two concurrent exchanges still produce exactly
+// one winner. The loser's INSERT never runs because its UPDATE matched nothing.
+func (r *Repo) RedeemAuthorizationCode(
+	ctx context.Context,
+	tenantID, codeID uuid.UUID,
+	tok sqlc.CreateMCPConnectionTokenParams,
+) (sqlc.McpConnectionToken, error) {
+	var out sqlc.McpConnectionToken
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).ConsumeMCPAuthorizationCodeInTenantTx(ctx,
-			sqlc.ConsumeMCPAuthorizationCodeInTenantTxParams{TenantID: tenantID, ID: codeID})
+		q := sqlc.New(tx)
+		if _, err := q.ConsumeMCPAuthorizationCodeInTenantTx(ctx,
+			sqlc.ConsumeMCPAuthorizationCodeInTenantTxParams{TenantID: tenantID, ID: codeID}); err != nil {
+			return err // pgx.ErrNoRows is meaningful to the caller
+		}
+		row, err := q.CreateMCPConnectionToken(ctx, tok)
 		if err != nil {
-			return err
+			// Rolls the consume back with it. The code stays redeemable, which
+			// is the whole point of the single transaction.
+			return fmt.Errorf("create mcp connection token: %w", err)
 		}
 		out = row
 		return nil
@@ -175,20 +203,6 @@ func (r *Repo) CreateGrantWithCode(
 		return nil
 	})
 	return grant, code, err
-}
-
-// CreateConnectionToken stores the hashed bearer token under InTenantTx.
-func (r *Repo) CreateConnectionToken(ctx context.Context, arg sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
-	var out sqlc.McpConnectionToken
-	err := r.pool.InTenantTx(ctx, arg.TenantID, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).CreateMCPConnectionToken(ctx, arg)
-		if err != nil {
-			return fmt.Errorf("create mcp connection token: %w", err)
-		}
-		out = row
-		return nil
-	})
-	return out, err
 }
 
 // LookupConnectionToken resolves a bearer token by hash under

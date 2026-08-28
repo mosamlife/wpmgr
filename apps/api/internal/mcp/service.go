@@ -473,7 +473,25 @@ type TokenRequest struct {
 	ClientID     string
 	ClientSecret string
 	CodeVerifier string
+
+	// ClientAuthVia is HOW the credential arrived, not whether it is valid:
+	// "client_secret_basic" (Authorization: Basic), "client_secret_post" (body
+	// parameters), "none" (no secret presented at all), or AuthViaMultiple when
+	// the client used more than one at once.
+	//
+	// It exists because token_endpoint_auth_method is NOT NULL over a closed set
+	// with no default -- the value is always a decision somebody made at
+	// registration -- and a stored decision that nothing honours is a field that
+	// looks like it governs behaviour and does not. The handler determines the
+	// source; only the handler can see the transport.
+	ClientAuthVia string
 }
+
+// AuthViaMultiple marks a request that presented credentials through more than
+// one mechanism. RFC 6749 section 2.3.1: "The client MUST NOT use more than one
+// authentication method in each request." Refusing is the only reading that
+// does not require guessing which one the client meant.
+const AuthViaMultiple = "multiple"
 
 // IssuedToken is the token response. AccessToken is present exactly once.
 type IssuedToken struct {
@@ -500,6 +518,17 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	if strings.TrimSpace(req.CodeVerifier) == "" {
 		return IssuedToken{}, domain.Validation(ErrCodeInvalidRequest,
 			"code_verifier is required; this server requires PKCE")
+	}
+	// RFC 6749 section 2.3.1: "The client MUST NOT use more than one
+	// authentication method in each request." This is a property of the REQUEST
+	// SHAPE, independent of whether the code is valid, so it is refused here
+	// with the other shape checks rather than after a credential lookup. A
+	// request carrying both a Basic header and body credentials gives no honest
+	// answer to "which method did the client use", and picking one by precedence
+	// would be a guess.
+	if req.ClientAuthVia == AuthViaMultiple {
+		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+			"present client credentials through exactly one mechanism, not several")
 	}
 
 	// 1. READ ONLY. This transaction must not write -- see repo.go.
@@ -545,6 +574,25 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 		return IssuedToken{}, fmt.Errorf("lookup client: %w", err)
 	}
 	if client.TokenEndpointAuthMethod != "none" {
+		// THE REGISTERED TRANSPORT IS ENFORCED, NOT MERELY RECORDED.
+		//
+		// token_endpoint_auth_method is NOT NULL over a closed set with no
+		// default precisely so the value is always a decision. Accepting a
+		// secret through a mechanism the client did not register would make the
+		// column decorative -- the same shape as a column no statement can
+		// write, which m126 deleted rather than leave lying around.
+		//
+		// RFC 6749 2.3.1 requires a server to support Basic and permits the body
+		// form; it does not require accepting whichever one shows up. A client
+		// that registered client_secret_basic and then posts its secret in a
+		// body has either been misconfigured or is not the client it claims to
+		// be, and both deserve a refusal rather than a token. The strict reading
+		// costs a registered client nothing, because it chose the value.
+		if req.ClientAuthVia != client.TokenEndpointAuthMethod {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+				fmt.Sprintf("this client registered %s; credentials presented via %s are refused",
+					client.TokenEndpointAuthMethod, req.ClientAuthVia))
+		}
 		// The schema's secret_matches_method_check guarantees a non-'none'
 		// client HAS a hash, so a nil here is an impossible row rather than a
 		// public client. Refuse rather than treat it as "no secret required" --
@@ -564,6 +612,15 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
 				"client authentication failed")
 		}
+	} else if req.ClientAuthVia != "" && req.ClientAuthVia != "none" {
+		// A PUBLIC CLIENT PRESENTING A SECRET IS REFUSED. 'none' means there is
+		// no secret to compare against (m124 DECISION 11 makes the row shape
+		// unrepresentable), so accepting a credential here would be accepting
+		// one that nothing verifies -- absence of a stored secret read as
+		// "anything matches", which is the exact reflex that decision exists to
+		// prevent.
+		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidClient,
+			"this client registered token_endpoint_auth_method=none and must not present a secret")
 	}
 	if req.RedirectURI != row.RedirectUri {
 		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
@@ -593,35 +650,45 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 			"code_verifier does not match the code_challenge")
 	}
 
-	// 5. CONSUME, in its own InTenantTx. This is m124 obligation 1.
+	// 5. REDEEM: consume the code and issue the token IN ONE TRANSACTION.
 	//
-	// pgx.ErrNoRows here means the row was NOT updated: a racing exchange won,
-	// or it expired between the transactions, or RLS refused the write. All
-	// three mean refuse. Treating "no row" as "already fine" is exactly how
-	// single-use becomes multi-use, so there is no such branch.
-	if _, err := s.store.ConsumeAuthorizationCode(ctx, row.TenantID, row.ID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
-				"the authorization code could not be redeemed; it was already used or has expired")
-		}
-		return IssuedToken{}, fmt.Errorf("consume authorization code: %w", err)
-	}
-
-	// 6. Only now does a credential exist.
+	// The credential is generated before the call because the insert needs its
+	// hash, but nothing has been persisted yet -- a failure here leaves no trace
+	// and the code stays redeemable.
 	secret, err := randomToken(32)
 	if err != nil {
 		return IssuedToken{}, fmt.Errorf("generate connection token: %w", err)
 	}
 	expiresAt := s.now().UTC().Add(connectionTokenTTL)
-	if _, err := s.store.CreateConnectionToken(ctx, sqlc.CreateMCPConnectionTokenParams{
-		TenantID:    row.TenantID,
-		GrantID:     row.GrantID,
-		TokenPrefix: secret[:tokenPrefixLen],
-		TokenHash:   hashCredential(secret),
-		Status:      string(GrantStatusActive),
-		ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
-	}); err != nil {
-		return IssuedToken{}, fmt.Errorf("create connection token: %w", err)
+
+	// ATOMIC BY CONSTRUCTION. These used to be two commits, and the ORDER was
+	// right -- burn the code, then mint -- because the reverse risks two tokens
+	// from one code. But two commits meant a failure in between left a state
+	// that is safe and useless: code permanently consumed, no token issued, and
+	// a blameless client unable to retry and forced to restart the whole browser
+	// flow with nothing to explain it. One transaction removes the window
+	// instead of documenting it.
+	//
+	// pgx.ErrNoRows means the compare-and-set matched nothing: a racing exchange
+	// won, it expired since the lookup, or RLS refused the write. All three mean
+	// refuse. Treating "no row" as "already fine" is exactly how single-use
+	// becomes multi-use, so there is no such branch.
+	if _, err := s.store.RedeemAuthorizationCode(ctx, row.TenantID, row.ID,
+		sqlc.CreateMCPConnectionTokenParams{
+			TenantID:    row.TenantID,
+			GrantID:     row.GrantID,
+			TokenPrefix: secret[:tokenPrefixLen],
+			TokenHash:   hashCredential(secret),
+			Status:      string(GrantStatusActive),
+			ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
+		}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
+				"the authorization code could not be redeemed; it was already used or has expired")
+		}
+		// The consume rolled back with the failure, so the code is still
+		// redeemable and the client may retry this exact request.
+		return IssuedToken{}, fmt.Errorf("redeem authorization code: %w", err)
 	}
 
 	return IssuedToken{

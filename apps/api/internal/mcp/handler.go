@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -168,21 +169,40 @@ func (h *Handler) token(c *gin.Context) {
 		return
 	}
 
-	// RFC 6749 2.3.1 prefers HTTP Basic for client_secret_basic and permits the
-	// body for client_secret_post. Basic wins when both are present, so a body
-	// parameter cannot override a header the client actually authenticated with.
+	// DETERMINE HOW THE CREDENTIAL ARRIVED, and pass that to the service so the
+	// registered token_endpoint_auth_method can be enforced rather than merely
+	// recorded. Only the handler can see the transport.
+	//
+	// This used to let Basic silently win when both were present, which
+	// discarded the credential source entirely: a client_secret_basic
+	// registration could authenticate with body parameters and vice versa, and
+	// the stored decision governed nothing. RFC 6749 2.3.1 also forbids using
+	// more than one mechanism per request, so presenting both is refused rather
+	// than resolved by precedence.
 	clientID, clientSecret := body.ClientID, body.ClientSecret
-	if id, secret, ok := c.Request.BasicAuth(); ok {
-		clientID, clientSecret = id, secret
+	authVia := "none"
+	basicID, basicSecret, hasBasic := c.Request.BasicAuth()
+	hasPost := strings.TrimSpace(body.ClientSecret) != ""
+
+	switch {
+	case hasBasic && hasPost:
+		authVia = AuthViaMultiple
+	case hasBasic:
+		clientID, clientSecret, authVia = basicID, basicSecret, "client_secret_basic"
+	case hasPost:
+		authVia = "client_secret_post"
 	}
+	// client_id may still travel in the body for a public client, which sends no
+	// secret at all; that is the "none" path and it is unchanged.
 
 	out, err := h.svc.Exchange(c.Request.Context(), TokenRequest{
 		GrantType:    body.GrantType,
 		Code:         body.Code,
 		RedirectURI:  body.RedirectURI,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		CodeVerifier: body.CodeVerifier,
+		ClientID:      clientID,
+		ClientSecret:  clientSecret,
+		CodeVerifier:  body.CodeVerifier,
+		ClientAuthVia: authVia,
 	})
 	if err != nil {
 		status, dto := oauthError(err)
