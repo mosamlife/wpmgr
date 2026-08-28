@@ -7287,8 +7287,9 @@ paths:
       description: |
         Returns the cached list of plugins/themes (and core) that have an update
         available, derived from the agent's last metadata sync. Items are sorted
-        core -> plugins -> themes, with active before inactive. `as_of` is the
-        site's last update timestamp. Requires viewer+.
+        core -> plugins -> themes, with active before inactive. `as_of` is when
+        that inventory was collected (GH #553); null when it never has been.
+        Requires viewer+.
       tags: [updates]
       parameters:
         - $ref: "#/components/parameters/SiteId"
@@ -13553,6 +13554,13 @@ components:
         as_of:
           type: [string, "null"]
           format: date-time
+          description: |
+            GH #553 — sites.components_updated_at: the control-plane instant this
+            inventory was last collected (stamped by the agent metadata push that
+            wrote `components`, never by the connection heartbeat). Explicit null
+            when the inventory has never been collected; never falls back to the
+            site's general updated_at, which the heartbeat bumps independently of
+            components and would silently overstate freshness.
     SiteTags:
       type: object
       required: [tags]

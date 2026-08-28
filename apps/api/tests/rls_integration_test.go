@@ -170,6 +170,14 @@ func startPostgres(t *testing.T) *db.Pool {
 		// audit_log is append-only: re-revoke mutation in case the blanket grant
 		// above re-added it.
 		"REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM wpmgr_app",
+		// The m122/ADR-064 context tables are append-only for the same reason
+		// and by the same mechanism, so they need the same re-revoke. Without
+		// these two lines the blanket GRANT above hands wpmgr_app an UPDATE it
+		// does not hold in production, and every test in this package would run
+		// against privileges no real install has -- including the append-only
+		// proofs, which would then pass by testing nothing.
+		"REVOKE UPDATE, DELETE, TRUNCATE ON org_context_versions FROM wpmgr_app",
+		"REVOKE UPDATE, DELETE, TRUNCATE ON site_context_versions FROM wpmgr_app",
 	} {
 		if _, err := adminPool.Exec(ctx, stmt); err != nil {
 			setupFatalf(t, err, "postgres: provision app role ("+stmt+")")

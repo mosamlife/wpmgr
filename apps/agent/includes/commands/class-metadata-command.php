@@ -361,6 +361,28 @@ final class MetadataCommand implements CommandInterface
      * force-refreshes that transient before the metadata push so dashboards
      * see fresh data within the 30-minute cadence.
      *
+     * `active` is the union of per-site activation (`active_plugins`, a LIST
+     * of plugin files, from `get_option()`) and network-wide activation on
+     * multisite (`active_sitewide_plugins`, a MAP keyed by plugin file with
+     * activation timestamps as values, from `get_site_option()` — a
+     * different option AND a different shape). A network-activated plugin
+     * never appears in `active_plugins`, so without this union it is
+     * reported inactive on every site in the network even when it is
+     * running on all of them. Mirrors
+     * DbCleanup::buildInstalledPluginsSnapshot() Pass 4, the existing
+     * reference implementation of this same union.
+     *
+     * The wire contract has no field to distinguish "active on this subsite
+     * only" from "active network-wide" — `active` is a single bool. A
+     * distinguishing field was deliberately not added: the control plane's
+     * persistence (sanitizeComponents() in apps/api/internal/site/service.go)
+     * already reconstructs each Component from only
+     * slug/name/version/active/available_update and drops every other field
+     * the agent sends (plugin_uri/update_uri/author_uri/network included), so
+     * a new field here would be silently discarded server-side rather than
+     * stored. The union is reported as `active`; the subsite-vs-network
+     * distinction is not carried to the control plane.
+     *
      * @return array<int,array{slug:string,name:string,version:string,active:bool,available_update:?array{new_version:string,package:?string,tested:?string,requires_php:?string}}>
      */
     private function plugins(): array
@@ -375,6 +397,18 @@ final class MetadataCommand implements CommandInterface
         foreach ($active as $a) {
             if (is_string($a)) {
                 $activeSet[$a] = true;
+            }
+        }
+
+        // Network-activated plugins (multisite). See docblock above.
+        if (function_exists('is_multisite') && is_multisite() && function_exists('get_site_option')) {
+            $networkActive = get_site_option('active_sitewide_plugins');
+            if (is_array($networkActive)) {
+                foreach (array_keys($networkActive) as $file) {
+                    if (is_string($file) && $file !== '') {
+                        $activeSet[$file] = true;
+                    }
+                }
             }
         }
 

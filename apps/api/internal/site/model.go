@@ -133,6 +133,17 @@ type Site struct {
 	// health verdict was last confirmed. Populated by repo.Get/List from
 	// site_uptime_status (PK-keyed, inside the same RLS-scoped tx).
 	HealthCheckedAt *time.Time
+	// ComponentsUpdatedAt is sites.components_updated_at (m121, GH #553): the
+	// control-plane write instant of the last UpdateSiteMetadata call, i.e. the
+	// age of the Components inventory. Nil means the inventory has never been
+	// collected — every pre-m121 row, and any row that has never synced.
+	//
+	// NOT UpdatedAt. sites.updated_at is bumped by the 60s heartbeat
+	// (TouchSiteHeartbeat), which never touches Components, so it can only ever
+	// overstate inventory freshness. This is the field getAvailableUpdates' as_of
+	// must read; falling back to UpdatedAt when this is nil silently recreates
+	// GH #553.
+	ComponentsUpdatedAt *time.Time
 }
 
 // CreateInput is the validated input for creating a site under a tenant.
