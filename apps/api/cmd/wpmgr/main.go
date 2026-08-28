@@ -55,6 +55,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
 	"github.com/mosamlife/wpmgr/apps/api/internal/files"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/httpclient"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/ipprovider"
@@ -2468,6 +2469,18 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// subscription to protect, so this is a no-op there).
 	orgH.SetHosted(cfg.Hosted.Enabled)
 
+	// ADR-064 slice S4 — governed org/site context. Facts (layer 4) is left
+	// unwired (nil) in this slice: SiteFactsProvider degrades a nil provider
+	// to an always-empty layer 4 (resolver.go), which is the correct,
+	// already-handled state for "no facts source wired yet" — the same shape
+	// as layer 5 (no skill store exists either). Wiring a real facts source
+	// is future work, not a correctness gap: only layers 2/3 (the stored
+	// context tables) can fail resolution outright (Decision 14).
+	govContextRepo := govcontext.NewRepo(pool)
+	govContextResolver := &govcontext.Resolver{Store: govContextRepo}
+	govContextSvc := govcontext.NewService(govContextRepo, auditRec, govContextResolver)
+	govContextH := govcontext.NewHandler(govContextSvc)
+
 	// Invitation service + handler.
 	var invitationMailer invitation.Mailer
 	if cfg.SMTP.Enabled() {
@@ -2802,6 +2815,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		// M5.7 — Orgs + Sharing + Invitations.
 		OrgH:        orgH,
 		SharingH:    sharingH,
+		GovContextH: govContextH,
 		InvitationH: invitationH,
 		// M23 — Media Optimizer.
 		MediaH:      mediaH,

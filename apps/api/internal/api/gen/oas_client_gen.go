@@ -1168,6 +1168,20 @@ type Invoker interface {
 	//
 	// DELETE /auth/2fa/webauthn/credentials/{id}
 	DeleteWebAuthnCredential(ctx context.Context, request *DeleteWebAuthnCredentialReq, params DeleteWebAuthnCredentialParams) (DeleteWebAuthnCredentialRes, error)
+	// DiffOrgContextVersion invokes diffOrgContextVersion operation.
+	//
+	// `baseline: true` means there is no eligible predecessor to diff against (ADR-064 Decision 5) — the
+	// version's own first write — and `prior`/`diff` are both null.
+	//
+	// GET /api/v1/orgs/{orgId}/context/versions/{versionId}/diff
+	DiffOrgContextVersion(ctx context.Context, params DiffOrgContextVersionParams) (DiffOrgContextVersionRes, error)
+	// DiffSiteContextVersion invokes diffSiteContextVersion operation.
+	//
+	// `baseline: true` covers both a genuine first version and the first version after a site transfer,
+	// whose immediately-prior row is sealed to the source organisation (ADR-064 Decisions 5 and 12).
+	//
+	// GET /api/v1/sites/{siteId}/context/versions/{versionId}/diff
+	DiffSiteContextVersion(ctx context.Context, params DiffSiteContextVersionParams) (DiffSiteContextVersionRes, error)
 	// DisableCache invokes disableCache operation.
 	//
 	// Turns off agent-side page caching. Returns an `{ok, detail}` ack. Requires the `site.cache.manage`
@@ -1514,6 +1528,15 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/perf/db/scan
 	GetDbScanResult(ctx context.Context, params GetDbScanResultParams) (*GetDbScanResultOK, error)
+	// GetEffectiveSiteContext invokes getEffectiveSiteContext operation.
+	//
+	// Calls the SAME resolution function a future model-facing assembly path calls, with no live session
+	// content (layer 6 is always empty here — a preview request has no run behind it). If resolution
+	// cannot complete, the call is refused with `503 context_unavailable` (ADR-064 Decision 14) rather
+	// than returning a partial or empty result.
+	//
+	// GET /api/v1/sites/{siteId}/context/effective
+	GetEffectiveSiteContext(ctx context.Context, params GetEffectiveSiteContextParams) (GetEffectiveSiteContextRes, error)
 	// GetEmailNotifySettings invokes getEmailNotifySettings operation.
 	//
 	// Returns the tenant-level email alert and digest notification settings. Always returns 200 with
@@ -1694,6 +1717,21 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/perf/object-cache/stats-history
 	GetObjectCacheStatsHistory(ctx context.Context, params GetObjectCacheStatsHistoryParams) (*ObjectCacheStatsHistory, error)
+	// GetOrgContext invokes getOrgContext operation.
+	//
+	// Returns the latest context version, or a synthetic version 0 with empty restrictions/guidance when
+	// the organisation has never authored any (a legitimate empty state, not a 404). Readable by any
+	// principal with fleet-read access to the organisation, including a site-scoped collaborator whose
+	// site belongs to it (ADR-064 Decision 6).
+	//
+	// GET /api/v1/orgs/{orgId}/context
+	GetOrgContext(ctx context.Context, params GetOrgContextParams) (GetOrgContextRes, error)
+	// GetOrgContextVersion invokes getOrgContextVersion operation.
+	//
+	// Get one organisation context version's full snapshot.
+	//
+	// GET /api/v1/orgs/{orgId}/context/versions/{versionId}
+	GetOrgContextVersion(ctx context.Context, params GetOrgContextVersionParams) (GetOrgContextVersionRes, error)
 	// GetOrgEmailConfig invokes getOrgEmailConfig operation.
 	//
 	// Returns the org-wide default email configuration. Sites with no per-site config inherit this row.
@@ -1836,6 +1874,18 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/updates/available
 	GetSiteAvailableUpdates(ctx context.Context, params GetSiteAvailableUpdatesParams) (GetSiteAvailableUpdatesRes, error)
+	// GetSiteContext invokes getSiteContext operation.
+	//
+	// Get a site's current context (ADR-064 layer 3).
+	//
+	// GET /api/v1/sites/{siteId}/context
+	GetSiteContext(ctx context.Context, params GetSiteContextParams) (GetSiteContextRes, error)
+	// GetSiteContextVersion invokes getSiteContextVersion operation.
+	//
+	// Get one site context version's full snapshot.
+	//
+	// GET /api/v1/sites/{siteId}/context/versions/{versionId}
+	GetSiteContextVersion(ctx context.Context, params GetSiteContextVersionParams) (GetSiteContextVersionRes, error)
 	// GetSiteDestination invokes getSiteDestination operation.
 	//
 	// Read one configured destination.
@@ -2193,6 +2243,12 @@ type Invoker interface {
 	//
 	// GET /auth/me/identities
 	ListMyIdentities(ctx context.Context) (ListMyIdentitiesRes, error)
+	// ListOrgContextVersions invokes listOrgContextVersions operation.
+	//
+	// List an organisation's context version history.
+	//
+	// GET /api/v1/orgs/{orgId}/context/versions
+	ListOrgContextVersions(ctx context.Context, params ListOrgContextVersionsParams) (ListOrgContextVersionsRes, error)
 	// ListOrgs invokes listOrgs operation.
 	//
 	// List the caller's organisations, with their role in each.
@@ -2313,6 +2369,13 @@ type Invoker interface {
 	//
 	// GET /api/v1/sites/{siteId}/security/bans
 	ListSiteBans(ctx context.Context, params ListSiteBansParams) (ListSiteBansRes, error)
+	// ListSiteContextVersions invokes listSiteContextVersions operation.
+	//
+	// Scoped to versions stamped with the site's CURRENT organisation (ADR-064 Decision 13): a
+	// pre-transfer version is retained but excluded.
+	//
+	// GET /api/v1/sites/{siteId}/context/versions
+	ListSiteContextVersions(ctx context.Context, params ListSiteContextVersionsParams) (ListSiteContextVersionsRes, error)
 	// ListSiteDestinations invokes listSiteDestinations operation.
 	//
 	// ADR-036 P1 storage adapter. Returns every destination configured on the site (`cp` / `local` /
@@ -2522,6 +2585,26 @@ type Invoker interface {
 	//
 	// PATCH /api/v1/members/{userId}
 	PatchMember(ctx context.Context, request *PatchMemberRequest, params PatchMemberParams) (PatchMemberRes, error)
+	// PatchOrgContext invokes patchOrgContext operation.
+	//
+	// Applies a partial field set onto the latest version's full snapshot and authors a new version.
+	// Requires organisation-admin+ (`context.org.write`); a site-scoped collaborator can never reach this
+	// route regardless of role (ADR-064 Decision 6, m123).
+	//
+	// `base_version` is required — see ADR-064 open question 2. A mismatch against the current version
+	// is refused with `409 context_version_conflict` before anything else is checked.
+	//
+	// PATCH /api/v1/orgs/{orgId}/context
+	PatchOrgContext(ctx context.Context, request *PatchGovContextRequest, params PatchOrgContextParams) (PatchOrgContextRes, error)
+	// PatchSiteContext invokes patchSiteContext operation.
+	//
+	// Requires `context.site.write` (operator+) AND access to this specific site (ADR-064 Decision 6). The
+	// proposed restrictions are checked against BOTH the organisation's current layer-2 policy and WPmgr's
+	// fixed layer-1 policy — a rejection names whichever of the two it violates first. `base_version` is
+	// required (ADR-064 open question 2).
+	//
+	// PATCH /api/v1/sites/{siteId}/context
+	PatchSiteContext(ctx context.Context, request *PatchGovContextRequest, params PatchSiteContextParams) (PatchSiteContextRes, error)
 	// PatchSiteErrorConfig invokes patchSiteErrorConfig operation.
 	//
 	// Stores the PHP error-level mask and md5 ignore-list for the site, then pushes the new config to the
@@ -3040,6 +3123,14 @@ type Invoker interface {
 	//
 	// POST /api/v1/orgs/{orgId}/restore
 	RestoreOrg(ctx context.Context, params RestoreOrgParams) (RestoreOrgRes, error)
+	// RestoreOrgContextVersion invokes restoreOrgContextVersion operation.
+	//
+	// Creates a new version whose snapshot equals the target version's, provenance `restore` (ADR-064
+	// Decision 5). Not a back door around the never-widen check, the secret scan, or the fail-closed audit
+	// transaction — all three run exactly as they do for PATCH.
+	//
+	// POST /api/v1/orgs/{orgId}/context/versions/{versionId}/restore
+	RestoreOrgContextVersion(ctx context.Context, params RestoreOrgContextVersionParams) (RestoreOrgContextVersionRes, error)
 	// RestoreSite invokes restoreSite operation.
 	//
 	// M21 / ADR-041 — operator action. Un-archives a site back to `disconnected`. Only valid from
@@ -3047,6 +3138,14 @@ type Invoker interface {
 	//
 	// POST /api/v1/sites/{siteId}/restore
 	RestoreSite(ctx context.Context, params RestoreSiteParams) (RestoreSiteRes, error)
+	// RestoreSiteContextVersion invokes restoreSiteContextVersion operation.
+	//
+	// Refused unconditionally, for every caller, when versionId names a pre-transfer version (ADR-064
+	// Decision 12) — surfaced as `404`, the same response a genuinely nonexistent id gets, since the
+	// caller's own read access to a pre-transfer id already ended the same way.
+	//
+	// POST /api/v1/sites/{siteId}/context/versions/{versionId}/restore
+	RestoreSiteContextVersion(ctx context.Context, params RestoreSiteContextVersionParams) (RestoreSiteContextVersionRes, error)
 	// RestoreSiteFileVersion invokes restoreSiteFileVersion operation.
 	//
 	// Issues a `file_version_restore` command to the site's agent, which overwrites the file at `path`
@@ -14694,6 +14793,244 @@ func (c *Client) sendDeleteWebAuthnCredential(ctx context.Context, request *Dele
 	return result, nil
 }
 
+// DiffOrgContextVersion invokes diffOrgContextVersion operation.
+//
+// `baseline: true` means there is no eligible predecessor to diff against (ADR-064 Decision 5) — the
+// version's own first write — and `prior`/`diff` are both null.
+//
+// GET /api/v1/orgs/{orgId}/context/versions/{versionId}/diff
+func (c *Client) DiffOrgContextVersion(ctx context.Context, params DiffOrgContextVersionParams) (DiffOrgContextVersionRes, error) {
+	res, err := c.sendDiffOrgContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendDiffOrgContextVersion(ctx context.Context, params DiffOrgContextVersionParams) (res DiffOrgContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("diffOrgContextVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context/versions/{versionId}/diff"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, DiffOrgContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/diff"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeDiffOrgContextVersionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// DiffSiteContextVersion invokes diffSiteContextVersion operation.
+//
+// `baseline: true` covers both a genuine first version and the first version after a site transfer,
+// whose immediately-prior row is sealed to the source organisation (ADR-064 Decisions 5 and 12).
+//
+// GET /api/v1/sites/{siteId}/context/versions/{versionId}/diff
+func (c *Client) DiffSiteContextVersion(ctx context.Context, params DiffSiteContextVersionParams) (DiffSiteContextVersionRes, error) {
+	res, err := c.sendDiffSiteContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendDiffSiteContextVersion(ctx context.Context, params DiffSiteContextVersionParams) (res DiffSiteContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("diffSiteContextVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context/versions/{versionId}/diff"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, DiffSiteContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/diff"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeDiffSiteContextVersionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // DisableCache invokes disableCache operation.
 //
 // Turns off agent-side page caching. Returns an `{ok, detail}` ack. Requires the `site.cache.manage`
@@ -19102,6 +19439,108 @@ func (c *Client) sendGetDbScanResult(ctx context.Context, params GetDbScanResult
 	return result, nil
 }
 
+// GetEffectiveSiteContext invokes getEffectiveSiteContext operation.
+//
+// Calls the SAME resolution function a future model-facing assembly path calls, with no live session
+// content (layer 6 is always empty here — a preview request has no run behind it). If resolution
+// cannot complete, the call is refused with `503 context_unavailable` (ADR-064 Decision 14) rather
+// than returning a partial or empty result.
+//
+// GET /api/v1/sites/{siteId}/context/effective
+func (c *Client) GetEffectiveSiteContext(ctx context.Context, params GetEffectiveSiteContextParams) (GetEffectiveSiteContextRes, error) {
+	res, err := c.sendGetEffectiveSiteContext(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetEffectiveSiteContext(ctx context.Context, params GetEffectiveSiteContextParams) (res GetEffectiveSiteContextRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getEffectiveSiteContext"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context/effective"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetEffectiveSiteContextOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/effective"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetEffectiveSiteContextResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetEmailNotifySettings invokes getEmailNotifySettings operation.
 //
 // Returns the tenant-level email alert and digest notification settings. Always returns 200 with
@@ -20966,6 +21405,225 @@ func (c *Client) sendGetObjectCacheStatsHistory(ctx context.Context, params GetO
 	return result, nil
 }
 
+// GetOrgContext invokes getOrgContext operation.
+//
+// Returns the latest context version, or a synthetic version 0 with empty restrictions/guidance when
+// the organisation has never authored any (a legitimate empty state, not a 404). Readable by any
+// principal with fleet-read access to the organisation, including a site-scoped collaborator whose
+// site belongs to it (ADR-064 Decision 6).
+//
+// GET /api/v1/orgs/{orgId}/context
+func (c *Client) GetOrgContext(ctx context.Context, params GetOrgContextParams) (GetOrgContextRes, error) {
+	res, err := c.sendGetOrgContext(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetOrgContext(ctx context.Context, params GetOrgContextParams) (res GetOrgContextRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getOrgContext"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetOrgContextOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetOrgContextResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetOrgContextVersion invokes getOrgContextVersion operation.
+//
+// Get one organisation context version's full snapshot.
+//
+// GET /api/v1/orgs/{orgId}/context/versions/{versionId}
+func (c *Client) GetOrgContextVersion(ctx context.Context, params GetOrgContextVersionParams) (GetOrgContextVersionRes, error) {
+	res, err := c.sendGetOrgContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetOrgContextVersion(ctx context.Context, params GetOrgContextVersionParams) (res GetOrgContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getOrgContextVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context/versions/{versionId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetOrgContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetOrgContextVersionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetOrgEmailConfig invokes getOrgEmailConfig operation.
 //
 // Returns the org-wide default email configuration. Sites with no per-site config inherit this row.
@@ -22724,6 +23382,222 @@ func (c *Client) sendGetSiteAvailableUpdates(ctx context.Context, params GetSite
 
 	stage = "DecodeResponse"
 	result, err := decodeGetSiteAvailableUpdatesResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetSiteContext invokes getSiteContext operation.
+//
+// Get a site's current context (ADR-064 layer 3).
+//
+// GET /api/v1/sites/{siteId}/context
+func (c *Client) GetSiteContext(ctx context.Context, params GetSiteContextParams) (GetSiteContextRes, error) {
+	res, err := c.sendGetSiteContext(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteContext(ctx context.Context, params GetSiteContextParams) (res GetSiteContextRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteContext"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteContextOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteContextResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// GetSiteContextVersion invokes getSiteContextVersion operation.
+//
+// Get one site context version's full snapshot.
+//
+// GET /api/v1/sites/{siteId}/context/versions/{versionId}
+func (c *Client) GetSiteContextVersion(ctx context.Context, params GetSiteContextVersionParams) (GetSiteContextVersionRes, error) {
+	res, err := c.sendGetSiteContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetSiteContextVersion(ctx context.Context, params GetSiteContextVersionParams) (res GetSiteContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("getSiteContextVersion"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context/versions/{versionId}"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, GetSiteContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeGetSiteContextVersionResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -27924,6 +28798,143 @@ func (c *Client) sendListMyIdentities(ctx context.Context) (res ListMyIdentities
 	return result, nil
 }
 
+// ListOrgContextVersions invokes listOrgContextVersions operation.
+//
+// List an organisation's context version history.
+//
+// GET /api/v1/orgs/{orgId}/context/versions
+func (c *Client) ListOrgContextVersions(ctx context.Context, params ListOrgContextVersionsParams) (ListOrgContextVersionsRes, error) {
+	res, err := c.sendListOrgContextVersions(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListOrgContextVersions(ctx context.Context, params ListOrgContextVersionsParams) (res ListOrgContextVersionsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listOrgContextVersions"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context/versions"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListOrgContextVersionsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "cursor" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "cursor",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Cursor.Get(); ok {
+				return e.EncodeValue(conv.Int64ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListOrgContextVersionsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListOrgs invokes listOrgs operation.
 //
 // List the caller's organisations, with their role in each.
@@ -29882,6 +30893,144 @@ func (c *Client) sendListSiteBans(ctx context.Context, params ListSiteBansParams
 
 	stage = "DecodeResponse"
 	result, err := decodeListSiteBansResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ListSiteContextVersions invokes listSiteContextVersions operation.
+//
+// Scoped to versions stamped with the site's CURRENT organisation (ADR-064 Decision 13): a
+// pre-transfer version is retained but excluded.
+//
+// GET /api/v1/sites/{siteId}/context/versions
+func (c *Client) ListSiteContextVersions(ctx context.Context, params ListSiteContextVersionsParams) (ListSiteContextVersionsRes, error) {
+	res, err := c.sendListSiteContextVersions(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListSiteContextVersions(ctx context.Context, params ListSiteContextVersionsParams) (res ListSiteContextVersionsRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("listSiteContextVersions"),
+		semconv.HTTPRequestMethodKey.String("GET"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context/versions"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ListSiteContextVersionsOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeQueryParams"
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "cursor" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "cursor",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Cursor.Get(); ok {
+				return e.EncodeValue(conv.Int64ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "limit" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "limit",
+			Style:   uri.QueryStyleForm,
+			Explode: true,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Limit.Get(); ok {
+				return e.EncodeValue(conv.IntToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeListSiteContextVersionsResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -32822,6 +33971,218 @@ func (c *Client) sendPatchMember(ctx context.Context, request *PatchMemberReques
 
 	stage = "DecodeResponse"
 	result, err := decodePatchMemberResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PatchOrgContext invokes patchOrgContext operation.
+//
+// Applies a partial field set onto the latest version's full snapshot and authors a new version.
+// Requires organisation-admin+ (`context.org.write`); a site-scoped collaborator can never reach this
+// route regardless of role (ADR-064 Decision 6, m123).
+//
+// `base_version` is required — see ADR-064 open question 2. A mismatch against the current version
+// is refused with `409 context_version_conflict` before anything else is checked.
+//
+// PATCH /api/v1/orgs/{orgId}/context
+func (c *Client) PatchOrgContext(ctx context.Context, request *PatchGovContextRequest, params PatchOrgContextParams) (PatchOrgContextRes, error) {
+	res, err := c.sendPatchOrgContext(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPatchOrgContext(ctx context.Context, request *PatchGovContextRequest, params PatchOrgContextParams) (res PatchOrgContextRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("patchOrgContext"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PatchOrgContextOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePatchOrgContextRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodePatchOrgContextResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// PatchSiteContext invokes patchSiteContext operation.
+//
+// Requires `context.site.write` (operator+) AND access to this specific site (ADR-064 Decision 6). The
+// proposed restrictions are checked against BOTH the organisation's current layer-2 policy and WPmgr's
+// fixed layer-1 policy — a rejection names whichever of the two it violates first. `base_version` is
+// required (ADR-064 open question 2).
+//
+// PATCH /api/v1/sites/{siteId}/context
+func (c *Client) PatchSiteContext(ctx context.Context, request *PatchGovContextRequest, params PatchSiteContextParams) (PatchSiteContextRes, error) {
+	res, err := c.sendPatchSiteContext(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendPatchSiteContext(ctx context.Context, request *PatchGovContextRequest, params PatchSiteContextParams) (res PatchSiteContextRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("patchSiteContext"),
+		semconv.HTTPRequestMethodKey.String("PATCH"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, PatchSiteContextOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "PATCH", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodePatchSiteContextRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodePatchSiteContextResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -37983,6 +39344,126 @@ func (c *Client) sendRestoreOrg(ctx context.Context, params RestoreOrgParams) (r
 	return result, nil
 }
 
+// RestoreOrgContextVersion invokes restoreOrgContextVersion operation.
+//
+// Creates a new version whose snapshot equals the target version's, provenance `restore` (ADR-064
+// Decision 5). Not a back door around the never-widen check, the secret scan, or the fail-closed audit
+// transaction — all three run exactly as they do for PATCH.
+//
+// POST /api/v1/orgs/{orgId}/context/versions/{versionId}/restore
+func (c *Client) RestoreOrgContextVersion(ctx context.Context, params RestoreOrgContextVersionParams) (RestoreOrgContextVersionRes, error) {
+	res, err := c.sendRestoreOrgContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendRestoreOrgContextVersion(ctx context.Context, params RestoreOrgContextVersionParams) (res RestoreOrgContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("restoreOrgContextVersion"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/orgs/{orgId}/context/versions/{versionId}/restore"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RestoreOrgContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/restore"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeRestoreOrgContextVersionResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // RestoreSite invokes restoreSite operation.
 //
 // M21 / ADR-041 — operator action. Un-archives a site back to `disconnected`. Only valid from
@@ -38076,6 +39557,126 @@ func (c *Client) sendRestoreSite(ctx context.Context, params RestoreSiteParams) 
 
 	stage = "DecodeResponse"
 	result, err := decodeRestoreSiteResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RestoreSiteContextVersion invokes restoreSiteContextVersion operation.
+//
+// Refused unconditionally, for every caller, when versionId names a pre-transfer version (ADR-064
+// Decision 12) — surfaced as `404`, the same response a genuinely nonexistent id gets, since the
+// caller's own read access to a pre-transfer id already ended the same way.
+//
+// POST /api/v1/sites/{siteId}/context/versions/{versionId}/restore
+func (c *Client) RestoreSiteContextVersion(ctx context.Context, params RestoreSiteContextVersionParams) (RestoreSiteContextVersionRes, error) {
+	res, err := c.sendRestoreSiteContextVersion(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendRestoreSiteContextVersion(ctx context.Context, params RestoreSiteContextVersionParams) (res RestoreSiteContextVersionRes, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("restoreSiteContextVersion"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.URLTemplateKey.String("/api/v1/sites/{siteId}/context/versions/{versionId}/restore"),
+	}
+	otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, RestoreSiteContextVersionOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/api/v1/sites/"
+	{
+		// Encode "siteId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "siteId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.SiteId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/context/versions/"
+	{
+		// Encode "versionId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "versionId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.UUIDToString(params.VersionId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/restore"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+
+	stage = "DecodeResponse"
+	result, err := decodeRestoreSiteContextVersionResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

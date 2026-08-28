@@ -311,6 +311,12 @@ import type {
   DeleteWebAuthnCredentialData,
   DeleteWebAuthnCredentialErrors,
   DeleteWebAuthnCredentialResponses,
+  DiffOrgContextVersionData,
+  DiffOrgContextVersionErrors,
+  DiffOrgContextVersionResponses,
+  DiffSiteContextVersionData,
+  DiffSiteContextVersionErrors,
+  DiffSiteContextVersionResponses,
   DisableCacheData,
   DisableCacheResponses,
   DisableObjectCacheData,
@@ -432,6 +438,9 @@ import type {
   GetDbOrphansReportResponses,
   GetDbScanResultData,
   GetDbScanResultResponses,
+  GetEffectiveSiteContextData,
+  GetEffectiveSiteContextErrors,
+  GetEffectiveSiteContextResponses,
   GetEmailNotifySettingsData,
   GetEmailNotifySettingsErrors,
   GetEmailNotifySettingsResponses,
@@ -477,6 +486,12 @@ import type {
   GetObjectCacheConfigResponses,
   GetObjectCacheStatsHistoryData,
   GetObjectCacheStatsHistoryResponses,
+  GetOrgContextData,
+  GetOrgContextErrors,
+  GetOrgContextResponses,
+  GetOrgContextVersionData,
+  GetOrgContextVersionErrors,
+  GetOrgContextVersionResponses,
   GetOrgEmailConfigData,
   GetOrgEmailConfigErrors,
   GetOrgEmailConfigResponses,
@@ -523,6 +538,12 @@ import type {
   GetSiteAvailableUpdatesData,
   GetSiteAvailableUpdatesErrors,
   GetSiteAvailableUpdatesResponses,
+  GetSiteContextData,
+  GetSiteContextErrors,
+  GetSiteContextResponses,
+  GetSiteContextVersionData,
+  GetSiteContextVersionErrors,
+  GetSiteContextVersionResponses,
   GetSiteData,
   GetSiteDestinationData,
   GetSiteDestinationErrors,
@@ -648,6 +669,9 @@ import type {
   ListMyIdentitiesData,
   ListMyIdentitiesErrors,
   ListMyIdentitiesResponses,
+  ListOrgContextVersionsData,
+  ListOrgContextVersionsErrors,
+  ListOrgContextVersionsResponses,
   ListOrgsData,
   ListOrgsErrors,
   ListOrgsResponses,
@@ -692,6 +716,9 @@ import type {
   ListSiteBansData,
   ListSiteBansErrors,
   ListSiteBansResponses,
+  ListSiteContextVersionsData,
+  ListSiteContextVersionsErrors,
+  ListSiteContextVersionsResponses,
   ListSiteDestinationsData,
   ListSiteDestinationsErrors,
   ListSiteDestinationsResponses,
@@ -759,6 +786,12 @@ import type {
   PatchMemberData,
   PatchMemberErrors,
   PatchMemberResponses,
+  PatchOrgContextData,
+  PatchOrgContextErrors,
+  PatchOrgContextResponses,
+  PatchSiteContextData,
+  PatchSiteContextErrors,
+  PatchSiteContextResponses,
   PatchSiteErrorConfigData,
   PatchSiteErrorConfigErrors,
   PatchSiteErrorConfigResponses,
@@ -899,9 +932,15 @@ import type {
   RestoreIsolatedMediaResponses,
   RestoreMediaData,
   RestoreMediaResponses,
+  RestoreOrgContextVersionData,
+  RestoreOrgContextVersionErrors,
+  RestoreOrgContextVersionResponses,
   RestoreOrgData,
   RestoreOrgErrors,
   RestoreOrgResponses,
+  RestoreSiteContextVersionData,
+  RestoreSiteContextVersionErrors,
+  RestoreSiteContextVersionResponses,
   RestoreSiteData,
   RestoreSiteErrors,
   RestoreSiteFileVersionData,
@@ -9062,3 +9101,243 @@ export const restoreSiteFileVersion = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
+
+/**
+ * Get an organisation's current context (ADR-064 layer 2)
+ *
+ * Returns the latest context version, or a synthetic version 0 with
+ * empty restrictions/guidance when the organisation has never authored
+ * any (a legitimate empty state, not a 404). Readable by any principal
+ * with fleet-read access to the organisation, including a site-scoped
+ * collaborator whose site belongs to it (ADR-064 Decision 6).
+ *
+ */
+export const getOrgContext = <ThrowOnError extends boolean = false>(
+  options: Options<GetOrgContextData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetOrgContextResponses,
+    GetOrgContextErrors,
+    ThrowOnError
+  >({ url: "/api/v1/orgs/{orgId}/context", ...options });
+
+/**
+ * Author a new organisation context version (ADR-064 layer 2)
+ *
+ * Applies a partial field set onto the latest version's full snapshot
+ * and authors a new version. Requires organisation-admin+
+ * (`context.org.write`); a site-scoped collaborator can never reach
+ * this route regardless of role (ADR-064 Decision 6, m123).
+ *
+ * `base_version` is required — see ADR-064 open question 2. A mismatch
+ * against the current version is refused with `409
+ * context_version_conflict` before anything else is checked.
+ *
+ */
+export const patchOrgContext = <ThrowOnError extends boolean = false>(
+  options: Options<PatchOrgContextData, ThrowOnError>,
+) =>
+  (options.client ?? client).patch<
+    PatchOrgContextResponses,
+    PatchOrgContextErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/orgs/{orgId}/context",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List an organisation's context version history
+ */
+export const listOrgContextVersions = <ThrowOnError extends boolean = false>(
+  options: Options<ListOrgContextVersionsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListOrgContextVersionsResponses,
+    ListOrgContextVersionsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/orgs/{orgId}/context/versions", ...options });
+
+/**
+ * Get one organisation context version's full snapshot
+ */
+export const getOrgContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<GetOrgContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetOrgContextVersionResponses,
+    GetOrgContextVersionErrors,
+    ThrowOnError
+  >({ url: "/api/v1/orgs/{orgId}/context/versions/{versionId}", ...options });
+
+/**
+ * Diff an organisation context version against its immediately-prior version
+ *
+ * `baseline: true` means there is no eligible predecessor to diff
+ * against (ADR-064 Decision 5) — the version's own first write — and
+ * `prior`/`diff` are both null.
+ *
+ */
+export const diffOrgContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<DiffOrgContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    DiffOrgContextVersionResponses,
+    DiffOrgContextVersionErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/orgs/{orgId}/context/versions/{versionId}/diff",
+    ...options,
+  });
+
+/**
+ * Restore an organisation context version
+ *
+ * Creates a new version whose snapshot equals the target version's,
+ * provenance `restore` (ADR-064 Decision 5). Not a back door around the
+ * never-widen check, the secret scan, or the fail-closed audit
+ * transaction — all three run exactly as they do for PATCH.
+ *
+ */
+export const restoreOrgContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<RestoreOrgContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RestoreOrgContextVersionResponses,
+    RestoreOrgContextVersionErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/orgs/{orgId}/context/versions/{versionId}/restore",
+    ...options,
+  });
+
+/**
+ * Get a site's current context (ADR-064 layer 3)
+ */
+export const getSiteContext = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContextData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContextResponses,
+    GetSiteContextErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/context", ...options });
+
+/**
+ * Author a new site context version (ADR-064 layer 3)
+ *
+ * Requires `context.site.write` (operator+) AND access to this specific
+ * site (ADR-064 Decision 6). The proposed restrictions are checked
+ * against BOTH the organisation's current layer-2 policy and WPmgr's
+ * fixed layer-1 policy — a rejection names whichever of the two it
+ * violates first. `base_version` is required (ADR-064 open question 2).
+ *
+ */
+export const patchSiteContext = <ThrowOnError extends boolean = false>(
+  options: Options<PatchSiteContextData, ThrowOnError>,
+) =>
+  (options.client ?? client).patch<
+    PatchSiteContextResponses,
+    PatchSiteContextErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/context",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List a site's context version history
+ *
+ * Scoped to versions stamped with the site's CURRENT organisation
+ * (ADR-064 Decision 13): a pre-transfer version is retained but excluded.
+ *
+ */
+export const listSiteContextVersions = <ThrowOnError extends boolean = false>(
+  options: Options<ListSiteContextVersionsData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    ListSiteContextVersionsResponses,
+    ListSiteContextVersionsErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/context/versions", ...options });
+
+/**
+ * Get one site context version's full snapshot
+ */
+export const getSiteContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<GetSiteContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetSiteContextVersionResponses,
+    GetSiteContextVersionErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/context/versions/{versionId}", ...options });
+
+/**
+ * Diff a site context version against its immediately-prior version
+ *
+ * `baseline: true` covers both a genuine first version and the first
+ * version after a site transfer, whose immediately-prior row is sealed
+ * to the source organisation (ADR-064 Decisions 5 and 12).
+ *
+ */
+export const diffSiteContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<DiffSiteContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    DiffSiteContextVersionResponses,
+    DiffSiteContextVersionErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/context/versions/{versionId}/diff",
+    ...options,
+  });
+
+/**
+ * Restore a site context version
+ *
+ * Refused unconditionally, for every caller, when versionId names a
+ * pre-transfer version (ADR-064 Decision 12) — surfaced as `404`, the
+ * same response a genuinely nonexistent id gets, since the caller's own
+ * read access to a pre-transfer id already ended the same way.
+ *
+ */
+export const restoreSiteContextVersion = <ThrowOnError extends boolean = false>(
+  options: Options<RestoreSiteContextVersionData, ThrowOnError>,
+) =>
+  (options.client ?? client).post<
+    RestoreSiteContextVersionResponses,
+    RestoreSiteContextVersionErrors,
+    ThrowOnError
+  >({
+    url: "/api/v1/sites/{siteId}/context/versions/{versionId}/restore",
+    ...options,
+  });
+
+/**
+ * Preview the resolved effective context a model-facing surface would receive (ADR-064 Decision 8)
+ *
+ * Calls the SAME resolution function a future model-facing assembly
+ * path calls, with no live session content (layer 6 is always empty
+ * here — a preview request has no run behind it). If resolution cannot
+ * complete, the call is refused with `503 context_unavailable`
+ * (ADR-064 Decision 14) rather than returning a partial or empty
+ * result.
+ *
+ */
+export const getEffectiveSiteContext = <ThrowOnError extends boolean = false>(
+  options: Options<GetEffectiveSiteContextData, ThrowOnError>,
+) =>
+  (options.client ?? client).get<
+    GetEffectiveSiteContextResponses,
+    GetEffectiveSiteContextErrors,
+    ThrowOnError
+  >({ url: "/api/v1/sites/{siteId}/context/effective", ...options });

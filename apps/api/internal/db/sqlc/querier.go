@@ -548,6 +548,7 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	CreateManifestEntry(ctx context.Context, arg CreateManifestEntryParams) (BackupManifestEntry, error)
 	CreateMembership(ctx context.Context, arg CreateMembershipParams) (Membership, error)
+	CreateOrgContextVersion(ctx context.Context, arg CreateOrgContextVersionParams) (OrgContextVersion, error)
 	// Tenant-scoped (app.tenant_id) — operator generates a code for the tenant.
 	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (PairingCode, error)
 	// Site-first "Add site" flow (ADR-041): create the sites row in
@@ -598,6 +599,7 @@ type Querier interface {
 	// site already exists in pending_enrollment). Consuming this code transitions
 	// THAT site to connected rather than creating a new row.
 	CreateSiteBoundPairingCode(ctx context.Context, arg CreateSiteBoundPairingCodeParams) (PairingCode, error)
+	CreateSiteContextVersion(ctx context.Context, arg CreateSiteContextVersionParams) (SiteContextVersion, error)
 	CreateSiteForEnroll(ctx context.Context, arg CreateSiteForEnrollParams) (Site, error)
 	// unique_violation (23505) on site_tags_tenant_name_key maps to 409
 	// tag_name_exists in the repo (exact-case unique; case-insensitive near-dupes
@@ -1228,6 +1230,15 @@ type Querier interface {
 	// verification link can carry the SAME plan intent forward onto its new
 	// token instead of losing it when the prior token is invalidated.
 	GetLatestDesiredPlanForUser(ctx context.Context, userID uuid.UUID) (*string, error)
+	// ADR-064 Decision 3: "the current context" is the latest version row.
+	// tenant_id is the leading column of org_context_versions_version_key, so this
+	// read uses that index as a backward scan — no separate ordering index needed.
+	GetLatestOrgContextVersion(ctx context.Context, tenantID uuid.UUID) (OrgContextVersion, error)
+	// ADR-064 Decision 3: "the current context" is the latest version row, scoped
+	// to the CURRENT tenant. After a site transfer only post-transfer rows carry
+	// the current tenant_id, so this naturally returns the destination org's
+	// active context per Decision 12 with no extra transfer-aware logic.
+	GetLatestSiteContextVersion(ctx context.Context, arg GetLatestSiteContextVersionParams) (SiteContextVersion, error)
 	GetMembership(ctx context.Context, arg GetMembershipParams) (Membership, error)
 	// ---------------------------------------------------------------------------
 	// email_notify_settings  (m62 — alerts + digest)
@@ -1257,6 +1268,11 @@ type Querier interface {
 	// Daily downsampling matches the cache-hit-ratio precedent.
 	// Tenant-scoped via RLS (InTenantTx sets app.tenant_id).
 	GetObjectCacheStatsHistory(ctx context.Context, arg GetObjectCacheStatsHistoryParams) ([]GetObjectCacheStatsHistoryRow, error)
+	GetOrgContextVersionByID(ctx context.Context, arg GetOrgContextVersionByIDParams) (OrgContextVersion, error)
+	// Used to fetch the immediately-prior version for a diff (ADR-064 Decision 5).
+	// Org context has no organisation-transfer analogue (the tenant_id subject
+	// never changes), so this always resolves when version > 1.
+	GetOrgContextVersionByVersion(ctx context.Context, arg GetOrgContextVersionByVersionParams) (OrgContextVersion, error)
 	// Returns the org-wide default config row (site_id IS NULL) for a tenant.
 	GetOrgEmailConfig(ctx context.Context, tenantID uuid.UUID) (SiteEmailConfig, error)
 	// Enroll path (app.enroll GUC): resolve a presented code by its hash before the
@@ -1360,6 +1376,21 @@ type Querier interface {
 	// archived site is visible and the caller can return a structured 409 with
 	// site_id + connection_state instead of hitting the unique-index violation.
 	GetSiteByURLForMint(ctx context.Context, arg GetSiteByURLForMintParams) (GetSiteByURLForMintRow, error)
+	// tenant_id is explicit (defense in depth per house convention) AND is the
+	// mechanism that makes a restore-pointer's stamp check work: a version id
+	// belonging to a DIFFERENT tenant stamp (a pre-transfer row, ADR-064 Decision
+	// 12) returns no rows here even though the row physically exists, because RLS
+	// tenant_isolation also filters on tenant_id and this WHERE clause matches
+	// it. Callers rely on this: "not found" here means "does not exist OR belongs
+	// to a stamp this caller may not read", which is exactly Decision 12's rule.
+	GetSiteContextVersionByID(ctx context.Context, arg GetSiteContextVersionByIDParams) (SiteContextVersion, error)
+	// Used to fetch the immediately-prior version for a diff (ADR-064 Decision 5).
+	// Same tenant-stamp mechanism as GetSiteContextVersionByID: if the immediately
+	// prior version (version-1) is stamped to a different (pre-transfer) tenant,
+	// this returns no rows under the current tenant, which the caller must read
+	// as "no eligible predecessor, render a baseline" per Decision 5 — not as an
+	// error.
+	GetSiteContextVersionByVersion(ctx context.Context, arg GetSiteContextVersionByVersionParams) (SiteContextVersion, error)
 	// The kind of the site's DEFAULT backup destination, read in the delete's own
 	// transaction BEFORE the cascade takes the row away. Diagnostic only: it lets
 	// the reclaim log say plainly where a site's backup payload lived.
@@ -2205,6 +2236,13 @@ type Querier interface {
 	// the table reads as empty, so an operator cannot discover the id that a
 	// "SET app.tenant_id first" instruction would need them to supply.
 	ListOpenTenantObjectReclaims(ctx context.Context, rowLimit int32) ([]TenantObjectReclaim, error)
+	// Keyset-paginated newest-first history (ADR-064 Decision 5). Cursor is the
+	// version number itself, not created_at/id: version is unique, monotonic and
+	// gap-free per tenant (org_context_versions_version_key), which is strictly
+	// stronger than a (created_at, id) tiebreak and is the index m122's header
+	// says this read path is meant to use. cursor = 0 means "first page" (version
+	// is CHECKed >= 1, so 0 never collides with a real row).
+	ListOrgContextVersions(ctx context.Context, arg ListOrgContextVersionsParams) ([]OrgContextVersion, error)
 	// ListOrgsForUser returns the user's organisations with their role in each, for
 	// the org switcher + settings (real names, not bare ids). Joins memberships under
 	// the memberships_self_read policy (app.user_id GUC) so it MUST run via InUserTx.
@@ -2250,6 +2288,14 @@ type Querier interface {
 	// session pinned to that (now-invisible) tenant on every login, landing in a
 	// permanent 403 loop instead of the no-access screen.
 	ListSharesForUser(ctx context.Context, userID uuid.UUID) ([]SiteShare, error)
+	// Keyset-paginated newest-first history, scoped to the CURRENT tenant stamp
+	// only — this is what makes list/item history "additionally scoped to
+	// versions stamped with the site's current organisation" (ADR-064 Decision 13)
+	// true with no extra filtering: a pre-transfer row simply never matches
+	// tenant_id = $1 once the site belongs to a new org. Cursor is the version
+	// number (unique, monotonic, gap-free per site via site_context_versions_
+	// version_key); 0 means first page.
+	ListSiteContextVersions(ctx context.Context, arg ListSiteContextVersionsParams) ([]SiteContextVersion, error)
 	// Lists all per-site config rows for a tenant (dashboard overview).
 	// Excludes the org-wide default row (site_id IS NULL).
 	ListSiteEmailConfigs(ctx context.Context, arg ListSiteEmailConfigsParams) ([]SiteEmailConfig, error)

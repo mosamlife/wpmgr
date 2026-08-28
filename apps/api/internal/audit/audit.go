@@ -534,6 +534,43 @@ func (r *Recorder) Record(ctx context.Context, e Event) (Entry, error) {
 	return out, err
 }
 
+// RecordInTx appends an audit entry inside the CALLER's already-open
+// transaction, instead of opening its own. It is the fail-closed counterpart
+// to Record, required by ADR-064 Decision 7 (and, on paper, ADR-061 Decision
+// 2): "If the audit append fails, the version write fails with it; nothing
+// commits." Record cannot provide this — it opens and commits its own
+// InTenantTx, so a caller that ignores its error (the documented, correct
+// thing to do for every other best-effort audit site in this codebase) has
+// already durably written whatever it was recording before Record's own
+// transaction even starts.
+//
+// The caller is responsible for:
+//   - Running tx against the SAME tenant as e.TenantID (this function does not
+//     open a transaction or set any GUC — it trusts the caller's tx is already
+//     scoped correctly, exactly as sqlc.New(tx) trusts it everywhere else).
+//   - Propagating a non-nil error up through its own transaction function so
+//     the caller's pgx.Tx rolls back. RecordInTx itself never rolls back or
+//     commits anything; that authority belongs to whoever opened tx.
+//
+// Locking is identical to Record's: lockChain still serializes concurrent
+// appends for the same tenant via a transaction-scoped advisory lock, so two
+// concurrent callers (one using Record, one using RecordInTx, or both using
+// either) still chain onto the true latest prev-hash rather than racing.
+func (r *Recorder) RecordInTx(ctx context.Context, tx pgx.Tx, e Event) (Entry, error) {
+	if e.ActorType == "" {
+		e.ActorType = ActorSystem
+	}
+	if err := lockChain(ctx, tx, e.TenantID); err != nil {
+		return Entry{}, err
+	}
+	createdAt := r.clock.Now().UTC().Truncate(time.Microsecond)
+	row, err := appendLocked(ctx, sqlc.New(tx), e, createdAt)
+	if err != nil {
+		return Entry{}, err
+	}
+	return rowToEntry(row), nil
+}
+
 // List returns a page of a tenant's audit entries, newest first (page 1 =
 // most recent; a larger offset walks further into the past).
 func (r *Recorder) List(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Entry, error) {

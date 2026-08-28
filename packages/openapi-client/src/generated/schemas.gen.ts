@@ -14784,6 +14784,430 @@ export const AgentSubmitManifestResponseSchema = {
   },
 } as const;
 
+export const RestrictionSetSchema = {
+  type: "object",
+  description:
+    'ADR-064 Decision 3\'s closed, structured "restrictions" kind. Every field is a deny-list; a lower layer may add to it but never remove an item a higher layer set (ADR-064 Decision 4). No field here is ever deep-merged on PATCH — see PatchGovContextRequest.',
+  properties: {
+    forbidden_tools: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    forbidden_domains: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    forbidden_topics: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const GuidanceSetSchema = {
+  type: "object",
+  description:
+    'ADR-064 Decision 3\'s free-text "guidance" kind. No widen-check applies to these fields — "wider" and "narrower" are not defined relations over prose (ADR-064 Decision 1) — and none is implemented.',
+  properties: {
+    brand_voice: {
+      type: "string",
+    },
+    audience: {
+      type: "string",
+    },
+    terminology: {
+      type: "string",
+    },
+    style: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const GovContextSchema = {
+  type: "object",
+  required: ["version", "restrictions", "guidance"],
+  properties: {
+    version: {
+      type: "integer",
+      format: "int64",
+      description:
+        "0 means no context has ever been authored for this subject (a legitimate empty state, not a 404).",
+    },
+    restrictions: {
+      $ref: "#/components/schemas/RestrictionSet",
+    },
+    guidance: {
+      $ref: "#/components/schemas/GuidanceSet",
+    },
+    author_type: {
+      type: "string",
+      enum: ["user", "api_key", "system"],
+    },
+    author_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    provenance: {
+      type: "string",
+      enum: ["manual", "restore", "transfer"],
+    },
+    restored_from_version_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    created_at: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const GovContextVersionSummarySchema = {
+  type: "object",
+  required: ["id", "version", "author_type", "provenance", "created_at"],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    version: {
+      type: "integer",
+      format: "int64",
+    },
+    author_type: {
+      type: "string",
+      enum: ["user", "api_key", "system"],
+    },
+    author_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    provenance: {
+      type: "string",
+      enum: ["manual", "restore", "transfer"],
+    },
+    restored_from_version_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const GovContextVersionListSchema = {
+  type: "object",
+  required: ["items", "next_cursor"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/GovContextVersionSummary",
+      },
+    },
+    next_cursor: {
+      type: "integer",
+      format: "int64",
+      description:
+        "Pass as ?cursor= to fetch the next page. 0 means no further page.",
+    },
+  },
+} as const;
+
+export const GovContextVersionItemSchema = {
+  type: "object",
+  required: [
+    "id",
+    "version",
+    "restrictions",
+    "guidance",
+    "author_type",
+    "provenance",
+    "created_at",
+  ],
+  properties: {
+    id: {
+      type: "string",
+      format: "uuid",
+    },
+    version: {
+      type: "integer",
+      format: "int64",
+    },
+    restrictions: {
+      $ref: "#/components/schemas/RestrictionSet",
+    },
+    guidance: {
+      $ref: "#/components/schemas/GuidanceSet",
+    },
+    author_type: {
+      type: "string",
+      enum: ["user", "api_key", "system"],
+    },
+    author_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    provenance: {
+      type: "string",
+      enum: ["manual", "restore", "transfer"],
+    },
+    restored_from_version_id: {
+      type: ["string", "null"],
+      format: "uuid",
+    },
+    created_at: {
+      type: "string",
+      format: "date-time",
+    },
+  },
+} as const;
+
+export const GovContextListDiffSchema = {
+  type: "object",
+  properties: {
+    added: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    removed: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+  },
+} as const;
+
+export const GovContextFieldDiffSchema = {
+  type: "object",
+  properties: {
+    old: {
+      type: "string",
+    },
+    new: {
+      type: "string",
+    },
+  },
+} as const;
+
+export const GovContextSnapshotDiffSchema = {
+  type: "object",
+  description:
+    "Only fields that actually changed between the two versions are present.",
+  properties: {
+    forbidden_tools: {
+      $ref: "#/components/schemas/GovContextListDiff",
+    },
+    forbidden_domains: {
+      $ref: "#/components/schemas/GovContextListDiff",
+    },
+    forbidden_topics: {
+      $ref: "#/components/schemas/GovContextListDiff",
+    },
+    brand_voice: {
+      $ref: "#/components/schemas/GovContextFieldDiff",
+    },
+    audience: {
+      $ref: "#/components/schemas/GovContextFieldDiff",
+    },
+    terminology: {
+      $ref: "#/components/schemas/GovContextFieldDiff",
+    },
+    style: {
+      $ref: "#/components/schemas/GovContextFieldDiff",
+    },
+  },
+} as const;
+
+export const GovContextDiffSchema = {
+  type: "object",
+  required: ["version", "baseline"],
+  properties: {
+    version: {
+      $ref: "#/components/schemas/GovContextVersionItem",
+    },
+    baseline: {
+      type: "boolean",
+      description:
+        "true when this version has no eligible predecessor to diff against (ADR-064 Decision 5) — a genuine first version, or (site scope only) the first version after a transfer.",
+    },
+    prior: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/GovContextVersionItem",
+        },
+        {
+          type: "null",
+        },
+      ],
+    },
+    diff: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/GovContextSnapshotDiff",
+        },
+        {
+          type: "null",
+        },
+      ],
+    },
+  },
+} as const;
+
+export const GovContextLayerContributionSchema = {
+  type: "object",
+  required: [
+    "layer",
+    "name",
+    "restrictions",
+    "guidance",
+    "facts_unavailable",
+    "bytes",
+    "truncated",
+  ],
+  properties: {
+    layer: {
+      type: "integer",
+      description:
+        "ADR-064 Decision 1 layer number, 1-6. Layer 7 (learned memory) is never present — it is not built, not stubbed.",
+    },
+    name: {
+      type: "string",
+    },
+    restrictions: {
+      $ref: "#/components/schemas/RestrictionSet",
+    },
+    guidance: {
+      $ref: "#/components/schemas/GuidanceSet",
+    },
+    facts: {
+      type: ["object", "null"],
+      description: "Populated only for layer 4 (detected site facts).",
+      properties: {
+        wp_version: {
+          type: "string",
+        },
+        php_version: {
+          type: "string",
+        },
+        multisite: {
+          type: "boolean",
+        },
+        active_theme: {
+          type: "string",
+        },
+      },
+    },
+    facts_unavailable: {
+      type: "boolean",
+      description:
+        'Always present (never omitted, even when false — the field exists specifically to distinguish "known false" from absence). Meaningful for layer 4 only; false on every other layer. true means layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never to be read as "this site has no facts". false means the load succeeded, whatever it found, including a verified, known-empty result.',
+    },
+    session: {
+      type: "string",
+      description:
+        "Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).",
+    },
+    bytes: {
+      type: "integer",
+    },
+    truncated: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const GovContextEffectiveSchema = {
+  type: "object",
+  required: [
+    "site_id",
+    "layers",
+    "restrictions",
+    "total_bytes",
+    "budget_bytes",
+    "truncated",
+  ],
+  properties: {
+    site_id: {
+      type: "string",
+      format: "uuid",
+    },
+    layers: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/GovContextLayerContribution",
+      },
+    },
+    restrictions: {
+      allOf: [
+        {
+          $ref: "#/components/schemas/RestrictionSet",
+        },
+      ],
+      description:
+        "The read-time union of every layer 1-3 restriction. Never truncated by the byte budget, unlike each layer's own display copy above — ADR-064 Decision 4's enforcement path reads this field, never a layer's (possibly truncated) prose.",
+    },
+    total_bytes: {
+      type: "integer",
+    },
+    budget_bytes: {
+      type: "integer",
+    },
+    truncated: {
+      type: "boolean",
+    },
+  },
+} as const;
+
+export const PatchGovContextRequestSchema = {
+  type: "object",
+  required: ["base_version"],
+  properties: {
+    base_version: {
+      type: "integer",
+      format: "int64",
+      description:
+        'The version this write is based on (0 = "no context authored yet"). A mismatch against the current version is refused with 409 context_version_conflict before anything else is checked (ADR-064 open question 2).',
+    },
+    restrictions: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/RestrictionSet",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.",
+    },
+    guidance: {
+      anyOf: [
+        {
+          $ref: "#/components/schemas/GuidanceSet",
+        },
+        {
+          type: "null",
+        },
+      ],
+      description:
+        "Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.",
+    },
+  },
+} as const;
+
 export const PerfConfigWritableSchema = {
   type: "object",
   description:

@@ -30,6 +30,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/diagnostics"
 	"github.com/mosamlife/wpmgr/apps/api/internal/email"
 	"github.com/mosamlife/wpmgr/apps/api/internal/files"
+	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
@@ -148,6 +149,10 @@ type Deps struct {
 	OrgH        *org.Handler        // POST /orgs, POST /orgs/:orgId/activate
 	SharingH    *sharing.Handler    // site shares CRUD + shared-with-me
 	InvitationH *invitation.Handler // public POST /invitations/accept
+	// ADR-064 slice S4 — governed org/site context: CRUD + version history +
+	// diff + restore for layers 2 and 3, plus the effective-context preview
+	// (Decision 8) at GET /sites/{siteId}/context/effective.
+	GovContextH *govcontext.Handler
 	// M23 — Media Optimizer (ADR-043). MediaH serves the operator-facing
 	// /api/v1/sites/{siteId}/media/... dashboard routes; MediaAgentH serves the
 	// agent-authenticated /agent/v1/media/... callbacks. Either may be nil.
@@ -588,6 +593,14 @@ func New(deps Deps) *Server {
 	}
 	if deps.SharingH != nil {
 		deps.SharingH.Register(v1)
+	}
+	// ADR-064 slice S4 — governed org/site context (Decision 13). Org routes
+	// gate on RequirePermission alone (orgId must equal the caller's active
+	// tenant — see govcontext.Handler.orgPrincipal); site routes additionally
+	// gate on RequireSiteAccess inside the handler's own Register, same as
+	// every other per-site resource.
+	if deps.GovContextH != nil {
+		deps.GovContextH.Register(v1)
 	}
 	// M23 — operator-facing Media Optimizer dashboard routes.
 	if deps.MediaH != nil {

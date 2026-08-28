@@ -16814,6 +16814,30 @@ func (s *DeliverabilityReport) SetItems(val []SiteDeliveryItem) {
 
 func (*DeliverabilityReport) getFleetEmailDeliverabilityRes() {}
 
+type DiffOrgContextVersionForbidden Error
+
+func (*DiffOrgContextVersionForbidden) diffOrgContextVersionRes() {}
+
+type DiffOrgContextVersionNotFound Error
+
+func (*DiffOrgContextVersionNotFound) diffOrgContextVersionRes() {}
+
+type DiffOrgContextVersionUnauthorized Error
+
+func (*DiffOrgContextVersionUnauthorized) diffOrgContextVersionRes() {}
+
+type DiffSiteContextVersionForbidden Error
+
+func (*DiffSiteContextVersionForbidden) diffSiteContextVersionRes() {}
+
+type DiffSiteContextVersionNotFound Error
+
+func (*DiffSiteContextVersionNotFound) diffSiteContextVersionRes() {}
+
+type DiffSiteContextVersionUnauthorized Error
+
+func (*DiffSiteContextVersionUnauthorized) diffSiteContextVersionRes() {}
+
 // DisableTotpNoContent is response for DisableTotp operation.
 type DisableTotpNoContent struct{}
 
@@ -22297,6 +22321,22 @@ func (s *GetDbScanResultOK) SetResult(val OptNilDbScanResult) {
 	s.Result = val
 }
 
+type GetEffectiveSiteContextForbidden Error
+
+func (*GetEffectiveSiteContextForbidden) getEffectiveSiteContextRes() {}
+
+type GetEffectiveSiteContextNotFound Error
+
+func (*GetEffectiveSiteContextNotFound) getEffectiveSiteContextRes() {}
+
+type GetEffectiveSiteContextServiceUnavailable Error
+
+func (*GetEffectiveSiteContextServiceUnavailable) getEffectiveSiteContextRes() {}
+
+type GetEffectiveSiteContextUnauthorized Error
+
+func (*GetEffectiveSiteContextUnauthorized) getEffectiveSiteContextRes() {}
+
 type GetEmailNotifySettingsForbidden Error
 
 func (*GetEmailNotifySettingsForbidden) getEmailNotifySettingsRes() {}
@@ -22536,6 +22576,30 @@ func (*GetMediaSettingsForbidden) getMediaSettingsRes() {}
 type GetMediaSettingsUnauthorized Error
 
 func (*GetMediaSettingsUnauthorized) getMediaSettingsRes() {}
+
+type GetOrgContextForbidden Error
+
+func (*GetOrgContextForbidden) getOrgContextRes() {}
+
+type GetOrgContextNotFound Error
+
+func (*GetOrgContextNotFound) getOrgContextRes() {}
+
+type GetOrgContextUnauthorized Error
+
+func (*GetOrgContextUnauthorized) getOrgContextRes() {}
+
+type GetOrgContextVersionForbidden Error
+
+func (*GetOrgContextVersionForbidden) getOrgContextVersionRes() {}
+
+type GetOrgContextVersionNotFound Error
+
+func (*GetOrgContextVersionNotFound) getOrgContextVersionRes() {}
+
+type GetOrgContextVersionUnauthorized Error
+
+func (*GetOrgContextVersionUnauthorized) getOrgContextVersionRes() {}
 
 type GetOrgEmailConfigForbidden Error
 
@@ -22783,6 +22847,30 @@ type GetSiteAutologinPolicyNotFound Error
 
 func (*GetSiteAutologinPolicyNotFound) getSiteAutologinPolicyRes() {}
 
+type GetSiteContextForbidden Error
+
+func (*GetSiteContextForbidden) getSiteContextRes() {}
+
+type GetSiteContextNotFound Error
+
+func (*GetSiteContextNotFound) getSiteContextRes() {}
+
+type GetSiteContextUnauthorized Error
+
+func (*GetSiteContextUnauthorized) getSiteContextRes() {}
+
+type GetSiteContextVersionForbidden Error
+
+func (*GetSiteContextVersionForbidden) getSiteContextVersionRes() {}
+
+type GetSiteContextVersionNotFound Error
+
+func (*GetSiteContextVersionNotFound) getSiteContextVersionRes() {}
+
+type GetSiteContextVersionUnauthorized Error
+
+func (*GetSiteContextVersionUnauthorized) getSiteContextVersionRes() {}
+
 type GetSiteDestinationNotFound Error
 
 func (*GetSiteDestinationNotFound) getSiteDestinationRes() {}
@@ -22907,6 +22995,1034 @@ type GetSmtpSettingsUnauthorized Error
 
 func (*GetSmtpSettingsUnauthorized) getSmtpSettingsRes() {}
 
+// Ref: #/components/schemas/GovContext
+type GovContext struct {
+	// 0 means no context has ever been authored for this subject (a legitimate empty state, not a 404).
+	Version               int64                   `json:"version"`
+	Restrictions          RestrictionSet          `json:"restrictions"`
+	Guidance              GuidanceSet             `json:"guidance"`
+	AuthorType            OptGovContextAuthorType `json:"author_type"`
+	AuthorID              OptNilUUID              `json:"author_id"`
+	Provenance            OptGovContextProvenance `json:"provenance"`
+	RestoredFromVersionID OptNilUUID              `json:"restored_from_version_id"`
+	CreatedAt             OptNilDateTime          `json:"created_at"`
+}
+
+// GetVersion returns the value of Version.
+func (s *GovContext) GetVersion() int64 {
+	return s.Version
+}
+
+// GetRestrictions returns the value of Restrictions.
+func (s *GovContext) GetRestrictions() RestrictionSet {
+	return s.Restrictions
+}
+
+// GetGuidance returns the value of Guidance.
+func (s *GovContext) GetGuidance() GuidanceSet {
+	return s.Guidance
+}
+
+// GetAuthorType returns the value of AuthorType.
+func (s *GovContext) GetAuthorType() OptGovContextAuthorType {
+	return s.AuthorType
+}
+
+// GetAuthorID returns the value of AuthorID.
+func (s *GovContext) GetAuthorID() OptNilUUID {
+	return s.AuthorID
+}
+
+// GetProvenance returns the value of Provenance.
+func (s *GovContext) GetProvenance() OptGovContextProvenance {
+	return s.Provenance
+}
+
+// GetRestoredFromVersionID returns the value of RestoredFromVersionID.
+func (s *GovContext) GetRestoredFromVersionID() OptNilUUID {
+	return s.RestoredFromVersionID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *GovContext) GetCreatedAt() OptNilDateTime {
+	return s.CreatedAt
+}
+
+// SetVersion sets the value of Version.
+func (s *GovContext) SetVersion(val int64) {
+	s.Version = val
+}
+
+// SetRestrictions sets the value of Restrictions.
+func (s *GovContext) SetRestrictions(val RestrictionSet) {
+	s.Restrictions = val
+}
+
+// SetGuidance sets the value of Guidance.
+func (s *GovContext) SetGuidance(val GuidanceSet) {
+	s.Guidance = val
+}
+
+// SetAuthorType sets the value of AuthorType.
+func (s *GovContext) SetAuthorType(val OptGovContextAuthorType) {
+	s.AuthorType = val
+}
+
+// SetAuthorID sets the value of AuthorID.
+func (s *GovContext) SetAuthorID(val OptNilUUID) {
+	s.AuthorID = val
+}
+
+// SetProvenance sets the value of Provenance.
+func (s *GovContext) SetProvenance(val OptGovContextProvenance) {
+	s.Provenance = val
+}
+
+// SetRestoredFromVersionID sets the value of RestoredFromVersionID.
+func (s *GovContext) SetRestoredFromVersionID(val OptNilUUID) {
+	s.RestoredFromVersionID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *GovContext) SetCreatedAt(val OptNilDateTime) {
+	s.CreatedAt = val
+}
+
+func (*GovContext) getOrgContextRes()             {}
+func (*GovContext) getSiteContextRes()            {}
+func (*GovContext) patchOrgContextRes()           {}
+func (*GovContext) patchSiteContextRes()          {}
+func (*GovContext) restoreOrgContextVersionRes()  {}
+func (*GovContext) restoreSiteContextVersionRes() {}
+
+type GovContextAuthorType string
+
+const (
+	GovContextAuthorTypeUser   GovContextAuthorType = "user"
+	GovContextAuthorTypeAPIKey GovContextAuthorType = "api_key"
+	GovContextAuthorTypeSystem GovContextAuthorType = "system"
+)
+
+// AllValues returns all GovContextAuthorType values.
+func (GovContextAuthorType) AllValues() []GovContextAuthorType {
+	return []GovContextAuthorType{
+		GovContextAuthorTypeUser,
+		GovContextAuthorTypeAPIKey,
+		GovContextAuthorTypeSystem,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextAuthorType) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextAuthorTypeUser:
+		return []byte(s), nil
+	case GovContextAuthorTypeAPIKey:
+		return []byte(s), nil
+	case GovContextAuthorTypeSystem:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextAuthorType) UnmarshalText(data []byte) error {
+	switch GovContextAuthorType(data) {
+	case GovContextAuthorTypeUser:
+		*s = GovContextAuthorTypeUser
+		return nil
+	case GovContextAuthorTypeAPIKey:
+		*s = GovContextAuthorTypeAPIKey
+		return nil
+	case GovContextAuthorTypeSystem:
+		*s = GovContextAuthorTypeSystem
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/GovContextDiff
+type GovContextDiff struct {
+	Version GovContextVersionItem `json:"version"`
+	// True when this version has no eligible predecessor to diff against (ADR-064 Decision 5) — a
+	// genuine first version, or (site scope only) the first version after a transfer.
+	Baseline bool                         `json:"baseline"`
+	Prior    OptNilGovContextVersionItem  `json:"prior"`
+	Diff     OptNilGovContextSnapshotDiff `json:"diff"`
+}
+
+// GetVersion returns the value of Version.
+func (s *GovContextDiff) GetVersion() GovContextVersionItem {
+	return s.Version
+}
+
+// GetBaseline returns the value of Baseline.
+func (s *GovContextDiff) GetBaseline() bool {
+	return s.Baseline
+}
+
+// GetPrior returns the value of Prior.
+func (s *GovContextDiff) GetPrior() OptNilGovContextVersionItem {
+	return s.Prior
+}
+
+// GetDiff returns the value of Diff.
+func (s *GovContextDiff) GetDiff() OptNilGovContextSnapshotDiff {
+	return s.Diff
+}
+
+// SetVersion sets the value of Version.
+func (s *GovContextDiff) SetVersion(val GovContextVersionItem) {
+	s.Version = val
+}
+
+// SetBaseline sets the value of Baseline.
+func (s *GovContextDiff) SetBaseline(val bool) {
+	s.Baseline = val
+}
+
+// SetPrior sets the value of Prior.
+func (s *GovContextDiff) SetPrior(val OptNilGovContextVersionItem) {
+	s.Prior = val
+}
+
+// SetDiff sets the value of Diff.
+func (s *GovContextDiff) SetDiff(val OptNilGovContextSnapshotDiff) {
+	s.Diff = val
+}
+
+func (*GovContextDiff) diffOrgContextVersionRes()  {}
+func (*GovContextDiff) diffSiteContextVersionRes() {}
+
+// Ref: #/components/schemas/GovContextEffective
+type GovContextEffective struct {
+	SiteID uuid.UUID                     `json:"site_id"`
+	Layers []GovContextLayerContribution `json:"layers"`
+	// The read-time union of every layer 1-3 restriction. Never truncated by the byte budget, unlike each
+	// layer's own display copy above — ADR-064 Decision 4's enforcement path reads this field, never a
+	// layer's (possibly truncated) prose.
+	Restrictions RestrictionSet `json:"restrictions"`
+	TotalBytes   int            `json:"total_bytes"`
+	BudgetBytes  int            `json:"budget_bytes"`
+	Truncated    bool           `json:"truncated"`
+}
+
+// GetSiteID returns the value of SiteID.
+func (s *GovContextEffective) GetSiteID() uuid.UUID {
+	return s.SiteID
+}
+
+// GetLayers returns the value of Layers.
+func (s *GovContextEffective) GetLayers() []GovContextLayerContribution {
+	return s.Layers
+}
+
+// GetRestrictions returns the value of Restrictions.
+func (s *GovContextEffective) GetRestrictions() RestrictionSet {
+	return s.Restrictions
+}
+
+// GetTotalBytes returns the value of TotalBytes.
+func (s *GovContextEffective) GetTotalBytes() int {
+	return s.TotalBytes
+}
+
+// GetBudgetBytes returns the value of BudgetBytes.
+func (s *GovContextEffective) GetBudgetBytes() int {
+	return s.BudgetBytes
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *GovContextEffective) GetTruncated() bool {
+	return s.Truncated
+}
+
+// SetSiteID sets the value of SiteID.
+func (s *GovContextEffective) SetSiteID(val uuid.UUID) {
+	s.SiteID = val
+}
+
+// SetLayers sets the value of Layers.
+func (s *GovContextEffective) SetLayers(val []GovContextLayerContribution) {
+	s.Layers = val
+}
+
+// SetRestrictions sets the value of Restrictions.
+func (s *GovContextEffective) SetRestrictions(val RestrictionSet) {
+	s.Restrictions = val
+}
+
+// SetTotalBytes sets the value of TotalBytes.
+func (s *GovContextEffective) SetTotalBytes(val int) {
+	s.TotalBytes = val
+}
+
+// SetBudgetBytes sets the value of BudgetBytes.
+func (s *GovContextEffective) SetBudgetBytes(val int) {
+	s.BudgetBytes = val
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *GovContextEffective) SetTruncated(val bool) {
+	s.Truncated = val
+}
+
+func (*GovContextEffective) getEffectiveSiteContextRes() {}
+
+// Ref: #/components/schemas/GovContextFieldDiff
+type GovContextFieldDiff struct {
+	Old OptString `json:"old"`
+	New OptString `json:"new"`
+}
+
+// GetOld returns the value of Old.
+func (s *GovContextFieldDiff) GetOld() OptString {
+	return s.Old
+}
+
+// GetNew returns the value of New.
+func (s *GovContextFieldDiff) GetNew() OptString {
+	return s.New
+}
+
+// SetOld sets the value of Old.
+func (s *GovContextFieldDiff) SetOld(val OptString) {
+	s.Old = val
+}
+
+// SetNew sets the value of New.
+func (s *GovContextFieldDiff) SetNew(val OptString) {
+	s.New = val
+}
+
+// Ref: #/components/schemas/GovContextLayerContribution
+type GovContextLayerContribution struct {
+	// ADR-064 Decision 1 layer number, 1-6. Layer 7 (learned memory) is never present — it is not built,
+	// not stubbed.
+	Layer        int            `json:"layer"`
+	Name         string         `json:"name"`
+	Restrictions RestrictionSet `json:"restrictions"`
+	Guidance     GuidanceSet    `json:"guidance"`
+	// Populated only for layer 4 (detected site facts).
+	Facts OptNilGovContextLayerContributionFacts `json:"facts"`
+	// Always present (never omitted, even when false — the field exists specifically to distinguish
+	// "known false" from absence). Meaningful for layer 4 only; false on every other layer. true means
+	// layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never
+	// to be read as "this site has no facts". false means the load succeeded, whatever it found, including
+	// a verified, known-empty result.
+	FactsUnavailable bool `json:"facts_unavailable"`
+	// Populated only for layer 6 (session context). Always empty on the effective-context preview
+	// (Decision 8).
+	Session   OptString `json:"session"`
+	Bytes     int       `json:"bytes"`
+	Truncated bool      `json:"truncated"`
+}
+
+// GetLayer returns the value of Layer.
+func (s *GovContextLayerContribution) GetLayer() int {
+	return s.Layer
+}
+
+// GetName returns the value of Name.
+func (s *GovContextLayerContribution) GetName() string {
+	return s.Name
+}
+
+// GetRestrictions returns the value of Restrictions.
+func (s *GovContextLayerContribution) GetRestrictions() RestrictionSet {
+	return s.Restrictions
+}
+
+// GetGuidance returns the value of Guidance.
+func (s *GovContextLayerContribution) GetGuidance() GuidanceSet {
+	return s.Guidance
+}
+
+// GetFacts returns the value of Facts.
+func (s *GovContextLayerContribution) GetFacts() OptNilGovContextLayerContributionFacts {
+	return s.Facts
+}
+
+// GetFactsUnavailable returns the value of FactsUnavailable.
+func (s *GovContextLayerContribution) GetFactsUnavailable() bool {
+	return s.FactsUnavailable
+}
+
+// GetSession returns the value of Session.
+func (s *GovContextLayerContribution) GetSession() OptString {
+	return s.Session
+}
+
+// GetBytes returns the value of Bytes.
+func (s *GovContextLayerContribution) GetBytes() int {
+	return s.Bytes
+}
+
+// GetTruncated returns the value of Truncated.
+func (s *GovContextLayerContribution) GetTruncated() bool {
+	return s.Truncated
+}
+
+// SetLayer sets the value of Layer.
+func (s *GovContextLayerContribution) SetLayer(val int) {
+	s.Layer = val
+}
+
+// SetName sets the value of Name.
+func (s *GovContextLayerContribution) SetName(val string) {
+	s.Name = val
+}
+
+// SetRestrictions sets the value of Restrictions.
+func (s *GovContextLayerContribution) SetRestrictions(val RestrictionSet) {
+	s.Restrictions = val
+}
+
+// SetGuidance sets the value of Guidance.
+func (s *GovContextLayerContribution) SetGuidance(val GuidanceSet) {
+	s.Guidance = val
+}
+
+// SetFacts sets the value of Facts.
+func (s *GovContextLayerContribution) SetFacts(val OptNilGovContextLayerContributionFacts) {
+	s.Facts = val
+}
+
+// SetFactsUnavailable sets the value of FactsUnavailable.
+func (s *GovContextLayerContribution) SetFactsUnavailable(val bool) {
+	s.FactsUnavailable = val
+}
+
+// SetSession sets the value of Session.
+func (s *GovContextLayerContribution) SetSession(val OptString) {
+	s.Session = val
+}
+
+// SetBytes sets the value of Bytes.
+func (s *GovContextLayerContribution) SetBytes(val int) {
+	s.Bytes = val
+}
+
+// SetTruncated sets the value of Truncated.
+func (s *GovContextLayerContribution) SetTruncated(val bool) {
+	s.Truncated = val
+}
+
+// Populated only for layer 4 (detected site facts).
+type GovContextLayerContributionFacts struct {
+	WpVersion   OptString `json:"wp_version"`
+	PhpVersion  OptString `json:"php_version"`
+	Multisite   OptBool   `json:"multisite"`
+	ActiveTheme OptString `json:"active_theme"`
+}
+
+// GetWpVersion returns the value of WpVersion.
+func (s *GovContextLayerContributionFacts) GetWpVersion() OptString {
+	return s.WpVersion
+}
+
+// GetPhpVersion returns the value of PhpVersion.
+func (s *GovContextLayerContributionFacts) GetPhpVersion() OptString {
+	return s.PhpVersion
+}
+
+// GetMultisite returns the value of Multisite.
+func (s *GovContextLayerContributionFacts) GetMultisite() OptBool {
+	return s.Multisite
+}
+
+// GetActiveTheme returns the value of ActiveTheme.
+func (s *GovContextLayerContributionFacts) GetActiveTheme() OptString {
+	return s.ActiveTheme
+}
+
+// SetWpVersion sets the value of WpVersion.
+func (s *GovContextLayerContributionFacts) SetWpVersion(val OptString) {
+	s.WpVersion = val
+}
+
+// SetPhpVersion sets the value of PhpVersion.
+func (s *GovContextLayerContributionFacts) SetPhpVersion(val OptString) {
+	s.PhpVersion = val
+}
+
+// SetMultisite sets the value of Multisite.
+func (s *GovContextLayerContributionFacts) SetMultisite(val OptBool) {
+	s.Multisite = val
+}
+
+// SetActiveTheme sets the value of ActiveTheme.
+func (s *GovContextLayerContributionFacts) SetActiveTheme(val OptString) {
+	s.ActiveTheme = val
+}
+
+// Ref: #/components/schemas/GovContextListDiff
+type GovContextListDiff struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+}
+
+// GetAdded returns the value of Added.
+func (s *GovContextListDiff) GetAdded() []string {
+	return s.Added
+}
+
+// GetRemoved returns the value of Removed.
+func (s *GovContextListDiff) GetRemoved() []string {
+	return s.Removed
+}
+
+// SetAdded sets the value of Added.
+func (s *GovContextListDiff) SetAdded(val []string) {
+	s.Added = val
+}
+
+// SetRemoved sets the value of Removed.
+func (s *GovContextListDiff) SetRemoved(val []string) {
+	s.Removed = val
+}
+
+type GovContextProvenance string
+
+const (
+	GovContextProvenanceManual   GovContextProvenance = "manual"
+	GovContextProvenanceRestore  GovContextProvenance = "restore"
+	GovContextProvenanceTransfer GovContextProvenance = "transfer"
+)
+
+// AllValues returns all GovContextProvenance values.
+func (GovContextProvenance) AllValues() []GovContextProvenance {
+	return []GovContextProvenance{
+		GovContextProvenanceManual,
+		GovContextProvenanceRestore,
+		GovContextProvenanceTransfer,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextProvenance) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextProvenanceManual:
+		return []byte(s), nil
+	case GovContextProvenanceRestore:
+		return []byte(s), nil
+	case GovContextProvenanceTransfer:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextProvenance) UnmarshalText(data []byte) error {
+	switch GovContextProvenance(data) {
+	case GovContextProvenanceManual:
+		*s = GovContextProvenanceManual
+		return nil
+	case GovContextProvenanceRestore:
+		*s = GovContextProvenanceRestore
+		return nil
+	case GovContextProvenanceTransfer:
+		*s = GovContextProvenanceTransfer
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Only fields that actually changed between the two versions are present.
+// Ref: #/components/schemas/GovContextSnapshotDiff
+type GovContextSnapshotDiff struct {
+	ForbiddenTools   OptGovContextListDiff  `json:"forbidden_tools"`
+	ForbiddenDomains OptGovContextListDiff  `json:"forbidden_domains"`
+	ForbiddenTopics  OptGovContextListDiff  `json:"forbidden_topics"`
+	BrandVoice       OptGovContextFieldDiff `json:"brand_voice"`
+	Audience         OptGovContextFieldDiff `json:"audience"`
+	Terminology      OptGovContextFieldDiff `json:"terminology"`
+	Style            OptGovContextFieldDiff `json:"style"`
+}
+
+// GetForbiddenTools returns the value of ForbiddenTools.
+func (s *GovContextSnapshotDiff) GetForbiddenTools() OptGovContextListDiff {
+	return s.ForbiddenTools
+}
+
+// GetForbiddenDomains returns the value of ForbiddenDomains.
+func (s *GovContextSnapshotDiff) GetForbiddenDomains() OptGovContextListDiff {
+	return s.ForbiddenDomains
+}
+
+// GetForbiddenTopics returns the value of ForbiddenTopics.
+func (s *GovContextSnapshotDiff) GetForbiddenTopics() OptGovContextListDiff {
+	return s.ForbiddenTopics
+}
+
+// GetBrandVoice returns the value of BrandVoice.
+func (s *GovContextSnapshotDiff) GetBrandVoice() OptGovContextFieldDiff {
+	return s.BrandVoice
+}
+
+// GetAudience returns the value of Audience.
+func (s *GovContextSnapshotDiff) GetAudience() OptGovContextFieldDiff {
+	return s.Audience
+}
+
+// GetTerminology returns the value of Terminology.
+func (s *GovContextSnapshotDiff) GetTerminology() OptGovContextFieldDiff {
+	return s.Terminology
+}
+
+// GetStyle returns the value of Style.
+func (s *GovContextSnapshotDiff) GetStyle() OptGovContextFieldDiff {
+	return s.Style
+}
+
+// SetForbiddenTools sets the value of ForbiddenTools.
+func (s *GovContextSnapshotDiff) SetForbiddenTools(val OptGovContextListDiff) {
+	s.ForbiddenTools = val
+}
+
+// SetForbiddenDomains sets the value of ForbiddenDomains.
+func (s *GovContextSnapshotDiff) SetForbiddenDomains(val OptGovContextListDiff) {
+	s.ForbiddenDomains = val
+}
+
+// SetForbiddenTopics sets the value of ForbiddenTopics.
+func (s *GovContextSnapshotDiff) SetForbiddenTopics(val OptGovContextListDiff) {
+	s.ForbiddenTopics = val
+}
+
+// SetBrandVoice sets the value of BrandVoice.
+func (s *GovContextSnapshotDiff) SetBrandVoice(val OptGovContextFieldDiff) {
+	s.BrandVoice = val
+}
+
+// SetAudience sets the value of Audience.
+func (s *GovContextSnapshotDiff) SetAudience(val OptGovContextFieldDiff) {
+	s.Audience = val
+}
+
+// SetTerminology sets the value of Terminology.
+func (s *GovContextSnapshotDiff) SetTerminology(val OptGovContextFieldDiff) {
+	s.Terminology = val
+}
+
+// SetStyle sets the value of Style.
+func (s *GovContextSnapshotDiff) SetStyle(val OptGovContextFieldDiff) {
+	s.Style = val
+}
+
+// Ref: #/components/schemas/GovContextVersionItem
+type GovContextVersionItem struct {
+	ID                    uuid.UUID                       `json:"id"`
+	Version               int64                           `json:"version"`
+	Restrictions          RestrictionSet                  `json:"restrictions"`
+	Guidance              GuidanceSet                     `json:"guidance"`
+	AuthorType            GovContextVersionItemAuthorType `json:"author_type"`
+	AuthorID              OptNilUUID                      `json:"author_id"`
+	Provenance            GovContextVersionItemProvenance `json:"provenance"`
+	RestoredFromVersionID OptNilUUID                      `json:"restored_from_version_id"`
+	CreatedAt             time.Time                       `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *GovContextVersionItem) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetVersion returns the value of Version.
+func (s *GovContextVersionItem) GetVersion() int64 {
+	return s.Version
+}
+
+// GetRestrictions returns the value of Restrictions.
+func (s *GovContextVersionItem) GetRestrictions() RestrictionSet {
+	return s.Restrictions
+}
+
+// GetGuidance returns the value of Guidance.
+func (s *GovContextVersionItem) GetGuidance() GuidanceSet {
+	return s.Guidance
+}
+
+// GetAuthorType returns the value of AuthorType.
+func (s *GovContextVersionItem) GetAuthorType() GovContextVersionItemAuthorType {
+	return s.AuthorType
+}
+
+// GetAuthorID returns the value of AuthorID.
+func (s *GovContextVersionItem) GetAuthorID() OptNilUUID {
+	return s.AuthorID
+}
+
+// GetProvenance returns the value of Provenance.
+func (s *GovContextVersionItem) GetProvenance() GovContextVersionItemProvenance {
+	return s.Provenance
+}
+
+// GetRestoredFromVersionID returns the value of RestoredFromVersionID.
+func (s *GovContextVersionItem) GetRestoredFromVersionID() OptNilUUID {
+	return s.RestoredFromVersionID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *GovContextVersionItem) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *GovContextVersionItem) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetVersion sets the value of Version.
+func (s *GovContextVersionItem) SetVersion(val int64) {
+	s.Version = val
+}
+
+// SetRestrictions sets the value of Restrictions.
+func (s *GovContextVersionItem) SetRestrictions(val RestrictionSet) {
+	s.Restrictions = val
+}
+
+// SetGuidance sets the value of Guidance.
+func (s *GovContextVersionItem) SetGuidance(val GuidanceSet) {
+	s.Guidance = val
+}
+
+// SetAuthorType sets the value of AuthorType.
+func (s *GovContextVersionItem) SetAuthorType(val GovContextVersionItemAuthorType) {
+	s.AuthorType = val
+}
+
+// SetAuthorID sets the value of AuthorID.
+func (s *GovContextVersionItem) SetAuthorID(val OptNilUUID) {
+	s.AuthorID = val
+}
+
+// SetProvenance sets the value of Provenance.
+func (s *GovContextVersionItem) SetProvenance(val GovContextVersionItemProvenance) {
+	s.Provenance = val
+}
+
+// SetRestoredFromVersionID sets the value of RestoredFromVersionID.
+func (s *GovContextVersionItem) SetRestoredFromVersionID(val OptNilUUID) {
+	s.RestoredFromVersionID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *GovContextVersionItem) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+func (*GovContextVersionItem) getOrgContextVersionRes()  {}
+func (*GovContextVersionItem) getSiteContextVersionRes() {}
+
+type GovContextVersionItemAuthorType string
+
+const (
+	GovContextVersionItemAuthorTypeUser   GovContextVersionItemAuthorType = "user"
+	GovContextVersionItemAuthorTypeAPIKey GovContextVersionItemAuthorType = "api_key"
+	GovContextVersionItemAuthorTypeSystem GovContextVersionItemAuthorType = "system"
+)
+
+// AllValues returns all GovContextVersionItemAuthorType values.
+func (GovContextVersionItemAuthorType) AllValues() []GovContextVersionItemAuthorType {
+	return []GovContextVersionItemAuthorType{
+		GovContextVersionItemAuthorTypeUser,
+		GovContextVersionItemAuthorTypeAPIKey,
+		GovContextVersionItemAuthorTypeSystem,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextVersionItemAuthorType) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextVersionItemAuthorTypeUser:
+		return []byte(s), nil
+	case GovContextVersionItemAuthorTypeAPIKey:
+		return []byte(s), nil
+	case GovContextVersionItemAuthorTypeSystem:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextVersionItemAuthorType) UnmarshalText(data []byte) error {
+	switch GovContextVersionItemAuthorType(data) {
+	case GovContextVersionItemAuthorTypeUser:
+		*s = GovContextVersionItemAuthorTypeUser
+		return nil
+	case GovContextVersionItemAuthorTypeAPIKey:
+		*s = GovContextVersionItemAuthorTypeAPIKey
+		return nil
+	case GovContextVersionItemAuthorTypeSystem:
+		*s = GovContextVersionItemAuthorTypeSystem
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type GovContextVersionItemProvenance string
+
+const (
+	GovContextVersionItemProvenanceManual   GovContextVersionItemProvenance = "manual"
+	GovContextVersionItemProvenanceRestore  GovContextVersionItemProvenance = "restore"
+	GovContextVersionItemProvenanceTransfer GovContextVersionItemProvenance = "transfer"
+)
+
+// AllValues returns all GovContextVersionItemProvenance values.
+func (GovContextVersionItemProvenance) AllValues() []GovContextVersionItemProvenance {
+	return []GovContextVersionItemProvenance{
+		GovContextVersionItemProvenanceManual,
+		GovContextVersionItemProvenanceRestore,
+		GovContextVersionItemProvenanceTransfer,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextVersionItemProvenance) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextVersionItemProvenanceManual:
+		return []byte(s), nil
+	case GovContextVersionItemProvenanceRestore:
+		return []byte(s), nil
+	case GovContextVersionItemProvenanceTransfer:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextVersionItemProvenance) UnmarshalText(data []byte) error {
+	switch GovContextVersionItemProvenance(data) {
+	case GovContextVersionItemProvenanceManual:
+		*s = GovContextVersionItemProvenanceManual
+		return nil
+	case GovContextVersionItemProvenanceRestore:
+		*s = GovContextVersionItemProvenanceRestore
+		return nil
+	case GovContextVersionItemProvenanceTransfer:
+		*s = GovContextVersionItemProvenanceTransfer
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/GovContextVersionList
+type GovContextVersionList struct {
+	Items []GovContextVersionSummary `json:"items"`
+	// Pass as ?cursor= to fetch the next page. 0 means no further page.
+	NextCursor int64 `json:"next_cursor"`
+}
+
+// GetItems returns the value of Items.
+func (s *GovContextVersionList) GetItems() []GovContextVersionSummary {
+	return s.Items
+}
+
+// GetNextCursor returns the value of NextCursor.
+func (s *GovContextVersionList) GetNextCursor() int64 {
+	return s.NextCursor
+}
+
+// SetItems sets the value of Items.
+func (s *GovContextVersionList) SetItems(val []GovContextVersionSummary) {
+	s.Items = val
+}
+
+// SetNextCursor sets the value of NextCursor.
+func (s *GovContextVersionList) SetNextCursor(val int64) {
+	s.NextCursor = val
+}
+
+func (*GovContextVersionList) listOrgContextVersionsRes()  {}
+func (*GovContextVersionList) listSiteContextVersionsRes() {}
+
+// Ref: #/components/schemas/GovContextVersionSummary
+type GovContextVersionSummary struct {
+	ID                    uuid.UUID                          `json:"id"`
+	Version               int64                              `json:"version"`
+	AuthorType            GovContextVersionSummaryAuthorType `json:"author_type"`
+	AuthorID              OptNilUUID                         `json:"author_id"`
+	Provenance            GovContextVersionSummaryProvenance `json:"provenance"`
+	RestoredFromVersionID OptNilUUID                         `json:"restored_from_version_id"`
+	CreatedAt             time.Time                          `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *GovContextVersionSummary) GetID() uuid.UUID {
+	return s.ID
+}
+
+// GetVersion returns the value of Version.
+func (s *GovContextVersionSummary) GetVersion() int64 {
+	return s.Version
+}
+
+// GetAuthorType returns the value of AuthorType.
+func (s *GovContextVersionSummary) GetAuthorType() GovContextVersionSummaryAuthorType {
+	return s.AuthorType
+}
+
+// GetAuthorID returns the value of AuthorID.
+func (s *GovContextVersionSummary) GetAuthorID() OptNilUUID {
+	return s.AuthorID
+}
+
+// GetProvenance returns the value of Provenance.
+func (s *GovContextVersionSummary) GetProvenance() GovContextVersionSummaryProvenance {
+	return s.Provenance
+}
+
+// GetRestoredFromVersionID returns the value of RestoredFromVersionID.
+func (s *GovContextVersionSummary) GetRestoredFromVersionID() OptNilUUID {
+	return s.RestoredFromVersionID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *GovContextVersionSummary) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *GovContextVersionSummary) SetID(val uuid.UUID) {
+	s.ID = val
+}
+
+// SetVersion sets the value of Version.
+func (s *GovContextVersionSummary) SetVersion(val int64) {
+	s.Version = val
+}
+
+// SetAuthorType sets the value of AuthorType.
+func (s *GovContextVersionSummary) SetAuthorType(val GovContextVersionSummaryAuthorType) {
+	s.AuthorType = val
+}
+
+// SetAuthorID sets the value of AuthorID.
+func (s *GovContextVersionSummary) SetAuthorID(val OptNilUUID) {
+	s.AuthorID = val
+}
+
+// SetProvenance sets the value of Provenance.
+func (s *GovContextVersionSummary) SetProvenance(val GovContextVersionSummaryProvenance) {
+	s.Provenance = val
+}
+
+// SetRestoredFromVersionID sets the value of RestoredFromVersionID.
+func (s *GovContextVersionSummary) SetRestoredFromVersionID(val OptNilUUID) {
+	s.RestoredFromVersionID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *GovContextVersionSummary) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+type GovContextVersionSummaryAuthorType string
+
+const (
+	GovContextVersionSummaryAuthorTypeUser   GovContextVersionSummaryAuthorType = "user"
+	GovContextVersionSummaryAuthorTypeAPIKey GovContextVersionSummaryAuthorType = "api_key"
+	GovContextVersionSummaryAuthorTypeSystem GovContextVersionSummaryAuthorType = "system"
+)
+
+// AllValues returns all GovContextVersionSummaryAuthorType values.
+func (GovContextVersionSummaryAuthorType) AllValues() []GovContextVersionSummaryAuthorType {
+	return []GovContextVersionSummaryAuthorType{
+		GovContextVersionSummaryAuthorTypeUser,
+		GovContextVersionSummaryAuthorTypeAPIKey,
+		GovContextVersionSummaryAuthorTypeSystem,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextVersionSummaryAuthorType) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextVersionSummaryAuthorTypeUser:
+		return []byte(s), nil
+	case GovContextVersionSummaryAuthorTypeAPIKey:
+		return []byte(s), nil
+	case GovContextVersionSummaryAuthorTypeSystem:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextVersionSummaryAuthorType) UnmarshalText(data []byte) error {
+	switch GovContextVersionSummaryAuthorType(data) {
+	case GovContextVersionSummaryAuthorTypeUser:
+		*s = GovContextVersionSummaryAuthorTypeUser
+		return nil
+	case GovContextVersionSummaryAuthorTypeAPIKey:
+		*s = GovContextVersionSummaryAuthorTypeAPIKey
+		return nil
+	case GovContextVersionSummaryAuthorTypeSystem:
+		*s = GovContextVersionSummaryAuthorTypeSystem
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+type GovContextVersionSummaryProvenance string
+
+const (
+	GovContextVersionSummaryProvenanceManual   GovContextVersionSummaryProvenance = "manual"
+	GovContextVersionSummaryProvenanceRestore  GovContextVersionSummaryProvenance = "restore"
+	GovContextVersionSummaryProvenanceTransfer GovContextVersionSummaryProvenance = "transfer"
+)
+
+// AllValues returns all GovContextVersionSummaryProvenance values.
+func (GovContextVersionSummaryProvenance) AllValues() []GovContextVersionSummaryProvenance {
+	return []GovContextVersionSummaryProvenance{
+		GovContextVersionSummaryProvenanceManual,
+		GovContextVersionSummaryProvenanceRestore,
+		GovContextVersionSummaryProvenanceTransfer,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s GovContextVersionSummaryProvenance) MarshalText() ([]byte, error) {
+	switch s {
+	case GovContextVersionSummaryProvenanceManual:
+		return []byte(s), nil
+	case GovContextVersionSummaryProvenanceRestore:
+		return []byte(s), nil
+	case GovContextVersionSummaryProvenanceTransfer:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *GovContextVersionSummaryProvenance) UnmarshalText(data []byte) error {
+	switch GovContextVersionSummaryProvenance(data) {
+	case GovContextVersionSummaryProvenanceManual:
+		*s = GovContextVersionSummaryProvenanceManual
+		return nil
+	case GovContextVersionSummaryProvenanceRestore:
+		*s = GovContextVersionSummaryProvenanceRestore
+		return nil
+	case GovContextVersionSummaryProvenanceTransfer:
+		*s = GovContextVersionSummaryProvenanceTransfer
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 type GrantAdminSelfMembershipForbidden Error
 
 func (*GrantAdminSelfMembershipForbidden) grantAdminSelfMembershipRes() {}
@@ -22914,6 +24030,57 @@ func (*GrantAdminSelfMembershipForbidden) grantAdminSelfMembershipRes() {}
 type GrantAdminSelfMembershipUnauthorized Error
 
 func (*GrantAdminSelfMembershipUnauthorized) grantAdminSelfMembershipRes() {}
+
+// ADR-064 Decision 3's free-text "guidance" kind. No widen-check applies to these fields — "wider"
+// and "narrower" are not defined relations over prose (ADR-064 Decision 1) — and none is
+// implemented.
+// Ref: #/components/schemas/GuidanceSet
+type GuidanceSet struct {
+	BrandVoice  OptString `json:"brand_voice"`
+	Audience    OptString `json:"audience"`
+	Terminology OptString `json:"terminology"`
+	Style       OptString `json:"style"`
+}
+
+// GetBrandVoice returns the value of BrandVoice.
+func (s *GuidanceSet) GetBrandVoice() OptString {
+	return s.BrandVoice
+}
+
+// GetAudience returns the value of Audience.
+func (s *GuidanceSet) GetAudience() OptString {
+	return s.Audience
+}
+
+// GetTerminology returns the value of Terminology.
+func (s *GuidanceSet) GetTerminology() OptString {
+	return s.Terminology
+}
+
+// GetStyle returns the value of Style.
+func (s *GuidanceSet) GetStyle() OptString {
+	return s.Style
+}
+
+// SetBrandVoice sets the value of BrandVoice.
+func (s *GuidanceSet) SetBrandVoice(val OptString) {
+	s.BrandVoice = val
+}
+
+// SetAudience sets the value of Audience.
+func (s *GuidanceSet) SetAudience(val OptString) {
+	s.Audience = val
+}
+
+// SetTerminology sets the value of Terminology.
+func (s *GuidanceSet) SetTerminology(val OptString) {
+	s.Terminology = val
+}
+
+// SetStyle sets the value of Style.
+func (s *GuidanceSet) SetStyle(val OptString) {
+	s.Style = val
+}
 
 // HandleBillingProviderWebhookNotFound is response for HandleBillingProviderWebhook operation.
 type HandleBillingProviderWebhookNotFound struct{}
@@ -23414,6 +24581,18 @@ type ListMembersUnauthorized Error
 
 func (*ListMembersUnauthorized) listMembersRes() {}
 
+type ListOrgContextVersionsForbidden Error
+
+func (*ListOrgContextVersionsForbidden) listOrgContextVersionsRes() {}
+
+type ListOrgContextVersionsNotFound Error
+
+func (*ListOrgContextVersionsNotFound) listOrgContextVersionsRes() {}
+
+type ListOrgContextVersionsUnauthorized Error
+
+func (*ListOrgContextVersionsUnauthorized) listOrgContextVersionsRes() {}
+
 type ListPortalReportsForbidden Error
 
 func (*ListPortalReportsForbidden) listPortalReportsRes() {}
@@ -23622,6 +24801,18 @@ func (*ListSiteBansOK) listSiteBansRes() {}
 type ListSiteBansUnauthorized Error
 
 func (*ListSiteBansUnauthorized) listSiteBansRes() {}
+
+type ListSiteContextVersionsForbidden Error
+
+func (*ListSiteContextVersionsForbidden) listSiteContextVersionsRes() {}
+
+type ListSiteContextVersionsNotFound Error
+
+func (*ListSiteContextVersionsNotFound) listSiteContextVersionsRes() {}
+
+type ListSiteContextVersionsUnauthorized Error
+
+func (*ListSiteContextVersionsUnauthorized) listSiteContextVersionsRes() {}
 
 type ListSiteDestinationsForbidden Error
 
@@ -30568,6 +31759,190 @@ func (o OptGetSiteUptimeWindow) Or(d GetSiteUptimeWindow) GetSiteUptimeWindow {
 	return d
 }
 
+// NewOptGovContextAuthorType returns new OptGovContextAuthorType with value set to v.
+func NewOptGovContextAuthorType(v GovContextAuthorType) OptGovContextAuthorType {
+	return OptGovContextAuthorType{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGovContextAuthorType is optional GovContextAuthorType.
+type OptGovContextAuthorType struct {
+	Value GovContextAuthorType
+	Set   bool
+}
+
+// IsSet returns true if OptGovContextAuthorType was set.
+func (o OptGovContextAuthorType) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGovContextAuthorType) Reset() {
+	var v GovContextAuthorType
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGovContextAuthorType) SetTo(v GovContextAuthorType) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGovContextAuthorType) Get() (v GovContextAuthorType, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGovContextAuthorType) Or(d GovContextAuthorType) GovContextAuthorType {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptGovContextFieldDiff returns new OptGovContextFieldDiff with value set to v.
+func NewOptGovContextFieldDiff(v GovContextFieldDiff) OptGovContextFieldDiff {
+	return OptGovContextFieldDiff{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGovContextFieldDiff is optional GovContextFieldDiff.
+type OptGovContextFieldDiff struct {
+	Value GovContextFieldDiff
+	Set   bool
+}
+
+// IsSet returns true if OptGovContextFieldDiff was set.
+func (o OptGovContextFieldDiff) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGovContextFieldDiff) Reset() {
+	var v GovContextFieldDiff
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGovContextFieldDiff) SetTo(v GovContextFieldDiff) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGovContextFieldDiff) Get() (v GovContextFieldDiff, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGovContextFieldDiff) Or(d GovContextFieldDiff) GovContextFieldDiff {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptGovContextListDiff returns new OptGovContextListDiff with value set to v.
+func NewOptGovContextListDiff(v GovContextListDiff) OptGovContextListDiff {
+	return OptGovContextListDiff{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGovContextListDiff is optional GovContextListDiff.
+type OptGovContextListDiff struct {
+	Value GovContextListDiff
+	Set   bool
+}
+
+// IsSet returns true if OptGovContextListDiff was set.
+func (o OptGovContextListDiff) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGovContextListDiff) Reset() {
+	var v GovContextListDiff
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGovContextListDiff) SetTo(v GovContextListDiff) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGovContextListDiff) Get() (v GovContextListDiff, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGovContextListDiff) Or(d GovContextListDiff) GovContextListDiff {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptGovContextProvenance returns new OptGovContextProvenance with value set to v.
+func NewOptGovContextProvenance(v GovContextProvenance) OptGovContextProvenance {
+	return OptGovContextProvenance{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptGovContextProvenance is optional GovContextProvenance.
+type OptGovContextProvenance struct {
+	Value GovContextProvenance
+	Set   bool
+}
+
+// IsSet returns true if OptGovContextProvenance was set.
+func (o OptGovContextProvenance) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptGovContextProvenance) Reset() {
+	var v GovContextProvenance
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptGovContextProvenance) SetTo(v GovContextProvenance) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptGovContextProvenance) Get() (v GovContextProvenance, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptGovContextProvenance) Or(d GovContextProvenance) GovContextProvenance {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptInt returns new OptInt with value set to v.
 func NewOptInt(v int) OptInt {
 	return OptInt{
@@ -32604,6 +33979,278 @@ func (o OptNilFloat64) Or(d float64) float64 {
 	return d
 }
 
+// NewOptNilGovContextLayerContributionFacts returns new OptNilGovContextLayerContributionFacts with value set to v.
+func NewOptNilGovContextLayerContributionFacts(v GovContextLayerContributionFacts) OptNilGovContextLayerContributionFacts {
+	return OptNilGovContextLayerContributionFacts{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilGovContextLayerContributionFacts is optional nullable GovContextLayerContributionFacts.
+type OptNilGovContextLayerContributionFacts struct {
+	Value GovContextLayerContributionFacts
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilGovContextLayerContributionFacts was set.
+func (o OptNilGovContextLayerContributionFacts) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilGovContextLayerContributionFacts) Reset() {
+	var v GovContextLayerContributionFacts
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilGovContextLayerContributionFacts) SetTo(v GovContextLayerContributionFacts) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilGovContextLayerContributionFacts) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilGovContextLayerContributionFacts) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v GovContextLayerContributionFacts
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilGovContextLayerContributionFacts) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilGovContextLayerContributionFacts) Get() (v GovContextLayerContributionFacts, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilGovContextLayerContributionFacts) Or(d GovContextLayerContributionFacts) GovContextLayerContributionFacts {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilGovContextSnapshotDiff returns new OptNilGovContextSnapshotDiff with value set to v.
+func NewOptNilGovContextSnapshotDiff(v GovContextSnapshotDiff) OptNilGovContextSnapshotDiff {
+	return OptNilGovContextSnapshotDiff{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilGovContextSnapshotDiff is optional nullable GovContextSnapshotDiff.
+type OptNilGovContextSnapshotDiff struct {
+	Value GovContextSnapshotDiff
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilGovContextSnapshotDiff was set.
+func (o OptNilGovContextSnapshotDiff) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilGovContextSnapshotDiff) Reset() {
+	var v GovContextSnapshotDiff
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilGovContextSnapshotDiff) SetTo(v GovContextSnapshotDiff) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilGovContextSnapshotDiff) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilGovContextSnapshotDiff) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v GovContextSnapshotDiff
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilGovContextSnapshotDiff) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilGovContextSnapshotDiff) Get() (v GovContextSnapshotDiff, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilGovContextSnapshotDiff) Or(d GovContextSnapshotDiff) GovContextSnapshotDiff {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilGovContextVersionItem returns new OptNilGovContextVersionItem with value set to v.
+func NewOptNilGovContextVersionItem(v GovContextVersionItem) OptNilGovContextVersionItem {
+	return OptNilGovContextVersionItem{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilGovContextVersionItem is optional nullable GovContextVersionItem.
+type OptNilGovContextVersionItem struct {
+	Value GovContextVersionItem
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilGovContextVersionItem was set.
+func (o OptNilGovContextVersionItem) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilGovContextVersionItem) Reset() {
+	var v GovContextVersionItem
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilGovContextVersionItem) SetTo(v GovContextVersionItem) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilGovContextVersionItem) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilGovContextVersionItem) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v GovContextVersionItem
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilGovContextVersionItem) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilGovContextVersionItem) Get() (v GovContextVersionItem, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilGovContextVersionItem) Or(d GovContextVersionItem) GovContextVersionItem {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilGuidanceSet returns new OptNilGuidanceSet with value set to v.
+func NewOptNilGuidanceSet(v GuidanceSet) OptNilGuidanceSet {
+	return OptNilGuidanceSet{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilGuidanceSet is optional nullable GuidanceSet.
+type OptNilGuidanceSet struct {
+	Value GuidanceSet
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilGuidanceSet was set.
+func (o OptNilGuidanceSet) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilGuidanceSet) Reset() {
+	var v GuidanceSet
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilGuidanceSet) SetTo(v GuidanceSet) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilGuidanceSet) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilGuidanceSet) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v GuidanceSet
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilGuidanceSet) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilGuidanceSet) Get() (v GuidanceSet, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilGuidanceSet) Or(d GuidanceSet) GuidanceSet {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptNilInt returns new OptNilInt with value set to v.
 func NewOptNilInt(v int) OptNilInt {
 	return OptNilInt{
@@ -33074,6 +34721,74 @@ func (o OptNilPortalSummaryVitalsOverall) Get() (v PortalSummaryVitalsOverall, o
 
 // Or returns value if set, or given parameter if does not.
 func (o OptNilPortalSummaryVitalsOverall) Or(d PortalSummaryVitalsOverall) PortalSummaryVitalsOverall {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptNilRestrictionSet returns new OptNilRestrictionSet with value set to v.
+func NewOptNilRestrictionSet(v RestrictionSet) OptNilRestrictionSet {
+	return OptNilRestrictionSet{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptNilRestrictionSet is optional nullable RestrictionSet.
+type OptNilRestrictionSet struct {
+	Value RestrictionSet
+	Set   bool
+	Null  bool
+}
+
+// IsSet returns true if OptNilRestrictionSet was set.
+func (o OptNilRestrictionSet) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptNilRestrictionSet) Reset() {
+	var v RestrictionSet
+	o.Value = v
+	o.Set = false
+	o.Null = false
+}
+
+// SetTo sets value to v.
+func (o *OptNilRestrictionSet) SetTo(v RestrictionSet) {
+	o.Set = true
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o OptNilRestrictionSet) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *OptNilRestrictionSet) SetToNull() {
+	o.Set = true
+	o.Null = true
+	var v RestrictionSet
+	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilRestrictionSet) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptNilRestrictionSet) Get() (v RestrictionSet, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptNilRestrictionSet) Or(d RestrictionSet) RestrictionSet {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -35984,6 +37699,50 @@ func (s *PairingCodeCreate) SetTags(val []string) {
 	s.Tags = val
 }
 
+// Ref: #/components/schemas/PatchGovContextRequest
+type PatchGovContextRequest struct {
+	// The version this write is based on (0 = "no context authored yet"). A mismatch against the current
+	// version is refused with 409 context_version_conflict before anything else is checked (ADR-064 open
+	// question 2).
+	BaseVersion int64 `json:"base_version"`
+	// Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never
+	// deep-merged.
+	Restrictions OptNilRestrictionSet `json:"restrictions"`
+	// Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never
+	// deep-merged.
+	Guidance OptNilGuidanceSet `json:"guidance"`
+}
+
+// GetBaseVersion returns the value of BaseVersion.
+func (s *PatchGovContextRequest) GetBaseVersion() int64 {
+	return s.BaseVersion
+}
+
+// GetRestrictions returns the value of Restrictions.
+func (s *PatchGovContextRequest) GetRestrictions() OptNilRestrictionSet {
+	return s.Restrictions
+}
+
+// GetGuidance returns the value of Guidance.
+func (s *PatchGovContextRequest) GetGuidance() OptNilGuidanceSet {
+	return s.Guidance
+}
+
+// SetBaseVersion sets the value of BaseVersion.
+func (s *PatchGovContextRequest) SetBaseVersion(val int64) {
+	s.BaseVersion = val
+}
+
+// SetRestrictions sets the value of Restrictions.
+func (s *PatchGovContextRequest) SetRestrictions(val OptNilRestrictionSet) {
+	s.Restrictions = val
+}
+
+// SetGuidance sets the value of Guidance.
+func (s *PatchGovContextRequest) SetGuidance(val OptNilGuidanceSet) {
+	s.Guidance = val
+}
+
 type PatchMemberForbidden Error
 
 func (*PatchMemberForbidden) patchMemberRes() {}
@@ -36014,6 +37773,46 @@ func (*PatchMemberUnauthorized) patchMemberRes() {}
 type PatchMemberUnprocessableEntity Error
 
 func (*PatchMemberUnprocessableEntity) patchMemberRes() {}
+
+type PatchOrgContextConflict Error
+
+func (*PatchOrgContextConflict) patchOrgContextRes() {}
+
+type PatchOrgContextForbidden Error
+
+func (*PatchOrgContextForbidden) patchOrgContextRes() {}
+
+type PatchOrgContextNotFound Error
+
+func (*PatchOrgContextNotFound) patchOrgContextRes() {}
+
+type PatchOrgContextUnauthorized Error
+
+func (*PatchOrgContextUnauthorized) patchOrgContextRes() {}
+
+type PatchOrgContextUnprocessableEntity Error
+
+func (*PatchOrgContextUnprocessableEntity) patchOrgContextRes() {}
+
+type PatchSiteContextConflict Error
+
+func (*PatchSiteContextConflict) patchSiteContextRes() {}
+
+type PatchSiteContextForbidden Error
+
+func (*PatchSiteContextForbidden) patchSiteContextRes() {}
+
+type PatchSiteContextNotFound Error
+
+func (*PatchSiteContextNotFound) patchSiteContextRes() {}
+
+type PatchSiteContextUnauthorized Error
+
+func (*PatchSiteContextUnauthorized) patchSiteContextRes() {}
+
+type PatchSiteContextUnprocessableEntity Error
+
+func (*PatchSiteContextUnprocessableEntity) patchSiteContextRes() {}
 
 type PatchSiteErrorConfigBadRequest Error
 
@@ -40586,6 +42385,26 @@ type RestoreOrgConflict Error
 
 func (*RestoreOrgConflict) restoreOrgRes() {}
 
+type RestoreOrgContextVersionConflict Error
+
+func (*RestoreOrgContextVersionConflict) restoreOrgContextVersionRes() {}
+
+type RestoreOrgContextVersionForbidden Error
+
+func (*RestoreOrgContextVersionForbidden) restoreOrgContextVersionRes() {}
+
+type RestoreOrgContextVersionNotFound Error
+
+func (*RestoreOrgContextVersionNotFound) restoreOrgContextVersionRes() {}
+
+type RestoreOrgContextVersionUnauthorized Error
+
+func (*RestoreOrgContextVersionUnauthorized) restoreOrgContextVersionRes() {}
+
+type RestoreOrgContextVersionUnprocessableEntity Error
+
+func (*RestoreOrgContextVersionUnprocessableEntity) restoreOrgContextVersionRes() {}
+
 type RestoreOrgForbidden Error
 
 func (*RestoreOrgForbidden) restoreOrgRes() {}
@@ -41071,6 +42890,26 @@ func (s *RestoreRunStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+type RestoreSiteContextVersionConflict Error
+
+func (*RestoreSiteContextVersionConflict) restoreSiteContextVersionRes() {}
+
+type RestoreSiteContextVersionForbidden Error
+
+func (*RestoreSiteContextVersionForbidden) restoreSiteContextVersionRes() {}
+
+type RestoreSiteContextVersionNotFound Error
+
+func (*RestoreSiteContextVersionNotFound) restoreSiteContextVersionRes() {}
+
+type RestoreSiteContextVersionUnauthorized Error
+
+func (*RestoreSiteContextVersionUnauthorized) restoreSiteContextVersionRes() {}
+
+type RestoreSiteContextVersionUnprocessableEntity Error
+
+func (*RestoreSiteContextVersionUnprocessableEntity) restoreSiteContextVersionRes() {}
+
 type RestoreSiteFileVersionBadRequest Error
 
 func (*RestoreSiteFileVersionBadRequest) restoreSiteFileVersionRes() {}
@@ -41103,6 +42942,46 @@ func (*RestoreSiteVulnerabilityNotFound) restoreSiteVulnerabilityRes() {}
 type RestoreSiteVulnerabilityUnauthorized Error
 
 func (*RestoreSiteVulnerabilityUnauthorized) restoreSiteVulnerabilityRes() {}
+
+// ADR-064 Decision 3's closed, structured "restrictions" kind. Every field is a deny-list; a lower
+// layer may add to it but never remove an item a higher layer set (ADR-064 Decision 4). No field here
+// is ever deep-merged on PATCH — see PatchGovContextRequest.
+// Ref: #/components/schemas/RestrictionSet
+type RestrictionSet struct {
+	ForbiddenTools   []string `json:"forbidden_tools"`
+	ForbiddenDomains []string `json:"forbidden_domains"`
+	ForbiddenTopics  []string `json:"forbidden_topics"`
+}
+
+// GetForbiddenTools returns the value of ForbiddenTools.
+func (s *RestrictionSet) GetForbiddenTools() []string {
+	return s.ForbiddenTools
+}
+
+// GetForbiddenDomains returns the value of ForbiddenDomains.
+func (s *RestrictionSet) GetForbiddenDomains() []string {
+	return s.ForbiddenDomains
+}
+
+// GetForbiddenTopics returns the value of ForbiddenTopics.
+func (s *RestrictionSet) GetForbiddenTopics() []string {
+	return s.ForbiddenTopics
+}
+
+// SetForbiddenTools sets the value of ForbiddenTools.
+func (s *RestrictionSet) SetForbiddenTools(val []string) {
+	s.ForbiddenTools = val
+}
+
+// SetForbiddenDomains sets the value of ForbiddenDomains.
+func (s *RestrictionSet) SetForbiddenDomains(val []string) {
+	s.ForbiddenDomains = val
+}
+
+// SetForbiddenTopics sets the value of ForbiddenTopics.
+func (s *RestrictionSet) SetForbiddenTopics(val []string) {
+	s.ForbiddenTopics = val
+}
 
 // Ref: #/components/schemas/ResumeMonitoringRequest
 type ResumeMonitoringRequest struct {
