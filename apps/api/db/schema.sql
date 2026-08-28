@@ -4087,15 +4087,16 @@ CREATE POLICY email_webhook_events_agent ON email_webhook_events
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- m125: the predicate below was `tenant_id IS NULL OR tenant_id = <app.tenant_id>`
+-- as m60 wrote it. The first branch bound nothing. It was dropped because it was
+-- not load-bearing: every path that touches this table (InsertWebhookEventDedup,
+-- PruneWebhookDedup) runs under Pool.InAgentTx and is admitted by the _agent
+-- policy above, which is FOR ALL over every row. Permissive policies are ORed, so
+-- narrowing this one does not narrow the ingest or the GC sweep. There is no
+-- SELECT query against this table in db/query/*.sql and no handler reads it.
 CREATE POLICY email_webhook_events_tenant_isolation ON email_webhook_events
-    USING (
-        tenant_id IS NULL
-        OR tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
-    )
-    WITH CHECK (
-        tenant_id IS NULL
-        OR tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
-    );
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- m62 — site_email_connection (multi-connection + failover)

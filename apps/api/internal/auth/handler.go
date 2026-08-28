@@ -511,6 +511,15 @@ func (h *Handler) updateProfile(c *gin.Context) {
 		return
 	}
 	out := toMe(u, memberships, p.TenantID, h.hosted, h.managedStorageAllowed(c.Request.Context(), p.TenantID), "")
+	// Enrich exactly as me() does. PATCH /auth/me returns the SAME Me resource
+	// as GET /auth/me, and clients cache it under the same key — apps/web does
+	// setQueryData(authKeys.me, <patch response>). Omitting scope/role here
+	// does not return a smaller Me, it returns a WRONG one: a site-scoped
+	// collaborator who saves their display name would have me.scope silently
+	// become undefined, canWriteSiteContext would flip to false, and the
+	// context editor would go read-only until a hard reload. An absent field
+	// must never read as a denied permission.
+	enrichMePortal(c.Request.Context(), &out, p, h.svc.repo)
 	c.JSON(http.StatusOK, &out)
 }
 
@@ -683,7 +692,14 @@ func toMe(u User, memberships []Membership, active uuid.UUID, hosted, managedSto
 // enrichMePortal sets the Me.Scope, Me.Role, and Me.Portal fields from the
 // resolved principal. Portal branding (client name, logo, color, agency name)
 // is fetched via a best-effort DB query; failures leave the fields empty.
-// Called only from me() where the principal is fully resolved.
+//
+// Called from every handler that returns a Me built from a principal the auth
+// middleware already resolved — me() and updateProfile(). It is deliberately
+// NOT called from login/register/verifyEmail/oidcCallback or the 2FA
+// completions: those mint the session themselves via issueSessionOrChallenge,
+// so the middleware ran before any cookie existed and there is no resolved
+// principal to read scope/role from. Those clients refetch GET /auth/me once
+// the cookie is set (see apps/web/src/routes/login.tsx).
 func enrichMePortal(ctx context.Context, me *gen.Me, p domain.Principal, repo *Repo) {
 	if p.Scope != "" {
 		me.Scope = gen.NewOptMeScope(gen.MeScope(p.Scope))

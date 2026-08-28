@@ -13091,7 +13091,7 @@ paths:
         "409":
           description: >-
             context_widen_forbidden — the write would remove a restriction
-            WPmgr's layer-1 policy set; or context_version_conflict —
+            that WPmgr's layer-1 policy set; or context_version_conflict —
             base_version does not match the current version.
           content:
             application/json:

@@ -21066,7 +21066,7 @@ export type PatchOrgContextErrors = {
    */
   404: Error;
   /**
-   * context_widen_forbidden — the write would remove a restriction WPmgr's layer-1 policy set; or context_version_conflict — base_version does not match the current version.
+   * context_widen_forbidden — the write would remove a restriction that WPmgr's layer-1 policy set; or context_version_conflict — base_version does not match the current version.
    */
   409: Error;
   /**
