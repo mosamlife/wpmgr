@@ -215,7 +215,19 @@ type LayerContribution struct {
 	Restrictions RestrictionSet
 	Guidance     GuidanceSet
 	Facts        *SiteFacts // populated only for Layer == 4
-	Session      string     // populated only for Layer == 6
+	// FactsUnavailable is true when layer 4 could not be loaded — no
+	// SiteFactsProvider is wired, or the wired one's call failed — as
+	// distinct from a load that SUCCEEDED and genuinely found nothing
+	// recorded yet (an unscanned site). Both states leave Facts at its zero
+	// value, so this field is what keeps "known empty" (FactsUnavailable
+	// false, a real fact: no one has scanned this site) from being
+	// indistinguishable from "unknown" (FactsUnavailable true, we don't know
+	// what this site looks like right now) — the same distinction as an
+	// `as_of: null` timestamp versus a field silently missing from a
+	// response. Set once, in resolver.go, and never inferred from
+	// Facts.IsEmpty(), which cannot tell the two states apart.
+	FactsUnavailable bool
+	Session          string // populated only for Layer == 6
 
 	Bytes     int  // this layer's serialised size, counted before truncation
 	Truncated bool // true if this layer's contribution was cut short by budget (Decision 9)

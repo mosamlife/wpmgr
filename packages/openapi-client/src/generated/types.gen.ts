@@ -8292,6 +8292,10 @@ export type GovContextLayerContribution = {
     active_theme?: string;
   } | null;
   /**
+   * Populated only for layer 4. true means layer 4 could not be loaded (no facts source wired, or the load failed) — an unknown state, never to be read as "this site has no facts". false (or absent) means the load succeeded, whatever it found, including a verified, known-empty result.
+   */
+  facts_unavailable?: boolean;
+  /**
    * Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).
    */
   session?: string;

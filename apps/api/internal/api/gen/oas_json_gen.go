@@ -65538,6 +65538,12 @@ func (s *GovContextLayerContribution) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.FactsUnavailable.Set {
+			e.FieldStart("facts_unavailable")
+			s.FactsUnavailable.Encode(e)
+		}
+	}
+	{
 		if s.Session.Set {
 			e.FieldStart("session")
 			s.Session.Encode(e)
@@ -65553,15 +65559,16 @@ func (s *GovContextLayerContribution) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfGovContextLayerContribution = [8]string{
+var jsonFieldsNameOfGovContextLayerContribution = [9]string{
 	0: "layer",
 	1: "name",
 	2: "restrictions",
 	3: "guidance",
 	4: "facts",
-	5: "session",
-	6: "bytes",
-	7: "truncated",
+	5: "facts_unavailable",
+	6: "session",
+	7: "bytes",
+	8: "truncated",
 }
 
 // Decode decodes GovContextLayerContribution from json.
@@ -65569,7 +65576,7 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode GovContextLayerContribution to nil")
 	}
-	var requiredBitSet [1]uint8
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
@@ -65627,6 +65634,16 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"facts\"")
 			}
+		case "facts_unavailable":
+			if err := func() error {
+				s.FactsUnavailable.Reset()
+				if err := s.FactsUnavailable.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"facts_unavailable\"")
+			}
 		case "session":
 			if err := func() error {
 				s.Session.Reset()
@@ -65638,7 +65655,7 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"session\"")
 			}
 		case "bytes":
-			requiredBitSet[0] |= 1 << 6
+			requiredBitSet[0] |= 1 << 7
 			if err := func() error {
 				v, err := d.Int()
 				s.Bytes = int(v)
@@ -65650,7 +65667,7 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"bytes\"")
 			}
 		case "truncated":
-			requiredBitSet[0] |= 1 << 7
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
 				v, err := d.Bool()
 				s.Truncated = bool(v)
@@ -65670,8 +65687,9 @@ func (s *GovContextLayerContribution) Decode(d *jx.Decoder) error {
 	}
 	// Validate required fields.
 	var failures []validate.FieldError
-	for i, mask := range [1]uint8{
-		0b11001111,
+	for i, mask := range [2]uint8{
+		0b10001111,
+		0b00000001,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

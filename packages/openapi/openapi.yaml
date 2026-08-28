@@ -23791,6 +23791,14 @@ components:
             php_version: { type: string }
             multisite: { type: boolean }
             active_theme: { type: string }
+        facts_unavailable:
+          type: boolean
+          description: >-
+            Populated only for layer 4. true means layer 4 could not be
+            loaded (no facts source wired, or the load failed) — an unknown
+            state, never to be read as "this site has no facts". false (or
+            absent) means the load succeeded, whatever it found, including a
+            verified, known-empty result.
         session:
           type: string
           description: Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).

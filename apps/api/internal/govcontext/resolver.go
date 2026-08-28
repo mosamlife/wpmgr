@@ -87,13 +87,20 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, sess
 	}
 
 	var facts SiteFacts
+	// factsUnavailable defaults true: "no provider wired" and "the provider
+	// call failed" are both "we do not know", never "verified empty" — see
+	// LayerContribution.FactsUnavailable's doc comment. Only a SUCCESSFUL
+	// call, whatever it returns, clears it.
+	factsUnavailable := true
 	if r.Facts != nil {
 		if f, ferr := r.Facts.GetFacts(ctx, tenantID, siteID); ferr == nil {
 			facts = f
+			factsUnavailable = false
 		}
-		// A facts error is swallowed deliberately: layer 4 is observational,
-		// not authoritative, and "never observed yet" is not a failure of
-		// resolution (see SiteFacts's doc comment).
+		// A facts ERROR still does not refuse the whole resolution — layer 4
+		// is observational, not authoritative, and only layers 2/3 (Decision
+		// 14) can fail the call outright. It is recorded as unavailable
+		// (above), never silently presented as a verified empty result.
 	}
 
 	var sessionText string
@@ -105,7 +112,7 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, sess
 		{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
 		{Layer: 2, Name: "organisation default", Restrictions: orgSnap.Restrictions, Guidance: orgSnap.Guidance},
 		{Layer: 3, Name: "site override", Restrictions: siteSnap.Restrictions, Guidance: siteSnap.Guidance},
-		{Layer: 4, Name: "detected site facts", Facts: &facts},
+		{Layer: 4, Name: "detected site facts", Facts: &facts, FactsUnavailable: factsUnavailable},
 		{Layer: 5, Name: "approved skill instructions"}, // structurally present, always empty: no skill store exists yet
 		{Layer: 6, Name: "session context", Session: sessionText},
 	}
@@ -122,6 +129,23 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID, siteID uuid.UUID, sess
 	total := 0
 	for _, l := range layers {
 		total += l.Bytes
+	}
+
+	// applyBudget only ever drops layers 2-6, in that order, never layer 1
+	// (Decision 9). If the total STILL exceeds budget after every reducible
+	// layer has been fully emptied, the budget cannot be met by truncation at
+	// all — layer 1 alone is over budget. Emitting an over-budget result
+	// would violate the budget silently; emitting a plausible-looking
+	// truncated one that still lies about its own size would be worse. This
+	// refuses instead, the same reasoning that makes Decision 14 refuse
+	// rather than proceed on a load failure: an honest failure beats a
+	// silently wrong success. layer1Restrictions is empty today, so this is
+	// unreachable in practice until layer 1 gains real content — see
+	// resolver_test.go for how it is proven anyway.
+	if total > budget {
+		return ResolvedContext{}, domain.ServiceUnavailable("context_unavailable",
+			"effective context could not be resolved: the resolved context exceeds its byte budget even after truncating every reducible layer").
+			WithDetails(map[string]any{"total_bytes": total, "budget_bytes": budget})
 	}
 
 	return ResolvedContext{

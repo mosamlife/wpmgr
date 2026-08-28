@@ -243,9 +243,16 @@ type layerContributionDTO struct {
 	Restrictions RestrictionSet `json:"restrictions"`
 	Guidance     GuidanceSet    `json:"guidance"`
 	Facts        *SiteFacts     `json:"facts,omitempty"`
-	Session      string         `json:"session,omitempty"`
-	Bytes        int            `json:"bytes"`
-	Truncated    bool           `json:"truncated"`
+	// FactsUnavailable is populated only for layer 4. true means layer 4
+	// could not be loaded (no facts source wired, or the load failed) — an
+	// UNKNOWN state, never to be read as "this site has no facts". false
+	// means the load succeeded, whatever it found — including nothing, which
+	// is then a verified, known-empty result. See LayerContribution's doc
+	// comment (model.go).
+	FactsUnavailable bool   `json:"facts_unavailable,omitempty"`
+	Session          string `json:"session,omitempty"`
+	Bytes            int    `json:"bytes"`
+	Truncated        bool   `json:"truncated"`
 }
 
 type effectiveContextDTO struct {

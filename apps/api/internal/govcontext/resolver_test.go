@@ -152,7 +152,15 @@ func TestResolve_RestrictionsUnionIsNeverTruncated(t *testing.T) {
 		orgOK: true,
 		org:   Snapshot{Restrictions: RestrictionSet{ForbiddenDomains: []string{"evil.example.com"}}},
 	}
-	r := &Resolver{Store: store, BudgetBytes: 1} // impossibly small budget forces total truncation
+	// 220 bytes: small enough to force every layer's CONTENT to empty (the
+	// org's one restriction easily overflows it), but still large enough for
+	// the six layers' bare-skeleton floor (209 bytes: five empty layers at 33
+	// bytes each — {"restrictions":{},"guidance":{}} — plus layer 4's 44
+	// bytes for its always-present, never-nil facts object) to fit. A budget
+	// BELOW that floor is a DIFFERENT case — "the budget cannot be met even
+	// by truncating everything" — which now refuses instead of returning an
+	// over-budget result; see TestResolve_RefusesWhenBudgetCannotBeMetEvenAfterFullTruncation.
+	r := &Resolver{Store: store, BudgetBytes: 220}
 
 	rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
 	if err != nil {
@@ -215,5 +223,152 @@ func TestApplyBudget_OrderIsSessionThenSkillThenFactsThenSiteThenOrg(t *testing.
 	}
 	if layers[1].Guidance.BrandVoice != "org" {
 		t.Errorf("layer 2 (org) was dropped before layer 3 was fully consumed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Security-review findings: layer 4 must distinguish "unavailable" from
+// "known empty", and Resolve must refuse rather than emit an over-budget
+// result when truncation cannot get under budget.
+// ---------------------------------------------------------------------------
+
+// fakeFactsProvider is a SiteFactsProvider test double.
+type fakeFactsProvider struct {
+	facts SiteFacts
+	err   error
+}
+
+func (f *fakeFactsProvider) GetFacts(ctx context.Context, tenantID, siteID uuid.UUID) (SiteFacts, error) {
+	return f.facts, f.err
+}
+
+// TestResolve_Layer4FactsUnavailable_DistinctFromKnownEmpty proves the three
+// states LayerContribution.FactsUnavailable must tell apart: no provider
+// wired, a provider that errors, and a provider that succeeds with a
+// genuinely empty result. Only the last is "known empty"
+// (FactsUnavailable=false); the other two are "unknown" (true) even though
+// Facts is the zero value in all three cases.
+func TestResolve_Layer4FactsUnavailable_DistinctFromKnownEmpty(t *testing.T) {
+	store := &fakeStore{}
+
+	t.Run("no provider wired", func(t *testing.T) {
+		r := &Resolver{Store: store}
+		rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+		l4 := layerN(t, rc, 4)
+		if !l4.FactsUnavailable {
+			t.Error("FactsUnavailable = false with no provider wired, want true (unknown, not known-empty)")
+		}
+	})
+
+	t.Run("provider errors", func(t *testing.T) {
+		r := &Resolver{Store: store, Facts: &fakeFactsProvider{err: errSimulatedInfra}}
+		rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+		l4 := layerN(t, rc, 4)
+		if !l4.FactsUnavailable {
+			t.Error("FactsUnavailable = false after a facts-provider error, want true — the load failed, this is not a verified empty result")
+		}
+	})
+
+	t.Run("provider succeeds with a genuinely empty result", func(t *testing.T) {
+		r := &Resolver{Store: store, Facts: &fakeFactsProvider{facts: SiteFacts{}}}
+		rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+		l4 := layerN(t, rc, 4)
+		if l4.FactsUnavailable {
+			t.Error("FactsUnavailable = true after a successful load, want false — the site has genuinely never been scanned, which is a known fact, not an unknown one")
+		}
+	})
+
+	t.Run("provider succeeds with real data", func(t *testing.T) {
+		r := &Resolver{Store: store, Facts: &fakeFactsProvider{facts: SiteFacts{WPVersion: "6.7"}}}
+		rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+		if err != nil {
+			t.Fatalf("Resolve failed: %v", err)
+		}
+		l4 := layerN(t, rc, 4)
+		if l4.FactsUnavailable {
+			t.Error("FactsUnavailable = true after a successful load with data, want false")
+		}
+		if l4.Facts == nil || l4.Facts.WPVersion != "6.7" {
+			t.Errorf("Facts = %+v, want WPVersion 6.7", l4.Facts)
+		}
+	})
+}
+
+func layerN(t *testing.T, rc ResolvedContext, n int) LayerContribution {
+	t.Helper()
+	for _, l := range rc.Layers {
+		if l.Layer == n {
+			return l
+		}
+	}
+	t.Fatalf("no layer %d in resolved context", n)
+	return LayerContribution{}
+}
+
+// TestResolve_RefusesWhenBudgetCannotBeMetEvenAfterFullTruncation proves the
+// review's second finding: if truncation cannot get the resolved context
+// under budget — because layer 1 alone, which is NEVER truncated, already
+// exceeds it — Resolve refuses rather than emitting an over-budget result.
+// layer1Restrictions is empty in production today, so this is exercised here
+// by temporarily giving it real content (this package's own test may reach
+// into its unexported package var directly) and restoring it afterward.
+//
+// Confirmed RED against a version of Resolve with the budget-cannot-be-met
+// check removed (the `if total > budget { return ... }` block deleted, so
+// the over-budget result was returned as a normal success):
+//
+//	$ go test ./internal/govcontext/... -run TestResolve_RefusesWhenBudgetCannotBeMetEvenAfterFullTruncation -v
+//	    resolver_test.go:345: Resolve succeeded with TotalBytes=331 over a BudgetBytes=10 budget, want a refusal
+//	--- FAIL: TestResolve_RefusesWhenBudgetCannotBeMetEvenAfterFullTruncation
+//
+// Restored, it is GREEN.
+func TestResolve_RefusesWhenBudgetCannotBeMetEvenAfterFullTruncation(t *testing.T) {
+	saved := layer1Restrictions
+	t.Cleanup(func() { layer1Restrictions = saved })
+	layer1Restrictions = RestrictionSet{
+		ForbiddenDomains: []string{"this-is-a-deliberately-long-domain-name-to-force-layer-one-alone-over-any-small-budget.example.com"},
+	}
+
+	r := &Resolver{Store: &fakeStore{}, BudgetBytes: 10} // far below layer 1's own unreducible size
+
+	rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+	if err == nil {
+		t.Fatalf("Resolve succeeded with TotalBytes=%d over a BudgetBytes=%d budget, want a refusal", rc.TotalBytes, 10)
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Code != "context_unavailable" {
+		t.Fatalf("got %v, want a context_unavailable domain error", err)
+	}
+	if rc.SiteID != uuid.Nil || len(rc.Layers) != 0 {
+		t.Errorf("Resolve returned a non-empty ResolvedContext alongside the refusal: %+v", rc)
+	}
+}
+
+// TestResolve_BudgetMetByFullTruncationIsNotRefused is the honest-cases
+// control: a budget that CAN be met by truncating layers 2-6, even down to
+// their bare skeleton, must still succeed. Only a budget layer 1 alone
+// cannot fit under is refused.
+func TestResolve_BudgetMetByFullTruncationIsNotRefused(t *testing.T) {
+	store := &fakeStore{
+		orgOK: true,
+		org:   Snapshot{Restrictions: RestrictionSet{ForbiddenDomains: []string{"evil.example.com"}}},
+	}
+	r := &Resolver{Store: store, BudgetBytes: 220} // see TestResolve_RestrictionsUnionIsNeverTruncated for the floor this must clear
+
+	rc, err := r.Resolve(context.Background(), uuid.New(), uuid.New(), nil)
+	if err != nil {
+		t.Fatalf("Resolve refused a budget that full truncation CAN meet: %v", err)
+	}
+	if !rc.Truncated {
+		t.Error("expected Truncated=true")
 	}
 }
