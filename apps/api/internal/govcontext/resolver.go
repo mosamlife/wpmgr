@@ -141,9 +141,12 @@ func refusal(what string, cause error) *domain.Error {
 
 // unionRestrictions is the read-time half of Decision 4: "a restriction may
 // only be added to or left alone by every layer below the one that set it".
-// The union is defence in depth (see ResolvedContext.Restrictions doc
-// comment) — the write-time widen-check already guarantees each layer's own
-// stored value is a superset of every higher layer's.
+// This union, not the write-time widen-check, is what actually holds that
+// invariant — see ResolvedContext.Restrictions doc comment for why a leaf's
+// STORED restrictions are routinely stale relative to a higher layer (a
+// guidance-only patch never re-checks or refreshes them, and PatchOrgContext
+// never touches a site row at all) and why that staleness is safe precisely
+// because this union re-reads every layer's CURRENT row on every call.
 func unionRestrictions(layers ...RestrictionSet) RestrictionSet {
 	tools := map[string]struct{}{}
 	domains := map[string]struct{}{}

@@ -255,3 +255,195 @@ func TestADR064S4_PatchOrgContext_SiteScopedCollaboratorRefusedEvenBypassingTheA
 		t.Errorf("LatestOrgVersion = %v, want ErrNotFound", gerr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Security-review finding: the widen-check must not over-fire on a
+// guidance-only patch. PatchOrgContext never touches any site row, so the
+// instant an organisation narrows its policy, every EXISTING site's stored
+// restrictions stop restating it — permanently, not for a transaction-width
+// window. Comparing that carried-forward, stale value against the org's
+// CURRENT restrictions on a write that never touches restrictions at all
+// locked every site under a narrowed org out of even a guidance-only edit.
+// ---------------------------------------------------------------------------
+
+// TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows
+// reproduces the exact sequence the review used: a site restates the org's
+// restriction at write time (so its OWN write-time check passed), the org
+// later ADDS a further restriction (a write that, by design, never touches
+// any site row), and the site then submits a patch that touches ONLY
+// guidance. That write must succeed — it never proposed a restrictions value
+// at all.
+//
+// Confirmed RED against the pre-fix code (service.go's PatchSiteContext
+// running checkNoWiden unconditionally, over next.Restrictions regardless of
+// whether in.Restrictions was supplied):
+//
+//	$ go test ./tests/... -run TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows -v
+//	    adr064_s4_govcontext_integration_test.go:332: guidance-only PatchSiteContext failed: this write would remove [b.example.com] from forbidden_domains, which was set by organisation default (layer 2) — a lower layer may narrow or add to a restriction but never remove what a higher layer set
+//	--- FAIL: TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows
+//
+// Restored (in.Restrictions != nil guard added), it is GREEN:
+//
+//	$ go test ./tests/... -run TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows -v
+//	--- PASS: TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows
+func TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	tenant := seedTenant(t, pool, "s4-guideonly-"+uuid.NewString()[:8])
+	site := adr064SeedSite(t, admin, tenant)
+	user := uuid.New()
+	svc, _ := adr064S4Service(pool)
+	ctx := adr064S4OrgMemberCtx(tenant, user)
+
+	// Org v1: sets a restriction.
+	if _, err := svc.PatchOrgContext(ctx, tenant, govcontext.PatchOrgContextInput{
+		BaseVersion:  0,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user}); err != nil {
+		t.Fatalf("seed org v1: %v", err)
+	}
+
+	// Site v1: restates it, satisfying the widen-check as of NOW.
+	if _, err := svc.PatchSiteContext(ctx, tenant, site, govcontext.PatchSiteContextInput{
+		BaseVersion:  0,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user}); err != nil {
+		t.Fatalf("seed site v1: %v", err)
+	}
+
+	// Org v2: narrows further. This NEVER touches the site row (verified by
+	// the reviewer: PatchOrgContext's body has zero site references) — the
+	// site's own stored restrictions are now stale relative to the org's
+	// current policy, permanently, until the site itself is next edited.
+	if _, err := svc.PatchOrgContext(ctx, tenant, govcontext.PatchOrgContextInput{
+		BaseVersion:  1,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com", "b.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user}); err != nil {
+		t.Fatalf("narrow org to v2: %v", err)
+	}
+
+	// Site: a GUIDANCE-ONLY patch. Restrictions is nil — this request never
+	// proposes a restrictions value.
+	v, err := svc.PatchSiteContext(ctx, tenant, site, govcontext.PatchSiteContextInput{
+		BaseVersion: 1,
+		Guidance:    &govcontext.GuidanceSet{BrandVoice: "warmer and more direct"},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user})
+	if err != nil {
+		t.Fatalf("guidance-only PatchSiteContext failed: %v", err)
+	}
+	if v.Version != 2 {
+		t.Errorf("Version = %d, want 2", v.Version)
+	}
+	if v.Snapshot.Guidance.BrandVoice != "warmer and more direct" {
+		t.Errorf("guidance was not applied: %+v", v.Snapshot.Guidance)
+	}
+	// The site's restrictions carry forward UNCHANGED — this write never
+	// claimed to update them, so the stored row still says exactly what it
+	// said before (still stale relative to the org's current "b.example.com",
+	// which is fine: unionRestrictions, not this row, is what enforcement
+	// reads — see model.go's ResolvedContext.Restrictions doc comment).
+	if len(v.Snapshot.Restrictions.ForbiddenDomains) != 1 || v.Snapshot.Restrictions.ForbiddenDomains[0] != "a.example.com" {
+		t.Errorf("Restrictions = %+v, want unchanged [a.example.com]", v.Snapshot.Restrictions)
+	}
+
+	// Enforcement is unaffected by the site's stale row: resolving right now
+	// still returns BOTH forbidden domains, because the union re-reads the
+	// org's CURRENT row fresh.
+	rc, err := svc.GetEffectiveContext(ctx, tenant, site)
+	if err != nil {
+		t.Fatalf("GetEffectiveContext failed: %v", err)
+	}
+	got := map[string]bool{}
+	for _, d := range rc.Restrictions.ForbiddenDomains {
+		got[d] = true
+	}
+	if !got["a.example.com"] || !got["b.example.com"] {
+		t.Errorf("resolved Restrictions = %+v, want BOTH a.example.com and b.example.com regardless of the site's stale row", rc.Restrictions)
+	}
+}
+
+// TestADR064S4_RestoreSiteContext_OfAStaleVersionIsStillRefused is the
+// control the review explicitly asked to be kept green: restoring a site's
+// OWN old version, whose stored restrictions are stale relative to the org's
+// CURRENT policy, is a genuine proposal to write that stale value back as
+// the new current one — and must still be refused, unlike a guidance-only
+// patch.
+func TestADR064S4_RestoreSiteContext_OfAStaleVersionIsStillRefused(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	tenant := seedTenant(t, pool, "s4-stalerestore-"+uuid.NewString()[:8])
+	site := adr064SeedSite(t, admin, tenant)
+	user := uuid.New()
+	svc, _ := adr064S4Service(pool)
+	ctx := adr064S4OrgMemberCtx(tenant, user)
+
+	if _, err := svc.PatchOrgContext(ctx, tenant, govcontext.PatchOrgContextInput{
+		BaseVersion:  0,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user}); err != nil {
+		t.Fatalf("seed org v1: %v", err)
+	}
+
+	siteV1, err := svc.PatchSiteContext(ctx, tenant, site, govcontext.PatchSiteContextInput{
+		BaseVersion:  0,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user})
+	if err != nil {
+		t.Fatalf("seed site v1: %v", err)
+	}
+
+	if _, err := svc.PatchOrgContext(ctx, tenant, govcontext.PatchOrgContextInput{
+		BaseVersion:  1,
+		Restrictions: &govcontext.RestrictionSet{ForbiddenDomains: []string{"a.example.com", "b.example.com"}},
+	}, govcontext.Actor{Type: govcontext.AuthorUser, ID: user}); err != nil {
+		t.Fatalf("narrow org to v2: %v", err)
+	}
+
+	// Restoring site v1 EXPLICITLY proposes writing back {a.example.com} as
+	// the site's new current restrictions — a genuine widen against the org's
+	// now-current {a.example.com, b.example.com} — and must be refused.
+	_, err = svc.RestoreSiteContext(ctx, tenant, site, siteV1.ID, govcontext.Actor{Type: govcontext.AuthorUser, ID: user})
+	if err == nil {
+		t.Fatal("RestoreSiteContext succeeded restoring a stale (widening) version, want a refusal")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok || de.Code != "context_widen_forbidden" {
+		t.Fatalf("got %v, want context_widen_forbidden", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fail-closed audit, site scope: CreateSiteVersion's audit hook is line-for-
+// line identical to CreateOrgVersion's (repo.go); this is the site-scope
+// twin of TestADR064S4_CreateOrgVersion_AuditFailureAbortsTheWholeWrite so
+// both write paths, not only the organisation one, have a direct proof.
+// ---------------------------------------------------------------------------
+
+func TestADR064S4_CreateSiteVersion_AuditFailureAbortsTheWholeWrite(t *testing.T) {
+	pool := startPostgres(t)
+	admin := connectAdmin(t, pool)
+	tenant := seedTenant(t, pool, "s4-siteauditfail-"+uuid.NewString()[:8])
+	site := adr064SeedSite(t, admin, tenant)
+	repo := govcontext.NewRepo(pool)
+	ctx := adr064S4OrgMemberCtx(tenant, uuid.New())
+
+	simulated := errors.New("simulated: audit ledger append failed")
+	_, err := repo.CreateSiteVersion(ctx, tenant, site, 1, govcontext.CreateSiteVersionInput{
+		Snapshot:   govcontext.Snapshot{Guidance: govcontext.GuidanceSet{BrandVoice: "x"}},
+		AuthorType: govcontext.AuthorSystem,
+		Provenance: govcontext.ProvenanceManual,
+	}, func(tx pgx.Tx, versionID uuid.UUID) error {
+		return simulated
+	})
+
+	if err == nil {
+		t.Fatal("CreateSiteVersion succeeded despite the audit hook failing, want an error")
+	}
+	if !errors.Is(err, simulated) {
+		t.Errorf("error = %v, want it to wrap the simulated audit failure", err)
+	}
+	if _, gerr := repo.LatestSiteVersion(ctx, tenant, site); !errors.Is(gerr, govcontext.ErrNotFound) {
+		t.Errorf("LatestSiteVersion = %v, want ErrNotFound — the version row must not have "+
+			"committed when its audit entry failed to append", gerr)
+	}
+}

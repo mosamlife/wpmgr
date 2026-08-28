@@ -121,10 +121,22 @@ func (s *Service) PatchOrgContext(ctx context.Context, tenantID uuid.UUID, in Pa
 
 	next := applyPatch(base, in.Restrictions, in.Guidance)
 
-	if verr := checkNoWiden(next.Restrictions, []namedLayer{
-		{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
-	}); verr != nil {
-		return Version{}, verr
+	// Only run the widen-check when THIS REQUEST actually proposes new
+	// restrictions. A guidance-only patch (in.Restrictions == nil) carries the
+	// organisation's own PREVIOUSLY-STORED restrictions forward unchanged
+	// (applyPatch) — that stored value may already be stale relative to
+	// layer 1 the moment layer 1 ever gains real content (it is empty today,
+	// so this branch is currently unreachable in practice, but the shape is
+	// identical to the site-scope bug this comment's sibling in
+	// PatchSiteContext fixes, and is guarded here for the same reason: never
+	// check a field the request does not touch against what the row happens
+	// to already contain).
+	if in.Restrictions != nil {
+		if verr := checkNoWiden(next.Restrictions, []namedLayer{
+			{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
+		}); verr != nil {
+			return Version{}, verr
+		}
 	}
 	if verr := checkNoSecret(next); verr != nil {
 		return Version{}, verr
@@ -286,15 +298,43 @@ func (s *Service) PatchSiteContext(ctx context.Context, tenantID, siteID uuid.UU
 
 	next := applyPatch(base, in.Restrictions, in.Guidance)
 
-	orgSnap, _, oerr := s.repo.LatestOrgSnapshot(ctx, tenantID)
-	if oerr != nil {
-		return Version{}, oerr
-	}
-	if verr := checkNoWiden(next.Restrictions, []namedLayer{
-		{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
-		{Layer: 2, Name: "organisation default", Restrictions: orgSnap.Restrictions},
-	}); verr != nil {
-		return Version{}, verr
+	// Only run the widen-check when THIS REQUEST actually proposes new
+	// restrictions (in.Restrictions != nil). A guidance-only patch carries the
+	// site's own PREVIOUSLY-STORED restrictions forward unchanged (applyPatch)
+	// — and that stored value is routinely stale the moment the organisation
+	// narrows its policy AFTER this site's last restriction write, because
+	// PatchOrgContext never touches any site row. Comparing that carried-
+	// forward, stale value against the organisation's CURRENT restrictions
+	// would refuse a write that never touches restrictions at all: every site
+	// under a newly-narrowed org would be locked out of even a guidance-only
+	// edit, reporting "would remove X" for an X the caller never mentioned.
+	// Checking only when the caller actually supplies Restrictions compares
+	// against what the request changes, not what the row happens to carry.
+	//
+	// This does NOT weaken enforcement: the resolved restriction set a caller
+	// is actually held to is unionRestrictions' READ-TIME union of layer 1 +
+	// the organisation's CURRENT row + the site's CURRENT row (resolver.go),
+	// recomputed fresh on every read — never the site's possibly-stale stored
+	// value alone. See model.go's ResolvedContext.Restrictions doc comment,
+	// which this fix's discovery corrected from a false "the write-time check
+	// already guarantees a superset" claim to this honest one: the read-time
+	// union is what actually holds the invariant, not the write-time check.
+	//
+	// RestoreSiteContext below deliberately does NOT take this shortcut: a
+	// restore always proposes the target version's FULL stored restrictions
+	// as this write's value, which is a genuine, explicit proposal for that
+	// field — never "leave unchanged" — so it must always be checked.
+	if in.Restrictions != nil {
+		orgSnap, _, oerr := s.repo.LatestOrgSnapshot(ctx, tenantID)
+		if oerr != nil {
+			return Version{}, oerr
+		}
+		if verr := checkNoWiden(next.Restrictions, []namedLayer{
+			{Layer: 1, Name: "WPMgr security policy", Restrictions: layer1Restrictions},
+			{Layer: 2, Name: "organisation default", Restrictions: orgSnap.Restrictions},
+		}); verr != nil {
+			return Version{}, verr
+		}
 	}
 	if verr := checkNoSecret(next); verr != nil {
 		return Version{}, verr

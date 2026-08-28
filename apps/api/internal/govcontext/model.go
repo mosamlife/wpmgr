@@ -234,12 +234,22 @@ type ResolvedContext struct {
 
 	// Restrictions is the READ-TIME UNION of every layer 1-3 restriction
 	// (Decision 4: "a restriction may only be added to or left alone by every
-	// layer below the one that set it"). Computed here, not merely stored on
-	// the leaf layer, as belt-and-braces: the write-time widen-check already
-	// guarantees a leaf's own stored value is a superset of every higher
-	// layer's, so this union is mathematically redundant with the leaf's own
-	// value when that invariant holds — and cheap insurance when it somehow
-	// does not.
+	// layer below the one that set it").
+	//
+	// This union is NOT belt-and-braces over a write-time guarantee — it is
+	// the ONLY thing that holds the invariant. A leaf's STORED restrictions
+	// are routinely stale relative to a higher layer: PatchOrgContext never
+	// touches any site row, so the instant an organisation narrows its
+	// policy, every existing site row stops restating it — permanently, not
+	// for a transaction-width window — and PatchSiteContext deliberately
+	// skips its own widen-check on a guidance-only write (service.go) rather
+	// than compare a field the request never touched against the org's
+	// current value. The write-time check in widen.go only ever runs when a
+	// caller actually proposes a new restrictions value for that layer; it
+	// is real protection against a caller widening what THEY hold, but it
+	// is not what keeps a stale, unrelated layer's row from under-reporting
+	// what is actually enforced. This field, recomputed from every layer's
+	// CURRENT row on every call, is what does that.
 	//
 	// This field is computed from the UNTRUNCATED layer 2/3 snapshots and is
 	// NEVER subject to Decision 9's byte-budget truncation, unlike each
