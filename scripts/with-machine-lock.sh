@@ -200,6 +200,46 @@
 # suite pins that path separately.
 #
 #
+# KNOWN AND ACCEPTED RESIDUAL: A HOLDER WHOSE WRAPPER AND TOKEN SHELL BOTH DIE
+# IS RECLAIMED WHILE ITS DESCENDANTS RUN. Decided, not missed — see GH #576.
+#
+# Every identifier this lock records lives in one of two processes: the wrapper
+# (`pid`/`lstart`) and the token-bearing shell (`child`/`clstart`, and `token`,
+# which exists only in that shell's argv). Kill both and leave the grandchildren
+# — `go test` and its containers — and assess_holder finds every identifier dead
+# and reclaims a lock whose work is still running. Reproduced:
+#
+#     wrapper alive : NO      token-sh alive: NO
+#     mid alive     : YES     leaf alive    : YES
+#     RECLAIMING STALE LOCK 'itest' — nothing is running under holder token ...
+#     SECOND-ADMITTED    exit=0
+#
+# RUN_PIDS does not help. It is private to the process that recorded it, is
+# built only inside a signal handler, and never reaches the metadata, so a
+# waiter inspecting somebody else's lock cannot see it.
+#
+# WHY IT IS ACCEPTED. It needs the wrapper AND the token shell dead together.
+# No ordinary kill does that: signalling the wrapper alone leaves the token
+# shell, and the token then holds the lock correctly, which is the case the
+# suite covers. Closing it means the holder periodically re-snapshotting its
+# tree into the metadata mid-run plus a new field — a design change to the
+# staleness subsystem, with its own review, not a patch. The comparison that
+# decided it is not "perfect lock vs this lock" but "this lock vs no lock":
+# before this script, `make test-integration` had no serialisation at all.
+#
+# THE ENVIRONMENT ROUTE IS CLOSED HERE, AND IT WAS MEASURED, so nobody spends
+# that hour again. An exported variable is the natural carrier because unlike
+# argv it survives exec into the whole tree — but no ps on this platform will
+# show it:
+#
+#     export WPMGR_PROBE_TOKEN=envtok-12345   (grandchild reached via exec)
+#     ps -E  -o pid=,command= | grep envtok-12345   ->  no output
+#     ps eww -o pid=,command= | grep envtok-12345   ->  no output
+#     pgrep -f envtok-12345                          ->  no match (argv only)
+#
+# That is the fourth capability this file has needed and not found, after
+# flock, timeout and setsid.
+#
 # EXIT CODES.
 #   *   The command's own status, passed through unchanged, whatever it was.
 #   64  Usage error (EX_USAGE): bad arguments, bad lock name, no command.
@@ -806,6 +846,9 @@ ANNOUNCED_RECLAIM_WAIT=0
 # re-runs it from scratch under the reclaim mutex; the first draft decided once
 # and acted on that verdict later, which is what let a waiter delete a lock
 # that had been acquired in the meantime.
+# NOTE: this sees only what the metadata records — the wrapper, the token shell
+# and the token. Descendants of a dead token shell are invisible to it; that
+# residual is documented in the header and tracked as GH #576.
 assess_holder() {
   holder_pid="$(meta_field pid || true)"
   holder_lstart="$(meta_field lstart || true)"
