@@ -581,7 +581,35 @@ still_running() {
 # be live when the next invocation took the lock — the same defect the signal
 # path had, in the other caller. One implementation means fixing it once.
 stop_run() {
-  [ -n "$CHILD" ] || return 0
+  if [ -z "$CHILD" ]; then
+    # NO RECORDED CHILD. Two very different situations look identical from
+    # here, and the old `return 0` answered both with "nothing is running":
+    #
+    #   a) we never forked      — signalled while still waiting for the lock,
+    #                             or before the command was launched at all.
+    #   b) we forked, and the signal landed before `CHILD=$!` assigned.
+    #
+    # In (b) the command is running and NOTHING NAMES IT: not $CHILD, which is
+    # still empty, and not `child=` in the metadata, which record_child has not
+    # written yet. Reporting success there released the lock over a live run.
+    #
+    # `spawning=1` does not help by itself — that flag stops OTHER waiters
+    # reclaiming, and says nothing about this process releasing its own lock.
+    # But combined with HELD it separates (a) from (b) well enough: we only
+    # reach the fork after taking the lock and writing that flag, so holding
+    # the lock with the flag set and no `child=` recorded IS the window. That
+    # is "a run may exist that I cannot name", which is a refusal, not success.
+    #
+    # The interval is the same measured median 7.71 ms as the spawning hold, so
+    # a wrongly-refused signal is rare; and every signal delivered BEFORE the
+    # lock is held — the ordinary early Ctrl-C, which is the common case by far
+    # — still returns success immediately, because HELD is 0.
+    [ "$HELD" = "1" ] || return 0
+    [ "$(meta_field spawning 2>/dev/null || true)" = "1" ] || return 0
+    [ -z "$(meta_field child 2>/dev/null || true)" ] || return 0
+    echo "$ME: signalled while starting the command; it may already be running" >&2
+    return 1
+  fi
 
   kill_tree "$CHILD" TERM
 
