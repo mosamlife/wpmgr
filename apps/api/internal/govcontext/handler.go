@@ -355,6 +355,22 @@ func bindJSON(c *gin.Context, dst any) error {
 	if err := dec.Decode(dst); err != nil {
 		return domain.Validation("invalid_body", "request body is not valid JSON: "+err.Error())
 	}
+	// Reject trailing content after the one JSON value the decoder consumed
+	// (dec.More reports true for a second value, unterminated garbage, or
+	// anything else non-whitespace — and false for a body that ends cleanly,
+	// including one with only trailing whitespace). encoding/json's Decoder
+	// silently stops after the first value by design (it is built to decode a
+	// STREAM of values), so without this check a body like
+	// `{"base_version":1}<anything>` binds successfully and <anything> is
+	// simply never looked at — the 1 MiB io.LimitReader above still bounds
+	// what is ever READ, so this is not a size-limit gap (see ADR-064 open
+	// question 4's answer, model.go), but silently accepting malformed input
+	// the caller almost certainly did not intend is its own defect, and is
+	// exactly the shape a JSON-parser differential across two services
+	// parsing the same bytes could exploit.
+	if dec.More() {
+		return domain.Validation("invalid_body", "request body contains trailing content after the JSON value")
+	}
 	return nil
 }
 
