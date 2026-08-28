@@ -571,55 +571,76 @@ still_running() {
   is_token_live "$TOKEN"
 }
 
-on_signal() { # on_signal SIGNAME SIGNUM
-  echo "" >&2
-  echo "$ME: caught SIG$1 — stopping the command and releasing the $NAME lock" >&2
-  if [ -n "$CHILD" ]; then
-    kill_tree "$CHILD" TERM
+# stop_run — stop the protected run and everything under it. Returns 0 when
+# nothing is left running, 1 when something survived.
+#
+# SHARED ON PURPOSE. There are two paths that must stop the run before letting
+# go of the lock: a caught signal, and a failure to record the child. The
+# second one used to TERM the token shell alone and then release
+# unconditionally, so an inner shell, `go test` or its containers could still
+# be live when the next invocation took the lock — the same defect the signal
+# path had, in the other caller. One implementation means fixing it once.
+stop_run() {
+  [ -n "$CHILD" ] || return 0
 
-    # NO BLOCKING `wait` HERE. `wait "$CHILD"` blocks until the child exits, so
-    # a child that ignores TERM would never let this handler reach the bounded
-    # loop or the KILL escalation below — an unbounded wait inside the very
-    # path whose job is to bound one. The child is reaped after the loop has
-    # established it is gone.
-    #
-    # Bounded, never an unbounded wait: TERM, then escalate. A descendant that
-    # ignores TERM must not leave us releasing the lock over a live suite.
-    _n=0
-    while [ "$_n" -lt 5 ]; do
-      resnapshot
-      still_running || break
-      sleep 1
-      _n=$(( _n + 1 ))
-    done
-    if still_running; then
-      echo "$ME: the command did not stop on TERM — escalating to KILL" >&2
-      # Signal the RECORDED tree, not a fresh walk from CHILD: by now CHILD is
-      # usually gone and its descendants have re-parented to pid 1, so a walk
-      # would find nothing to kill.
-      resnapshot
-      signal_snapshot KILL
-      sleep 1
-    fi
+  kill_tree "$CHILD" TERM
 
-    # Reap now that the bounded path has run, so the child does not linger as
-    # a zombie. Non-blocking in practice: by here it has been TERMed and KILLed.
-    wait "$CHILD" 2>/dev/null
+  # NO BLOCKING `wait` HERE. `wait "$CHILD"` blocks until the child exits, so
+  # a child that ignores TERM would never let this reach the bounded loop or
+  # the KILL escalation below — an unbounded wait inside the very path whose
+  # job is to bound one. The child is reaped after the loop has established it
+  # is gone.
+  #
+  # Bounded, never an unbounded wait: TERM, then escalate. A descendant that
+  # ignores TERM must not leave us releasing the lock over a live suite.
+  _n=0
+  while [ "$_n" -lt 5 ]; do
+    resnapshot
+    still_running || break
+    sleep 1
+    _n=$(( _n + 1 ))
+  done
+  if still_running; then
+    echo "$ME: the command did not stop on TERM — escalating to KILL" >&2
+    # Signal the RECORDED tree, not a fresh walk from CHILD: by now CHILD is
+    # usually gone and its descendants have re-parented to pid 1, so a walk
+    # would find nothing to kill.
+    resnapshot
+    signal_snapshot KILL
+    sleep 1
   fi
 
-  # The lock is released only once nothing is left running under it. Releasing
-  # over a live command is the exact fail-open this whole change removes, and
-  # refusing here is loud and recoverable; releasing is silent and is not.
-  if still_running; then
-    echo "$ME: NOT releasing '$NAME' — something is still running under it" >&2
+  # Reap now that the bounded path has run, so the child does not linger as a
+  # zombie. Non-blocking in practice: by here it has been TERMed and KILLed.
+  wait "$CHILD" 2>/dev/null
+
+  still_running && return 1
+  return 0
+}
+
+# refuse_release — say why the lock is staying, and make sure the EXIT trap
+# does not quietly undo that decision on the way out.
+refuse_release() {
+  echo "$ME: NOT releasing '$NAME' — something is still running under it" >&2
     # Deliberately does NOT promise automatic recovery. RUN_PIDS is private to
     # this process; assess_holder reads only pid, child and token, so the next
     # waiter judges by those and may well reclaim immediately. An earlier
     # version of this line claimed the lock "will be reclaimed once that exits",
     # which was simply false.
-    echo "$ME:   lock left at $LOCK_DIR. Nothing tracks those survivors for you:" >&2
-    echo "$ME:   check them, stop them, then remove that directory by hand." >&2
-    trap - EXIT
+  echo "$ME:   lock left at $LOCK_DIR. Nothing tracks those survivors for you:" >&2
+  echo "$ME:   check them, stop them, then remove that directory by hand." >&2
+  trap - EXIT
+}
+
+on_signal() { # on_signal SIGNAME SIGNUM
+  echo "" >&2
+  echo "$ME: caught SIG$1 — stopping the command and releasing the $NAME lock" >&2
+
+  # The lock is released only once nothing is left running under it. Releasing
+  # over a live command is the exact fail-open this whole change removes, and
+  # refusing is loud and recoverable; releasing is silent and is not.
+  if ! stop_run; then
+    refuse_release
     exit $(( 128 + $2 ))
   fi
 
@@ -1055,8 +1076,15 @@ if ! record_child; then
   # stop the command and refuse, rather than protect it with a lock that lies.
   echo "$ME: cannot record the command's pid ($CHILD) in $META" >&2
   echo "$ME: stopping it rather than running under a lock that cannot see it" >&2
-  kill -TERM "$CHILD" 2>/dev/null
-  wait "$CHILD" 2>/dev/null
+  # The command has already started and may have descendants of its own, so
+  # this stops the whole tree and refuses to release over anything that
+  # survives. TERMing the token shell alone and releasing regardless left an
+  # inner shell, `go test` or its containers live while the next invocation
+  # took the lock.
+  if ! stop_run; then
+    refuse_release
+    exit 69
+  fi
   release
   exit 69
 fi
