@@ -138,13 +138,23 @@
 #                            by evidence rather than by being made smaller.
 #   killed after the append  child pid recorded too -> LIVE, as since fix 1.
 #
-# THE ONE REMAINING GAP is between fork() and exec(), while the child still
-# carries the parent's argv and the token is not yet visible in it.
+# THE FORK-TO-EXEC GAP, and how it is closed. Between the fork and the exec the
+# child carries the parent's argv, so the token is not visible in it, and
+# `child=` has not been written yet either — both identifiers are blind. A
+# child that is stopped or delayed through that interval would be invisible to
+# two consecutive assessments, and a waiter would reclaim a lock whose command
+# then resumes beside the new holder.
 #
-# What actually mitigates it is the SECOND ASSESSMENT: declaring a lock stale
-# requires assess_holder to return stale twice — once in the polling loop, and
-# again from scratch under the reclaim mutex — so a waiter would have to sample
-# inside that same gap on both occasions. Nothing else covers it.
+# So the metadata carries `spawning=1`, written BEFORE the fork. A lock with
+# `spawning=1` and no `child=` is never declared stale: nothing can prove the
+# command did not start, and for a mutex "cannot prove" resolves to held. That
+# trades a fail-open in a microsecond-wide crash window for a deadlock in the
+# same window — loud, named on stderr, and clearable by hand, against silent
+# and two suites deep.
+#
+# The SECOND ASSESSMENT still matters and is kept: declaring a lock stale
+# requires assess_holder to return stale twice, once in the polling loop and
+# again from scratch under the reclaim mutex.
 #
 # `child`/`clstart` do NOT cover this gap, and an earlier version of this
 # comment claimed they did. They cannot, for two measured reasons: CHILD is the
@@ -156,10 +166,6 @@
 # absent from the metadata entirely — see assess_holder — which is why the
 # suite pins that path separately.
 #
-# The gap is NOT bounded by measurement. An attempt to bound it read 0s across
-# 200 iterations, but `date +%s` has one-second resolution, so that measures
-# nothing finer than "under a second". Treat it as unbounded-but-narrow rather
-# than as a number anybody has established.
 #
 # EXIT CODES.
 #   *   The command's own status, passed through unchanged, whatever it was.
@@ -515,8 +521,13 @@ on_signal() { # on_signal SIGNAME SIGNUM
   echo "$ME: caught SIG$1 — stopping the command and releasing the $NAME lock" >&2
   if [ -n "$CHILD" ]; then
     kill_tree "$CHILD" TERM
-    wait "$CHILD" 2>/dev/null
 
+    # NO BLOCKING `wait` HERE. `wait "$CHILD"` blocks until the child exits, so
+    # a child that ignores TERM would never let this handler reach the bounded
+    # loop or the KILL escalation below — an unbounded wait inside the very
+    # path whose job is to bound one. The child is reaped after the loop has
+    # established it is gone.
+    #
     # Bounded, never an unbounded wait: TERM, then escalate. A descendant that
     # ignores TERM must not leave us releasing the lock over a live suite.
     _n=0
@@ -535,6 +546,10 @@ on_signal() { # on_signal SIGNAME SIGNUM
       signal_snapshot KILL
       sleep 1
     fi
+
+    # Reap now that the bounded path has run, so the child does not linger as
+    # a zombie. Non-blocking in practice: by here it has been TERMed and KILLed.
+    wait "$CHILD" 2>/dev/null
   fi
 
   # The lock is released only once nothing is left running under it. Releasing
@@ -604,7 +619,19 @@ write_meta() {
   # `token` goes in HERE, before anything is forked, and is verified below.
   # That ordering is the whole point: after this function returns successfully,
   # the lock can identify the run even though the run does not exist yet.
-  if ! printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=%s\nhost=%s\ncwd=%s\ncmd=%s\n' \
+  # `spawning=1` is the fork-to-exec backstop. Between this write and
+  # record_child there is an interval in which a child may exist while neither
+  # identifier can see it: `child=` is not written yet, and the token is not in
+  # the child's argv until it execs. A child that is stopped or delayed through
+  # that interval is invisible to both assessments, and a waiter would reclaim
+  # a lock whose command then resumes beside the new holder.
+  #
+  # So the metadata says, before the fork, that a fork is about to happen. A
+  # lock carrying `spawning=1` with no `child=` is NOT declared stale: we
+  # cannot prove nothing is running, and for a mutex "cannot prove" resolves to
+  # held. The flag stops mattering the moment `child=` appears, which is the
+  # very next write, so it governs only that microsecond-wide interval.
+  if ! printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=%s\nspawning=1\nhost=%s\ncwd=%s\ncmd=%s\n' \
       "$$" "$(now)" "$(lstart_of $$)" "$TOKEN" "$_host" "$_cwd" "$_cmd" \
       > "$_tmp"; then
     echo "$ME: cannot write lock metadata to $_tmp" >&2
@@ -671,6 +698,7 @@ assess_holder() {
   holder_pid="$(meta_field pid || true)"
   holder_lstart="$(meta_field lstart || true)"
   holder_token="$(meta_field token || true)"
+  holder_spawning="$(meta_field spawning || true)"
   holder_child="$(meta_field child || true)"
   holder_clstart="$(meta_field clstart || true)"
   holder_since="$(meta_field acquired || true)"
@@ -717,6 +745,20 @@ assess_holder() {
     return 0
   fi
   if is_pid_live "$holder_pid" "$holder_lstart"; then
+    return 0
+  fi
+
+  # FORK-TO-EXEC BACKSTOP. The holder said it was about to fork and never got
+  # as far as recording a pid. A child may or may not exist, and if it does it
+  # may be stopped or not yet exec'd, which makes it invisible to both the
+  # token and the pid checks above. We cannot prove nothing is running, so the
+  # lock stays held rather than being handed to a second run.
+  #
+  # This is a deliberate deadlock in a microsecond-wide crash window, chosen
+  # over a fail-open in the same window: it is loud, it names the directory,
+  # and a human can clear it. The opposite failure is silent and runs two
+  # suites.
+  if [ "$holder_spawning" = "1" ] && [ -z "$holder_child" ]; then
     return 0
   fi
 
@@ -889,6 +931,11 @@ while :; do
     echo "$ME: TIMED OUT after $(human_secs "$waited") waiting for lock '$NAME'" >&2
     echo "$ME:   still held by pid ${holder_pid:-?}${holder_cmd:+ running: $holder_cmd}" >&2
     echo "$ME:   nothing was run. Raise WPMGR_LOCK_TIMEOUT, or wait for that run to finish." >&2
+    if [ "$holder_spawning" = "1" ] && [ -z "$holder_child" ]; then
+      echo "$ME:   NOTE: that lock was taken by a run that died while starting its command." >&2
+      echo "$ME:   It is held deliberately, because whether the command started cannot be" >&2
+      echo "$ME:   determined. If nothing is running, remove $LOCK_DIR by hand." >&2
+    fi
     exit 75
   fi
 

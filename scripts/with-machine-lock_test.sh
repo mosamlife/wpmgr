@@ -548,6 +548,55 @@ if ! skip_case; then
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
+begin "spawning-without-child-is-held"
+if ! skip_case; then
+  # The fork-to-exec backstop. Between write_meta and record_child both
+  # identifiers are blind: `child=` is not written yet and the token is not in
+  # the child's argv until it execs. A child stopped or delayed through that
+  # interval is invisible to two consecutive assessments, so a waiter would
+  # reclaim the lock and the command would resume beside the new holder.
+  #
+  # A lock carrying `spawning=1` with no `child=` must therefore read as HELD
+  # even though every liveness check comes back negative — a dead wrapper, a
+  # token nothing runs under, and no recorded child.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\ntoken=wpmgrlock-nothing-runs-under-this-0001\nspawning=1\nhost=test\ncwd=/nowhere\ncmd=died-while-starting\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+    "$LOCK" itest -- echo ADMITTED-OVER-SPAWNING > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 75 "$st" "a lock that died while starting its command is held, not reclaimed"
+  expect_absent "$ROOT/o" "ADMITTED-OVER-SPAWNING" "no second suite ran over a possibly-live command"
+  expect_contains "$ROOT/o" "died while starting its command" "the deliberate hold explains itself and names the remedy"
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "spawning-with-child-recorded-is-reclaimable"
+if ! skip_case; then
+  # The over-fire complement, and the one that keeps the backstop usable. Once
+  # `child=` is recorded the flag stops mattering, so an ordinary dead run is
+  # still reclaimed rather than wedging the machine for WPMGR_LOCK_TIMEOUT.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  d1=$!
+  wait $d1 2>/dev/null
+  sh -c 'exit 0' &
+  d2=$!
+  wait $d2 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\ntoken=wpmgrlock-nothing-runs-under-this-0002\nspawning=1\nhost=test\ncwd=/nowhere\ncmd=dead-holder\nchild=%s\nclstart=Mon Jan  1 00:00:00 2001\n' \
+    "$d1" "$(now)" "$d2" > "$ROOT/itest.lock/meta"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 \
+    "$LOCK" itest -- echo RECLAIMED-AFTER-SPAWNING > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "spawning=1 stops mattering once the child pid is recorded"
+  expect_contains "$ROOT/o" "RECLAIMED-AFTER-SPAWNING" "the command ran after the reclaim"
+fi
+
 begin "token-gone-is-still-reclaimable"
 if ! skip_case; then
   # The over-fire complement. The token must not make locks immortal: when the
@@ -831,7 +880,10 @@ if ! skip_case; then
   evil="$ROOT/$(printf 'a\nchild=1\nclstart=x\nb')"
   mkdir -p "$evil" 2>/dev/null
   if [ ! -d "$evil" ]; then
-    ok "this filesystem refuses a newline in a directory name; nothing to forge"
+    # Not `ok`: if the fixture cannot be built, the regression case did not
+    # run, and reporting success over a case that never executed is the exact
+    # defect this suite exists to catch.
+    fail "could not create the newline-named fixture, so the injection case did not run"
   else
     ( cd "$evil" && WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- echo THE-COMMAND-RAN ) > "$ROOT/o" 2>&1
     st=$?
