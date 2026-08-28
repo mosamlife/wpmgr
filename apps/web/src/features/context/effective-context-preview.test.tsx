@@ -25,13 +25,13 @@ vi.mock("./use-context", async (importOriginal) => {
 const mockedUseEffectiveSiteContext = vi.mocked(useEffectiveSiteContext);
 
 // The exact `Name` strings ADR-064 S4's resolver assigns per layer —
-// apps/api/internal/govcontext/resolver.go:96-101 on
-// origin/feat/adr064-s4-context-resolver:
+// apps/api/internal/govcontext/resolver.go:110-115 on
+// origin/feat/adr064-s4-context-resolver (tip d9f1bde8, post-facts_unavailable):
 //
 //   {Layer: 1, Name: "WPMgr security policy", ...}
 //   {Layer: 2, Name: "organisation default", ...}
 //   {Layer: 3, Name: "site override", ...}
-//   {Layer: 4, Name: "detected site facts", ...}
+//   {Layer: 4, Name: "detected site facts", Facts: &facts, FactsUnavailable: factsUnavailable}
 //   {Layer: 5, Name: "approved skill instructions"}
 //   {Layer: 6, Name: "session context", ...}
 const REAL_LAYER_NAMES = [
@@ -189,5 +189,56 @@ describe("EffectiveContextPreview — a truncated layer never reads as the compl
     expect(
       screen.queryByText(/this layer's own list may be shorter than what's enforced/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("EffectiveContextPreview — layer 4 'unavailable' is never rendered as 'nothing to report'", () => {
+  // ADR-064 S4 (apps/api/internal/govcontext/dto.go:245-252,
+  // resolver.go:89-98, tip d9f1bde8): a failed or unwired facts load still
+  // carries a non-null `facts` object on the wire (Go's `Facts: &facts` is
+  // never nil) — only `facts_unavailable: true` distinguishes "we could not
+  // load this" from "the load succeeded and found nothing". This is the
+  // same "inventory age unknown" vs. "inventory unavailable" distinction
+  // this project already drew on the updates card, and the same one that
+  // produced the earlier "Never" bug.
+  //
+  // NOTE for whoever picks this up next: as of S4 tip d9f1bde8,
+  // toEffectiveContextDTO (dto.go:267-287) copies every LayerContribution
+  // field EXCEPT FactsUnavailable into the wire DTO, so `facts_unavailable`
+  // can never actually be `true` in a live response today even though the
+  // resolver computes it correctly internally (proven by resolver_test.go's
+  // own TestResolve_Layer4FactsUnavailable_DistinctFromKnownEmpty). This
+  // fixture exercises the DOCUMENTED contract regardless — the frontend must
+  // still be correct once that backend gap is closed, and this test does not
+  // depend on the live API to prove it.
+  it("shows a distinct 'could not be loaded' message for facts_unavailable, never the empty facts fields", () => {
+    const base = buildEffective();
+    const layers = base.layers.map((l) =>
+      l.layer === 4 ? { ...l, facts: {}, facts_unavailable: true } : l,
+    );
+    mockData({ ...base, layers });
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    expect(
+      screen.getByText(/could not be loaded for this site/i),
+    ).toBeInTheDocument();
+    // Non-vacuous: none of the facts field labels render at all in this
+    // state — a version that fell back to the (empty) facts object would
+    // render the label with an absent-value dash instead of this message.
+    expect(screen.queryByText("WordPress version")).not.toBeInTheDocument();
+    expect(screen.queryByText("PHP version")).not.toBeInTheDocument();
+  });
+
+  it("still renders real facts fields when the load succeeded (facts_unavailable false/absent)", () => {
+    const base = buildEffective();
+    const layers = base.layers.map((l) =>
+      l.layer === 4 ? { ...l, facts: { wp_version: "6.7", active_theme: "twentytwentyfive" } } : l,
+    );
+    mockData({ ...base, layers });
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    expect(screen.getByText("6.7")).toBeInTheDocument();
+    expect(screen.getByText("twentytwentyfive")).toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded for this site/i)).not.toBeInTheDocument();
   });
 });

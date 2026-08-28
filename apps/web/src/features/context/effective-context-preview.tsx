@@ -205,7 +205,26 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
         <DefinitionList rows={guidanceRows(layer.guidance)} />
       </div>
 
-      {layer.facts ? (
+      {/* ADR-064 S4: `facts_unavailable` MUST be checked before `facts` is
+          rendered as data. A failed or unwired facts load still carries a
+          non-null (all-empty) `facts` object on the wire — checking `facts`
+          truthiness alone would render that as "this site genuinely has
+          nothing to report," which is a different, false claim from "we do
+          not know." This is the same distinction as "inventory age unknown"
+          vs. "inventory unavailable" on the updates card, and the same one
+          that produced the earlier "Never" bug on this project — an unknown
+          state must never be presented as a verified empty one. */}
+      {layer.facts_unavailable ? (
+        <div className="space-y-1">
+          <h5 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Facts
+          </h5>
+          <p className="text-xs text-warning-subtle-fg">
+            Could not be loaded for this site. This is not the same as
+            "nothing to report" — treat this layer as unknown, not empty.
+          </p>
+        </div>
+      ) : layer.facts ? (
         <div className="space-y-1">
           <h5 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Facts
