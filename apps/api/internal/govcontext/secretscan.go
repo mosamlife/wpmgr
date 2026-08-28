@@ -67,6 +67,40 @@ const entropyRatio = 0.78
 
 var tokenRe = regexp.MustCompile(`[A-Za-z0-9+/_\-]{20,}`)
 
+// hostnameRe matches a plausible fully-qualified hostname, taken as a whole
+// value: one or more dot-separated labels (1-63 characters, alphanumeric,
+// interior hyphens allowed, never leading/trailing one) followed by a
+// letters-only final label of 2-63 characters — a plausible TLD. DNS is
+// case-insensitive, hence (?i).
+var hostnameRe = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+
+// looksLikeHostname reports whether v, taken as a whole, is a plausible
+// fully-qualified domain name — exactly the shape
+// RestrictionSet.ForbiddenDomains exists to hold.
+//
+// A real hostname routinely has borderline-to-high per-character entropy: a
+// DNS label mixes letters, digits and hyphens with little natural
+// repetition, which is a property of being a structured identifier, not
+// evidence of being a randomly-generated secret. A single hyphenated label
+// with no dot at all — "extremely-long-subdomain-name", 29 characters, ratio
+// 0.7994 — crosses entropyRatio (0.78) on its own; the SAME label as part of
+// "extremely-long-subdomain-name.example.com" is unambiguously a hostname
+// and must not be refused as a credential. This check exempts the whole
+// value from the entropy fallback when it looks like a hostname; the four
+// exact-shape patterns above still run first and still catch a real secret
+// that happens to be dotted, so this narrows only the fallback heuristic's
+// blast radius, not Decision 10's actual coverage of known credential shapes.
+//
+// This is not adversarially airtight — a value could be hand-crafted to end
+// in a short, valid-looking TLD purely to dodge this check (Decision 10's
+// scan defends against an operator ACCIDENTALLY pasting a live credential,
+// not a deliberate attempt to disguise one, and the four exact-shape
+// patterns above already catch any accidentally-pasted secret that carries
+// its own recognisable prefix or structure regardless of this exemption).
+func looksLikeHostname(v string) bool {
+	return len(v) <= 253 && hostnameRe.MatchString(v)
+}
+
 // DetectSecret scans every string value in a Snapshot for something
 // credential-shaped. It returns the category of the FIRST match and true, or
 // ("", false) when nothing matches.
@@ -104,6 +138,9 @@ func scanValue(v string) (string, bool) {
 		if p.re.MatchString(v) {
 			return p.category, true
 		}
+	}
+	if looksLikeHostname(v) {
+		return "", false
 	}
 	for _, tok := range tokenRe.FindAllString(v, -1) {
 		if isHighEntropy(tok) {

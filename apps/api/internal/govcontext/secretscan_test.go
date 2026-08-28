@@ -183,6 +183,95 @@ func TestDetectSecret_EntropyBoundary_Length26RealisticTokenIsCaught(t *testing.
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The entropy fallback over-fires on ordinary hostnames. A single hyphenated
+// DNS label with no dot at all can cross entropyRatio on its own —
+// "extremely-long-subdomain-name" (29 chars) has ratio 0.7994, computed
+// directly with shannonEntropy/log2 below — and that label is exactly what
+// ForbiddenDomains is supposed to hold. Fixed by exempting a value that, as a
+// WHOLE, looks like a fully-qualified hostname (looksLikeHostname,
+// secretscan.go) from the entropy fallback specifically — the four
+// exact-shape patterns still run unconditionally first.
+// ---------------------------------------------------------------------------
+
+// TestDetectSecret_HostnameNotFlaggedAsHighEntropy is the over-fire proof:
+// realistic multi-label domains whose longest dot-free label independently
+// crosses entropyRatio must not be flagged.
+//
+// Confirmed RED against secretscan.go with the `if looksLikeHostname(v) {
+// return "", false }` line removed from scanValue:
+//
+//	$ go test ./internal/govcontext/... -run TestDetectSecret_HostnameNotFlaggedAsHighEntropy -v
+//	    secretscan_test.go:228: DetectSecret flagged the ordinary hostname "extremely-long-subdomain-name.example.com" as "high_entropy_secret"
+//	--- FAIL: TestDetectSecret_HostnameNotFlaggedAsHighEntropy
+//
+// Restored, it is GREEN.
+func TestDetectSecret_HostnameNotFlaggedAsHighEntropy(t *testing.T) {
+	domains := []string{
+		// Each contains a single dot-free label that independently crosses
+		// entropyRatio (0.78) — verified against isHighEntropy directly below
+		// before asserting DetectSecret's behaviour over the whole domain.
+		"extremely-long-subdomain-name.example.com",
+		"wp-content-uploads-2026-08-archive.example.org",
+		// The two domains reported directly: dotted, so tokenRe's dot-free
+		// {20,} match never extracts a token 20+ characters long from either
+		// (their longest label is under 20 chars) — pinned here so a future
+		// change to tokenRe's character class (e.g. adding '.') cannot
+		// silently reopen this without a test failing.
+		"staging.client-portal.example.com",
+		"some.very-long-subdomain.example.co.uk",
+	}
+	for _, d := range domains {
+		t.Run(d, func(t *testing.T) {
+			snap := Snapshot{Restrictions: RestrictionSet{ForbiddenDomains: []string{d}}}
+			if cat, found := DetectSecret(snap); found {
+				t.Errorf("DetectSecret flagged the ordinary hostname %q as %q", d, cat)
+			}
+		})
+	}
+}
+
+// TestDetectSecret_HostnameLabelWouldHaveCrossedTheThreshold pins the actual
+// numbers TestDetectSecret_HostnameNotFlaggedAsHighEntropy depends on staying
+// true: that the fix is exempting a label that GENUINELY crosses
+// entropyRatio, not one that was already safely below it. If this test ever
+// fails, the over-fire proof above is no longer testing what it claims to.
+func TestDetectSecret_HostnameLabelWouldHaveCrossedTheThreshold(t *testing.T) {
+	cases := []struct {
+		label string
+		len   int
+	}{
+		{"extremely-long-subdomain-name", 29},
+		{"wp-content-uploads-2026-08-archive", 34},
+	}
+	for _, c := range cases {
+		if len(c.label) != c.len {
+			t.Fatalf("fixture %q is %d characters, want %d", c.label, len(c.label), c.len)
+		}
+		if !isHighEntropy(c.label) {
+			t.Errorf("isHighEntropy(%q) = false, want true — this fixture must independently cross "+
+				"entropyRatio for the hostname-exemption test above to prove anything", c.label)
+		}
+	}
+}
+
+// TestDetectSecret_HostnameExemptionDoesNotReopenTheDeadZone re-confirms the
+// entropy dead-zone fix (TestDetectSecret_EntropyBoundary_Length25/26) is
+// unaffected by the hostname exemption: a bare, dot-free high-entropy token
+// (no domain shape at all) must still be flagged. looksLikeHostname requires
+// at least one dot, so a dotless value can never match it — this test proves
+// that rather than asserting it from reading the regex.
+func TestDetectSecret_HostnameExemptionDoesNotReopenTheDeadZone(t *testing.T) {
+	tok := "Xk9mQ2pL7vN4wZ8tR1yB6hJf3" // the same 25-char fixture as the dead-zone test
+	if looksLikeHostname(tok) {
+		t.Fatalf("looksLikeHostname(%q) = true, want false (no dot at all)", tok)
+	}
+	snap := Snapshot{Guidance: GuidanceSet{BrandVoice: "rotation token: " + tok}}
+	if _, found := DetectSecret(snap); !found {
+		t.Error("DetectSecret found nothing in a bare 25-char high-entropy token — the hostname exemption must not affect dotless values")
+	}
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(substr) > 0 && (func() bool {
 		for i := 0; i+len(substr) <= len(s); i++ {
