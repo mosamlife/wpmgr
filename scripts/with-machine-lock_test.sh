@@ -917,60 +917,68 @@ fi
 
 begin "signal-while-waiting-releases-cleanly"
 if ! skip_case; then
-  # THE OVER-FIRE COMPLEMENT of stop_run's new refusal. That refusal fires when
-  # the lock is HELD but no child pid has been recorded — the fork window. It
-  # must NOT fire for the common case: a signal arriving while this run is
-  # still queued behind somebody else's lock, where nothing was ever started
-  # and there is nothing to refuse. Getting this wrong would make every
-  # early Ctrl-C print a scary refusal and leave a lock behind.
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 3391 > "$ROOT/holder" 2>&1 &
-  holder=$!
-  hchild="$(wait_for_meta_field "$ROOT/itest.lock/meta" child)"
+  # THE OVER-FIRE COMPLEMENT of stop_run's refusal. That refusal must fire only
+  # when THIS process holds the lock and cannot name what it started. A waiter
+  # holds nothing, so it must never refuse — but `meta_field` reads whatever
+  # lock file is on disk, which belongs to somebody else, so without the HELD
+  # guard a waiter inherits the holder's `spawning=1` and refuses over a run it
+  # never started.
+  #
+  # The lock waited on is therefore planted in exactly the state that triggers
+  # the refusal — spawning=1, no `child=` — and kept credible with a live pid
+  # so it is not reclaimed instead. Waiting on an ordinary holder would not
+  # test this: that metadata carries `child=`, which returns success one check
+  # earlier and lets a broken HELD guard pass.
+  sleep 3391 &
+  livepid=$!
+  livestart="$(ps -o lstart= -p "$livepid" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ *//; s/ *$//')"
 
-  if [ -z "$hchild" ]; then
-    fail "the first holder never took the lock — this case would prove nothing"
+  mkdir -p "$ROOT/itest.lock"
+  printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=wpmgrlock-nothing-runs-under-this-0004\nspawning=1\nhost=test\ncwd=/nowhere\ncmd=holder-mid-spawn\n' \
+    "$livepid" "$(now)" "$livestart" > "$ROOT/itest.lock/meta"
+
+  if grep -q '^child=' "$ROOT/itest.lock/meta" 2>/dev/null; then
+    fail "the planted lock has a child pid; a broken HELD guard would pass this case"
   else
-    # A second run that will sit in the wait loop, never acquiring.
-    WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=60 WPMGR_LOCK_POLL=1 \
-      "$LOCK" itest -- echo MUST-NOT-RUN > "$ROOT/waiter" 2>&1 &
-    waiter=$!
-    sleep 3
-
-    if kill -0 "$waiter" 2>/dev/null; then
-      ok "the second run is waiting, not holding"
-    else
-      fail "the second run exited before it could be signalled"
-    fi
-
-    started="$(now)"
-    kill -TERM "$waiter" 2>/dev/null
-    wait "$waiter" 2>/dev/null
-    wst=$?
-    elapsed=$(( $(now) - started ))
-
-    expect_status 143 "$wst" "a waiter signalled before it holds the lock exits 128+15"
-    expect_absent "$ROOT/waiter" "NOT releasing" "no refusal is printed for a run that never started anything"
-    expect_absent "$ROOT/waiter" "may already be running" "no fork-window warning for a run that never forked"
-    expect_absent "$ROOT/waiter" "MUST-NOT-RUN" "the waiting command never ran"
-    if [ "$elapsed" -le 3 ]; then
-      ok "the signalled waiter exited promptly (${elapsed}s)"
-    else
-      fail "the signalled waiter took ${elapsed}s to exit"
-    fi
-
-    # And it must not have disturbed the real holder's lock.
-    if [ -d "$ROOT/itest.lock" ]; then
-      ok "the live holder's lock is untouched"
-    else
-      fail "the signalled waiter removed the live holder's lock"
-    fi
-
-    for _d in $(pgrep -P "$hchild" 2>/dev/null); do
-      kill -9 "$_d" 2>/dev/null
-    done
-    kill -9 "$hchild" "$holder" 2>/dev/null
-    wait "$holder" 2>/dev/null
+    ok "the planted lock is in the spawning state, which is what triggers the refusal"
   fi
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=60 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=600 \
+    "$LOCK" itest -- echo MUST-NOT-RUN > "$ROOT/waiter" 2>&1 &
+  waiter=$!
+  sleep 3
+
+  if kill -0 "$waiter" 2>/dev/null; then
+    ok "the second run is waiting, not holding"
+  else
+    fail "the second run exited before it could be signalled"
+  fi
+
+  started="$(now)"
+  kill -TERM "$waiter" 2>/dev/null
+  wait "$waiter" 2>/dev/null
+  wst=$?
+  elapsed=$(( $(now) - started ))
+
+  expect_status 143 "$wst" "a waiter signalled before it holds the lock exits 128+15"
+  expect_absent "$ROOT/waiter" "NOT releasing" "no refusal is printed for a run that never started anything"
+  expect_absent "$ROOT/waiter" "may already be running" "no fork-window warning for a run that never forked"
+  expect_absent "$ROOT/waiter" "MUST-NOT-RUN" "the waiting command never ran"
+  if [ "$elapsed" -le 3 ]; then
+    ok "the signalled waiter exited promptly (${elapsed}s)"
+  else
+    fail "the signalled waiter took ${elapsed}s to exit"
+  fi
+
+  # And it must not have touched a lock it never held.
+  if [ -d "$ROOT/itest.lock" ]; then
+    ok "the lock the waiter never held is untouched"
+  else
+    fail "the signalled waiter removed a lock it never held"
+  fi
+
+  kill -9 "$livepid" 2>/dev/null
+  wait "$livepid" 2>/dev/null
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
