@@ -43,3 +43,18 @@ either** — only a role with `BYPASSRLS` or `SUPERUSER` does. So:
   Run fleet-wide as `wpmgr_app` and you get **zero rows, not an error**. The
   script detects that case and aborts rather than reporting an empty fleet as
   a finding.
+
+## Schema requirement
+
+`fleet_software_census.sql` reads `sites.components_updated_at`, added by
+**m121** (`20260823000000_m121_site_components_updated_at`). Against an older
+database both the census and its proof harness fail on the unknown column,
+loudly, which is the correct outcome: the census dates every freshness number
+from that column and cannot be run — or proven — against a schema that lacks it.
+
+m121 added the column with **no backfill**, so every row that predates it reads
+`NULL` until that site's next metadata push. `NULL` means "we have never
+recorded when this inventory was collected", it is reported as its own bucket,
+and on any run soon after m121 it will be the largest bucket. Read section 0 of
+the output, which prints that denominator before any adoption number, before
+quoting anything further down.
