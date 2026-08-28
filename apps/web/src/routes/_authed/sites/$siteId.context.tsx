@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { EffectiveContextPreview } from "@/features/context/effective-context-preview";
 import { SiteContextSection } from "@/features/context/site-context-section";
 import { SiteContextHistorySection } from "@/features/context/site-context-history-section";
-import { useMe, canManage } from "@/features/auth/use-auth";
+import { useMe, canOperate } from "@/features/auth/use-auth";
 
 // ADR-064 S5 — `/sites/:siteId/context` route.
 //
@@ -18,14 +18,18 @@ export const Route = createFileRoute("/_authed/sites/$siteId/context")({
 function ContextTab() {
   const { siteId } = Route.useParams();
   const { data: me } = useMe();
-  // Decision 6: site-scope write is narrower than read, but this codebase
-  // has no finer-grained "context.site.write" signal on the client today —
-  // gate the editable form the same way every other site-configuration
-  // write (hardening, login protection, destinations) already does, and let
-  // the server's own capability check be the real enforcement point
-  // regardless (a 403 from the PATCH still surfaces if this client-side
-  // gate is ever wrong in either direction).
-  const canWrite = canManage(me);
+  // Decision 6: "site-scope write additionally requires access to that
+  // specific site" — narrower than read, but NOT narrower than
+  // organisation-scope write (which Decision 6 states explicitly IS
+  // admin-only). `canManage` (owner/admin only) was too strict here and hid
+  // the editor and history from an operator-level org member or an
+  // operator-role site collaborator, both of whom `context.site.write`
+  // actually permits — caught in review (Greptile P1, "Operator writes are
+  // hidden"). `canOperate` matches this codebase's own existing definition
+  // of "site access at operator tier or above." The server's own capability
+  // check remains the real enforcement point regardless (a 403 from the
+  // PATCH still surfaces if this client-side gate is ever wrong).
+  const canWrite = canOperate(me);
 
   return (
     <div className="space-y-8 px-4 pb-8 pt-6 sm:px-6">
