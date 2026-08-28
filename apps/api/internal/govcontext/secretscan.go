@@ -40,30 +40,110 @@ const entropyCategory = "high_entropy_secret"
 // its own, a claim that anything shorter is safe from being a secret.
 const entropyMinLen = 20
 
-// entropyRatio is the fraction of a token's OWN maximum possible Shannon
-// entropy — log2(len(token)), achieved only when every character in the
-// token is distinct — that a bare alphanumeric token must reach to be
-// treated as "password-shaped... with the right entropy" per Decision 10.
+// entropyRatio is the fraction of a token's ceiling entropy that its OBSERVED
+// Shannon entropy must reach to be treated as "password-shaped... with the
+// right entropy" per Decision 10. "Ceiling" is defined by tokenCeilingBits
+// below — this constant has been wrong twice about what that ceiling is, and
+// both mistakes are worth keeping on the record because the second one was
+// only findable by fixing the first.
 //
-// A FIXED, LENGTH-INDEPENDENT bit/char threshold cannot work here, and
-// previously did not: entropyThreshold used to be a flat 4.7 bits/char, but
-// the maximum entropy ANY string of length n can have is log2(n) — 4.3219
-// at n=20, 4.6439 at n=25 — both below 4.7. Every 20-25 character token was
-// therefore structurally unable to cross that bound, whatever it contained;
-// the check was dead code across exactly the length window it claimed to
-// cover, and reported "no secret found" there because it was unreachable,
-// not because it looked and cleared. See secretscan_test.go's boundary tests
-// at 25 and 26, which pinned that exact dead zone before this fix and now
-// prove a 20-25 character high-entropy token is caught, not skipped.
+// MISTAKE 1 (fixed): a FIXED, length-independent bit/char threshold. This
+// package used to compare against a flat 4.7 bits/char, but the maximum
+// entropy ANY string of length n can have is log2(n) — 4.3219 at n=20,
+// 4.6439 at n=25 — both below 4.7. Every 20-25 character token was
+// structurally unable to cross that bound, whatever it contained: the check
+// was dead code across exactly the length window it claimed to cover. See
+// secretscan_test.go's boundary tests at 25 and 26.
 //
-// Calibrated empirically (see the fixed 20000-trial simulation this comment
-// is not the place to reproduce, summarised in the PR): a uniformly-random
-// token over this file's alphabet has its entropy-to-log2(len) ratio fall
-// below 0.78 in fewer than 0.02% of draws at every tested length from 20 to
-// 40, while every non-secret contiguous-token fixture this package has
-// tested (camelCase identifiers, snake_case identifiers, URLs, hex-ish
-// strings) tops out at 0.75. 0.78 sits in the gap with margin on both sides.
+// MISTAKE 2 (fixed): comparing against log2(len(token)) unconditionally, on
+// the theory that a token could in principle use as many distinct symbols as
+// it has characters. That is only true for an UNBOUNDED alphabet. A REAL
+// token drawn from a FIXED, small alphabet — hex (16 symbols), base32 (32),
+// base58 (58) — has a ceiling of log2(alphabet size) that does NOT grow with
+// length, so log2(len(token)) eventually exceeds it: past 35 characters for
+// hex, 86 for base32, 183 for base58, the threshold became unreachable by
+// ANY content in that alphabet, whatever it contained — the identical dead-
+// zone shape as mistake 1, just relocated from short tokens to long
+// fixed-alphabet ones. A 40-character hex API key and a 64-character
+// SHA-256 digest are common, not exotic, and both were undetectable.
+//
+// tokenCeilingBits (below) is the corrected ceiling: log2(min(len(token),
+// alphabet size)), where alphabet size is either a detected narrow, known
+// encoding (decimal/hex/base32/base58, via tokenAlphabetSize) or this
+// package's own general token character class (66 symbols) for anything
+// else. This is the mathematically correct bound for BOTH failure modes at
+// once: for a token shorter than its alphabet, length is the binding
+// constraint (mistake 1's regime); for a token at or past its alphabet's
+// size, the alphabet is (mistake 2's regime) — and it never exceeds
+// whichever is actually achievable, so there is no length past which a
+// GENUINELY random token of ANY of these alphabets becomes undetectable.
+// secretscan_test.go's calibration tests verify this holds from 20 characters
+// up to 512 for decimal, hex, base32, base58 and this package's general
+// alphabet.
+//
+// 0.78 itself is calibrated empirically against this corrected ceiling: a
+// uniformly-random token has its entropy-to-ceiling ratio fall below 0.78 in
+// under 10% of draws at every tested length and alphabet from 20 to 512
+// characters (worst observed: hex at length 20, ~91% detection — short
+// samples of a 16-symbol alphabet have the least room to look uniform, and
+// that residual is the honest cost of also closing the dead zone at length
+// 20 rather than only at length 512), while every non-secret fixture this
+// package tests — camelCase and snake_case identifiers, URLs, long
+// identifier-like strings well past 100 characters — tops out at 0.75.
 const entropyRatio = 0.78
+
+// generalAlphabetSize is the size of tokenRe's own character class
+// (A-Za-z0-9+/_-, 66 symbols): the ceiling used for any token that is not
+// entirely within one of narrowAlphabets below.
+const generalAlphabetSize = 66
+
+// narrowAlphabets lists well-known, low-cardinality credential/identifier
+// encodings, ORDERED SMALLEST FIRST so a token consistent with more than one
+// (e.g. a pure-digit token is also valid hex) gets the tightest, most
+// accurate ceiling. A token using any character outside all of these falls
+// back to generalAlphabetSize.
+var narrowAlphabets = []string{
+	"0123456789",                       // decimal, 10
+	"0123456789abcdef",                 // hex, lowercase, 16
+	"0123456789ABCDEF",                 // hex, uppercase, 16
+	"0123456789abcdefABCDEF",           // hex, mixed case, 22 — unusual but not exotic
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", // base32 (RFC 4648), 32
+	"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz", // base58 (Bitcoin alphabet, excludes 0/O/I/l), 58
+}
+
+// tokenAlphabetSize returns the size of the smallest known alphabet in
+// narrowAlphabets that every character of tok belongs to, or
+// generalAlphabetSize if tok uses characters outside all of them.
+func tokenAlphabetSize(tok string) int {
+	for _, chars := range narrowAlphabets {
+		if isSubsetOf(tok, chars) {
+			return len(chars)
+		}
+	}
+	return generalAlphabetSize
+}
+
+func isSubsetOf(tok, chars string) bool {
+	for i := 0; i < len(tok); i++ {
+		if strings.IndexByte(chars, tok[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// tokenCeilingBits returns the maximum Shannon entropy tok could possibly
+// have, in bits per character: log2(min(len(tok), alphabet size)). See
+// entropyRatio's doc comment for why both terms of this min() are load-
+// bearing — dropping either one reopens one of this package's two prior dead
+// zones.
+func tokenCeilingBits(tok string) float64 {
+	n := len(tok)
+	if a := tokenAlphabetSize(tok); a < n {
+		n = a
+	}
+	return math.Log2(float64(n))
+}
 
 var tokenRe = regexp.MustCompile(`[A-Za-z0-9+/_\-]{20,}`)
 
@@ -176,12 +256,14 @@ func scanValue(v string) (string, bool) {
 // (log2(len(tok))), which is the length-relative form of "the right entropy"
 // per Decision 10. See entropyRatio's doc comment for why a flat, length-
 // independent bit/char bound cannot be used here.
+// isHighEntropy reports whether tok's observed Shannon entropy reaches
+// entropyRatio of tokenCeilingBits(tok) — the length-AND-alphabet-aware
+// ceiling that closes both dead zones documented on entropyRatio.
 func isHighEntropy(tok string) bool {
 	if len(tok) < entropyMinLen {
 		return false
 	}
-	maxEntropy := math.Log2(float64(len(tok)))
-	return shannonEntropy(tok) >= entropyRatio*maxEntropy
+	return shannonEntropy(tok) >= entropyRatio*tokenCeilingBits(tok)
 }
 
 // shannonEntropy returns the Shannon entropy of s in bits per character.

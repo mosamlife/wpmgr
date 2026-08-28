@@ -1,6 +1,8 @@
 package govcontext
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
@@ -357,6 +359,131 @@ func TestDetectSecret_MixedCaseTokenWithFakeTLDIsCaught(t *testing.T) {
 	if _, found := DetectSecret(snap); !found {
 		t.Errorf("DetectSecret found nothing in %q — a bare mixed-case high-entropy token with no "+
 			"recognisable prefix, hidden behind a fake TLD", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The length-relative ceiling (log2(len(token))) assumed an unbounded
+// alphabet: a token could in principle use as many distinct symbols as it
+// has characters. A real token drawn from a FIXED, small alphabet cannot —
+// hex tops out at log2(16)=4.0 bits/char no matter how long it is — so past
+// 35 characters for hex, 86 for base32, 183 for base58, the threshold became
+// higher than that alphabet could ever produce: the identical dead-zone shape
+// as the original bug, relocated from short tokens to long fixed-alphabet
+// ones. A 40-character hex API key and a 64-character SHA-256 digest are
+// common, not exotic, and both were undetectable. Fixed by capping the
+// ceiling at log2(min(len(token), detected alphabet size)) — see
+// entropyRatio's doc comment (secretscan.go) for the full account of both
+// mistakes.
+// ---------------------------------------------------------------------------
+
+// TestDetectSecret_FixedAlphabetDigestsAreCaught uses real, reproducible hash
+// digests — not synthetic strings — as the concrete case the dead zone
+// missed. Each is hex, and each was previously undetectable purely because
+// of its length, regardless of content.
+//
+// Confirmed RED against the pre-fix ceiling (tokenCeilingBits replaced with
+// a bare `math.Log2(float64(len(tok)))`, ignoring alphabet entirely):
+//
+//	$ go test ./internal/govcontext/... -run TestDetectSecret_FixedAlphabetDigestsAreCaught -v
+//	    secretscan_test.go:412: DetectSecret found nothing in the sha256("wpmgr") digest (64 hex characters) — this is exactly the fixed-alphabet dead zone
+//	--- FAIL: TestDetectSecret_FixedAlphabetDigestsAreCaught
+//
+// Restored, it is GREEN.
+func TestDetectSecret_FixedAlphabetDigestsAreCaught(t *testing.T) {
+	cases := []struct {
+		name string
+		hex  string
+	}{
+		// sha1("wpmgr"), sha256("wpmgr"), md5("wpmgr") — reproducible with
+		// any standard library: echo -n wpmgr | sha1sum / sha256sum / md5sum.
+		{`sha1("wpmgr") digest (40 hex characters)`, "f432f2956ce15a76ee56bd8af04c1df25e2b13e5"},
+		{`sha256("wpmgr") digest (64 hex characters)`, "6fe7e000d77661bc26207f7658a92908e3551bf11bfc82eac50d4e66e75acaee"},
+		{`md5("wpmgr") digest (32 hex characters)`, "8955db4aaa57cdfb759681e466bc9caa"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tokenAlphabetSize(c.hex); got != 16 {
+				t.Fatalf("tokenAlphabetSize(%q) = %d, want 16 (hex) — fixture is not pure hex", c.hex, got)
+			}
+			snap := Snapshot{Guidance: GuidanceSet{BrandVoice: "deploy checksum: " + c.hex}}
+			cat, found := DetectSecret(snap)
+			if !found {
+				t.Fatalf("DetectSecret found nothing in the %s — this is exactly the fixed-alphabet dead zone", c.name)
+			}
+			if cat != entropyCategory {
+				t.Errorf("category = %q, want %q", cat, entropyCategory)
+			}
+		})
+	}
+}
+
+// cyclicToken deterministically constructs a token of the given length by
+// cycling through alphabet in order. For any length, every character of
+// alphabet appears either floor(length/len(alphabet)) or one more time than
+// that — as close to perfectly uniform as an integer-length string can be —
+// so its Shannon entropy sits arbitrarily close to log2(len(alphabet)), that
+// alphabet's true ceiling, regardless of how long the token is. This is
+// deliberately NOT random sampling: a fixed construction removes sampling
+// variance from the question "does detection degrade with length", which is
+// exactly what the dead zone was about.
+func cyclicToken(alphabet string, length int) string {
+	var b strings.Builder
+	for i := 0; i < length; i++ {
+		b.WriteByte(alphabet[i%len(alphabet)])
+	}
+	return b.String()
+}
+
+// TestDetectSecret_NoDeadZoneAcrossAlphabetsAndLengths is the acceptance
+// test named directly: for every alphabet a real credential encoding
+// plausibly uses, and every tested length from entropyMinLen up to 512
+// characters, a near-maximally-uniform token of that alphabet is detected.
+// There is no (alphabet, length) pair in this table where the check cannot
+// fire — which is the property the two prior dead zones each violated, in
+// opposite directions (too-short tokens, then too-long fixed-alphabet ones).
+func TestDetectSecret_NoDeadZoneAcrossAlphabetsAndLengths(t *testing.T) {
+	alphabets := map[string]string{
+		"decimal": "0123456789",
+		"hex":     "0123456789abcdef",
+		"base32":  "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+		"base58":  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
+	}
+	lengths := []int{20, 24, 32, 40, 64, 96, 128, 256, 512}
+	for name, alphabet := range alphabets {
+		for _, length := range lengths {
+			tok := cyclicToken(alphabet, length)
+			t.Run(fmt.Sprintf("%s/len=%d", name, length), func(t *testing.T) {
+				if !isHighEntropy(tok) {
+					t.Errorf("isHighEntropy(%q) = false — dead zone at length %d for the %s alphabet", tok, length, name)
+				}
+			})
+		}
+	}
+}
+
+// TestTokenAlphabetSize_ClassifiesKnownEncodings is the unit-level proof
+// tokenAlphabetSize picks the tightest (smallest) alphabet consistent with a
+// token's actual characters, which is what makes the ceiling accurate rather
+// than merely "large enough to never fire".
+func TestTokenAlphabetSize_ClassifiesKnownEncodings(t *testing.T) {
+	cases := []struct {
+		tok  string
+		want int
+	}{
+		{"0123456789", 10},
+		{"0123456789abcdef", 16},
+		{"0123456789ABCDEF", 16},
+		{"deadBEEF0123", 22}, // mixed-case hex
+		{"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 32},
+		{"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz", 58},
+		{"ThisIsALongCamelCaseIdentifier", generalAlphabetSize}, // outside every narrow alphabet
+		{"api/key+value_pair-here", generalAlphabetSize},
+	}
+	for _, c := range cases {
+		if got := tokenAlphabetSize(c.tok); got != c.want {
+			t.Errorf("tokenAlphabetSize(%q) = %d, want %d", c.tok, got, c.want)
+		}
 	}
 }
 
