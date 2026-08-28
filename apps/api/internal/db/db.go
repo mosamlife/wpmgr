@@ -468,6 +468,99 @@ func (p *Pool) InAPIKeyLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) e
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// The four MCP GUC helpers (m124 / m126).
+//
+// Each opens EXACTLY ONE table, and each of the four policies they enable is
+// FOR SELECT or FOR INSERT only -- never FOR ALL. That is the whole reason
+// these are four helpers rather than one "InMCPTx": the narrow name at the call
+// site is what tells you which table you are allowed to touch.
+//
+// THE TRAP THESE EXIST TO MAKE VISIBLE (m124 "WHAT S6b MUST DO" item 1, the one
+// that fails silently). The lookup policies are FOR SELECT. An UPDATE issued
+// inside one of the ...LookupTx helpers below matches ZERO ROWS AND RAISES NO
+// ERROR under FORCE ROW LEVEL SECURITY. Stamp consumed_at there and single-use
+// silently becomes multi-use, with nothing in any log. A security reviewer
+// reproduced exactly that. The tenant is known the moment a lookup resolves --
+// every one of these rows carries tenant_id, except the client row which has
+// none by design -- so every follow-up write belongs in a separate InTenantTx.
+// The generated query names carry the same warning: ...ForLookup reads,
+// ...InTenantTx writes. Never issue the second inside the first.
+// ---------------------------------------------------------------------------
+
+// InMCPClientRegisterTx runs fn with app.mcp_client_register set, enabling the
+// mcp_oauth_clients_registration INSERT-only policy.
+//
+// This is RFC 7591 dynamic client registration, which is an UNAUTHENTICATED
+// POST: there is no organisation to attribute the row to at INSERT time, which
+// is why mcp_oauth_clients carries no tenant_id at all (see m124's header). fn
+// must do nothing but insert one client row. The policy is FOR INSERT, so a
+// SELECT in here returns nothing -- registration cannot read the table, which
+// is the tighter grant and is deliberate.
+func (p *Pool) InMCPClientRegisterTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return p.inMCPGUCTx(ctx, "app.mcp_client_register", fn)
+}
+
+// InMCPClientLookupTx runs fn with app.mcp_client_lookup set, enabling the
+// mcp_oauth_clients_lookup SELECT-only policy. fn must do nothing but resolve a
+// client by its client_id.
+//
+// The redirect_uri check does NOT belong in here and cannot be pushed into SQL:
+// the query takes no redirect_uri parameter on purpose, so the caller
+// exact-matches the presented URI against the returned array in Go. A prefix,
+// suffix or host-only comparison is an open redirector.
+func (p *Pool) InMCPClientLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return p.inMCPGUCTx(ctx, "app.mcp_client_lookup", fn)
+}
+
+// InMCPCodeLookupTx runs fn with app.mcp_code_lookup set, enabling the
+// mcp_authorization_codes_lookup SELECT-only policy. fn resolves a PKCE
+// authorization code by its hash and MUST NOT write.
+//
+// Consuming the code is ConsumeMCPAuthorizationCodeInTenantTx in a FOLLOWING
+// InTenantTx. Issued here it is the silent UPDATE 0 described above.
+func (p *Pool) InMCPCodeLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return p.inMCPGUCTx(ctx, "app.mcp_code_lookup", fn)
+}
+
+// InMCPTokenLookupTx runs fn with app.mcp_token_lookup set, enabling the
+// mcp_connection_tokens_lookup SELECT-only policy. fn resolves a bearer token
+// by its hash and MUST NOT write.
+//
+// AUTHENTICATION IS TWO QUERIES, NOT A JOIN. mcp_grants has no lookup policy --
+// only tenant isolation -- so `token JOIN grant` in here matches zero rows and
+// would fail EVERY MCP request with nothing in any log. Resolve the token here
+// to learn its tenant, then re-check the grant in an InTenantTx.
+func (p *Pool) InMCPTokenLookupTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return p.inMCPGUCTx(ctx, "app.mcp_token_lookup", fn)
+}
+
+// inMCPGUCTx is the shared body of the four helpers above. It is unexported so
+// that no call site can invent a fifth GUC in passing: adding one means adding
+// a named helper next to its policy, which is a reviewable change.
+func (p *Pool) inMCPGUCTx(ctx context.Context, guc string, fn func(tx pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// set_config's third arg is is_local: the setting is confined to this
+	// transaction (equivalent to SET LOCAL) and is safe under pgBouncer
+	// transaction-mode pooling. The GUC name is from the closed set above, not
+	// from caller input, so the format verb cannot inject.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('%s', 'on', true)", guc)); err != nil {
+		return fmt.Errorf("set %s: %w", guc, err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
 // InScopedTenantTx runs fn inside a transaction with four GUCs set:
 //   - app.tenant_id  — the active org (same as InTenantTx)
 //   - app.user_id    — the acting user (same as InTenantTxAsUser)

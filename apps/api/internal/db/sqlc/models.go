@@ -451,6 +451,63 @@ type Invitation struct {
 	ClientID       pgtype.UUID        `json:"client_id"`
 }
 
+type McpAuthorizationCode struct {
+	ID                  uuid.UUID          `json:"id"`
+	TenantID            uuid.UUID          `json:"tenant_id"`
+	GrantID             uuid.UUID          `json:"grant_id"`
+	ClientID            string             `json:"client_id"`
+	CodeHash            string             `json:"code_hash"`
+	CodeChallenge       string             `json:"code_challenge"`
+	CodeChallengeMethod string             `json:"code_challenge_method"`
+	RedirectUri         string             `json:"redirect_uri"`
+	CreatedAt           time.Time          `json:"created_at"`
+	ExpiresAt           time.Time          `json:"expires_at"`
+	ConsumedAt          pgtype.Timestamptz `json:"consumed_at"`
+}
+
+type McpConnectionToken struct {
+	ID          uuid.UUID          `json:"id"`
+	TenantID    uuid.UUID          `json:"tenant_id"`
+	GrantID     uuid.UUID          `json:"grant_id"`
+	TokenPrefix string             `json:"token_prefix"`
+	TokenHash   string             `json:"token_hash"`
+	Status      string             `json:"status"`
+	CreatedAt   time.Time          `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type McpGrant struct {
+	ID                       uuid.UUID          `json:"id"`
+	TenantID                 uuid.UUID          `json:"tenant_id"`
+	Name                     string             `json:"name"`
+	Status                   string             `json:"status"`
+	SiteScopeMode            string             `json:"site_scope_mode"`
+	ScopeTagIds              []uuid.UUID        `json:"scope_tag_ids"`
+	ScopeSiteIds             []uuid.UUID        `json:"scope_site_ids"`
+	ClientID                 *string            `json:"client_id"`
+	ClientName               *string            `json:"client_name"`
+	ClientVersion            *string            `json:"client_version"`
+	ProtocolVersion          *string            `json:"protocol_version"`
+	ClientIdentityRecordedAt pgtype.Timestamptz `json:"client_identity_recorded_at"`
+	CreatedByUserID          pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt                time.Time          `json:"created_at"`
+	LastUsedAt               pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt                pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type McpOauthClient struct {
+	ID                      uuid.UUID `json:"id"`
+	ClientID                string    `json:"client_id"`
+	ClientSecretHash        *string   `json:"client_secret_hash"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method"`
+	RedirectUris            []string  `json:"redirect_uris"`
+	ClientName              *string   `json:"client_name"`
+	ClientUri               *string   `json:"client_uri"`
+	CreatedAt               time.Time `json:"created_at"`
+}
+
 type Membership struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`

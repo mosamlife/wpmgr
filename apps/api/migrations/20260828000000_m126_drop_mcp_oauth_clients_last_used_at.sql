@@ -1,0 +1,130 @@
+-- m126 - drop mcp_oauth_clients.last_used_at. A COLUMN NO STATEMENT CAN WRITE.
+--
+-- CORRECTS m124 (20260826000000_m124_mcp_connection_surface.sql). m124 is
+-- APPLIED and is therefore IMMUTABLE: apps/api/internal/db/migrate.go sorts the
+-- embedded versions lexically and skips anything already in schema_migrations,
+-- so editing m124 to remove the column would be a silent no-op on every
+-- database that has already run it while looking like a fix. A correction is a
+-- NEW ORDINAL. This is that ordinal, on the m114/m115 pattern.
+--
+-- ORDINAL. 20260828000000, chosen after reading the ordinals of everything
+-- UNMERGED, not merely everything merged: m125
+-- (20260827000000_m125_email_webhook_dedup_tenant_scope.sql) lives on another
+-- unmerged branch and would otherwise have collided or, worse, sorted after
+-- this file and applied against a base it did not expect, inside main(). This
+-- file must sort after both m124 and m125 and it does.
+--
+-- CONVERGE PATH: NONE NEEDED, AND HERE IS WHY, rather than an assertion.
+-- m124 creates this column unconditionally and m126 drops it unconditionally,
+-- so both populations land in the same end state with no branch:
+--   * a database that already applied m124 has the column, and m126 drops it;
+--   * a database that has applied neither runs m124 then m126, in ordinal
+--     order, and ends with no column.
+-- THE DROP IS LOSSLESS BY CONSTRUCTION, which is a stronger claim than "we
+-- checked and it was empty". The column has been NULL in every row in every
+-- database since m124 shipped, because no policy has ever admitted a write to
+-- it -- see below. There is no data to migrate because there has never been
+-- any data, and no policy under which any could have arrived.
+--
+-- ===========================================================================
+-- THE DEFECT: A COLUMN GUARANTEED TO STAY NULL IS NOT A MISSING FEATURE,
+--             IT IS A FALSE STATEMENT WAITING FOR A SCREEN TO RENDER IT
+-- ===========================================================================
+--
+-- m124 Decision 7 gives mcp_oauth_clients exactly two policies, SPLIT BY
+-- COMMAND on purpose:
+--
+--   mcp_oauth_clients_registration  FOR INSERT  app.mcp_client_register
+--   mcp_oauth_clients_lookup        FOR SELECT  app.mcp_client_lookup
+--
+-- There is NO UPDATE policy. The table is ENABLE + FORCE ROW LEVEL SECURITY,
+-- so under every transaction that exists -- both GUCs, either GUC, neither --
+-- an UPDATE of this column matches ZERO ROWS AND RAISES NO ERROR. Executed as
+-- wpmgr_app (NOSUPERUSER NOBYPASSRLS, the role every install runs as) before
+-- this migration was written: UPDATE 0, no error, transaction commits clean.
+--
+-- So last_used_at is not "not wired up yet". It is unwritable by construction,
+-- and therefore NULL forever. m124 Decision 10 fixes the meaning of NULL on
+-- exactly this kind of column -- "NULL means never used. Not epoch, not
+-- created_at. 'Never used' is a true and useful statement about a credential
+-- and it is exactly what an operator deciding whether to revoke wants to read."
+-- That reasoning is right for mcp_grants.last_used_at, which IS written. Here
+-- the same NULL is a LIE PRODUCED BY ABSENCE: a UI reading this column says
+-- "never used" about a client that has been used continuously for a year, and
+-- says it with the full confidence of a value that came out of the database.
+--
+-- This is the project's signature defect -- a failure quietly coerced into a
+-- plausible value -- in its purest form, because here there is not even a
+-- failure to coerce. There is a column that no code path can ever set,
+-- rendering as data.
+--
+-- ===========================================================================
+-- WHY DROP RATHER THAN ADD THE FOR UPDATE POLICY. FOUR REASONS, AND THE
+-- OPERATOR-SURFACE ONE IS THE WEAKEST OF THEM
+-- ===========================================================================
+--
+-- 1. THE GRANT ALREADY ANSWERS THE QUESTION, AND IT IS THE OBJECT AN OPERATOR
+--    ACTUALLY HANDLES. mcp_grants.last_used_at is written under InTenantTx and
+--    is the column behind "when did this connection last read anything". A
+--    grant is what an operator names, reviews, rotates and revokes. An OAuth
+--    client registration is protocol plumbing minted by an unauthenticated
+--    POST; nobody manages one. Two columns answering one question, only one of
+--    them written, is how the wrong one gets read.
+--
+-- 2. THE VALUE WOULD BE SEMANTICALLY INCOHERENT, NOT MERELY REDUNDANT. This
+--    table HAS NO tenant_id -- that is m124's opening decision and it cannot be
+--    otherwise, because registration happens before any organisation exists to
+--    attribute the row to. A last_used_at on an org-blind shared row is
+--    LAST-WRITE-WINS ACROSS TENANTS: it answers "when was this client_id last
+--    used by someone, somewhere in this installation", which is a question no
+--    screen in this product should be asking and no operator can act on. A
+--    timestamp with no owner is not a fact about anything the reader can see.
+--
+-- 3. IT WOULD ADD A CROSS-TENANT ACTIVITY ORACLE TO THE ONE TABLE DELIBERATELY
+--    BUILT TO REVEAL NOTHING ABOUT ORGANISATIONS. m124 defends this table
+--    having no tenant_id on the ground that "the row names no organisation, so
+--    there is nothing org-shaped to enumerate ... reading every row reveals
+--    which software registered against this installation; it does not reveal
+--    which organisation authorized any of it". A ticking last_used_at changes
+--    what the table discloses: it upgrades "this software registered once" into
+--    "this software is in active use right now", a liveness signal about other
+--    tenants' behaviour keyed by a client_id that RFC 6749 section 2.2 says is
+--    NOT a secret. That is a new disclosure, on the table whose whole defence
+--    is that it discloses nothing org-shaped, bought for a timestamp nobody
+--    reads.
+--
+-- 4. THE POLICY IT WOULD REQUIRE IS A CROSS-TENANT WRITE GRANT. Every policy on
+--    a table with no tenant_id binds no tenant and therefore needs a row in
+--    db/rls-cross-tenant-policies.txt. m124 has two such rows and argues each.
+--    A third -- admitting a WRITE rather than a read -- is a materially larger
+--    concession than the two that exist, and m124 Decision 8 already rejects
+--    the general form of this trade: adding permissive policies over credential
+--    tables "on the chance a worker might one day want one, is exactly
+--    backwards for a boundary". Paying that for a column reason 2 shows to be
+--    meaningless is the worst version of the trade.
+--
+-- WHAT THIS COSTS, ASKED BEFORE IT WAS ACCEPTED. Nothing that exists. No Go
+-- code reads the column (S6b is not written), no test references it, and no
+-- row anywhere holds a value. The generated sqlc struct loses one field.
+--
+-- IF A PER-CLIENT ACTIVITY SIGNAL IS EVER GENUINELY WANTED, it arrives in its
+-- own migration, with its own FOR UPDATE policy, and a ledger row naming the
+-- caller that writes it -- the same construction m124 Decision 8 specifies for
+-- the expired-code sweep. Not speculatively, and not as a column that looks
+-- like data while being incapable of holding any.
+--
+-- ===========================================================================
+-- WHAT REPLACES IT: A LOUD FAILURE INSTEAD OF A QUIET NULL
+-- ===========================================================================
+--
+-- After this migration, code that reaches for a client-level last-used
+-- timestamp fails with 42703 undefined_column at the point of the mistake,
+-- instead of receiving NULL and rendering "never used". That is the entire
+-- point of the change: absence must announce itself rather than resolve to a
+-- plausible value. A search that finds nothing must refuse, not answer.
+
+-- Guarded in the house style: this migration must be safe to read twice even
+-- though migrate.go will only ever run it once, and it applies inside main()
+-- at boot on every install at once.
+ALTER TABLE "public"."mcp_oauth_clients"
+    DROP COLUMN IF EXISTS "last_used_at";

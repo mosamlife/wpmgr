@@ -60,6 +60,23 @@
 # asserting a grant that does not exist costs the file the only thing it has,
 # which is being true.
 #
+# A ROW CAN ALSO BE TRUE AND STILL BE WRONG ABOUT ITS OWN REASON.
+# email_webhook_events_tenant_isolation was in this file until m125. Its
+# predicate really was `tenant_id IS NULL OR tenant_id = app.tenant_id`, so the
+# classification was correct, but the RATIONALE that kept it here was not: it
+# argued the unbound branch had to stay or webhook dedup would break, while its
+# own last sentence recorded that both writers run under InAgentTx and are
+# admitted by email_webhook_events_agent. Those two statements cannot both hold.
+# The branch was serving no path, m125 dropped it, and the policy is tenant-bound
+# now and no longer belongs here.
+#
+# The lesson is about the shape of a ledger entry, not about that one table. An
+# entry has to justify THE BRANCH, not the table's need for unattributed rows.
+# The table did need them; this policy was never what let it have them. When a
+# rationale ends by naming the sibling policy that actually carries the path,
+# that is the entry arguing against itself, and it is worth re-reading rather
+# than filing.
+#
 # RESTRICTIVE policies are excluded deliberately: a restrictive policy can only
 # narrow the row set, never grant one. The site_scope policies are restrictive
 # and do not mention app.tenant_id, so a classifier that ignored `permissive`
@@ -177,13 +194,16 @@ email_notify_settings|email_notify_settings_agent|app.agent|ALL|-|FOR ALL admits
 email_suppression|email_suppression_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 email_verification_tokens|email_verification_tokens_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 email_webhook_events|email_webhook_events_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
-email_webhook_events|email_webhook_events_tenant_isolation|app.tenant_id|ALL|-|NAMED tenant_isolation, BUT IT IS A CROSS-TENANT GRANT. Its predicate is (tenant_id IS NULL OR tenant_id = app.tenant_id), and the first branch binds nothing, so every tenant sees -- and under FOR ALL may modify -- every row whose tenant was never resolved. That is deliberate, not a bug: m60 stores one row per (provider, provider_event_id) for webhook dedup and replay defence, and the row is written BEFORE the tenant is known (fan-out happens after dedup), so tenant_id stays NULL whenever provider metadata was absent or unparseable. A NULL-tenant row that only its own tenant could see would be a row nobody could see, and the dedup key would stop working. Exposure is bounded three ways: the rows hold provider ids, an event type and an email HASH (m61), never plaintext; EmailWebhookDedupGCWorker prunes them after 7 days; and no production caller reads this table under tenant scope at all -- both writers, InsertWebhookEventDedup (email/repo.go:1633) and PruneWebhookDedup (email/repo.go:1699), run under InAgentTx and are therefore admitted by the _agent policy above, not by this one. So the grant is latent rather than exercised. ops is '-' because no code path runs under THIS policy; FOR ALL admits every verb regardless, so the FOR SELECT silence cannot arise. Recorded because an unattributed row visible to everyone is exactly the kind of deliberate cross-tenant visibility this file exists to make explicit, and the policy's NAME actively hides it
 file_transfers|file_transfers_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 font_results|font_results_agent_access|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 font_transcode_results|agent_access|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 generated_reports|generated_reports_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 instance_settings|instance_settings_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 invitations|invitations_token_lookup|app.invite_lookup|SELECT|select|invitation/service.go:193 resolves an invitation by token hash on the public accept endpoint, before any session exists; accepting it writes under InTenantTx
+mcp_authorization_codes|mcp_authorization_codes_lookup|app.mcp_code_lookup|SELECT|select|m124/S6a. The OAuth token endpoint presents a code and no tenant; resolving the code by hash is what ESTABLISHES the tenant, so it cannot run under one. SELECT-only is deliberate and load-bearing: marking the code consumed must happen in a FOLLOWING InTenantTx, the way api_keys_prefix_lookup does its last_used_at stamp. A consume attempted under this policy matches zero rows with NO ERROR, single-use silently becomes multi-use, and the code stays replayable until it expires. Caller lands in S6b (backend-architect); no Go path reads this table yet
+mcp_connection_tokens|mcp_connection_tokens_lookup|app.mcp_token_lookup|SELECT|select|m124/S6a. The headless path presents a long-lived bearer token and resolving its hash is what establishes the tenant. Exactly the api_keys_prefix_lookup shape (m1:107) and narrowed the same way: the last_used_at stamp is tenant-keyed and runs under InTenantTx afterwards, so this policy admits the read and nothing else. Caller lands in S6b; no Go path reads this table yet
+mcp_oauth_clients|mcp_oauth_clients_lookup|app.mcp_client_lookup|SELECT|select|m124/S6a. mcp_oauth_clients is NOT tenant-scoped and carries no tenant_id column at all: RFC 7591 dynamic client registration is unauthenticated and precedes any authorization, so there is no organisation to attribute the row to and a nullable tenant_id would make absence mean permitted. Every policy on the table is therefore cross-tenant by construction. This one serves the authorize and token endpoints resolving a presented client_id. Enumeration is bounded by the row naming no organisation (the org binding is on mcp_grants.client_id, which IS tenant-isolated) and by FORCE RLS making the table invisible without this GUC. Caller lands in S6b
+mcp_oauth_clients|mcp_oauth_clients_registration|app.mcp_client_register|INSERT|insert|m124/S6a. The unauthenticated RFC 7591 registration POST. Split from the lookup policy by command on purpose rather than one FOR ALL: registration cannot read the table and lookup cannot write to it, so neither GUC grants more than its own endpoint needs. Caller lands in S6b
 media_optimization_jobs|media_optimization_jobs_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 media_variant_results|media_variant_results_agent|app.agent|ALL|-|FOR ALL admits every verb, so the FOR SELECT silence cannot arise here; the path was not individually audited
 memberships|memberships_agent|app.agent|SELECT|select|org/delete_handler.go:245 DELETEs a membership inside an InAgentTx closure, but sets app.tenant_id at :242 first so memberships_tenant_isolation authorises it; this policy stays SELECT-only deliberately, because widening it to FOR ALL would grant cross-tenant membership deletion

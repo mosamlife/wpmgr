@@ -4087,15 +4087,16 @@ CREATE POLICY email_webhook_events_agent ON email_webhook_events
     USING      (current_setting('app.agent', true) = 'on')
     WITH CHECK (current_setting('app.agent', true) = 'on');
 
+-- m125: the predicate below was `tenant_id IS NULL OR tenant_id = <app.tenant_id>`
+-- as m60 wrote it. The first branch bound nothing. It was dropped because it was
+-- not load-bearing: every path that touches this table (InsertWebhookEventDedup,
+-- PruneWebhookDedup) runs under Pool.InAgentTx and is admitted by the _agent
+-- policy above, which is FOR ALL over every row. Permissive policies are ORed, so
+-- narrowing this one does not narrow the ingest or the GC sweep. There is no
+-- SELECT query against this table in db/query/*.sql and no handler reads it.
 CREATE POLICY email_webhook_events_tenant_isolation ON email_webhook_events
-    USING (
-        tenant_id IS NULL
-        OR tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
-    )
-    WITH CHECK (
-        tenant_id IS NULL
-        OR tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
-    );
+    USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- m62 — site_email_connection (multi-connection + failover)
@@ -5581,3 +5582,317 @@ GRANT SELECT, INSERT ON site_context_versions TO wpmgr_app;
 
 REVOKE UPDATE, DELETE, TRUNCATE ON org_context_versions  FROM wpmgr_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON site_context_versions FROM wpmgr_app;
+
+-- ---------------------------------------------------------------------------
+-- mcp_grants / mcp_connection_tokens / mcp_oauth_clients /
+-- mcp_authorization_codes  (m124, S6a: the read-only MCP connection surface)
+--
+-- An AI client connects over an OAuth streamable-HTTP MCP endpoint and READS
+-- fleet state; it can never write. Two authentication paths: OAuth with dynamic
+-- client registration, and a long-lived hashed connection token for the
+-- headless path.
+--
+-- THE FULL REASONING IS IN THE MIGRATION, NOT HERE:
+-- migrations/20260826000000_m124_mcp_connection_surface.sql. The four points a
+-- reader of this file most needs, because getting any of them wrong is a
+-- boundary defect rather than a style one:
+--
+--   * mcp_oauth_clients IS NOT TENANT-SCOPED and carries no tenant_id column.
+--     RFC 7591 registration is unauthenticated and happens before any user
+--     authorizes, so there is no organisation to attribute the row to. A
+--     nullable tenant_id was rejected because it makes absence mean permitted.
+--     The org binding lives on mcp_grants.client_id, which IS tenant-isolated.
+--   * NO SCOPE COLUMN HAS A DEFAULT. site_scope_mode and status are NOT NULL
+--     with no default on purpose: the permissive value is never the one you get
+--     for free. The payload CHECK makes "requested a scope and named nothing"
+--     unstorable, because an empty allowlist is what a caller reads as "no
+--     filter, therefore everything".
+--   * LIVENESS IS status, NOT expires_at. Revocation is effective on the next
+--     request. A future expires_at is not proof of liveness.
+--   * THE THREE _lookup POLICIES ARE FOR SELECT ONLY. A write attempted in a
+--     lookup transaction matches zero rows WITH NO ERROR (the m84/#96 silence).
+--     For mcp_authorization_codes that means consumed_at is never set and the
+--     code stays replayable. Those writes belong in a following InTenantTx.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE mcp_grants (
+    id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    name      text NOT NULL CONSTRAINT mcp_grants_name_not_blank_check
+        CHECK (length(btrim(name)) > 0),
+    -- Liveness. NOT NULL, closed set, NO DEFAULT: a DEFAULT 'active' means a
+    -- caller that forgot to say produces a live credential.
+    status text NOT NULL CONSTRAINT mcp_grants_status_check
+        CHECK (status IN ('active', 'revoked')),
+    -- Which sites this grant may touch. NOT NULL, closed set, NO DEFAULT.
+    site_scope_mode text NOT NULL CONSTRAINT mcp_grants_site_scope_mode_check
+        CHECK (site_scope_mode IN ('all', 'tags', 'list')),
+    scope_tag_ids  uuid[] NOT NULL DEFAULT '{}',
+    scope_site_ids uuid[] NOT NULL DEFAULT '{}',
+    -- "Requested a scope and named nothing" is unrepresentable.
+    CONSTRAINT mcp_grants_site_scope_payload_check CHECK (
+        (site_scope_mode = 'all'
+            AND cardinality(scope_tag_ids) = 0
+            AND cardinality(scope_site_ids) = 0)
+        OR (site_scope_mode = 'tags'
+            AND cardinality(scope_tag_ids) > 0
+            AND cardinality(scope_site_ids) = 0)
+        OR (site_scope_mode = 'list'
+            AND cardinality(scope_site_ids) > 0
+            AND cardinality(scope_tag_ids) = 0)
+    ),
+    -- The registered OAuth client, or NULL on the headless token path. No
+    -- foreign key: neither ON DELETE action is right for a recorded fact.
+    client_id text NULL,
+    -- What the client reported. protocol_version IS NULL means it sent no
+    -- MCP-Protocol-Version header; client_identity_recorded_at IS NULL means it
+    -- has never connected. Two distinct absences, deliberately not collapsed.
+    client_name                 text        NULL,
+    client_version              text        NULL,
+    protocol_version            text        NULL,
+    client_identity_recorded_at timestamptz NULL,
+    created_by_user_id          uuid        NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz NULL,
+    revoked_at   timestamptz NULL,
+    CONSTRAINT mcp_grants_revoked_at_matches_status_check
+        CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+);
+
+-- "Is this grant live right now" in one indexed read.
+CREATE INDEX mcp_grants_live_idx ON mcp_grants (tenant_id) WHERE status = 'active';
+-- The partial index above does not serve the purge cascade, which must reach
+-- revoked rows too.
+CREATE INDEX mcp_grants_tenant_idx ON mcp_grants (tenant_id);
+
+ALTER TABLE mcp_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mcp_grants FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY mcp_grants_tenant_isolation ON mcp_grants
+    FOR ALL
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- A site-scoped collaborator must not READ or MINT an organisation-wide read
+-- credential -- the m112 defect class, producing a live bearer credential that
+-- outlives the session that made it. Four command-specific RESTRICTIVE gates
+-- (m123's shape).
+--
+-- THE SELECT GATE IS PR #569 FINDING F1. Without it a collaborator shared onto
+-- one site reads the whole organisation's grant list, and scope_site_ids names
+-- every other site the org has granted MCP access to. The leak is a COLUMN
+-- inside the row and RLS filters rows, so no partial filter closes it: total
+-- refusal is the only shape that works. It breaks no entitled reader -- a grant
+-- is an organisation-level credential -- which is the test a SELECT gate has to
+-- pass, and the reason m122 correctly refused one on org_context_versions.
+CREATE POLICY mcp_grants_site_scope_select ON mcp_grants
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_grants_site_scope_insert ON mcp_grants
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_grants_site_scope_update ON mcp_grants
+    AS RESTRICTIVE FOR UPDATE
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_grants_site_scope_delete ON mcp_grants
+    AS RESTRICTIVE FOR DELETE
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+-- Its own table, not a column on mcp_grants: rotation means two live tokens at
+-- once, and two live credentials cannot be two values of one column.
+CREATE TABLE mcp_connection_tokens (
+    id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    grant_id  uuid NOT NULL REFERENCES mcp_grants (id) ON DELETE CASCADE,
+    -- The short PUBLIC handle shown in the UI so an operator can tell two
+    -- tokens apart while rotating. Carries no authentication weight.
+    token_prefix text NOT NULL CONSTRAINT mcp_connection_tokens_prefix_not_blank_check
+        CHECK (length(btrim(token_prefix)) > 0),
+    -- THE CREDENTIAL, HASHED. Lower-case hex SHA-256, the construction at
+    -- internal/apikey/apikey.go:102. The plaintext is returned once at creation
+    -- and never stored.
+    token_hash text NOT NULL CONSTRAINT mcp_connection_tokens_hash_format_check
+        CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+    status text NOT NULL CONSTRAINT mcp_connection_tokens_status_check
+        CHECK (status IN ('active', 'revoked')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    -- NOT THE LIVENESS GATE. NULL means this token does not expire on a clock,
+    -- which is the documented headless path. status is what revocation flips.
+    expires_at   timestamptz NULL,
+    last_used_at timestamptz NULL,
+    revoked_at   timestamptz NULL,
+    CONSTRAINT mcp_connection_tokens_revoked_at_matches_status_check
+        CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+);
+
+-- The authentication probe: presented hash to row in one lookup.
+CREATE UNIQUE INDEX mcp_connection_tokens_hash_key ON mcp_connection_tokens (token_hash);
+-- Deliberately NOT unique on (grant_id) WHERE status = 'active': that would cap
+-- a grant at one live token and make rotation impossible.
+CREATE INDEX mcp_connection_tokens_grant_idx  ON mcp_connection_tokens (grant_id);
+CREATE INDEX mcp_connection_tokens_tenant_idx ON mcp_connection_tokens (tenant_id);
+
+ALTER TABLE mcp_connection_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mcp_connection_tokens FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY mcp_connection_tokens_tenant_isolation ON mcp_connection_tokens
+    FOR ALL
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- Resolving a presented bearer token is what ESTABLISHES the tenant, so it
+-- cannot run under one. FOR SELECT ONLY: the last_used_at stamp belongs in a
+-- following InTenantTx, exactly as api_keys_prefix_lookup records.
+CREATE POLICY mcp_connection_tokens_lookup ON mcp_connection_tokens
+    FOR SELECT
+    USING (current_setting('app.mcp_token_lookup', true) = 'on');
+
+-- Credential storage; no site-scoped principal is entitled to enumerate it.
+-- The gate does not interfere with mcp_connection_tokens_lookup: the
+-- authentication transaction sets app.mcp_token_lookup and NOT app.site_scope,
+-- so this RESTRICTIVE predicate is a tautology there.
+CREATE POLICY mcp_connection_tokens_site_scope_select ON mcp_connection_tokens
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_connection_tokens_site_scope_insert ON mcp_connection_tokens
+    AS RESTRICTIVE FOR INSERT
+    WITH CHECK (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_connection_tokens_site_scope_update ON mcp_connection_tokens
+    AS RESTRICTIVE FOR UPDATE
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+CREATE POLICY mcp_connection_tokens_site_scope_delete ON mcp_connection_tokens
+    AS RESTRICTIVE FOR DELETE
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+-- NOT TENANT-SCOPED, AND CARRIES NO tenant_id COLUMN. See the header above.
+CREATE TABLE mcp_oauth_clients (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Public per RFC 6749 section 2.2. Not a secret; possession authorizes
+    -- nothing on its own -- every request still resolves to an mcp_grants row.
+    client_id text NOT NULL,
+    -- THE SECRET, HASHED, and NULL exactly when there is none.
+    client_secret_hash text NULL
+        CONSTRAINT mcp_oauth_clients_secret_format_check
+        CHECK (client_secret_hash IS NULL OR client_secret_hash ~ '^[0-9a-f]{64}$'),
+    token_endpoint_auth_method text NOT NULL
+        CONSTRAINT mcp_oauth_clients_auth_method_check
+        CHECK (token_endpoint_auth_method IN ('none', 'client_secret_basic', 'client_secret_post')),
+    -- 'none' if and only if there is no secret. A confidential client with a
+    -- NULL hash -- the row where the secret comparison has nothing to compare
+    -- against -- is unrepresentable.
+    CONSTRAINT mcp_oauth_clients_secret_matches_method_check
+        CHECK ((token_endpoint_auth_method = 'none') = (client_secret_hash IS NULL)),
+    -- At least one redirect URI, always: "matches nothing" is one careless
+    -- comparison away from "matches anything".
+    redirect_uris text[] NOT NULL
+        CONSTRAINT mcp_oauth_clients_redirect_uris_present_check
+        CHECK (cardinality(redirect_uris) > 0),
+    client_name  text NULL,
+    client_uri   text NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+    -- NO last_used_at, AND DO NOT ADD ONE BACK. m124 shipped one and m126
+    -- dropped it. This table has FOR INSERT and FOR SELECT policies and no
+    -- UPDATE policy, so under FORCE ROW LEVEL SECURITY the stamp matched zero
+    -- rows and raised no error from every transaction that exists -- proven as
+    -- wpmgr_app under both GUCs, both together, and under tenant scope. The
+    -- column was therefore NULL forever, which a UI renders as "never used"
+    -- about a client in daily use. The grant carries the last_used_at an
+    -- operator actually reads. Re-adding this needs its own migration, a FOR
+    -- UPDATE policy and a cross-tenant ledger row -- see
+    -- migrations/20260828000000_m126_drop_mcp_oauth_clients_last_used_at.sql.
+);
+
+CREATE UNIQUE INDEX mcp_oauth_clients_client_id_key ON mcp_oauth_clients (client_id);
+
+ALTER TABLE mcp_oauth_clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mcp_oauth_clients FORCE ROW LEVEL SECURITY;
+
+-- TWO POLICIES, SPLIT BY COMMAND, EACH ON ITS OWN GUC. There is deliberately no
+-- tenant_isolation policy, because there is no tenant_id to isolate on: under
+-- FORCE ROW LEVEL SECURITY a transaction that sets neither GUC matches ZERO
+-- ROWS, so this table is invisible to every ordinary tenant transaction, every
+-- worker and every agent transaction. Absence of the GUC is REFUSAL. Split by
+-- command so registration cannot read and lookup cannot write. Both are
+-- cross-tenant grants and both carry a row in rls-cross-tenant-policies.txt.
+CREATE POLICY mcp_oauth_clients_registration ON mcp_oauth_clients
+    FOR INSERT
+    WITH CHECK (current_setting('app.mcp_client_register', true) = 'on');
+
+CREATE POLICY mcp_oauth_clients_lookup ON mcp_oauth_clients
+    FOR SELECT
+    USING (current_setting('app.mcp_client_lookup', true) = 'on');
+
+CREATE TABLE mcp_authorization_codes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- The user has consented by the time a code exists, so the organisation IS
+    -- known and this table is tenant-isolated -- unlike mcp_oauth_clients.
+    tenant_id uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+    grant_id  uuid NOT NULL REFERENCES mcp_grants (id) ON DELETE CASCADE,
+    client_id text NOT NULL,
+    -- THE CODE, HASHED. Never the plaintext.
+    code_hash text NOT NULL CONSTRAINT mcp_authorization_codes_hash_format_check
+        CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+    -- PKCE (RFC 7636). The CHALLENGE is public by construction -- it is already
+    -- SHA-256 of the verifier and travels in the authorize request. The verifier
+    -- is the secret and this schema never sees it.
+    code_challenge text NOT NULL
+        CONSTRAINT mcp_authorization_codes_challenge_not_blank_check
+        CHECK (length(btrim(code_challenge)) > 0),
+    -- 'S256' ONLY, and NO DEFAULT. 'plain' is deliberately not in the set, and
+    -- a missing method must not fall back to anything.
+    code_challenge_method text NOT NULL
+        CONSTRAINT mcp_authorization_codes_challenge_method_check
+        CHECK (code_challenge_method IN ('S256')),
+    redirect_uri text NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    -- NOT NULL: a code with no expiry is a code that never stops being
+    -- redeemable.
+    expires_at timestamptz NOT NULL,
+    -- SINGLE-USE. NULL means not yet consumed. The row is KEPT after
+    -- consumption so a replay is detectable rather than looking like an expired
+    -- or forged code.
+    consumed_at timestamptz NULL
+);
+
+CREATE UNIQUE INDEX mcp_authorization_codes_hash_key   ON mcp_authorization_codes (code_hash);
+CREATE INDEX        mcp_authorization_codes_tenant_idx ON mcp_authorization_codes (tenant_id);
+CREATE INDEX        mcp_authorization_codes_grant_idx  ON mcp_authorization_codes (grant_id);
+
+ALTER TABLE mcp_authorization_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mcp_authorization_codes FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY mcp_authorization_codes_tenant_isolation ON mcp_authorization_codes
+    FOR ALL
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- The token endpoint presents a code and no tenant: resolving it is what
+-- establishes the tenant. FOR SELECT ONLY -- and this is the one that fails
+-- silently. Setting consumed_at inside this transaction matches ZERO ROWS WITH
+-- NO ERROR, single-use quietly becomes multi-use, and the code stays replayable
+-- until it expires. The consume belongs in a following InTenantTx.
+CREATE POLICY mcp_authorization_codes_lookup ON mcp_authorization_codes
+    FOR SELECT
+    USING (current_setting('app.mcp_code_lookup', true) = 'on');
+
+-- Credential-lifecycle data with no site-scoped reader anywhere. Beyond what PR
+-- #569's F1 asked for, on that narrow ground rather than on "completing the
+-- set". The lookup transaction does not set app.site_scope, so the token
+-- exchange still resolves.
+CREATE POLICY mcp_authorization_codes_site_scope_select ON mcp_authorization_codes
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
+-- NO REVOKE here, unlike the context tables above: these are not append-only. A
+-- grant is revoked by flipping status, a token is rotated, a code is marked
+-- consumed. Withholding UPDATE would break revocation itself.
+GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_grants              TO wpmgr_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_connection_tokens   TO wpmgr_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_oauth_clients       TO wpmgr_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON mcp_authorization_codes TO wpmgr_app;
