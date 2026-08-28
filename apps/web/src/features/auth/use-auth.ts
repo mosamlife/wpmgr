@@ -508,6 +508,15 @@ export function canOperate(me: Me | null | undefined): boolean {
  * `false` — refused, never a default and never "narrower, so allow it" —
  * because an unrecognised scope is an unknown principal shape, not a site
  * collaborator by another name.
+ *
+ * Exact mirror of `apps/api/internal/middleware/auth.go:178-180`: the server
+ * clamps a site share role at or above admin down to `operator` before it
+ * ever reaches a `Me` response, specifically so a site-scoped principal can
+ * never present as admin/owner (admin would pass an org-level permission
+ * check before the org-scope guard fires). `scope === "site"` therefore
+ * never carries `role: "owner"` or `role: "admin"` in practice — checking
+ * only `operator` here is not a narrower client rule than the server's, it
+ * is the same ceiling, stated once instead of duplicated loosely.
  */
 export function canWriteSiteContext(me: Me | null | undefined): boolean {
   if (!me) return false;
@@ -516,7 +525,7 @@ export function canWriteSiteContext(me: Me | null | undefined): boolean {
   // site-level writes.
   if (canOperate(me)) return true;
   if (me.scope === "site") {
-    return me.role === "owner" || me.role === "admin" || me.role === "operator";
+    return me.role === "operator";
   }
   return false;
 }

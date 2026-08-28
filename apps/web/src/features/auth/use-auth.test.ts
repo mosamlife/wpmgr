@@ -60,14 +60,25 @@ describe("canWriteSiteContext — ADR-064 Decision 6 (site-scope write is not or
     expect(canWriteSiteContext(meOrgScoped("viewer"))).toBe(false);
   });
 
-  it("a genuine SITE-scoped collaborator with an operator+ share role may write their own site (the fix)", () => {
-    expect(canWriteSiteContext(meSiteScoped("owner"))).toBe(true);
-    expect(canWriteSiteContext(meSiteScoped("admin"))).toBe(true);
+  it("a genuine SITE-scoped collaborator with an operator share role may write their own site (the fix)", () => {
     expect(canWriteSiteContext(meSiteScoped("operator"))).toBe(true);
   });
 
   it("a site-scoped VIEWER collaborator may not write", () => {
     expect(canWriteSiteContext(meSiteScoped("viewer"))).toBe(false);
+  });
+
+  // Security review finding (F2): apps/api/internal/middleware/auth.go:178-180
+  // clamps a site share role at or above admin down to operator before it
+  // ever reaches a Me response, specifically so scope==="site" can never
+  // carry role: "owner"/"admin" — the server cannot produce that state. This
+  // asserts the SERVER's actual ceiling, not a client-invented one: even if
+  // a malformed/future response somehow smuggled owner or admin through
+  // scope==="site", this client refuses it rather than trusting a shape the
+  // real server never sends.
+  it("refuses owner/admin under scope==='site' — a shape the server's own clamp can never produce", () => {
+    expect(canWriteSiteContext(meSiteScoped("owner"))).toBe(false);
+    expect(canWriteSiteContext(meSiteScoped("admin"))).toBe(false);
   });
 
   it("an unrecognised or absent Me.scope resolves to false — refused, never a default and never 'site because it's narrower'", () => {
@@ -88,6 +99,17 @@ describe("canWriteSiteContext — ADR-064 Decision 6 (site-scope write is not or
         memberships: [],
       } as unknown as Me),
     ).toBe(false);
+  });
+
+  // Security review finding (F3): scope==="site" explicitly includes portal
+  // (client-report) principals per the generated Me.scope doc comment
+  // (types.gen.ts:939, "site for collaborators/portal principals"), and
+  // role: "client" is a real value that reaches this code, not a
+  // hypothetical. It resolves to false today because "client" matches none
+  // of the three checked strings, but nothing held that down before this
+  // test — "happens to be false" is not "tested to be false".
+  it("refuses a portal (client) principal, even though it is a real scope==='site' shape", () => {
+    expect(canWriteSiteContext(meSiteScoped("client"))).toBe(false);
   });
 
   it("null/undefined me is refused outright", () => {

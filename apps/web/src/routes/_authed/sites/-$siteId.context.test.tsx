@@ -93,6 +93,21 @@ async function renderAs(role: "owner" | "admin" | "operator" | "viewer") {
   return screen.findByTestId("site-context-section");
 }
 
+// A genuine site-scoped principal: no org membership at all (site access via
+// a share, not an org role) — the actual principal the canWriteSiteContext
+// fix exists for, per its own Me.scope/Me.role check.
+function meSiteScoped(role: Me["role"]): Me {
+  return { scope: "site", role, memberships: [] } as unknown as Me;
+}
+
+async function renderAsSiteScoped(role: Me["role"]) {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(ME_KEY, meSiteScoped(role));
+  const router = buildContextRouter();
+  renderWithProviders(<RouterProvider router={router} />, { queryClient });
+  return screen.findByTestId("site-context-section");
+}
+
 describe("site context tab — canWrite follows Decision 6, not the org-admin ceiling", () => {
   it("an OPERATOR (not owner/admin) sees the editor and history as writable", async () => {
     const section = await renderAs("operator");
@@ -118,6 +133,23 @@ describe("site context tab — canWrite follows Decision 6, not the org-admin ce
 
   it("a VIEWER is still read-only", async () => {
     const section = await renderAs("viewer");
+    expect(section).toHaveTextContent("canWrite=false");
+  });
+
+  // Security review finding (F3): every case above is an org-scoped
+  // membership role. Nothing rendered this route as a genuine site-scoped
+  // collaborator — the very principal the canWriteSiteContext fix exists
+  // for — until now.
+  it("a genuine SITE-SCOPED collaborator (no org membership) sees the editor as writable", async () => {
+    const section = await renderAsSiteScoped("operator");
+    expect(section).toHaveTextContent("canWrite=true");
+  });
+
+  // Security review finding (F3): role:"client" is a real portal-principal
+  // value under scope==="site" (types.gen.ts:939) that reaches this route,
+  // not a hypothetical. It resolves to read-only today; this holds it there.
+  it("a portal (client) principal under scope==='site' stays read-only", async () => {
+    const section = await renderAsSiteScoped("client");
     expect(section).toHaveTextContent("canWrite=false");
   });
 });
