@@ -105,15 +105,15 @@ func TestDetectSecret_HonestCases_OrdinaryProseIsNotFlagged(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Security-review finding: entropyThreshold used to be a FLAT 4.7 bits/char
-// bound, but the maximum Shannon entropy ANY string of length n can have is
-// log2(n) — 4.3219 at n=20, 4.6439 at n=25. Every 20-25 character token was
-// therefore STRUCTURALLY UNABLE to cross 4.7, whatever it contained: the
-// entropy fallback reported "no secret found" across that entire window
-// because the check was unreachable there, not because it looked and
-// cleared. Fixed by making the threshold a fraction (entropyRatio) of the
-// token's OWN maximum possible entropy (secretscan.go). These two tests pin
-// exactly the boundary the review asked for.
+// entropyThreshold used to be a FLAT 4.7 bits/char bound, but the maximum
+// Shannon entropy ANY string of length n can have is log2(n) — 4.3219 at
+// n=20, 4.6439 at n=25. Every 20-25 character token was therefore
+// STRUCTURALLY UNABLE to cross 4.7, whatever it contained: the entropy
+// fallback reported "no secret found" across that entire window because the
+// check was unreachable there, not because it looked and cleared. Fixed by
+// making the threshold a fraction (entropyRatio) of the token's OWN maximum
+// possible entropy (secretscan.go). These two tests pin exactly the boundary
+// that fix must hold at.
 // ---------------------------------------------------------------------------
 
 // TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone: 25 characters

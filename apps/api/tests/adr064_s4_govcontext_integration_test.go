@@ -252,10 +252,10 @@ func TestADR064S4_PatchOrgContext_SiteScopedCollaboratorRefusedEvenBypassingTheA
 	if err == nil {
 		t.Fatal("a site-scoped collaborator authored an ORGANISATION context version — m123's policy did not fire")
 	}
-	// Security-review finding: "err != nil" alone passes for the wrong
-	// reason too — a dropped connection, a typo'd column name, or any other
-	// unrelated failure would ALSO satisfy it, and the test would still
-	// claim m123's policy fired. adr064IsRowSecurityRefusal (same package,
+	// "err != nil" alone passes for the wrong reason too — a dropped
+	// connection, a typo'd column name, or any other unrelated failure would
+	// ALSO satisfy it, and the test would still claim m123's policy fired.
+	// adr064IsRowSecurityRefusal (same package,
 	// adr064_governed_context_rls_integration_test.go) is the exact helper
 	// that file's own header explains is necessary because Postgres reports
 	// BOTH the RESTRICTIVE policy refusing the row and the append-only
@@ -306,22 +306,22 @@ func TestADR064S4_RowSecurityRefusalCheck_DoesNotAcceptAnyError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Security-review finding: the widen-check must not over-fire on a
-// guidance-only patch. PatchOrgContext never touches any site row, so the
-// instant an organisation narrows its policy, every EXISTING site's stored
-// restrictions stop restating it — permanently, not for a transaction-width
-// window. Comparing that carried-forward, stale value against the org's
-// CURRENT restrictions on a write that never touches restrictions at all
-// locked every site under a narrowed org out of even a guidance-only edit.
+// The widen-check must not over-fire on a guidance-only patch.
+// PatchOrgContext never touches any site row, so the instant an organisation
+// narrows its policy, every EXISTING site's stored restrictions stop
+// restating it — permanently, not for a transaction-width window. Comparing
+// that carried-forward, stale value against the org's CURRENT restrictions
+// on a write that never touches restrictions at all locked every site under
+// a narrowed org out of even a guidance-only edit.
 // ---------------------------------------------------------------------------
 
 // TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows
-// reproduces the exact sequence the review used: a site restates the org's
-// restriction at write time (so its OWN write-time check passed), the org
-// later ADDS a further restriction (a write that, by design, never touches
-// any site row), and the site then submits a patch that touches ONLY
-// guidance. That write must succeed — it never proposed a restrictions value
-// at all.
+// reproduces the exact sequence that triggers the defect: a site restates
+// the org's restriction at write time (so its OWN write-time check passed),
+// the org later ADDS a further restriction (a write that, by design, never
+// touches any site row), and the site then submits a patch that touches
+// ONLY guidance. That write must succeed — it never proposed a restrictions
+// value at all.
 //
 // Confirmed RED against the pre-fix code (service.go's PatchSiteContext
 // running checkNoWiden unconditionally, over next.Restrictions regardless of
@@ -360,8 +360,8 @@ func TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows(t *te
 		t.Fatalf("seed site v1: %v", err)
 	}
 
-	// Org v2: narrows further. This NEVER touches the site row (verified by
-	// the reviewer: PatchOrgContext's body has zero site references) — the
+	// Org v2: narrows further. This NEVER touches the site row (verified
+	// directly: PatchOrgContext's body has zero site references) — the
 	// site's own stored restrictions are now stale relative to the org's
 	// current policy, permanently, until the site itself is next edited.
 	if _, err := svc.PatchOrgContext(ctx, tenant, govcontext.PatchOrgContextInput{
@@ -412,7 +412,7 @@ func TestADR064S4_PatchSiteContext_GuidanceOnlyEditSucceedsAfterOrgNarrows(t *te
 }
 
 // TestADR064S4_RestoreSiteContext_OfAStaleVersionIsStillRefused is the
-// control the review explicitly asked to be kept green: restoring a site's
+// control the guidance-only fix above must not flatten: restoring a site's
 // OWN old version, whose stored restrictions are stale relative to the org's
 // CURRENT policy, is a genuine proposal to write that stale value back as
 // the new current one — and must still be refused, unlike a guidance-only

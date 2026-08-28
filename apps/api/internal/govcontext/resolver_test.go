@@ -227,9 +227,9 @@ func TestApplyBudget_OrderIsSessionThenSkillThenFactsThenSiteThenOrg(t *testing.
 }
 
 // ---------------------------------------------------------------------------
-// Security-review findings: layer 4 must distinguish "unavailable" from
-// "known empty", and Resolve must refuse rather than emit an over-budget
-// result when truncation cannot get under budget.
+// Layer 4 must distinguish "unavailable" from "known empty", and Resolve
+// must refuse rather than emit an over-budget result when truncation cannot
+// get under budget.
 // ---------------------------------------------------------------------------
 
 // fakeFactsProvider is a SiteFactsProvider test double.

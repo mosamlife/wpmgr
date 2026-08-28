@@ -17,12 +17,13 @@ func bindCtx(body string) *gin.Context {
 	return c
 }
 
-// TestBindJSON_RejectsTrailingContent is the security-review finding: the
-// 1 MiB io.LimitReader in bindJSON bounds what is ever READ, but
-// encoding/json's Decoder silently stops after the FIRST JSON value by
-// design — a body like `{"base_version":1}<anything>` bound successfully
-// with <anything> simply never inspected. Confirmed RED against the pre-fix
-// bindJSON (the dec.More() check removed):
+// TestBindJSON_RejectsTrailingContent proves bindJSON rejects a body carrying
+// content after the JSON value it decodes. The 1 MiB io.LimitReader in
+// bindJSON bounds what is ever READ, but encoding/json's Decoder silently
+// stops after the FIRST JSON value by design — a body like
+// `{"base_version":1}<anything>` bound successfully with <anything> simply
+// never inspected. Confirmed RED against a version of bindJSON with the
+// dec.More() check removed:
 //
 //	$ go test ./internal/govcontext/... -run TestBindJSON_RejectsTrailingContent -v
 //	    handler_test.go:42: bindJSON("{\"base_version\":1}garbage") accepted a body with trailing content, want a rejection
