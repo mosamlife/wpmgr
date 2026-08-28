@@ -270,6 +270,11 @@ export function usePatchOrgContext(
       // rather than guess which one(s) to target — cheap, and "pull is the
       // truth" means a mounted preview just refetches on next focus/mount.
       void queryClient.invalidateQueries({ queryKey: [...contextKeys.all, "effective"] });
+      // CodeRabbit finding on #566: a PATCH authors a new stored version row
+      // (Decision 5) same as restore does, but only restore invalidated the
+      // history list — the editor and history mounted together kept showing
+      // pre-save pages, omitting the version just authored.
+      void queryClient.invalidateQueries({ queryKey: contextKeys.orgVersions(orgId) });
     },
   });
 }
@@ -306,6 +311,8 @@ export function usePatchSiteContext(
       // Layer 3 changed — this site's effective-context preview (Decision 8,
       // Screen 1) is stale (Decision 2). Targeted, since we know the site.
       void queryClient.invalidateQueries({ queryKey: contextKeys.effective(siteId) });
+      // Same PATCH-vs-restore inconsistency as usePatchOrgContext above.
+      void queryClient.invalidateQueries({ queryKey: contextKeys.siteVersions(siteId) });
     },
   });
 }
@@ -352,7 +359,14 @@ export function useOrgContextVersions(orgId: string): UseGovContextVersionsResul
         query: pageParam !== undefined ? { cursor: pageParam } : undefined,
       });
       if (error) throw toError(error);
-      return data ?? { items: [], next_cursor: 0 };
+      // CodeRabbit finding on #566: falling back to an empty page here reads
+      // as "this history has nothing in it" — the exact conflation this
+      // project keeps shipping (the updates-card "Never" bug, the as_of
+      // heartbeat substitution, facts_unavailable's omitempty). A missing
+      // body with no error is "we could not tell," never "there is
+      // nothing," so this throws like every other hook in this file.
+      if (!data) throw new Error("Empty response");
+      return data;
     },
   });
   return {
@@ -385,7 +399,14 @@ export function useSiteContextVersions(siteId: string): UseGovContextVersionsRes
         query: pageParam !== undefined ? { cursor: pageParam } : undefined,
       });
       if (error) throw toError(error);
-      return data ?? { items: [], next_cursor: 0 };
+      // CodeRabbit finding on #566: falling back to an empty page here reads
+      // as "this history has nothing in it" — the exact conflation this
+      // project keeps shipping (the updates-card "Never" bug, the as_of
+      // heartbeat substitution, facts_unavailable's omitempty). A missing
+      // body with no error is "we could not tell," never "there is
+      // nothing," so this throws like every other hook in this file.
+      if (!data) throw new Error("Empty response");
+      return data;
     },
   });
   return {
