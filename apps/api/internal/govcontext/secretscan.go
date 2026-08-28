@@ -68,35 +68,56 @@ const entropyRatio = 0.78
 var tokenRe = regexp.MustCompile(`[A-Za-z0-9+/_\-]{20,}`)
 
 // hostnameRe matches a plausible fully-qualified hostname, taken as a whole
-// value: one or more dot-separated labels (1-63 characters, alphanumeric,
-// interior hyphens allowed, never leading/trailing one) followed by a
-// letters-only final label of 2-63 characters — a plausible TLD. DNS is
-// case-insensitive, hence (?i).
-var hostnameRe = regexp.MustCompile(`(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+// value: one or more dot-separated labels (1-63 characters, lowercase
+// alphanumeric, interior hyphens allowed, never leading/trailing one)
+// followed by a lowercase-letters-only final label of 2-63 characters — a
+// plausible TLD.
+//
+// Deliberately CASE-SENSITIVE, lowercase only — not the DNS spec's own
+// case-insensitivity. A real hostname, as an operator actually types or
+// pastes one, is essentially always lowercase by convention; a raw secret
+// token is essentially always mixed-case, because token generators preserve
+// case specifically to maximise the effective alphabet and hence the entropy
+// per character. That is the one structural signal available here that
+// mixed-case does NOT: "AKIAIOSFODNN7EXAMPLE.amazonaws.com" and
+// "ghp-16CharTokenXyz.io" both satisfy hostname GRAMMAR (dot-separated
+// labels, letters-only final label) but neither is lowercase-only, so
+// neither exempts under this pattern — see secretscan_test.go's
+// TestDetectSecret_HostnameExemptionRequiresLowercase for the four shapes
+// this line was tightened against. A case-insensitive version of this regex
+// was the first cut of this fix and over-corrected: requiring only "looks
+// like hostname grammar" also exempted a mixed-case secret with a fake short
+// TLD tacked on, which is exactly the accidental-paste shape Decision 10
+// exists to catch.
+var hostnameRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 
-// looksLikeHostname reports whether v, taken as a whole, is a plausible
-// fully-qualified domain name — exactly the shape
+// looksLikeHostname reports whether v, taken as a whole, is a plausible,
+// lowercase, fully-qualified domain name — exactly the shape
 // RestrictionSet.ForbiddenDomains exists to hold.
 //
 // A real hostname routinely has borderline-to-high per-character entropy: a
 // DNS label mixes letters, digits and hyphens with little natural
 // repetition, which is a property of being a structured identifier, not
-// evidence of being a randomly-generated secret. A single hyphenated label
-// with no dot at all — "extremely-long-subdomain-name", 29 characters, ratio
-// 0.7994 — crosses entropyRatio (0.78) on its own; the SAME label as part of
-// "extremely-long-subdomain-name.example.com" is unambiguously a hostname
-// and must not be refused as a credential. This check exempts the whole
-// value from the entropy fallback when it looks like a hostname; the four
-// exact-shape patterns above still run first and still catch a real secret
-// that happens to be dotted, so this narrows only the fallback heuristic's
-// blast radius, not Decision 10's actual coverage of known credential shapes.
+// evidence of being a randomly-generated secret. A single hyphenated
+// LOWERCASE label with no dot at all — "extremely-long-subdomain-name", 29
+// characters, ratio 0.7994 — crosses entropyRatio (0.78) on its own; the SAME
+// label as part of "extremely-long-subdomain-name.example.com" is
+// unambiguously a hostname and must not be refused as a credential. This
+// check exempts the whole value from the entropy fallback when it looks like
+// a lowercase hostname; the four exact-shape patterns above still run first
+// and still catch a real secret that happens to be dotted, so this narrows
+// only the fallback heuristic's blast radius, not Decision 10's actual
+// coverage of known credential shapes.
 //
-// This is not adversarially airtight — a value could be hand-crafted to end
-// in a short, valid-looking TLD purely to dodge this check (Decision 10's
-// scan defends against an operator ACCIDENTALLY pasting a live credential,
-// not a deliberate attempt to disguise one, and the four exact-shape
-// patterns above already catch any accidentally-pasted secret that carries
-// its own recognisable prefix or structure regardless of this exemption).
+// This is not adversarially airtight — a value could still be hand-crafted,
+// entirely lowercase, to end in a short valid-looking TLD purely to dodge
+// this check. Decision 10's scan defends against an operator ACCIDENTALLY
+// pasting a live credential, not a deliberate attempt to disguise one, and
+// the four exact-shape patterns above already catch any accidentally-pasted
+// secret that carries its own recognisable prefix or structure regardless of
+// this exemption; the lowercase requirement closes the specific realistic
+// residual this function's history already found (a mixed-case token
+// suffixed with a fake TLD), not every conceivable one.
 func looksLikeHostname(v string) bool {
 	return len(v) <= 253 && hostnameRe.MatchString(v)
 }

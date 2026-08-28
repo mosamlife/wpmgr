@@ -272,6 +272,94 @@ func TestDetectSecret_HostnameExemptionDoesNotReopenTheDeadZone(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Proportionality check: a case-INSENSITIVE hostname exemption swallows more
+// than real hostnames. "AKIAIOSFODNN7EXAMPLE.amazonaws.com" and
+// "ghp-16CharTokenXyz.io" both satisfy hostname grammar (dot-separated
+// labels, letters-only final label) despite carrying a credential-shaped
+// prefix, because grammar alone says nothing about case. hostnameRe is now
+// lowercase-only — see its doc comment for why that is the available
+// structural signal (real hostnames are conventionally lowercase; generated
+// tokens are conventionally mixed-case to maximise entropy per character).
+// ---------------------------------------------------------------------------
+
+// TestDetectSecret_HostnameExemptionRequiresLowercase checks the four
+// reported shapes against the actual end-to-end DetectSecret pipeline (not
+// hostnameRe in isolation) and records, per row, WHY each lands where it
+// does — two different rows are caught for two different reasons that are
+// easy to conflate.
+func TestDetectSecret_HostnameExemptionRequiresLowercase(t *testing.T) {
+	cases := []struct {
+		value   string
+		found   bool
+		explain string
+	}{
+		{
+			"some.very-long-subdomain.example.co.uk", false,
+			"real hostname, all lowercase — exempted, correctly",
+		},
+		{
+			"sk-proj-A9fK2mQ7xR4tL8vN3wZ6yB1cD5eG", true,
+			"bare mixed-case token, no dot at all — caught by entropy; hostnameRe never applies (no dot to match)",
+		},
+		{
+			"AKIAIOSFODNN7EXAMPLE.amazonaws.com", true,
+			"caught by the exact-shape aws_access_key PATTERN, which runs before the hostname check regardless of " +
+				"case — this row was never actually exempted end-to-end, independent of this fix",
+		},
+		{
+			"ghp-16CharTokenXyz.io", false,
+			"NOT fixed by this change, and not caused by the hostname exemption either: the bare label " +
+				"\"ghp-16CharTokenXyz\" is 18 characters, below entropyMinLen (20), so it would never be flagged " +
+				"by entropy with or without any hostname involved, and this package has no GitHub-token-shaped " +
+				"exact pattern. A separate, pre-existing, disclosed gap — not this fix's scope.",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.value, func(t *testing.T) {
+			snap := Snapshot{Restrictions: RestrictionSet{ForbiddenDomains: []string{c.value}}}
+			_, found := DetectSecret(snap)
+			if found != c.found {
+				t.Errorf("DetectSecret(%q) found=%v, want %v (%s)", c.value, found, c.found, c.explain)
+			}
+		})
+	}
+}
+
+// TestDetectSecret_MixedCaseTokenWithFakeTLDIsCaught is the actual
+// vulnerability TestDetectSecret_HostnameExemptionRequiresLowercase's row 3
+// only LOOKS like it demonstrates: a bare, mixed-case, high-entropy token
+// carrying NO recognisable prefix at all (not AWS-, PEM-, connection-string-,
+// bearer-, or key=value-shaped) with a short lowercase TLD appended. Before
+// the lowercase restriction, this satisfied hostname grammar case-
+// insensitively and was exempted outright; the AWS example is a red herring
+// for this specific class because it is caught by its own exact pattern
+// regardless of the hostname check.
+//
+// Confirmed RED against a case-insensitive hostnameRe (the `(?i)` flag
+// restored):
+//
+//	$ go test ./internal/govcontext/... -run TestDetectSecret_MixedCaseTokenWithFakeTLDIsCaught -v
+//	    secretscan_test.go:354: looksLikeHostname("Xk9mQ2pL7vN4wZ8tR1yB6hJf3.io") = true, want false — it is mixed-case, not a real hostname
+//	--- FAIL: TestDetectSecret_MixedCaseTokenWithFakeTLDIsCaught
+//
+// Restored (lowercase-only), it is GREEN.
+func TestDetectSecret_MixedCaseTokenWithFakeTLDIsCaught(t *testing.T) {
+	tok := "Xk9mQ2pL7vN4wZ8tR1yB6hJf3" // the dead-zone fixture: mixed case, ratio 1.0000, no recognisable prefix
+	if !isHighEntropy(tok) {
+		t.Fatalf("fixture %q must independently cross entropyRatio for this test to prove anything", tok)
+	}
+	v := tok + ".io"
+	if looksLikeHostname(v) {
+		t.Fatalf("looksLikeHostname(%q) = true, want false — it is mixed-case, not a real hostname", v)
+	}
+	snap := Snapshot{Restrictions: RestrictionSet{ForbiddenDomains: []string{v}}}
+	if _, found := DetectSecret(snap); !found {
+		t.Errorf("DetectSecret found nothing in %q — a bare mixed-case high-entropy token with no "+
+			"recognisable prefix, hidden behind a fake TLD", v)
+	}
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(substr) > 0 && (func() bool {
 		for i := 0; i+len(substr) <= len(s); i++ {
