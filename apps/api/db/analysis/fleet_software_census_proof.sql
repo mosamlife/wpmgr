@@ -1,13 +1,21 @@
 -- ===========================================================================
 -- Proof harness for fleet_software_census.sql
 -- ===========================================================================
--- Seeds twelve sites covering every classification branch, runs the census,
--- asserts the bucket counts, then ROLLS BACK. Nothing is persisted.
+-- Seeds thirteen sites covering every classification branch and every
+-- inventory-age bucket, runs the census, asserts the counts, then ROLLS BACK.
+-- Nothing is persisted.
 --
 --   psql "$OWNER_DSN" -f fleet_software_census_proof.sql
 --
--- The census's own guard is proven separately by running it against an empty
--- scope: it must RAISE and exit non-zero rather than print zeroes.
+-- Run it from THIS DIRECTORY: the \i below is resolved against psql's cwd.
+--
+-- Requires a database at m121 or later (sites.components_updated_at). Against
+-- an older schema the seeds fail on the unknown column, loudly, which is the
+-- correct outcome — the census cannot be proven against a schema that lacks the
+-- column it now reports on.
+--
+-- The census's own empty-scope guard is proven separately by running it against
+-- an empty scope: it must RAISE and exit non-zero rather than print zeroes.
 --
 -- Every seeded site is annotated with the bucket it must land in. If you change
 -- the classification CASE in the census, this file must move with it.
@@ -21,90 +29,119 @@ BEGIN;
 INSERT INTO tenants (id, name, slug)
 VALUES ('c5e75000-0000-4000-8000-0000000c5e75', 'Census Proof Org', 'census-proof-org-s2');
 
--- 1. Elementor active as a PLUGIN.                    -> builder active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000001','c5e75000-0000-4000-8000-0000000c5e75','https://s1.example','s1-elementor','connected', now(), false, 'hello-elementor',
+-- ---------------------------------------------------------------------------
+-- components_updated_at (m121) is set EXPLICITLY on every seed, including the
+-- NULLs. The NULLs are fixtures, not oversights: they are the state every row
+-- in a real database is in until its next metadata push, because m121
+-- deliberately did not backfill. A proof that only seeded dated rows would
+-- never exercise the bucket that dominates a real run.
+-- ---------------------------------------------------------------------------
+
+-- 1. Elementor active as a PLUGIN.       -> builder active, inventory_24h
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000001','c5e75000-0000-4000-8000-0000000c5e75','https://s1.example','s1-elementor','connected', now(), now(), false, 'hello-elementor',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.21.5","active":true},
               {"slug":"akismet/akismet.php","name":"Akismet","version":"5.3.1","active":false}],
    "themes":[{"slug":"hello-elementor","name":"Hello","version":"3.0.1","active":true}]}'::jsonb);
 
 -- 2. Bricks active as a THEME. A plugins-only census scores this Gutenberg.
---                                                     -> builder active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000002','c5e75000-0000-4000-8000-0000000c5e75','https://s2.example','s2-bricks','connected', now(), false, 'bricks',
+--                                        -> builder active, inventory_week
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000002','c5e75000-0000-4000-8000-0000000c5e75','https://s2.example','s2-bricks','connected', now(), now() - interval '3 days', false, 'bricks',
  '{"plugins":[{"slug":"akismet/akismet.php","name":"Akismet","version":"5.3.1","active":true}],
    "themes":[{"slug":"bricks","name":"Bricks","version":"1.9.2","active":true}]}'::jsonb);
 
--- 3. Divi, whose stylesheet directory is capital-D "Divi".
---                                                     -> builder active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000003','c5e75000-0000-4000-8000-0000000c5e75','https://s3.example','s3-divi','connected', now(), false, 'Divi',
+-- 3. Divi, whose stylesheet directory is capital-D "Divi". FULL inventory but
+--    NO recorded age — a dated-inventory question this site cannot answer even
+--    though its component list is complete.
+--                                        -> builder active, age_unknown
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000003','c5e75000-0000-4000-8000-0000000c5e75','https://s3.example','s3-divi','connected', now(), NULL, false, 'Divi',
  '{"plugins":[],
    "themes":[{"slug":"Divi","name":"Divi","version":"4.23.1","active":true}]}'::jsonb);
 
 -- 4. WPBakery, whose plugin directory is "js_composer".
---                                                     -> builder active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000004','c5e75000-0000-4000-8000-0000000c5e75','https://s4.example','s4-wpbakery','connected', now(), false, 'twentytwentyone',
+--                                        -> builder active, inventory_24h
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000004','c5e75000-0000-4000-8000-0000000c5e75','https://s4.example','s4-wpbakery','connected', now(), now(), false, 'twentytwentyone',
  '{"plugins":[{"slug":"js_composer/js_composer.php","name":"WPBakery","version":"6.13.0","active":true}],
    "themes":[{"slug":"twentytwentyone","name":"TT1","version":"2.0","active":true}]}'::jsonb);
 
--- 5. No builder at all, full inventory. Also the Woo + Yoast fixture.
---                                                     -> Gutenberg
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000005','c5e75000-0000-4000-8000-0000000c5e75','https://s5.example','s5-gutenberg','connected', now(), false, 'twentytwentyfour',
+-- 5. No builder at all, full inventory. Also the Woo + Yoast + ACF fixture.
+--    Dated 10 days back, so it is PROVABLY stale at the default stale_days=7.
+--                                        -> Gutenberg, inventory_month, stale
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000005','c5e75000-0000-4000-8000-0000000c5e75','https://s5.example','s5-gutenberg','connected', now(), now() - interval '10 days', false, 'twentytwentyfour',
  '{"plugins":[{"slug":"woocommerce/woocommerce.php","name":"WooCommerce","version":"8.1.2","active":true},
               {"slug":"wordpress-seo/wp-seo.php","name":"Yoast SEO","version":"21.5","active":true},
               {"slug":"advanced-custom-fields/acf.php","name":"ACF","version":"6.2.4","active":true}],
    "themes":[{"slug":"twentytwentyfour","name":"TT4","version":"1.1","active":true}]}'::jsonb);
 
--- 6. Plugins array present, THEMES KEY ABSENT. Cannot be called Gutenberg
---    because an unseen theme could be Bricks or Divi.
---                                                     -> indeterminate
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000006','c5e75000-0000-4000-8000-0000000c5e75','https://s6.example','s6-nothemes','connected', now(), false, '',
+-- 6. Plugins array present, THEMES KEY ABSENT, and its only builder is
+--    inactive. Cannot be called Gutenberg because an unseen theme could be
+--    Bricks or Divi.
+--                                        -> indeterminate: partial inventory
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000006','c5e75000-0000-4000-8000-0000000c5e75','https://s6.example','s6-nothemes','connected', now(), NULL, false, '',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.20.0","active":false}]}'::jsonb);
 
--- 7. Never reported anything.                         -> unknown: no inventory
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000007','c5e75000-0000-4000-8000-0000000c5e75','https://s7.example','s7-empty','pending_enrollment', NULL, false, '', '{}'::jsonb);
+-- 7. Never reported anything.            -> unknown: no inventory, age_unknown
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000007','c5e75000-0000-4000-8000-0000000c5e75','https://s7.example','s7-empty','pending_enrollment', NULL, NULL, false, '', '{}'::jsonb);
 
 -- 8. Malformed plugins key (the shape sites.sql already guards against).
---                                                     -> unknown: no inventory
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000008','c5e75000-0000-4000-8000-0000000c5e75','https://s8.example','s8-badshape','connected', now(), false, '',
+--                                        -> unknown: no inventory, age_unknown
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000008','c5e75000-0000-4000-8000-0000000c5e75','https://s8.example','s8-badshape','connected', now(), NULL, false, '',
  '{"plugins":{"unexpected":"shape"}}'::jsonb);
 
--- 9. MULTISITE with a network-activated Elementor, which the agent reports
---    active=false. Real state is "active"; we can only see "installed".
---                                                     -> builder installed, not active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-000000000009','c5e75000-0000-4000-8000-0000000c5e75','https://s9.example','s9-multisite','connected', now(), true, 'twentytwentyfour',
+-- 9. MULTISITE with an Elementor reported active=false. On a PRE-#558 agent
+--    that may be a network-activated plugin being under-reported; on a post
+--    -#558 agent it is genuinely inactive. The census cannot tell which, which
+--    is why multisite is reported in its own column and section 7 sizes the
+--    exposure.
+--                                        -> builder installed, not active
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-000000000009','c5e75000-0000-4000-8000-0000000c5e75','https://s9.example','s9-multisite','connected', now(), now(), true, 'twentytwentyfour',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.21.5","active":false}],
    "themes":[]}'::jsonb);
 
--- 10. Elementor active but last contact 60 days ago.  -> builder active, stale
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-00000000000a','c5e75000-0000-4000-8000-0000000c5e75','https://s10.example','s10-stale','disconnected', now() - interval '60 days', false, 'hello-elementor',
+-- 10. Elementor active, inventory recorded 60 days ago.
+--                                        -> builder active, over_30d, stale
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-00000000000a','c5e75000-0000-4000-8000-0000000c5e75','https://s10.example','s10-stale','disconnected', now() - interval '60 days', now() - interval '60 days', false, 'hello-elementor',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.18.0","active":true}],
    "themes":[]}'::jsonb);
 
 -- 11. Version header missing; the agent writes the literal "unknown".
---                                                     -> builder active, (unparsed)
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-00000000000b','c5e75000-0000-4000-8000-0000000c5e75','https://s11.example','s11-unknownver','connected', now(), false, 'hello-elementor',
+--                                        -> builder active, (unparsed)
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-00000000000b','c5e75000-0000-4000-8000-0000000c5e75','https://s11.example','s11-unknownver','connected', now(), now(), false, 'hello-elementor',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"unknown","active":true}],
    "themes":[]}'::jsonb);
 
--- 12. Breakdance installed but switched off.          -> builder installed, not active
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-00000000000c','c5e75000-0000-4000-8000-0000000c5e75','https://s12.example','s12-inactive','connected', now(), false, 'twentytwentyfour',
+-- 12. Breakdance installed but switched off. Single-site, so active=false is
+--     trustworthy regardless of agent version. Dated 40 days back.
+--                                        -> builder installed, not active, stale
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-00000000000c','c5e75000-0000-4000-8000-0000000c5e75','https://s12.example','s12-inactive','connected', now(), now() - interval '40 days', false, 'twentytwentyfour',
  '{"plugins":[{"slug":"breakdance/plugin.php","name":"Breakdance","version":"1.7.0","active":false}],
    "themes":[{"slug":"twentytwentyfour","name":"TT4","version":"1.1","active":true}]}'::jsonb);
 
+-- 13. THEMES ONLY: Bricks active, PLUGINS KEY ABSENT. This is the mirror of
+--     site 6 and it is the regression guard for the classification ORDER. A
+--     CASE that tests "no plugin inventory" before testing "builder active"
+--     calls this site 'unknown' — discarding a builder we positively observed.
+--     A positive finding survives partial inventory; only a negative needs the
+--     complete document.
+--                                        -> builder active, inventory_24h
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-00000000000d','c5e75000-0000-4000-8000-0000000c5e75','https://s13.example','s13-themesonly','connected', now(), now() - interval '2 hours', false, 'bricks',
+ '{"themes":[{"slug":"bricks","name":"Bricks","version":"1.9.5","active":true}]}'::jsonb);
+
 -- An archived site, which the census must EXCLUDE entirely.
-INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, multisite, active_theme, components) VALUES
-('a0000000-0000-0000-0000-0000000000ff','c5e75000-0000-4000-8000-0000000c5e75','https://sX.example','sX-archived','archived', now(), false, 'x',
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('a0000000-0000-0000-0000-0000000000ff','c5e75000-0000-4000-8000-0000000c5e75','https://sX.example','sX-archived','archived', now(), now(), false, 'x',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.21.5","active":true}],"themes":[]}'::jsonb);
 
 \echo '### Running census as the OWNER (BYPASSRLS), fleet-wide ###'
@@ -119,13 +156,12 @@ DO $$
 DECLARE
     got  bigint;
     fail text := '';
-    PROCEDURE_note text;
 BEGIN
     SELECT count(*) INTO got FROM census_fleet;
-    IF got <> 12 THEN fail := fail || format('scope should exclude the archived site and be 12, got %s; ', got); END IF;
+    IF got <> 13 THEN fail := fail || format('scope should exclude the archived site and be 13, got %s; ', got); END IF;
 
     -- ---- Inventory-usability flags must be BOOLEAN, never NULL. -------------
-    -- These four are the regression guard for the three-valued-logic bug:
+    -- These are the regression guard for the three-valued-logic bug:
     -- jsonb_typeof(NULL) is NULL, so without COALESCE a never-reported site
     -- (components = '{}', the column default) has has_plugin_inventory = NULL,
     -- slips past `WHEN NOT ...` and is classified Gutenberg.
@@ -135,47 +171,119 @@ BEGIN
     SELECT count(*) INTO got FROM census_fleet WHERE has_theme_inventory IS NULL;
     IF got <> 0 THEN fail := fail || format('has_theme_inventory must never be NULL, got %s NULL rows; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE NOT has_plugin_inventory;
-    IF got <> 2 THEN fail := fail || format('sites with no usable inventory should be 2 (s7 empty, s8 malformed), got %s; ', got); END IF;
+    -- Same rule, now for the m121 age flags. inventory_provably_stale is built
+    -- from a comparison against a NULLABLE column, so it is the same trap one
+    -- table over: without COALESCE it is NULL for every undated site and every
+    -- `FILTER (WHERE ...)` silently drops those rows.
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_age_known IS NULL;
+    IF got <> 0 THEN fail := fail || format('inventory_age_known must never be NULL, got %s NULL rows; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory AND NOT has_theme_inventory;
-    IF got <> 1 THEN fail := fail || format('plugins-but-no-themes should be 1 (s6), got %s; ', got); END IF;
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_provably_stale IS NULL;
+    IF got <> 0 THEN fail := fail || format('inventory_provably_stale must never be NULL, got %s NULL rows; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness IS NULL;
+    IF got <> 0 THEN fail := fail || format('inventory_freshness must never be NULL, got %s NULL rows; ', got); END IF;
+
+    -- ---- Inventory presence -----------------------------------------------
+    SELECT count(*) INTO got FROM census_fleet WHERE NOT has_plugin_inventory AND NOT has_theme_inventory;
+    IF got <> 2 THEN fail := fail || format('sites with NO usable inventory should be 2 (s7 empty, s8 malformed), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet
+      WHERE (has_plugin_inventory OR has_theme_inventory)
+        AND NOT (has_plugin_inventory AND has_theme_inventory);
+    IF got <> 2 THEN fail := fail || format('PARTIAL inventory should be 2 (s6 plugins-only, s13 themes-only), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory;
+    IF got <> 10 THEN fail := fail || format('plugin_denom should be 10, got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE has_theme_inventory;
+    IF got <> 10 THEN fail := fail || format('theme_denom should be 10, got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory OR has_theme_inventory;
+    IF got <> 11 THEN fail := fail || format('either_denom should be 11, got %s; ', got); END IF;
+
+    -- ---- m121 inventory age. The NULL bucket is the point. ----------------
+    SELECT count(*) INTO got FROM census_fleet WHERE NOT inventory_age_known;
+    IF got <> 4 THEN fail := fail || format('age_unknown should be 4 (s3,s6,s7,s8), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_age_known;
+    IF got <> 9 THEN fail := fail || format('age_known should be 9, got %s; ', got); END IF;
+
+    -- Every undated site must land in the age_unknown bucket and NOWHERE else.
+    -- This is the assertion that stops a NULL age being quietly folded into a
+    -- freshness bucket, which would report "we do not know" as "it is fresh".
+    SELECT count(*) INTO got FROM census_fleet
+      WHERE NOT inventory_age_known AND inventory_freshness <> 'age_unknown (never recorded)';
+    IF got <> 0 THEN fail := fail || format('%s undated site(s) landed in a dated freshness bucket — NULL age is being folded in; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet
+      WHERE inventory_age_known AND inventory_freshness = 'age_unknown (never recorded)';
+    IF got <> 0 THEN fail := fail || format('%s DATED site(s) landed in age_unknown; ', got); END IF;
+
+    -- An undated site must never be counted as provably stale: we cannot prove
+    -- what we never recorded.
+    SELECT count(*) INTO got FROM census_fleet
+      WHERE NOT inventory_age_known AND inventory_provably_stale;
+    IF got <> 0 THEN fail := fail || format('%s undated site(s) counted as provably stale; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_provably_stale;
+    IF got <> 3 THEN fail := fail || format('provably stale (>7d) should be 3 (s5 10d, s10 60d, s12 40d), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_24h';
+    IF got <> 5 THEN fail := fail || format('inventory_24h should be 5 (s1,s4,s9,s11,s13), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_week';
+    IF got <> 1 THEN fail := fail || format('inventory_week should be 1 (s2), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_month';
+    IF got <> 1 THEN fail := fail || format('inventory_month should be 1 (s5), got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_over_30d';
+    IF got <> 2 THEN fail := fail || format('inventory_over_30d should be 2 (s10,s12), got %s; ', got); END IF;
+
+    -- Inventory age and agent contact are DIFFERENT facts. s3 proves it: the
+    -- heartbeat is current, the inventory has no recorded age at all. If these
+    -- two ever agree on every row, the census has gone back to reading
+    -- last_seen_at as freshness.
+    SELECT count(*) INTO got FROM census_fleet
+      WHERE last_contact_freshness = 'contact_24h' AND NOT inventory_age_known;
+    IF got <> 3 THEN fail := fail || format('sites contacted <24h but with UNDATED inventory should be 3 (s3,s6,s8), got %s; ', got); END IF;
 
     -- ---- Every classification bucket, by exact count. ----------------------
-    -- Re-derives the census CASE. If the CASE changes, this must change too.
-    CREATE TEMP TABLE census_proof_buckets ON COMMIT DROP AS
-    SELECT f.id,
-           CASE
-               WHEN NOT f.has_plugin_inventory THEN 'unknown: no inventory'
-               WHEN EXISTS (SELECT 1 FROM census_hits h
-                            WHERE h.site_id = f.id AND h.category = 'builder' AND h.active)
-                    THEN 'builder active'
-               WHEN NOT f.has_theme_inventory THEN 'indeterminate: no theme inventory'
-               WHEN EXISTS (SELECT 1 FROM census_hits h
-                            WHERE h.site_id = f.id AND h.category = 'builder')
-                    THEN 'builder installed, not active'
-               ELSE 'Gutenberg (no builder present)'
-           END AS bucket
-    FROM census_fleet f;
-
-    SELECT count(*) INTO got FROM census_proof_buckets WHERE bucket = 'unknown: no inventory';
+    -- These read census_classified, THE VIEW THE CENSUS ITSELF REPORTS FROM.
+    --
+    -- An earlier version of this harness re-derived the classification CASE
+    -- here in its own CREATE TABLE AS. That made every assertion below a test
+    -- of the copy: the census's CASE was edited to a known-wrong ordering and
+    -- this file still exited 0, because the copy was still right. Asserting
+    -- against the census's own view is the whole point -- if the two ever drift
+    -- apart again, the harness is testing nothing.
+    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'unknown: no inventory';
     IF got <> 2 THEN fail := fail || format('bucket "unknown: no inventory" should be 2 (s7,s8), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_proof_buckets WHERE bucket = 'builder active';
-    IF got <> 6 THEN fail := fail || format('bucket "builder active" should be 6 (s1,s2,s3,s4,s10,s11), got %s; ', got); END IF;
+    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'builder active';
+    IF got <> 7 THEN fail := fail || format('bucket "builder active" should be 7 (s1,s2,s3,s4,s10,s11,s13), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_proof_buckets WHERE bucket = 'indeterminate: no theme inventory';
+    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'indeterminate: partial inventory';
     IF got <> 1 THEN fail := fail || format('bucket "indeterminate" should be 1 (s6), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_proof_buckets WHERE bucket = 'builder installed, not active';
+    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'builder installed, not active';
     IF got <> 2 THEN fail := fail || format('bucket "installed not active" should be 2 (s9,s12), got %s; ', got); END IF;
 
     -- The one that matters most: exactly ONE seeded site truly runs no builder.
-    SELECT count(*) INTO got FROM census_proof_buckets WHERE bucket = 'Gutenberg (no builder present)';
+    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'Gutenberg (no builder present)';
     IF got <> 1 THEN fail := fail || format('bucket "Gutenberg" should be EXACTLY 1 (s5 only). Got %s — a site with unknown or partial inventory is being scored as Gutenberg; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='Bricks' AND active;
-    IF got <> 1 THEN fail := fail || format('Bricks (theme) active should be 1, got %s; ', got); END IF;
+    -- s13 specifically: a themes-only site with an ACTIVE builder must be
+    -- 'builder active', not 'unknown'. This fails if the CASE ever tests
+    -- inventory completeness before testing for a positive hit.
+    SELECT count(*) INTO got FROM census_classified
+      WHERE id = 'a0000000-0000-0000-0000-00000000000d' AND bucket = 'builder active';
+    IF got <> 1 THEN fail := fail || 'themes-only s13 with active Bricks must classify "builder active", not be discarded as unknown; '; END IF;
+
+    -- ---- Target matching, plugins AND themes ------------------------------
+    SELECT count(DISTINCT site_id) INTO got FROM census_hits WHERE target='Bricks' AND active;
+    IF got <> 2 THEN fail := fail || format('Bricks (theme) active should be 2 (s2,s13), got %s; ', got); END IF;
 
     SELECT count(*) INTO got FROM census_hits WHERE target='Divi' AND active;
     IF got <> 1 THEN fail := fail || format('Divi (capital-D theme dir) active should be 1, got %s; ', got); END IF;
@@ -195,6 +303,25 @@ BEGIN
     SELECT count(*) INTO got FROM census_hits WHERE target='ACF' AND active;
     IF got <> 1 THEN fail := fail || format('ACF active should be 1, got %s; ', got); END IF;
 
+    -- ---- Per-target denominators (PR #552 review, thread 1) ---------------
+    -- A theme-shipped target must NOT be divided by the plugin denominator. Of
+    -- the 13 seeded sites, 10 sent a themes array and 10 sent a plugins array,
+    -- but they are not the same 10: s6 is plugins-only and s13 is themes-only.
+    -- Dividing Bricks by the plugin denominator would count s6 — a site that
+    -- could never have reported a theme — against Bricks' adoption.
+    SELECT ships_plugin::int + ships_theme::int * 2 INTO got FROM census_target_kinds WHERE target = 'Bricks';
+    IF got <> 2 THEN fail := fail || format('Bricks must be classified theme-only (expected 2 = theme bit), got %s; ', got); END IF;
+
+    SELECT ships_plugin::int + ships_theme::int * 2 INTO got FROM census_target_kinds WHERE target = 'Divi';
+    IF got <> 3 THEN fail := fail || format('Divi must be classified plugin+theme (expected 3), got %s; ', got); END IF;
+
+    SELECT ships_plugin::int + ships_theme::int * 2 INTO got FROM census_target_kinds WHERE target = 'Elementor';
+    IF got <> 1 THEN fail := fail || format('Elementor must be classified plugin-only (expected 1), got %s; ', got); END IF;
+
+    SELECT ships_plugin::int + ships_theme::int * 2 INTO got FROM census_target_kinds WHERE target = 'Beaver Builder';
+    IF got <> 3 THEN fail := fail || format('Beaver Builder must be classified plugin+theme (expected 3), got %s; ', got); END IF;
+
+    -- ---- Exclusions and parsing -------------------------------------------
     -- The archived site carried an active Elementor. If it leaked in, the
     -- Elementor count above would be 4.
     SELECT count(*) INTO got FROM census_fleet WHERE connection_state='archived';
@@ -209,29 +336,73 @@ BEGIN
       WHERE target='Elementor' AND active AND version_minor='3.21';
     IF got <> 1 THEN fail := fail || format('one Elementor should group to 3.21, got %s; ', got); END IF;
 
+    -- ---- Multisite exposure (the #558 caveat, sized) ----------------------
+    SELECT count(*) INTO got FROM census_fleet WHERE multisite;
+    IF got <> 1 THEN fail := fail || format('multisite sites should be 1 (s9), got %s; ', got); END IF;
+
+    SELECT count(DISTINCT site_id) INTO got FROM census_hits
+      WHERE multisite AND category='builder' AND NOT active;
+    IF got <> 1 THEN fail := fail || format('multisite sites with an INACTIVE builder should be 1 (s9), got %s; ', got); END IF;
+
     IF fail <> '' THEN RAISE EXCEPTION 'PROOF FAILED: %', fail; END IF;
     RAISE NOTICE 'ALL ASSERTIONS PASSED';
 END $$;
 
 -- ---------------------------------------------------------------------------
--- Same data, but read as wpmgr_app: NOSUPERUSER, NOBYPASSRLS, the role every
--- install actually runs as, through the real tenant-isolation policy. A proof
--- that only ever runs as superuser leaves the RLS policies inert.
+-- RLS, ASSERTED — not merely printed. (PR #552 review, thread 2.)
+--
+-- Read as wpmgr_app: NOSUPERUSER, NOBYPASSRLS, the role every install actually
+-- runs as, through the real tenant-isolation policy. A proof that only ever
+-- runs as superuser leaves the RLS policies inert.
+--
+-- These queries hit `sites` DIRECTLY and deliberately not census_fleet. The
+-- census's temp views are owned by the role that ran the census (the BYPASSRLS
+-- owner) and are not granted to wpmgr_app, so reading one here raises
+-- "permission denied for view census_fleet" — verified, not assumed. Were a
+-- grant ever added, it would be worse than the error: PostgreSQL defaults views
+-- to security_invoker = false, so the view would execute with the OWNER's
+-- rights and report the owner's row count while appearing to test the app role.
+-- Either way the view proves nothing about RLS. The table does.
+--
+-- The counts are asserted inside a DO block so a policy or role regression
+-- RAISES and psql exits non-zero. Printed counts alone let the script exit 0
+-- while showing the wrong numbers, which is a guard that fails open.
 -- ---------------------------------------------------------------------------
 \echo ''
-\echo '### RLS: same scope as wpmgr_app under sites_tenant_isolation ###'
+\echo '### RLS: asserted as wpmgr_app under sites_tenant_isolation ###'
 SET LOCAL ROLE wpmgr_app;
+
 SELECT set_config('app.tenant_id', 'c5e75000-0000-4000-8000-0000000c5e75', true) AS scoped;
 SELECT current_user AS running_as,
        count(*)     AS sites_visible_to_app_role
 FROM sites WHERE connection_state <> 'archived';
 
-\echo ''
-\echo '### RLS: wpmgr_app with NO tenant GUC must see nothing ###'
-SELECT set_config('app.tenant_id', '', true) AS cleared;
-SELECT current_user AS running_as,
-       count(*)     AS sites_visible_without_guc
-FROM sites;
+DO $$
+DECLARE got bigint; fail text := '';
+BEGIN
+    IF current_user <> 'wpmgr_app' THEN
+        RAISE EXCEPTION 'RLS PROOF BROKEN: expected to be running as wpmgr_app, am %. The role switch failed, so nothing below tests RLS.', current_user;
+    END IF;
+
+    -- Scoped to the proof tenant: the 13 non-archived seeds are visible.
+    PERFORM set_config('app.tenant_id', 'c5e75000-0000-4000-8000-0000000c5e75', true);
+    SELECT count(*) INTO got FROM sites WHERE connection_state <> 'archived';
+    IF got <> 13 THEN fail := fail || format('wpmgr_app WITH the tenant GUC should see 13 non-archived seeded sites, got %s; ', got); END IF;
+
+    SELECT count(*) INTO got FROM sites;
+    IF got <> 14 THEN fail := fail || format('wpmgr_app WITH the tenant GUC should see 14 sites including the archived one, got %s; ', got); END IF;
+
+    -- GUC cleared: tenant isolation must admit NOTHING. If this ever returns a
+    -- row, sites_tenant_isolation is not doing its job and every number this
+    -- census prints for a single org is suspect.
+    PERFORM set_config('app.tenant_id', '', true);
+    SELECT count(*) INTO got FROM sites;
+    IF got <> 0 THEN fail := fail || format('wpmgr_app with NO tenant GUC must see 0 sites, got %s — tenant isolation is not holding; ', got); END IF;
+
+    IF fail <> '' THEN RAISE EXCEPTION 'RLS PROOF FAILED: %', fail; END IF;
+    RAISE NOTICE 'RLS ASSERTIONS PASSED (as %)', current_user;
+END $$;
+
 RESET ROLE;
 
 ROLLBACK;
