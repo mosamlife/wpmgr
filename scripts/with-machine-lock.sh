@@ -146,11 +146,44 @@
 # then resumes beside the new holder.
 #
 # So the metadata carries `spawning=1`, written BEFORE the fork. A lock with
-# `spawning=1` and no `child=` is never declared stale: nothing can prove the
-# command did not start, and for a mutex "cannot prove" resolves to held. That
-# trades a fail-open in a microsecond-wide crash window for a deadlock in the
-# same window — loud, named on stderr, and clearable by hand, against silent
-# and two suites deep.
+# `spawning=1` and no `child=` is not declared stale on sight: nothing can
+# prove the command did not start, and for a mutex "cannot prove" resolves to
+# held.
+#
+# THE HOLD IS BOUNDED, AND THE NUMBERS ARE WHY. An earlier version held such a
+# lock forever, justified on two claims that were both measured false:
+#
+#   "a microsecond-wide window"   The `spawning=1` interval is a median 7.71 ms
+#                                 (n=40, instrumentation cost subtracted). It
+#                                 spans mv, two sed readbacks, the fork, ps+tr+
+#                                 sed in lstart_of, and the append — six exec'd
+#                                 processes. The blind interval it actually
+#                                 protects, fork to exec, is a median 2.42 ms
+#                                 and a max of 3.46 ms (n=30). So the hold
+#                                 covered about 3x the interval it protects,
+#                                 and the excess is the PRE-FORK part, where no
+#                                 child exists at all and nothing can be
+#                                 running. The permanent deadlock therefore
+#                                 fired on a strict superset of the fail-open's
+#                                 conditions.
+#   "loud"                        It was not. WPMGR_LOCK_TIMEOUT defaults to
+#                                 3600, and the explanatory NOTE only printed
+#                                 in the timed-out branch. For that hour a
+#                                 waiter printed the ordinary "held by pid N"
+#                                 line, indistinguishable from a live suite —
+#                                 and the population here is agents, which get
+#                                 killed when they block. Silent for exactly
+#                                 the people who hit it, an hour each. The NOTE
+#                                 is now in the periodic notice too.
+#
+# `spawning=1` with no `child=` cannot legitimately persist past a forked sh's
+# exec, so it is bounded by the same GRACE the metadata-less case uses: held on
+# first sight, and after GRACE seconds of dead pid AND dead token AND no
+# `child=`, declared stale with a reason that names it. For the fail-open to
+# return, a child would have to sit SIGSTOPped inside a ~3 ms interval for the
+# whole grace period and then resume, with its wrapper dead and a waiter
+# sampling stale twice. That is strictly harder than the pre-`spawning` state,
+# which had no protection for any duration.
 #
 # The SECOND ASSESSMENT still matters and is kept: declaring a lock stale
 # requires assess_holder to return stale twice, once in the polling loop and
@@ -360,6 +393,19 @@ _flat() {
   printf '%s' "$1" | tr '\n\r' '  '
 }
 
+# Printed wherever a wait is reported, not only at the timeout an hour later.
+# A waiter blocked on this state used to see the ordinary "held by pid N" line,
+# indistinguishable from a live suite, for the whole of WPMGR_LOCK_TIMEOUT —
+# and the population here is agents, which get killed when they block.
+spawning_notice() {
+  [ "${holder_spawning:-}" = "1" ] || return 0
+  [ -z "${holder_child:-}" ] || return 0
+  echo "$ME:   NOTE: that lock was taken by a run that died while starting its" >&2
+  echo "$ME:   command, so whether the command started cannot be determined." >&2
+  echo "$ME:   It is held for ${GRACE}s and then reclaimed automatically." >&2
+  echo "$ME:   If you know nothing is running, remove $LOCK_DIR by hand." >&2
+}
+
 human_secs() { # human_secs N  ->  "3m12s"
   m=$(( $1 / 60 ))
   s=$(( $1 % 60 ))
@@ -461,6 +507,11 @@ resnapshot() {
   done
 }
 
+# KNOWN AND ACCEPTED: an empty start key skips the pid-reuse guard, so a
+# recorded pid whose start time could not be read reads as LIVE on any live pid
+# that later takes its number. That is the over-fire direction (the lock is
+# held, never wrongly released), and reaching it needs ~100k pid allocations
+# within seconds. Recorded here so it is not rediscovered as new.
 snapshot_pid_live() { # snapshot_pid_live PID STARTKEY
   _p="${1:-}"
   _key="${2:-}"
@@ -488,6 +539,10 @@ signal_snapshot() {
 # `wait` return, and released the lock while the suite and its containers were
 # still running — a second `make test-integration` could then start alongside
 # it.
+# KNOWN AND ACCEPTED: a descendant spawned between snapshot_tree's `pgrep` and
+# the TERM, whose parent then dies before the first resnapshot, is missed —
+# roughly a 10 ms window, narrower than the 7.71 ms and 2.42 ms intervals this
+# file already bounds elsewhere. Recorded so it is not rediscovered as new.
 kill_tree() {
   snapshot_tree "$1"
   signal_snapshot "$2"
@@ -557,7 +612,13 @@ on_signal() { # on_signal SIGNAME SIGNUM
   # refusing here is loud and recoverable; releasing is silent and is not.
   if still_running; then
     echo "$ME: NOT releasing '$NAME' — something is still running under it" >&2
-    echo "$ME:   lock left at $LOCK_DIR deliberately; it will be reclaimed once that exits" >&2
+    # Deliberately does NOT promise automatic recovery. RUN_PIDS is private to
+    # this process; assess_holder reads only pid, child and token, so the next
+    # waiter judges by those and may well reclaim immediately. An earlier
+    # version of this line claimed the lock "will be reclaimed once that exits",
+    # which was simply false.
+    echo "$ME:   lock left at $LOCK_DIR. Nothing tracks those survivors for you:" >&2
+    echo "$ME:   check them, stop them, then remove that directory by hand." >&2
     trap - EXIT
     exit $(( 128 + $2 ))
   fi
@@ -630,7 +691,8 @@ write_meta() {
   # lock carrying `spawning=1` with no `child=` is NOT declared stale: we
   # cannot prove nothing is running, and for a mutex "cannot prove" resolves to
   # held. The flag stops mattering the moment `child=` appears, which is the
-  # very next write, so it governs only that microsecond-wide interval.
+  # very next write. That interval is a measured median 7.71 ms, and the hold
+  # it triggers is bounded by GRACE rather than permanent — see the header.
   if ! printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=%s\nspawning=1\nhost=%s\ncwd=%s\ncmd=%s\n' \
       "$$" "$(now)" "$(lstart_of $$)" "$TOKEN" "$_host" "$_cwd" "$_cmd" \
       > "$_tmp"; then
@@ -686,6 +748,7 @@ ANNOUNCED_WAIT=0
 MAX_POLLS=$(( TIMEOUT / POLL + 60 ))
 POLLS=0
 NOMETA_SINCE=0
+SPAWNING_SINCE=0
 BLOCKED_ON_RECLAIM=0
 ANNOUNCED_RECLAIM_WAIT=0
 
@@ -706,6 +769,13 @@ assess_holder() {
   holder_cmd="$(meta_field cmd || true)"
 
   STALE_REASON=""
+
+  # The spawning hold applies only while the flag is set and no child pid has
+  # been recorded. Anything else clears the clock, so the grace period always
+  # measures an uninterrupted run of that exact state.
+  if [ "$holder_spawning" != "1" ] || [ -n "$holder_child" ]; then
+    SPAWNING_SINCE=0
+  fi
 
   if [ -z "$holder_pid" ]; then
     # No readable metadata. Since write_meta is checked, the only holder that
@@ -754,11 +824,20 @@ assess_holder() {
   # token and the pid checks above. We cannot prove nothing is running, so the
   # lock stays held rather than being handed to a second run.
   #
-  # This is a deliberate deadlock in a microsecond-wide crash window, chosen
-  # over a fail-open in the same window: it is loud, it names the directory,
-  # and a human can clear it. The opposite failure is silent and runs two
-  # suites.
+  # Held on first sight, then bounded. A permanent hold here fired on a strict
+  # superset of the fail-open's conditions — including the pre-fork part of the
+  # interval, where no child exists at all — so it wedged locks over runs that
+  # had provably started nothing. SPAWNING_SINCE is reset above whenever the
+  # flag does not apply, so a holder that is merely slow to record its child
+  # accumulates no credit towards being declared dead.
   if [ "$holder_spawning" = "1" ] && [ -z "$holder_child" ]; then
+    if [ "$SPAWNING_SINCE" = "0" ]; then
+      SPAWNING_SINCE="$(now)"
+    fi
+    if [ $(( $(now) - SPAWNING_SINCE )) -lt "$GRACE" ]; then
+      return 0
+    fi
+    STALE_REASON="it died while starting its command (spawning, no child pid, dead holder and dead token for ${GRACE}s)"
     return 0
   fi
 
@@ -917,12 +996,14 @@ while :; do
     [ -n "$holder_cwd" ] && echo "$ME:   holder cwd: $holder_cwd" >&2
     [ -n "$holder_cmd" ] && echo "$ME:   holder cmd: $holder_cmd" >&2
     echo "$ME:   will wait up to $(human_secs "$TIMEOUT"), reporting every ${NOTIFY}s" >&2
+    spawning_notice
     ANNOUNCED_WAIT=1
     LAST_NOTICE="$n"
   elif [ $(( n - LAST_NOTICE )) -ge "$NOTIFY" ]; then
     held_for="?"
     [ -n "$holder_since" ] && held_for="$(human_secs $(( n - holder_since )))"
     echo "$ME: still waiting for '$NAME' after $(human_secs "$waited") — pid ${holder_pid:-?} has held it $held_for" >&2
+    spawning_notice
     LAST_NOTICE="$n"
   fi
 
@@ -931,11 +1012,7 @@ while :; do
     echo "$ME: TIMED OUT after $(human_secs "$waited") waiting for lock '$NAME'" >&2
     echo "$ME:   still held by pid ${holder_pid:-?}${holder_cmd:+ running: $holder_cmd}" >&2
     echo "$ME:   nothing was run. Raise WPMGR_LOCK_TIMEOUT, or wait for that run to finish." >&2
-    if [ "$holder_spawning" = "1" ] && [ -z "$holder_child" ]; then
-      echo "$ME:   NOTE: that lock was taken by a run that died while starting its command." >&2
-      echo "$ME:   It is held deliberately, because whether the command started cannot be" >&2
-      echo "$ME:   determined. If nothing is running, remove $LOCK_DIR by hand." >&2
-    fi
+    spawning_notice
     exit 75
   fi
 

@@ -566,13 +566,70 @@ if ! skip_case; then
   printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\ntoken=wpmgrlock-nothing-runs-under-this-0001\nspawning=1\nhost=test\ncwd=/nowhere\ncmd=died-while-starting\n' \
     "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
 
-  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+  # GRACE well beyond the wait, so what is under test is the HOLD rather than
+  # the bound below it.
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=600 \
     "$LOCK" itest -- echo ADMITTED-OVER-SPAWNING > "$ROOT/o" 2>&1
   st=$?
   expect_status 75 "$st" "a lock that died while starting its command is held, not reclaimed"
   expect_absent "$ROOT/o" "ADMITTED-OVER-SPAWNING" "no second suite ran over a possibly-live command"
-  expect_contains "$ROOT/o" "died while starting its command" "the deliberate hold explains itself and names the remedy"
+  expect_contains "$ROOT/o" "died while starting its" "the hold explains itself and names the remedy"
+
+  # LOUDNESS IS PART OF THE PROPERTY, NOT A NICETY. The explanation used to
+  # print only in the timed-out branch, so with the default WPMGR_LOCK_TIMEOUT
+  # of 3600 a waiter saw the ordinary "held by pid N" line — indistinguishable
+  # from a live suite — for an hour. The population here is agents, and a
+  # blocked agent gets killed, so it was silent for exactly the people who hit
+  # it. Assert the NOTE reaches the WAIT notice, before any timeout.
+  if grep -q "waiting for lock" "$ROOT/o" 2>/dev/null; then
+    ok "the waiter announced the wait"
+  else
+    fail "the waiter never announced the wait, so this case cannot test the notice"
+  fi
+  wait_line="$(grep -n 'waiting for lock' "$ROOT/o" | head -1 | cut -d: -f1)"
+  note_line="$(grep -n 'died while starting its' "$ROOT/o" | head -1 | cut -d: -f1)"
+  timeout_line="$(grep -n 'TIMED OUT' "$ROOT/o" | head -1 | cut -d: -f1)"
+  if [ -n "$note_line" ] && [ -n "$wait_line" ] && [ "$note_line" -gt "$wait_line" ] \
+     && { [ -z "$timeout_line" ] || [ "$note_line" -lt "$timeout_line" ]; }; then
+    ok "the explanation reaches the wait notice, not only the timeout an hour later"
+  else
+    fail "the explanation appears only at timeout (wait=$wait_line note=$note_line timeout=$timeout_line)"
+  fi
   rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "spawning-hold-is-bounded-by-grace"
+if ! skip_case; then
+  # THE BOUND. Holding such a lock forever was justified on two claims that
+  # were both measured false: the interval is a median 7.71 ms rather than
+  # microseconds, and the hold covered roughly 3x the fork-to-exec interval it
+  # protects (median 2.42 ms, max 3.46 ms) — the excess being the PRE-FORK
+  # part, where no child exists at all. So a permanent hold wedged locks over
+  # runs that had provably started nothing, on a strict superset of the
+  # fail-open's conditions.
+  #
+  # `spawning=1` with no `child=` cannot legitimately outlast a forked sh's
+  # exec, so after GRACE it is declared stale like any other unaccountable
+  # lock. Same metadata as the case above; only GRACE differs.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\ntoken=wpmgrlock-nothing-runs-under-this-0003\nspawning=1\nhost=test\ncwd=/nowhere\ncmd=died-while-starting\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+    "$LOCK" itest -- echo RECLAIMED-AFTER-SPAWNING-GRACE > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "the spawning hold expires after the grace period instead of wedging the lock"
+  expect_contains "$ROOT/o" "died while starting its command" "the reclaim names why the lock was held first"
+  expect_contains "$ROOT/o" "RECLAIMED-AFTER-SPAWNING-GRACE" "the command ran once the hold expired"
+  if [ -d "$ROOT/itest.lock" ]; then
+    fail "the lock survived its own reclaim"
+    rm -rf "$ROOT/itest.lock" 2>/dev/null
+  else
+    ok "the reclaimed lock was released normally afterwards"
+  fi
 fi
 
 begin "spawning-with-child-recorded-is-reclaimable"
