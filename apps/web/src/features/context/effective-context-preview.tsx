@@ -9,14 +9,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { DefinitionList, type KvRowProps } from "@/components/shared/definition-list";
-import type {
-  GovContextEffective,
-  GovContextLayerContribution,
-  GuidanceSet,
-  RestrictionSet,
-} from "@wpmgr/api";
+import { DefinitionList } from "@/components/shared/definition-list";
+import type { GovContextEffective, GovContextLayerContribution } from "@wpmgr/api";
 
+import { restrictionRows, guidanceRows } from "./context-rows";
 import { ContextUnavailableError, useEffectiveSiteContext } from "./use-context";
 
 // ADR-064 Decision 8 — the effective-context preview (Screen 1 of the S5
@@ -270,27 +266,4 @@ function EffectiveContextSkeleton() {
       </div>
     </div>
   );
-}
-
-// ── Row builders ─────────────────────────────────────────────────────────
-
-function restrictionRows(restrictions: RestrictionSet): KvRowProps[] {
-  return [
-    { label: "Forbidden tools", value: joinOrUndefined(restrictions.forbidden_tools) },
-    { label: "Forbidden domains", value: joinOrUndefined(restrictions.forbidden_domains) },
-    { label: "Forbidden topics", value: joinOrUndefined(restrictions.forbidden_topics) },
-  ];
-}
-
-function guidanceRows(guidance: GuidanceSet): KvRowProps[] {
-  return [
-    { label: "Brand voice", value: guidance.brand_voice || undefined },
-    { label: "Audience", value: guidance.audience || undefined },
-    { label: "Terminology", value: guidance.terminology || undefined },
-    { label: "Style", value: guidance.style || undefined },
-  ];
-}
-
-function joinOrUndefined(items?: string[]): string | undefined {
-  return items && items.length > 0 ? items.join(", ") : undefined;
 }
