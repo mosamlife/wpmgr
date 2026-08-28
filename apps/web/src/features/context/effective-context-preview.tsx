@@ -94,6 +94,11 @@ function EffectiveContextBody({ data }: { data: GovContextEffective }) {
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Restrictions enforced at dispatch (union of layers 1-3)
         </h3>
+        <p className="text-xs text-muted-foreground">
+          This set is what actually blocks a tool call — it is never shortened
+          by the byte budget below, even when a layer&apos;s own copy further
+          down this page is.
+        </p>
         <div className="rounded-lg border border-border bg-card p-4">
           <DefinitionList rows={restrictionRows(data.restrictions)} />
         </div>
@@ -156,6 +161,16 @@ function LayerOverviewTable({
 
 function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
   const isSessionLayer = layer.layer === 6;
+  // Only layers 2-3 ever carry restrictions (layer 1's is a fixed constant
+  // Decision 9 never truncates; layers 4-6 don't set restrictions at all —
+  // apps/api/internal/govcontext/resolver.go's Resolve on the S4 branch).
+  // For those two, `truncated` can mean this layer's OWN restriction list
+  // was shortened to fit the byte budget — a real, expected state (Decision
+  // 9), but one that must never read as though this card were the complete
+  // enforced set. The enforced union above is the authoritative number;
+  // this callout is what stops a short list here from being mistaken for it.
+  const restrictionsMayBeIncomplete =
+    layer.truncated && (layer.layer === 2 || layer.layer === 3);
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-card p-4">
@@ -173,6 +188,13 @@ function LayerCard({ layer }: { layer: GovContextLayerContribution }) {
         <h5 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Restrictions
         </h5>
+        {restrictionsMayBeIncomplete ? (
+          <p className="text-xs text-warning-subtle-fg">
+            This layer&apos;s own list may be shorter than what&apos;s enforced
+            — truncated to fit the byte budget. See the enforced union above
+            for the complete, untruncated set.
+          </p>
+        ) : null}
         <DefinitionList rows={restrictionRows(layer.restrictions)} />
       </div>
 

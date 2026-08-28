@@ -138,3 +138,56 @@ describe("EffectiveContextPreview — 503 context_unavailable is distinct from a
     expect(screen.queryByText(CONTEXT_UNAVAILABLE_WHAT)).not.toBeInTheDocument();
   });
 });
+
+describe("EffectiveContextPreview — a truncated layer never reads as the complete enforced set", () => {
+  // Security review on ADR-064 S4 (PR #567): Resolve() computes the enforced
+  // union from UNTRUNCATED snapshots, but a layer's own display copy can have
+  // restriction items dropped by the byte-budget truncation (truncate.go).
+  // Only layers 2-3 can carry restrictions at all (resolver.go), so this
+  // fixture puts the shorter, truncated copy on layer 3 while the enforced
+  // union (top-level `restrictions`, never truncated) carries the full set —
+  // the real shape the review flagged, not a hypothetical.
+  function buildTruncatedFixture(): GovContextEffective {
+    const base = buildEffective();
+    const layers = base.layers.map((l) =>
+      l.layer === 3
+        ? { ...l, truncated: true, restrictions: { forbidden_tools: ["shell_exec"] } }
+        : l,
+    );
+    return {
+      ...base,
+      layers,
+      restrictions: { forbidden_tools: ["shell_exec", "wp_eval", "file_delete"] },
+      truncated: true,
+    };
+  }
+
+  it("flags layer 3's own restriction list as possibly incomplete when truncated, and shows the fuller enforced union separately", () => {
+    mockData(buildTruncatedFixture());
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    // The enforced union (never truncated) carries all three items.
+    expect(screen.getByText("shell_exec, wp_eval, file_delete")).toBeInTheDocument();
+    // Layer 3's own (truncated) copy carries only one — a DIFFERENT string
+    // in the DOM, not the same list rendered twice.
+    expect(screen.getByText("shell_exec")).toBeInTheDocument();
+    // The gap between those two is exactly what the callout must surface.
+    expect(
+      screen.getByText(/this layer's own list may be shorter than what's enforced/i),
+    ).toBeInTheDocument();
+  });
+
+  it("does NOT show the incomplete-list callout on a layer that cannot carry restrictions, even if flagged truncated", () => {
+    const base = buildEffective();
+    const layers = base.layers.map((l) => (l.layer === 6 ? { ...l, truncated: true } : l));
+    mockData({ ...base, layers, truncated: true });
+    renderWithProviders(<EffectiveContextPreview siteId="site-1" />);
+
+    // Non-vacuous: the callout text must never appear at all here, not just
+    // "not next to layer 6" — layers 4-6 never set restrictions, so there is
+    // nothing for the callout to be honest about on this fixture.
+    expect(
+      screen.queryByText(/this layer's own list may be shorter than what's enforced/i),
+    ).not.toBeInTheDocument();
+  });
+});
