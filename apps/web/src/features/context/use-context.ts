@@ -1,7 +1,10 @@
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -9,11 +12,20 @@ import {
   getEffectiveSiteContext,
   getOrgContext as apiGetOrgContext,
   patchOrgContext as apiPatchOrgContext,
+  listOrgContextVersions as apiListOrgContextVersions,
+  diffOrgContextVersion as apiDiffOrgContextVersion,
+  restoreOrgContextVersion as apiRestoreOrgContextVersion,
   getSiteContext as apiGetSiteContext,
   patchSiteContext as apiPatchSiteContext,
+  listSiteContextVersions as apiListSiteContextVersions,
+  diffSiteContextVersion as apiDiffSiteContextVersion,
+  restoreSiteContextVersion as apiRestoreSiteContextVersion,
   type ApiError,
   type GovContext,
+  type GovContextDiff,
   type GovContextEffective,
+  type GovContextVersionList,
+  type GovContextVersionSummary,
   type PatchGovContextRequest,
 } from "@wpmgr/api";
 
@@ -21,18 +33,23 @@ import { toError } from "@/features/auth/use-auth";
 
 // ADR-064 (governed org/site context) — S5.
 //
-// Stage A covered ONLY the effective-context preview (Decision 8, Screen 1).
-// Stage B adds the org/site context read+write hooks below (Decision
-// 6/13) — org and site editors, and the three write-path refusals Decision
-// 4/10/13 define. Version history, diff and restore (Decision 5) are not yet
-// built; grow `contextKeys` further (e.g. `contextKeys.orgVersions(orgId)`)
-// rather than starting a second key factory when that lands.
+// Stage A covered the effective-context preview (Decision 8, Screen 1).
+// Stage B added the org/site editors and the three write-path refusals
+// (Decision 4/10/13, below). This section adds version history, diff and
+// restore (Decision 5) — the last of the five screens in the original S5
+// brief.
 
 export const contextKeys = {
   all: ["gov-context"] as const,
   effective: (siteId: string) => [...contextKeys.all, "effective", siteId] as const,
   org: (orgId: string) => [...contextKeys.all, "org", orgId] as const,
   site: (siteId: string) => [...contextKeys.all, "site", siteId] as const,
+  orgVersions: (orgId: string) => [...contextKeys.all, "org-versions", orgId] as const,
+  siteVersions: (siteId: string) => [...contextKeys.all, "site-versions", siteId] as const,
+  orgVersionDiff: (orgId: string, versionId: string) =>
+    [...contextKeys.all, "org-version-diff", orgId, versionId] as const,
+  siteVersionDiff: (siteId: string, versionId: string) =>
+    [...contextKeys.all, "site-version-diff", siteId, versionId] as const,
 };
 
 /**
@@ -288,6 +305,185 @@ export function usePatchSiteContext(
       queryClient.setQueryData(contextKeys.site(siteId), updated);
       // Layer 3 changed — this site's effective-context preview (Decision 8,
       // Screen 1) is stale (Decision 2). Targeted, since we know the site.
+      void queryClient.invalidateQueries({ queryKey: contextKeys.effective(siteId) });
+    },
+  });
+}
+
+// ── Version history, diff, restore (Decision 5) ─────────────────────────
+//
+// The list/item/diff routes return STORED rows — what was authored at write
+// time, never a resolved context. A diff between two versions is therefore a
+// diff of authored intent, not of what was enforced at either moment: an
+// organisation's own restrictions can move between when a site version was
+// written and when it is read here, and a stored site-layer row never
+// restates the org's current state. Nothing in this section computes or
+// implies an "as enforced" comparison — that is Screen 1's job, on live data,
+// never this screen's on history.
+
+export interface UseGovContextVersionsResult {
+  items: GovContextVersionSummary[];
+  fetchNextPage: UseInfiniteQueryResult<InfiniteData<GovContextVersionList>, Error>["fetchNextPage"];
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  isPending: boolean;
+  isError: boolean;
+  error: Error | null;
+  refetch: UseInfiniteQueryResult<InfiniteData<GovContextVersionList>, Error>["refetch"];
+}
+
+/** `GET /api/v1/orgs/{orgId}/context/versions` — paginated, newest first. */
+export function useOrgContextVersions(orgId: string): UseGovContextVersionsResult {
+  const result = useInfiniteQuery<
+    GovContextVersionList,
+    Error,
+    InfiniteData<GovContextVersionList>,
+    ReturnType<typeof contextKeys.orgVersions>,
+    number | undefined
+  >({
+    queryKey: contextKeys.orgVersions(orgId),
+    initialPageParam: undefined,
+    // `next_cursor: 0` means "no further page" (GovContextVersionList's own
+    // doc comment) — falsy, so `|| undefined` reads it correctly as "stop".
+    getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
+    queryFn: async ({ pageParam }) => {
+      const { data, error } = await apiListOrgContextVersions({
+        path: { orgId },
+        query: pageParam !== undefined ? { cursor: pageParam } : undefined,
+      });
+      if (error) throw toError(error);
+      return data ?? { items: [], next_cursor: 0 };
+    },
+  });
+  return {
+    items: result.data?.pages.flatMap((p) => p.items) ?? [],
+    fetchNextPage: result.fetchNextPage,
+    hasNextPage: result.hasNextPage,
+    isFetchingNextPage: result.isFetchingNextPage,
+    isPending: result.isPending,
+    isError: result.isError,
+    error: result.error,
+    refetch: result.refetch,
+  };
+}
+
+/** `GET /api/v1/sites/{siteId}/context/versions` — site-scope sibling. */
+export function useSiteContextVersions(siteId: string): UseGovContextVersionsResult {
+  const result = useInfiniteQuery<
+    GovContextVersionList,
+    Error,
+    InfiniteData<GovContextVersionList>,
+    ReturnType<typeof contextKeys.siteVersions>,
+    number | undefined
+  >({
+    queryKey: contextKeys.siteVersions(siteId),
+    initialPageParam: undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
+    queryFn: async ({ pageParam }) => {
+      const { data, error } = await apiListSiteContextVersions({
+        path: { siteId },
+        query: pageParam !== undefined ? { cursor: pageParam } : undefined,
+      });
+      if (error) throw toError(error);
+      return data ?? { items: [], next_cursor: 0 };
+    },
+  });
+  return {
+    items: result.data?.pages.flatMap((p) => p.items) ?? [],
+    fetchNextPage: result.fetchNextPage,
+    hasNextPage: result.hasNextPage,
+    isFetchingNextPage: result.isFetchingNextPage,
+    isPending: result.isPending,
+    isError: result.isError,
+    error: result.error,
+    refetch: result.refetch,
+  };
+}
+
+/**
+ * `GET /api/v1/orgs/{orgId}/context/versions/{versionId}/diff` — fetched only
+ * when a row is expanded (`enabled`), never eagerly for the whole list.
+ */
+export function useOrgContextVersionDiff(
+  orgId: string,
+  versionId: string,
+  options: { enabled: boolean },
+): UseQueryResult<GovContextDiff, Error> {
+  return useQuery({
+    queryKey: contextKeys.orgVersionDiff(orgId, versionId),
+    queryFn: async () => {
+      const { data, error } = await apiDiffOrgContextVersion({ path: { orgId, versionId } });
+      if (error) throw toError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    enabled: options.enabled,
+  });
+}
+
+/** Site-scope sibling of {@link useOrgContextVersionDiff}. */
+export function useSiteContextVersionDiff(
+  siteId: string,
+  versionId: string,
+  options: { enabled: boolean },
+): UseQueryResult<GovContextDiff, Error> {
+  return useQuery({
+    queryKey: contextKeys.siteVersionDiff(siteId, versionId),
+    queryFn: async () => {
+      const { data, error } = await apiDiffSiteContextVersion({ path: { siteId, versionId } });
+      if (error) throw toError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    enabled: options.enabled,
+  });
+}
+
+/**
+ * `POST /api/v1/orgs/{orgId}/context/versions/{versionId}/restore` — a new
+ * version whose snapshot equals `versionId`'s (Decision 5). Runs through the
+ * SAME widen-check, secret-scan and audit transaction as an ordinary PATCH
+ * (service.go's own doc comment: "It is not a back door around either"), so
+ * it can refuse with the identical three codes `toPatchContextError` already
+ * maps — reused here rather than a fourth error class, because the shape is
+ * identical; only the UI copy for *why* a restore was refused differs (a
+ * restore's widen refusal means "this version would reintroduce something
+ * since tightened", not "your edit tried to remove something").
+ */
+export function useRestoreOrgContextVersion(
+  orgId: string,
+): UseMutationResult<GovContext, Error, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (versionId: string) => {
+      const { data, error } = await apiRestoreOrgContextVersion({ path: { orgId, versionId } });
+      if (error) throw toPatchContextError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(contextKeys.org(orgId), updated);
+      void queryClient.invalidateQueries({ queryKey: contextKeys.orgVersions(orgId) });
+      void queryClient.invalidateQueries({ queryKey: [...contextKeys.all, "effective"] });
+    },
+  });
+}
+
+/** Site-scope sibling of {@link useRestoreOrgContextVersion}. */
+export function useRestoreSiteContextVersion(
+  siteId: string,
+): UseMutationResult<GovContext, Error, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (versionId: string) => {
+      const { data, error } = await apiRestoreSiteContextVersion({ path: { siteId, versionId } });
+      if (error) throw toPatchContextError(error);
+      if (!data) throw new Error("Empty response");
+      return data;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(contextKeys.site(siteId), updated);
+      void queryClient.invalidateQueries({ queryKey: contextKeys.siteVersions(siteId) });
       void queryClient.invalidateQueries({ queryKey: contextKeys.effective(siteId) });
     },
   });

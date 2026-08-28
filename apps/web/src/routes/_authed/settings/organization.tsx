@@ -17,6 +17,7 @@ import { CopyableMono } from "@/components/shared/copyable-mono";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { useMe } from "@/features/auth/use-auth";
 import { OrgContextSection } from "@/features/context/org-context-section";
+import { OrgContextHistorySection } from "@/features/context/org-context-history-section";
 import {
   useOrgs,
   useRenameOrg,
@@ -79,6 +80,7 @@ function OrganizationSettingsPage() {
         <>
           <OrgCard key={activeOrg.id} org={activeOrg} />
           <OrgContextCard key={`${activeOrg.id}-context`} org={activeOrg} />
+          <OrgContextHistoryCard key={`${activeOrg.id}-context-history`} org={activeOrg} />
           {activeOrg.role === "owner" ? (
             <DangerZoneCard
               key={`${activeOrg.id}-danger`}
@@ -211,6 +213,29 @@ function OrgContextCard({ org }: { org: Org }) {
       </CardHeader>
       <CardContent>
         <OrgContextSection orgId={org.id} canWrite={canWrite} />
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OrgContextHistoryCard: ADR-064 S5 Screen 4 — version history, diff and
+// restore (Decision 5). Same read/write gate as OrgContextCard above.
+// ---------------------------------------------------------------------------
+
+function OrgContextHistoryCard({ org }: { org: Org }) {
+  const canWrite = org.role === "owner" || org.role === "admin";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Organisation context history</CardTitle>
+        <CardDescription>
+          Every accepted write, newest first. A diff compares what was
+          authored in two versions, not what either enforced at the time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <OrgContextHistorySection orgId={org.id} canWrite={canWrite} />
       </CardContent>
     </Card>
   );
