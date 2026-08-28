@@ -110,6 +110,9 @@ const TABS = [
   { to: "/sites/$siteId/email", label: "Email" },
   // File manager (P1 read-only browser). Route: $siteId.files.tsx.
   { to: "/sites/$siteId/files", label: "Files" },
+  // ADR-064 S5 — governed org/site context tab. Route file:
+  // apps/web/src/routes/_authed/sites/$siteId.context.tsx
+  { to: "/sites/$siteId/context", label: "Context" },
   { to: "/sites/$siteId/settings", label: "Settings" },
 ] as const;
 

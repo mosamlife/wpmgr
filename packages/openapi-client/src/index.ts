@@ -248,6 +248,20 @@ export {
   searchSiteFiles,
   listSiteFileVersions,
   restoreSiteFileVersion,
+  // governed org/site context (ADR-064 S4)
+  getOrgContext,
+  patchOrgContext,
+  listOrgContextVersions,
+  getOrgContextVersion,
+  diffOrgContextVersion,
+  restoreOrgContextVersion,
+  getSiteContext,
+  patchSiteContext,
+  listSiteContextVersions,
+  getSiteContextVersion,
+  diffSiteContextVersion,
+  restoreSiteContextVersion,
+  getEffectiveSiteContext,
 } from "./generated/sdk.gen";
 
 // --- Domain + request/response types ----------------------------------------
@@ -876,6 +890,20 @@ export type {
   ListSiteFileVersionsResponse,
   RestoreSiteFileVersionData,
   RestoreSiteFileVersionResponse,
+  // governed org/site context (ADR-064 S4)
+  RestrictionSet,
+  GuidanceSet,
+  GovContext,
+  GovContextVersionSummary,
+  GovContextVersionList,
+  GovContextVersionItem,
+  GovContextListDiff,
+  GovContextFieldDiff,
+  GovContextSnapshotDiff,
+  GovContextDiff,
+  GovContextLayerContribution,
+  GovContextEffective,
+  PatchGovContextRequest,
   // admin-billing (superadmin billing-admin panel: accounts / account detail / revenue)
   AdminAccountTiles,
   AdminAccountListItem,
