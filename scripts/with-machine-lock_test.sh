@@ -294,7 +294,10 @@ if ! skip_case; then
   #
   # The property: a live test process means the lock is not stale, regardless
   # of what happened to the wrapper.
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 30 > "$ROOT/holder" 2>&1 &
+  # A duration unique to this case: `pgrep -f` is machine-wide, so a shared
+  # `sleep 30` would match another case's leftover and this one would pass or
+  # fail on the wrong process.
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 41 > "$ROOT/holder" 2>&1 &
   wp=$!
 
   # Bounded wait for the lock to record the command's pid. No unbounded loop.
@@ -337,7 +340,10 @@ if ! skip_case; then
     expect_absent "$ROOT/o" "SECOND-SUITE-ADMITTED" "no second suite started alongside a live one"
     expect_absent "$ROOT/o" "RECLAIM" "the live child's lock was not reclaimed as stale"
 
+    # Kill the grandchild too, not just the recorded shell: leaving it behind
+    # pollutes every later case that greps for a running command.
     kill -9 "$child" 2>/dev/null
+    pkill -9 -f 'sleep 41' 2>/dev/null
   fi
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
@@ -484,7 +490,7 @@ if ! skip_case; then
   #
   # The lock must still refuse, and it can only do so via the token, which was
   # written before the fork.
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 30 > "$ROOT/holder" 2>&1 &
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 43 > "$ROOT/holder" 2>&1 &
   wp=$!
 
   tok=""
@@ -527,6 +533,7 @@ if ! skip_case; then
     expect_absent "$ROOT/o" "RECLAIM" "the token kept the lock from being read as stale"
 
     pkill -f "$tok" 2>/dev/null
+    pkill -9 -f 'sleep 43' 2>/dev/null
   fi
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
@@ -627,6 +634,65 @@ if ! skip_case; then
   kill -9 "$livechild" 2>/dev/null
   wait "$livechild" 2>/dev/null
   rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "signal-does-not-release-live-command"
+if ! skip_case; then
+  # A SIGTERM to the wrapper must stop the whole run before the lock is
+  # released. `kill $CHILD` reaped only the token-bearing `sh`, let `wait`
+  # return, and released the lock while the real command — its child — kept
+  # running, so a second suite could start alongside it.
+  #
+  # The command here is a shell that starts its own child, which is the shape
+  # the real target has (`sh -c 'cd apps/api && go test ...'`).
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sh -c 'sleep 37' > "$ROOT/holder" 2>&1 &
+  wp=$!
+
+  tok=""
+  i=0
+  while [ "$i" -lt 10 ]; do
+    tok="$(sed -n 's/^token=//p' "$ROOT/itest.lock/meta" 2>/dev/null | head -1)"
+    [ -n "$tok" ] && break
+    sleep 1
+    i=$(( i + 1 ))
+  done
+
+  if [ -z "$tok" ]; then
+    fail "the holder never took the lock — this case would prove nothing"
+  else
+    grandkid="$(pgrep -f 'sleep 37' 2>/dev/null | head -1)"
+    if [ -n "$grandkid" ]; then
+      ok "the protected command has a grandchild ($grandkid), as the real target does"
+    else
+      fail "no grandchild was started — this case would not exercise the tree kill"
+    fi
+
+    kill -TERM "$wp" 2>/dev/null
+    wait "$wp" 2>/dev/null
+
+    # Give the handler its bounded escalation window before judging it.
+    i=0
+    while [ "$i" -lt 8 ]; do
+      pgrep -f 'sleep 37' >/dev/null 2>&1 || break
+      sleep 1
+      i=$(( i + 1 ))
+    done
+
+    if pgrep -f 'sleep 37' >/dev/null 2>&1; then
+      fail "the command survived the signal; the lock was released over a live run"
+      pkill -9 -f 'sleep 37' 2>/dev/null
+    else
+      ok "the signal stopped the command and its grandchild, not just the wrapper"
+    fi
+
+    # Only once nothing is running may the lock be gone.
+    if [ -d "$ROOT/itest.lock" ]; then
+      fail "the lock was left behind after a clean signal shutdown"
+      rm -rf "$ROOT/itest.lock" 2>/dev/null
+    else
+      ok "the lock was released after the run had actually stopped"
+    fi
+  fi
 fi
 
 begin "reclaim-salvage-removed"

@@ -403,13 +403,63 @@ release() {
 # WAIT for the child to go before releasing — releasing first would hand the
 # lock to a second suite while this one's containers were still shutting down,
 # which is property 1 failing in the other direction.
+# kill_tree PID SIG — signal PID and every descendant, children first.
+#
+# `kill $CHILD` is not enough and never was. CHILD is the token-bearing `sh`,
+# and the real work is ITS child (`go test`, which is itself under another
+# `sh -c 'cd apps/api && ...'`). Signalling only CHILD reaped the shell, let
+# `wait` return, and released the lock while the suite and its containers were
+# still running — a second `make test-integration` could then start alongside
+# it. Depth-first so a descendant is signalled before the parent that would
+# otherwise re-parent it away mid-sweep.
+kill_tree() {
+  _kids="$(pgrep -P "$1" 2>/dev/null)"
+  for _k in $_kids; do
+    kill_tree "$_k" "$2"
+  done
+  kill -"$2" "$1" 2>/dev/null
+}
+
+# still_running -> 0 if any part of the protected run survives.
+still_running() {
+  if [ -n "$CHILD" ] && kill -0 "$CHILD" 2>/dev/null; then
+    return 0
+  fi
+  is_token_live "$TOKEN"
+}
+
 on_signal() { # on_signal SIGNAME SIGNUM
   echo "" >&2
   echo "$ME: caught SIG$1 — stopping the command and releasing the $NAME lock" >&2
-  if [ -n "$CHILD" ] && kill -0 "$CHILD" 2>/dev/null; then
-    kill -TERM "$CHILD" 2>/dev/null
+  if [ -n "$CHILD" ]; then
+    kill_tree "$CHILD" TERM
     wait "$CHILD" 2>/dev/null
+
+    # Bounded, never an unbounded wait: TERM, then escalate. A descendant that
+    # ignores TERM must not leave us releasing the lock over a live suite.
+    _n=0
+    while [ "$_n" -lt 5 ]; do
+      still_running || break
+      sleep 1
+      _n=$(( _n + 1 ))
+    done
+    if still_running; then
+      echo "$ME: the command did not stop on TERM — escalating to KILL" >&2
+      kill_tree "$CHILD" KILL
+      sleep 1
+    fi
   fi
+
+  # The lock is released only once nothing is left running under it. Releasing
+  # over a live command is the exact fail-open this whole change removes, and
+  # refusing here is loud and recoverable; releasing is silent and is not.
+  if still_running; then
+    echo "$ME: NOT releasing '$NAME' — something is still running under it" >&2
+    echo "$ME:   lock left at $LOCK_DIR deliberately; it will be reclaimed once that exits" >&2
+    trap - EXIT
+    exit $(( 128 + $2 ))
+  fi
+
   release
   trap - EXIT
   exit $(( 128 + $2 ))
