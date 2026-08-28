@@ -353,23 +353,58 @@
 --     coalesce(current_setting('app.site_scope', true), '') <> 'on'
 --
 -- WITH CHECK on the INSERT gate (there is no existing row to test) and USING on
--- the UPDATE and DELETE gates (USING is what decides which existing rows the
--- statement may reach). A site-scoped principal can create no grant, revoke no
--- grant, and mint or destroy no token, in the database, whatever a handler
--- forgets.
+-- the SELECT, UPDATE and DELETE gates (USING is what decides which existing
+-- rows the statement may reach). A site-scoped principal can read no grant,
+-- create no grant, revoke no grant, and mint or destroy no token, in the
+-- database, whatever a handler forgets.
 --
--- WHY THREE COMMAND-SPECIFIC POLICIES AND NOT ONE FOR ALL. Because FOR ALL is
--- AND-combined onto SELECT as well, and gating the read is not wanted: a
--- site-scoped collaborator seeing that their organisation has connected an AI
--- client is not an escalation, and a restrictive SELECT here would break the
--- ordinary listing for exactly the principals most likely to be looking. This
--- is m123's reasoning and m123 exists because m122 got the INSERT-only version
--- of it wrong -- so the three-policy set is written completely here on the way
--- in, rather than as an INSERT gate plus a converge migration later.
+-- THE SELECT GATE WAS ADDED BY SECURITY REVIEW OF PR #569 (finding F1), AND THE
+-- REASONING IT REPLACED IS WORTH KEEPING, BECAUSE IT WAS WRONG IN AN
+-- INSTRUCTIVE WAY. This file originally gated INSERT, UPDATE and DELETE only,
+-- and argued that gating the read was unwanted: "a site-scoped collaborator
+-- seeing that their organisation has connected an AI client is not an
+-- escalation". That sentence is true and it is not the question. The review
+-- executed the read as wpmgr_app with app.site_scope = 'on' and a collaborator
+-- shared onto ONE site returned the whole organisation's grant list --
+-- including scope_site_ids, which is a uuid[] naming EVERY OTHER SITE the
+-- organisation has granted MCP access to.
 --
--- NOT ON mcp_authorization_codes OR mcp_oauth_clients. Neither is created by a
--- dashboard principal: a code is minted by the authorize endpoint after a user
--- consents, and a client row is minted by an unauthenticated registration POST.
+-- So the leak is not "a connection exists". It is a COLUMN INSIDE THE ROW that
+-- enumerates sites the principal was never granted. That distinction decides
+-- the shape of the fix, and it is the reason the gate is TOTAL rather than a
+-- filter: RLS filters ROWS, and no row filter can withhold a column from a row
+-- the principal is otherwise allowed to see. A "show only grants overlapping
+-- your sites" policy would still hand back scope_site_ids in full on every row
+-- it admitted. Total refusal is the only shape that closes a column leak.
+--
+-- It also matters that RequireSiteAccess returns 404 rather than 403 precisely
+-- so that no existence oracle for foreign sites exists at the HTTP layer.
+-- Leaving SELECT open would have reinstated that oracle at the data layer the
+-- moment S6b shipped a list endpoint -- an ADR-level property of the product
+-- undone by a policy omission two slices away.
+--
+-- WHAT THE REFUSAL COSTS, ASKED BEFORE IT WAS ACCEPTED. Nothing real. An MCP
+-- grant is an organisation-level credential and managing one is an
+-- organisation-admin action. This is the point where m122's warning does NOT
+-- apply: there, a restrictive SELECT would have broken a read ADR-064 Decision
+-- 6 explicitly requires, so the gate would have cost a legitimate caller. Here
+-- no decision anywhere entitles a site-scoped collaborator to the grant list,
+-- so the gate refuses nobody who was entitled. A SELECT gate has to earn its
+-- place against a named reader; this one has no reader to break.
+--
+-- ALSO ON mcp_authorization_codes, WHICH GOES BEYOND WHAT F1 ASKED. The review
+-- named mcp_grants and mcp_connection_tokens. The codes table is gated too, on
+-- the narrow ground that it is credential-lifecycle data with NO site-scoped
+-- reader anywhere -- not on "completing the set", which is exactly the reflex
+-- m122's header warns against. The test applied was the same one: name the
+-- caller the gate would break. There is none.
+--
+-- NOT ON mcp_oauth_clients. It is minted by an unauthenticated registration
+-- POST, is not tenant-scoped at all, and is already invisible to any
+-- transaction that sets neither of its two GUCs -- a site-scoped session
+-- included. A site_scope gate there would refuse nothing that FORCE ROW LEVEL
+-- SECURITY does not already refuse, and would falsely suggest that a
+-- site-scoped principal had a path to it.
 -- Neither ever runs with app.site_scope set, so a gate there would refuse
 -- nothing and would only suggest, falsely, that a site-scoped principal had a
 -- path to those tables.
@@ -487,6 +522,17 @@
 --      an empty payload being stored, but nothing stops Go from computing an
 --      empty set (a tag that matches no site) and then treating it as absence
 --      of a filter.
+--
+--      THE RESOLUTION MUST RUN INSIDE InTenantTx, and that is a correctness
+--      requirement rather than a convention. scope_site_ids is a uuid[] and
+--      PostgreSQL has no foreign key over array elements, so the column ACCEPTS
+--      ANY UUID -- including a site id belonging to another organisation, or
+--      one that never existed. Nothing in this file can refuse that, and no
+--      CHECK can: the constraint needed is a cross-table membership test.
+--      Resolving inside a tenant transaction is the only place it is caught,
+--      because joining through `sites` under RLS silently drops every id that
+--      is not this tenant's. Resolve outside one -- or against a cached site
+--      list -- and a foreign UUID stays in the set all the way to the read.
 --   3. REFUSING A CLIENT THAT REQUESTS NO RECOGNISED SCOPE, rather than
 --      granting a default. The schema makes the unset value unstorable; the
 --      REQUEST side of that gate is S6b's and is S6's stated exit criterion.
@@ -499,6 +545,34 @@
 --      feature.
 --   6. THE PLAINTEXT CREDENTIAL IS RETURNED ONCE, AT CREATION, AND NEVER READ
 --      BACK. There is no column to read it back from; do not add a cache.
+--   7. THE CONSENT SCREEN MUST PRESENT REGISTRATION-SUPPLIED IDENTITY AS
+--      UNVERIFIED, AND redirect_uri MUST BE EXACT-MATCHED AGAINST THE STORED
+--      ARRAY. This is PR #569 finding F2 and it is a Go obligation because it
+--      cannot be a schema one.
+--
+--      Registration is unauthenticated, so client_name and client_uri are
+--      ATTACKER-CONTROLLED STRINGS. The unique index on this table is on
+--      client_id alone, so two clients both calling themselves "Claude Desktop"
+--      with identical redirect_uris store cleanly -- proven by the review. A
+--      consent screen that renders client_name as though it were verified would
+--      then say "Claude Desktop wants to read your fleet" over an attacker's
+--      registration, and the user's consent is the entire authorization.
+--
+--      NO INDEX OR CONSTRAINT CAN FIX THIS, which is why it is listed here
+--      rather than added above: the database cannot distinguish a second
+--      legitimate registration of a popular client from an impersonating one,
+--      and a uniqueness constraint on client_name would break the legitimate
+--      case while an attacker simply picks a different string. The defence is
+--      presentational (show the identity as self-asserted, show the redirect
+--      host) plus an exact match of the presented redirect_uri against
+--      redirect_uris -- never a prefix, suffix or host-only comparison, each of
+--      which is a redirector.
+--
+--      Note this is NOT covered by the header's third enumeration defence. That
+--      argument says a client_id is not a secret and possession authorizes
+--      nothing. True, and it addresses reading the table -- not a user being
+--      deceived into authorizing a registration that is exactly what it claims
+--      to be at the database level and a lie at the human level.
 --
 -- ===========================================================================
 -- IDEMPOTENCE AND BOOT SAFETY
@@ -665,9 +739,32 @@ BEGIN
 END;
 $$;
 
--- A site-scoped collaborator must not MINT an organisation-wide read
--- credential. Three command-specific RESTRICTIVE gates, m123's shape; SELECT is
--- deliberately left alone. See DECISION 9.
+-- A site-scoped collaborator must not READ or MINT an organisation-wide read
+-- credential. Four command-specific RESTRICTIVE gates, m123's shape. See
+-- DECISION 9.
+--
+-- THE SELECT GATE IS PR #569 FINDING F1. Without it a collaborator shared onto
+-- one site reads the whole organisation's grant list, and scope_site_ids names
+-- every other site the organisation has granted MCP access to. The leak is a
+-- COLUMN inside the row, and RLS filters rows, so no partial filter closes it --
+-- total refusal is the only shape that works. Nothing is entitled to this read:
+-- a grant is an organisation-level credential.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'mcp_grants'
+          AND policyname = 'mcp_grants_site_scope_select'
+    ) THEN
+        CREATE POLICY "mcp_grants_site_scope_select" ON "public"."mcp_grants"
+            AS RESTRICTIVE FOR SELECT
+            USING (
+                coalesce(current_setting('app.site_scope', true), '') <> 'on'
+            );
+    END IF;
+END;
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -866,8 +963,31 @@ BEGIN
 END;
 $$;
 
--- A site-scoped collaborator must not mint or destroy a connection token
--- against an organisation-wide grant. See DECISION 9.
+-- A site-scoped collaborator must not read, mint or destroy a connection token
+-- against an organisation-wide grant. See DECISION 9. The SELECT gate is PR
+-- #569 finding F1; this is credential storage and no site-scoped principal is
+-- entitled to enumerate it.
+--
+-- The gate does NOT interfere with mcp_connection_tokens_lookup above: that
+-- runs in the authentication transaction, which sets app.mcp_token_lookup and
+-- does NOT set app.site_scope, so this RESTRICTIVE predicate is a tautology
+-- there and the lookup still resolves.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'mcp_connection_tokens'
+          AND policyname = 'mcp_connection_tokens_site_scope_select'
+    ) THEN
+        CREATE POLICY "mcp_connection_tokens_site_scope_select" ON "public"."mcp_connection_tokens"
+            AS RESTRICTIVE FOR SELECT
+            USING (
+                coalesce(current_setting('app.site_scope', true), '') <> 'on'
+            );
+    END IF;
+END;
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -1170,6 +1290,27 @@ BEGIN
         CREATE POLICY "mcp_authorization_codes_lookup" ON "public"."mcp_authorization_codes"
             FOR SELECT
             USING (current_setting('app.mcp_code_lookup', true) = 'on');
+    END IF;
+END;
+$$;
+
+-- Credential-lifecycle data with no site-scoped reader anywhere. Gated for the
+-- same reason as its two siblings, and beyond what PR #569's F1 asked for --
+-- see DECISION 9 for why that is a narrow argument and not "completing the
+-- set". As above, the lookup transaction does not set app.site_scope, so this
+-- predicate is a tautology there and the token exchange still resolves.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'mcp_authorization_codes'
+          AND policyname = 'mcp_authorization_codes_site_scope_select'
+    ) THEN
+        CREATE POLICY "mcp_authorization_codes_site_scope_select" ON "public"."mcp_authorization_codes"
+            AS RESTRICTIVE FOR SELECT
+            USING (
+                coalesce(current_setting('app.site_scope', true), '') <> 'on'
+            );
     END IF;
 END;
 $$;

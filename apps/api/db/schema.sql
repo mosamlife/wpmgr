@@ -5672,11 +5672,22 @@ CREATE POLICY mcp_grants_tenant_isolation ON mcp_grants
     USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 
--- A site-scoped collaborator must not MINT an organisation-wide read
+-- A site-scoped collaborator must not READ or MINT an organisation-wide read
 -- credential -- the m112 defect class, producing a live bearer credential that
--- outlives the session that made it. Three command-specific RESTRICTIVE gates
--- (m123's shape); SELECT is deliberately left alone, because FOR ALL would be
--- AND-combined onto the read as well.
+-- outlives the session that made it. Four command-specific RESTRICTIVE gates
+-- (m123's shape).
+--
+-- THE SELECT GATE IS PR #569 FINDING F1. Without it a collaborator shared onto
+-- one site reads the whole organisation's grant list, and scope_site_ids names
+-- every other site the org has granted MCP access to. The leak is a COLUMN
+-- inside the row and RLS filters rows, so no partial filter closes it: total
+-- refusal is the only shape that works. It breaks no entitled reader -- a grant
+-- is an organisation-level credential -- which is the test a SELECT gate has to
+-- pass, and the reason m122 correctly refused one on org_context_versions.
+CREATE POLICY mcp_grants_site_scope_select ON mcp_grants
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
+
 CREATE POLICY mcp_grants_site_scope_insert ON mcp_grants
     AS RESTRICTIVE FOR INSERT
     WITH CHECK (coalesce(current_setting('app.site_scope', true), '') <> 'on');
@@ -5737,6 +5748,14 @@ CREATE POLICY mcp_connection_tokens_tenant_isolation ON mcp_connection_tokens
 CREATE POLICY mcp_connection_tokens_lookup ON mcp_connection_tokens
     FOR SELECT
     USING (current_setting('app.mcp_token_lookup', true) = 'on');
+
+-- Credential storage; no site-scoped principal is entitled to enumerate it.
+-- The gate does not interfere with mcp_connection_tokens_lookup: the
+-- authentication transaction sets app.mcp_token_lookup and NOT app.site_scope,
+-- so this RESTRICTIVE predicate is a tautology there.
+CREATE POLICY mcp_connection_tokens_site_scope_select ON mcp_connection_tokens
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
 
 CREATE POLICY mcp_connection_tokens_site_scope_insert ON mcp_connection_tokens
     AS RESTRICTIVE FOR INSERT
@@ -5851,6 +5870,14 @@ CREATE POLICY mcp_authorization_codes_tenant_isolation ON mcp_authorization_code
 CREATE POLICY mcp_authorization_codes_lookup ON mcp_authorization_codes
     FOR SELECT
     USING (current_setting('app.mcp_code_lookup', true) = 'on');
+
+-- Credential-lifecycle data with no site-scoped reader anywhere. Beyond what PR
+-- #569's F1 asked for, on that narrow ground rather than on "completing the
+-- set". The lookup transaction does not set app.site_scope, so the token
+-- exchange still resolves.
+CREATE POLICY mcp_authorization_codes_site_scope_select ON mcp_authorization_codes
+    AS RESTRICTIVE FOR SELECT
+    USING (coalesce(current_setting('app.site_scope', true), '') <> 'on');
 
 -- NO REVOKE here, unlike the context tables above: these are not append-only. A
 -- grant is revoked by flipping status, a token is rotated, a code is marked
