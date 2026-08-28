@@ -484,3 +484,39 @@ export function canOperate(me: Me | null | undefined): boolean {
   // except viewer is operator-capable (server enforces per-site).
   return role === "owner" || role === "admin" || role === "operator";
 }
+
+/**
+ * Whether the principal may write THIS SITE's governed context (ADR-064
+ * Decision 6 / m123): "site-scope write additionally requires access to
+ * that specific site" — it is not gated on an organisation membership at
+ * all, unlike organisation-scope context write (owner/admin only,
+ * unaffected by this function). `canOperate`/`activeRole` only ever read
+ * `me.memberships`, so a genuine site-scoped collaborator — who has none —
+ * always reads as unauthorized through them, hiding an entitlement
+ * `context.site.write` actually grants (Greptile finding on #566, "Site
+ * collaborators remain read-only").
+ *
+ * No existing helper in this codebase gates a site-collaborator-visible
+ * WRITE action by their own share role: every other `me.scope === "site"`
+ * site — settings/members.tsx, the fleet rollups, the updates card — either
+ * excludes the collaborator outright or degrades to a read-only/best-effort
+ * view. This function is the first of that shape; noted here, and in the
+ * PR thread, as an established pattern rather than a silent one-off.
+ *
+ * `me.scope` is `"org" | "site" | ""` and can also be absent on an older
+ * response. Absence or any value other than the two named ones resolves to
+ * `false` — refused, never a default and never "narrower, so allow it" —
+ * because an unrecognised scope is an unknown principal shape, not a site
+ * collaborator by another name.
+ */
+export function canWriteSiteContext(me: Me | null | undefined): boolean {
+  if (!me) return false;
+  // An org-scoped member with operator+ role already covers every site in
+  // their org — same entitlement canOperate already grants for other
+  // site-level writes.
+  if (canOperate(me)) return true;
+  if (me.scope === "site") {
+    return me.role === "owner" || me.role === "admin" || me.role === "operator";
+  }
+  return false;
+}
