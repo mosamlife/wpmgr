@@ -187,6 +187,41 @@ const (
 	// management action. Org-level (see orgLevelPerms): a site-scoped
 	// collaborator must never reach it regardless of role.
 	PermBillingManage Permission = "billing:manage"
+
+	// ADR-064 (governed per-site and organisation context), Decision 6. The
+	// string values match the ADR's own capability names exactly
+	// ("context.org.read" etc.) — Decision 6 gates these routes on the same
+	// explicit capability registry ADR-061 Decision 5 introduced for API keys,
+	// not a new role tier, so the wire-visible capability string and the
+	// internal Permission constant are deliberately the same text.
+	//
+	// PermOrgContextRead reads an organisation's layer-2 context (current +
+	// history + diff). Viewer+, and NOT in orgLevelPerms: Decision 6 gives read
+	// access "at the organisation AND the site scope that cover that site", and
+	// Decision 8's effective-context preview renders layer 2 for a site-scoped
+	// collaborator's own site — blocking this permission for a site-scoped
+	// principal would break both. This mirrors m122/m123's own RLS choice: no
+	// restrictive SELECT policy on org_context_versions.
+	PermOrgContextRead Permission = "context.org.read"
+	// PermOrgContextWrite authors a new organisation context version (PATCH,
+	// restore). Admin+, and IS in orgLevelPerms: Decision 6 states "organisation-
+	// scope write is held by organisation administrators", and a site-scoped
+	// collaborator authoring org-wide (layer 2) context is exactly the m112/m123
+	// defect class — a per-site principal reaching the organisation row. m123's
+	// RESTRICTIVE INSERT/UPDATE/DELETE policies on org_context_versions enforce
+	// the same rule at the database layer; this is the belt-and-braces app-layer
+	// gate in front of it.
+	PermOrgContextWrite Permission = "context.org.write"
+	// PermSiteContextRead reads a site's layer-3 context (current + history +
+	// diff) and the effective-context preview (Decision 8). Viewer+; site-scoped
+	// (NOT in orgLevelPerms) — gated per-site by authz.RequireSiteAccess on the
+	// route, same shape as PermSiteRead.
+	PermSiteContextRead Permission = "context.site.read"
+	// PermSiteContextWrite authors a new site context version (PATCH, restore).
+	// Operator+ (same tier as PermSiteWrite); site-scoped (NOT in orgLevelPerms)
+	// — Decision 6: "site-scope write additionally requires access to that
+	// specific site", i.e. role AND authz.RequireSiteAccess, not org membership.
+	PermSiteContextWrite Permission = "context.site.write"
 )
 
 // minRoleFor maps each permission to the minimum role that holds it. The matrix
@@ -244,6 +279,14 @@ var minRoleFor = map[Permission]Role{
 	PermSiteFilesWriteCode: RoleOwner,
 	// Hosted billing (M16 Phase B). Owner-only.
 	PermBillingManage: RoleOwner,
+	// ADR-064 governed context. Read: viewer+ at both scopes (Decision 6/8).
+	// Org write: admin+ (Decision 6); site write: operator+, same tier as
+	// PermSiteWrite (Decision 6's "additionally requires access to that site"
+	// is the authz.RequireSiteAccess route gate, not a higher role floor).
+	PermOrgContextRead:   RoleViewer,
+	PermOrgContextWrite:  RoleAdmin,
+	PermSiteContextRead:  RoleViewer,
+	PermSiteContextWrite: RoleOperator,
 }
 
 // Allows reports whether role r is permitted to perform p.
