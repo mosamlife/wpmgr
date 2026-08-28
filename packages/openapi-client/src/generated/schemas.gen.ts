@@ -14851,23 +14851,20 @@ export const GovContextSchema = {
       enum: ["user", "api_key", "system"],
     },
     author_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     provenance: {
       type: "string",
       enum: ["manual", "restore", "transfer"],
     },
     restored_from_version_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     created_at: {
-      type: "string",
+      type: ["string", "null"],
       format: "date-time",
-      nullable: true,
     },
   },
 } as const;
@@ -14889,18 +14886,16 @@ export const GovContextVersionSummarySchema = {
       enum: ["user", "api_key", "system"],
     },
     author_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     provenance: {
       type: "string",
       enum: ["manual", "restore", "transfer"],
     },
     restored_from_version_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     created_at: {
       type: "string",
@@ -14959,18 +14954,16 @@ export const GovContextVersionItemSchema = {
       enum: ["user", "api_key", "system"],
     },
     author_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     provenance: {
       type: "string",
       enum: ["manual", "restore", "transfer"],
     },
     restored_from_version_id: {
-      type: "string",
+      type: ["string", "null"],
       format: "uuid",
-      nullable: true,
     },
     created_at: {
       type: "string",
@@ -15051,20 +15044,24 @@ export const GovContextDiffSchema = {
         "true when this version has no eligible predecessor to diff against (ADR-064 Decision 5) — a genuine first version, or (site scope only) the first version after a transfer.",
     },
     prior: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/GovContextVersionItem",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
     },
     diff: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/GovContextSnapshotDiff",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
     },
   },
 } as const;
@@ -15088,8 +15085,7 @@ export const GovContextLayerContributionSchema = {
       $ref: "#/components/schemas/GuidanceSet",
     },
     facts: {
-      type: "object",
-      nullable: true,
+      type: ["object", "null"],
       description: "Populated only for layer 4 (detected site facts).",
       properties: {
         wp_version: {
@@ -15173,22 +15169,26 @@ export const PatchGovContextRequestSchema = {
         'The version this write is based on (0 = "no context authored yet"). A mismatch against the current version is refused with 409 context_version_conflict before anything else is checked (ADR-064 open question 2).',
     },
     restrictions: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/RestrictionSet",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
       description:
         "Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.",
     },
     guidance: {
-      allOf: [
+      anyOf: [
         {
           $ref: "#/components/schemas/GuidanceSet",
         },
+        {
+          type: "null",
+        },
       ],
-      nullable: true,
       description:
         "Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.",
     },

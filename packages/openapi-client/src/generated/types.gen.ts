@@ -8205,19 +8205,19 @@ export type GovContext = {
   restrictions: RestrictionSet;
   guidance: GuidanceSet;
   author_type?: "user" | "api_key" | "system";
-  author_id?: string;
+  author_id?: string | null;
   provenance?: "manual" | "restore" | "transfer";
-  restored_from_version_id?: string;
-  created_at?: string;
+  restored_from_version_id?: string | null;
+  created_at?: string | null;
 };
 
 export type GovContextVersionSummary = {
   id: string;
   version: number;
   author_type: "user" | "api_key" | "system";
-  author_id?: string;
+  author_id?: string | null;
   provenance: "manual" | "restore" | "transfer";
-  restored_from_version_id?: string;
+  restored_from_version_id?: string | null;
   created_at: string;
 };
 
@@ -8235,9 +8235,9 @@ export type GovContextVersionItem = {
   restrictions: RestrictionSet;
   guidance: GuidanceSet;
   author_type: "user" | "api_key" | "system";
-  author_id?: string;
+  author_id?: string | null;
   provenance: "manual" | "restore" | "transfer";
-  restored_from_version_id?: string;
+  restored_from_version_id?: string | null;
   created_at: string;
 };
 
@@ -8270,8 +8270,8 @@ export type GovContextDiff = {
    * true when this version has no eligible predecessor to diff against (ADR-064 Decision 5) — a genuine first version, or (site scope only) the first version after a transfer.
    */
   baseline: boolean;
-  prior?: GovContextVersionItem;
-  diff?: GovContextSnapshotDiff;
+  prior?: GovContextVersionItem | null;
+  diff?: GovContextSnapshotDiff | null;
 };
 
 export type GovContextLayerContribution = {
@@ -8290,7 +8290,7 @@ export type GovContextLayerContribution = {
     php_version?: string;
     multisite?: boolean;
     active_theme?: string;
-  };
+  } | null;
   /**
    * Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).
    */
@@ -8319,11 +8319,11 @@ export type PatchGovContextRequest = {
   /**
    * Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.
    */
-  restrictions?: RestrictionSet;
+  restrictions?: RestrictionSet | null;
   /**
    * Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.
    */
-  guidance?: GuidanceSet;
+  guidance?: GuidanceSet | null;
 };
 
 /**

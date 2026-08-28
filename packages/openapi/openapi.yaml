@@ -23694,10 +23694,10 @@ components:
         restrictions: { $ref: "#/components/schemas/RestrictionSet" }
         guidance: { $ref: "#/components/schemas/GuidanceSet" }
         author_type: { type: string, enum: [user, api_key, system] }
-        author_id: { type: string, format: uuid, nullable: true }
+        author_id: { type: [string, "null"], format: uuid }
         provenance: { type: string, enum: [manual, restore, transfer] }
-        restored_from_version_id: { type: string, format: uuid, nullable: true }
-        created_at: { type: string, format: date-time, nullable: true }
+        restored_from_version_id: { type: [string, "null"], format: uuid }
+        created_at: { type: [string, "null"], format: date-time }
     GovContextVersionSummary:
       type: object
       required: [id, version, author_type, provenance, created_at]
@@ -23705,9 +23705,9 @@ components:
         id: { type: string, format: uuid }
         version: { type: integer, format: int64 }
         author_type: { type: string, enum: [user, api_key, system] }
-        author_id: { type: string, format: uuid, nullable: true }
+        author_id: { type: [string, "null"], format: uuid }
         provenance: { type: string, enum: [manual, restore, transfer] }
-        restored_from_version_id: { type: string, format: uuid, nullable: true }
+        restored_from_version_id: { type: [string, "null"], format: uuid }
         created_at: { type: string, format: date-time }
     GovContextVersionList:
       type: object
@@ -23729,9 +23729,9 @@ components:
         restrictions: { $ref: "#/components/schemas/RestrictionSet" }
         guidance: { $ref: "#/components/schemas/GuidanceSet" }
         author_type: { type: string, enum: [user, api_key, system] }
-        author_id: { type: string, format: uuid, nullable: true }
+        author_id: { type: [string, "null"], format: uuid }
         provenance: { type: string, enum: [manual, restore, transfer] }
-        restored_from_version_id: { type: string, format: uuid, nullable: true }
+        restored_from_version_id: { type: [string, "null"], format: uuid }
         created_at: { type: string, format: date-time }
     GovContextListDiff:
       type: object
@@ -23766,11 +23766,13 @@ components:
             against (ADR-064 Decision 5) — a genuine first version, or (site
             scope only) the first version after a transfer.
         prior:
-          allOf: [{ $ref: "#/components/schemas/GovContextVersionItem" }]
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/GovContextVersionItem"
+            - type: "null"
         diff:
-          allOf: [{ $ref: "#/components/schemas/GovContextSnapshotDiff" }]
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/GovContextSnapshotDiff"
+            - type: "null"
     GovContextLayerContribution:
       type: object
       required: [layer, name, restrictions, guidance, bytes, truncated]
@@ -23782,8 +23784,7 @@ components:
         restrictions: { $ref: "#/components/schemas/RestrictionSet" }
         guidance: { $ref: "#/components/schemas/GuidanceSet" }
         facts:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: Populated only for layer 4 (detected site facts).
           properties:
             wp_version: { type: string }
@@ -23826,10 +23827,12 @@ components:
             context_version_conflict before anything else is checked
             (ADR-064 open question 2).
         restrictions:
-          allOf: [{ $ref: "#/components/schemas/RestrictionSet" }]
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/RestrictionSet"
+            - type: "null"
           description: Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.
         guidance:
-          allOf: [{ $ref: "#/components/schemas/GuidanceSet" }]
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/GuidanceSet"
+            - type: "null"
           description: Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.
