@@ -297,7 +297,7 @@ if ! skip_case; then
   # A duration unique to this case: `pgrep -f` is machine-wide, so a shared
   # `sleep 30` would match another case's leftover and this one would pass or
   # fail on the wrong process.
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 41 > "$ROOT/holder" 2>&1 &
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 4177 > "$ROOT/holder" 2>&1 &
   wp=$!
 
   # Bounded wait for the lock to record the command's pid. No unbounded loop.
@@ -341,9 +341,13 @@ if ! skip_case; then
     expect_absent "$ROOT/o" "RECLAIM" "the live child's lock was not reclaimed as stale"
 
     # Kill the grandchild too, not just the recorded shell: leaving it behind
-    # pollutes every later case that greps for a running command.
+    # pollutes every later case. By PARENTAGE, not by name — `pkill -f` is
+    # machine-wide and would reach a developer's unrelated `sleep 4177`.
+    # Descendants first, while the parentage still exists to find them by.
+    for _d in $(pgrep -P "$child" 2>/dev/null); do
+      kill -9 "$_d" 2>/dev/null
+    done
     kill -9 "$child" 2>/dev/null
-    pkill -9 -f 'sleep 41' 2>/dev/null
   fi
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
@@ -490,7 +494,7 @@ if ! skip_case; then
   #
   # The lock must still refuse, and it can only do so via the token, which was
   # written before the fork.
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 43 > "$ROOT/holder" 2>&1 &
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 4379 > "$ROOT/holder" 2>&1 &
   wp=$!
 
   tok=""
@@ -532,8 +536,14 @@ if ! skip_case; then
     expect_absent "$ROOT/o" "ADMITTED-IN-SPAWN-WINDOW" "no second suite started in the spawn-to-record window"
     expect_absent "$ROOT/o" "RECLAIM" "the token kept the lock from being read as stale"
 
-    pkill -f "$tok" 2>/dev/null
-    pkill -9 -f 'sleep 43' 2>/dev/null
+    # The token is unique to this run, so matching on it is safe; its
+    # descendants are then reached by parentage rather than by payload name.
+    for _t in $(pgrep -f "$tok" 2>/dev/null); do
+      for _d in $(pgrep -P "$_t" 2>/dev/null); do
+        kill -9 "$_d" 2>/dev/null
+      done
+      kill -9 "$_t" 2>/dev/null
+    done
   fi
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
@@ -636,63 +646,145 @@ if ! skip_case; then
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
-begin "signal-does-not-release-live-command"
+# A shared helper for the signal cases. Identifies the run's processes by
+# walking DOWN from the pid the lock recorded, never by `pgrep -f` on the
+# payload's name: the wrapper's own argv contains the payload string too, so a
+# name match returns the wrapper, the token shell and the leaf, and `head -1`
+# picks the wrapper. An assertion that prints the wrapper's pid while claiming
+# to have found a grandchild is the thing this whole PR is about.
+
+# wait_for_meta_field FILE KEY -> echoes the value, bounded
+wait_for_meta_field() {
+  _f="$1"; _k="$2"; _v=""; _i=0
+  while [ "$_i" -lt 10 ]; do
+    _v="$(sed -n "s/^$_k=//p" "$_f" 2>/dev/null | head -1)"
+    [ -n "$_v" ] && break
+    sleep 1
+    _i=$(( _i + 1 ))
+  done
+  echo "$_v"
+}
+
+begin "signal-stops-a-two-deep-tree"
 if ! skip_case; then
   # A SIGTERM to the wrapper must stop the whole run before the lock is
   # released. `kill $CHILD` reaped only the token-bearing `sh`, let `wait`
-  # return, and released the lock while the real command — its child — kept
-  # running, so a second suite could start alongside it.
+  # return, and released the lock while the real command kept running.
   #
-  # The command here is a shell that starts its own child, which is the shape
-  # the real target has (`sh -c 'cd apps/api && go test ...'`).
-  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sh -c 'sleep 37' > "$ROOT/holder" 2>&1 &
+  # DEPTH MATTERS AND IS ASSERTED. `sh -c 'sleep N'` is a single simple command
+  # and the shell exec-optimizes it away, so that payload is only one level
+  # deep and never exercises the recursion. `; :` keeps the payload shell
+  # alive, giving token-sh -> sh -> sleep, which is the shape the real target
+  # has (`sh -c 'cd apps/api && go test ...'`).
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sh -c 'sleep 3771; :' > "$ROOT/holder" 2>&1 &
   wp=$!
 
-  tok=""
-  i=0
-  while [ "$i" -lt 10 ]; do
-    tok="$(sed -n 's/^token=//p' "$ROOT/itest.lock/meta" 2>/dev/null | head -1)"
-    [ -n "$tok" ] && break
-    sleep 1
-    i=$(( i + 1 ))
-  done
-
-  if [ -z "$tok" ]; then
+  child="$(wait_for_meta_field "$ROOT/itest.lock/meta" child)"
+  if [ -z "$child" ]; then
     fail "the holder never took the lock — this case would prove nothing"
   else
-    grandkid="$(pgrep -f 'sleep 37' 2>/dev/null | head -1)"
-    if [ -n "$grandkid" ]; then
-      ok "the protected command has a grandchild ($grandkid), as the real target does"
+    mid="$(pgrep -P "$child" 2>/dev/null | head -1)"
+    leaf=""
+    [ -n "$mid" ] && leaf="$(pgrep -P "$mid" 2>/dev/null | head -1)"
+    if [ -n "$mid" ] && [ -n "$leaf" ]; then
+      ok "the run is two deep below the recorded pid (child $child -> $mid -> $leaf)"
     else
-      fail "no grandchild was started — this case would not exercise the tree kill"
+      fail "the run is not two deep (child=$child mid=${mid:-none} leaf=${leaf:-none}); the recursion would go untested"
     fi
 
     kill -TERM "$wp" 2>/dev/null
     wait "$wp" 2>/dev/null
 
-    # Give the handler its bounded escalation window before judging it.
     i=0
     while [ "$i" -lt 8 ]; do
-      pgrep -f 'sleep 37' >/dev/null 2>&1 || break
+      kill -0 "$leaf" 2>/dev/null || break
       sleep 1
       i=$(( i + 1 ))
     done
 
-    if pgrep -f 'sleep 37' >/dev/null 2>&1; then
-      fail "the command survived the signal; the lock was released over a live run"
-      pkill -9 -f 'sleep 37' 2>/dev/null
+    # Judge the two facts together. Reporting on the lock alone would let a
+    # message claim "released after the run stopped" while the run was still
+    # running, which is exactly what the previous version of this case did.
+    leaf_alive=0
+    kill -0 "$leaf" 2>/dev/null && leaf_alive=1
+    lock_present=0
+    [ -d "$ROOT/itest.lock" ] && lock_present=1
+
+    if [ "$leaf_alive" = "1" ] && [ "$lock_present" = "0" ]; then
+      fail "the lock was released while the leaf process ($leaf) was still running"
+    elif [ "$leaf_alive" = "1" ]; then
+      fail "the leaf process ($leaf) survived the signal (lock correctly still held)"
+    elif [ "$lock_present" = "1" ]; then
+      fail "the run stopped but the lock was left behind"
     else
-      ok "the signal stopped the command and its grandchild, not just the wrapper"
+      ok "the whole tree stopped, and only then was the lock released"
     fi
 
-    # Only once nothing is running may the lock be gone.
-    if [ -d "$ROOT/itest.lock" ]; then
-      fail "the lock was left behind after a clean signal shutdown"
-      rm -rf "$ROOT/itest.lock" 2>/dev/null
-    else
-      ok "the lock was released after the run had actually stopped"
-    fi
+    kill -9 "$leaf" "$mid" 2>/dev/null
   fi
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "signal-tree-ignoring-term"
+if ! skip_case; then
+  # THE CASE THE PREVIOUS FIX CLAIMED TO HANDLE AND DID NOT. `still_running`
+  # watched CHILD and the token, and both name the SAME process — the token
+  # lives only in the token shell's argv and an exec'd descendant does not
+  # carry it. So when CHILD died and a descendant outlived it, still_running
+  # said false, the escalation loop broke on its first iteration, and the lock
+  # was released over a live run.
+  #
+  # SIG_IGN survives exec, so this descendant genuinely ignores SIGTERM. The
+  # handler must notice it is still there and escalate.
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sh -c 'trap "" TERM; exec sleep 3779' > "$ROOT/holder" 2>&1 &
+  wp=$!
+
+  child="$(wait_for_meta_field "$ROOT/itest.lock/meta" child)"
+  if [ -z "$child" ]; then
+    fail "the holder never took the lock — this case would prove nothing"
+  else
+    leaf="$(pgrep -P "$child" 2>/dev/null | head -1)"
+    if [ -n "$leaf" ]; then
+      ok "the run has a descendant ($leaf) that ignores SIGTERM"
+    else
+      fail "no descendant was started; this case would not exercise the escalation"
+    fi
+
+    kill -TERM "$wp" 2>/dev/null
+    wait "$wp" 2>/dev/null
+
+    i=0
+    while [ "$i" -lt 10 ]; do
+      kill -0 "$leaf" 2>/dev/null || break
+      sleep 1
+      i=$(( i + 1 ))
+    done
+
+    leaf_alive=0
+    kill -0 "$leaf" 2>/dev/null && leaf_alive=1
+    lock_present=0
+    [ -d "$ROOT/itest.lock" ] && lock_present=1
+
+    # The property, stated as the review asked: a surviving descendant means
+    # the lock is NOT released. Both honest outcomes pass — reap it and
+    # release, or fail to reap it and refuse — and only the fail-open fails.
+    if [ "$leaf_alive" = "1" ] && [ "$lock_present" = "0" ]; then
+      fail "the lock was released while a TERM-ignoring descendant ($leaf) was still running"
+    elif [ "$leaf_alive" = "1" ]; then
+      ok "the descendant survived and the lock was deliberately NOT released"
+    elif [ "$lock_present" = "1" ]; then
+      fail "the descendant was reaped but the lock was left behind"
+    else
+      ok "the descendant was escalated to KILL and reaped, and only then was the lock released"
+    fi
+
+    # The escalation is the mechanism under test; assert it actually ran rather
+    # than inferring it from the outcome.
+    expect_contains "$ROOT/holder" "escalating to KILL" "the handler escalated rather than giving up after TERM"
+
+    kill -9 "$leaf" 2>/dev/null
+  fi
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
 begin "reclaim-salvage-removed"

@@ -412,16 +412,98 @@ release() {
 # still running — a second `make test-integration` could then start alongside
 # it. Depth-first so a descendant is signalled before the parent that would
 # otherwise re-parent it away mid-sweep.
-kill_tree() {
+# WHY A SNAPSHOT, AND NOT A LIVE WALK. Once CHILD dies its descendants
+# re-parent to pid 1, so `pgrep -P "$CHILD"` returns nothing and there is no
+# link left to walk down. Anything that asks "what is still running under this
+# run?" AFTER the signal therefore finds nothing and concludes, wrongly, that
+# the run is over. The tree has to be recorded while the parentage still
+# exists — that is, before the first signal — and every later question asked
+# against that recording.
+#
+# The recorded form is `pid:startkey`, with the process start time's spaces
+# turned into underscores so an entry holds no whitespace and the list can be
+# iterated with the default IFS. The start time is carried for the same reason
+# the wrapper's is: so a recycled pid cannot make a dead process look alive.
+RUN_PIDS=""
+
+lstart_key() {
+  lstart_of "$1" | tr ' ' '_'
+}
+
+# snapshot_tree PID — record PID and every descendant, children first, so a
+# later signal pass reaches a child before the parent that would otherwise
+# re-parent it away mid-sweep.
+snapshot_tree() {
   _kids="$(pgrep -P "$1" 2>/dev/null)"
   for _k in $_kids; do
-    kill_tree "$_k" "$2"
+    snapshot_tree "$_k"
   done
-  kill -"$2" "$1" 2>/dev/null
+  case " $RUN_PIDS " in
+    *" $1:"*) ;;
+    *) RUN_PIDS="$RUN_PIDS $1:$(lstart_key "$1")" ;;
+  esac
+}
+
+# Re-walk from everything still alive, to pick up processes spawned after the
+# snapshot was taken. Cheap, and it only ever adds.
+resnapshot() {
+  for _e in $RUN_PIDS; do
+    _p="${_e%%:*}"
+    if kill -0 "$_p" 2>/dev/null; then
+      snapshot_tree "$_p"
+    fi
+  done
+}
+
+snapshot_pid_live() { # snapshot_pid_live PID STARTKEY
+  _p="${1:-}"
+  _key="${2:-}"
+  [ -n "$_p" ] || return 1
+  ps -p "$_p" >/dev/null 2>&1 || return 1
+  [ -n "$_key" ] || return 0
+  _cur="$(lstart_key "$_p")"
+  [ -n "$_cur" ] || return 0
+  [ "$_key" = "$_cur" ]
+}
+
+# signal_snapshot SIG — signal every recorded pid, in recorded order.
+signal_snapshot() {
+  for _e in $RUN_PIDS; do
+    _p="${_e%%:*}"
+    kill -"$1" "$_p" 2>/dev/null
+  done
+}
+
+# kill_tree PID SIG — record the tree, then signal it.
+#
+# `kill $CHILD` is not enough and never was. CHILD is the token-bearing `sh`,
+# and the real work is ITS child (`go test`, itself under another
+# `sh -c 'cd apps/api && ...'`). Signalling only CHILD reaped the shell, let
+# `wait` return, and released the lock while the suite and its containers were
+# still running — a second `make test-integration` could then start alongside
+# it.
+kill_tree() {
+  snapshot_tree "$1"
+  signal_snapshot "$2"
 }
 
 # still_running -> 0 if any part of the protected run survives.
+#
+# THE RECORDED TREE IS CHECKED FIRST AND IS THE LOAD-BEARING ARM. The two
+# checks below it both watch the SAME process: CHILD is the token-bearing `sh`,
+# and the token exists only in that process's argv — an exec'd descendant does
+# not carry it. An earlier version had only those two, so when CHILD died and a
+# descendant outlived it this returned false, the escalation never ran, and the
+# lock was released over a live run. Proved by a descendant that ignores TERM
+# (SIG_IGN survives exec), which is now the `signal-tree-ignoring-term` case.
 still_running() {
+  for _e in $RUN_PIDS; do
+    _p="${_e%%:*}"
+    _k="${_e#*:}"
+    if snapshot_pid_live "$_p" "$_k"; then
+      return 0
+    fi
+  done
   if [ -n "$CHILD" ] && kill -0 "$CHILD" 2>/dev/null; then
     return 0
   fi
@@ -439,13 +521,18 @@ on_signal() { # on_signal SIGNAME SIGNUM
     # ignores TERM must not leave us releasing the lock over a live suite.
     _n=0
     while [ "$_n" -lt 5 ]; do
+      resnapshot
       still_running || break
       sleep 1
       _n=$(( _n + 1 ))
     done
     if still_running; then
       echo "$ME: the command did not stop on TERM — escalating to KILL" >&2
-      kill_tree "$CHILD" KILL
+      # Signal the RECORDED tree, not a fresh walk from CHILD: by now CHILD is
+      # usually gone and its descendants have re-parented to pid 1, so a walk
+      # would find nothing to kill.
+      resnapshot
+      signal_snapshot KILL
       sleep 1
     fi
   fi
