@@ -18,7 +18,12 @@ import (
 // notably that a losing compare-and-set returns pgx.ErrNoRows rather than a
 // zero-value row.
 type Store interface {
-	RegisterClient(ctx context.Context, arg sqlc.RegisterMCPOAuthClientParams) (sqlc.McpOauthClient, error)
+	// RegisterClient returns ROWS WRITTEN, mirroring the :execrows query
+	// exactly. It deliberately does not return the row: the register GUC
+	// enables no SELECT policy, so RETURNING raises 42501 (see Repo's method).
+	// Modelling this as a count in the interface is what lets a fake reproduce
+	// a zero-row write, which a row-returning shape cannot express.
+	RegisterClient(ctx context.Context, arg sqlc.RegisterMCPOAuthClientParams) (int64, error)
 	LookupClient(ctx context.Context, clientID string) (sqlc.McpOauthClient, error)
 
 	LookupAuthorizationCode(ctx context.Context, codeHash string) (sqlc.GetMCPAuthorizationCodeByHashForLookupRow, error)
@@ -44,19 +49,40 @@ func NewRepo(pool *db.Pool) *Repo { return &Repo{pool: pool} }
 var _ Store = (*Repo)(nil)
 
 // RegisterClient inserts one RFC 7591 registration under
-// app.mcp_client_register. The policy is FOR INSERT, so this transaction
-// cannot read the table back.
-func (r *Repo) RegisterClient(ctx context.Context, arg sqlc.RegisterMCPOAuthClientParams) (sqlc.McpOauthClient, error) {
-	var out sqlc.McpOauthClient
+// app.mcp_client_register and returns the number of rows written.
+//
+// IT RETURNS A COUNT, NOT A ROW, AND THAT IS NOT A STYLE CHOICE. The only
+// policy this GUC enables is FOR INSERT, so the transaction genuinely cannot
+// read the table back -- and `RETURNING` is a read. Under FORCE ROW LEVEL
+// SECURITY the SELECT policy is enforced against the returned row as a
+// WithCheckOption, so any RETURNING here raises SQLSTATE 42501 at
+// ExecWithCheckOptions and the whole transaction rolls back. Every registration
+// would fail at runtime.
+//
+// THIS IS NOT `RETURNING *`-SPECIFIC. Returning one column fails identically --
+// even `RETURNING id`, which is server-generated and contains nothing the
+// caller supplied. Reading the fix as "return fewer columns" reproduces the
+// bug exactly.
+//
+// The obvious alternative -- setting app.mcp_client_lookup here too -- was
+// rejected on purpose. Registration is an UNAUTHENTICATED POST, so granting it
+// the lookup GUC would let any caller enumerate every registered client on the
+// installation, client_secret_hash included. That swaps "the database refuses"
+// for "the handler happens not to ask", which is the weaker guarantee.
+//
+// So the caller asserts the count and then reads the row back in a separate
+// InMCPClientLookupTx. One extra round trip is the cost of the split.
+func (r *Repo) RegisterClient(ctx context.Context, arg sqlc.RegisterMCPOAuthClientParams) (int64, error) {
+	var affected int64
 	err := r.pool.InMCPClientRegisterTx(ctx, func(tx pgx.Tx) error {
-		row, err := sqlc.New(tx).RegisterMCPOAuthClient(ctx, arg)
+		n, err := sqlc.New(tx).RegisterMCPOAuthClient(ctx, arg)
 		if err != nil {
 			return fmt.Errorf("register mcp oauth client: %w", err)
 		}
-		out = row
+		affected = n
 		return nil
 	})
-	return out, err
+	return affected, err
 }
 
 // LookupClient resolves a registration by client_id under

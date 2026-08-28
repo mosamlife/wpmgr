@@ -143,7 +143,10 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 		secretHash = &h
 	}
 
-	row, err := s.store.RegisterClient(ctx, sqlc.RegisterMCPOAuthClientParams{
+	// THE WRITE. It returns a count, not a row: the register GUC enables no
+	// SELECT policy, so RETURNING would raise 42501 and roll the whole
+	// registration back. See Repo.RegisterClient.
+	affected, err := s.store.RegisterClient(ctx, sqlc.RegisterMCPOAuthClientParams{
 		ClientID:                clientID,
 		ClientSecretHash:        secretHash,
 		TokenEndpointAuthMethod: method,
@@ -154,14 +157,45 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 	if err != nil {
 		return RegisteredClient{}, fmt.Errorf("register client: %w", err)
 	}
+	// A ZERO-ROW WRITE IS A FAILURE, LOUDLY. The query is :execrows rather than
+	// :exec precisely so there is something to assert here. An INSERT ... VALUES
+	// with no ON CONFLICT writes one row or raises, so 0 should be unreachable
+	// -- which is exactly why reaching it must stop the registration rather than
+	// be shrugged off. A silent 0 here would hand back a client_id and a secret
+	// for a row that does not exist.
+	if affected != 1 {
+		return RegisteredClient{}, fmt.Errorf(
+			"register client %q: wrote %d rows, want exactly 1", clientID, affected)
+	}
 
+	// THE READ-BACK, in its own transaction under the lookup GUC. Two round
+	// trips is the deliberate cost of not granting the unauthenticated
+	// registration endpoint the ability to read this table.
+	stored, err := s.store.LookupClient(ctx, clientID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The insert reported one row and the read found none. That is a
+			// broken invariant, not a client with no details, and it must NOT
+			// be papered over by rebuilding the response from req -- doing so
+			// would report a fabricated success on top of a real failure.
+			return RegisteredClient{}, fmt.Errorf(
+				"register client %q: wrote the registration but could not read it back", clientID)
+		}
+		return RegisteredClient{}, fmt.Errorf("read back registered client %q: %w", clientID, err)
+	}
+
+	// Built from the STORED row, so the response describes what the database
+	// actually holds rather than what the caller asked for. The two can differ
+	// -- trimming, and the auth method defaulted above -- and the stored value
+	// is the true one. ClientSecret is the sole exception: it exists only here,
+	// in memory, and there is no column to read it back from (m124 obligation 6).
 	return RegisteredClient{
-		ClientID:                row.ClientID,
+		ClientID:                stored.ClientID,
 		ClientSecret:            secret, // once, here, never again
-		TokenEndpointAuthMethod: row.TokenEndpointAuthMethod,
-		RedirectURIs:            row.RedirectUris,
-		ClientName:              req.ClientName,
-		ClientURI:               req.ClientURI,
+		TokenEndpointAuthMethod: stored.TokenEndpointAuthMethod,
+		RedirectURIs:            stored.RedirectUris,
+		ClientName:              derefString(stored.ClientName),
+		ClientURI:               derefString(stored.ClientUri),
 	}, nil
 }
 

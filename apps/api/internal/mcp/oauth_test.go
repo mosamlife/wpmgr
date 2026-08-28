@@ -43,6 +43,17 @@ type fakeStore struct {
 	client   sqlc.McpOauthClient
 	clientOK bool
 
+	// registerRows is what the :execrows INSERT reports. Defaults to 0, so a
+	// test that means "registration succeeds" must SAY 1 -- the honest default,
+	// since a fake that silently succeeds is what hid the last defect.
+	registerRows int64
+	// registerErr forces the write itself to fail (e.g. 42501).
+	registerErr error
+	// registerReadBackMissing writes the row but makes the follow-up
+	// LookupClient find nothing: the insert reports success and the read-back
+	// comes up empty. A broken invariant, not an empty result.
+	registerReadBackMissing bool
+
 	code     sqlc.GetMCPAuthorizationCodeByHashForLookupRow
 	codeOK   bool
 	consumed bool // the compare-and-set has already won once
@@ -75,17 +86,35 @@ type fakeStore struct {
 
 func (f *fakeStore) note(s string) { f.calls = append(f.calls, s) }
 
-func (f *fakeStore) RegisterClient(_ context.Context, arg sqlc.RegisterMCPOAuthClientParams) (sqlc.McpOauthClient, error) {
+// RegisterClient models the :execrows query: it reports ROWS WRITTEN and can
+// never hand back the row, because the register GUC enables no SELECT policy
+// and RETURNING raises 42501 against the real database.
+//
+// THE PREVIOUS FAKE RETURNED A FULLY POPULATED ROW, which is why a P1 that
+// broke every single registration reached review with a green suite: the fake
+// said yes to something Postgres refuses outright. Modelling the count is only
+// half the repair -- registerRows and registerReadBackMissing exist so the
+// FAILURE modes are reachable too, since a fake that models the new shape but
+// not the new failures leaves exactly the same hole.
+func (f *fakeStore) RegisterClient(_ context.Context, arg sqlc.RegisterMCPOAuthClientParams) (int64, error) {
 	f.note("RegisterClient")
-	return sqlc.McpOauthClient{
-		ID:                      uuid.New(),
-		ClientID:                arg.ClientID,
-		ClientSecretHash:        arg.ClientSecretHash,
-		TokenEndpointAuthMethod: arg.TokenEndpointAuthMethod,
-		RedirectUris:            arg.RedirectUris,
-		ClientName:              arg.ClientName,
-		ClientUri:               arg.ClientUri,
-	}, nil
+	if f.registerErr != nil {
+		return 0, f.registerErr
+	}
+	// Record what was written so LookupClient can serve a faithful read-back.
+	if !f.registerReadBackMissing {
+		f.client = sqlc.McpOauthClient{
+			ID:                      uuid.New(),
+			ClientID:                arg.ClientID,
+			ClientSecretHash:        arg.ClientSecretHash,
+			TokenEndpointAuthMethod: arg.TokenEndpointAuthMethod,
+			RedirectUris:            arg.RedirectUris,
+			ClientName:              arg.ClientName,
+			ClientUri:               arg.ClientUri,
+		}
+		f.clientOK = true
+	}
+	return f.registerRows, nil
 }
 
 func (f *fakeStore) LookupClient(_ context.Context, _ string) (sqlc.McpOauthClient, error) {
@@ -669,7 +698,7 @@ func TestRegister_RefusesRedirectURIsThatCannotBeTrusted(t *testing.T) {
 }
 
 func TestRegister_PublicClientGetsNoSecretAndConfidentialDoes(t *testing.T) {
-	svc := NewService(&fakeStore{})
+	svc := NewService(&fakeStore{registerRows: 1})
 
 	pub, err := svc.Register(context.Background(), RegistrationRequest{
 		RedirectURIs: []string{"https://claude.ai/cb"}, TokenEndpointAuthMethod: "none",
@@ -698,7 +727,7 @@ func TestRegister_PublicClientGetsNoSecretAndConfidentialDoes(t *testing.T) {
 
 // Loopback http is the native-client case RFC 8252 requires and must still work.
 func TestRegister_AllowsLoopbackHTTPForNativeClients(t *testing.T) {
-	svc := NewService(&fakeStore{})
+	svc := NewService(&fakeStore{registerRows: 1})
 	for _, uri := range []string{"http://localhost:8765/cb", "http://127.0.0.1:1455/cb"} {
 		if _, err := svc.Register(context.Background(), RegistrationRequest{
 			RedirectURIs: []string{uri}, TokenEndpointAuthMethod: "none",
