@@ -51,6 +51,7 @@ describe("ContextVersionHistory — author, provenance and timestamp per version
         onToggleExpand={noop}
         canWrite
         onRequestRestore={noop}
+        isRestoring={false}
       />,
     );
 
@@ -95,6 +96,7 @@ describe("ContextVersionHistory — author, provenance and timestamp per version
         onToggleExpand={noop}
         canWrite
         onRequestRestore={noop}
+        isRestoring={false}
       />,
     );
     expect(screen.getByText("No edits yet")).toBeInTheDocument();
@@ -132,6 +134,7 @@ describe("ContextVersionHistory — diff never implies it compares enforced stat
         diff={mockQueryResult<GovContextDiff>({ data: buildDiff() })}
         canWrite
         onRequestRestore={noop}
+        isRestoring={false}
       />,
     );
 
@@ -165,6 +168,7 @@ describe("ContextVersionHistory — diff never implies it compares enforced stat
         })}
         canWrite
         onRequestRestore={noop}
+        isRestoring={false}
       />,
     );
 
@@ -225,5 +229,111 @@ describe("RestoreVersionDialog — a widen refusal here reads as correct behavio
     );
     fireEvent.click(screen.getByRole("button", { name: "Restore this version" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RestoreVersionDialog — dismissal is blocked while a restore is pending", () => {
+  // CodeRabbit finding on #566: `restore.reset()` does not cancel the
+  // in-flight `mutateAsync` call (TanStack Query never aborts a mutation),
+  // and Dialog routes Escape, an overlay click, and a programmatic close all
+  // through the same `onClose` — so any of those closing the dialog mid-flight
+  // would let the operator open a second restore confirmation on another row
+  // while the first is still running.
+  it("ignores Escape while isPending is true", () => {
+    const onClose = vi.fn();
+    renderWithProviders(
+      <RestoreVersionDialog
+        open
+        onClose={onClose}
+        version={buildVersion({ version: 2 })}
+        scopeLabel="site"
+        onConfirm={noop}
+        isPending
+        error={null}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("honours Escape once nothing is pending (must not over-block)", () => {
+    const onClose = vi.fn();
+    renderWithProviders(
+      <RestoreVersionDialog
+        open
+        onClose={onClose}
+        version={buildVersion({ version: 2 })}
+        scopeLabel="site"
+        onConfirm={noop}
+        isPending={false}
+        error={null}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ContextVersionHistory — no overlapping restores", () => {
+  function buildRows(): GovContextVersionSummary[] {
+    return [
+      buildVersion({ id: "v-3", version: 3 }),
+      buildVersion({ id: "v-2", version: 2 }),
+      buildVersion({ id: "v-1", version: 1 }),
+    ];
+  }
+
+  it("disables every row's restore button while a restore is already pending elsewhere", () => {
+    renderWithProviders(
+      <ContextVersionHistory
+        scopeLabel="site"
+        items={buildRows()}
+        isPending={false}
+        isError={false}
+        error={null}
+        onRetry={noop}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={noop}
+        expandedId={null}
+        onToggleExpand={noop}
+        canWrite
+        onRequestRestore={noop}
+        isRestoring
+      />,
+    );
+    const buttons = screen.getAllByRole("button", { name: "Restore this version" });
+    // Non-vacuous: there must be more than zero to disable (v2 and v1, since
+    // v3 is "Current" and never gets a restore button at all).
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button).toBeDisabled();
+    }
+  });
+
+  it("leaves restore buttons enabled when no restore is pending (must not over-block)", () => {
+    renderWithProviders(
+      <ContextVersionHistory
+        scopeLabel="site"
+        items={buildRows()}
+        isPending={false}
+        isError={false}
+        error={null}
+        onRetry={noop}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={noop}
+        expandedId={null}
+        onToggleExpand={noop}
+        canWrite
+        onRequestRestore={noop}
+        isRestoring={false}
+      />,
+    );
+    const buttons = screen.getAllByRole("button", { name: "Restore this version" });
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button).toBeEnabled();
+    }
   });
 });

@@ -74,6 +74,7 @@ export function SiteContextHistorySection({
           restore.reset();
           setConfirmVersion(version);
         }}
+        isRestoring={restore.isPending}
       />
       <RestoreVersionDialog
         open={confirmVersion !== null}

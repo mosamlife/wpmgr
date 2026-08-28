@@ -59,6 +59,12 @@ export interface ContextVersionHistoryProps {
   diff?: UseQueryResult<GovContextDiff, Error>;
   canWrite: boolean;
   onRequestRestore: (version: GovContextVersionSummary) => void;
+  /** True while ANY restore is in flight (CodeRabbit finding on #566: "the
+   *  history still exposes restore buttons, so overlapping restores can
+   *  create multiple new versions"). Disables every row's restore action,
+   *  not just the one being confirmed — only one restore may be proposed
+   *  at a time. */
+  isRestoring: boolean;
 }
 
 export function ContextVersionHistory({
@@ -76,6 +82,7 @@ export function ContextVersionHistory({
   diff,
   canWrite,
   onRequestRestore,
+  isRestoring,
 }: ContextVersionHistoryProps) {
   if (isPending) {
     return <HistorySkeleton />;
@@ -120,6 +127,7 @@ export function ContextVersionHistory({
               canWrite={canWrite}
               onRequestRestore={() => onRequestRestore(item)}
               scopeLabel={scopeLabel}
+              restoreDisabled={isRestoring}
             />
             {expandedId === item.id ? (
               <div className="border-t border-border bg-muted/30 px-4 py-3">
@@ -154,6 +162,7 @@ function VersionRow({
   canWrite,
   onRequestRestore,
   scopeLabel,
+  restoreDisabled,
 }: {
   item: GovContextVersionSummary;
   isCurrent: boolean;
@@ -162,6 +171,7 @@ function VersionRow({
   canWrite: boolean;
   onRequestRestore: () => void;
   scopeLabel: string;
+  restoreDisabled: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3">
@@ -202,7 +212,13 @@ function VersionRow({
         {isCurrent ? (
           <Badge variant="muted">Current</Badge>
         ) : canWrite ? (
-          <Button type="button" variant="outline" size="sm" onClick={onRequestRestore}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRequestRestore}
+            disabled={restoreDisabled}
+          >
             Restore this version
           </Button>
         ) : null}
@@ -416,8 +432,21 @@ export function RestoreVersionDialog({
   error,
 }: RestoreVersionDialogProps) {
   const errCopy = error ? restoreErrorCopy(error, scopeLabel) : null;
+  // CodeRabbit finding on #566: `restore.reset()` clears the mutation's
+  // observed state but does not cancel the in-flight `mutateAsync` call
+  // (TanStack Query does not abort mutations — the request keeps running
+  // server-side regardless). Dialog routes Escape, an overlay click, AND a
+  // programmatic close all through `onClose` (dialog.tsx's own doc
+  // comment), so every one of those needs blocking while a restore is
+  // pending, not just the Cancel button — closing here would let the
+  // operator open a second restore confirmation on another row while the
+  // first is still running.
+  const handleClose = () => {
+    if (isPending) return;
+    onClose();
+  };
   return (
-    <Dialog open={open} onClose={onClose}>
+    <Dialog open={open} onClose={handleClose}>
       <DialogContent
         ariaLabelledBy="restore-context-version-title"
         ariaDescribedBy="restore-context-version-desc"
