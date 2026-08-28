@@ -715,7 +715,7 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 	return i, err
 }
 
-const registerMCPOAuthClient = `-- name: RegisterMCPOAuthClient :one
+const registerMCPOAuthClient = `-- name: RegisterMCPOAuthClient :execrows
 
 
 INSERT INTO mcp_oauth_clients (
@@ -724,7 +724,6 @@ INSERT INTO mcp_oauth_clients (
 ) VALUES (
     $1, $2, $3, $4, $5, $6
 )
-RETURNING id, client_id, client_secret_hash, token_endpoint_auth_method, redirect_uris, client_name, client_uri, created_at
 `
 
 type RegisterMCPOAuthClientParams struct {
@@ -806,9 +805,61 @@ type RegisterMCPOAuthClientParams struct {
 // ===========================================================================
 // REQUIRES app.mcp_client_register = 'on'. Registration is an unauthenticated
 // POST, so there is no tenant to run under -- this table carries no tenant_id
-// at all (m124's opening question). The registration policy is FOR INSERT
-// only, so this transaction cannot read the table back; that is the tighter
-// grant and RETURNING is what makes it unnecessary.
+// at all (m124's opening question).
+//
+// THERE IS NO RETURNING CLAUSE, AND THERE CANNOT BE ONE. This is the correction
+// of a real break found in review of PR #572; the first cut of this query ended
+// in RETURNING * and every dynamic client registration would have failed at
+// runtime.
+//
+// WHY. mcp_oauth_clients has two policies, SPLIT BY COMMAND (m124 Decision 7):
+// FOR INSERT gated on app.mcp_client_register, FOR SELECT gated on
+// app.mcp_client_lookup. PostgreSQL enforces the SELECT policy on rows a
+// RETURNING clause hands back, as a WithCheckOption. So under the register GUC
+// alone the INSERT passes its own policy, the RETURNING then fails the SELECT
+// policy, and the WHOLE TRANSACTION ROLLS BACK. Executed as wpmgr_app:
+//
+//	INSERT ... (no RETURNING)   -> INSERT 0 1, COMMIT
+//	INSERT ... RETURNING *      -> ERROR 42501, ROLLBACK
+//	INSERT ... RETURNING id     -> ERROR 42501, ROLLBACK
+//
+// IT IS NOT ABOUT WHICH COLUMNS ARE NAMED. Returning a single column, even the
+// server-generated id, fails identically -- the check is on visibility of the
+// row, not on the column list. Anyone tempted to "just return the id" should
+// read that line again.
+//
+// THE FIX IS NOT TO SET BOTH GUCS IN THE REGISTRATION TRANSACTION, though that
+// also makes the error go away. It would destroy the property the split exists
+// to create. m124 Decision 7: "Split is the tighter grant: it means the
+// registration endpoint cannot read the table and the lookup path cannot write
+// to it." m124's security review verified exactly that -- inside the
+// registration transaction, SELECT count(*) returned 0 -- and recorded it as a
+// defence. This endpoint is UNAUTHENTICATED. Granting it the lookup GUC would
+// let an unauthenticated POST enumerate every registered client on the
+// installation, client_secret_hash included, and would replace "the database
+// refuses" with "the handler happens not to ask". That the failing read is the
+// proof the boundary works is the whole point, not an inconvenience.
+//
+// NOR A NEW POLICY. A FOR SELECT policy gated on the register GUC grants read
+// of the WHOLE table to the registering transaction, which is the same hole by
+// another route. Narrowing it to the row being inserted would need a second GUC
+// carrying the client_id, a new policy, and a cross-tenant ledger row -- strictly
+// more surface than reading the row back in the transaction already built to
+// read it.
+//
+// SO THE CALLER RE-READS. Insert here, then resolve the row in a following
+// InMCPClientLookupTx via GetMCPOAuthClientByClientIDForLookup. That is the
+// same two-transaction split every other credential path in this file uses --
+// lookup then consume, lookup then touch -- applied in the other direction, and
+// client_id is uniquely indexed so the re-read resolves exactly the row just
+// written.
+//
+// :execrows, NOT :exec, AND THE DISTINCTION FROM AN UPDATE MATTERS. This file's
+// rule is that every mutating query returns something checkable, because an
+// UPDATE can match zero rows in silence. An INSERT ... VALUES cannot: with no
+// ON CONFLICT and no INSERT ... SELECT, it writes exactly one row or raises.
+// :execrows still hands the caller a count to assert on, so the rule holds
+// without a RETURNING clause the policy set forbids.
 //
 // The caller supplies client_id (public per RFC 6749 2.2) and, for a
 // confidential client, the lower-case hex SHA-256 of the secret. The schema
@@ -816,8 +867,8 @@ type RegisterMCPOAuthClientParams struct {
 // 'none' hold exactly when client_secret_hash IS NULL, so a public client
 // carrying a secret and a confidential client without one both fail here with
 // 23514 rather than reaching a Go comparison against NULL (Decision 11).
-func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (McpOauthClient, error) {
-	row := q.db.QueryRow(ctx, registerMCPOAuthClient,
+func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAuthClientParams) (int64, error) {
+	result, err := q.db.Exec(ctx, registerMCPOAuthClient,
 		arg.ClientID,
 		arg.ClientSecretHash,
 		arg.TokenEndpointAuthMethod,
@@ -825,18 +876,10 @@ func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAu
 		arg.ClientName,
 		arg.ClientUri,
 	)
-	var i McpOauthClient
-	err := row.Scan(
-		&i.ID,
-		&i.ClientID,
-		&i.ClientSecretHash,
-		&i.TokenEndpointAuthMethod,
-		&i.RedirectUris,
-		&i.ClientName,
-		&i.ClientUri,
-		&i.CreatedAt,
-	)
-	return i, err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolveMCPGrantScopeSitesInTenantTx = `-- name: ResolveMCPGrantScopeSitesInTenantTx :many
@@ -1017,17 +1060,34 @@ type RevokeMCPGrantWithTokensInTenantTxRow struct {
 // Emitting these as two queries would leave that ordering to a handler. They
 // are one CTE so the atomicity is a property of the statement.
 //
-// THE RETURN SHAPE IS THREE DISTINGUISHABLE OUTCOMES, none of which is silence:
+// THE RETURN SHAPE IS FOUR DISTINGUISHABLE OUTCOMES, none of which is silence.
+// (0,0) IS A SUCCESS, NOT A FAILURE -- read that one before writing the handler:
 //
 //	pgx.ErrNoRows            no such grant in this tenant, or RLS refused the
 //	                         read (a site-scoped session) -- the caller 404s.
-//	                         Nothing was written.
+//	                         Nothing was written. This is the ONLY outcome that
+//	                         means "the grant is not there".
 //	grants_revoked = 1       flipped now, with tokens_revoked tokens.
 //	grants_revoked = 0 and
 //	tokens_revoked > 0       the grant was ALREADY revoked and its tokens were
 //	                         not. This converges exactly the half-revoked state
 //	                         the review found. Re-running is the repair, and
 //	                         the count is how the caller knows repair happened.
+//	grants_revoked = 0 and
+//	tokens_revoked = 0       THE GRANT EXISTS AND WAS ALREADY FULLY REVOKED --
+//	                         status 'revoked' with no active token left. The
+//	                         requested end state already holds, so this is an
+//	                         IDEMPOTENT RETRY AND IT SUCCEEDED. Return the same
+//	                         2xx as a first revoke.
+//
+// THE LAST ONE IS SPELLED OUT BECAUSE THE PLAUSIBLE GUESS IS WRONG. Two zeroes
+// look like "nothing happened, therefore something went wrong", and a handler
+// that maps them to 404 or 500 reports a correctly revoked credential as a
+// failure -- which invites the operator to retry, or worse, to believe the
+// credential is still live. The row came back at all, which is what says the
+// grant is visible; the counts describe only how much work was left to do.
+// Distinguishing "not found" from "nothing left to do" is precisely why the
+// outer SELECT reads FROM target instead of returning a bare count.
 //
 // The outer SELECT reads FROM target, so a grant this transaction cannot see
 // yields zero rows rather than a row of zeroes -- absence stays absence and is
