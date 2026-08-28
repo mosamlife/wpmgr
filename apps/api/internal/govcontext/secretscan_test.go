@@ -104,6 +104,85 @@ func TestDetectSecret_HonestCases_OrdinaryProseIsNotFlagged(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Security-review finding: entropyThreshold used to be a FLAT 4.7 bits/char
+// bound, but the maximum Shannon entropy ANY string of length n can have is
+// log2(n) — 4.3219 at n=20, 4.6439 at n=25. Every 20-25 character token was
+// therefore STRUCTURALLY UNABLE to cross 4.7, whatever it contained: the
+// entropy fallback reported "no secret found" across that entire window
+// because the check was unreachable there, not because it looked and
+// cleared. Fixed by making the threshold a fraction (entropyRatio) of the
+// token's OWN maximum possible entropy (secretscan.go). These two tests pin
+// exactly the boundary the review asked for.
+// ---------------------------------------------------------------------------
+
+// TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone: 25 characters
+// is the LONGEST length for which the old flat 4.7 threshold was
+// mathematically unreachable by ANY content (log2(25) = 4.6439 < 4.7). This
+// token is maximally diverse (25 distinct characters, the highest entropy a
+// 25-character string can have) and was therefore the best-case input the
+// old scanner could ever be given at this length — and it still would have
+// been reported clean.
+//
+// Confirmed RED restoring the OLD flat-threshold behaviour (entropyRatio's
+// use replaced with the literal old check `shannonEntropy(tok) >= 4.7`):
+//
+//	$ go test ./internal/govcontext/... -run TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone -v
+//	    secretscan_test.go:149: DetectSecret found nothing in a 25-char, maximally-diverse token (entropy 4.6439 bits/char) — the OLD flat-4.7 threshold is mathematically unreachable at this length regardless of content
+//	--- FAIL: TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone
+//
+// Restored to the length-relative check, it is GREEN:
+//
+//	$ go test ./internal/govcontext/... -run TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone -v
+//	--- PASS: TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone
+func TestDetectSecret_EntropyBoundary_Length25IsNoLongerADeadZone(t *testing.T) {
+	tok := "Xk9mQ2pL7vN4wZ8tR1yB6hJf3" // 25 chars, all distinct: H = log2(25) = 4.6439
+	if len(tok) != 25 {
+		t.Fatalf("test fixture is %d characters, want exactly 25", len(tok))
+	}
+	if h := shannonEntropy(tok); h < 4.6 || h > 4.65 {
+		t.Fatalf("test fixture's entropy is %.4f, want ~4.6439 (recompute the fixture)", h)
+	}
+	snap := Snapshot{Guidance: GuidanceSet{BrandVoice: "rotation token: " + tok}}
+	cat, found := DetectSecret(snap)
+	if !found {
+		t.Fatalf("DetectSecret found nothing in a 25-char, maximally-diverse token (entropy 4.6439 bits/char) — " +
+			"the OLD flat-4.7 threshold is mathematically unreachable at this length regardless of content")
+	}
+	if cat != entropyCategory {
+		t.Errorf("category = %q, want %q", cat, entropyCategory)
+	}
+}
+
+// TestDetectSecret_EntropyBoundary_Length26RealisticTokenIsCaught uses a
+// REALISTIC 26-character token — one repeated character, not the perfectly
+// unique string that was the only content able to reach the old flat 4.7 at
+// this exact length (log2(26) = 4.7004, so only an all-distinct 26-char
+// string could ever have crossed the old bound). A real credential almost
+// never has zero repeated characters; this fixture proves 26 characters is
+// robustly covered now, not merely at its single unreachable-in-practice
+// edge case.
+func TestDetectSecret_EntropyBoundary_Length26RealisticTokenIsCaught(t *testing.T) {
+	tok := "Xk9mQ2pL7vN4wZ8tR1yB6hJf3k" // 26 chars, ONE repeat ('k'): H = 4.6235 < 4.7 (old bound)
+	if len(tok) != 26 {
+		t.Fatalf("test fixture is %d characters, want exactly 26", len(tok))
+	}
+	h := shannonEntropy(tok)
+	if h >= 4.7 {
+		t.Fatalf("test fixture's entropy is %.4f, want < 4.7 (this fixture is supposed to fail the OLD flat "+
+			"threshold so it proves the new one catches what the old one could not)", h)
+	}
+	snap := Snapshot{Guidance: GuidanceSet{BrandVoice: "rotation token: " + tok}}
+	cat, found := DetectSecret(snap)
+	if !found {
+		t.Fatalf("DetectSecret found nothing in a realistic 26-char token (entropy %.4f bits/char, below the "+
+			"old flat 4.7 bound but above the new length-relative one)", h)
+	}
+	if cat != entropyCategory {
+		t.Errorf("category = %q, want %q", cat, entropyCategory)
+	}
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(substr) > 0 && (func() bool {
 		for i := 0; i+len(substr) <= len(s); i++ {

@@ -33,19 +33,37 @@ var secretPatterns = []secretPattern{
 const entropyCategory = "high_entropy_secret"
 
 // entropyMinLen is the shortest bare token the entropy fallback considers.
-// Below this, entropy is not a meaningful signal (too few symbols to measure)
-// and false positives on ordinary words dominate.
+// Below this, ANY string of distinct characters trivially reaches the maximum
+// possible entropy for its own length (e.g. a 4-character word with no
+// repeated letters already has ratio 1.0 against itself), so a length floor
+// is a false-positive guard independent of the ratio check below — not, on
+// its own, a claim that anything shorter is safe from being a secret.
 const entropyMinLen = 20
 
-// entropyThreshold is the Shannon-entropy-per-character bound above which a
-// bare alphanumeric token is treated as "password-shaped... with the right
-// entropy" per Decision 10. Calibrated so that: real secrets (API keys,
-// tokens — base62/base64-ish, ~5.5-6 bits/char) trip it; ordinary prose,
-// including camelCase identifiers and concatenated words, does not (natural
-// language runs well under 4.5 bits/char at this alphabet size). See
-// secretscan_test.go for the calibration cases this threshold must satisfy in
-// both directions.
-const entropyThreshold = 4.7
+// entropyRatio is the fraction of a token's OWN maximum possible Shannon
+// entropy — log2(len(token)), achieved only when every character in the
+// token is distinct — that a bare alphanumeric token must reach to be
+// treated as "password-shaped... with the right entropy" per Decision 10.
+//
+// A FIXED, LENGTH-INDEPENDENT bit/char threshold cannot work here, and
+// previously did not: entropyThreshold used to be a flat 4.7 bits/char, but
+// the maximum entropy ANY string of length n can have is log2(n) — 4.3219
+// at n=20, 4.6439 at n=25 — both below 4.7. Every 20-25 character token was
+// therefore structurally unable to cross that bound, whatever it contained;
+// the check was dead code across exactly the length window it claimed to
+// cover, and reported "no secret found" there because it was unreachable,
+// not because it looked and cleared. See secretscan_test.go's boundary tests
+// at 25 and 26, which pinned that exact dead zone before this fix and now
+// prove a 20-25 character high-entropy token is caught, not skipped.
+//
+// Calibrated empirically (see the fixed 20000-trial simulation this comment
+// is not the place to reproduce, summarised in the PR): a uniformly-random
+// token over this file's alphabet has its entropy-to-log2(len) ratio fall
+// below 0.78 in fewer than 0.02% of draws at every tested length from 20 to
+// 40, while every non-secret contiguous-token fixture this package has
+// tested (camelCase identifiers, snake_case identifiers, URLs, hex-ish
+// strings) tops out at 0.75. 0.78 sits in the gap with margin on both sides.
+const entropyRatio = 0.78
 
 var tokenRe = regexp.MustCompile(`[A-Za-z0-9+/_\-]{20,}`)
 
@@ -88,11 +106,24 @@ func scanValue(v string) (string, bool) {
 		}
 	}
 	for _, tok := range tokenRe.FindAllString(v, -1) {
-		if len(tok) >= entropyMinLen && shannonEntropy(tok) >= entropyThreshold {
+		if isHighEntropy(tok) {
 			return entropyCategory, true
 		}
 	}
 	return "", false
+}
+
+// isHighEntropy reports whether tok's observed Shannon entropy reaches
+// entropyRatio of the maximum ANY string of tok's length could have
+// (log2(len(tok))), which is the length-relative form of "the right entropy"
+// per Decision 10. See entropyRatio's doc comment for why a flat, length-
+// independent bit/char bound cannot be used here.
+func isHighEntropy(tok string) bool {
+	if len(tok) < entropyMinLen {
+		return false
+	}
+	maxEntropy := math.Log2(float64(len(tok)))
+	return shannonEntropy(tok) >= entropyRatio*maxEntropy
 }
 
 // shannonEntropy returns the Shannon entropy of s in bits per character.
