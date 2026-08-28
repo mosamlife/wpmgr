@@ -2,8 +2,23 @@
 -- Proof harness for fleet_software_census.sql
 -- ===========================================================================
 -- Seeds thirteen sites covering every classification branch and every
--- inventory-age bucket, runs the census, asserts the counts, then ROLLS BACK.
+-- inventory-age bucket, PLUS a second "noise" org whose three sites every
+-- assertion must exclude, runs the census, asserts the counts, then ROLLS BACK.
 -- Nothing is persisted.
+--
+-- The noise org is load-bearing. Assertions here used to read GLOBAL counts
+-- (`SELECT count(*) FROM census_fleet`), which are only correct on a database
+-- holding no other sites -- and the census runs fleet-wide as a BYPASSRLS
+-- owner, so it sees everything. It passed solely because the dev container has
+-- zero sites, and would have mis-asserted on any populated database. Every
+-- assertion is now scoped to the fixture tenant, and the noise org exists so
+-- that re-globalising one breaks immediately instead of much later on somebody
+-- else's database.
+--
+-- It also proves the census is READ-ONLY by behaviour rather than by grepping
+-- its text: every base table in `public` is fingerprinted (rows + content
+-- digest) and the transaction's tuple-write counters are captured, before and
+-- after the census runs, and any movement fails the harness.
 --
 --   psql "$OWNER_DSN" -f fleet_software_census_proof.sql
 --
@@ -144,8 +159,110 @@ INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, com
 ('a0000000-0000-0000-0000-0000000000ff','c5e75000-0000-4000-8000-0000000c5e75','https://sX.example','sX-archived','archived', now(), now(), false, 'x',
  '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.21.5","active":true}],"themes":[]}'::jsonb);
 
+-- ---------------------------------------------------------------------------
+-- NOISE TENANT. A SECOND org whose sites the census WILL see (this runs
+-- fleet-wide as a BYPASSRLS owner) and which every assertion below must
+-- therefore exclude.
+--
+-- This exists because the harness previously asserted on GLOBAL counts --
+-- `SELECT count(*) FROM census_fleet` and friends -- which only gave the right
+-- answer on a database holding no other sites. It passed on the dev container
+-- because that container has zero sites, and it would have mis-asserted on any
+-- populated database, including a staging restore. Seeding foreign sites makes
+-- that failure mode permanent rather than latent: if anyone re-globalises an
+-- assertion, these rows break it immediately instead of two months from now on
+-- someone else's database.
+--
+-- Deliberately shaped to break every global count: it adds sites, an active
+-- Elementor, an active Bricks theme, an undated inventory and a multisite.
+-- ---------------------------------------------------------------------------
+INSERT INTO tenants (id, name, slug)
+VALUES ('d0125000-0000-4000-8000-0000000d0125', 'Noise Org', 'census-noise-org-s2');
+
+INSERT INTO sites (id, tenant_id, url, name, connection_state, last_seen_at, components_updated_at, multisite, active_theme, components) VALUES
+('c0000000-0000-0000-0000-000000000001','d0125000-0000-4000-8000-0000000d0125','https://n1.example','n1-elementor','connected', now(), now(), false, 'hello-elementor',
+ '{"plugins":[{"slug":"elementor/elementor.php","name":"Elementor","version":"3.21.5","active":true}],
+   "themes":[{"slug":"hello-elementor","name":"Hello","version":"3.0.1","active":true}]}'::jsonb),
+('c0000000-0000-0000-0000-000000000002','d0125000-0000-4000-8000-0000000d0125','https://n2.example','n2-bricks','connected', now(), NULL, true, 'bricks',
+ '{"plugins":[],
+   "themes":[{"slug":"bricks","name":"Bricks","version":"1.9.2","active":true}]}'::jsonb),
+('c0000000-0000-0000-0000-000000000003','d0125000-0000-4000-8000-0000000d0125','https://n3.example','n3-empty','pending_enrollment', NULL, NULL, false, '', '{}'::jsonb);
+
+-- ---------------------------------------------------------------------------
+-- READ-ONLY, PROVEN AT RUNTIME RATHER THAN BY GREPPING THE TEXT.
+--
+-- The claim "this script writes nothing" was previously supported by
+--     grep -inE '^[[:space:]]*(INSERT|UPDATE|DELETE|...)' fleet_software_census.sql
+-- which is a check that cannot meaningfully fail. The `^` anchor means a write
+-- placed after anything else on its line is invisible to it, and the file
+-- mentions those keywords dozens of times in prose regardless, so the exit
+-- status was never really testing the property.
+--
+-- This tests the BEHAVIOUR instead: fingerprint every base table in `public`,
+-- run the census, fingerprint again, and require the two to be identical. Row
+-- count alone would miss an UPDATE that rewrites a row in place, so each table
+-- also carries a content digest.
+--
+-- Cheap here because the fixture is tiny. It is a proof-harness device and is
+-- not something to point at a production-sized database.
+-- ---------------------------------------------------------------------------
+CREATE TEMP TABLE census_rw_snapshot (
+    phase  text,
+    tbl    text,
+    n      bigint,
+    digest text
+);
+
+CREATE FUNCTION pg_temp.census_fingerprint(p_phase text) RETURNS bigint AS $fn$
+DECLARE
+    r        record;
+    cnt      bigint;
+    dig      text;
+    n_tables bigint := 0;
+BEGIN
+    FOR r IN
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        WHERE ns.nspname = 'public' AND c.relkind = 'r'
+        ORDER BY c.relname
+    LOOP
+        EXECUTE format(
+            'SELECT count(*), coalesce(md5(string_agg(t::text, %L ORDER BY t::text)), %L) FROM public.%I t',
+            '|', '(empty)', r.relname)
+        INTO cnt, dig;
+        INSERT INTO census_rw_snapshot VALUES (p_phase, r.relname, cnt, dig);
+        n_tables := n_tables + 1;
+    END LOOP;
+
+    -- Content digests alone are NOT sufficient, and this was found the hard
+    -- way: a planted `UPDATE sites SET last_seen_at = now() WHERE multisite`
+    -- passed the digest check silently, because now() is the TRANSACTION START
+    -- time and the seeds had already written that exact value -- so the write
+    -- really happened and rewrote identical bytes.
+    --
+    -- pg_stat_xact_user_tables counts TUPLES TOUCHED in the current
+    -- transaction, so an UPDATE that changes nothing still increments
+    -- n_tup_upd. That closes the identical-value hole the digest cannot see.
+    -- Restricted to `public` so this function's own INSERTs into the temp
+    -- snapshot table are not counted as writes.
+    INSERT INTO census_rw_snapshot
+    SELECT p_phase, '__xact_tuples_written__',
+           coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0),
+           '(tuple counter, not a digest)'
+    FROM pg_stat_xact_user_tables
+    WHERE schemaname = 'public';
+
+    RETURN n_tables;
+END
+$fn$ LANGUAGE plpgsql;
+
+SELECT pg_temp.census_fingerprint('before') AS tables_fingerprinted_before;
+
 \echo '### Running census as the OWNER (BYPASSRLS), fleet-wide ###'
 \i fleet_software_census.sql
+
+SELECT pg_temp.census_fingerprint('after') AS tables_fingerprinted_after;
 
 -- ---------------------------------------------------------------------------
 -- Assertions. Each is the classification the seed comments promise.
@@ -156,8 +273,43 @@ DO $$
 DECLARE
     got  bigint;
     fail text := '';
+    diff text;
+    -- EVERY assertion below is scoped to this tenant. The census runs
+    -- fleet-wide as a BYPASSRLS owner, so census_fleet also holds the noise
+    -- org's sites and anything else the database happens to contain. Asserting
+    -- on global counts made this harness silently conditional on an EMPTY
+    -- database -- it passed only because the dev container has zero sites, and
+    -- it would have mis-asserted on any populated one.
+    proof_tenant constant uuid := 'c5e75000-0000-4000-8000-0000000c5e75';
+    noise_tenant constant uuid := 'd0125000-0000-4000-8000-0000000d0125';
 BEGIN
-    SELECT count(*) INTO got FROM census_fleet;
+    -- The noise org must actually be present, or the scoping is being proven
+    -- against nothing and we are back to the empty-database assumption.
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = noise_tenant;
+    IF got <> 3 THEN fail := fail || format('noise tenant should contribute 3 sites that every assertion must exclude, got %s; ', got); END IF;
+
+    -- ---- READ-ONLY, PROVEN AT RUNTIME -------------------------------------
+    -- Every base table in `public`, fingerprinted before and after the census
+    -- ran. Any INSERT, UPDATE or DELETE it performed moves a count or a digest.
+    SELECT count(*) INTO got FROM census_rw_snapshot WHERE phase = 'before';
+    IF got = 0 THEN fail := fail || 'read-only fingerprint covered 0 tables, so it proves nothing; fix it before trusting a pass; '; END IF;
+
+    SELECT count(*) INTO got FROM census_rw_snapshot WHERE phase = 'after';
+    IF got = 0 THEN fail := fail || 'read-only fingerprint has no AFTER phase; the census run did not complete; '; END IF;
+
+    SELECT string_agg(format('%s (rows %s->%s, digest %s)',
+                             b.tbl, b.n, a.n,
+                             CASE WHEN b.digest IS DISTINCT FROM a.digest THEN 'CHANGED' ELSE 'same' END), ', ')
+      INTO diff
+      FROM census_rw_snapshot b
+      JOIN census_rw_snapshot a ON a.tbl = b.tbl AND a.phase = 'after'
+     WHERE b.phase = 'before'
+       AND (b.n, b.digest) IS DISTINCT FROM (a.n, a.digest);
+    IF diff IS NOT NULL THEN
+        fail := fail || format('THE CENSUS IS NOT READ-ONLY -- it changed: %s; ', diff);
+    END IF;
+
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant;
     IF got <> 13 THEN fail := fail || format('scope should exclude the archived site and be 13, got %s; ', got); END IF;
 
     -- ---- Inventory-usability flags must be BOOLEAN, never NULL. -------------
@@ -165,80 +317,80 @@ BEGIN
     -- jsonb_typeof(NULL) is NULL, so without COALESCE a never-reported site
     -- (components = '{}', the column default) has has_plugin_inventory = NULL,
     -- slips past `WHEN NOT ...` and is classified Gutenberg.
-    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory IS NULL;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND has_plugin_inventory IS NULL;
     IF got <> 0 THEN fail := fail || format('has_plugin_inventory must never be NULL, got %s NULL rows; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE has_theme_inventory IS NULL;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND has_theme_inventory IS NULL;
     IF got <> 0 THEN fail := fail || format('has_theme_inventory must never be NULL, got %s NULL rows; ', got); END IF;
 
     -- Same rule, now for the m121 age flags. inventory_provably_stale is built
     -- from a comparison against a NULLABLE column, so it is the same trap one
     -- table over: without COALESCE it is NULL for every undated site and every
     -- `FILTER (WHERE ...)` silently drops those rows.
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_age_known IS NULL;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_age_known IS NULL;
     IF got <> 0 THEN fail := fail || format('inventory_age_known must never be NULL, got %s NULL rows; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_provably_stale IS NULL;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_provably_stale IS NULL;
     IF got <> 0 THEN fail := fail || format('inventory_provably_stale must never be NULL, got %s NULL rows; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness IS NULL;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_freshness IS NULL;
     IF got <> 0 THEN fail := fail || format('inventory_freshness must never be NULL, got %s NULL rows; ', got); END IF;
 
     -- ---- Inventory presence -----------------------------------------------
-    SELECT count(*) INTO got FROM census_fleet WHERE NOT has_plugin_inventory AND NOT has_theme_inventory;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND NOT has_plugin_inventory AND NOT has_theme_inventory;
     IF got <> 2 THEN fail := fail || format('sites with NO usable inventory should be 2 (s7 empty, s8 malformed), got %s; ', got); END IF;
 
     SELECT count(*) INTO got FROM census_fleet
-      WHERE (has_plugin_inventory OR has_theme_inventory)
+      WHERE tenant_id = proof_tenant AND (has_plugin_inventory OR has_theme_inventory)
         AND NOT (has_plugin_inventory AND has_theme_inventory);
     IF got <> 2 THEN fail := fail || format('PARTIAL inventory should be 2 (s6 plugins-only, s13 themes-only), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND has_plugin_inventory;
     IF got <> 10 THEN fail := fail || format('plugin_denom should be 10, got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE has_theme_inventory;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND has_theme_inventory;
     IF got <> 10 THEN fail := fail || format('theme_denom should be 10, got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE has_plugin_inventory OR has_theme_inventory;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND (has_plugin_inventory OR has_theme_inventory);
     IF got <> 11 THEN fail := fail || format('either_denom should be 11, got %s; ', got); END IF;
 
     -- ---- m121 inventory age. The NULL bucket is the point. ----------------
-    SELECT count(*) INTO got FROM census_fleet WHERE NOT inventory_age_known;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND NOT inventory_age_known;
     IF got <> 4 THEN fail := fail || format('age_unknown should be 4 (s3,s6,s7,s8), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_age_known;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_age_known;
     IF got <> 9 THEN fail := fail || format('age_known should be 9, got %s; ', got); END IF;
 
     -- Every undated site must land in the age_unknown bucket and NOWHERE else.
     -- This is the assertion that stops a NULL age being quietly folded into a
     -- freshness bucket, which would report "we do not know" as "it is fresh".
     SELECT count(*) INTO got FROM census_fleet
-      WHERE NOT inventory_age_known AND inventory_freshness <> 'age_unknown (never recorded)';
+      WHERE tenant_id = proof_tenant AND NOT inventory_age_known AND inventory_freshness <> 'age_unknown (never recorded)';
     IF got <> 0 THEN fail := fail || format('%s undated site(s) landed in a dated freshness bucket — NULL age is being folded in; ', got); END IF;
 
     SELECT count(*) INTO got FROM census_fleet
-      WHERE inventory_age_known AND inventory_freshness = 'age_unknown (never recorded)';
+      WHERE tenant_id = proof_tenant AND inventory_age_known AND inventory_freshness = 'age_unknown (never recorded)';
     IF got <> 0 THEN fail := fail || format('%s DATED site(s) landed in age_unknown; ', got); END IF;
 
     -- An undated site must never be counted as provably stale: we cannot prove
     -- what we never recorded.
     SELECT count(*) INTO got FROM census_fleet
-      WHERE NOT inventory_age_known AND inventory_provably_stale;
+      WHERE tenant_id = proof_tenant AND NOT inventory_age_known AND inventory_provably_stale;
     IF got <> 0 THEN fail := fail || format('%s undated site(s) counted as provably stale; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_provably_stale;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_provably_stale;
     IF got <> 3 THEN fail := fail || format('provably stale (>7d) should be 3 (s5 10d, s10 60d, s12 40d), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_24h';
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_freshness = 'inventory_24h';
     IF got <> 5 THEN fail := fail || format('inventory_24h should be 5 (s1,s4,s9,s11,s13), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_week';
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_freshness = 'inventory_week';
     IF got <> 1 THEN fail := fail || format('inventory_week should be 1 (s2), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_month';
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_freshness = 'inventory_month';
     IF got <> 1 THEN fail := fail || format('inventory_month should be 1 (s5), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_fleet WHERE inventory_freshness = 'inventory_over_30d';
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND inventory_freshness = 'inventory_over_30d';
     IF got <> 2 THEN fail := fail || format('inventory_over_30d should be 2 (s10,s12), got %s; ', got); END IF;
 
     -- Inventory age and agent contact are DIFFERENT facts. s3 proves it: the
@@ -246,7 +398,7 @@ BEGIN
     -- two ever agree on every row, the census has gone back to reading
     -- last_seen_at as freshness.
     SELECT count(*) INTO got FROM census_fleet
-      WHERE last_contact_freshness = 'contact_24h' AND NOT inventory_age_known;
+      WHERE tenant_id = proof_tenant AND last_contact_freshness = 'contact_24h' AND NOT inventory_age_known;
     IF got <> 3 THEN fail := fail || format('sites contacted <24h but with UNDATED inventory should be 3 (s3,s6,s8), got %s; ', got); END IF;
 
     -- ---- Every classification bucket, by exact count. ----------------------
@@ -258,49 +410,49 @@ BEGIN
     -- this file still exited 0, because the copy was still right. Asserting
     -- against the census's own view is the whole point -- if the two ever drift
     -- apart again, the harness is testing nothing.
-    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'unknown: no inventory';
+    SELECT count(*) INTO got FROM census_classified WHERE tenant_id = proof_tenant AND bucket = 'unknown: no inventory';
     IF got <> 2 THEN fail := fail || format('bucket "unknown: no inventory" should be 2 (s7,s8), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'builder active';
+    SELECT count(*) INTO got FROM census_classified WHERE tenant_id = proof_tenant AND bucket = 'builder active';
     IF got <> 7 THEN fail := fail || format('bucket "builder active" should be 7 (s1,s2,s3,s4,s10,s11,s13), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'indeterminate: partial inventory';
+    SELECT count(*) INTO got FROM census_classified WHERE tenant_id = proof_tenant AND bucket = 'indeterminate: partial inventory';
     IF got <> 1 THEN fail := fail || format('bucket "indeterminate" should be 1 (s6), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'builder installed, not active';
+    SELECT count(*) INTO got FROM census_classified WHERE tenant_id = proof_tenant AND bucket = 'builder installed, not active';
     IF got <> 2 THEN fail := fail || format('bucket "installed not active" should be 2 (s9,s12), got %s; ', got); END IF;
 
     -- The one that matters most: exactly ONE seeded site truly runs no builder.
-    SELECT count(*) INTO got FROM census_classified WHERE bucket = 'Gutenberg (no builder present)';
+    SELECT count(*) INTO got FROM census_classified WHERE tenant_id = proof_tenant AND bucket = 'Gutenberg (no builder present)';
     IF got <> 1 THEN fail := fail || format('bucket "Gutenberg" should be EXACTLY 1 (s5 only). Got %s — a site with unknown or partial inventory is being scored as Gutenberg; ', got); END IF;
 
     -- s13 specifically: a themes-only site with an ACTIVE builder must be
     -- 'builder active', not 'unknown'. This fails if the CASE ever tests
     -- inventory completeness before testing for a positive hit.
     SELECT count(*) INTO got FROM census_classified
-      WHERE id = 'a0000000-0000-0000-0000-00000000000d' AND bucket = 'builder active';
+      WHERE tenant_id = proof_tenant AND id = 'a0000000-0000-0000-0000-00000000000d' AND bucket = 'builder active';
     IF got <> 1 THEN fail := fail || 'themes-only s13 with active Bricks must classify "builder active", not be discarded as unknown; '; END IF;
 
     -- ---- Target matching, plugins AND themes ------------------------------
-    SELECT count(DISTINCT site_id) INTO got FROM census_hits WHERE target='Bricks' AND active;
+    SELECT count(DISTINCT site_id) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='Bricks' AND active;
     IF got <> 2 THEN fail := fail || format('Bricks (theme) active should be 2 (s2,s13), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='Divi' AND active;
+    SELECT count(*) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='Divi' AND active;
     IF got <> 1 THEN fail := fail || format('Divi (capital-D theme dir) active should be 1, got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='WPBakery' AND active;
+    SELECT count(*) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='WPBakery' AND active;
     IF got <> 1 THEN fail := fail || format('WPBakery (js_composer) active should be 1, got %s; ', got); END IF;
 
-    SELECT count(DISTINCT site_id) INTO got FROM census_hits WHERE target='Elementor' AND active;
+    SELECT count(DISTINCT site_id) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='Elementor' AND active;
     IF got <> 3 THEN fail := fail || format('Elementor active should be 3 (s1,s10,s11), got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='WooCommerce' AND active;
+    SELECT count(*) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='WooCommerce' AND active;
     IF got <> 1 THEN fail := fail || format('WooCommerce active should be 1, got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='Yoast SEO' AND active;
+    SELECT count(*) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='Yoast SEO' AND active;
     IF got <> 1 THEN fail := fail || format('Yoast (wordpress-seo) active should be 1, got %s; ', got); END IF;
 
-    SELECT count(*) INTO got FROM census_hits WHERE target='ACF' AND active;
+    SELECT count(*) INTO got FROM census_hits WHERE tenant_id = proof_tenant AND target='ACF' AND active;
     IF got <> 1 THEN fail := fail || format('ACF active should be 1, got %s; ', got); END IF;
 
     -- ---- Per-target denominators (PR #552 review, thread 1) ---------------
@@ -324,24 +476,24 @@ BEGIN
     -- ---- Exclusions and parsing -------------------------------------------
     -- The archived site carried an active Elementor. If it leaked in, the
     -- Elementor count above would be 4.
-    SELECT count(*) INTO got FROM census_fleet WHERE connection_state='archived';
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND connection_state='archived';
     IF got <> 0 THEN fail := fail || format('archived sites must be excluded, got %s; ', got); END IF;
 
     -- The unparsed-version bucket must survive rather than be dropped.
     SELECT count(*) INTO got FROM census_hits
-      WHERE target='Elementor' AND active AND version_minor IS NULL;
+      WHERE tenant_id = proof_tenant AND target='Elementor' AND active AND version_minor IS NULL;
     IF got <> 1 THEN fail := fail || format('one Elementor should have an unparsed version, got %s; ', got); END IF;
 
     SELECT count(*) INTO got FROM census_hits
-      WHERE target='Elementor' AND active AND version_minor='3.21';
+      WHERE tenant_id = proof_tenant AND target='Elementor' AND active AND version_minor='3.21';
     IF got <> 1 THEN fail := fail || format('one Elementor should group to 3.21, got %s; ', got); END IF;
 
     -- ---- Multisite exposure (the #558 caveat, sized) ----------------------
-    SELECT count(*) INTO got FROM census_fleet WHERE multisite;
+    SELECT count(*) INTO got FROM census_fleet WHERE tenant_id = proof_tenant AND multisite;
     IF got <> 1 THEN fail := fail || format('multisite sites should be 1 (s9), got %s; ', got); END IF;
 
     SELECT count(DISTINCT site_id) INTO got FROM census_hits
-      WHERE multisite AND category='builder' AND NOT active;
+      WHERE tenant_id = proof_tenant AND multisite AND category='builder' AND NOT active;
     IF got <> 1 THEN fail := fail || format('multisite sites with an INACTIVE builder should be 1 (s9), got %s; ', got); END IF;
 
     IF fail <> '' THEN RAISE EXCEPTION 'PROOF FAILED: %', fail; END IF;

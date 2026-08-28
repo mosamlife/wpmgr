@@ -4,7 +4,16 @@
 -- Answers: for each integration target, how many sites run it, at which
 -- versions, and what fraction of the fleet is that?
 --
--- READ-ONLY. Every statement is a SELECT. Nothing here writes.
+-- READ-ONLY, and that is PROVEN AT RUNTIME rather than asserted here. The proof
+-- harness fingerprints every base table in `public` (row count plus a content
+-- digest) and the transaction's tuple-write counters, before and after this
+-- script runs, and fails if anything moved. Do not replace that with a grep for
+-- write keywords: the anchored grep this file used to advertise reported CLEAN
+-- with a live `UPDATE sites` planted in it, because the write followed another
+-- statement on its line.
+--
+-- What it DOES do to the session, none of it persistent: creates TEMP views, and
+-- sets app.tenant_id when a tenant_id is supplied. Both vanish on disconnect.
 --
 --   psql "$APP_DSN"   -v tenant_id=<uuid> -f fleet_software_census.sql   # one org
 --   psql "$OWNER_DSN"                     -f fleet_software_census.sql   # fleet-wide
@@ -57,6 +66,22 @@
 -- m121 (20260823000000) added sites.components_updated_at, stamped by
 -- UpdateSiteMetadata — the only statement in the tree that writes
 -- sites.components — so the inventory now carries its own age.
+--
+-- WHAT THE TIMESTAMP MEANS, EXACTLY. It is now() evaluated ON THE CONTROL PLANE
+-- at the moment it PERSISTED the inventory document. It is NOT the instant the
+-- agent walked the plugin and theme list on the WordPress host. The agent's
+-- metadata payload carries no collection timestamp, so the collection instant is
+-- simply not knowable here, and m121 named the column components_updated_at
+-- rather than components_collected_at precisely so this script cannot quietly
+-- claim otherwise (m121 DECISION 2).
+--
+-- The gap between the two is one agent push — normally a single HTTP round trip,
+-- and NOT small when it matters: a queued or retried push, a clock-skewed host,
+-- or any future store-and-forward path widens it without warning. So every
+-- freshness number below is "how long since WE RECORDED this", which is a lower
+-- bound on "how long since the agent LOOKED". Like every other error in this
+-- script it runs one way: the inventory can be older than it reports here, never
+-- newer.
 --
 -- This replaces last_seen_at, which was never inventory age: TouchSiteHeartbeat
 -- (db/query/site_connection.sql) bumps last_seen_at every 60 seconds WITHOUT
@@ -315,7 +340,7 @@ JOIN census_targets t
 -- a fact when BOTH arrays arrived. None of the three non-builder buckets is
 -- silently merged into Gutenberg.
 CREATE OR REPLACE TEMP VIEW census_classified AS
-SELECT f.id, f.multisite, f.inventory_provably_stale, f.inventory_age_known,
+SELECT f.id, f.tenant_id, f.multisite, f.inventory_provably_stale, f.inventory_age_known,
        CASE
            WHEN NOT f.has_plugin_inventory AND NOT f.has_theme_inventory
                 THEN 'unknown: no inventory'
@@ -350,6 +375,7 @@ BEGIN
             'census scope is empty: 0 sites visible. Either the tenant_id matches no site, or this is a fleet-wide run as a role without BYPASSRLS (sites is FORCE RLS). Refusing to report a fleet that does not exist.';
     END IF;
 END $$;
+
 
 \echo ''
 \echo '======================================================================'
