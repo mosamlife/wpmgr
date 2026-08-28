@@ -438,7 +438,7 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 }
 
 const getMCPOAuthClientByClientIDForLookup = `-- name: GetMCPOAuthClientByClientIDForLookup :one
-SELECT id, client_id, client_secret_hash, token_endpoint_auth_method, redirect_uris, client_name, client_uri, created_at, last_used_at FROM mcp_oauth_clients
+SELECT id, client_id, client_secret_hash, token_endpoint_auth_method, redirect_uris, client_name, client_uri, created_at FROM mcp_oauth_clients
 WHERE client_id = $1
 `
 
@@ -467,7 +467,6 @@ func (q *Queries) GetMCPOAuthClientByClientIDForLookup(ctx context.Context, clie
 		&i.ClientName,
 		&i.ClientUri,
 		&i.CreatedAt,
-		&i.LastUsedAt,
 	)
 	return i, err
 }
@@ -725,7 +724,7 @@ INSERT INTO mcp_oauth_clients (
 ) VALUES (
     $1, $2, $3, $4, $5, $6
 )
-RETURNING id, client_id, client_secret_hash, token_endpoint_auth_method, redirect_uris, client_name, client_uri, created_at, last_used_at
+RETURNING id, client_id, client_secret_hash, token_endpoint_auth_method, redirect_uris, client_name, client_uri, created_at
 `
 
 type RegisterMCPOAuthClientParams struct {
@@ -836,7 +835,6 @@ func (q *Queries) RegisterMCPOAuthClient(ctx context.Context, arg RegisterMCPOAu
 		&i.ClientName,
 		&i.ClientUri,
 		&i.CreatedAt,
-		&i.LastUsedAt,
 	)
 	return i, err
 }

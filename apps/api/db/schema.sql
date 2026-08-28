@@ -5794,8 +5794,17 @@ CREATE TABLE mcp_oauth_clients (
         CHECK (cardinality(redirect_uris) > 0),
     client_name  text NULL,
     client_uri   text NULL,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    last_used_at timestamptz NULL
+    created_at   timestamptz NOT NULL DEFAULT now()
+    -- NO last_used_at, AND DO NOT ADD ONE BACK. m124 shipped one and m126
+    -- dropped it. This table has FOR INSERT and FOR SELECT policies and no
+    -- UPDATE policy, so under FORCE ROW LEVEL SECURITY the stamp matched zero
+    -- rows and raised no error from every transaction that exists -- proven as
+    -- wpmgr_app under both GUCs, both together, and under tenant scope. The
+    -- column was therefore NULL forever, which a UI renders as "never used"
+    -- about a client in daily use. The grant carries the last_used_at an
+    -- operator actually reads. Re-adding this needs its own migration, a FOR
+    -- UPDATE policy and a cross-tenant ledger row -- see
+    -- migrations/20260828000000_m126_drop_mcp_oauth_clients_last_used_at.sql.
 );
 
 CREATE UNIQUE INDEX mcp_oauth_clients_client_id_key ON mcp_oauth_clients (client_id);
