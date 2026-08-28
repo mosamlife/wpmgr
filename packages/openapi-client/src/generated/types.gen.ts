@@ -8179,6 +8179,154 @@ export type AgentSubmitManifestResponse = {
 };
 
 /**
+ * ADR-064 Decision 3's closed, structured "restrictions" kind. Every field is a deny-list; a lower layer may add to it but never remove an item a higher layer set (ADR-064 Decision 4). No field here is ever deep-merged on PATCH — see PatchGovContextRequest.
+ */
+export type RestrictionSet = {
+  forbidden_tools?: Array<string>;
+  forbidden_domains?: Array<string>;
+  forbidden_topics?: Array<string>;
+};
+
+/**
+ * ADR-064 Decision 3's free-text "guidance" kind. No widen-check applies to these fields — "wider" and "narrower" are not defined relations over prose (ADR-064 Decision 1) — and none is implemented.
+ */
+export type GuidanceSet = {
+  brand_voice?: string;
+  audience?: string;
+  terminology?: string;
+  style?: string;
+};
+
+export type GovContext = {
+  /**
+   * 0 means no context has ever been authored for this subject (a legitimate empty state, not a 404).
+   */
+  version: number;
+  restrictions: RestrictionSet;
+  guidance: GuidanceSet;
+  author_type?: "user" | "api_key" | "system";
+  author_id?: string;
+  provenance?: "manual" | "restore" | "transfer";
+  restored_from_version_id?: string;
+  created_at?: string;
+};
+
+export type GovContextVersionSummary = {
+  id: string;
+  version: number;
+  author_type: "user" | "api_key" | "system";
+  author_id?: string;
+  provenance: "manual" | "restore" | "transfer";
+  restored_from_version_id?: string;
+  created_at: string;
+};
+
+export type GovContextVersionList = {
+  items: Array<GovContextVersionSummary>;
+  /**
+   * Pass as ?cursor= to fetch the next page. 0 means no further page.
+   */
+  next_cursor: number;
+};
+
+export type GovContextVersionItem = {
+  id: string;
+  version: number;
+  restrictions: RestrictionSet;
+  guidance: GuidanceSet;
+  author_type: "user" | "api_key" | "system";
+  author_id?: string;
+  provenance: "manual" | "restore" | "transfer";
+  restored_from_version_id?: string;
+  created_at: string;
+};
+
+export type GovContextListDiff = {
+  added?: Array<string>;
+  removed?: Array<string>;
+};
+
+export type GovContextFieldDiff = {
+  old?: string;
+  new?: string;
+};
+
+/**
+ * Only fields that actually changed between the two versions are present.
+ */
+export type GovContextSnapshotDiff = {
+  forbidden_tools?: GovContextListDiff;
+  forbidden_domains?: GovContextListDiff;
+  forbidden_topics?: GovContextListDiff;
+  brand_voice?: GovContextFieldDiff;
+  audience?: GovContextFieldDiff;
+  terminology?: GovContextFieldDiff;
+  style?: GovContextFieldDiff;
+};
+
+export type GovContextDiff = {
+  version: GovContextVersionItem;
+  /**
+   * true when this version has no eligible predecessor to diff against (ADR-064 Decision 5) — a genuine first version, or (site scope only) the first version after a transfer.
+   */
+  baseline: boolean;
+  prior?: GovContextVersionItem;
+  diff?: GovContextSnapshotDiff;
+};
+
+export type GovContextLayerContribution = {
+  /**
+   * ADR-064 Decision 1 layer number, 1-6. Layer 7 (learned memory) is never present — it is not built, not stubbed.
+   */
+  layer: number;
+  name: string;
+  restrictions: RestrictionSet;
+  guidance: GuidanceSet;
+  /**
+   * Populated only for layer 4 (detected site facts).
+   */
+  facts?: {
+    wp_version?: string;
+    php_version?: string;
+    multisite?: boolean;
+    active_theme?: string;
+  };
+  /**
+   * Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).
+   */
+  session?: string;
+  bytes: number;
+  truncated: boolean;
+};
+
+export type GovContextEffective = {
+  site_id: string;
+  layers: Array<GovContextLayerContribution>;
+  /**
+   * The read-time union of every layer 1-3 restriction. Never truncated by the byte budget, unlike each layer's own display copy above — ADR-064 Decision 4's enforcement path reads this field, never a layer's (possibly truncated) prose.
+   */
+  restrictions: RestrictionSet;
+  total_bytes: number;
+  budget_bytes: number;
+  truncated: boolean;
+};
+
+export type PatchGovContextRequest = {
+  /**
+   * The version this write is based on (0 = "no context authored yet"). A mismatch against the current version is refused with 409 context_version_conflict before anything else is checked (ADR-064 open question 2).
+   */
+  base_version: number;
+  /**
+   * Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.
+   */
+  restrictions?: RestrictionSet;
+  /**
+   * Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.
+   */
+  guidance?: GuidanceSet;
+};
+
+/**
  * The full per-site performance configuration. `cdn_credentials` is
  * write-only (see CdnCredentials); `cdn_has_credentials` and the
  * install-state fields (`server_software`, `dropin_installed`,
@@ -8320,6 +8468,8 @@ export type DestinationId = string;
 export type UserId = string;
 
 export type OrgId = string;
+
+export type VersionId = string;
 
 export type GetHealthzData = {
   body?: never;
@@ -20852,3 +21002,534 @@ export type RestoreSiteFileVersionResponses = {
 
 export type RestoreSiteFileVersionResponse =
   RestoreSiteFileVersionResponses[keyof RestoreSiteFileVersionResponses];
+
+export type GetOrgContextData = {
+  body?: never;
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/context";
+};
+
+export type GetOrgContextErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetOrgContextError = GetOrgContextErrors[keyof GetOrgContextErrors];
+
+export type GetOrgContextResponses = {
+  /**
+   * Current organisation context
+   */
+  200: GovContext;
+};
+
+export type GetOrgContextResponse =
+  GetOrgContextResponses[keyof GetOrgContextResponses];
+
+export type PatchOrgContextData = {
+  body: PatchGovContextRequest;
+  path: {
+    orgId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/context";
+};
+
+export type PatchOrgContextErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * context_widen_forbidden — the write would remove a restriction WPmgr's layer-1 policy set; or context_version_conflict — base_version does not match the current version.
+   */
+  409: Error;
+  /**
+   * context_secret_detected — the write contains a value shaped like a credential.
+   */
+  422: Error;
+};
+
+export type PatchOrgContextError =
+  PatchOrgContextErrors[keyof PatchOrgContextErrors];
+
+export type PatchOrgContextResponses = {
+  /**
+   * New organisation context version
+   */
+  200: GovContext;
+};
+
+export type PatchOrgContextResponse =
+  PatchOrgContextResponses[keyof PatchOrgContextResponses];
+
+export type ListOrgContextVersionsData = {
+  body?: never;
+  path: {
+    orgId: string;
+  };
+  query?: {
+    /**
+     * Version number cursor from a prior page's next_cursor. Omit for the first page.
+     */
+    cursor?: number;
+    limit?: number;
+  };
+  url: "/api/v1/orgs/{orgId}/context/versions";
+};
+
+export type ListOrgContextVersionsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type ListOrgContextVersionsError =
+  ListOrgContextVersionsErrors[keyof ListOrgContextVersionsErrors];
+
+export type ListOrgContextVersionsResponses = {
+  /**
+   * Paginated version history, newest first
+   */
+  200: GovContextVersionList;
+};
+
+export type ListOrgContextVersionsResponse =
+  ListOrgContextVersionsResponses[keyof ListOrgContextVersionsResponses];
+
+export type GetOrgContextVersionData = {
+  body?: never;
+  path: {
+    orgId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/context/versions/{versionId}";
+};
+
+export type GetOrgContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetOrgContextVersionError =
+  GetOrgContextVersionErrors[keyof GetOrgContextVersionErrors];
+
+export type GetOrgContextVersionResponses = {
+  /**
+   * The requested version
+   */
+  200: GovContextVersionItem;
+};
+
+export type GetOrgContextVersionResponse =
+  GetOrgContextVersionResponses[keyof GetOrgContextVersionResponses];
+
+export type DiffOrgContextVersionData = {
+  body?: never;
+  path: {
+    orgId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/context/versions/{versionId}/diff";
+};
+
+export type DiffOrgContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type DiffOrgContextVersionError =
+  DiffOrgContextVersionErrors[keyof DiffOrgContextVersionErrors];
+
+export type DiffOrgContextVersionResponses = {
+  /**
+   * The diff (or baseline marker)
+   */
+  200: GovContextDiff;
+};
+
+export type DiffOrgContextVersionResponse =
+  DiffOrgContextVersionResponses[keyof DiffOrgContextVersionResponses];
+
+export type RestoreOrgContextVersionData = {
+  body?: never;
+  path: {
+    orgId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/orgs/{orgId}/context/versions/{versionId}/restore";
+};
+
+export type RestoreOrgContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * context_widen_forbidden, or context_version_conflict on a concurrent write.
+   */
+  409: Error;
+  /**
+   * context_secret_detected.
+   */
+  422: Error;
+};
+
+export type RestoreOrgContextVersionError =
+  RestoreOrgContextVersionErrors[keyof RestoreOrgContextVersionErrors];
+
+export type RestoreOrgContextVersionResponses = {
+  /**
+   * The newly-created restore version
+   */
+  200: GovContext;
+};
+
+export type RestoreOrgContextVersionResponse =
+  RestoreOrgContextVersionResponses[keyof RestoreOrgContextVersionResponses];
+
+export type GetSiteContextData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context";
+};
+
+export type GetSiteContextErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type GetSiteContextError =
+  GetSiteContextErrors[keyof GetSiteContextErrors];
+
+export type GetSiteContextResponses = {
+  /**
+   * Current site context
+   */
+  200: GovContext;
+};
+
+export type GetSiteContextResponse =
+  GetSiteContextResponses[keyof GetSiteContextResponses];
+
+export type PatchSiteContextData = {
+  body: PatchGovContextRequest;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context";
+};
+
+export type PatchSiteContextErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * context_widen_forbidden — the write would remove a restriction the organisation or WPmgr set; or context_version_conflict — base_version does not match the current version.
+   */
+  409: Error;
+  /**
+   * context_secret_detected — the write contains a value shaped like a credential.
+   */
+  422: Error;
+};
+
+export type PatchSiteContextError =
+  PatchSiteContextErrors[keyof PatchSiteContextErrors];
+
+export type PatchSiteContextResponses = {
+  /**
+   * New site context version
+   */
+  200: GovContext;
+};
+
+export type PatchSiteContextResponse =
+  PatchSiteContextResponses[keyof PatchSiteContextResponses];
+
+export type ListSiteContextVersionsData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: {
+    cursor?: number;
+    limit?: number;
+  };
+  url: "/api/v1/sites/{siteId}/context/versions";
+};
+
+export type ListSiteContextVersionsErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type ListSiteContextVersionsError =
+  ListSiteContextVersionsErrors[keyof ListSiteContextVersionsErrors];
+
+export type ListSiteContextVersionsResponses = {
+  /**
+   * Paginated version history, newest first
+   */
+  200: GovContextVersionList;
+};
+
+export type ListSiteContextVersionsResponse =
+  ListSiteContextVersionsResponses[keyof ListSiteContextVersionsResponses];
+
+export type GetSiteContextVersionData = {
+  body?: never;
+  path: {
+    siteId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context/versions/{versionId}";
+};
+
+export type GetSiteContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Not found — including a pre-transfer version id, which is unconditionally inaccessible through this route for every caller (ADR-064 Decision 12).
+   */
+  404: Error;
+};
+
+export type GetSiteContextVersionError =
+  GetSiteContextVersionErrors[keyof GetSiteContextVersionErrors];
+
+export type GetSiteContextVersionResponses = {
+  /**
+   * The requested version
+   */
+  200: GovContextVersionItem;
+};
+
+export type GetSiteContextVersionResponse =
+  GetSiteContextVersionResponses[keyof GetSiteContextVersionResponses];
+
+export type DiffSiteContextVersionData = {
+  body?: never;
+  path: {
+    siteId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context/versions/{versionId}/diff";
+};
+
+export type DiffSiteContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+};
+
+export type DiffSiteContextVersionError =
+  DiffSiteContextVersionErrors[keyof DiffSiteContextVersionErrors];
+
+export type DiffSiteContextVersionResponses = {
+  /**
+   * The diff (or baseline marker)
+   */
+  200: GovContextDiff;
+};
+
+export type DiffSiteContextVersionResponse =
+  DiffSiteContextVersionResponses[keyof DiffSiteContextVersionResponses];
+
+export type RestoreSiteContextVersionData = {
+  body?: never;
+  path: {
+    siteId: string;
+    versionId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context/versions/{versionId}/restore";
+};
+
+export type RestoreSiteContextVersionErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * context_widen_forbidden, or context_version_conflict on a concurrent write.
+   */
+  409: Error;
+  /**
+   * context_secret_detected.
+   */
+  422: Error;
+};
+
+export type RestoreSiteContextVersionError =
+  RestoreSiteContextVersionErrors[keyof RestoreSiteContextVersionErrors];
+
+export type RestoreSiteContextVersionResponses = {
+  /**
+   * The newly-created restore version
+   */
+  200: GovContext;
+};
+
+export type RestoreSiteContextVersionResponse =
+  RestoreSiteContextVersionResponses[keyof RestoreSiteContextVersionResponses];
+
+export type GetEffectiveSiteContextData = {
+  body?: never;
+  path: {
+    siteId: string;
+  };
+  query?: never;
+  url: "/api/v1/sites/{siteId}/context/effective";
+};
+
+export type GetEffectiveSiteContextErrors = {
+  /**
+   * Not authenticated
+   */
+  401: Error;
+  /**
+   * Insufficient permission
+   */
+  403: Error;
+  /**
+   * Resource not found
+   */
+  404: Error;
+  /**
+   * context_unavailable — effective-context resolution could not complete.
+   */
+  503: Error;
+};
+
+export type GetEffectiveSiteContextError =
+  GetEffectiveSiteContextErrors[keyof GetEffectiveSiteContextErrors];
+
+export type GetEffectiveSiteContextResponses = {
+  /**
+   * The resolved effective context
+   */
+  200: GovContextEffective;
+};
+
+export type GetEffectiveSiteContextResponse =
+  GetEffectiveSiteContextResponses[keyof GetEffectiveSiteContextResponses];

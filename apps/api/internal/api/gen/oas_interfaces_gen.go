@@ -381,6 +381,14 @@ type DeleteWebAuthnCredentialRes interface {
 	deleteWebAuthnCredentialRes()
 }
 
+type DiffOrgContextVersionRes interface {
+	diffOrgContextVersionRes()
+}
+
+type DiffSiteContextVersionRes interface {
+	diffSiteContextVersionRes()
+}
+
 type DisableTotpRes interface {
 	disableTotpRes()
 }
@@ -521,6 +529,10 @@ type GetDbOrphansReportRes interface {
 	getDbOrphansReportRes()
 }
 
+type GetEffectiveSiteContextRes interface {
+	getEffectiveSiteContextRes()
+}
+
 type GetEmailNotifySettingsRes interface {
 	getEmailNotifySettingsRes()
 }
@@ -555,6 +567,14 @@ type GetMeRes interface {
 
 type GetMediaSettingsRes interface {
 	getMediaSettingsRes()
+}
+
+type GetOrgContextRes interface {
+	getOrgContextRes()
+}
+
+type GetOrgContextVersionRes interface {
+	getOrgContextVersionRes()
 }
 
 type GetOrgEmailConfigRes interface {
@@ -611,6 +631,14 @@ type GetSiteAutologinPolicyRes interface {
 
 type GetSiteAvailableUpdatesRes interface {
 	getSiteAvailableUpdatesRes()
+}
+
+type GetSiteContextRes interface {
+	getSiteContextRes()
+}
+
+type GetSiteContextVersionRes interface {
+	getSiteContextVersionRes()
 }
 
 type GetSiteDestinationRes interface {
@@ -753,6 +781,10 @@ type ListMyIdentitiesRes interface {
 	listMyIdentitiesRes()
 }
 
+type ListOrgContextVersionsRes interface {
+	listOrgContextVersionsRes()
+}
+
 type ListOrgsRes interface {
 	listOrgsRes()
 }
@@ -799,6 +831,10 @@ type ListSharedWithMeRes interface {
 
 type ListSiteBansRes interface {
 	listSiteBansRes()
+}
+
+type ListSiteContextVersionsRes interface {
+	listSiteContextVersionsRes()
 }
 
 type ListSiteDestinationsRes interface {
@@ -871,6 +907,14 @@ type OidcLoginRes interface {
 
 type PatchMemberRes interface {
 	patchMemberRes()
+}
+
+type PatchOrgContextRes interface {
+	patchOrgContextRes()
+}
+
+type PatchSiteContextRes interface {
+	patchSiteContextRes()
 }
 
 type PatchSiteErrorConfigRes interface {
@@ -1049,8 +1093,16 @@ type RestoreAdminAccountRes interface {
 	restoreAdminAccountRes()
 }
 
+type RestoreOrgContextVersionRes interface {
+	restoreOrgContextVersionRes()
+}
+
 type RestoreOrgRes interface {
 	restoreOrgRes()
+}
+
+type RestoreSiteContextVersionRes interface {
+	restoreSiteContextVersionRes()
 }
 
 type RestoreSiteFileVersionRes interface {

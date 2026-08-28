@@ -13027,6 +13027,413 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  # ADR-064 slice S4 — governed org/site context (Decision 13).
+  /api/v1/orgs/{orgId}/context:
+    get:
+      operationId: getOrgContext
+      summary: Get an organisation's current context (ADR-064 layer 2)
+      description: |
+        Returns the latest context version, or a synthetic version 0 with
+        empty restrictions/guidance when the organisation has never authored
+        any (a legitimate empty state, not a 404). Readable by any principal
+        with fleet-read access to the organisation, including a site-scoped
+        collaborator whose site belongs to it (ADR-064 Decision 6).
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Current organisation context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchOrgContext
+      summary: Author a new organisation context version (ADR-064 layer 2)
+      description: |
+        Applies a partial field set onto the latest version's full snapshot
+        and authors a new version. Requires organisation-admin+
+        (`context.org.write`); a site-scoped collaborator can never reach
+        this route regardless of role (ADR-064 Decision 6, m123).
+
+        `base_version` is required — see ADR-064 open question 2. A mismatch
+        against the current version is refused with `409
+        context_version_conflict` before anything else is checked.
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchGovContextRequest"
+      responses:
+        "200":
+          description: New organisation context version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            context_widen_forbidden — the write would remove a restriction
+            WPmgr's layer-1 policy set; or context_version_conflict —
+            base_version does not match the current version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: context_secret_detected — the write contains a value shaped like a credential.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/orgs/{orgId}/context/versions:
+    get:
+      operationId: listOrgContextVersions
+      summary: List an organisation's context version history
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: cursor
+          in: query
+          schema: { type: integer, format: int64 }
+          description: Version number cursor from a prior page's next_cursor. Omit for the first page.
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: Paginated version history, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextVersionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/orgs/{orgId}/context/versions/{versionId}:
+    get:
+      operationId: getOrgContextVersion
+      summary: Get one organisation context version's full snapshot
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The requested version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextVersionItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/orgs/{orgId}/context/versions/{versionId}/diff:
+    get:
+      operationId: diffOrgContextVersion
+      summary: Diff an organisation context version against its immediately-prior version
+      description: |
+        `baseline: true` means there is no eligible predecessor to diff
+        against (ADR-064 Decision 5) — the version's own first write — and
+        `prior`/`diff` are both null.
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The diff (or baseline marker)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextDiff"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/orgs/{orgId}/context/versions/{versionId}/restore:
+    post:
+      operationId: restoreOrgContextVersion
+      summary: Restore an organisation context version
+      description: |
+        Creates a new version whose snapshot equals the target version's,
+        provenance `restore` (ADR-064 Decision 5). Not a back door around the
+        never-widen check, the secret scan, or the fail-closed audit
+        transaction — all three run exactly as they do for PATCH.
+      tags: [orgs]
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The newly-created restore version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: context_widen_forbidden, or context_version_conflict on a concurrent write.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: context_secret_detected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/context:
+    get:
+      operationId: getSiteContext
+      summary: Get a site's current context (ADR-064 layer 3)
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: Current site context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchSiteContext
+      summary: Author a new site context version (ADR-064 layer 3)
+      description: |
+        Requires `context.site.write` (operator+) AND access to this specific
+        site (ADR-064 Decision 6). The proposed restrictions are checked
+        against BOTH the organisation's current layer-2 policy and WPmgr's
+        fixed layer-1 policy — a rejection names whichever of the two it
+        violates first. `base_version` is required (ADR-064 open question 2).
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchGovContextRequest"
+      responses:
+        "200":
+          description: New site context version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            context_widen_forbidden — the write would remove a restriction the
+            organisation or WPmgr set; or context_version_conflict —
+            base_version does not match the current version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: context_secret_detected — the write contains a value shaped like a credential.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/context/versions:
+    get:
+      operationId: listSiteContextVersions
+      summary: List a site's context version history
+      description: |
+        Scoped to versions stamped with the site's CURRENT organisation
+        (ADR-064 Decision 13): a pre-transfer version is retained but excluded.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - name: cursor
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: Paginated version history, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextVersionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/context/versions/{versionId}:
+    get:
+      operationId: getSiteContextVersion
+      summary: Get one site context version's full snapshot
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The requested version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextVersionItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >-
+            Not found — including a pre-transfer version id, which is
+            unconditionally inaccessible through this route for every caller
+            (ADR-064 Decision 12).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/context/versions/{versionId}/diff:
+    get:
+      operationId: diffSiteContextVersion
+      summary: Diff a site context version against its immediately-prior version
+      description: |
+        `baseline: true` covers both a genuine first version and the first
+        version after a site transfer, whose immediately-prior row is sealed
+        to the source organisation (ADR-064 Decisions 5 and 12).
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The diff (or baseline marker)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextDiff"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/sites/{siteId}/context/versions/{versionId}/restore:
+    post:
+      operationId: restoreSiteContextVersion
+      summary: Restore a site context version
+      description: |
+        Refused unconditionally, for every caller, when versionId names a
+        pre-transfer version (ADR-064 Decision 12) — surfaced as `404`, the
+        same response a genuinely nonexistent id gets, since the caller's own
+        read access to a pre-transfer id already ended the same way.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The newly-created restore version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContext"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: context_widen_forbidden, or context_version_conflict on a concurrent write.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: context_secret_detected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/sites/{siteId}/context/effective:
+    get:
+      operationId: getEffectiveSiteContext
+      summary: Preview the resolved effective context a model-facing surface would receive (ADR-064 Decision 8)
+      description: |
+        Calls the SAME resolution function a future model-facing assembly
+        path calls, with no live session content (layer 6 is always empty
+        here — a preview request has no run behind it). If resolution cannot
+        complete, the call is refused with `503 context_unavailable`
+        (ADR-064 Decision 14) rather than returning a partial or empty
+        result.
+      tags: [sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteId"
+      responses:
+        "200":
+          description: The resolved effective context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovContextEffective"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: context_unavailable — effective-context resolution could not complete.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   responses:
     Unauthorized:
@@ -13143,6 +13550,13 @@ components:
         format: uuid
     OrgId:
       name: orgId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    VersionId:
+      name: versionId
       in: path
       required: true
       schema:
@@ -23239,3 +23653,183 @@ components:
         ok: { type: boolean }
         chunk_count: { type: integer, format: int64 }
         stored_count: { type: integer, format: int64 }
+
+    # ADR-064 slice S4 — governed org/site context (Decision 13).
+    RestrictionSet:
+      type: object
+      description: >-
+        ADR-064 Decision 3's closed, structured "restrictions" kind. Every
+        field is a deny-list; a lower layer may add to it but never remove an
+        item a higher layer set (ADR-064 Decision 4). No field here is ever
+        deep-merged on PATCH — see PatchGovContextRequest.
+      properties:
+        forbidden_tools:
+          type: array
+          items: { type: string }
+        forbidden_domains:
+          type: array
+          items: { type: string }
+        forbidden_topics:
+          type: array
+          items: { type: string }
+    GuidanceSet:
+      type: object
+      description: >-
+        ADR-064 Decision 3's free-text "guidance" kind. No widen-check applies
+        to these fields — "wider" and "narrower" are not defined relations
+        over prose (ADR-064 Decision 1) — and none is implemented.
+      properties:
+        brand_voice: { type: string }
+        audience: { type: string }
+        terminology: { type: string }
+        style: { type: string }
+    GovContext:
+      type: object
+      required: [version, restrictions, guidance]
+      properties:
+        version:
+          type: integer
+          format: int64
+          description: 0 means no context has ever been authored for this subject (a legitimate empty state, not a 404).
+        restrictions: { $ref: "#/components/schemas/RestrictionSet" }
+        guidance: { $ref: "#/components/schemas/GuidanceSet" }
+        author_type: { type: string, enum: [user, api_key, system] }
+        author_id: { type: string, format: uuid, nullable: true }
+        provenance: { type: string, enum: [manual, restore, transfer] }
+        restored_from_version_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time, nullable: true }
+    GovContextVersionSummary:
+      type: object
+      required: [id, version, author_type, provenance, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, format: int64 }
+        author_type: { type: string, enum: [user, api_key, system] }
+        author_id: { type: string, format: uuid, nullable: true }
+        provenance: { type: string, enum: [manual, restore, transfer] }
+        restored_from_version_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+    GovContextVersionList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/GovContextVersionSummary" }
+        next_cursor:
+          type: integer
+          format: int64
+          description: Pass as ?cursor= to fetch the next page. 0 means no further page.
+    GovContextVersionItem:
+      type: object
+      required: [id, version, restrictions, guidance, author_type, provenance, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, format: int64 }
+        restrictions: { $ref: "#/components/schemas/RestrictionSet" }
+        guidance: { $ref: "#/components/schemas/GuidanceSet" }
+        author_type: { type: string, enum: [user, api_key, system] }
+        author_id: { type: string, format: uuid, nullable: true }
+        provenance: { type: string, enum: [manual, restore, transfer] }
+        restored_from_version_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+    GovContextListDiff:
+      type: object
+      properties:
+        added: { type: array, items: { type: string } }
+        removed: { type: array, items: { type: string } }
+    GovContextFieldDiff:
+      type: object
+      properties:
+        old: { type: string }
+        new: { type: string }
+    GovContextSnapshotDiff:
+      type: object
+      description: Only fields that actually changed between the two versions are present.
+      properties:
+        forbidden_tools: { $ref: "#/components/schemas/GovContextListDiff" }
+        forbidden_domains: { $ref: "#/components/schemas/GovContextListDiff" }
+        forbidden_topics: { $ref: "#/components/schemas/GovContextListDiff" }
+        brand_voice: { $ref: "#/components/schemas/GovContextFieldDiff" }
+        audience: { $ref: "#/components/schemas/GovContextFieldDiff" }
+        terminology: { $ref: "#/components/schemas/GovContextFieldDiff" }
+        style: { $ref: "#/components/schemas/GovContextFieldDiff" }
+    GovContextDiff:
+      type: object
+      required: [version, baseline]
+      properties:
+        version: { $ref: "#/components/schemas/GovContextVersionItem" }
+        baseline:
+          type: boolean
+          description: >-
+            true when this version has no eligible predecessor to diff
+            against (ADR-064 Decision 5) — a genuine first version, or (site
+            scope only) the first version after a transfer.
+        prior:
+          allOf: [{ $ref: "#/components/schemas/GovContextVersionItem" }]
+          nullable: true
+        diff:
+          allOf: [{ $ref: "#/components/schemas/GovContextSnapshotDiff" }]
+          nullable: true
+    GovContextLayerContribution:
+      type: object
+      required: [layer, name, restrictions, guidance, bytes, truncated]
+      properties:
+        layer:
+          type: integer
+          description: ADR-064 Decision 1 layer number, 1-6. Layer 7 (learned memory) is never present — it is not built, not stubbed.
+        name: { type: string }
+        restrictions: { $ref: "#/components/schemas/RestrictionSet" }
+        guidance: { $ref: "#/components/schemas/GuidanceSet" }
+        facts:
+          type: object
+          nullable: true
+          description: Populated only for layer 4 (detected site facts).
+          properties:
+            wp_version: { type: string }
+            php_version: { type: string }
+            multisite: { type: boolean }
+            active_theme: { type: string }
+        session:
+          type: string
+          description: Populated only for layer 6 (session context). Always empty on the effective-context preview (Decision 8).
+        bytes: { type: integer }
+        truncated: { type: boolean }
+    GovContextEffective:
+      type: object
+      required: [site_id, layers, restrictions, total_bytes, budget_bytes, truncated]
+      properties:
+        site_id: { type: string, format: uuid }
+        layers:
+          type: array
+          items: { $ref: "#/components/schemas/GovContextLayerContribution" }
+        restrictions:
+          allOf: [{ $ref: "#/components/schemas/RestrictionSet" }]
+          description: >-
+            The read-time union of every layer 1-3 restriction. Never
+            truncated by the byte budget, unlike each layer's own display copy
+            above — ADR-064 Decision 4's enforcement path reads this field,
+            never a layer's (possibly truncated) prose.
+        total_bytes: { type: integer }
+        budget_bytes: { type: integer }
+        truncated: { type: boolean }
+    PatchGovContextRequest:
+      type: object
+      required: [base_version]
+      properties:
+        base_version:
+          type: integer
+          format: int64
+          description: >-
+            The version this write is based on (0 = "no context authored
+            yet"). A mismatch against the current version is refused with 409
+            context_version_conflict before anything else is checked
+            (ADR-064 open question 2).
+        restrictions:
+          allOf: [{ $ref: "#/components/schemas/RestrictionSet" }]
+          nullable: true
+          description: Omit to leave restrictions unchanged; include (even as {}) to replace them wholesale — never deep-merged.
+        guidance:
+          allOf: [{ $ref: "#/components/schemas/GuidanceSet" }]
+          nullable: true
+          description: Omit to leave guidance unchanged; include (even as {}) to replace it wholesale — never deep-merged.

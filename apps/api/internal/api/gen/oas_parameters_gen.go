@@ -298,6 +298,18 @@ type DeleteWebAuthnCredentialParams struct {
 	ID uuid.UUID
 }
 
+// DiffOrgContextVersionParams is parameters of diffOrgContextVersion operation.
+type DiffOrgContextVersionParams struct {
+	OrgId     uuid.UUID
+	VersionId uuid.UUID
+}
+
+// DiffSiteContextVersionParams is parameters of diffSiteContextVersion operation.
+type DiffSiteContextVersionParams struct {
+	SiteId    uuid.UUID
+	VersionId uuid.UUID
+}
+
 // DisableCacheParams is parameters of disableCache operation.
 type DisableCacheParams struct {
 	SiteId uuid.UUID
@@ -475,6 +487,11 @@ type GetDbScanResultParams struct {
 	SiteId uuid.UUID
 }
 
+// GetEffectiveSiteContextParams is parameters of getEffectiveSiteContext operation.
+type GetEffectiveSiteContextParams struct {
+	SiteId uuid.UUID
+}
+
 // GetFleetBackupHealthParams is parameters of getFleetBackupHealth operation.
 type GetFleetBackupHealthParams struct {
 	// Comma-separated site UUIDs. Defaults to all accessible sites.
@@ -554,6 +571,17 @@ type GetObjectCacheStatsHistoryParams struct {
 	Days OptInt `json:",omitempty,omitzero"`
 }
 
+// GetOrgContextParams is parameters of getOrgContext operation.
+type GetOrgContextParams struct {
+	OrgId uuid.UUID
+}
+
+// GetOrgContextVersionParams is parameters of getOrgContextVersion operation.
+type GetOrgContextVersionParams struct {
+	OrgId     uuid.UUID
+	VersionId uuid.UUID
+}
+
 // GetPerfConfigParams is parameters of getPerfConfig operation.
 type GetPerfConfigParams struct {
 	SiteId uuid.UUID
@@ -624,6 +652,17 @@ type GetSiteAutologinPolicyParams struct {
 // GetSiteAvailableUpdatesParams is parameters of getSiteAvailableUpdates operation.
 type GetSiteAvailableUpdatesParams struct {
 	SiteId uuid.UUID
+}
+
+// GetSiteContextParams is parameters of getSiteContext operation.
+type GetSiteContextParams struct {
+	SiteId uuid.UUID
+}
+
+// GetSiteContextVersionParams is parameters of getSiteContextVersion operation.
+type GetSiteContextVersionParams struct {
+	SiteId    uuid.UUID
+	VersionId uuid.UUID
 }
 
 // GetSiteDestinationParams is parameters of getSiteDestination operation.
@@ -882,6 +921,14 @@ type ListMembersParams struct {
 	Offset OptInt32 `json:",omitempty,omitzero"`
 }
 
+// ListOrgContextVersionsParams is parameters of listOrgContextVersions operation.
+type ListOrgContextVersionsParams struct {
+	OrgId uuid.UUID
+	// Version number cursor from a prior page's next_cursor. Omit for the first page.
+	Cursor OptInt64 `json:",omitempty,omitzero"`
+	Limit  OptInt   `json:",omitempty,omitzero"`
+}
+
 // ListPortalSiteBackupsParams is parameters of listPortalSiteBackups operation.
 type ListPortalSiteBackupsParams struct {
 	SiteId uuid.UUID
@@ -974,6 +1021,13 @@ type ListSiteActivityParams struct {
 // ListSiteBansParams is parameters of listSiteBans operation.
 type ListSiteBansParams struct {
 	SiteId uuid.UUID
+}
+
+// ListSiteContextVersionsParams is parameters of listSiteContextVersions operation.
+type ListSiteContextVersionsParams struct {
+	SiteId uuid.UUID
+	Cursor OptInt64 `json:",omitempty,omitzero"`
+	Limit  OptInt   `json:",omitempty,omitzero"`
 }
 
 // ListSiteDestinationsParams is parameters of listSiteDestinations operation.
@@ -1136,6 +1190,16 @@ type OptimizeMediaParams struct {
 // PatchMemberParams is parameters of patchMember operation.
 type PatchMemberParams struct {
 	UserId uuid.UUID
+}
+
+// PatchOrgContextParams is parameters of patchOrgContext operation.
+type PatchOrgContextParams struct {
+	OrgId uuid.UUID
+}
+
+// PatchSiteContextParams is parameters of patchSiteContext operation.
+type PatchSiteContextParams struct {
+	SiteId uuid.UUID
 }
 
 // PatchSiteErrorConfigParams is parameters of patchSiteErrorConfig operation.
@@ -1347,9 +1411,21 @@ type RestoreOrgParams struct {
 	OrgId uuid.UUID
 }
 
+// RestoreOrgContextVersionParams is parameters of restoreOrgContextVersion operation.
+type RestoreOrgContextVersionParams struct {
+	OrgId     uuid.UUID
+	VersionId uuid.UUID
+}
+
 // RestoreSiteParams is parameters of restoreSite operation.
 type RestoreSiteParams struct {
 	SiteId uuid.UUID
+}
+
+// RestoreSiteContextVersionParams is parameters of restoreSiteContextVersion operation.
+type RestoreSiteContextVersionParams struct {
+	SiteId    uuid.UUID
+	VersionId uuid.UUID
 }
 
 // RestoreSiteFileVersionParams is parameters of restoreSiteFileVersion operation.
