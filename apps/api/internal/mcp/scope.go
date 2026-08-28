@@ -11,8 +11,17 @@ import (
 )
 
 // ErrCodeInvalidScope is the domain error code the OAuth error response renders
-// as RFC 6749 section 5.2 `invalid_scope`. httpx maps KindValidation to 400,
-// which is the correct status for both the authorize and the token endpoint.
+// as RFC 6749 section 5.2 `invalid_scope`.
+//
+// THE OAUTH ENDPOINTS MUST SET THE STATUS THEMSELVES. This is KindValidation,
+// and domain.HTTPStatus maps KindValidation to 422 (errors.go:170-171), which
+// is what the generic httpx.Error renderer returns. RFC 6749 section 5.2
+// requires 400 on the token endpoint, so an OAuth handler that falls through to
+// the generic renderer answers 422 and is non-conformant. The handlers
+// therefore map this code explicitly rather than delegating.
+//
+// An earlier version of this comment asserted that httpx maps KindValidation to
+// 400. It does not, and never did.
 const ErrCodeInvalidScope = "mcp_invalid_scope"
 
 // ErrCodeInvalidSiteScope is the domain error code for a site-scope request
@@ -48,14 +57,17 @@ var recognisedScopes = map[Scope]struct{}{
 //     silently dropped from it;
 //   - matching is exact and case-sensitive, per RFC 6749 section 3.3, so
 //     "MCP:READ" is unrecognised and is refused rather than normalised into a
-//     grant the client did not spell.
+//     grant the client did not spell;
+//   - only ASCII space (U+0020) separates. A tab, newline, NBSP or any other
+//     Unicode space is not a delimiter, so it stays inside its token and the
+//     token is refused. See splitASCIISpace.
 //
 // The refusal path returns a nil slice as well as an error. A caller that
 // ignores the error still gets no authority, which is the fail-closed
 // direction; the schema half of this gate (m124 DECISION 1) makes the same
 // value unstorable.
 func ParseRequestedScopes(raw string) ([]Scope, error) {
-	fields := strings.Fields(raw)
+	fields := splitASCIISpace(raw)
 	if len(fields) == 0 {
 		return nil, domain.Validation(ErrCodeInvalidScope,
 			"the scope parameter is required and must name at least one recognised scope").
@@ -93,6 +105,39 @@ func ParseRequestedScopes(raw string) ([]Scope, error) {
 			"no recognised scope was requested")
 	}
 	return out, nil
+}
+
+// splitASCIISpace splits on U+0020 AND NOTHING ELSE, per RFC 6749 section 3.3:
+//
+//	scope = scope-token *( SP scope-token )
+//
+// This deliberately replaces strings.Fields, which splits on unicode.IsSpace
+// and therefore treated TAB, LF, CR, VT, FF, NBSP (U+00A0), LINE SEPARATOR
+// (U+2028), IDEOGRAPHIC SPACE (U+3000) and the rest as delimiters. That made
+// the parser REPAIR malformed input into a well-formed request before the gate
+// below ever saw it: "mcp:read\tmcp:read" was silently read as two valid
+// scopes. The absence of a valid separator became a valid separator, which is
+// the same coercion this whole file exists to refuse, one layer earlier.
+//
+// Any other whitespace now stays INSIDE its token, so that token is not in the
+// closed registry and the existing rule refuses the whole request. No new
+// refusal branch was needed; the bug was that the input never reached the one
+// already there.
+//
+// EMPTY SEGMENTS ARE DROPPED, and that is not the same kind of leniency.
+// Repeated, leading or trailing spaces produce segments that name no scope, so
+// dropping them cannot manufacture authority. Treating a tab as a delimiter can:
+// it invents a token boundary the client never wrote, and can turn one
+// unrecognised token into two recognised ones.
+func splitASCIISpace(raw string) []string {
+	parts := strings.Split(raw, " ")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // SupportedScopes lists the registry for discovery documents and error
