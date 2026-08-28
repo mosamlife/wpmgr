@@ -271,6 +271,200 @@ if ! skip_case; then
 fi
 
 # ============================================================================
+# 5b. The three fail-open defects found in review of the first draft (PR #575).
+#
+#     All three had the same shape and the same direction, which is the worst
+#     one for a mutex: the lock silently ADMITS a second run alongside a live
+#     one. A lock people trust that lets two suites through is worse than no
+#     lock, because they stop checking.
+#
+#     Each case below fails against the pre-review implementation and passes
+#     against the current one. None of them runs the integration suite; the
+#     protected command is `sleep` or `echo`, as everywhere else here.
+# ============================================================================
+
+begin "killed-wrapper-live-child"
+if ! skip_case; then
+  # DEFECT 1. SIGKILL cannot be trapped, and agents on this machine get killed
+  # mid-run — that is the origin of the project's "commit before the slow
+  # suite" rule. The wrapper dies; `go test` and its containers do not. The
+  # first draft recorded only the wrapper's pid, so the next invocation saw a
+  # dead pid, correctly concluded the WRAPPER was gone, and admitted a second
+  # suite alongside a live one.
+  #
+  # The property: a live test process means the lock is not stale, regardless
+  # of what happened to the wrapper.
+  WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- sleep 30 > "$ROOT/holder" 2>&1 &
+  wp=$!
+
+  # Bounded wait for the lock to record the command's pid. No unbounded loop.
+  child=""
+  i=0
+  while [ "$i" -lt 10 ]; do
+    child="$(sed -n 's/^child=//p' "$ROOT/itest.lock/meta" 2>/dev/null | head -1)"
+    [ -n "$child" ] && break
+    sleep 1
+    i=$(( i + 1 ))
+  done
+
+  if [ -z "$child" ]; then
+    fail "the lock never recorded the command's pid — a killed wrapper strands a live suite"
+  else
+    ok "the lock records the command's pid ($child), not only the wrapper's"
+
+    kill -9 "$wp" 2>/dev/null
+    wait "$wp" 2>/dev/null
+
+    # The case only proves something if the child really did outlive the
+    # wrapper. Assert that rather than assuming it.
+    if ps -p "$child" >/dev/null 2>&1; then
+      ok "the command outlived the SIGKILLed wrapper (pid $child still running)"
+    else
+      fail "the command died with the wrapper — this case proves nothing as written"
+    fi
+    if ps -p "$wp" >/dev/null 2>&1; then
+      fail "the wrapper survived SIGKILL — this case proves nothing as written"
+    else
+      ok "the wrapper is gone (pid $wp), so only the child keeps the lock honest"
+    fi
+
+    # GRACE=1 so the metadata-less path cannot be what refuses; the refusal has
+    # to come from the live child.
+    WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+      "$LOCK" itest -- echo SECOND-SUITE-ADMITTED > "$ROOT/o" 2>&1
+    st=$?
+    expect_status 75 "$st" "a second run REFUSES while the first run's command is still alive"
+    expect_absent "$ROOT/o" "SECOND-SUITE-ADMITTED" "no second suite started alongside a live one"
+    expect_absent "$ROOT/o" "RECLAIM" "the live child's lock was not reclaimed as stale"
+
+    kill -9 "$child" 2>/dev/null
+  fi
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "killed-wrapper-dead-child-still-reclaimable"
+if ! skip_case; then
+  # The over-fire complement of the case above, and the one that decides
+  # whether the fix is usable. Recording a child pid must not make locks
+  # immortal: when the wrapper AND the command are both gone, the lock is still
+  # stale and must still be reclaimed, or a killed run wedges the machine for
+  # WPMGR_LOCK_TIMEOUT and everyone switches the lock off.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  d1=$!
+  wait $d1 2>/dev/null
+  sh -c 'exit 0' &
+  d2=$!
+  wait $d2 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\nhost=test\ncwd=/nowhere\ncmd=dead-holder\nchild=%s\nclstart=Mon Jan  1 00:00:00 2001\n' \
+    "$d1" "$(now)" "$d2" > "$ROOT/itest.lock/meta"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 \
+    "$LOCK" itest -- echo RECLAIMED-BOTH-DEAD > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "a lock whose wrapper AND command are both dead is still reclaimable"
+  expect_contains "$ROOT/o" "both gone" "the reclaim says both pids were checked"
+  expect_contains "$ROOT/o" "RECLAIMED-BOTH-DEAD" "the command ran after the reclaim"
+fi
+
+begin "meta-write-unwritable"
+if ! skip_case; then
+  # DEFECT 2. The first draft's metadata write was both suppressed
+  # (`2>/dev/null`) and unchecked, so a failed write still reached the
+  # protected command. Another invocation then saw a metadata-less lock, waited
+  # out the grace period, and admitted a concurrent suite.
+  #
+  # Forcing the failure cheaply: run under `umask 0777` so `mkdir` still
+  # succeeds but creates the lock directory mode 000, and nothing can be
+  # created inside it. The redirection below is evaluated by THIS shell, under
+  # the normal umask, so the transcript stays readable.
+  : > "$ROOT/o"
+  ( umask 0777
+    WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 \
+      "$LOCK" itest -- echo RAN-WITHOUT-METADATA ) > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 69 "$st" "a lock whose metadata cannot be written refuses to run the command"
+  expect_absent "$ROOT/o" "RAN-WITHOUT-METADATA" "the command did not run under an unaccountable lock"
+  expect_contains "$ROOT/o" "cannot write lock metadata" "the write failure is reported, never suppressed"
+
+  # And the refusal must not leave the unaccountable lock behind. A leaked
+  # metadata-less lock is the same defect one step later: the next run waits
+  # out the grace period and reclaims it. `rm -rf` cannot descend a mode-000
+  # directory, so this assertion is what proves the release actually released.
+  if [ -d "$ROOT/itest.lock" ]; then
+    fail "the failed acquire leaked a metadata-less lock at $ROOT/itest.lock"
+    chmod u+rwx "$ROOT/itest.lock" 2>/dev/null
+    rm -rf "$ROOT/itest.lock" 2>/dev/null
+  else
+    ok "the failed acquire released its lock rather than leaving one nobody can account for"
+  fi
+fi
+
+begin "reclaim-not-raced"
+if ! skip_case; then
+  # DEFECT 3. Two waiters could both classify one lock as stale. The first
+  # moved it, removed it and acquired a fresh lock; the second, still acting on
+  # its now-obsolete verdict, moved and removed THAT live lock, and both
+  # commands ran. Reclaimers are now serialised by a second mkdir mutex and
+  # re-derive staleness inside it.
+  #
+  # Set up a genuinely stale lock AND a reclaim already in progress by a live
+  # process (this test process). The waiter must not reclaim in parallel.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\nhost=test\ncwd=/nowhere\ncmd=dead-holder\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  mkdir -p "$ROOT/itest.reclaim"
+  printf 'pid=%s\nlstart=%s\n' \
+    "$$" "$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' ' ' | sed 's/^ *//; s/ *$//')" \
+    > "$ROOT/itest.reclaim/by"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 \
+    "$LOCK" itest -- echo RECLAIMED-IN-PARALLEL > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 75 "$st" "a reclaim already under way by a live process is waited for, not raced"
+  expect_absent "$ROOT/o" "RECLAIMED-IN-PARALLEL" "the waiter did not reclaim behind another reclaimer's back"
+  expect_contains "$ROOT/o" "reclaiming the stale" "the waiter says why it is waiting"
+  rm -rf "$ROOT/itest.reclaim" "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "reclaim-marker-abandoned-is-cleared"
+if ! skip_case; then
+  # The over-fire complement of the case above. A reclaimer killed mid-reclaim
+  # must not wedge the machine forever: its marker names a pid, and a reclaimer
+  # holds no command, so a dead one is provably doing nothing. Clearing it is
+  # safe in a way that clearing a LOCK is not, and the winner still revalidates
+  # under the marker before removing anything.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadpid=$!
+  wait $deadpid 2>/dev/null
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\nhost=test\ncwd=/nowhere\ncmd=dead-holder\n' \
+    "$deadpid" "$(now)" > "$ROOT/itest.lock/meta"
+
+  sh -c 'exit 0' &
+  deadreclaimer=$!
+  wait $deadreclaimer 2>/dev/null
+  mkdir -p "$ROOT/itest.reclaim"
+  printf 'pid=%s\nlstart=Mon Jan  1 00:00:00 2001\n' "$deadreclaimer" > "$ROOT/itest.reclaim/by"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 \
+    "$LOCK" itest -- echo RAN-AFTER-ABANDONED-RECLAIM > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "an abandoned reclaim marker does not wedge the lock forever"
+  expect_contains "$ROOT/o" "abandoned reclaim marker" "clearing an abandoned marker is announced, never silent"
+  expect_contains "$ROOT/o" "RAN-AFTER-ABANDONED-RECLAIM" "the command ran once the marker was cleared"
+  if [ -d "$ROOT/itest.reclaim" ]; then
+    fail "the reclaim marker was left behind"
+  else
+    ok "the reclaim marker was removed after the reclaim finished"
+  fi
+fi
+
+# ============================================================================
 # 6. It must NOT over-fire. A guard that blocks correct work gets switched off,
 #    and then it guards nothing. These are the cases that must stay green.
 # ============================================================================
