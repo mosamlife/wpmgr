@@ -16,9 +16,9 @@ import (
 // to match this codebase's other context.* naming (authz.PermOrgContextRead
 // etc.).
 const (
-	actionOrgContextPatched  = "context.org.patched"
-	actionOrgContextRestored = "context.org.restored"
-	actionSiteContextPatched = "context.site.patched"
+	actionOrgContextPatched   = "context.org.patched"
+	actionOrgContextRestored  = "context.org.restored"
+	actionSiteContextPatched  = "context.site.patched"
 	actionSiteContextRestored = "context.site.restored"
 )
 

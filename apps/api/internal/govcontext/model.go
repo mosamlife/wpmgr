@@ -191,10 +191,10 @@ type SessionInput struct {
 // resolution failure; only layers 2 and 3 (Decision 3's stored tables) can
 // fail resolution outright (Decision 14).
 type SiteFacts struct {
-	WPVersion   string
-	PHPVersion  string
-	Multisite   bool
-	ActiveTheme string
+	WPVersion   string `json:"wp_version,omitempty"`
+	PHPVersion  string `json:"php_version,omitempty"`
+	Multisite   bool   `json:"multisite,omitempty"`
+	ActiveTheme string `json:"active_theme,omitempty"`
 }
 
 // IsEmpty reports whether no fact has been recorded.

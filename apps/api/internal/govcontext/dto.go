@@ -150,9 +150,9 @@ type fieldDiffDTO struct {
 
 // diffDTO is the wire shape of GET .../versions/{versionId}/diff.
 type diffDTO struct {
-	Version  versionItemDTO  `json:"version"`
-	Baseline bool            `json:"baseline"`
-	Prior    *versionItemDTO `json:"prior"`
+	Version  versionItemDTO   `json:"version"`
+	Baseline bool             `json:"baseline"`
+	Prior    *versionItemDTO  `json:"prior"`
 	Diff     *snapshotDiffDTO `json:"diff"`
 }
 
@@ -249,12 +249,12 @@ type layerContributionDTO struct {
 }
 
 type effectiveContextDTO struct {
-	SiteID       string                  `json:"site_id"`
-	Layers       []layerContributionDTO  `json:"layers"`
-	Restrictions RestrictionSet          `json:"restrictions"`
-	TotalBytes   int                     `json:"total_bytes"`
-	BudgetBytes  int                     `json:"budget_bytes"`
-	Truncated    bool                    `json:"truncated"`
+	SiteID       string                 `json:"site_id"`
+	Layers       []layerContributionDTO `json:"layers"`
+	Restrictions RestrictionSet         `json:"restrictions"`
+	TotalBytes   int                    `json:"total_bytes"`
+	BudgetBytes  int                    `json:"budget_bytes"`
+	Truncated    bool                   `json:"truncated"`
 }
 
 func toEffectiveContextDTO(rc ResolvedContext) effectiveContextDTO {
