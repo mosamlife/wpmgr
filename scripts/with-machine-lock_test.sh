@@ -629,6 +629,40 @@ if ! skip_case; then
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
+begin "reclaim-salvage-removed"
+if ! skip_case; then
+  # The reclaim renames the stale lock aside and then deletes the copy. That
+  # delete was the last suppressed, unchecked write in the script, three lines
+  # under a comment about the pattern. It only leaks directories rather than
+  # failing open, but leaking is what it does, and this pins it.
+  #
+  # A mode-000 stale lock is the case `rm -rf` cannot handle: it cannot descend
+  # the directory to empty it. Built at 700 so the metadata can be written,
+  # then locked down.
+  mkdir -p "$ROOT/itest.lock"
+  printf 'unreadable\n' > "$ROOT/itest.lock/meta"
+  chmod 000 "$ROOT/itest.lock"
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=10 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+    "$LOCK" itest -- echo RECLAIMED-UNREADABLE > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 0 "$st" "an unreadable stale lock is reclaimed rather than wedging the machine"
+  expect_contains "$ROOT/o" "RECLAIMED-UNREADABLE" "the command ran after the reclaim"
+
+  # The salvaged copy must not survive. `ls` rather than a glob so an unmatched
+  # pattern cannot be mistaken for a filename.
+  leaked="$(ls -d "$ROOT"/itest.lock.stale.* 2>/dev/null | head -1)"
+  if [ -n "$leaked" ]; then
+    fail "the reclaim leaked its salvaged copy at $leaked"
+    chmod -R u+rwx "$ROOT"/itest.lock.stale.* 2>/dev/null
+    rm -rf "$ROOT"/itest.lock.stale.* 2>/dev/null
+  else
+    ok "the reclaim removed the salvaged copy it renamed aside"
+  fi
+  chmod -R u+rwx "$ROOT/itest.lock" 2>/dev/null
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
 begin "metadata-newline-injection"
 if ! skip_case; then
   # The metadata is a line-oriented KEY=VALUE file, so any free-text value
