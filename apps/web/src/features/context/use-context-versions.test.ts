@@ -11,16 +11,21 @@ import { createElement, type ReactNode } from "react";
 // convention, so this exercises the real response-shape branch, not a
 // hand-built fixture of use-context.ts's own internals.
 
-const { listOrgContextVersionsMock } = vi.hoisted(() => ({
+const { listOrgContextVersionsMock, patchOrgContextMock } = vi.hoisted(() => ({
   listOrgContextVersionsMock: vi.fn(),
+  patchOrgContextMock: vi.fn(),
 }));
 
 vi.mock("@wpmgr/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@wpmgr/api")>();
-  return { ...actual, listOrgContextVersions: listOrgContextVersionsMock };
+  return {
+    ...actual,
+    listOrgContextVersions: listOrgContextVersionsMock,
+    patchOrgContext: patchOrgContextMock,
+  };
 });
 
-const { useOrgContextVersions } = await import("./use-context");
+const { useOrgContextVersions, usePatchOrgContext } = await import("./use-context");
 
 function wrapperFor(qc: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -30,6 +35,7 @@ function wrapperFor(qc: QueryClient) {
 
 beforeEach(() => {
   listOrgContextVersionsMock.mockReset();
+  patchOrgContextMock.mockReset();
 });
 
 describe("useOrgContextVersions — a missing body is a failure, never an empty history", () => {
@@ -60,5 +66,48 @@ describe("useOrgContextVersions — a missing body is a failure, never an empty 
     await waitFor(() => expect(result.current.isPending).toBe(false));
     expect(result.current.isError).toBe(false);
     expect(result.current.items).toEqual([]);
+  });
+});
+
+describe("usePatchOrgContext — a successful PATCH invalidates the version-history list", () => {
+  // CodeRabbit finding on #566: a PATCH authors a new stored version row
+  // (Decision 5) exactly like restore does, but only restore invalidated
+  // contextKeys.orgVersions — the history list, mounted alongside the
+  // editor, kept showing pre-save pages. This mounts BOTH hooks against one
+  // shared QueryClient (the real coupling the bug lived in) and proves the
+  // list actually refetches, not just that invalidateQueries was called —
+  // an invalidation call that targeted the wrong key would still "pass" a
+  // spy-based assertion while leaving the rendered list stale.
+  it("makes the just-authored version show up in the still-mounted history list", async () => {
+    listOrgContextVersionsMock
+      .mockResolvedValueOnce({
+        data: { items: [{ id: "v-1", version: 1, author_type: "user", provenance: "manual", created_at: "2026-08-01T00:00:00Z" }], next_cursor: 0 },
+        error: undefined,
+      })
+      .mockResolvedValueOnce({
+        data: {
+          items: [
+            { id: "v-2", version: 2, author_type: "user", provenance: "manual", created_at: "2026-08-02T00:00:00Z" },
+            { id: "v-1", version: 1, author_type: "user", provenance: "manual", created_at: "2026-08-01T00:00:00Z" },
+          ],
+          next_cursor: 0,
+        },
+        error: undefined,
+      });
+    patchOrgContextMock.mockResolvedValue({
+      data: { version: 2, restrictions: {}, guidance: {} },
+      error: undefined,
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const versions = renderHook(() => useOrgContextVersions("org-1"), { wrapper: wrapperFor(qc) });
+    const patch = renderHook(() => usePatchOrgContext("org-1"), { wrapper: wrapperFor(qc) });
+
+    await waitFor(() => expect(versions.result.current.items).toHaveLength(1));
+
+    await patch.result.current.mutateAsync({ base_version: 1, restrictions: {}, guidance: {} });
+
+    await waitFor(() => expect(versions.result.current.items).toHaveLength(2));
+    expect(versions.result.current.items[0]?.version).toBe(2);
   });
 });
