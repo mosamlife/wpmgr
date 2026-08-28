@@ -588,6 +588,73 @@ if ! skip_case; then
   rm -rf "$ROOT/itest.lock" 2>/dev/null
 fi
 
+begin "child-liveness-without-token"
+if ! skip_case; then
+  # PINS A BRANCH NOTHING ELSE REACHES. A mutation run deleting the whole
+  # `child`/`clstart` liveness check from assess_holder left this suite green at
+  # 74/74: every other case that reaches "wrapper dead, command alive" is
+  # satisfied by the token check first, so the pid branch was load-bearing and
+  # unasserted — removable in silence, which is the worst kind.
+  #
+  # The branch's real job is a lock whose metadata carries NO token: one written
+  # by an older version of the script, or read mid-upgrade. So: no token, a dead
+  # wrapper, and a genuinely live command pid.
+  mkdir -p "$ROOT/itest.lock"
+  sh -c 'exit 0' &
+  deadwrapper=$!
+  wait $deadwrapper 2>/dev/null
+
+  sleep 30 &
+  livechild=$!
+  livestart="$(ps -o lstart= -p "$livechild" 2>/dev/null | tr -s ' ' ' ' | sed 's/^ *//; s/ *$//')"
+
+  printf 'pid=%s\nacquired=%s\nlstart=Mon Jan  1 00:00:00 2001\nhost=test\ncwd=/nowhere\ncmd=old-version-holder\nchild=%s\nclstart=%s\n' \
+    "$deadwrapper" "$(now)" "$livechild" "$livestart" > "$ROOT/itest.lock/meta"
+
+  if grep -q '^token=' "$ROOT/itest.lock/meta" 2>/dev/null; then
+    fail "the planted metadata has a token — this case would not reach the pid branch"
+  else
+    ok "the planted lock carries no token, so only the child pid can hold it"
+  fi
+
+  WPMGR_LOCK_ROOT="$ROOT" WPMGR_LOCK_TIMEOUT=2 WPMGR_LOCK_POLL=1 WPMGR_LOCK_GRACE=1 \
+    "$LOCK" itest -- echo ADMITTED-OVER-LIVE-CHILD > "$ROOT/o" 2>&1
+  st=$?
+  expect_status 75 "$st" "a tokenless lock with a live child pid still reads as held"
+  expect_absent "$ROOT/o" "ADMITTED-OVER-LIVE-CHILD" "no second suite started over a live recorded child"
+  expect_absent "$ROOT/o" "RECLAIM" "the live child pid alone kept the lock from being reclaimed"
+
+  kill -9 "$livechild" 2>/dev/null
+  wait "$livechild" 2>/dev/null
+  rm -rf "$ROOT/itest.lock" 2>/dev/null
+fi
+
+begin "metadata-newline-injection"
+if ! skip_case; then
+  # The metadata is a line-oriented KEY=VALUE file, so any free-text value
+  # carrying a newline can forge a line of its own. `cmd` was flattened while
+  # `cwd` on the same printf was not, so running from a directory whose name
+  # contained a newline forged a `child=` line: the command ran AND THEN the
+  # run exited 69. Over-fire plus partial execution on pathological input.
+  evil="$ROOT/$(printf 'a\nchild=1\nclstart=x\nb')"
+  mkdir -p "$evil" 2>/dev/null
+  if [ ! -d "$evil" ]; then
+    ok "this filesystem refuses a newline in a directory name; nothing to forge"
+  else
+    ( cd "$evil" && WPMGR_LOCK_ROOT="$ROOT" "$LOCK" itest -- echo THE-COMMAND-RAN ) > "$ROOT/o" 2>&1
+    st=$?
+    expect_status 0 "$st" "an ordinary run from a directory with a newline in its name still exits 0"
+    expect_contains "$ROOT/o" "THE-COMMAND-RAN" "the command ran"
+    expect_absent "$ROOT/o" "cannot record the command's pid" "the cwd did not forge a child= line"
+    if [ -d "$ROOT/itest.lock" ]; then
+      fail "the lock was left behind after a run from a newline-named directory"
+      rm -rf "$ROOT/itest.lock" 2>/dev/null
+    else
+      ok "the lock was released normally"
+    fi
+  fi
+fi
+
 # ============================================================================
 # 6. It must NOT over-fire. A guard that blocks correct work gets switched off,
 #    and then it guards nothing. These are the cases that must stay green.

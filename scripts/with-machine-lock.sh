@@ -138,11 +138,28 @@
 #                            by evidence rather than by being made smaller.
 #   killed after the append  child pid recorded too -> LIVE, as since fix 1.
 #
-# The one remaining gap is between fork() and exec(), while the child still
-# carries the parent's argv and the token is not yet visible in it — microseconds,
-# and unobservable in practice because declaring a lock stale requires a SECOND
-# assessment taken later, under the reclaim mutex. `child`/`clstart` are kept
-# alongside the token for exactly that corroboration; either one alive is enough.
+# THE ONE REMAINING GAP is between fork() and exec(), while the child still
+# carries the parent's argv and the token is not yet visible in it.
+#
+# What actually mitigates it is the SECOND ASSESSMENT: declaring a lock stale
+# requires assess_holder to return stale twice — once in the polling loop, and
+# again from scratch under the reclaim mutex — so a waiter would have to sample
+# inside that same gap on both occasions. Nothing else covers it.
+#
+# `child`/`clstart` do NOT cover this gap, and an earlier version of this
+# comment claimed they did. They cannot, for two measured reasons: CHILD is the
+# pid of the very `sh` that carries the token, so the two checks track ONE
+# process rather than corroborating each other; and during the gap the metadata
+# has no `child=` line at all, because write_meta runs before the fork and
+# record_child runs after it, so is_pid_live gets an empty pid and returns
+# false. What `child`/`clstart` are actually for is the case where the token is
+# absent from the metadata entirely — see assess_holder — which is why the
+# suite pins that path separately.
+#
+# The gap is NOT bounded by measurement. An attempt to bound it read 0s across
+# 200 iterations, but `date +%s` has one-second resolution, so that measures
+# nothing finer than "under a second". Treat it as unbounded-but-narrow rather
+# than as a number anybody has established.
 #
 # EXIT CODES.
 #   *   The command's own status, passed through unchanged, whatever it was.
@@ -330,6 +347,13 @@ remove_dir_hard() {
   [ ! -d "$1" ]
 }
 
+# _flat TEXT -> TEXT with every newline and carriage return turned into a
+# space. The metadata is a line-oriented KEY=VALUE file, so any free-text value
+# carrying a newline can forge a line of its own.
+_flat() {
+  printf '%s' "$1" | tr '\n\r' '  '
+}
+
 human_secs() { # human_secs N  ->  "3m12s"
   m=$(( $1 / 60 ))
   s=$(( $1 % 60 ))
@@ -431,12 +455,20 @@ write_meta() {
   # A newline inside the command would forge extra metadata lines — including a
   # `child=` line naming a live pid, which would make this lock permanent — so
   # the recorded command is flattened to one line.
-  _cmd="$(printf '%s' "$*" | tr '\n\r' '  ')"
+  # EVERY free-text field gets flattened, not just this one. `cmd` was
+  # flattened here while `cwd` on the same printf was not, so a run started
+  # from a directory named `a<newline>child=1<newline>clstart=x` forged its own
+  # `child=` line: an ordinary run printed its output AND THEN exited 69,
+  # over-firing and partially executing on pathological input. Anything
+  # interpolated into this file must go through _flat.
+  _cmd="$(_flat "$*")"
+  _cwd="$(_flat "$PWD")"
+  _host="$(_flat "$(hostname 2>/dev/null || echo unknown)")"
   # `token` goes in HERE, before anything is forked, and is verified below.
   # That ordering is the whole point: after this function returns successfully,
   # the lock can identify the run even though the run does not exist yet.
   if ! printf 'pid=%s\nacquired=%s\nlstart=%s\ntoken=%s\nhost=%s\ncwd=%s\ncmd=%s\n' \
-      "$$" "$(now)" "$(lstart_of $$)" "$TOKEN" "$(hostname 2>/dev/null || echo unknown)" "$PWD" "$_cmd" \
+      "$$" "$(now)" "$(lstart_of $$)" "$TOKEN" "$_host" "$_cwd" "$_cmd" \
       > "$_tmp"; then
     echo "$ME: cannot write lock metadata to $_tmp" >&2
     return 1
@@ -535,11 +567,15 @@ assess_holder() {
   # The TOKEN is checked first and is the load-bearing one: it was written and
   # verified before the fork, so it covers the interval in which a child exists
   # but its pid has not been recorded yet. The pid checks corroborate it from
-  # the other side (they cover the fork-to-exec instant, where the token is not
-  # yet in the child's argv). Any one of the three alive keeps the lock.
+  # the other side. Any one of the three alive keeps the lock.
   if is_token_live "$holder_token"; then
     return 0
   fi
+  # LOOKS REMOVABLE, IS NOT. Deleting this branch left the suite green at 74/74
+  # in a mutation run, because every other case reaching "wrapper dead, command
+  # alive" goes through the token above. It is what holds a lock written by a
+  # version that recorded no token, and it is now pinned by the
+  # `child-liveness-without-token` case so removing it reddens.
   if is_pid_live "$holder_child" "$holder_clstart"; then
     return 0
   fi
@@ -634,7 +670,18 @@ while :; do
           [ -n "$holder_cmd" ] && echo "$ME:   dead holder ran: $holder_cmd" >&2
           [ -n "$holder_cwd" ] && echo "$ME:   dead holder cwd: $holder_cwd" >&2
           echo "$ME:   removing $LOCK_DIR and taking it" >&2
-          rm -rf "$salvage" 2>/dev/null
+          # Suppressing this was the last unchecked write in the file, three
+          # lines under a comment about that pattern. It only leaks *.stale.*
+          # directories rather than failing open, but removing that shape is
+          # what this whole change is for.
+          if ! remove_dir_hard "$salvage"; then
+            echo "$ME:   NOTE: could not remove the salvaged copy at $salvage — remove it by hand" >&2
+          fi
+        else
+          # Not fail-open: without the rename we simply do not hold the lock,
+          # and the loop re-assesses. Still said out loud, because a reclaim
+          # that silently achieves nothing looks identical to one that worked.
+          echo "$ME: could not rename $LOCK_DIR out of the way to reclaim it; will re-assess" >&2
         fi
       fi
 
