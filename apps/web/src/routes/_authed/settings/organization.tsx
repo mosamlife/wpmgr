@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { CopyableMono } from "@/components/shared/copyable-mono";
 import { DestructiveConfirm } from "@/components/dialogs/destructive-confirm";
 import { useMe } from "@/features/auth/use-auth";
+import { OrgContextSection } from "@/features/context/org-context-section";
 import {
   useOrgs,
   useRenameOrg,
@@ -77,6 +78,7 @@ function OrganizationSettingsPage() {
       {activeOrg ? (
         <>
           <OrgCard key={activeOrg.id} org={activeOrg} />
+          <OrgContextCard key={`${activeOrg.id}-context`} org={activeOrg} />
           {activeOrg.role === "owner" ? (
             <DangerZoneCard
               key={`${activeOrg.id}-danger`}
@@ -181,6 +183,34 @@ function OrgCard({ org }: { org: Org }) {
             </Button>
           </div>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OrgContextCard: ADR-064 S5 Screen 3 — organisation-defaults editor
+// (layer 2). Read follows this page's existing "any org-scoped member sees
+// it" gate (Decision 6: read access follows existing fleet-read access);
+// write is narrower — organisation-admin+, mirroring OrgCard's canRename
+// gate above, per Decision 6's "organisation-scope write is held by
+// organisation administrators".
+// ---------------------------------------------------------------------------
+
+function OrgContextCard({ org }: { org: Org }) {
+  const canWrite = org.role === "owner" || org.role === "admin";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Organisation context</CardTitle>
+        <CardDescription>
+          Restrictions and guidance every site in this organisation inherits
+          (layer 2). A site&apos;s own override may narrow these, never widen
+          them.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <OrgContextSection orgId={org.id} canWrite={canWrite} />
       </CardContent>
     </Card>
   );
