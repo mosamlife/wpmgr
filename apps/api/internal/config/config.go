@@ -692,9 +692,9 @@ func (c Config) IsProduction() bool {
 	return strings.EqualFold(c.Env, "production") || strings.EqualFold(c.Env, "prod")
 }
 
-// ValidateSessionSecret refuses weak/placeholder session secrets. The secret
-// keys the session store; an empty, placeholder, or short value is a security
-// hole, so the server must not boot with one.
+// ValidateSessionSecret refuses weak/placeholder/published session secrets. The
+// secret keys the session store; an empty, placeholder, short, or publicly
+// known value is a security hole, so the server must not boot with one.
 func (c Config) ValidateSessionSecret() error {
 	s := c.Auth.SessionSecret
 	if s == "" {
@@ -702,6 +702,13 @@ func (c Config) ValidateSessionSecret() error {
 	}
 	if strings.HasPrefix(s, "change-me") {
 		return fmt.Errorf("WPMGR_SESSION_SECRET still holds the placeholder value: set a real random secret of at least 32 bytes")
+	}
+	// Before the length check, deliberately. A published secret is long and
+	// well-formed, so it would otherwise sail past every remaining check; and if
+	// a future published value ever were short, "this one is public" is the more
+	// useful thing to tell the operator than "this one is short".
+	if reason := publishedSessionSecretRefusal(s); reason != "" {
+		return fmt.Errorf("WPMGR_SESSION_SECRET %s", reason)
 	}
 	if len(s) < 32 {
 		return fmt.Errorf("WPMGR_SESSION_SECRET is too short (%d bytes): use at least 32 bytes", len(s))
