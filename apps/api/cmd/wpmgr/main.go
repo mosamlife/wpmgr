@@ -542,6 +542,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// and an installation with no grants simply has no valid bearer token.
 	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now)
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, version)
+	// The OAuth half, wired unconditionally for the same reason. Without it the
+	// transport above is mounted and correct and refuses every request forever,
+	// because nothing can mint a token. mcp.NewHandler arms its own
+	// registration rate limiter, so there is no assembly order that mounts the
+	// unauthenticated /register endpoint unlimited.
+	mcpOAuthH := mcp.NewHandler(mcpSvc)
 
 	// A narrow tenant-creation capability handed to the auth domain (bootstrap +
 	// OIDC first-login) without coupling it to the tenant package internals.
@@ -2821,6 +2827,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		SiteH:            siteH,
 		SiteEventsH:      siteEventsH,
 		MCPTransportH:    mcpTransportH,
+		MCPOAuthH:        mcpOAuthH,
 		FilesH:           filesH,
 		UpdateH:          updateH,
 		BackupH:          backupH,
