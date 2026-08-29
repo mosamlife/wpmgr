@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -61,6 +62,12 @@ type Issue struct {
 	Reason string
 }
 
+// maxProxyHops bounds WPMGR_AUTH_PROXY_HOPS. Nothing sane needs more than a
+// handful, and a large value here is almost always someone entering the length
+// of a forwarded header rather than a count of appending proxies — which would
+// hand the limiter key straight back to the caller.
+const maxProxyHops = 8
+
 // Validate aggregates ALL boot-critical configuration problems and returns them
 // as a slice of Issues. An empty slice means the configuration is valid.
 //
@@ -107,6 +114,22 @@ func Validate(cfg Config) []Issue {
 		issues = append(issues, Issue{
 			Name:   "WPMGR_SESSION_SECRET",
 			Reason: "too short — use at least 32 bytes",
+		})
+	}
+
+	// 1b. Proxy hop count. Refused rather than coerced: a value that cannot be
+	// right for the deployment either stops the auth limiters binding or
+	// refuses every legitimate user, and both are worse than not booting.
+	if h := cfg.Auth.ProxyHops; h < 0 {
+		issues = append(issues, Issue{
+			Name:   "WPMGR_AUTH_PROXY_HOPS",
+			Reason: "negative — set the number of proxies in front of this process that append to X-Forwarded-For (0 when it terminates connections directly)",
+		})
+	} else if h > maxProxyHops {
+		issues = append(issues, Issue{
+			Name: "WPMGR_AUTH_PROXY_HOPS",
+			Reason: fmt.Sprintf("%d exceeds the maximum of %d — this counts proxies that append to X-Forwarded-For, not the length of the header",
+				h, maxProxyHops),
 		})
 	}
 

@@ -56,6 +56,11 @@ type Handler struct {
 	// Optional: nil makes every Me response report true. Set after
 	// construction via SetManagedStorageResolver.
 	managedStorage ManagedStorageResolver
+	// proxyHops is the deployment's appending-proxy count; see SetProxyHops.
+	// proxyHopsSet distinguishes "explicitly 0" (nothing appends, use the peer
+	// address) from "never configured", which must not silently become 0.
+	proxyHops    int
+	proxyHopsSet bool
 	// logger receives the social sign-in failure lines (see social_log.go).
 	// Optional: nil falls back to slog.Default(), which cmd/wpmgr configures.
 	logger *slog.Logger
@@ -585,7 +590,7 @@ func (h *Handler) resetPassword(c *gin.Context) {
 	}
 	// limiterAddr, not clientAddr: ResetPassword rate-limits on this value
 	// ("pwreset-consume:"), and it is the only limit on reset-token guessing.
-	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, limiterAddr(c)); err != nil {
+	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, h.limiterAddr(c)); err != nil {
 		httpx.Error(c, err)
 		return
 	}
@@ -604,23 +609,34 @@ func clientAddr(c *gin.Context) netip.Addr {
 	return addr
 }
 
-// proxyHops is the number of X-Forwarded-For entries that the infrastructure in
-// front of this process appends to whatever the caller sent: the client address
-// as the balancer observed it, then the balancer's own frontend address. The
-// rightmost proxyHops entries are therefore written by us; everything to their
-// left came from the caller and is worth nothing.
+// defaultProxyHops is the fallback for a Handler that was never told its
+// deployment shape. It matches config's default and the hosted topology.
+const defaultProxyHops = 2
+
+// SetProxyHops declares how many X-Forwarded-For entries the infrastructure in
+// front of this process appends. See config.AuthConfig.ProxyHops for the
+// meaning of each value; the effective value is logged at startup.
 //
-// This holds only while the API is unreachable except through the balancer.
-// That is a deployment property, not a code property: the Cloud Run service runs
-// with ingress restricted to internal-and-cloud-load-balancing, so its own URL
-// is closed to the internet and every request arrives through the balancer.
-//
-// If that ingress is ever widened, a request can arrive with fewer appended
-// entries than proxyHops and the entry selected below drifts back into
-// caller-supplied territory. Anyone changing the ingress setting, the balancer,
-// or the number of proxies in front of this service must revisit this constant
-// and the tests that pin it.
-const proxyHops = 2
+// A negative value is refused by config.Validate before this is reached, so it
+// is coerced here only to keep a zero-value Handler in tests from selecting
+// nonsense.
+func (h *Handler) SetProxyHops(n int) {
+	if n < 0 {
+		n = defaultProxyHops
+	}
+	h.proxyHops = n
+	h.proxyHopsSet = true
+}
+
+// effectiveProxyHops treats an unset field as the default, so a Handler built
+// without SetProxyHops behaves as the hosted deployment rather than as though
+// nothing were in front of it.
+func (h *Handler) effectiveProxyHops() int {
+	if h.proxyHops == 0 && !h.proxyHopsSet {
+		return defaultProxyHops
+	}
+	return h.proxyHops
+}
 
 // limiterAddr returns the address that a rate-limit DECISION may be keyed on.
 //
@@ -629,17 +645,30 @@ const proxyHops = 2
 // refuse a request cannot, because then the caller selects its own bucket and
 // the limit stops binding.
 //
-// When the forwarded chain is shorter than the infrastructure guarantees, this
-// falls back to the peer address rather than reaching further left.
+// The number of entries the infrastructure appends is configuration, not a
+// property this process can observe — see config.AuthConfig.ProxyHops. A count
+// of 0 means nothing appends, so the forwarded header is ignored entirely and
+// the peer address is used.
 //
-// That fallback is NOT a security guard, and must not be described as one. It
-// only catches honest short chains. A caller that wants control of its key sends
-// exactly proxyHops entries itself, which is long enough to skip the fallback
-// entirely, so if this process ever becomes directly reachable the fallback
-// protects nobody: honest clients collapse onto the peer key while an attacker
-// keeps a key per request. The ingress restriction described on proxyHops is the
-// only thing standing between this and that state.
-func limiterAddr(c *gin.Context) netip.Addr {
+// When the chain is shorter than the configured count, this falls back to the
+// peer address rather than reaching further left. That fallback is NOT a
+// security guard and must not be described as one: it catches honest short
+// chains only. A caller wanting control of its key supplies the configured
+// number of entries itself, which skips the fallback entirely. So if this
+// process is reachable without the proxies it is configured for, the fallback
+// protects nobody — honest clients collapse onto the peer key while a caller
+// keeps a key per request. Only a correct hop count, matching what actually sits
+// in front, makes this sound.
+func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
+	hops := h.effectiveProxyHops()
+	if hops == 0 {
+		// Nothing in front appends, so every forwarded entry is caller-supplied
+		// and none of it is evidence. The peer address is the client.
+		if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
+			return addr
+		}
+		return netip.Addr{}
+	}
 	// Values, not Get. Get returns only the FIRST header line, so a caller that
 	// sends X-Forwarded-For twice would have the appended entries land on a line
 	// this never reads, handing back a value it chose. Joining every line is the
@@ -647,8 +676,8 @@ func limiterAddr(c *gin.Context) netip.Addr {
 	// whether the proxy in front coalesces repeated lines.
 	joined := strings.Join(c.Request.Header.Values("X-Forwarded-For"), ",")
 	parts := strings.Split(joined, ",")
-	if len(parts) >= proxyHops {
-		if addr, ok := parseForwardedAddr(parts[len(parts)-proxyHops]); ok {
+	if len(parts) >= hops {
+		if addr, ok := parseForwardedAddr(parts[len(parts)-hops]); ok {
 			return addr
 		}
 	}

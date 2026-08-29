@@ -63,6 +63,20 @@ func engineAsProductionBuildsIt() *gin.Engine {
 	return gin.New()
 }
 
+// handlerWithHops builds a Handler that resolves addresses for a deployment
+// with n appending proxies.
+func handlerWithHops(n int) *Handler {
+	h := &Handler{}
+	h.SetProxyHops(n)
+	return h
+}
+
+// defaultHopsHandler matches the hosted topology (a load balancer appending the
+// client address then its own), which is the default and what most pins here
+// exercise. Deployments with a different shape are covered by
+// TestLimiterAddrHonoursConfiguredHopCount.
+var defaultHopsHandler = handlerWithHops(2)
+
 // simulateBalancerFor builds the X-Forwarded-For chain as it arrives at the
 // container: whatever the caller sent, then the observed client address, then
 // the balancer's own.
@@ -101,7 +115,7 @@ func probeOnce(t *testing.T, client *http.Client, method, url, fwd string) (int,
 func TestLimiterAddrSelectsTheAppendedClientEntry(t *testing.T) {
 	e := engineAsProductionBuildsIt()
 	e.GET("/probe", func(c *gin.Context) {
-		c.String(http.StatusOK, "%s", limiterAddr(c).String())
+		c.String(http.StatusOK, "%s", defaultHopsHandler.limiterAddr(c).String())
 	})
 	srv := httptest.NewServer(e)
 	defer srv.Close()
@@ -132,7 +146,7 @@ func TestLimiterAddrSelectsTheAppendedClientEntry(t *testing.T) {
 func TestLimiterAddrReadsEveryForwardedHeaderLine(t *testing.T) {
 	e := engineAsProductionBuildsIt()
 	e.GET("/probe", func(c *gin.Context) {
-		c.String(http.StatusOK, "%s", limiterAddr(c).String())
+		c.String(http.StatusOK, "%s", defaultHopsHandler.limiterAddr(c).String())
 	})
 	srv := httptest.NewServer(e)
 	defer srv.Close()
@@ -172,7 +186,7 @@ func TestLimiterAddrReadsEveryForwardedHeaderLine(t *testing.T) {
 func TestLimiterAddrHandlesIPv6Forms(t *testing.T) {
 	e := engineAsProductionBuildsIt()
 	e.GET("/probe", func(c *gin.Context) {
-		c.String(http.StatusOK, "%s", limiterAddr(c).String())
+		c.String(http.StatusOK, "%s", defaultHopsHandler.limiterAddr(c).String())
 	})
 	srv := httptest.NewServer(e)
 	defer srv.Close()
@@ -199,7 +213,7 @@ func TestLimiterAddrHandlesIPv6Forms(t *testing.T) {
 func TestLimiterAddrFallsBackToPeerOnShortChain(t *testing.T) {
 	e := engineAsProductionBuildsIt()
 	e.GET("/probe", func(c *gin.Context) {
-		c.String(http.StatusOK, "%s|%s", limiterAddr(c).String(), c.RemoteIP())
+		c.String(http.StatusOK, "%s|%s", defaultHopsHandler.limiterAddr(c).String(), c.RemoteIP())
 	})
 	srv := httptest.NewServer(e)
 	defer srv.Close()
@@ -216,6 +230,83 @@ func TestLimiterAddrFallsBackToPeerOnShortChain(t *testing.T) {
 	}
 }
 
+// TestLimiterAddrHonoursConfiguredHopCount is the pin that the positional rule
+// is not hard-wired to one deployment.
+//
+// Before the hop count was configurable this selection was fixed at 2, which is
+// correct only for the hosted topology. On a single-proxy install it made honest
+// clients — who send no forwarded header of their own, producing a chain of one
+// — fall back to the proxy's address and share a single limiter key, locking
+// them out, while a caller supplying one entry still chose its own key. That is
+// strictly worse than not fixing anything, so each supported shape is pinned.
+func TestLimiterAddrHonoursConfiguredHopCount(t *testing.T) {
+	cases := []struct {
+		name  string
+		hops  int
+		chain string // as it arrives at this process
+		want  string // "" means "the peer address"
+	}{
+		{"two appending proxies, honest client", 2, simulatedClient + ", " + simulatedBalancer, simulatedClient},
+		{"two appending proxies, caller prepends", 2, "9.9.9.9, " + simulatedClient + ", " + simulatedBalancer, simulatedClient},
+
+		// One appending proxy: the honest chain is just the client, and it must
+		// resolve to the client rather than collapsing onto the peer.
+		{"one appending proxy, honest client", 1, simulatedClient, simulatedClient},
+		{"one appending proxy, caller prepends", 1, "9.9.9.9, " + simulatedClient, simulatedClient},
+
+		// Nothing appends: the header is caller-supplied in its entirety and
+		// carries no evidence, so it must be ignored and the peer used.
+		{"no proxy, no header", 0, "", ""},
+		{"no proxy, caller supplies a full chain", 0, "9.9.9.9, 8.8.8.8", ""},
+		{"no proxy, caller mimics the hosted shape", 0, simulatedClient + ", " + simulatedBalancer, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := handlerWithHops(tc.hops)
+			e := engineAsProductionBuildsIt()
+			e.GET("/probe", func(c *gin.Context) {
+				c.String(http.StatusOK, "%s|%s", h.limiterAddr(c).String(), c.RemoteIP())
+			})
+			srv := httptest.NewServer(e)
+			defer srv.Close()
+
+			_, body := probeOnce(t, srv.Client(), "GET", srv.URL+"/probe", tc.chain)
+			got, peer, ok := strings.Cut(body, "|")
+			if !ok {
+				t.Fatalf("malformed probe response %q", body)
+			}
+			want := tc.want
+			if want == "" {
+				want = peer
+			}
+			if got != want {
+				t.Errorf("hops=%d chain=%q gave %s, want %s", tc.hops, tc.chain, got, want)
+			}
+		})
+	}
+}
+
+// TestUnconfiguredHandlerDoesNotReadHeaderAsIfNothingAppends pins that a
+// Handler nobody configured behaves as the default topology rather than as
+// hops=0. The distinction matters because 0 is a meaningful setting, so a
+// zero-valued field must not be mistaken for it.
+func TestUnconfiguredHandlerDoesNotReadHeaderAsIfNothingAppends(t *testing.T) {
+	h := &Handler{} // never told its shape
+	e := engineAsProductionBuildsIt()
+	e.GET("/probe", func(c *gin.Context) {
+		c.String(http.StatusOK, "%s", h.limiterAddr(c).String())
+	})
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	_, got := probeOnce(t, srv.Client(), "GET", srv.URL+"/probe", simulateBalancer("9.9.9.9"))
+	if got != simulatedClient {
+		t.Errorf("unconfigured handler resolved %s, want %s: an unset hop count must mean "+
+			"the default, not the explicit 0 that ignores the header", got, simulatedClient)
+	}
+}
+
 // newResetRoute builds the real /auth/password/reset route: the real Handler,
 // the real Service, the real limiter. Requests past the cap are refused by the
 // limiter before any database access, which is what makes this reachable
@@ -228,6 +319,7 @@ func newResetRoute(t *testing.T, lim *autologin.MemoryLimiter) *httptest.Server 
 	e := gin.New()
 	e.Use(gin.Recovery())
 	h := &Handler{svc: &Service{limiter: lim}}
+	h.SetProxyHops(2) // the shape simulateBalancer produces
 	h.Register(e)
 	srv := httptest.NewServer(e)
 	t.Cleanup(srv.Close)
@@ -328,7 +420,7 @@ func TestTwoFAPerIPLimiterKeysOnAppendedClient(t *testing.T) {
 		defer lim.Stop()
 		e := engineAsProductionBuildsIt()
 		e.POST("/auth/2fa/verify", func(c *gin.Context) {
-			ip := limiterAddr(c)
+			ip := defaultHopsHandler.limiterAddr(c)
 			if ip.IsValid() {
 				if ok, _ := lim.Allow(context.Background(), "2fa-ip:"+ip.String(), twoFAIPLockoutPerMinute); !ok {
 					c.String(http.StatusTooManyRequests, "429")
@@ -407,15 +499,21 @@ func TestDecisionSitesUseLimiterAddr(t *testing.T) {
 			checked++
 
 			var uses []string
+			note := func(name string) {
+				if name == "limiterAddr" || name == "clientAddr" {
+					uses = append(uses, name)
+				}
+			}
 			ast.Inspect(fd, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				if id, ok := call.Fun.(*ast.Ident); ok {
-					if id.Name == "limiterAddr" || id.Name == "clientAddr" {
-						uses = append(uses, id.Name)
-					}
+				switch fun := call.Fun.(type) {
+				case *ast.Ident: // clientAddr(c)
+					note(fun.Name)
+				case *ast.SelectorExpr: // h.limiterAddr(c)
+					note(fun.Sel.Name)
 				}
 				return true
 			})
