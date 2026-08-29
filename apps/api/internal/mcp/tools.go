@@ -15,8 +15,12 @@ import (
 //
 // Resources and prompts are out of scope for Phase 1 -- not refused on
 // principle, but unbudgeted and undesigned, and shipping them half-specified
-// is worse than their absence. The registry and its per-site policy filtering
-// are S7; this file is a flat, positively-enumerated list of one.
+// is worse than their absence.
+//
+// THE LIST ITSELF MOVED TO registry.go AT S7, along with what each tool
+// requires and the single predicate tools/list and tools/call both resolve
+// through. This file keeps the descriptor type, the schemas, and the rendering
+// of the one read tool's result.
 //
 // Every tool here must be expressible at the FLOOR revision. Header-less
 // clients are floor clients by definition, so a capability that exists only at
@@ -63,23 +67,6 @@ var listSitesSchema = json.RawMessage(`{
   "properties": {},
   "additionalProperties": false
 }`)
-
-// Tools returns the Phase 1 tool surface. It is a function returning a fresh
-// slice rather than an exported package var so no caller can append a tool
-// into the surface at runtime -- the read-only claim of this feature is
-// exactly "no write tool is exposed", and that claim is only as strong as the
-// list being closed.
-func Tools() []ToolDescriptor {
-	return []ToolDescriptor{{
-		Name: ToolListSites,
-		Description: "List the WordPress sites this connection may read, with their " +
-			"connection state, health, WordPress/PHP/agent versions, and an explicit " +
-			"inventory staleness stamp. Sites whose plugin/theme inventory has never " +
-			"been collected are reported as never_collected rather than being given a " +
-			"substitute date.",
-		InputSchema: listSitesSchema,
-	}}
-}
 
 // ---------------------------------------------------------------------------
 // The site record, and the staleness stamp

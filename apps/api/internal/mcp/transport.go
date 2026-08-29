@@ -67,6 +67,21 @@ const (
 	// codeInvalidToolArguments carries the offending argument and the schema
 	// inline, so the model corrects in one round trip.
 	codeInvalidToolArguments = -32003
+
+	// codeToolNotAvailable is the single code for the TWO reasons a named tool
+	// is not reachable that a caller must not be able to tell apart: no such
+	// tool exists, or this connection's capabilities do not cover it. One code
+	// for two reasons is deliberate and is the whole disclosure decision -- see
+	// the note on AuthorizeTool. A client branching on the number learns "ask
+	// tools/list", which is the only correct action in both cases.
+	//
+	// AN EMPTY SITE SCOPE IS NOT ONE OF THEM and does not answer -32004. It
+	// answers codeScopeEmpty (-32002) above, by name, because a connection
+	// whose capability set already covers the tool is entitled to know the tool
+	// exists -- see the asymmetry note on visible(). An earlier version of this
+	// comment claimed -32004 covered the scope-empty case too. It never did:
+	// TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
+	codeToolNotAvailable = -32004
 )
 
 // TransportHandler serves the single MCP endpoint. It is separate from Handler
@@ -277,15 +292,34 @@ func (h *TransportHandler) serve(c *gin.Context) {
 
 	// A request with no id is a NOTIFICATION: it takes no response body. 202
 	// with an empty body is what the Streamable HTTP transport specifies.
-	isNotification := len(req.ID) == 0
+	//
+	// THE CHECK IS BEFORE DISPATCH, AND THAT ORDERING IS THE POINT.
+	//
+	// It used to be after: dispatch ran, the tool EXECUTED, and then the 202
+	// swallowed the result. An id-less tools/call was therefore a
+	// fire-and-forget invocation channel -- the caller triggered the work and
+	// received an empty body, so nothing it did was observable in its own
+	// response.
+	//
+	// That is harmless only while every tool is a read. The moment a write tool
+	// lands it is exactly the shape the proposal machinery exists to prevent: an
+	// effect with no answer, no result to show a user, and no record the caller
+	// ever sees. Fixing it after that tool ships would mean fixing it under
+	// pressure, so it is fixed now, while the only thing it can suppress is a
+	// list of sites.
+	//
+	// Returning early also costs nothing correct. Every method this server
+	// implements that is legitimately sent as a notification
+	// (notifications/initialized, ping) is a no-op whose only product IS the
+	// response, and initialize is required by the spec to carry an id.
+	if len(req.ID) == 0 {
+		c.Status(http.StatusAccepted)
+		return
+	}
 
 	resp, status, handled := h.dispatch(c, auth, neg, req)
 	if !handled {
 		return // dispatch already wrote the response
-	}
-	if isNotification {
-		c.Status(http.StatusAccepted)
-		return
 	}
 	c.JSON(status, resp)
 }
@@ -309,7 +343,12 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{}), http.StatusOK, true
 
 	case "tools/list":
-		return newResponse(req.ID, map[string]any{"tools": Tools()}), http.StatusOK, true
+		// VisibleTools, NOT Tools. Tools() is the whole registry and is not a
+		// request-path value; VisibleTools filters by this connection's
+		// capability set and site scope through the SAME predicate tools/call
+		// applies. An empty list here is a truthful answer for a connection
+		// that reaches nothing, not an error.
+		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
 		return h.callTool(ctx, auth, req), http.StatusOK, true
@@ -416,32 +455,94 @@ type toolCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// callTool is S7's EXIT GATE, and the gate is the absence of a `default` arm.
+//
+// This function used to switch on the tool name with a `default` that answered
+// "unknown tool" and listed every tool the server has. Two things were wrong
+// with it, and only the second is a vulnerability:
+//
+//  1. It enumerated the whole surface to any caller holding any valid token.
+//
+//  2. MORE IMPORTANTLY, the filtering lived on tools/list alone. The switch
+//     matched a registered name and dispatched -- with no reference to what
+//     this connection may reach. So a model that never called tools/list, and
+//     simply guessed a name, was dispatched on it. The permission check was on
+//     the discovery path, and discovery is not something an attacker has to
+//     use.
+//
+// There is now NO switch and therefore no arm to fall through. The name is
+// resolved by AuthorizeTool, which applies the same visible() predicate
+// tools/list applies, and the implementation hangs off the registry entry that
+// resolution returned. A name that AuthorizeTool did not authorize has no
+// invoke function to reach.
 func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) jsonrpcResponse {
 	var p toolCallParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil)
 	}
 
-	switch p.Name {
-	case ToolListSites:
-		text, err := h.svc.ListSitesForModel(ctx, auth)
-		if err != nil {
-			return h.toolError(req.ID, err)
+	entry, reason, err := AuthorizeTool(p.Name, auth)
+	if err != nil {
+		// THE OPERATOR LOG IS WRITTEN FOR EVERY REFUSAL WITH A REASON, not
+		// only for the ones the wire blurs.
+		//
+		// It used to be written only inside the not-available branch, which
+		// left the scope-empty refusal with NO operator line anywhere: it
+		// returned early to toolError, and toolError logs nothing for a domain
+		// error. That made a comment two lines up ("the operator log
+		// distinguishes ... site scope empty") false, and the false half was
+		// load-bearing -- "the operator can still tell them apart" is part of
+		// what justifies blurring the other two on the wire. An operator
+		// debugging a scope problem got nothing on either side.
+		//
+		// So: log first, on the reason, and let the wire answer be decided
+		// separately below. The three reasons are distinguished HERE; only two
+		// of them are blurred on the wire.
+		if reason != "" {
+			h.log.WarnContext(ctx, "mcp tool refused",
+				slog.String("tenant_id", auth.TenantID.String()),
+				slog.String("grant_id", auth.GrantID.String()),
+				slog.String("requested_tool", p.Name),
+				slog.String("refusal_reason", string(reason)),
+				slog.Int("held_capabilities", auth.Capabilities.Len()),
+				slog.Int("scoped_sites", auth.Sites.Len()),
+			)
 		}
-		return newResponse(req.ID, map[string]any{
-			"content": []map[string]any{{"type": "text", "text": text}},
-		})
-	default:
-		// A tool the grant does not cover is ABSENT from tools/list, so there
-		// is nothing to refuse; an unknown name here is a client error.
-		data, _ := json.Marshal(map[string]any{
-			"argument":    "name",
-			"supplied":    p.Name,
-			"known_tools": toolNames(),
-		})
-		return newErrorResponse(req.ID, codeInvalidToolArguments,
-			fmt.Sprintf("unknown tool %q", p.Name), data)
+
+		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
+			// available_tools is this connection's OWN tools/list answer, so it
+			// discloses nothing it was not already shown, and it lets a model
+			// that mistyped a name it legitimately holds correct in one round
+			// trip.
+			data, _ := json.Marshal(map[string]any{
+				"argument":        "name",
+				"supplied":        p.Name,
+				"available_tools": visibleToolNames(auth),
+			})
+			return newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data)
+		}
+		// Everything else keeps its own named answer: mcp_scope_empty becomes
+		// -32002 through toolError, and a non-domain error (a registry entry
+		// with no implementation) becomes the internal code. Neither is
+		// reported as a permission refusal.
+		return h.toolError(req.ID, err)
 	}
+
+	h.log.InfoContext(ctx, "mcp tool call",
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("tool", entry.Name),
+		slog.String("capability", string(entry.Capability)),
+		slog.String("operator_permission", string(entry.OperatorPermission)),
+	)
+
+	text, err := entry.invoke(ctx, h.svc, auth, p.Arguments)
+	if err != nil {
+		return h.toolError(req.ID, err)
+	}
+	return newResponse(req.ID, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": text}},
+	})
 }
 
 // toolError maps a domain refusal onto a named JSON-RPC code, and an infra
@@ -456,15 +557,6 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 	}
 	h.log.Error("mcp tool call failed", slog.String("error", err.Error()))
 	return newErrorResponse(id, codeInternalError, "the tool call failed", nil)
-}
-
-func toolNames() []string {
-	ts := Tools()
-	out := make([]string, 0, len(ts))
-	for _, t := range ts {
-		out = append(out, t.Name)
-	}
-	return out
 }
 
 // ---------------------------------------------------------------------------

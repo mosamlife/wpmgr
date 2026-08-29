@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,13 +100,38 @@ type fakeStore struct {
 	sitesMore bool
 	sitesErr  error
 
-	// call log
+	// call log. mu guards all four -- see note().
+	mu           sync.Mutex
 	consumeCalls int
 	tokensMinted int
 	calls        []string
 }
 
-func (f *fakeStore) note(s string) { f.calls = append(f.calls, s) }
+// note records one store call.
+//
+// THE MUTEX IS NOT DECORATION. Every fakeStore method calls this, so any test
+// that drives the transport concurrently races here -- and `go test -race` then
+// reports the FIXTURE, which is indistinguishable at first glance from a race in
+// the code under test and is enough to stop a concurrency proof from being run
+// at all. A security review of this surface hit exactly that and could not run
+// its concurrent attack under -race. Two lines buy every future concurrency
+// proof on the busiest fake in this package.
+//
+// It guards the counters too: they are incremented from the same paths.
+func (f *fakeStore) note(s string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, s)
+}
+
+// callLog returns a COPY of the call log, safe to read while other goroutines
+// are still calling the store. A test that ranges over f.calls directly is
+// correct only while it is sequential; this is what a concurrent one must use.
+func (f *fakeStore) callLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
 
 // RegisterClient models the :execrows query: it reports ROWS WRITTEN and can
 // never hand back the row, because the register GUC enables no SELECT policy
@@ -175,7 +201,9 @@ func (f *fakeStore) LookupAuthorizationCode(_ context.Context, _ string) (sqlc.G
 // and the test would pass against the broken code.
 func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error) {
 	f.note("RedeemAuthorizationCode")
+	f.mu.Lock()
 	f.consumeCalls++
+	f.mu.Unlock()
 
 	// The compare-and-set runs first, inside the transaction.
 	if f.raceLost || f.consumed {
