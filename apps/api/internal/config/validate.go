@@ -110,6 +110,14 @@ func Validate(cfg Config) []Issue {
 			Name:   "WPMGR_SESSION_SECRET",
 			Reason: "still holds the placeholder value — set a real random secret of at least 32 bytes",
 		})
+	// Ordered ahead of the length case to match ValidateSessionSecret: a
+	// published secret is long and well-formed, and "public" is the more useful
+	// diagnosis than "short" whenever both could apply.
+	case publishedSessionSecretRefusal(s) != "":
+		issues = append(issues, Issue{
+			Name:   "WPMGR_SESSION_SECRET",
+			Reason: publishedSessionSecretRefusal(s),
+		})
 	case len(s) < 32:
 		issues = append(issues, Issue{
 			Name:   "WPMGR_SESSION_SECRET",
@@ -210,6 +218,17 @@ func Validate(cfg Config) []Issue {
 // provider.
 func Advisories(cfg Config) []Issue {
 	issues := validateSocialConfig(cfg)
+
+	// The declared-development half of the published-session-secret check. That
+	// case boots on purpose (see publishedSessionSecretRefusal), so this is what
+	// stops it being silent: the developer is told on every boot, and the state
+	// cannot quietly follow a copied compose file into a real deployment.
+	if reason := publishedSessionSecretAdvisory(cfg.Auth.SessionSecret); reason != "" {
+		issues = append(issues, Issue{
+			Name:   "WPMGR_SESSION_SECRET",
+			Reason: reason,
+		})
+	}
 
 	// The public base URL is checked here rather than inside the social
 	// validator, because it is not a social question. The derived redirect_uri
