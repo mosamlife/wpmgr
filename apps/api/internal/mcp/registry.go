@@ -139,6 +139,16 @@ const (
 	// reasonCapabilityNotHeld: the entry exists and this connection's
 	// capability set does not hold what it requires.
 	reasonCapabilityNotHeld refusalReason = "capability_not_held"
+	// reasonSiteScopeEmpty: the entry exists, the capability IS held, and the
+	// connection's resolved site scope is empty, so a site-keyed tool has
+	// nothing it may read.
+	//
+	// Unlike the two above this one is also disclosed to the caller, by name,
+	// as mcp_scope_empty -- see the asymmetry note on visible(). It still needs
+	// a reason constant because the OPERATOR log must carry it: an operator
+	// debugging a scope problem got nothing at all before this existed, on
+	// either the wire or the log.
+	reasonSiteScopeEmpty refusalReason = "site_scope_empty"
 )
 
 // visible reports whether auth may SEE AND CALL entry. tools/list and
@@ -304,7 +314,10 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 			// Only a caller who passed visible() reaches here, so naming the
 			// reason discloses nothing beyond that caller's own tools/list.
 			if entry.RequiresSiteScope && auth.Sites.IsEmpty() {
-				return ToolPolicy{}, "", domain.Forbidden(ErrCodeScopeEmpty,
+				// The reason is returned, NOT "". An empty reason here made the
+				// refusal invisible to the operator log, which is half of what
+				// justifies blurring the other two reasons on the wire.
+				return ToolPolicy{}, reasonSiteScopeEmpty, domain.Forbidden(ErrCodeScopeEmpty,
 					"this connection's site scope resolves to no sites, so there is nothing it may read. "+
 						"This is a refusal, not an empty fleet: check the grant's site scope.")
 			}

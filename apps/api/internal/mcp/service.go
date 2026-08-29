@@ -784,16 +784,30 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// construction -- ParseRequestedScopes refuses anything else and
 	// recognisedScopes holds exactly that one entry.
 	//
-	// WHAT IS NOT WIRED YET, SAID PLAINLY RATHER THAN IMPLIED: there is no
-	// stored per-connection capability narrowing, so this value IS the org
-	// default. CapabilitySet.NarrowTo is the mechanism that applies one, and it
-	// refuses a request wider than the default rather than granting it; the
-	// COLUMN it would read from arrives with its own migration, NOT NULL, no
-	// default, closed CHECK, exactly as DECISION 1 requires. Writing a
-	// half-wired narrowing that silently defaults to the ceiling would be the
-	// absence-read-as-a-value failure this whole surface is built against, so
-	// the gap is a comment and a returned error, not a nil treated as permissive.
-	caps, err := OrgDefaultCapabilities([]Scope{ScopeRead})
+	// WHAT IS NOT WIRED YET, SAID PLAINLY RATHER THAN IMPLIED. Two gaps, and
+	// the second is a LATENT WIDENING rather than a missing narrowing:
+	//
+	//  1. There is no stored per-connection capability narrowing, so this value
+	//     IS the org default. CapabilitySet.NarrowTo is the mechanism that
+	//     applies one, and it refuses a request wider than the default rather
+	//     than granting it; the COLUMN it would read from arrives with its own
+	//     migration, NOT NULL, no default, closed CHECK, as DECISION 1
+	//     requires.
+	//
+	//  2. THE SCOPE LIST BELOW IS A CONSTANT, NOT THE GRANT'S OWN SCOPES.
+	//     mcp_grants has no scopes column, so there is nothing per-grant to
+	//     read; grantScopes() returns the one scope every live grant holds by
+	//     construction. That is exact TODAY and only because recognisedScopes
+	//     holds exactly one entry. The day a second scope joins it, a
+	//     connection granted ONLY that scope would still be handed ScopeRead's
+	//     capabilities here -- a widening, and one no existing test catches,
+	//     because TestEveryRecognisedScopeHasACapabilityMapping pins the map's
+	//     totality and not this function's input.
+	//
+	//     TestGrantScopesIsExactOnlyWhileOneScopeExists goes red the moment
+	//     recognisedScopes grows, so whoever adds the second scope is forced to
+	//     come here and read a grant's scopes instead of a constant.
+	caps, err := OrgDefaultCapabilities(grantScopes())
 	if err != nil {
 		// A capability set that cannot be resolved is a REFUSAL, never an
 		// empty-but-proceeding one. An AuthorizedRequest with a zero-value

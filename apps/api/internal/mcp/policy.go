@@ -90,6 +90,26 @@ var scopeCapabilities = map[Scope][]Capability{
 	ScopeRead: {CapSitesRead},
 }
 
+// grantScopes returns the OAuth scopes a live grant holds.
+//
+// IT IS A CONSTANT, AND THAT IS THE WHOLE REASON THIS FUNCTION EXISTS RATHER
+// THAN A LITERAL AT THE CALL SITE. mcp_grants has no scopes column (m124
+// DECISION 1 declines to mint one), so there is nothing per-grant to read; every
+// grant that can authenticate holds ScopeRead, because ParseRequestedScopes
+// refuses anything recognisedScopes does not carry and recognisedScopes carries
+// exactly one entry.
+//
+// That reasoning is load-bearing and it EXPIRES the moment a second scope is
+// recognised: a connection granted only the new scope would still be handed
+// ScopeRead's capabilities, which is a widening rather than a narrowing and is
+// therefore the direction that matters. Naming it here gives
+// TestGrantScopesIsExactOnlyWhileOneScopeExists something to point at, and gives
+// whoever adds that scope one obvious place to replace with a real per-grant
+// read.
+func grantScopes() []Scope {
+	return []Scope{ScopeRead}
+}
+
 // CapabilitySet is a RESOLVED set of capabilities.
 //
 // It is a struct and not a []Capability on purpose, and the reasoning is

@@ -235,11 +235,18 @@ func TestRegistryEntriesAreWellFormed(t *testing.T) {
 	}
 }
 
-// TestRegistryIsClosed proves the surface cannot be widened at runtime.
-// registryTools returns a FRESH slice, so mutating what one caller got must not
-// be observable by the next -- the property that makes "no write tool is
-// exposed" a claim about the code rather than about discipline.
-func TestRegistryIsClosed(t *testing.T) {
+// TestRegistryIsNotAliasedAcrossCalls proves registryTools returns a FRESH
+// slice, so mutating what one caller got is not observable by the next.
+//
+// IT IS NAMED FOR WHAT IT TESTS. It was called TestRegistryIsClosed, which
+// overclaimed: a review mutation that added a write-shaped delete_site tool to
+// the literal passed this test unchanged, and was caught by
+// TestToolsList_IsToolsOnlyAndReadOnly instead. Aliasing and closure are
+// different properties -- this one covers runtime mutation of a returned slice,
+// and the read-only claim about the literal's CONTENTS belongs to that other
+// test. A test whose name claims the stronger property is worse than no test,
+// because the next reader stops looking.
+func TestRegistryIsNotAliasedAcrossCalls(t *testing.T) {
 	before := len(registryTools())
 
 	stolen := registryTools()
@@ -264,6 +271,36 @@ func TestRegistryIsClosed(t *testing.T) {
 		t.Fatalf("Tools() is not a fresh slice")
 	}
 	_ = t1
+}
+
+// TestNoRegisteredToolIsWriteShaped is the closure half the aliasing test above
+// does NOT cover, kept here so the registry file carries its own read-only
+// guard rather than relying on a transport test to catch a registry change.
+//
+// It is a NAME-SHAPE heuristic and says so: it cannot tell what a tool does, it
+// can only refuse verbs a read tool has no business declaring. That is enough
+// to make a write tool arrive as a visible, deliberate act -- someone has to
+// delete a case from this list, in a diff, with a reason.
+func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
+	forbidden := []string{
+		"create", "update", "delete", "remove", "restart", "reboot",
+		"install", "uninstall", "activate", "deactivate", "write",
+		"set_", "purge", "restore", "rollback", "run_", "exec",
+	}
+	for _, e := range registryTools() {
+		lower := strings.ToLower(e.Name)
+		for _, verb := range forbidden {
+			if strings.Contains(lower, verb) {
+				t.Errorf("tool %q contains the write-shaped verb %q. The MCP surface is read-only "+
+					"BY CONSTRUCTION (m124 DECISION 1) -- a write tool arrives with its own "+
+					"capability, its own migration and its own security review, never by being "+
+					"appended to registryTools.", e.Name, verb)
+			}
+		}
+		if e.OperatorPermission == authz.PermSiteWrite {
+			t.Errorf("tool %q declares the site:write operator permission on a read-only surface", e.Name)
+		}
+	}
 }
 
 // TestVisibleToolNamesDiscloseOnlyTheConnectionsOwnSurface guards the error

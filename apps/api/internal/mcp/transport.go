@@ -68,12 +68,19 @@ const (
 	// inline, so the model corrects in one round trip.
 	codeInvalidToolArguments = -32003
 
-	// codeToolNotAvailable is the SINGLE code for every reason a named tool is
-	// not reachable by this connection: it does not exist, this connection's
-	// capabilities do not cover it, or its site scope is empty. One code for
-	// three reasons is deliberate and is the whole disclosure decision -- see
-	// the note on AuthorizeTool. A client branching on the number learns
-	// "ask tools/list", which is the only correct action in all three cases.
+	// codeToolNotAvailable is the single code for the TWO reasons a named tool
+	// is not reachable that a caller must not be able to tell apart: no such
+	// tool exists, or this connection's capabilities do not cover it. One code
+	// for two reasons is deliberate and is the whole disclosure decision -- see
+	// the note on AuthorizeTool. A client branching on the number learns "ask
+	// tools/list", which is the only correct action in both cases.
+	//
+	// AN EMPTY SITE SCOPE IS NOT ONE OF THEM and does not answer -32004. It
+	// answers codeScopeEmpty (-32002) above, by name, because a connection
+	// whose capability set already covers the tool is entitled to know the tool
+	// exists -- see the asymmetry note on visible(). An earlier version of this
+	// comment claimed -32004 covered the scope-empty case too. It never did:
+	// TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
 	codeToolNotAvailable = -32004
 )
 
@@ -285,15 +292,34 @@ func (h *TransportHandler) serve(c *gin.Context) {
 
 	// A request with no id is a NOTIFICATION: it takes no response body. 202
 	// with an empty body is what the Streamable HTTP transport specifies.
-	isNotification := len(req.ID) == 0
+	//
+	// THE CHECK IS BEFORE DISPATCH, AND THAT ORDERING IS THE POINT.
+	//
+	// It used to be after: dispatch ran, the tool EXECUTED, and then the 202
+	// swallowed the result. An id-less tools/call was therefore a
+	// fire-and-forget invocation channel -- the caller triggered the work and
+	// received an empty body, so nothing it did was observable in its own
+	// response.
+	//
+	// That is harmless only while every tool is a read. The moment a write tool
+	// lands it is exactly the shape the proposal machinery exists to prevent: an
+	// effect with no answer, no result to show a user, and no record the caller
+	// ever sees. Fixing it after that tool ships would mean fixing it under
+	// pressure, so it is fixed now, while the only thing it can suppress is a
+	// list of sites.
+	//
+	// Returning early also costs nothing correct. Every method this server
+	// implements that is legitimately sent as a notification
+	// (notifications/initialized, ping) is a no-op whose only product IS the
+	// response, and initialize is required by the spec to carry an id.
+	if len(req.ID) == 0 {
+		c.Status(http.StatusAccepted)
+		return
+	}
 
 	resp, status, handled := h.dispatch(c, auth, neg, req)
 	if !handled {
 		return // dispatch already wrote the response
-	}
-	if isNotification {
-		c.Status(http.StatusAccepted)
-		return
 	}
 	c.JSON(status, resp)
 }
@@ -457,11 +483,22 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 
 	entry, reason, err := AuthorizeTool(p.Name, auth)
 	if err != nil {
-		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
-			// THE PRECISE REASON GOES HERE AND ONLY HERE. The operator log
-			// distinguishes "no such tool" from "capability not held" from
-			// "site scope empty"; the wire answer below does not, so there is
-			// no existence oracle. See the disclosure note on AuthorizeTool.
+		// THE OPERATOR LOG IS WRITTEN FOR EVERY REFUSAL WITH A REASON, not
+		// only for the ones the wire blurs.
+		//
+		// It used to be written only inside the not-available branch, which
+		// left the scope-empty refusal with NO operator line anywhere: it
+		// returned early to toolError, and toolError logs nothing for a domain
+		// error. That made a comment two lines up ("the operator log
+		// distinguishes ... site scope empty") false, and the false half was
+		// load-bearing -- "the operator can still tell them apart" is part of
+		// what justifies blurring the other two on the wire. An operator
+		// debugging a scope problem got nothing on either side.
+		//
+		// So: log first, on the reason, and let the wire answer be decided
+		// separately below. The three reasons are distinguished HERE; only two
+		// of them are blurred on the wire.
+		if reason != "" {
 			h.log.WarnContext(ctx, "mcp tool refused",
 				slog.String("tenant_id", auth.TenantID.String()),
 				slog.String("grant_id", auth.GrantID.String()),
@@ -470,6 +507,9 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 				slog.Int("held_capabilities", auth.Capabilities.Len()),
 				slog.Int("scoped_sites", auth.Sites.Len()),
 			)
+		}
+
+		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
 			// available_tools is this connection's OWN tools/list answer, so it
 			// discloses nothing it was not already shown, and it lets a model
 			// that mistyped a name it legitimately holds correct in one round
@@ -481,9 +521,10 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 			})
 			return newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data)
 		}
-		// A non-domain error from AuthorizeTool is a registry defect (an entry
-		// with no implementation). It is reported as internal, never as a
-		// permission refusal.
+		// Everything else keeps its own named answer: mcp_scope_empty becomes
+		// -32002 through toolError, and a non-domain error (a registry entry
+		// with no implementation) becomes the internal code. Neither is
+		// reported as a permission refusal.
 		return h.toolError(req.ID, err)
 	}
 

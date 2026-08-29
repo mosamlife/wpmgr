@@ -883,6 +883,59 @@ func TestToolsCall_ReadPathReturnsStampedSites(t *testing.T) {
 	}
 }
 
+// TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool.
+//
+// A JSON-RPC request with no id is a notification and takes no response body.
+// The transport used to DISPATCH FIRST and apply that rule afterwards, so an
+// id-less tools/call ran the tool and then answered 202 with an empty body: the
+// caller triggered the work and saw nothing of it.
+//
+// Harmless while every tool is a read. The moment a write tool lands it is a
+// fire-and-forget invocation channel -- an effect with no answer and no record
+// the caller ever sees, which is the shape the proposal machinery exists to
+// prevent. The assertion that matters is therefore NOT the status code, which
+// was always 202; it is that the store was never touched.
+func TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool(t *testing.T) {
+	allowed := uuid.New()
+	store := liveGrantStore(allowed)
+	row := siteRow("should-never-be-read", nil)
+	row.ID = allowed
+	store.sites = []sqlc.ListSitesRow{row}
+
+	r := newTransportRouter(t, store)
+	w := post(t, r, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("HTTP %d, want 202: %s", w.Code, w.Body.String())
+	}
+	if body := strings.TrimSpace(w.Body.String()); body != "" {
+		t.Errorf("a notification returned a body: %q", body)
+	}
+
+	// THE REAL ASSERTION. ListSitesForRead must never have been called.
+	for _, c := range store.callLog() {
+		if c == "ListSitesForRead" {
+			t.Fatalf("an id-less tools/call EXECUTED the tool; the call log is %v", store.callLog())
+		}
+	}
+
+	// Positive control: the same call WITH an id does execute, so the proof
+	// above is the notification rule and not a broken fixture.
+	w2 := post(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("the id-carrying control got HTTP %d: %s", w2.Code, w2.Body.String())
+	}
+	var executed bool
+	for _, c := range store.callLog() {
+		if c == "ListSitesForRead" {
+			executed = true
+		}
+	}
+	if !executed {
+		t.Fatal("the id-carrying control did not execute the tool either; the fixture is broken")
+	}
+}
+
 // jsonPart returns the JSON payload half of a tool result, i.e. everything
 // from the first '{' that begins the payload object. The instructions are
 // PREPENDED, so the payload is the tail.

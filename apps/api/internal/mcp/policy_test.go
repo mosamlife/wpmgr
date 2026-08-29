@@ -115,6 +115,37 @@ func TestEveryRecognisedScopeHasACapabilityMapping(t *testing.T) {
 	}
 }
 
+// TestGrantScopesIsExactOnlyWhileOneScopeExists is a TRIPWIRE, not a property
+// test. It asserts the precondition that makes grantScopes' constant honest.
+//
+// Authenticate hands OrgDefaultCapabilities a constant instead of the grant's
+// own scopes, which is exact only while every live grant holds the same single
+// scope. Adding a second recognised scope silently converts that constant into
+// a WIDENING: a connection granted only the new scope keeps being handed
+// ScopeRead's capabilities, and no other test in this package notices, because
+// TestEveryRecognisedScopeHasACapabilityMapping pins the map's totality rather
+// than Authenticate's input.
+//
+// So this fails the moment recognisedScopes grows. The fix when it does is NOT
+// to update the number here: it is to store the grant's scopes and read them,
+// then delete this test.
+func TestGrantScopesIsExactOnlyWhileOneScopeExists(t *testing.T) {
+	if len(recognisedScopes) != 1 {
+		t.Fatalf("recognisedScopes now holds %d scopes, so grantScopes()'s constant is no longer "+
+			"exact: a connection granted only one of them is still handed %v's capabilities by "+
+			"Authenticate, which WIDENS it. Read the grant's own scopes instead of a constant "+
+			"(mcp_grants needs the column first -- see m124 DECISION 1), then delete this test. "+
+			"Do not just update the count.", len(recognisedScopes), ScopeRead)
+	}
+	got := grantScopes()
+	if len(got) != 1 || got[0] != ScopeRead {
+		t.Fatalf("grantScopes() = %v, want exactly [%v]", got, ScopeRead)
+	}
+	if _, ok := recognisedScopes[got[0]]; !ok {
+		t.Fatalf("grantScopes() returns %v, which is not a recognised scope", got[0])
+	}
+}
+
 // TestOrgDefaultForTheReadScope pins the actual Phase 1 answer.
 func TestOrgDefaultForTheReadScope(t *testing.T) {
 	set, err := OrgDefaultCapabilities([]Scope{ScopeRead})
