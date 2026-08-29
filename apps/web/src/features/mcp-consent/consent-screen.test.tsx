@@ -41,7 +41,7 @@ function props(over: Partial<ConsentScreenProps> = {}): ConsentScreenProps {
   return {
     consent: ATTACKER,
     tags: [{ id: "t1", name: "prod" }],
-    allSites: SITES,
+    fleet: { sites: SITES, complete: true },
     tagsBySiteId: { s1: ["prod"], s2: ["staging"] },
     sitesLoading: false,
     isApproving: false,
@@ -163,9 +163,9 @@ describe("ConsentScreen — an empty site scope is not everything", () => {
   });
 
   it("a failed site load blocks approval instead of resolving to zero or to all", () => {
-    renderWithProviders(<ConsentScreen {...props({ allSites: null, sitesLoading: false })} />);
+    renderWithProviders(<ConsentScreen {...props({ fleet: null, sitesLoading: false })} />);
     expect(screen.getByTestId("consent-scope-summary").textContent).toMatch(
-      /could not load your sites/i,
+      /could not read every site/i,
     );
     expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
   });
@@ -188,5 +188,60 @@ describe("ConsentScreen — an empty site scope is not everything", () => {
       scopeTagIds: [],
       scopeSiteIds: ["s1"],
     });
+  });
+});
+
+
+describe("ConsentScreen — a page of sites is not presented as the fleet", () => {
+  // The org has more sites than the page we hold. The screen must not let the
+  // operator believe the list in front of them is the whole fleet, because
+  // approving "every site" then grants read access to sites they never saw.
+  const CAPPED = { sites: SITES, complete: false };
+
+  it("mode 'all' over a capped list refuses to state a fleet size", () => {
+    renderWithProviders(<ConsentScreen {...props({ fleet: CAPPED })} />);
+    fireEvent.click(screen.getByText("Every site"));
+    const summary = screen.getByTestId("consent-scope-summary").textContent ?? "";
+    expect(summary).not.toMatch(/That is \d+ sites? today/);
+    expect(summary).toMatch(/there are more than that/i);
+  });
+
+  it("labels the enumeration as partial rather than letting it pose as the list", () => {
+    renderWithProviders(<ConsentScreen {...props({ fleet: CAPPED })} />);
+    fireEvent.click(screen.getByText("Every site"));
+    expect(screen.getByTestId("consent-list-partial").textContent).toMatch(
+      /not the whole list/i,
+    );
+  });
+
+  it("does NOT label the enumeration partial when the list really is complete", () => {
+    // The over-fire case. A warning that shows on correct work gets ignored,
+    // and then it warns about nothing.
+    renderWithProviders(<ConsentScreen {...props()} />);
+    fireEvent.click(screen.getByText("Every site"));
+    expect(screen.queryByTestId("consent-list-partial")).toBeNull();
+    expect(screen.getByTestId("consent-scope-summary").textContent).toMatch(
+      /That is 2 sites today/,
+    );
+  });
+
+  it("warns that the site picker is not offering every site", () => {
+    renderWithProviders(<ConsentScreen {...props({ fleet: CAPPED })} />);
+    expect(screen.getByTestId("consent-picker-truncated").textContent).toMatch(
+      /not all of them/i,
+    );
+  });
+
+  it("does not warn on the picker when every site is offered", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-picker-truncated")).toBeNull();
+  });
+
+  it("says an all-sites grant covers sites added later", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    fireEvent.click(screen.getByText("Every site"));
+    expect(screen.getByTestId("consent-scope-summary").textContent).toMatch(
+      /added later is covered/i,
+    );
   });
 });

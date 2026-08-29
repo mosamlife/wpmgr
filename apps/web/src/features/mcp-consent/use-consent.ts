@@ -224,3 +224,45 @@ export function buildRedirectTarget(result: ApproveResult): string {
   if (result.state !== null) url.searchParams.set("state", result.state);
   return url.toString();
 }
+
+/**
+ * Build the destination that tells the client the operator said no.
+ *
+ * REFUSAL IS A PROTOCOL MESSAGE, NOT A UI GESTURE. RFC 6749 section 4.1.2.1
+ * defines `access_denied` for exactly this. A screen that answers "no" by going
+ * back in history leaves the initiating client waiting for a callback that
+ * never arrives, so the user's refusal is invisible to the thing they refused.
+ * It is also unreachable in the common case: an OAuth client opens this URL in
+ * a new tab or a fresh window, where there is no history entry to return to,
+ * and `history.back()` there does nothing at all.
+ *
+ * `state` is echoed unchanged when the request carried one. It is the client's
+ * own CSRF token and the only way it can match this answer to the request it
+ * sent; dropping it turns a refusal into an unattributable stray callback. It
+ * is omitted when there was none, never invented.
+ *
+ * THE DESTINATION IS THE SERVER'S, NOT THE BROWSER'S. `consent.redirectUri`
+ * arrives on the authorize response, and internal/mcp/service.go only puts a
+ * value there after exactMatchRedirectURI has proved it equals one of the
+ * client's registered URIs. Building this from the query string instead would
+ * make the refusal path an open redirector, on a screen whose entire premise is
+ * that registration is unauthenticated and the request is untrusted.
+ */
+export function buildDenialTarget(consent: ConsentContext): string {
+  const url = new URL(consent.redirectUri);
+  url.searchParams.set("error", "access_denied");
+  url.searchParams.set("error_description", "The operator refused this connection.");
+  if (consent.state !== null) url.searchParams.set("state", consent.state);
+  return url.toString();
+}
+
+/**
+ * Hand the browser to a URL.
+ *
+ * A one-line indirection so the approval and the refusal paths leave through
+ * the same door, and so a test can watch that door. Nothing else in this
+ * feature should touch window.location.
+ */
+export function navigateTo(url: string): void {
+  window.location.assign(url);
+}

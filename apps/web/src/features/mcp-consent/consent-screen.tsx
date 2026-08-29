@@ -20,6 +20,7 @@ import {
   describeSiteScope,
   isScopeApprovable,
   resolveSiteScope,
+  type FleetSnapshot,
   type ResolvedSiteScope,
   type ScopedSite,
   type SiteScopeMode,
@@ -242,6 +243,7 @@ function SiteScopeBlock({
   selectedTagNames,
   onToggleTag,
   sites,
+  pickerComplete,
   selectedSiteIds,
   onToggleSite,
 }: {
@@ -252,6 +254,7 @@ function SiteScopeBlock({
   selectedTagNames: readonly string[];
   onToggleTag: (name: string) => void;
   sites: readonly ScopedSite[];
+  pickerComplete: boolean;
   selectedSiteIds: readonly string[];
   onToggleSite: (id: string) => void;
 }) {
@@ -259,7 +262,15 @@ function SiteScopeBlock({
   // resolved sites are always enumerated rather than summarised. The union's
   // `none` and `unresolved` members have no site list to enumerate and say so
   // instead, in words that cannot be read as "everything".
-  const enumerable = scope.kind === "all" || scope.kind === "sites" ? scope.sites : [];
+  const enumerable =
+    scope.kind === "all" ? scope.shown : scope.kind === "sites" ? scope.sites : [];
+
+  // Whether the enumeration below is the whole story. Rendered explicitly
+  // rather than inferred from the list's length, because "these are all of
+  // them" and "these are the ones we could load" look identical on screen and
+  // mean very different things to someone about to approve.
+  const listComplete =
+    scope.kind === "all" || scope.kind === "sites" ? scope.listComplete : true;
 
   return (
     <section
@@ -323,6 +334,17 @@ function SiteScopeBlock({
         </div>
       )}
 
+      {mode === "list" && !pickerComplete && (
+        <p
+          role="alert"
+          data-testid="consent-picker-truncated"
+          className="mt-3 rounded-md border border-[var(--color-destructive)]/30 p-3 text-sm text-[var(--color-destructive)]"
+        >
+          This organisation has more sites than we can list here, so the choices below
+          are not all of them. Anything you do not see is not covered by this grant.
+        </p>
+      )}
+
       {mode === "list" && (
         <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
           {sites.map((site) => (
@@ -352,6 +374,15 @@ function SiteScopeBlock({
         {describeSiteScope(scope)}
       </p>
 
+      {enumerable.length > 0 && !listComplete && (
+        <p
+          data-testid="consent-list-partial"
+          className="mt-2 text-sm font-medium text-[var(--color-destructive)]"
+        >
+          The sites below are the ones we could load, not the whole list.
+        </p>
+      )}
+
       {enumerable.length > 0 && (
         <ul
           data-testid="consent-scope-sites"
@@ -366,8 +397,8 @@ function SiteScopeBlock({
       )}
 
       <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
-        This list is what this dashboard can see right now. Your organisation&apos;s records
-        decide what the connection actually reads on each request.
+        Your organisation&apos;s records decide what this connection reads on each
+        request, not this list. The list is what this dashboard could load just now.
       </p>
     </section>
   );
@@ -421,8 +452,12 @@ export const consentNameSchema = z.object({
 export interface ConsentScreenProps {
   readonly consent: ConsentContext;
   readonly tags: readonly { id: string; name: string }[];
-  /** Null when the site list has not loaded or its load failed. Never []. */
-  readonly allSites: readonly ScopedSite[] | null;
+  /**
+   * What we loaded of the fleet, or null when the load has not finished or
+   * failed. Null is NOT an empty snapshot, and an incomplete snapshot is NOT a
+   * complete one -- see site-scope.ts.
+   */
+  readonly fleet: FleetSnapshot | null;
   readonly tagsBySiteId: Readonly<Record<string, readonly string[]>>;
   readonly sitesLoading: boolean;
   readonly isApproving: boolean;
@@ -439,7 +474,7 @@ export interface ConsentScreenProps {
 export function ConsentScreen({
   consent,
   tags,
-  allSites,
+  fleet,
   tagsBySiteId,
   sitesLoading,
   isApproving,
@@ -464,11 +499,11 @@ export function ConsentScreen({
         mode,
         selectedTagNames,
         selectedSiteIds,
-        allSites,
+        fleet,
         tagsBySiteId,
         sitesLoading,
       }),
-    [mode, selectedTagNames, selectedSiteIds, allSites, tagsBySiteId, sitesLoading],
+    [mode, selectedTagNames, selectedSiteIds, fleet, tagsBySiteId, sitesLoading],
   );
 
   const scopeOk = isScopeApprovable(scope);
@@ -521,7 +556,8 @@ export function ConsentScreen({
             prev.includes(tagName) ? prev.filter((t) => t !== tagName) : [...prev, tagName],
           )
         }
-        sites={allSites ?? []}
+        sites={fleet?.sites ?? []}
+        pickerComplete={fleet?.complete ?? true}
         selectedSiteIds={selectedSiteIds}
         onToggleSite={(id) =>
           setSelectedSiteIds((prev) =>

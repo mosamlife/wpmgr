@@ -4,6 +4,7 @@ import {
   describeSiteScope,
   isScopeApprovable,
   resolveSiteScope,
+  snapshotFromPage,
   type ResolveInput,
   type ScopedSite,
 } from "./site-scope";
@@ -25,7 +26,7 @@ function input(over: Partial<ResolveInput>): ResolveInput {
     mode: "list",
     selectedTagNames: [],
     selectedSiteIds: [],
-    allSites: SITES,
+    fleet: { sites: SITES, complete: true },
     tagsBySiteId: TAGS_BY_SITE,
     sitesLoading: false,
     ...over,
@@ -88,7 +89,7 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
     // The grant is genuinely open-ended and picks up the first site added, so
     // collapsing it to `none` would understate what was granted -- the mirror
     // image of the bug above and just as wrong.
-    const scope = resolveSiteScope(input({ mode: "all", allSites: [] }));
+    const scope = resolveSiteScope(input({ mode: "all", fleet: { sites: [], complete: true } }));
     expect(scope.kind).toBe("all");
     expect(describeSiteScope(scope)).toMatch(/added later/i);
   });
@@ -96,24 +97,24 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
 
 describe("resolveSiteScope — an unread fleet is not an empty one", () => {
   it("a site list that has not loaded is unresolved, not none and not all", () => {
-    const scope = resolveSiteScope(input({ allSites: null, sitesLoading: true }));
+    const scope = resolveSiteScope(input({ fleet: null, sitesLoading: true }));
     expect(scope.kind).toBe("unresolved");
     expect(scope.kind === "unresolved" && scope.because).toBe("loading");
   });
 
   it("a FAILED site load is unresolved and blocks approval", () => {
-    const scope = resolveSiteScope(input({ allSites: null, sitesLoading: false }));
+    const scope = resolveSiteScope(input({ fleet: null, sitesLoading: false }));
     expect(scope.kind).toBe("unresolved");
     expect(scope.kind === "unresolved" && scope.because).toBe("failed");
     expect(isScopeApprovable(scope)).toBe(false);
-    expect(describeSiteScope(scope)).toMatch(/could not load/i);
+    expect(describeSiteScope(scope)).toMatch(/could not read every site/i);
   });
 
   it("mode 'all' does not paper over an unread fleet", () => {
     // Tempting shortcut: mode 'all' does not need the site list to be correct,
     // so return `all` regardless. It would then be impossible to tell the user
     // how many sites that is, and the count is half the checklist item.
-    const scope = resolveSiteScope(input({ mode: "all", allSites: null, sitesLoading: false }));
+    const scope = resolveSiteScope(input({ mode: "all", fleet: null, sitesLoading: false }));
     expect(scope.kind).toBe("unresolved");
   });
 });
@@ -124,13 +125,107 @@ describe("resolveSiteScope — a real selection names its sites", () => {
     expect(scope.kind).toBe("sites");
     expect(scope.kind === "sites" && scope.sites.map((s) => s.id)).toEqual(["s1"]);
     const sentence = describeSiteScope(scope);
-    expect(sentence).toMatch(/^1 site, listed below/);
-    expect(sentence).toMatch(/No other site is covered/);
+    expect(sentence).toMatch(/^1 site carries these tags today/);
+    // A TAG IS A RULE, NOT A LIST. A site given this tag tomorrow is covered
+    // without a second consent, so the copy may never present the enumeration
+    // as the fixed extent of the grant.
+    expect(sentence).toMatch(/given one of these tags later is covered/i);
   });
 
   it("a count is never offered without the list behind it", () => {
     const scope = resolveSiteScope(input({ mode: "list", selectedSiteIds: ["s1", "s2"] }));
     expect(scope.kind === "sites" && scope.sites).toHaveLength(2);
-    expect(describeSiteScope(scope)).toMatch(/2 sites, listed below/);
+    const sentence = describeSiteScope(scope);
+    expect(sentence).toMatch(/2 sites, listed below/);
+    // A hand-picked list IS exhaustive and fixed, and is the one basis allowed
+    // to say so.
+    expect(sentence).toMatch(/No other site is covered/);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// A page of sites is not a fleet.
+//
+// listSites is paged; useSites asks for DEFAULT_SITES_LIMIT rows and SiteList
+// is `{ items }` with no `total` and no `has_more`. So a full page and a full
+// page with more behind it are the same response, and an operator with more
+// sites than the page size would -- under a naive screen -- approve access to
+// sites the screen never showed them. Partial rendered as complete, on the one
+// screen where the cost is consent for something unseen.
+// ---------------------------------------------------------------------------
+
+describe("snapshotFromPage — a full page is never called complete", () => {
+  it("marks a short page complete: we asked for more and got fewer", () => {
+    expect(snapshotFromPage(SITES, 200).complete).toBe(true);
+  });
+
+  it("marks a FULL page incomplete, because nothing on the wire says otherwise", () => {
+    const full = Array.from({ length: 200 }, (_, i) => ({
+      id: `s${i}`,
+      name: `Site ${i}`,
+      url: `https://s${i}.example`,
+    }));
+    expect(snapshotFromPage(full, 200).complete).toBe(false);
+  });
+
+  it("marks an empty page complete", () => {
+    expect(snapshotFromPage([], 200).complete).toBe(true);
+  });
+});
+
+describe("an org larger than the page cap is never shown the page as the fleet", () => {
+  const CAPPED = { sites: SITES, complete: false };
+
+  it("mode 'all' states no total and says there are more", () => {
+    const scope = resolveSiteScope(input({ mode: "all", fleet: CAPPED }));
+    expect(scope.kind).toBe("all");
+    expect(scope.kind === "all" && scope.listComplete).toBe(false);
+    const sentence = describeSiteScope(scope);
+    // "That is N sites today" is the sentence that must NOT appear: it presents
+    // the page as the fleet size.
+    expect(sentence).not.toMatch(/That is \d+ sites? today/);
+    expect(sentence).toMatch(/there are more than that/i);
+    expect(sentence).toMatch(/added later is covered/i);
+  });
+
+  it("mode 'all' on a COMPLETE list may state the exact count", () => {
+    // The guard must not fire on honest work: when the page really is the whole
+    // fleet, refusing to give a number would be its own defect.
+    const scope = resolveSiteScope(input({ mode: "all" }));
+    expect(scope.kind === "all" && scope.listComplete).toBe(true);
+    expect(describeSiteScope(scope)).toMatch(/That is 2 sites today/);
+  });
+
+  it("mode 'tags' on a capped list gives a floor, never a total", () => {
+    const scope = resolveSiteScope(
+      input({ mode: "tags", selectedTagNames: ["prod"], fleet: CAPPED }),
+    );
+    expect(scope.kind === "sites" && scope.listComplete).toBe(false);
+    const sentence = describeSiteScope(scope);
+    expect(sentence).toMatch(/^At least 1 sites carry these tags/);
+    expect(sentence).toMatch(/could not check every site/i);
+  });
+
+  it("a tag matching nothing IN A CAPPED PAGE is unresolved, not a zero", () => {
+    // We have not looked at every site, so "matches nothing" is a claim we
+    // cannot make. Asserting a false zero here would be the mirror of the
+    // empty-means-all bug: it would tell the operator the grant reads nothing
+    // when it may read plenty.
+    const scope = resolveSiteScope(
+      input({ mode: "tags", selectedTagNames: ["archived"], fleet: CAPPED }),
+    );
+    expect(scope.kind).toBe("unresolved");
+    expect(isScopeApprovable(scope)).toBe(false);
+  });
+
+  it("a hand-picked list stays exhaustive even when the picker was capped", () => {
+    // What truncation costs mode 'list' is CHOICE, not accuracy: the grant is
+    // exactly the ids the operator ticked, all of which they saw.
+    const scope = resolveSiteScope(
+      input({ mode: "list", selectedSiteIds: ["s1"], fleet: CAPPED }),
+    );
+    expect(scope.kind === "sites" && scope.listComplete).toBe(true);
+    expect(describeSiteScope(scope)).toMatch(/No other site is covered/);
   });
 });

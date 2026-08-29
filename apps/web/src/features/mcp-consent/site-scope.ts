@@ -1,30 +1,53 @@
 // Resolving "how many sites, and which" for the consent screen.
 //
-// THE RULE THIS FILE EXISTS TO HOLD: an empty resolved site set means NO SITES,
-// never every site.
+// TWO RULES LIVE HERE, AND THEY PULL IN OPPOSITE DIRECTIONS.
 //
-// That conflation has been closed three times in the backend on this stack and
-// is named again in m124 obligation 2
-// (apps/api/migrations/20260826000000_m124_mcp_connection_surface.sql lines
-// 518-524): "An empty resolved set must mean NO SITES, never every site. The
-// CHECK above stops an empty payload being stored, but nothing stops Go from
-// computing an empty set (a tag that matches no site) and then treating it as
-// absence of a filter."
+// RULE 1: an empty resolved site set means NO SITES, never every site.
 //
-// The same trap is available in a UI, in a nastier form. `sites.length === 0`
-// reads naturally as "no filter applied", and the sentence that falls out of it
-// -- "this client will be able to read your sites" -- is indistinguishable from
-// the sentence for mode 'all'. A user would approve fleet-wide read access
+// m124 obligation 2 (apps/api/migrations/20260826000000_m124_mcp_connection_surface.sql
+// lines 518-524): "An empty resolved set must mean NO SITES, never every site.
+// The CHECK above stops an empty payload being stored, but nothing stops Go
+// from computing an empty set (a tag that matches no site) and then treating it
+// as absence of a filter." Closed three times in the backend.
+//
+// In a UI the trap is nastier: `sites.length === 0` reads naturally as "no
+// filter applied", and the sentence that falls out of it is indistinguishable
+// from the sentence for mode 'all'. A user would approve fleet-wide read access
 // believing they had scoped it to one tag.
 //
-// So the resolution is a discriminated union with a distinct `none` member, and
-// there is no code path from `none` to a sentence containing the word "all".
+// RULE 2: the list we hold is neither exhaustive nor fixed, and the copy must
+// not imply it is either.
 //
-// WHAT THIS RESOLUTION IS AND IS NOT. It is a PREVIEW, computed from the site
-// list this dashboard can see. The authoritative resolution happens server-side
-// inside InTenantTx at one audited chokepoint, because a uuid[] column has no
-// foreign key over its elements and only a join through `sites` under RLS drops
-// ids belonging to another organisation. The screen must not claim otherwise.
+//   NOT EXHAUSTIVE. listSites is a paged endpoint. useSites asks for
+//   DEFAULT_SITES_LIMIT (200) rows and SiteList is `{ items }` -- there is no
+//   `total` and no `has_more` on the wire, so a full page is indistinguishable
+//   from a full page with more behind it. An operator with more sites than the
+//   cap would, under a naive screen, approve access to sites the screen never
+//   showed them. That is a PARTIAL RESULT RENDERED AS A COMPLETE ONE, which is
+//   this project's signature defect, landed on the one screen where the cost is
+//   consent given for something the person was not shown.
+//
+//   NOT FIXED. The server resolves 'all' and 'tags' against CURRENT tenant data
+//   at read time, so those grants cover sites added after approval. A list
+//   presented as the definition of the grant would be wrong the moment a site
+//   is enrolled.
+//
+// The consequence for the copy is that mode 'all' and mode 'tags' MUST NOT
+// state a fleet size. What they state is the RULE ("every site", "every site
+// carrying this tag") plus a floor -- "at least N, which is what we could load"
+// -- which is true no matter what the API withheld, because we are holding
+// those N rows. Only mode 'list' enumerates exhaustively, because the operator
+// picked from what they saw and the grant is exactly that fixed set.
+//
+// A FLOOR IS NOT AN APPROXIMATION. "At least N" is backed by rows in hand. A
+// total is not available on the wire and is not guessed; see the PR for the
+// routing note.
+//
+// WHAT THIS RESOLUTION IS AND IS NOT. It is a PREVIEW. The authoritative
+// resolution happens server-side inside InTenantTx at one audited chokepoint,
+// because a uuid[] column has no foreign key over its elements and only a join
+// through `sites` under RLS drops ids belonging to another organisation. The
+// screen must not claim otherwise.
 
 export type SiteScopeMode = "all" | "tags" | "list";
 
@@ -39,15 +62,49 @@ export interface ScopedSite {
   readonly url: string;
 }
 
+/**
+ * What this dashboard managed to load of the tenant's fleet.
+ *
+ * `complete` is the load-bearing field. It is false whenever the page came back
+ * full, because a full page and a full page with more behind it are the same
+ * response. False does not mean "there are definitely more"; it means "we
+ * cannot say there are not", and the copy is written for that weaker claim.
+ */
+export interface FleetSnapshot {
+  readonly sites: readonly ScopedSite[];
+  readonly complete: boolean;
+}
+
+/**
+ * Build a snapshot from a page of sites and the page size that was requested.
+ *
+ * A short page is complete: we asked for `requestedLimit` and got fewer, so
+ * there is nothing behind it. A full page is NOT complete.
+ */
+export function snapshotFromPage(
+  sites: readonly ScopedSite[],
+  requestedLimit: number,
+): FleetSnapshot {
+  return { sites, complete: sites.length < requestedLimit };
+}
+
 export type ResolvedSiteScope =
   /**
-   * Every site in the organisation, including sites added after this grant is
-   * created. `sites` is what exists today and is shown as a count, not as the
-   * definition -- the definition is open-ended and the copy must say so.
+   * Every site in the organisation, now and in future. `shown` is what we could
+   * load, and it is a sample rather than a definition -- see `listComplete`.
    */
-  | { readonly kind: "all"; readonly sites: readonly ScopedSite[] }
-  /** A closed, non-empty set. `sites` is exhaustive. */
-  | { readonly kind: "sites"; readonly sites: readonly ScopedSite[] }
+  | { readonly kind: "all"; readonly shown: readonly ScopedSite[]; readonly listComplete: boolean }
+  /**
+   * A named set. `basis` decides whether it is fixed: 'list' is the operator's
+   * own pick and is exhaustive and fixed; 'tags' is a rule that future sites can
+   * fall into, and is only as complete as the page we resolved it against.
+   */
+  | {
+      readonly kind: "sites";
+      readonly sites: readonly ScopedSite[];
+      readonly basis: "tags" | "list";
+      readonly listComplete: boolean;
+    }
   /**
    * The selection is valid and resolves to NOTHING. Distinct from `all` by
    * construction, and distinct from `unresolved`: we know the answer and the
@@ -68,11 +125,11 @@ export interface ResolveInput {
   /** Site ids selected for mode 'list'. */
   readonly selectedSiteIds: readonly string[];
   /**
-   * Every site the dashboard can see, or null when the site list has not
-   * loaded or its load failed. NULL IS NOT AN EMPTY ARRAY here, and the two
-   * produce different outcomes on purpose.
+   * What we loaded of the fleet, or null when the load has not finished or
+   * failed. NULL IS NOT AN EMPTY SNAPSHOT here, and the two produce different
+   * outcomes on purpose.
    */
-  readonly allSites: readonly ScopedSite[] | null;
+  readonly fleet: FleetSnapshot | null;
   /** Tag names carried by each site, keyed by site id. */
   readonly tagsBySiteId: Readonly<Record<string, readonly string[]>>;
   readonly sitesLoading: boolean;
@@ -85,9 +142,9 @@ export interface ResolveInput {
  * returns `all` except mode 'all'.
  */
 export function resolveSiteScope(input: ResolveInput): ResolvedSiteScope {
-  const { mode, selectedTagNames, selectedSiteIds, allSites, tagsBySiteId } = input;
+  const { mode, selectedTagNames, selectedSiteIds, fleet, tagsBySiteId } = input;
 
-  if (allSites === null) {
+  if (fleet === null) {
     // Cannot see the fleet. Whether that is a pending load or a failed one, the
     // honest answer is the same: we do not know which sites this covers.
     return { kind: "unresolved", because: input.sitesLoading ? "loading" : "failed" };
@@ -97,50 +154,84 @@ export function resolveSiteScope(input: ResolveInput): ResolvedSiteScope {
     // The only branch that may say "all". Note it is reached on the MODE, never
     // on a set turning out to be empty: an organisation with zero sites still
     // gets kind 'all', because the grant is genuinely open-ended and will pick
-    // up the first site added. The copy layer handles the "and you have none
-    // today" wrinkle without changing what was granted.
-    return { kind: "all", sites: allSites };
+    // up the first site added.
+    return { kind: "all", shown: fleet.sites, listComplete: fleet.complete };
   }
 
   if (mode === "tags") {
     if (selectedTagNames.length === 0) return { kind: "none", because: "no-selection" };
     const wanted = new Set(selectedTagNames);
-    const matched = allSites.filter((site) =>
+    const matched = fleet.sites.filter((site) =>
       (tagsBySiteId[site.id] ?? []).some((tag) => wanted.has(tag)),
     );
-    // A tag that matches no site. THIS is the case the backend rule is about,
-    // and it lands on `none`, never on a filter-less read.
-    if (matched.length === 0) return { kind: "none", because: "no-matches" };
-    return { kind: "sites", sites: matched };
+    // A tag that matches no site IN THE PAGE WE HOLD. When the page is complete
+    // that is a real zero and lands on `none`. When it is not, we have not
+    // looked at every site, so "matches nothing" is a claim we cannot make --
+    // it is an unresolved scope, not an empty one, and it blocks approval
+    // rather than either granting everything or asserting a false zero.
+    if (matched.length === 0) {
+      return fleet.complete
+        ? { kind: "none", because: "no-matches" }
+        : { kind: "unresolved", because: "failed" };
+    }
+    return { kind: "sites", sites: matched, basis: "tags", listComplete: fleet.complete };
   }
 
   // mode === "list"
   if (selectedSiteIds.length === 0) return { kind: "none", because: "no-selection" };
   const wanted = new Set(selectedSiteIds);
-  const matched = allSites.filter((site) => wanted.has(site.id));
+  const matched = fleet.sites.filter((site) => wanted.has(site.id));
   // Selected ids that resolve to nothing this organisation owns. Same landing
   // as above, for the same reason.
   if (matched.length === 0) return { kind: "none", because: "no-matches" };
-  return { kind: "sites", sites: matched };
+  // ALWAYS complete. The operator picked these ids out of the list they were
+  // shown, so the grant is exactly the set on screen regardless of what the
+  // page withheld. What the truncation costs here is CHOICE, not accuracy, and
+  // the picker says so separately.
+  return { kind: "sites", sites: matched, basis: "list", listComplete: true };
 }
 
 /**
  * The sentence the screen shows for a resolved scope.
  *
  * Deliberately a pure function over the union so the copy for every branch is
- * visible in one place and can be read against the rule. No branch other than
- * `all` may contain the words "all" or "every".
+ * visible in one place and can be read against both rules above. Two invariants
+ * a reader should be able to check by eye:
+ *
+ *   - no branch other than `all` contains "all" or "every" as a claim about
+ *     coverage;
+ *   - no branch claims a complete list unless `listComplete` is true, and the
+ *     open-ended bases ('all', 'tags') always say that future sites are covered.
  */
 export function describeSiteScope(scope: ResolvedSiteScope): string {
   switch (scope.kind) {
-    case "all":
+    case "all": {
+      const future = "Any site added later is covered too, without asking you again.";
+      if (!scope.listComplete) {
+        // NO TOTAL. We hold `shown.length` rows and cannot see past them, so the
+        // only true quantity is a floor.
+        return `Every site in this organisation. We can only list ${scope.shown.length} of them here, and there are more than that. ${future}`;
+      }
+      return scope.shown.length === 1
+        ? `Every site in this organisation. That is 1 site today, listed below. ${future}`
+        : `Every site in this organisation. That is ${scope.shown.length} sites today, listed below. ${future}`;
+    }
+    case "sites": {
+      if (scope.basis === "list") {
+        // Exhaustive AND fixed: the operator picked these out of what they saw.
+        return scope.sites.length === 1
+          ? "1 site, listed below. No other site is covered, including sites added later."
+          : `${scope.sites.length} sites, listed below. No other site is covered, including sites added later.`;
+      }
+      const future =
+        "Any site given one of these tags later is covered too, without asking you again.";
+      if (!scope.listComplete) {
+        return `At least ${scope.sites.length} sites carry these tags. We could not check every site in this organisation, so there may be more. ${future}`;
+      }
       return scope.sites.length === 1
-        ? "Every site in this organisation. That is 1 site today, and any site added later is covered too."
-        : `Every site in this organisation. That is ${scope.sites.length} sites today, and any site added later is covered too.`;
-    case "sites":
-      return scope.sites.length === 1
-        ? "1 site, listed below. No other site is covered, including sites added later."
-        : `${scope.sites.length} sites, listed below. No other site is covered, including sites added later.`;
+        ? `1 site carries these tags today, listed below. ${future}`
+        : `${scope.sites.length} sites carry these tags today, listed below. ${future}`;
+    }
     case "none":
       return scope.because === "no-selection"
         ? "No sites are selected yet. Choose what this client may read before approving."
@@ -148,7 +239,7 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
     case "unresolved":
       return scope.because === "loading"
         ? "Working out which sites this covers."
-        : "We could not load your sites, so we cannot tell you which sites this connection would cover. Do not approve until this loads.";
+        : "We could not read every site in this organisation, so we cannot tell you which sites this connection would cover. Do not approve until this loads.";
   }
 }
 
@@ -160,6 +251,11 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
  * an empty set, so approving it creates a grant that reads nothing. Better to
  * say that on this screen than to mint a credential that silently does nothing.
  * `unresolved` is blocked because consenting to an unread set is not consent.
+ *
+ * A TRUNCATED LIST DOES NOT BLOCK. It is disclosed instead. Blocking would
+ * refuse every organisation past the page size, and the operator choosing "every
+ * site" has understood the rule they are granting; what they must not be given
+ * is a false count or a list that poses as the whole fleet.
  */
 export function isScopeApprovable(scope: ResolvedSiteScope): boolean {
   return scope.kind === "all" || scope.kind === "sites";

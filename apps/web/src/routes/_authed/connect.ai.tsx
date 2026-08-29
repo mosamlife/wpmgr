@@ -3,19 +3,25 @@ import { useMemo } from "react";
 import { z } from "zod";
 
 import { PageError } from "@/components/feedback/page-error";
-import { useSites } from "@/features/sites/use-sites";
+import { DEFAULT_SITES_LIMIT, useSites } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import {
   ConsentScreen,
   ConsentScreenSkeleton,
 } from "@/features/mcp-consent/consent-screen";
 import {
+  buildDenialTarget,
   buildRedirectTarget,
+  navigateTo,
   useApproveConsent,
   useConsentContext,
   type AuthorizeParams,
 } from "@/features/mcp-consent/use-consent";
-import type { ScopedSite } from "@/features/mcp-consent/site-scope";
+import {
+  snapshotFromPage,
+  type FleetSnapshot,
+  type ScopedSite,
+} from "@/features/mcp-consent/site-scope";
 
 // /connect/ai — the browser step of the MCP OAuth flow (ADR-064 S6b, design
 // Step 7).
@@ -77,12 +83,23 @@ function ConnectAiPage() {
   const approve = useApproveConsent();
 
   // NULL, NOT [], WHEN WE CANNOT SEE THE FLEET. resolveSiteScope treats the two
-  // differently on purpose: an empty array is a fleet with no sites, and null
-  // is a fleet we have not read. Collapsing them would let a failed site load
-  // render as a confident, approvable "0 sites".
-  const allSites: readonly ScopedSite[] | null = useMemo(() => {
+  // differently on purpose: an empty snapshot is a fleet with no sites, and
+  // null is a fleet we have not read. Collapsing them would let a failed site
+  // load render as a confident, approvable "0 sites".
+  //
+  // AND A FULL PAGE IS NOT A WHOLE FLEET. listSites is paged and SiteList is
+  // `{ items }` with no total and no has_more, so the only truthful reading of
+  // a full page is "at least this many". snapshotFromPage carries that fact
+  // forward instead of letting the screen treat the page as the fleet -- the
+  // partial-rendered-as-complete defect, on the screen where it costs consent.
+  const fleet: FleetSnapshot | null = useMemo(() => {
     if (sitesQuery.data === undefined) return null;
-    return sitesQuery.data.map((s) => ({ id: s.id, name: s.name, url: s.url }));
+    const sites: ScopedSite[] = sitesQuery.data.map((s) => ({
+      id: s.id,
+      name: s.name,
+      url: s.url,
+    }));
+    return snapshotFromPage(sites, DEFAULT_SITES_LIMIT);
   }, [sitesQuery.data]);
 
   const tagsBySiteId = useMemo(() => {
@@ -133,7 +150,7 @@ function ConnectAiPage() {
     <ConsentScreen
       consent={consentQuery.data}
       tags={tags}
-      allSites={allSites}
+      fleet={fleet}
       tagsBySiteId={tagsBySiteId}
       sitesLoading={sitesQuery.isPending}
       isApproving={approve.isPending}
@@ -145,13 +162,18 @@ function ConnectAiPage() {
             onSuccess: (result) => {
               // Hand control back to the destination the SERVER returned, never
               // to the value that arrived in this browser's query string.
-              window.location.assign(buildRedirectTarget(result));
+              navigateTo(buildRedirectTarget(result));
             },
           },
         );
       }}
       onDeny={() => {
-        window.history.back();
+        // REFUSAL TRAVELS BACK TO THE CLIENT. history.back() left the
+        // initiating client waiting for a callback that never came, and did
+        // nothing at all when this page was opened in a fresh tab -- which is
+        // how an OAuth client normally opens it. RFC 6749 section 4.1.2.1 has
+        // a way to say no; use it.
+        navigateTo(buildDenialTarget(consentQuery.data));
       }}
     />
   );

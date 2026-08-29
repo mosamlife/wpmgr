@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "./connect.ai";
-import { useConsentContext, OAuthRequestError } from "@/features/mcp-consent/use-consent";
+import {
+  useConsentContext,
+  navigateTo,
+  OAuthRequestError,
+} from "@/features/mcp-consent/use-consent";
+import { parseConsentContext, SCOPE_READ } from "@/features/mcp-consent/consent-context";
 import { useSites } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import type { ConsentContext } from "@/features/mcp-consent/consent-context";
@@ -21,7 +26,7 @@ import type { Site, SiteTag } from "@wpmgr/api";
 vi.mock("@/features/mcp-consent/use-consent", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/features/mcp-consent/use-consent")>();
-  return { ...actual, useConsentContext: vi.fn() };
+  return { ...actual, useConsentContext: vi.fn(), navigateTo: vi.fn() };
 });
 vi.mock("@/features/sites/use-sites", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/features/sites/use-sites")>();
@@ -33,6 +38,7 @@ vi.mock("@/features/tags/use-tags", async (importOriginal) => {
 });
 
 const mockedConsent = vi.mocked(useConsentContext);
+const mockedNavigate = vi.mocked(navigateTo);
 const mockedSites = vi.mocked(useSites);
 const mockedTags = vi.mocked(useTags);
 
@@ -109,5 +115,53 @@ describe("/connect/ai — a failed load is not approvable", () => {
     expect(screen.queryByTestId("consent-approve")).toBeNull();
     // And it never asked the server, because there was no question to ask.
     expect(mockedConsent).toHaveBeenCalledWith(null);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Refusal reaches the client.
+// ---------------------------------------------------------------------------
+
+const CONSENT = parseConsentContext({
+  client_id: "c1",
+  client_name_unverified: "Some Client",
+  identity_verified: false,
+  redirect_uri: "https://client.example/cb",
+  redirect_host: "client.example",
+  scopes: [SCOPE_READ],
+  state: "opaque-csrf-token",
+});
+
+describe("/connect/ai — 'Do not connect' answers the client", () => {
+  it("redirects to the client with access_denied and the original state", async () => {
+    mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: CONSENT }));
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    fireEvent.click(await screen.findByTestId("consent-deny"));
+
+    expect(mockedNavigate).toHaveBeenCalledTimes(1);
+    const target = new URL(mockedNavigate.mock.calls[0]![0]);
+    expect(target.origin + target.pathname).toBe("https://client.example/cb");
+    expect(target.searchParams.get("error")).toBe("access_denied");
+    expect(target.searchParams.get("state")).toBe("opaque-csrf-token");
+    expect(target.searchParams.has("code")).toBe(false);
+  });
+
+  it("does NOT use browser history, which is empty in a freshly opened tab", async () => {
+    // An OAuth client opens this URL in a new tab or window. There is no
+    // history entry to go back to, so history.back() there does nothing at all
+    // and the user's refusal simply vanishes.
+    const back = vi.spyOn(window.history, "back");
+    mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: CONSENT }));
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    fireEvent.click(await screen.findByTestId("consent-deny"));
+
+    expect(back).not.toHaveBeenCalled();
+    expect(mockedNavigate).toHaveBeenCalledTimes(1);
+    back.mockRestore();
   });
 });
