@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"time"
 
@@ -1010,6 +1011,12 @@ func (t *TwoFactorService) checkCrossChallengeLimits(ctx context.Context, userID
 	if ip != nil && ip.IsValid() {
 		if ok, retryAfter := t.limiter.Allow(ctx, "2fa-ip:"+ip.String(), twoFAIPLockoutPerMinute); !ok {
 			_ = retryAfter
+			// Logged because the refusal is otherwise invisible: the caller sees an
+			// ordinary 429 and operators see nothing at all. If the address this
+			// keys on ever stops distinguishing callers, every 2FA verification in
+			// the fleet is refused and this line is the only thing that says so.
+			slog.WarnContext(ctx, "2fa per-address rate limited",
+				"key", "2fa-ip", "addr", ip.String(), "limit_per_minute", twoFAIPLockoutPerMinute)
 			return domain.RateLimited("too_many_attempts", "too many requests from this address; wait before trying again")
 		}
 	}

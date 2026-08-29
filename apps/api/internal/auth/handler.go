@@ -56,6 +56,11 @@ type Handler struct {
 	// Optional: nil makes every Me response report true. Set after
 	// construction via SetManagedStorageResolver.
 	managedStorage ManagedStorageResolver
+	// proxyHops is the deployment's appending-proxy count; see SetProxyHops.
+	// proxyHopsSet distinguishes "explicitly 0" (nothing appends, use the peer
+	// address) from "never configured", which must not silently become 0.
+	proxyHops    int
+	proxyHopsSet bool
 	// logger receives the social sign-in failure lines (see social_log.go).
 	// Optional: nil falls back to slog.Default(), which cmd/wpmgr configures.
 	logger *slog.Logger
@@ -583,7 +588,9 @@ func (h *Handler) resetPassword(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
-	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, clientAddr(c)); err != nil {
+	// limiterAddr, not clientAddr: ResetPassword rate-limits on this value
+	// ("pwreset-consume:"), and it is the only limit on reset-token guessing.
+	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, h.limiterAddr(c)); err != nil {
 		httpx.Error(c, err)
 		return
 	}
@@ -591,13 +598,118 @@ func (h *Handler) resetPassword(c *gin.Context) {
 }
 
 // clientAddr parses gin's resolved client IP into a netip.Addr (invalid when
-// unparseable). Used to rate-limit + record the requesting IP.
+// unparseable). Used where the requesting address is RECORDED — audit rows,
+// notification bodies, trusted-device rows. See limiterAddr for the address a
+// rate-limit decision may be keyed on; the two are deliberately different.
 func clientAddr(c *gin.Context) netip.Addr {
 	addr, err := netip.ParseAddr(c.ClientIP())
 	if err != nil {
 		return netip.Addr{}
 	}
 	return addr
+}
+
+// defaultProxyHops is the fallback for a Handler that was never told its
+// deployment shape. It matches config's default and the hosted topology.
+const defaultProxyHops = 2
+
+// SetProxyHops declares how many X-Forwarded-For entries the infrastructure in
+// front of this process appends. See config.AuthConfig.ProxyHops for the
+// meaning of each value; the effective value is logged at startup.
+//
+// A negative value is refused by config.Validate before this is reached, so it
+// is coerced here only to keep a zero-value Handler in tests from selecting
+// nonsense.
+func (h *Handler) SetProxyHops(n int) {
+	if n < 0 {
+		n = defaultProxyHops
+	}
+	h.proxyHops = n
+	h.proxyHopsSet = true
+}
+
+// effectiveProxyHops treats an unset field as the default, so a Handler built
+// without SetProxyHops behaves as the hosted deployment rather than as though
+// nothing were in front of it.
+func (h *Handler) effectiveProxyHops() int {
+	if h.proxyHops == 0 && !h.proxyHopsSet {
+		return defaultProxyHops
+	}
+	return h.proxyHops
+}
+
+// limiterAddr returns the address that a rate-limit DECISION may be keyed on.
+//
+// It is separate from clientAddr on purpose. An address that is merely recorded
+// can tolerate being caller-influenced; an address that decides whether to
+// refuse a request cannot, because then the caller selects its own bucket and
+// the limit stops binding.
+//
+// The number of entries the infrastructure appends is configuration, not a
+// property this process can observe — see config.AuthConfig.ProxyHops. A count
+// of 0 means nothing appends, so the forwarded header is ignored entirely and
+// the peer address is used.
+//
+// When the chain is shorter than the configured count, this falls back to the
+// peer address rather than reaching further left. That fallback is NOT a
+// security guard and must not be described as one: it catches honest short
+// chains only. A caller wanting control of its key supplies the configured
+// number of entries itself, which skips the fallback entirely. So if this
+// process is reachable without the proxies it is configured for, the fallback
+// protects nobody — honest clients collapse onto the peer key while a caller
+// keeps a key per request. Only a correct hop count, matching what actually sits
+// in front, makes this sound.
+func (h *Handler) limiterAddr(c *gin.Context) netip.Addr {
+	hops := h.effectiveProxyHops()
+	if hops == 0 {
+		// Nothing in front appends, so every forwarded entry is caller-supplied
+		// and none of it is evidence. The peer address is the client.
+		if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
+			return addr
+		}
+		return netip.Addr{}
+	}
+	// Values, not Get. Get returns only the FIRST header line, so a caller that
+	// sends X-Forwarded-For twice would have the appended entries land on a line
+	// this never reads, handing back a value it chose. Joining every line is the
+	// chain as the invariant above describes it, and removes any dependence on
+	// whether the proxy in front coalesces repeated lines.
+	joined := strings.Join(c.Request.Header.Values("X-Forwarded-For"), ",")
+	parts := strings.Split(joined, ",")
+	if len(parts) >= hops {
+		if addr, ok := parseForwardedAddr(parts[len(parts)-hops]); ok {
+			return addr
+		}
+	}
+	if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
+		return addr
+	}
+	return netip.Addr{}
+}
+
+// parseForwardedAddr parses one forwarded-chain entry. Entries are usually bare
+// addresses, but the bracketed and port-suffixed forms are legal in the wild and
+// are what IPv6 tends to arrive as. Treating those as unparseable would drop
+// every v6 client onto the shared fallback key, so they are handled explicitly.
+func parseForwardedAddr(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Unmap(), true
+	}
+	// "[2001:db8::1]:443" and "198.51.100.7:443".
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	// "[2001:db8::1]" with no port.
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		if addr, err := netip.ParseAddr(s[1 : len(s)-1]); err == nil {
+			return addr.Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func (h *Handler) oidcLogin(c *gin.Context) {
