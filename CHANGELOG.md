@@ -6,6 +6,33 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.147] - 2026-08-30
+
+### Added
+
+- A read-only MCP connection surface, so an AI client can be granted scoped read access to a fleet. It ships end to end: connection storage, the OAuth authorization flow (dynamic client registration, PKCE, an explicit consent screen, token exchange), the Streamable HTTP transport with protocol version negotiation, a first fleet-read tool, and a tool registry that filters per connection. A client that requests no recognised scope is refused rather than granted a default. Every tool call is checked against the registry in its own right, so a tool that was filtered out of the listing cannot be invoked by naming it directly.
+- The AI-connection consent screen. It shows what a client is asking for before anything is granted, marks a client's self-declared identity as unverified rather than presenting it as established, and sends a refusal back to the client instead of leaving it waiting.
+- Governed per-site and organisation context: five screens (effective-context preview, site context editor, organisation context editor, and version history with diff and restore), the API and resolver behind them, and the tables they read. Where a layer's contribution could not be loaded or had to be truncated, the screens say so instead of rendering an incomplete answer as a complete one.
+
+### Changed
+
+- `PATCH /auth/me` now returns the caller's scope and role alongside the rest of the profile, so a client no longer has to make a second call to learn what the account it just updated is allowed to do.
+- Authentication rate limits now derive the client address from the deployment's proxy configuration rather than assuming one topology. The number of proxies in front of the control plane that append to `X-Forwarded-For` is set with `WPMGR_AUTH_PROXY_HOPS`. **The default suits the hosted topology and is not correct for the bundled compose deployment**, which needs `1`; the shipped `.env.example` already carries that value, and [docs/install.md](docs/install.md#proxy-hops) explains how to count it for any other deployment. Self-hosters running behind their own reverse proxy should set this deliberately rather than leave it to the default.
+
+### Fixed
+
+- Network-activated plugins now report as active in site metadata. On a multisite network, a plugin activated for the whole network was reported inactive, so it was missing from the inventory and from anything that reads it.
+- The site inventory no longer presents "never collected" as though it were a collection date. Inventory age is now stamped from when the component list was actually gathered rather than from the site's last heartbeat, and a site with no gathered inventory renders an explicit unknown state. A failure to load the inventory is now distinguishable from an inventory that is genuinely empty, in the API and on screen.
+- Email webhook deduplication is now scoped to the tenant it belongs to.
+- The bundled compose deployment now takes the control-plane and media-encoder credential values from the environment file it is given, so a value set there reaches the service that needs it instead of being shadowed.
+- `make test-integration` now serialises across worktrees with a machine-wide lock, so two runs on one machine no longer collide over the same database. Affects contributors to this repository, not the running system.
+
+### Security
+
+- The control plane now validates `WPMGR_SESSION_SECRET` at boot and refuses to start on a value that is unfit to hold confidentially, naming the variable in the error rather than starting and behaving oddly later.
+- **Self-hosted upgrade action.** Rotating `WPMGR_SESSION_SECRET` is recommended as part of this upgrade. Two things to know before you do. Every operator is signed out once and signs in again, which is expected. More importantly, **if `WPMGR_SITE_DEST_AGE_SECRET` is empty, the secrets-at-rest key is derived from `WPMGR_SESSION_SECRET`**, so rotating the session secret on its own would leave stored secrets (operator two-factor enrollments, SMTP passwords, backup-destination and object-cache credentials) unreadable. Pin an explicit `WPMGR_SITE_DEST_AGE_SECRET` first, then rotate. See ["Pin your secrets"](docs/install.md#pin-your-secrets) for the pinning step and the recovery path if a key has already moved underneath stored data.
+- Upgrading is recommended for every self-hosted install.
+
 ## [0.61.146] - 2026-08-26
 
 ### Security
