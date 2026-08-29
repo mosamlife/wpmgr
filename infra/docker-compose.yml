@@ -162,10 +162,32 @@ services:
       # App role is non-superuser now, so it must NOT be allowed to bypass RLS.
       WPMGR_ALLOW_RLS_BYPASS_ROLE: "false"
       # --- Sessions -----------------------------------------------------------
-      # REQUIRED, >=32 bytes. The app refuses to boot on the placeholder or
-      # anything shorter. This is a FIXED DEV value — production MUST override it
-      # (e.g. via .env / secret manager): openssl rand -base64 48
-      WPMGR_SESSION_SECRET: ${WPMGR_SESSION_SECRET:-ZGV2LW9ubHktc2Vzc2lvbi1zZWNyZXQtZG8tbm90LXVzZS1pbi1wcm9kdWN0aW9uLTQ4Ynl0ZXM=}
+      # REQUIRED, >=32 bytes: `openssl rand -base64 48`, or let
+      # scripts/init-env.sh generate one. Supplied through env_file (../.env)
+      # ONLY — deliberately absent from this block.
+      #
+      # A key listed here wins over env_file unconditionally, so a value named
+      # in this block replaces the operator's .env value rather than falling
+      # back to it. Compose also resolves ${VAR:-default} against the project
+      # directory (infra/), not the repo root where .env lives, so a default
+      # written here would win every time. Absence is the fail-closed
+      # direction: with no value the api refuses to boot
+      # (config.ValidateSessionSecret) instead of running on a shared one.
+      # The zero-config dev value lives in infra/docker-compose.dev.yml.
+      # --- Forwarded-client trust ---------------------------------------------
+      # WPMGR_AUTH_PROXY_HOPS is absent from this block for exactly the reason
+      # given above, and ships as WPMGR_AUTH_PROXY_HOPS=1 in .env.example,
+      # reaching this service through `env_file: ../.env`. Do not add it here:
+      # an entry would pin every install to the literal default and discard the
+      # operator's value. Note this key does NOT fail closed the way the secrets
+      # above do — a wrong value still boots and silently mis-identifies the
+      # client behind the proxy, so the env_file path is the only thing making
+      # it configurable at all.
+      #
+      # 1 rather than the api's built-in default of 2, because the bundled nginx
+      # (the `web` service) appends exactly one X-Forwarded-For entry. See
+      # .env.example for how to derive it for another topology, and
+      # infra/nginx/nginx.conf for the trusted-front-proxy case.
       # --- OIDC (Dex) ---------------------------------------------------------
       # Issuer must match Dex's configured issuer AND be reachable from this
       # container; dex.localhost is mapped to host-gateway via extra_hosts below
@@ -184,7 +206,9 @@ services:
       # default here — an unset value means the install boots but nobody can
       # claim it yet, which is the deliberate fail-closed direction. quickstart
       # (scripts/init-env.sh) generates and persists this into .env on first run.
-      WPMGR_BOOTSTRAP_CLAIM_SECRET: ${WPMGR_BOOTSTRAP_CLAIM_SECRET:-}
+      # Supplied through env_file (../.env) only: naming the key here with an
+      # empty default would override that generated value with "" and leave the
+      # install permanently unclaimable.
       WPMGR_REDIS_ADDR: redis:6379
       # M5.6/ADR-033: presigned URLs the agent receives MUST be reachable from
       # OUTSIDE this Docker network — `seaweedfs:8333` (Docker service name)
@@ -289,8 +313,10 @@ services:
       WPMGR_S3_FORCE_PATH_STYLE: "true"
       WPMGR_RIVER_MEDIA_SCHEMA: ${WPMGR_RIVER_MEDIA_SCHEMA:-media_encoder}
       # CP signing key: required to dispatch the signed media_apply command back
-      # to the agent. Share the same key the api uses (.env override in prod).
-      WPMGR_AGENT_SIGNING_PRIVATE_KEY: ${WPMGR_AGENT_SIGNING_PRIVATE_KEY:-}
+      # to the agent. Share the same key the api uses, which means taking it
+      # from env_file (../.env) exactly as the api does — naming the key here
+      # with an empty default would override .env with "" and leave this
+      # service unable to sign media_apply while the api signs fine.
       # Public CP base URL the agent reaches callbacks at (presign/encode-ready/
       # job-status). Same value the api uses.
       WPMGR_PUBLIC_BASE_URL: ${WPMGR_PUBLIC_BASE_URL:-}

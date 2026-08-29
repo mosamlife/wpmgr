@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"time"
@@ -124,6 +125,12 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPwd string, ip ne
 	}
 	if s.limiter != nil && ip.IsValid() {
 		if ok, _ := s.limiter.Allow(ctx, "pwreset-consume:"+ip.String(), resetPerMinute); !ok {
+			// Logged because the refusal is otherwise invisible: the caller sees an
+			// ordinary 429 and operators see nothing at all. If the address this
+			// keys on ever stops distinguishing callers, every user is refused and
+			// this line is the only thing that says so.
+			slog.WarnContext(ctx, "password reset consume rate limited",
+				"key", "pwreset-consume", "addr", ip.String(), "limit_per_minute", resetPerMinute)
 			return domain.RateLimited("too_many_attempts", "too many attempts; try again later")
 		}
 	}
