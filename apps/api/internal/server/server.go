@@ -33,6 +33,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/govcontext"
 	"github.com/mosamlife/wpmgr/apps/api/internal/invitation"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
 	"github.com/mosamlife/wpmgr/apps/api/internal/middleware"
 	"github.com/mosamlife/wpmgr/apps/api/internal/objectcache"
@@ -237,6 +238,18 @@ type Deps struct {
 	// engine (not under the tenant-gated /api/v1 group) despite sharing its
 	// path prefix — see RegisterPublic.
 	PricingH *pricing.Handler
+	// MCPTransportH serves the SINGLE Streamable HTTP MCP endpoint at
+	// POST /mcp (internal/mcp). It authenticates a bearer connection token on
+	// every request and carries no session, so it is mounted on the root
+	// engine rather than on the session-auth group.
+	//
+	// UNLIKE the nil-when-unhosted handlers above, this one is REQUIRED and is
+	// mounted unconditionally: the endpoint is published to users on the
+	// connect screen, and an unmounted route answers 404 — which would hide a
+	// wiring failure behind something that looks like a deliberate refusal.
+	// An unauthenticated request here must be 401, and 401 is only reachable
+	// if the route exists.
+	MCPTransportH *mcp.TransportHandler
 	// BillingSuspensionGate is the M16 Phase C1 superadmin hard-lockout
 	// middleware (billing.Service.SuspensionGate) mounted on the tenant-scoped
 	// v1 group. nil ⇒ WPMGR_HOSTED is off; self-host never sees this check
@@ -396,6 +409,20 @@ func New(deps Deps) *Server {
 	// immediately above. nil ⇒ WPMGR_HOSTED is off; self-host 404s here.
 	if deps.PricingH != nil {
 		deps.PricingH.RegisterPublic(engine)
+	}
+
+	// S6b — the single Streamable HTTP MCP endpoint: POST /mcp. One endpoint,
+	// one origin, one TLS boundary; SSE is not required of a client in
+	// Phase 1, so this never upgrades.
+	//
+	// Mounted on the ROOT engine and NOT on sessionAuthGroup: an MCP client
+	// presents a bearer connection token and no cookie, so a session load here
+	// would be a Redis round trip per request for nothing and would create a
+	// standing trap where this path might come to read a session principal.
+	// The handler re-checks the grant against current state on every request,
+	// so revocation lands on the next call.
+	if deps.MCPTransportH != nil {
+		deps.MCPTransportH.Register(engine)
 	}
 
 	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519

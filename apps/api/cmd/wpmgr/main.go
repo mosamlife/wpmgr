@@ -61,6 +61,7 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/ipprovider"
 	"github.com/mosamlife/wpmgr/apps/api/internal/loginbrand"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mailer"
+	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/media"
 	mediafont "github.com/mosamlife/wpmgr/apps/api/internal/media/font"
 	mediahandler "github.com/mosamlife/wpmgr/apps/api/internal/media/handler"
@@ -516,6 +517,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	siteSvc := site.NewService(site.NewRepo(pool), validator, clock)
 	siteSvc.SetLogger(logger)
 	auditRec := audit.NewRecorder(pool, clock)
+
+	// S6b — the MCP read surface. Wired UNCONDITIONALLY, not behind a hosted
+	// flag: the endpoint is published on the connect screen, and a nil handler
+	// would make POST /mcp answer 404, which is indistinguishable from a
+	// routing failure. Self-host reaches it too; the grant is what authorizes,
+	// and an installation with no grants simply has no valid bearer token.
+	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now)
+	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, version)
 
 	// A narrow tenant-creation capability handed to the auth domain (bootstrap +
 	// OIDC first-login) without coupling it to the tenant package internals.
@@ -2779,6 +2788,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		TenantH:          tenant.NewHandler(tenantSvc, auditRec),
 		SiteH:            siteH,
 		SiteEventsH:      siteEventsH,
+		MCPTransportH:    mcpTransportH,
 		FilesH:           filesH,
 		UpdateH:          updateH,
 		BackupH:          backupH,
