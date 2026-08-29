@@ -305,6 +305,88 @@ func TestTransport_UnauthenticatedIs401Not404(t *testing.T) {
 	}
 }
 
+// TestTransport_NonPostVerbsAre405Not404 is the OTHER axis of the same
+// invariant, and the one the original proof missed.
+//
+// The 404 control above uses a DIFFERENT PATH, which makes the POST assertion
+// non-vacuous but says nothing about other verbs on the SAME path. GET is what
+// `curl https://app.wpmgr.app/mcp` sends, and that URL is published to users:
+// answering it "404 page not found" tells an operator the service is not
+// deployed. GET and DELETE are also real parts of the Streamable HTTP
+// transport, so a conforming client probes them.
+func TestTransport_NonPostVerbsAre405Not404(t *testing.T) {
+	r := newTransportRouter(t, liveGrantStore(uuid.New()))
+
+	for _, verb := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		t.Run(verb, func(t *testing.T) {
+			req := httptest.NewRequest(verb, TransportPath, nil)
+			req.Header.Set("Authorization", "Bearer "+testBearer)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code == http.StatusNotFound {
+				t.Fatalf("%s %s answered 404; the published endpoint must not read as "+
+					"undeployed. Want 405.", verb, TransportPath)
+			}
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s answered %d, want 405", verb, TransportPath, w.Code)
+			}
+			if got := w.Header().Get("Allow"); got != http.MethodPost {
+				t.Errorf("Allow = %q, want %q", got, http.MethodPost)
+			}
+			// HEAD carries no body by definition; every other verb must
+			// answer in the JSON-RPC shape rather than gin's plain text, so
+			// the wire contract holds for every probe.
+			if verb != http.MethodHead {
+				if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+					t.Errorf("Content-Type = %q, want JSON — a plain-text body breaks the wire contract", ct)
+				}
+				if strings.Contains(w.Body.String(), "404 page not found") {
+					t.Error("the body is gin's default 404 text")
+				}
+			}
+		})
+	}
+
+	// POST on the same path must still reach the handler and 401, so the 405s
+	// above are not the router swallowing everything.
+	req := httptest.NewRequest(http.MethodPost, TransportPath,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code == http.StatusMethodNotAllowed {
+		t.Fatal("POST is being refused as method-not-allowed; the verb registration ate the real route")
+	}
+}
+
+// TestTransport_OversizedBodyIsRefused proves the body cap exists and reports
+// itself as a size problem rather than as malformed JSON.
+func TestTransport_OversizedBodyIsRefused(t *testing.T) {
+	r := newTransportRouter(t, liveGrantStore(uuid.New()))
+
+	// Valid JSON, simply enormous: this must fail on SIZE, not on parsing, or
+	// the caller is told to fix the wrong thing.
+	huge := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":"` +
+		strings.Repeat("x", maxRequestBytes+1024) + `"}}`
+	w := post(t, r, huge, nil)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body answered %d, want 413\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// A body just under the cap is still served, so the cap does not reject
+	// legitimate traffic.
+	ok := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":"` +
+		strings.Repeat("x", 1024) + `"}}`
+	w2 := post(t, r, ok, nil)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("an in-budget body answered %d, want 200\nbody: %s", w2.Code, w2.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PROOF 4 -- STALENESS IS HONEST.
 //
@@ -456,8 +538,8 @@ func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
 	if payload.Truncation.Returned != len(payload.Sites) {
 		t.Errorf("truncation.returned = %d but %d sites present", payload.Truncation.Returned, len(payload.Sites))
 	}
-	if payload.Truncation.Available != len(rows) {
-		t.Errorf("truncation.available = %d, want %d", payload.Truncation.Available, len(rows))
+	if payload.Truncation.Available == nil || *payload.Truncation.Available != len(rows) {
+		t.Errorf("truncation.available = %v, want %d", payload.Truncation.Available, len(rows))
 	}
 
 	// 5. THE MARKER IS ALSO AT THE HEAD, not only in the tail. The tail is
@@ -527,10 +609,102 @@ func TestListSites_PageBoundIsReportedAsTruncation(t *testing.T) {
 	if !payload.Truncation.Truncated {
 		t.Fatal("a page-bounded result reports truncated=false — it reads as the whole fleet")
 	}
-	// available must NOT claim a total it cannot know.
-	if payload.Truncation.Available != -1 {
+	// available must NOT claim a total it cannot know, and must say so as
+	// null rather than as a sentinel a reader has to be told about.
+	if payload.Truncation.Available != nil {
 		t.Errorf("truncation.available = %d; a page-bounded read cannot know the total and "+
-			"must not state one", payload.Truncation.Available)
+			"must report null", *payload.Truncation.Available)
+	}
+	if !strings.Contains(jsonPart(t, text), `"available":null`) {
+		t.Error("a page-bounded result does not serialise available as an explicit null")
+	}
+}
+
+// TestListSites_BannerSurvivesInstructionClamp: the banner must NEVER be the
+// thing the clamp drops.
+//
+// The clamp cuts from the tail, so appending the banner to the instructions
+// put the "this result is incomplete" notice in the exact position that gets
+// removed under budget pressure. It is prepended now, and this asserts the
+// ordering rather than the arithmetic — a future instruction text that grows
+// past the budget must not silently reintroduce the bug.
+func TestListSites_BannerSurvivesInstructionClamp(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	var rows []sqlc.ListSitesRow
+	for i := 0; i < 400; i++ {
+		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
+	}
+
+	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+
+	bannerAt := strings.Index(text, "INCOMPLETE RESULT")
+	if bannerAt < 0 {
+		t.Fatal("the truncation banner is absent entirely")
+	}
+	instructionsAt := strings.Index(text, "Fleet inventory, read-only")
+	if instructionsAt < 0 {
+		t.Fatal("the instructions are absent entirely")
+	}
+	// THE ORDERING IS THE ASSERTION: banner first, instructions after. If the
+	// banner sorts after the instructions it is once again in the clamp's path.
+	if bannerAt > instructionsAt {
+		t.Errorf("the banner (at %d) comes AFTER the instructions (at %d); it is back in the "+
+			"position the clamp cuts from", bannerAt, instructionsAt)
+	}
+	// And the clamp must apply to the instructions only, never to the banner.
+	if strings.Contains(text[:bannerAt+len("INCOMPLETE RESULT")], "[instructions truncated]") {
+		t.Error("the clamp marker appears before the banner")
+	}
+}
+
+// TestListSites_OneOversizedRecordDoesNotBlockTheRest: a single huge record
+// must not zero out the tool for that org.
+//
+// sites.name is tenant-controlled, so one very long name is enough. Because
+// the list is ordered by name, a `break` would put that record in the same
+// place on every call and suppress everything after it indefinitely.
+func TestListSites_OneOversizedRecordDoesNotBlockTheRest(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+
+	// "a..." sorts first by name, and on its own exceeds the whole budget.
+	oversized := siteRow("a"+strings.Repeat("x", recordByteBudget+512), &collected)
+	small := siteRow("b-small-site", &collected)
+	rows := []sqlc.ListSitesRow{oversized, small}
+
+	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+	var payload struct {
+		Sites      []siteRecord   `json:"sites"`
+		Truncation truncationInfo `json:"truncation"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart(t, text)), &payload); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+
+	if len(payload.Sites) != 1 {
+		t.Fatalf("got %d sites, want 1 — the fitting site was suppressed by the oversized one",
+			len(payload.Sites))
+	}
+	if payload.Sites[0].Name != "b-small-site" {
+		t.Errorf("returned %q, want the small site", payload.Sites[0].Name)
+	}
+	// It is still truncation and must still be marked.
+	if !payload.Truncation.Truncated {
+		t.Error("a result that omitted a record reports truncated=false")
+	}
+	// The marker must say OMITTED, not "cut at" — the result is a subset, and
+	// implying a prefix would tell the model the missing sites all sort after
+	// the last one shown.
+	if strings.Contains(payload.Truncation.Explanation, "cut at") {
+		t.Errorf("the explanation implies a prefix: %q", payload.Truncation.Explanation)
+	}
+	if !strings.Contains(payload.Truncation.Explanation, "omitted") {
+		t.Errorf("the explanation does not say records were omitted: %q", payload.Truncation.Explanation)
 	}
 }
 

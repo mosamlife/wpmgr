@@ -35,6 +35,12 @@ const TransportPath = "/mcp"
 // whole sites table.
 const sitesPageBound = 500
 
+// maxRequestBytes caps the JSON-RPC request body. Phase 1's largest legitimate
+// request is an initialize with client info -- a few hundred bytes -- so 256
+// KiB is orders of magnitude of headroom and still refuses a body sized to
+// exhaust a shared instance.
+const maxRequestBytes = 256 * 1024
+
 // JSON-RPC 2.0 reserved codes.
 const (
 	codeParseError     = -32700
@@ -87,6 +93,51 @@ func NewTransportHandler(svc *Service, log *slog.Logger, version string) *Transp
 // trap where this path might come to depend on a session principal.
 func (h *TransportHandler) Register(r gin.IRouter) {
 	r.POST(TransportPath, h.serve)
+
+	// EVERY OTHER VERB ON THIS PATH ANSWERS 405, NOT 404.
+	//
+	// This is the same rule as the 401-not-404 one below, on the other axis,
+	// and it was got wrong here first: a 404 on a verb hides a routing failure
+	// behind something that looks like a deliberate refusal, exactly as a 404
+	// on an unauthenticated request would. The path is PUBLISHED to users as
+	// https://app.wpmgr.app/mcp, so `curl` against it -- which sends GET -- is
+	// the first thing anyone does, and gin's bare "404 page not found" tells
+	// that operator the service is not deployed.
+	//
+	// GET and DELETE are additionally REAL parts of the Streamable HTTP
+	// transport (the SSE stream and session teardown). Phase 1 offers neither,
+	// and the transport's own answer for a server that does not offer them is
+	// 405 -- so a conforming client that opens the GET stream first learns
+	// "this server does not do that" instead of "there is no server here".
+	//
+	// Registered explicitly per verb rather than via HandleMethodNotAllowed,
+	// because that flag is engine-global and would change the response of
+	// every other route in the API as a side effect of this slice.
+	for _, verb := range []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+		http.MethodOptions,
+	} {
+		r.Handle(verb, TransportPath, h.methodNotAllowed)
+	}
+}
+
+// methodNotAllowed answers a non-POST verb on the published path with a JSON
+// 405 that names the one verb this transport accepts.
+//
+// It deliberately does NOT authenticate first. The verb is wrong regardless of
+// who is asking, and answering 401 to an unauthenticated GET would send an
+// operator to rotate a credential when the actual fix is to send a POST.
+func (h *TransportHandler) methodNotAllowed(c *gin.Context) {
+	c.Header("Allow", http.MethodPost)
+	c.JSON(http.StatusMethodNotAllowed, newErrorResponse(nil, codeInvalidRequest,
+		fmt.Sprintf("%s is not supported on %s. This is a Streamable HTTP MCP endpoint and "+
+			"accepts POST only; server-sent events and session teardown are not offered in "+
+			"Phase 1. The endpoint IS deployed -- this is a refusal, not a missing route.",
+			c.Request.Method, TransportPath), nil))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,9 +223,28 @@ func (h *TransportHandler) serve(c *gin.Context) {
 		return
 	}
 
-	// 3. Parse the envelope.
+	// 3. Parse the envelope, under a HARD BYTE CAP.
+	//
+	// Authentication has already run, so this is an authenticated-only path --
+	// but that is not sufficient reason to read an unbounded body. A stolen or
+	// leaked connection token would otherwise buffer arbitrary bytes into a
+	// shared Cloud Run instance, and an OOM there is a CROSS-TENANT
+	// AVAILABILITY EVENT: one tenant's compromised credential takes down every
+	// tenant on the instance. Every other body-accepting public POST in this
+	// tree caps its read (internal/rum, internal/site, internal/backup); this
+	// one was the exception.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		// MaxBytesReader's error is reported as 413 and not as a parse
+		// failure: "your request is too large" and "your JSON is malformed"
+		// are different facts and a client can act on only one of them.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, newErrorResponse(nil, codeInvalidRequest,
+				fmt.Sprintf("the request body exceeds the %d-byte limit for this endpoint", maxRequestBytes), nil))
+			return
+		}
 		c.JSON(http.StatusBadRequest, newErrorResponse(nil, codeParseError, "could not read the request body", nil))
 		return
 	}
@@ -251,7 +321,7 @@ func (h *TransportHandler) dispatch(
 	case "resources/list", "resources/read", "resources/templates/list",
 		"prompts/list", "prompts/get":
 		return newErrorResponse(req.ID, codeMethodNotFound,
-			fmt.Sprintf("%q is not implemented: this server exposes tools only", req.Method), nil),
+				fmt.Sprintf("%q is not implemented: this server exposes tools only", req.Method), nil),
 			http.StatusOK, true
 
 	default:

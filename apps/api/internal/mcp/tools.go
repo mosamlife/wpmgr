@@ -189,17 +189,22 @@ func timestampOrNil(ts pgtype.Timestamptz) *string {
 
 // truncationInfo is the machine-readable half of the marker.
 type truncationInfo struct {
-	Truncated  bool   `json:"truncated"`
-	Returned   int    `json:"returned"`
-	Available  int    `json:"available"`
-	ByteCap    int    `json:"byte_cap"`
+	Truncated bool `json:"truncated"`
+	Returned  int  `json:"returned"`
+	// Available is the number of sites this request had to choose from, or
+	// JSON null when the page bound was hit and the true total is therefore
+	// unknown. It is a *int rather than a sentinel number because an unknown
+	// total should be self-describing: a reader has to be told what -1 means,
+	// but null already says it.
+	Available   *int   `json:"available"`
+	ByteCap     int    `json:"byte_cap"`
 	Explanation string `json:"explanation,omitempty"`
 }
 
 // sitesPayload is the JSON body of a list_sites result.
 type sitesPayload struct {
-	Sites     []json.RawMessage `json:"sites"`
-	Truncation truncationInfo   `json:"truncation"`
+	Sites      []json.RawMessage `json:"sites"`
+	Truncation truncationInfo    `json:"truncation"`
 }
 
 // buildListSitesResult renders rows into the tool result text.
@@ -234,8 +239,22 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 		// +1 for the comma this record costs inside the array.
 		cost := len(enc) + 1
 		if used+cost > recordByteBudget {
+			// CONTINUE, NOT BREAK, AND THAT IS A DELIBERATE CHOICE.
+			//
+			// `break` reads more naturally -- it yields a contiguous prefix,
+			// "the first N sites by name" -- but it lets ONE oversized record
+			// suppress every record after it. sites.name is tenant-controlled,
+			// so an org that names one site with a very long string zeroes out
+			// its own list_sites permanently, and because the list is ordered
+			// by name that record keeps landing in the same place on every
+			// call. A self-inflicted wound is still an outage.
+			//
+			// Skipping it and continuing costs the contiguity, which the
+			// marker below states plainly ("omitted", never "cut at"), and buys
+			// a tool that keeps working. Nothing downstream relies on the
+			// result being a prefix.
 			truncatedByBytes = true
-			break
+			continue
 		}
 		kept = append(kept, enc)
 		used += cost
@@ -251,17 +270,27 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 		Truncated: truncated,
 		Returned:  len(kept),
 		ByteCap:   recordByteBudget,
-		Available: available,
-	}
-	header := listSitesInstructions
-	if truncated {
-		info.Explanation = truncationExplanation(len(kept), available, more, truncatedByBytes)
-		header += "\n\n" + truncationBanner(info.Explanation)
+		Available: &available,
 	}
 	if more {
 		// `available` counts only what this page read, so it would understate
-		// the fleet. Report it as unknown rather than as a total.
-		info.Available = -1
+		// the fleet. Report it as JSON null -- an unknown total is
+		// self-describing as null, where a sentinel number has to be known
+		// about to be read correctly.
+		info.Available = nil
+	}
+
+	// THE BANNER IS PREPENDED TO THE INSTRUCTIONS, AND THE CLAMP IS APPLIED TO
+	// THE INSTRUCTIONS ALONE.
+	//
+	// Appending it and then clamping the whole header put the banner in the
+	// exact position the clamp cuts from, so the first thing dropped under
+	// budget pressure was the notice that the result is incomplete. That is
+	// the same mistake as putting safety text in the tail, one level down.
+	header := clampInstructions(listSitesInstructions)
+	if truncated {
+		info.Explanation = truncationExplanation(len(kept), available, more, truncatedByBytes)
+		header = truncationBanner(info.Explanation) + "\n\n" + header
 	}
 
 	// COMPACT, not indented. The budget above is measured on compact record
@@ -273,7 +302,7 @@ func buildListSitesResult(rows []sqlc.ListSitesRow, more bool, now time.Time) (s
 		return "", fmt.Errorf("marshal list_sites payload: %w", err)
 	}
 
-	return clampInstructions(header) + "\n\n" + string(payload), nil
+	return header + "\n\n" + string(payload), nil
 }
 
 // truncationExplanation states, in words the model will act on, exactly which
@@ -293,11 +322,16 @@ func truncationExplanation(returned, available int, more, byBytes bool) string {
 				"list as the whole fleet.",
 			returned)
 	default:
+		// "omitted", never "cut at": records are skipped individually when
+		// they do not fit the remaining budget, so the result is a SUBSET of
+		// the fleet and not a prefix of it. Saying "cut at" would imply the
+		// missing sites are all the ones sorting after the last one shown.
 		return fmt.Sprintf(
-			"INCOMPLETE RESULT: %d of %d sites returned. The %d-byte result cap was reached "+
-				"and the list was cut at a whole-record boundary; %d sites were not returned. "+
-				"Do not treat this list as the whole fleet.",
-			returned, available, recordByteBudget, available-returned)
+			"INCOMPLETE RESULT: %d of %d sites returned. The %d-byte result cap was reached, so "+
+				"%d whole records were omitted. Records are omitted individually, so this is a "+
+				"SUBSET of the fleet and not the first %d sites. Do not treat this list as the "+
+				"whole fleet.",
+			returned, available, recordByteBudget, available-returned, returned)
 	}
 }
 

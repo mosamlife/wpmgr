@@ -266,11 +266,25 @@ func (r *Repo) ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode s
 	var out []uuid.UUID
 	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, err := sqlc.New(tx).ResolveMCPGrantScopeSitesInTenantTx(ctx,
+			// COLUMN3 IS THE SITE ARRAY AND COLUMN4 IS THE TAG ARRAY, in that
+			// order. The query reads `WHEN 'list' THEN s.id = ANY($3)` and
+			// `WHEN 'tags' THEN ... t.id = ANY($4)`, so the positional names
+			// sqlc generates do NOT follow this function's argument order.
+			//
+			// They were swapped here until an integration proof executed a
+			// 'list' grant: both scoped modes resolved to ZERO SITES, because
+			// 'list' compared site ids against tag ids and 'tags' looked up tag
+			// ids by site id. It never leaked -- both directions fail closed --
+			// but every grant that was not mode 'all' silently read nothing,
+			// and the caller reports that as "your scope resolves to no sites"
+			// for a perfectly valid grant.
+			//
+			// No unit test could catch it: the fake store ignores both arrays.
 			sqlc.ResolveMCPGrantScopeSitesInTenantTxParams{
 				TenantID: tenantID,
 				Column2:  mode,
-				Column3:  tagIDs,
-				Column4:  siteIDs,
+				Column3:  siteIDs,
+				Column4:  tagIDs,
 			})
 		if err != nil {
 			return fmt.Errorf("resolve mcp grant scope sites: %w", err)
