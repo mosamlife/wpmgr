@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,98 @@ const (
 	// reads as "nothing to do" is how a scoping bug becomes invisible.
 	ErrCodeScopeEmpty = "mcp_scope_empty"
 )
+
+// The OAuth vocabulary this server implements, named once.
+//
+// THE VALIDATORS BELOW COMPARE AGAINST THESE, AND discovery.go ADVERTISES
+// THESE. That is the entire point: a discovery document is a promise, and the
+// way a server comes to advertise a grant type or a PKCE method it refuses is
+// by keeping two lists that agree on the day they are written. There is one
+// list, and TestDiscoveryVocabularyMatchesTheValidators drives the validators
+// with every plausible neighbouring value to prove the list is the set the code
+// actually accepts.
+const (
+	// ResponseTypeCode is the only response_type Service.Authorize accepts.
+	ResponseTypeCode = "code"
+	// GrantTypeAuthorizationCode is the only grant_type Service.Exchange
+	// accepts. There is no refresh_token grant: the connection token's lifetime
+	// is the connection's, and nothing here mints a refresh token.
+	GrantTypeAuthorizationCode = "authorization_code"
+	// CodeChallengeMethodS256 is the only PKCE method accepted, at /authorize
+	// and again at /token. "plain" is deliberately absent here, absent from the
+	// schema's closed set, and must stay absent from the discovery document.
+	CodeChallengeMethodS256 = "S256"
+	// TokenEndpointAuthMethodNone is the no-secret PKCE-only client type. It
+	// must be asked for explicitly; RFC 7591's default is the restrictive one.
+	TokenEndpointAuthMethodNone = "none"
+)
+
+// supportedTokenEndpointAuthMethods is the closed set Register accepts, in the
+// order the discovery document advertises them.
+var supportedTokenEndpointAuthMethods = []string{
+	TokenEndpointAuthMethodNone,
+	"client_secret_basic",
+	"client_secret_post",
+}
+
+// SupportedResponseTypes reports the response_type values Service.Authorize
+// accepts.
+func SupportedResponseTypes() []string { return []string{ResponseTypeCode} }
+
+// SupportedGrantTypes reports the grant_type values Service.Exchange accepts.
+func SupportedGrantTypes() []string { return []string{GrantTypeAuthorizationCode} }
+
+// SupportedCodeChallengeMethods reports the PKCE methods this server accepts.
+//
+// RFC 8414 section 2 makes this field how a client learns PKCE is available at
+// all, and the MCP specification has clients REFUSE to proceed when it is
+// absent. It must therefore be present and it must be exactly true.
+func SupportedCodeChallengeMethods() []string { return []string{CodeChallengeMethodS256} }
+
+// SupportedTokenEndpointAuthMethods reports the client authentication methods
+// Service.Register accepts.
+func SupportedTokenEndpointAuthMethods() []string {
+	return append([]string(nil), supportedTokenEndpointAuthMethods...)
+}
+
+// validateCodeChallengeMethod is the one place a PKCE method is judged at
+// authorization time. Extracted from Authorize so the discovery test can drive
+// it directly with every neighbouring value ("plain", "s256", "") and assert
+// the advertised list is exactly the set it accepts.
+func validateCodeChallengeMethod(method string) error {
+	if method != CodeChallengeMethodS256 {
+		return domain.Validation(ErrCodeInvalidRequest,
+			"code_challenge_method must be '"+CodeChallengeMethodS256+"'")
+	}
+	return nil
+}
+
+// validateResponseType and validateGrantType exist for the same reason.
+func validateResponseType(responseType string) error {
+	if responseType != ResponseTypeCode {
+		return domain.Validation(ErrCodeUnsupportedResponse,
+			"response_type must be '"+ResponseTypeCode+"'")
+	}
+	return nil
+}
+
+func validateGrantType(grantType string) error {
+	if grantType != GrantTypeAuthorizationCode {
+		return domain.Validation(ErrCodeInvalidRequest,
+			"grant_type must be '"+GrantTypeAuthorizationCode+"'")
+	}
+	return nil
+}
+
+// validateTokenEndpointAuthMethod judges a registration's requested client
+// authentication method against the closed set above.
+func validateTokenEndpointAuthMethod(method string) error {
+	if !slices.Contains(supportedTokenEndpointAuthMethods, method) {
+		return domain.Validation(ErrCodeRegistrationInvalid,
+			fmt.Sprintf("token_endpoint_auth_method %q is not supported", method))
+	}
+	return nil
+}
 
 // Clock is injectable so expiry behaviour is testable without sleeping.
 type Clock func() time.Time
@@ -121,11 +214,8 @@ func (s *Service) Register(ctx context.Context, req RegistrationRequest) (Regist
 	if method == "" {
 		method = "client_secret_basic"
 	}
-	switch method {
-	case "none", "client_secret_basic", "client_secret_post":
-	default:
-		return RegisteredClient{}, domain.Validation(ErrCodeRegistrationInvalid,
-			fmt.Sprintf("token_endpoint_auth_method %q is not supported", method))
+	if err := validateTokenEndpointAuthMethod(method); err != nil {
+		return RegisteredClient{}, err
 	}
 
 	clientID, err := randomToken(24)
@@ -274,9 +364,8 @@ type ConsentContext struct {
 // screen must render. It mints NOTHING: no grant and no code exist until a
 // human approves, which is what makes consent the authorization.
 func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentContext, error) {
-	if req.ResponseType != "code" {
-		return ConsentContext{}, domain.Validation(ErrCodeUnsupportedResponse,
-			"response_type must be 'code'")
+	if err := validateResponseType(req.ResponseType); err != nil {
+		return ConsentContext{}, err
 	}
 	if strings.TrimSpace(req.ClientID) == "" {
 		return ConsentContext{}, domain.Validation(ErrCodeInvalidRequest, "client_id is required")
@@ -290,9 +379,8 @@ func (s *Service) Authorize(ctx context.Context, req AuthorizeRequest) (ConsentC
 		return ConsentContext{}, domain.Validation(ErrCodeInvalidRequest,
 			"code_challenge is required; this server requires PKCE")
 	}
-	if req.CodeChallengeMethod != "S256" {
-		return ConsentContext{}, domain.Validation(ErrCodeInvalidRequest,
-			"code_challenge_method must be 'S256'")
+	if err := validateCodeChallengeMethod(req.CodeChallengeMethod); err != nil {
+		return ConsentContext{}, err
 	}
 
 	// THE EXIT GATE. A client requesting no recognised scope is refused here,
@@ -391,7 +479,7 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	if err := ValidateSiteScopeRequest(req.SiteScope); err != nil {
 		return Approval{}, err
 	}
-	if req.Consent.CodeChallengeMethod != "S256" || strings.TrimSpace(req.Consent.CodeChallenge) == "" {
+	if req.Consent.CodeChallengeMethod != CodeChallengeMethodS256 || strings.TrimSpace(req.Consent.CodeChallenge) == "" {
 		return Approval{}, domain.Validation(ErrCodeInvalidRequest,
 			"the approved request carries no S256 PKCE challenge")
 	}
@@ -515,9 +603,8 @@ type IssuedToken struct {
 // own transaction, and ONLY IF that consume actually wrote is a token minted.
 // A zero-row consume is a refusal, never a shrug.
 func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, error) {
-	if req.GrantType != "authorization_code" {
-		return IssuedToken{}, domain.Validation(ErrCodeInvalidRequest,
-			"grant_type must be 'authorization_code'")
+	if err := validateGrantType(req.GrantType); err != nil {
+		return IssuedToken{}, err
 	}
 	if strings.TrimSpace(req.Code) == "" {
 		return IssuedToken{}, domain.Validation(ErrCodeInvalidRequest, "code is required")
@@ -648,7 +735,7 @@ func (s *Service) Exchange(ctx context.Context, req TokenRequest) (IssuedToken, 
 	}
 
 	// 4. PKCE. S256 only, constant-time.
-	if row.CodeChallengeMethod != "S256" {
+	if row.CodeChallengeMethod != CodeChallengeMethodS256 {
 		return IssuedToken{}, domain.Unauthorized(ErrCodeInvalidGrant,
 			"the authorization code carries an unsupported challenge method")
 	}

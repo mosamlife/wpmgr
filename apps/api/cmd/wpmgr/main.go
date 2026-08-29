@@ -548,6 +548,12 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// registration rate limiter, so there is no assembly order that mounts the
 	// unauthenticated /register endpoint unlimited.
 	mcpOAuthH := mcp.NewHandler(mcpSvc)
+	// The discovery half. The issuer is DERIVED from cfg.PublicBaseURL and is
+	// never a constant: a self-hosted install has a different origin, and a
+	// document naming the wrong host sends clients somewhere real and wrong.
+	// An unset or unparseable value makes both documents answer 503 naming
+	// WPMGR_PUBLIC_BASE_URL rather than emit a plausible-looking lie.
+	mcpDiscoveryH := mcp.NewDiscoveryHandler(cfg.PublicBaseURL)
 
 	// A narrow tenant-creation capability handed to the auth domain (bootstrap +
 	// OIDC first-login) without coupling it to the tenant package internals.
@@ -2828,6 +2834,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		SiteEventsH:      siteEventsH,
 		MCPTransportH:    mcpTransportH,
 		MCPOAuthH:        mcpOAuthH,
+		MCPDiscoveryH:    mcpDiscoveryH,
 		FilesH:           filesH,
 		UpdateH:          updateH,
 		BackupH:          backupH,

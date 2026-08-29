@@ -266,6 +266,20 @@ type Deps struct {
 	// unmounted route answers 404, which hides a wiring failure behind
 	// something that reads as a deliberate refusal.
 	MCPOAuthH *mcp.Handler
+	// MCPDiscoveryH serves the two unauthenticated OAuth discovery documents:
+	// GET /.well-known/oauth-authorization-server (RFC 8414) and GET
+	// /.well-known/oauth-protected-resource (RFC 9728), the second also at its
+	// RFC 9728 path-insertion form /.well-known/oauth-protected-resource/mcp.
+	//
+	// REQUIRED, mounted unconditionally, for a reason specific to these paths:
+	// an unmounted well-known path does not 404 in production. The load
+	// balancer hands anything its API rule does not match to the SPA, which
+	// answers 200 with text/html for every path, so a missing document
+	// presents as a document that exists and is unparseable. "It returns 200"
+	// therefore proves nothing about this route; only the content type and the
+	// body do. Adding these paths to the load balancer's API rule is a
+	// deployment step that has no representation in this repository.
+	MCPDiscoveryH *mcp.DiscoveryHandler
 	// BillingSuspensionGate is the M16 Phase C1 superadmin hard-lockout
 	// middleware (billing.Service.SuspensionGate) mounted on the tenant-scoped
 	// v1 group. nil ⇒ WPMGR_HOSTED is off; self-host never sees this check
@@ -462,7 +476,17 @@ func New(deps Deps) *Server {
 	// bounded by the two-layer limiter and body cap in
 	// internal/mcp/register_limit.go. Read that file before changing this.
 	if deps.MCPOAuthH != nil {
-		deps.MCPOAuthH.RegisterPublic(engine.Group("/api/v1"))
+		deps.MCPOAuthH.RegisterPublic(engine.Group(mcp.APIV1Prefix))
+	}
+
+	// S7 — the OAuth discovery documents, unauthenticated, on the ROOT engine.
+	//
+	// A GUI client (Claude Desktop, ChatGPT) has no field in which to be told
+	// where to authorize: it fetches a well-known document or it cannot
+	// complete the handshake. These must not sit behind the session group —
+	// they are fetched before any credential exists, which is the point.
+	if deps.MCPDiscoveryH != nil {
+		deps.MCPDiscoveryH.Register(engine)
 	}
 
 	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519
@@ -542,7 +566,7 @@ func New(deps Deps) *Server {
 	// Everything under /api/v1 requires session load + authentication + an active
 	// tenant; finer per-route RBAC is applied by each handler.
 	// Derive from sessionAuthGroup so session + auth middlewares are inherited.
-	v1 := sessionAuthGroup.Group("/api/v1")
+	v1 := sessionAuthGroup.Group(mcp.APIV1Prefix)
 	v1.Use(authz.RequireAuth(), authz.RequireTenant())
 	// M16 Phase C1 — superadmin hard-lockout: 402 {code:"account_suspended"}
 	// for a suspended tenant's requests, EXCEPT its own /billing/* routes (so

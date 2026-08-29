@@ -68,7 +68,9 @@ const maxOAuthBodyBytes = 16 << 10
 // /authorize answering 405 for every verb including its own. server.New mounts
 // both from one Deps field, which is what keeps that unreachable.
 func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
-	g := r.Group("/oauth/mcp")
+	// oauthGroupPath, not a literal: discovery.go advertises the absolute form
+	// of these paths and both halves must read the same constant.
+	g := r.Group(oauthGroupPath)
 	g.POST("/register", h.register)
 	g.POST("/token", h.token)
 
@@ -86,7 +88,7 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 // handlers below re-check the principal anyway, because a handler that trusts
 // its mount point is one refactor away from being anonymous.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group("/oauth/mcp")
+	g := r.Group(oauthGroupPath)
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
 }
