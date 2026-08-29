@@ -583,7 +583,9 @@ func (h *Handler) resetPassword(c *gin.Context) {
 		httpx.Error(c, domain.Validation("invalid_body", "request body is not valid JSON"))
 		return
 	}
-	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, clientAddr(c)); err != nil {
+	// limiterAddr, not clientAddr: ResetPassword rate-limits on this value
+	// ("pwreset-consume:"), and it is the only limit on reset-token guessing.
+	if err := h.svc.ResetPassword(c.Request.Context(), body.Token, body.Password, limiterAddr(c)); err != nil {
 		httpx.Error(c, err)
 		return
 	}
@@ -591,13 +593,94 @@ func (h *Handler) resetPassword(c *gin.Context) {
 }
 
 // clientAddr parses gin's resolved client IP into a netip.Addr (invalid when
-// unparseable). Used to rate-limit + record the requesting IP.
+// unparseable). Used where the requesting address is RECORDED — audit rows,
+// notification bodies, trusted-device rows. See limiterAddr for the address a
+// rate-limit decision may be keyed on; the two are deliberately different.
 func clientAddr(c *gin.Context) netip.Addr {
 	addr, err := netip.ParseAddr(c.ClientIP())
 	if err != nil {
 		return netip.Addr{}
 	}
 	return addr
+}
+
+// proxyHops is the number of X-Forwarded-For entries that the infrastructure in
+// front of this process appends to whatever the caller sent: the client address
+// as the balancer observed it, then the balancer's own frontend address. The
+// rightmost proxyHops entries are therefore written by us; everything to their
+// left came from the caller and is worth nothing.
+//
+// This holds only while the API is unreachable except through the balancer.
+// That is a deployment property, not a code property: the Cloud Run service runs
+// with ingress restricted to internal-and-cloud-load-balancing, so its own URL
+// is closed to the internet and every request arrives through the balancer.
+//
+// If that ingress is ever widened, a request can arrive with fewer appended
+// entries than proxyHops and the entry selected below drifts back into
+// caller-supplied territory. Anyone changing the ingress setting, the balancer,
+// or the number of proxies in front of this service must revisit this constant
+// and the tests that pin it.
+const proxyHops = 2
+
+// limiterAddr returns the address that a rate-limit DECISION may be keyed on.
+//
+// It is separate from clientAddr on purpose. An address that is merely recorded
+// can tolerate being caller-influenced; an address that decides whether to
+// refuse a request cannot, because then the caller selects its own bucket and
+// the limit stops binding.
+//
+// When the forwarded chain is shorter than the infrastructure guarantees, this
+// falls back to the peer address rather than reaching further left.
+//
+// That fallback is NOT a security guard, and must not be described as one. It
+// only catches honest short chains. A caller that wants control of its key sends
+// exactly proxyHops entries itself, which is long enough to skip the fallback
+// entirely, so if this process ever becomes directly reachable the fallback
+// protects nobody: honest clients collapse onto the peer key while an attacker
+// keeps a key per request. The ingress restriction described on proxyHops is the
+// only thing standing between this and that state.
+func limiterAddr(c *gin.Context) netip.Addr {
+	// Values, not Get. Get returns only the FIRST header line, so a caller that
+	// sends X-Forwarded-For twice would have the appended entries land on a line
+	// this never reads, handing back a value it chose. Joining every line is the
+	// chain as the invariant above describes it, and removes any dependence on
+	// whether the proxy in front coalesces repeated lines.
+	joined := strings.Join(c.Request.Header.Values("X-Forwarded-For"), ",")
+	parts := strings.Split(joined, ",")
+	if len(parts) >= proxyHops {
+		if addr, ok := parseForwardedAddr(parts[len(parts)-proxyHops]); ok {
+			return addr
+		}
+	}
+	if addr, ok := parseForwardedAddr(c.RemoteIP()); ok {
+		return addr
+	}
+	return netip.Addr{}
+}
+
+// parseForwardedAddr parses one forwarded-chain entry. Entries are usually bare
+// addresses, but the bracketed and port-suffixed forms are legal in the wild and
+// are what IPv6 tends to arrive as. Treating those as unparseable would drop
+// every v6 client onto the shared fallback key, so they are handled explicitly.
+func parseForwardedAddr(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Unmap(), true
+	}
+	// "[2001:db8::1]:443" and "198.51.100.7:443".
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	// "[2001:db8::1]" with no port.
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		if addr, err := netip.ParseAddr(s[1 : len(s)-1]); err == nil {
+			return addr.Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func (h *Handler) oidcLogin(c *gin.Context) {

@@ -106,7 +106,8 @@ func (h *Handler) twoFATOTPComplete(c *gin.Context) {
 		return
 	}
 
-	ip := clientAddr(c)
+	// limiterAddr, not clientAddr: this flows into the "2fa-ip:" cross-account cap.
+	ip := limiterAddr(c)
 	res, err := h.svc.VerifyTOTPChallenge(c.Request.Context(), challengeID, body.Code, &ip)
 	if err != nil {
 		httpx.Error(c, err)
@@ -159,7 +160,8 @@ func (h *Handler) twoFARecoveryComplete(c *gin.Context) {
 		return
 	}
 
-	ip := clientAddr(c)
+	// limiterAddr, not clientAddr: this flows into the "2fa-ip:" cross-account cap.
+	ip := limiterAddr(c)
 	res, remaining, err := h.svc.VerifyRecoveryCodeChallenge(c.Request.Context(), challengeID, body.Code, &ip)
 	if err != nil {
 		httpx.Error(c, err)
@@ -244,7 +246,8 @@ func (h *Handler) twoFAWebAuthnFinish(c *gin.Context) {
 		return
 	}
 
-	ip := clientAddr(c)
+	// limiterAddr, not clientAddr: this flows into the "2fa-ip:" cross-account cap.
+	ip := limiterAddr(c)
 	res, err := h.svc.FinishWebAuthnChallenge(c.Request.Context(), challengeID, body.Assertion, &ip)
 	if err != nil {
 		httpx.Error(c, err)
