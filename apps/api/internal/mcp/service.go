@@ -434,22 +434,22 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 
 	grant, _, err := s.store.CreateGrantWithCode(ctx,
 		sqlc.CreateMCPGrantParams{
-			TenantID:        req.TenantID,
-			Name:            strings.TrimSpace(req.GrantName),
-			Status:          string(GrantStatusActive),
-			SiteScopeMode:   string(req.SiteScope.Mode),
-			ScopeTagIds:     orEmpty(req.SiteScope.TagIDs),
-			ScopeSiteIds:    orEmpty(req.SiteScope.SiteIDs),
+			TenantID:      req.TenantID,
+			Name:          strings.TrimSpace(req.GrantName),
+			Status:        string(GrantStatusActive),
+			SiteScopeMode: string(req.SiteScope.Mode),
+			ScopeTagIds:   orEmpty(req.SiteScope.TagIDs),
+			ScopeSiteIds:  orEmpty(req.SiteScope.SiteIDs),
 			// The RESOLVED client id, not the body's copy of it.
 			ClientID:        nullableText(client.ClientID),
 			CreatedByUserID: uuidToPG(req.UserID),
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
-				TenantID: req.TenantID,
-				GrantID:  grantID,
-				ClientID: client.ClientID,
-				CodeHash: codeHash,
+				TenantID:            req.TenantID,
+				GrantID:             grantID,
+				ClientID:            client.ClientID,
+				CodeHash:            codeHash,
 				CodeChallenge:       req.Consent.CodeChallenge,
 				CodeChallengeMethod: req.Consent.CodeChallengeMethod,
 				RedirectUri:         req.Consent.RedirectURI,
@@ -715,7 +715,17 @@ type AuthorizedRequest struct {
 	TenantID uuid.UUID
 	GrantID  uuid.UUID
 	TokenID  uuid.UUID
-	Sites    SiteSet
+
+	// Sites is the resolved site scope: the PER-CONNECTION narrowing on the
+	// site axis. Zero value allows nothing.
+	Sites SiteSet
+
+	// Capabilities is the resolved capability set: which tools this connection
+	// may reach. Zero value allows nothing, so an AuthorizedRequest built by a
+	// literal in a test -- or by any future code path that forgets to set it --
+	// reaches NO tool rather than every tool. That is why it is a CapabilitySet
+	// and not a []string.
+	Capabilities CapabilitySet
 }
 
 // Authenticate resolves a bearer token and re-checks its grant against CURRENT
@@ -762,13 +772,45 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 		return AuthorizedRequest{}, fmt.Errorf("resolve grant scope: %w", err)
 	}
 
+	// Resolve the CAPABILITY set (S7). Two axes narrow an MCP connection and
+	// they are independent: the site axis above says WHICH SITES, this one says
+	// WHICH TOOLS.
+	//
+	// THE ORG DEFAULT IS DERIVED, NOT STORED, AND THAT IS m124 DECISION 1. There
+	// is deliberately no capabilities column on mcp_grants, because minting one
+	// would create the place a write capability could appear without a
+	// migration and without a review. So the ceiling is computed from the closed
+	// scope registry, and every live grant on this surface holds ScopeRead by
+	// construction -- ParseRequestedScopes refuses anything else and
+	// recognisedScopes holds exactly that one entry.
+	//
+	// WHAT IS NOT WIRED YET, SAID PLAINLY RATHER THAN IMPLIED: there is no
+	// stored per-connection capability narrowing, so this value IS the org
+	// default. CapabilitySet.NarrowTo is the mechanism that applies one, and it
+	// refuses a request wider than the default rather than granting it; the
+	// COLUMN it would read from arrives with its own migration, NOT NULL, no
+	// default, closed CHECK, exactly as DECISION 1 requires. Writing a
+	// half-wired narrowing that silently defaults to the ceiling would be the
+	// absence-read-as-a-value failure this whole surface is built against, so
+	// the gap is a comment and a returned error, not a nil treated as permissive.
+	caps, err := OrgDefaultCapabilities([]Scope{ScopeRead})
+	if err != nil {
+		// A capability set that cannot be resolved is a REFUSAL, never an
+		// empty-but-proceeding one. An AuthorizedRequest with a zero-value
+		// CapabilitySet reaches no tool, so proceeding would produce a
+		// connection that authenticates and then refuses everything with no
+		// explanation anywhere.
+		return AuthorizedRequest{}, fmt.Errorf("resolve grant capabilities: %w", err)
+	}
+
 	// An empty resolved set means NO SITES. NewSiteSet's zero value allows
 	// nothing, so there is no widening path here even if ids is nil.
 	return AuthorizedRequest{
-		TenantID: tok.TenantID,
-		GrantID:  chk.GrantID,
-		TokenID:  chk.TokenID,
-		Sites:    NewSiteSet(ids),
+		TenantID:     tok.TenantID,
+		GrantID:      chk.GrantID,
+		TokenID:      chk.TokenID,
+		Sites:        NewSiteSet(ids),
+		Capabilities: caps,
 	}, nil
 }
 
