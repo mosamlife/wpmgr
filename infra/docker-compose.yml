@@ -174,6 +174,20 @@ services:
       # direction: with no value the api refuses to boot
       # (config.ValidateSessionSecret) instead of running on a shared one.
       # The zero-config dev value lives in infra/docker-compose.dev.yml.
+      # --- Forwarded-client trust ---------------------------------------------
+      # WPMGR_AUTH_PROXY_HOPS is absent from this block for exactly the reason
+      # given above, and ships as WPMGR_AUTH_PROXY_HOPS=1 in .env.example,
+      # reaching this service through `env_file: ../.env`. Do not add it here:
+      # an entry would pin every install to the literal default and discard the
+      # operator's value. Note this key does NOT fail closed the way the secrets
+      # above do — a wrong value still boots and silently mis-identifies the
+      # client behind the proxy, so the env_file path is the only thing making
+      # it configurable at all.
+      #
+      # 1 rather than the api's built-in default of 2, because the bundled nginx
+      # (the `web` service) appends exactly one X-Forwarded-For entry. See
+      # .env.example for how to derive it for another topology, and
+      # infra/nginx/nginx.conf for the trusted-front-proxy case.
       # --- OIDC (Dex) ---------------------------------------------------------
       # Issuer must match Dex's configured issuer AND be reachable from this
       # container; dex.localhost is mapped to host-gateway via extra_hosts below
