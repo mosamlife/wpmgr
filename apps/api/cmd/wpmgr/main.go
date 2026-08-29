@@ -107,6 +107,23 @@ var version = "0.0.0-dev"
 func main() {
 	// Load config and initialize the logger as early as possible so all boot
 	// paths have structured output.
+	// A Load error exits rather than parking in the degraded mode used for
+	// Validate issues below, and that difference is deliberate rather than an
+	// oversight.
+	//
+	// Degraded mode exists to serve /readyz from a Config that parsed. A Load
+	// error means there is no such Config: the value was rejected precisely
+	// because it could not be turned into one, and there is nothing coherent to
+	// serve a diagnostic page out of. The error is written to stderr first, so
+	// it is readable in the container log even though the process then restarts.
+	//
+	// The tradeoff is real: an operator who mistypes one of the strictly-parsed
+	// values gets a restart loop rather than the readable page. That is accepted
+	// because those values are refused only when they cannot be read as intended
+	// at all, and booting on a guess at what was meant is the worse outcome —
+	// for the auth proxy hop count specifically, a guess either stops the
+	// sign-in rate limits binding or refuses every legitimate user, neither of
+	// which is visible from inside the process.
 	cfg, err := config.Load(os.Getenv("WPMGR_CONFIG_FILE"))
 	if err != nil {
 		slog.Error("fatal: config load failed", slog.Any("error", err))
@@ -2765,6 +2782,21 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	// only in a redirect the browser follows away.
 	authH.SetLogger(logger)
 	authH.SetSecureCookies(cfg.IsProduction())
+	// Declare how many proxies in front of this process append to
+	// X-Forwarded-For, which is what the auth rate limiters key on.
+	//
+	// Logged unconditionally, and at Info, because a wrong value here is not
+	// visible from inside the process: too low and every client shares one
+	// limiter key and legitimate sign-ins are refused fleet-wide; too high and
+	// the limiters key on caller-supplied data. An operator whose auth starts
+	// refusing everyone must be able to find the effective value in the first
+	// screen of the log rather than by reading the source. The default suits
+	// the hosted topology; any other deployment sets WPMGR_AUTH_PROXY_HOPS.
+	authH.SetProxyHops(cfg.Auth.ProxyHops)
+	logger.Info("auth rate-limit peer address resolution",
+		"proxy_hops", cfg.Auth.ProxyHops,
+		"env_var", "WPMGR_AUTH_PROXY_HOPS",
+		"meaning", "number of proxies in front of this process that append to X-Forwarded-For; 0 means this process terminates connections directly and the peer address is the client")
 	// The social handshake is sealed rather than stored, so the start endpoint
 	// writes nothing to the session store an unauthenticated caller could fill.
 	// Fatal if it cannot be keyed: the alternative is an install whose sign-in

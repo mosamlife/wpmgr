@@ -42,6 +42,13 @@ services:
       GOWORK: "off"
       WPMGR_ENV: development
       WPMGR_LOG_LEVEL: debug
+      # Fixed dev session secret, so `make dev` boots with no .env. It lives in
+      # this overlay and NOT in the base file on purpose: the base file is what
+      # docs/install.md tells operators to run on their own hosts, and a value
+      # named in its `environment:` block would override the operator's .env
+      # rather than fall back to it. Anything loading this overlay is a local
+      # dev stack by definition. Never set WPMGR_ENV=production alongside it.
+      WPMGR_SESSION_SECRET: ${WPMGR_SESSION_SECRET:-ZGV2LW9ubHktc2Vzc2lvbi1zZWNyZXQtZG8tbm90LXVzZS1pbi1wcm9kdWN0aW9uLTQ4Ynl0ZXM=}
     volumes:
       - ../apps/api:/src/apps/api
       - go-mod-cache:/go/pkg/mod

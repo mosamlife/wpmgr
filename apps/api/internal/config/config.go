@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -527,6 +528,32 @@ type AuthConfig struct {
 	IdleTimeout    time.Duration `koanf:"idle_timeout"`
 	AbsoluteExpiry time.Duration `koanf:"absolute_expiry"`
 
+	// ProxyHops (WPMGR_AUTH_PROXY_HOPS) is the number of X-Forwarded-For
+	// entries the infrastructure in front of this process appends to whatever
+	// the caller sent. The authentication rate limiters key on the entry that
+	// many positions from the right; everything to its left is caller-supplied
+	// and must not decide whether a request is refused.
+	//
+	// Set it to the number of proxies that append, counting from this process
+	// outward:
+	//
+	//	0  nothing appends — this process terminates connections directly, and
+	//	   the peer address IS the client. The forwarded header is ignored
+	//	   entirely, which is the only safe reading when nothing is trusted.
+	//	1  a single reverse proxy that appends the client address (the bundled
+	//	   nginx compose deployment).
+	//	2  a cloud load balancer that appends the client address and then its
+	//	   own frontend address. This is the default because it is correct for
+	//	   the hosted deployment.
+	//
+	// Getting this wrong is not subtle in one direction and silent in the
+	// other: too high and the limiters key on caller-supplied data and stop
+	// binding; too low and every client collapses onto one key and legitimate
+	// users are refused. Neither is guessable from inside the process, so it is
+	// configuration rather than a constant, and the effective value is logged
+	// at startup.
+	ProxyHops int `koanf:"proxy_hops"`
+
 	// BootstrapClaimSecret (WPMGR_BOOTSTRAP_CLAIM_SECRET) is the provisioning
 	// claim the installer mints and hands to the person who is entitled to own
 	// the install. First-run ownership — the very first organisation and its
@@ -692,9 +719,9 @@ func (c Config) IsProduction() bool {
 	return strings.EqualFold(c.Env, "production") || strings.EqualFold(c.Env, "prod")
 }
 
-// ValidateSessionSecret refuses weak/placeholder session secrets. The secret
-// keys the session store; an empty, placeholder, or short value is a security
-// hole, so the server must not boot with one.
+// ValidateSessionSecret refuses weak/placeholder/published session secrets. The
+// secret keys the session store; an empty, placeholder, short, or publicly
+// known value is a security hole, so the server must not boot with one.
 func (c Config) ValidateSessionSecret() error {
 	s := c.Auth.SessionSecret
 	if s == "" {
@@ -702,6 +729,13 @@ func (c Config) ValidateSessionSecret() error {
 	}
 	if strings.HasPrefix(s, "change-me") {
 		return fmt.Errorf("WPMGR_SESSION_SECRET still holds the placeholder value: set a real random secret of at least 32 bytes")
+	}
+	// Before the length check, deliberately. A published secret is long and
+	// well-formed, so it would otherwise sail past every remaining check; and if
+	// a future published value ever were short, "this one is public" is the more
+	// useful thing to tell the operator than "this one is short".
+	if reason := publishedSessionSecretRefusal(s); reason != "" {
+		return fmt.Errorf("WPMGR_SESSION_SECRET %s", reason)
 	}
 	if len(s) < 32 {
 		return fmt.Errorf("WPMGR_SESSION_SECRET is too short (%d bytes): use at least 32 bytes", len(s))
@@ -758,8 +792,12 @@ func defaults() map[string]any {
 		"db.allow_rls_bypass_role": false,
 		"redis.addr":               "localhost:6379",
 		"redis.password":           "",
-		"auth.session_secret":      "",
-		"auth.idle_timeout":        "168h", // 7 days idle
+		"auth.session_secret": "",
+		// 2 is correct for the hosted deployment (load balancer appends the
+		// client address then its own). Every other topology must set this;
+		// see AuthConfig.ProxyHops and the startup log line that names it.
+		"auth.proxy_hops":   2,
+		"auth.idle_timeout": "168h", // 7 days idle
 		"auth.absolute_expiry":     "720h", // 30 days hard cap
 		// ADR-056: WebAuthn relying party defaults (hosted instance).
 		// Self-hosted operators override via WPMGR_AUTH_WEBAUTHN_RPID etc.
@@ -887,21 +925,66 @@ func Load(path string) (Config, error) {
 		}
 	}
 
+	// rawProxyHops holds the unconverted WPMGR_AUTH_PROXY_HOPS string when the
+	// variable is present at all, including when it is present and empty.
+	var rawProxyHops *string
 	// Env: WPMGR_DB_HOST -> db.host, WPMGR_HTTP_ADDR -> http_addr, etc.
 	// We strip the WPMGR_ prefix, lowercase, then map the documented
 	// double-underscore-free names by replacing the first underscore segment.
 	envProvider := env.ProviderWithValue("WPMGR_", ".", func(key, value string) (string, any) {
 		k := strings.ToLower(strings.TrimPrefix(key, "WPMGR_"))
 		k = mapEnvKey(k)
+		// Capture the RAW string for the proxy hop count. Everything below this
+		// point is typed, and the typing is what loses the distinction that
+		// matters: mapstructure's weak input rewrites "" to 0, so an unset outer
+		// variable in WPMGR_AUTH_PROXY_HOPS=${SOMETHING}, or an empty ConfigMap
+		// entry, would arrive as a deliberate 0 and be indistinguishable from
+		// one. See parseProxyHops.
+		if k == "auth.proxy_hops" {
+			v := value
+			rawProxyHops = &v
+		}
 		return k, value
 	})
 	if err := k.Load(envProvider, nil); err != nil {
 		return Config{}, fmt.Errorf("load env: %w", err)
 	}
 
+	// Before unmarshal, so the operator gets a message naming the variable and
+	// saying what is wrong with it. Left until after, the generic decode failure
+	// ("decoding failed due to the following error(s)") is all they would see,
+	// and the one spelling that does NOT fail to decode — the empty string — is
+	// the dangerous one.
+	proxyHops := -1
+	if rawProxyHops != nil {
+		n, err := parseProxyHops(*rawProxyHops)
+		if err != nil {
+			return Config{}, fmt.Errorf("WPMGR_AUTH_PROXY_HOPS: %w", err)
+		}
+		proxyHops = n
+	} else {
+		// The env var is not the only source. A YAML file supplies the same key,
+		// and reaches the same weak decode: a quoted "010" becomes 8, a bare
+		// `proxy_hops:` becomes 0, `true` becomes 1. The null shapes are what a
+		// templating tool renders for a value it could not resolve, which is the
+		// same accident as an unset ${VAR} and needs the same answer.
+		n, err := proxyHopsFromValue(k.Get("auth.proxy_hops"))
+		if err != nil {
+			source := "auth.proxy_hops"
+			if path != "" {
+				source = fmt.Sprintf("auth.proxy_hops in %s", path)
+			}
+			return Config{}, fmt.Errorf("%s: %w", source, err)
+		}
+		proxyHops = n
+	}
+
 	var cfg Config
 	if err := k.Unmarshal("", &cfg); err != nil {
 		return Config{}, fmt.Errorf("unmarshal config: %w", err)
+	}
+	if proxyHops >= 0 {
+		cfg.Auth.ProxyHops = proxyHops
 	}
 	// Normalize ONCE, here, so every consumer and every check sees the same
 	// string. Consumers append paths to this value; a check that trimmed and a
@@ -909,6 +992,76 @@ func Load(path string) (Config, error) {
 	// check would then approve a value nothing uses.
 	cfg.PublicBaseURL = NormalizePublicBaseURL(cfg.PublicBaseURL)
 	return cfg, nil
+}
+
+// parseProxyHops converts WPMGR_AUTH_PROXY_HOPS, accepting only a plain decimal
+// integer: no empty string, no sign, no surrounding whitespace, no 0x form and
+// no leading zero.
+//
+// It is this strict because every rejected spelling has a plausible reading that
+// is not what the operator meant, and the cost of guessing wrong is not a
+// startup warning. The hop count decides which forwarded entry the auth rate
+// limiters key on: too low and every caller in the fleet shares one bucket and
+// legitimate sign-ins are refused; too high and the key comes from
+// caller-supplied data and the limits stop binding. Neither is visible from
+// inside the process.
+//
+// The empty string is the case worth naming. It is the ordinary output of
+// WPMGR_AUTH_PROXY_HOPS=${SOMETHING} with SOMETHING unset, and of an empty
+// value in a ConfigMap or .env file. Weak typing turns it into 0, which is a
+// meaningful and very different setting — "nothing is in front of this process"
+// — so accepting it would silently reconfigure a load-balanced deployment onto
+// a single shared limiter key. Absence and emptiness are not the same thing:
+// remove the variable to take the default.
+// proxyHopsFromValue converts the hop count as it sits in koanf after the
+// defaults and any config file have loaded, before the typed decode.
+//
+// It exists because the decode is weakly typed and will turn a null, a bool or
+// a quoted numeral into a plausible-looking count. Every conversion it would
+// perform silently is refused here instead, for the same reason the environment
+// string is parsed strictly: the value decides which forwarded entry the auth
+// rate limiters key on, and both directions of being wrong are invisible from
+// inside the process.
+//
+// A quoted numeral is parsed rather than rejected outright — "2" is unambiguous
+// — but through the same strict parser as the environment path, so the octal,
+// hex and empty spellings are refused identically wherever they are written.
+func proxyHopsFromValue(v any) (int, error) {
+	switch n := v.(type) {
+	case int:
+		return n, nil
+	case int64:
+		return int(n), nil
+	case string:
+		return parseProxyHops(n)
+	case nil:
+		return 0, fmt.Errorf("empty. An empty value is not 0 — 0 means nothing in front of this process appends to X-Forwarded-For. Remove the key to take the default, or set an explicit number")
+	case bool:
+		return 0, fmt.Errorf("%v is a boolean; this is a count of proxies in front of this process, so write a bare number", n)
+	case float64:
+		return 0, fmt.Errorf("%v is not a whole number; this is a count of proxies, so write a bare integer", n)
+	default:
+		return 0, fmt.Errorf("%v (%T) is not a whole number; this is a count of proxies, so write a bare integer", v, v)
+	}
+}
+
+func parseProxyHops(raw string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("present but empty. An empty value is not 0 — 0 means nothing in front of this process appends to X-Forwarded-For. Remove the variable to take the default, or set an explicit number")
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < '0' || raw[i] > '9' {
+			return 0, fmt.Errorf("%q is not a plain decimal integer: no signs, spaces, decimal points or 0x forms", raw)
+		}
+	}
+	if len(raw) > 1 && raw[0] == '0' {
+		return 0, fmt.Errorf("%q has a leading zero, which reads as octal in some tooling. Write it as a plain decimal number", raw)
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a valid number: %w", raw, err)
+	}
+	return n, nil
 }
 
 // NormalizePublicBaseURL is the canonical form of WPMGR_PUBLIC_BASE_URL: no
