@@ -250,6 +250,22 @@ type Deps struct {
 	// An unauthenticated request here must be 401, and 401 is only reachable
 	// if the route exists.
 	MCPTransportH *mcp.TransportHandler
+	// MCPOAuthH serves the four OAuth endpoints that mint the bearer token
+	// MCPTransportH consumes: POST /api/v1/oauth/mcp/register (RFC 7591 dynamic
+	// client registration), GET .../authorize, POST .../consent and POST
+	// .../token. Without these mounted, POST /mcp is reachable but no token can
+	// ever be minted, so it refuses every request forever.
+	//
+	// MOUNTED IN TWO PLACES BY DESIGN, and the split is the security boundary:
+	// RegisterPublic goes on the ROOT engine (register + token are
+	// unauthenticated by specification), Register goes on the session-authed,
+	// tenant-gated v1 group (authorize + consent are the human's approval and
+	// the grant belongs to that human's organisation).
+	//
+	// Like MCPTransportH this is REQUIRED and mounted unconditionally: an
+	// unmounted route answers 404, which hides a wiring failure behind
+	// something that reads as a deliberate refusal.
+	MCPOAuthH *mcp.Handler
 	// BillingSuspensionGate is the M16 Phase C1 superadmin hard-lockout
 	// middleware (billing.Service.SuspensionGate) mounted on the tenant-scoped
 	// v1 group. nil ⇒ WPMGR_HOSTED is off; self-host never sees this check
@@ -425,6 +441,30 @@ func New(deps Deps) *Server {
 		deps.MCPTransportH.Register(engine)
 	}
 
+	// S6b — the UNAUTHENTICATED half of the MCP OAuth surface:
+	// POST /api/v1/oauth/mcp/register and POST /api/v1/oauth/mcp/token, plus the
+	// 405 fallbacks for all four OAuth paths.
+	//
+	// Mounted on the ROOT engine via a bare /api/v1 group, NOT on the
+	// sessionAuthGroup-derived v1 below, and NOT on sessionAuthGroup: RFC 7591
+	// registration precedes any human, and the token endpoint authenticates by
+	// presenting a code plus a PKCE verifier. Neither may ever read a tenant
+	// from a session, and mounting them behind Authenticate() would put a
+	// session principal within reach of code that must never consult one. Same
+	// reasoning and same shape as PricingH.RegisterPublic above.
+	//
+	// THE OPEN-REGISTRATION DECISION IS DELIBERATE, not a side effect of
+	// mounting the transport: /register lets anyone on the internet create rows
+	// in mcp_oauth_clients, which is required because GUI clients enrol
+	// themselves before any human signs in. The harm is bounded to anonymous
+	// row creation -- the table has no tenant_id, a client_id is not a secret,
+	// and possession authorizes nothing without a grant -- and that harm is
+	// bounded by the two-layer limiter and body cap in
+	// internal/mcp/register_limit.go. Read that file before changing this.
+	if deps.MCPOAuthH != nil {
+		deps.MCPOAuthH.RegisterPublic(engine.Group("/api/v1"))
+	}
+
 	// Agent-authenticated endpoints: the agent authenticator verifies an Ed25519
 	// signed request and resolves the site/tenant from the verified key — this
 	// group does NOT use the session/API-key principal chain.
@@ -524,6 +564,17 @@ func New(deps Deps) *Server {
 	// tenant gate here opens no hole. (ADR-045 Phase 3 onboarding.)
 	v1Auth := sessionAuthGroup.Group("/api/v1")
 	v1Auth.Use(authz.RequireAuth())
+	// S6b — the OPERATOR-AUTHENTICATED half of the MCP OAuth surface:
+	// GET /api/v1/oauth/mcp/authorize and POST /api/v1/oauth/mcp/consent.
+	//
+	// On v1, so RequireAuth AND RequireTenant both apply. RequireTenant is
+	// load-bearing rather than incidental: consent writes the grant under
+	// principal.TenantID, and a principal with uuid.Nil there would otherwise
+	// reach the service and attempt a grant belonging to no organisation.
+	// Refusing at the gate is what stops uuid.Nil being treated as a tenant.
+	if deps.MCPOAuthH != nil {
+		deps.MCPOAuthH.Register(v1)
+	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)
 	// m100 (GH #230 "rich tags") — tenant-level tag registry.

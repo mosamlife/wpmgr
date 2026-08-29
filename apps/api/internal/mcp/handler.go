@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -24,27 +26,127 @@ import (
 //     to the organisation of the human who approved it.
 type Handler struct {
 	svc *Service
+	// regLimit bounds anonymous registration. Never nil after NewHandler; a nil
+	// receiver refuses rather than allows (see registrationLimiter.allow).
+	regLimit *registrationLimiter
 }
 
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewHandler builds the OAuth handler with its registration limiter already
+// armed. The limiter is constructed HERE rather than injected with a nil
+// default, so there is no assembly order in which the endpoint is mounted
+// unlimited: an unmounted limiter would be a wiring failure that presents as
+// working registration, which is the failure mode this whole slice is most
+// exposed to.
+func NewHandler(svc *Service) *Handler {
+	return &Handler{
+		svc:      svc,
+		regLimit: newRegistrationLimiter(RegisterGlobalPerMin, RegisterPerPeerPerMin),
+	}
+}
 
-// RegisterPublic mounts the two unauthenticated OAuth endpoints.
+// maxOAuthBodyBytes caps the two unauthenticated POST bodies.
+//
+// Registration metadata is a handful of short strings and a redirect_uri array;
+// a token request is five short form fields. 16 KiB is orders of magnitude
+// above either and still bounds an anonymous caller streaming a body at a
+// decoder. Matches the house pattern (rum/handler.go:261,
+// site/monitoring_handler.go:212, backup/agent_handler.go:96, transport.go).
+const maxOAuthBodyBytes = 16 << 10
+
+// RegisterPublic mounts the two unauthenticated OAuth endpoints, AND the
+// method-not-allowed fallbacks for all four OAuth paths including the two
+// mounted by Register.
+//
+// The 405 fallbacks live here, unauthenticated, on purpose, and for the same
+// reason TransportHandler.Register gives: the verb is wrong regardless of who
+// is asking, and answering 401 to a GET on /consent sends an operator to check
+// a credential when the fix is to send a POST. Answering 404 is worse still --
+// it reads as "not deployed", which is exactly how the S6b-2 blocker presented.
+//
+// This couples the two mount points: Register's routes get their 405 siblings
+// from here, so a caller that mounts one without the other leaves GET
+// /authorize answering 405 for every verb including its own. server.New mounts
+// both from one Deps field, which is what keeps that unreachable.
 func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 	g := r.Group("/oauth/mcp")
 	g.POST("/register", h.register)
 	g.POST("/token", h.token)
+
+	// Registered explicitly per verb rather than via HandleMethodNotAllowed,
+	// because that flag is engine-global and would change the response of every
+	// other route in the API as a side effect of this slice.
+	methodNotAllowedExcept(g, "/register", http.MethodPost)
+	methodNotAllowedExcept(g, "/token", http.MethodPost)
+	methodNotAllowedExcept(g, "/authorize", http.MethodGet)
+	methodNotAllowedExcept(g, "/consent", http.MethodPost)
 }
 
 // Register mounts the two operator-authenticated endpoints. The caller's group
-// is already behind session auth.
+// is already behind session auth AND authz.RequireAuth/RequireTenant; the
+// handlers below re-check the principal anyway, because a handler that trusts
+// its mount point is one refactor away from being anonymous.
 func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group("/oauth/mcp")
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
 }
 
+// allVerbs is every method the 405 fallback covers. CONNECT and TRACE are
+// omitted: gin's router does not serve them and net/http handles CONNECT
+// separately.
+var allVerbs = []string{
+	http.MethodGet,
+	http.MethodHead,
+	http.MethodPost,
+	http.MethodPut,
+	http.MethodPatch,
+	http.MethodDelete,
+	http.MethodOptions,
+}
+
+// methodNotAllowedExcept mounts a JSON 405 on every verb except the ones the
+// path actually serves, naming the supported verb in Allow.
+func methodNotAllowedExcept(g *gin.RouterGroup, path string, supported ...string) {
+	allowed := strings.Join(supported, ", ")
+	for _, verb := range allVerbs {
+		if slices.Contains(supported, verb) {
+			continue
+		}
+		g.Handle(verb, path, func(c *gin.Context) {
+			c.Header("Allow", allowed)
+			c.JSON(http.StatusMethodNotAllowed, oauthErrorDTO{
+				Err:     "invalid_request",
+				ErrDesc: "this endpoint accepts " + allowed + " only",
+			})
+		})
+	}
+}
+
 // register is RFC 7591 dynamic client registration.
+//
+// UNAUTHENTICATED BY SPECIFICATION, so the two guards below are the entire
+// admission control and both run BEFORE the body is read: the rate limit, then
+// the body cap. See register_limit.go for why the limiter key is RemoteIP and
+// never ClientIP.
 func (h *Handler) register(c *gin.Context) {
+	// RemoteIP, not ClientIP. ClientIP returns an attacker-supplied header value
+	// under this engine's configuration; keying the limiter on it would enforce
+	// nothing while looking correct.
+	if ok, retryAfter := h.regLimit.allow(c.RemoteIP()); !ok {
+		secs := int(retryAfter.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		c.Header("Retry-After", strconv.Itoa(secs))
+		c.JSON(http.StatusTooManyRequests, oauthErrorDTO{
+			Err:     "invalid_request",
+			ErrDesc: "too many client registrations; retry later",
+		})
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthBodyBytes)
+
 	var body registrationRequestDTO
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, oauthErrorDTO{
@@ -162,6 +264,12 @@ func (h *Handler) consent(c *gin.Context) {
 // which is what the RFC specifies and what every client library sends, and
 // JSON for convenience.
 func (h *Handler) token(c *gin.Context) {
+	// Unauthenticated like /register, so the body is capped here too. It is NOT
+	// rate limited: a code is single-use, high-entropy and short-lived, so there
+	// is nothing here to grind at, and a limiter on this endpoint would refuse
+	// legitimate exchanges during the one moment a user is watching.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthBodyBytes)
+
 	var body tokenRequestDTO
 	if err := c.ShouldBind(&body); err != nil {
 		c.JSON(http.StatusBadRequest, oauthErrorDTO{
