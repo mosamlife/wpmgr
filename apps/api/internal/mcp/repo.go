@@ -39,6 +39,17 @@ type Store interface {
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
 	ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode string, tagIDs, siteIDs []uuid.UUID) ([]uuid.UUID, error)
+
+	// RecordClientIdentity stamps the connecting client's self-reported
+	// identity on the grant. protocolVersion is a *string and NOT a string so
+	// that "sent no header" survives as NULL -- see the method on Repo.
+	RecordClientIdentity(ctx context.Context, tenantID, grantID uuid.UUID, name, version string, protocolVersion *string) error
+
+	// ListSitesForRead reads one bounded page of the tenant's sites for the
+	// list_sites tool. It returns the rows AND whether the bound was reached
+	// with rows still unread, because a page-bounded list that reports itself
+	// as complete is a lie about the fleet.
+	ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and
@@ -268,6 +279,77 @@ func (r *Repo) ResolveScopeSites(ctx context.Context, tenantID uuid.UUID, mode s
 		return nil
 	})
 	return out, err
+}
+
+// RecordClientIdentity stamps client_name, client_version, protocol_version
+// and client_identity_recorded_at on the grant.
+//
+// IT RUNS InTenantTx AND NOT IN THE TOKEN-LOOKUP TRANSACTION. This is m124
+// obligation 1, the one that fails SILENTLY: mcp_grants' lookup policies are
+// FOR SELECT, so an UPDATE issued inside the lookup transaction matches ZERO
+// ROWS AND RAISES NO ERROR under FORCE ROW LEVEL SECURITY. The tenant is known
+// the moment the credential resolves, so the write belongs here.
+//
+// protocolVersion is a *string, and nil means the client sent no
+// MCP-Protocol-Version header. It MUST NOT be defaulted to a string: NULL is
+// what separates "connected and sent no header" (recorded_at set,
+// protocol_version NULL) from "has never connected" (recorded_at NULL), and
+// that first fact is a compatibility signal an operator needs.
+func (r *Repo) RecordClientIdentity(
+	ctx context.Context,
+	tenantID, grantID uuid.UUID,
+	name, version string,
+	protocolVersion *string,
+) error {
+	return r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := sqlc.New(tx).RecordMCPGrantClientIdentityInTenantTx(ctx,
+			sqlc.RecordMCPGrantClientIdentityInTenantTxParams{
+				TenantID:        tenantID,
+				ID:              grantID,
+				ClientName:      nullableText(name),
+				ClientVersion:   nullableText(version),
+				ProtocolVersion: protocolVersion,
+			})
+		if err != nil {
+			return fmt.Errorf("record mcp client identity: %w", err)
+		}
+		return nil
+	})
+}
+
+// ListSitesForRead reads one bounded page of the tenant's sites inside
+// InTenantTx, so `sites` RLS scopes the read to this tenant regardless of what
+// the grant claims.
+//
+// It asks for limit+1 rows and reports the overflow as `more` rather than
+// silently returning a short list. A page bound that is invisible to the
+// caller is how "these are your sites" becomes false for any org with more
+// sites than one page.
+func (r *Repo) ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
+	var rows []sqlc.ListSitesRow
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		out, err := sqlc.New(tx).ListSites(ctx, sqlc.ListSitesParams{
+			TenantID: tenantID,
+			Limit:    limit + 1,
+			Offset:   0,
+			// Sort is bound as a parameter and compared against fixed literals
+			// in the query; "name" is one of them and gives the model a stable
+			// order across calls.
+			Sort: "name",
+		})
+		if err != nil {
+			return fmt.Errorf("list sites for mcp read: %w", err)
+		}
+		rows = out
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if int32(len(rows)) > limit {
+		return rows[:limit], true, nil
+	}
+	return rows, false, nil
 }
 
 // nullableText is the pgtype-free helper for the *string columns sqlc emits.

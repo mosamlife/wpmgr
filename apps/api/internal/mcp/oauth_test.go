@@ -83,6 +83,22 @@ type fakeStore struct {
 
 	scopeSites []uuid.UUID
 
+	// S6b transport surface.
+	//
+	// identityErr forces the connect record to fail, which the transport must
+	// surface as a refused session rather than swallow.
+	identityErr error
+	// identityCalls records every RecordClientIdentity argument set, so a test
+	// can assert that an ABSENT protocol header was persisted as nil and not
+	// coerced into a string.
+	identityCalls []recordedIdentity
+
+	// sites is what ListSitesForRead returns; sitesMore is its page-bound
+	// overflow flag; sitesErr forces the read to fail.
+	sites     []sqlc.ListSitesRow
+	sitesMore bool
+	sitesErr  error
+
 	// call log
 	consumeCalls int
 	tokensMinted int
@@ -204,6 +220,38 @@ func (f *fakeStore) ReCheckAuthorization(_ context.Context, _, _ uuid.UUID) (sql
 func (f *fakeStore) ResolveScopeSites(_ context.Context, _ uuid.UUID, _ string, _, _ []uuid.UUID) ([]uuid.UUID, error) {
 	f.note("ResolveScopeSites")
 	return f.scopeSites, nil
+}
+
+// recordedIdentity is one captured RecordClientIdentity call. ProtocolVersion
+// is a *string so a test can tell "sent no header" (nil) from "sent the empty
+// string", which is the distinction the column exists to preserve.
+type recordedIdentity struct {
+	Name            string
+	Version         string
+	ProtocolVersion *string
+}
+
+func (f *fakeStore) RecordClientIdentity(
+	_ context.Context, _, _ uuid.UUID, name, version string, protocolVersion *string,
+) error {
+	f.note("RecordClientIdentity")
+	f.identityCalls = append(f.identityCalls, recordedIdentity{
+		Name: name, Version: version, ProtocolVersion: protocolVersion,
+	})
+	return f.identityErr
+}
+
+func (f *fakeStore) ListSitesForRead(_ context.Context, _ uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
+	f.note("ListSitesForRead")
+	if f.sitesErr != nil {
+		return nil, false, f.sitesErr
+	}
+	// Model the real repo's limit+1 overflow: a fake that ignored the bound
+	// would let a page-bound bug pass.
+	if int32(len(f.sites)) > limit {
+		return f.sites[:limit], true, nil
+	}
+	return f.sites, f.sitesMore, nil
 }
 
 // ---------------------------------------------------------------------------

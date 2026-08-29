@@ -1,0 +1,724 @@
+package mcp
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+)
+
+// ---------------------------------------------------------------------------
+// Harness
+//
+// The router is built by calling TransportHandler.Register with the SAME
+// argument shape server.go passes it (a gin.IRouter that is the root engine),
+// so these proofs exercise the real mount rather than a hand-rolled route that
+// only resembles it. A test that invented its own route would prove nothing
+// about whether POST /mcp is reachable.
+// ---------------------------------------------------------------------------
+
+const testBearer = "connection-token-plaintext"
+
+func newTransportRouter(t *testing.T, store Store) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewTransportHandler(NewService(store), slog.New(slog.DiscardHandler), "test-version")
+	h.Register(r)
+	return r
+}
+
+// liveGrantStore is a fakeStore whose credential resolves and whose grant is
+// authorized, scoped to the given sites.
+func liveGrantStore(siteIDs ...uuid.UUID) *fakeStore {
+	tenantID := uuid.New()
+	return &fakeStore{
+		tokenOK: true,
+		token: sqlc.GetMCPConnectionTokenByHashForLookupRow{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		recheckOK: true,
+		recheck: sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow{
+			Authorized: true,
+			GrantID:    uuid.New(),
+			TokenID:    uuid.New(),
+		},
+		scopeSites: siteIDs,
+	}
+}
+
+// post issues one JSON-RPC request. headers are applied verbatim, so a test
+// can send NO protocol header at all -- which is the case the design says to
+// expect most of.
+func post(t *testing.T, r *gin.Engine, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, TransportPath, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testBearer)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func decodeRPC(t *testing.T, w *httptest.ResponseRecorder) jsonrpcResponse {
+	t.Helper()
+	var resp jsonrpcResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not JSON-RPC: %v\nbody: %s", err, w.Body.String())
+	}
+	return resp
+}
+
+func initBody(protocolVersion string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+		"protocolVersion":%q,
+		"clientInfo":{"name":"Claude Desktop","version":"1.2.3"}}}`, protocolVersion)
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 1 -- A CLIENT BELOW THE FLOOR IS REFUSED.
+//
+// The floor is a property of the approval flow, not a compatibility
+// preference: revisions under 2025-03-26 drop fields the approval flow needs.
+// So the refusal must be a refusal, and it must NAME BOTH NUMBERS so the user
+// can act on it -- never a silent downgrade to the floor and never a quietly
+// reduced surface.
+// ---------------------------------------------------------------------------
+
+func TestInitialize_BelowFloorIsRefusedNotDowngraded(t *testing.T) {
+	// 2024-11-05 is the revision the design names explicitly as below the floor.
+	for _, rev := range []string{"2024-11-05", "2024-01-01", "2025-03-25"} {
+		t.Run(rev, func(t *testing.T) {
+			r := newTransportRouter(t, liveGrantStore(uuid.New()))
+			w := post(t, r, initBody(rev), nil)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("below-floor revision %s: got HTTP %d, want 400\nbody: %s",
+					rev, w.Code, w.Body.String())
+			}
+			resp := decodeRPC(t, w)
+			if resp.Error == nil {
+				t.Fatalf("below-floor revision %s produced no JSON-RPC error: %s", rev, w.Body.String())
+			}
+			if resp.Error.Code != codeProtocolUnsupported {
+				t.Errorf("error code = %d, want %d", resp.Error.Code, codeProtocolUnsupported)
+			}
+
+			// THE REFUSAL MUST NAME BOTH NUMBERS. A refusal that says only
+			// "unsupported" cannot be acted on.
+			if !strings.Contains(resp.Error.Message, ProtocolFloor) {
+				t.Errorf("refusal does not name the floor %s: %q", ProtocolFloor, resp.Error.Message)
+			}
+			if !strings.Contains(resp.Error.Message, ProtocolTarget) {
+				t.Errorf("refusal does not name the target %s: %q", ProtocolTarget, resp.Error.Message)
+			}
+
+			// AND IT MUST NOT HAVE SERVED THE REQUEST ANYWAY. A result here
+			// would be the silent downgrade the floor exists to prevent.
+			if resp.Result != nil {
+				t.Errorf("a below-floor client was served a result: %#v", resp.Result)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 2 -- THE THREE HEADER CASES ARE THREE DIFFERENT ANSWERS.
+//
+// Treating any two of them the same is a defect. Case 1 is the one that is
+// easy to get wrong in the STRICT direction: no surveyed client documents this
+// header, so header-less is the case to expect, and 400ing it rejects
+// conforming clients.
+// ---------------------------------------------------------------------------
+
+func TestProtocolHeader_ThreeCasesThreeAnswers(t *testing.T) {
+	cases := []struct {
+		name        string
+		header      string
+		sendHeader  bool
+		wantStatus  int
+		wantOutcome NegotiationOutcome
+	}{
+		{
+			name:        "absent assumes the floor and is NOT refused",
+			sendHeader:  false,
+			wantStatus:  http.StatusOK,
+			wantOutcome: NegotiationAssumedFloor,
+		},
+		{
+			name:        "present and supported is accepted",
+			header:      ProtocolTarget,
+			sendHeader:  true,
+			wantStatus:  http.StatusOK,
+			wantOutcome: NegotiationAccepted,
+		},
+		{
+			name:        "present and below the floor is refused",
+			header:      "2024-11-05",
+			sendHeader:  true,
+			wantStatus:  http.StatusBadRequest,
+			wantOutcome: NegotiationBelowFloor,
+		},
+		{
+			name:        "present and unparseable is refused",
+			header:      "banana",
+			sendHeader:  true,
+			wantStatus:  http.StatusBadRequest,
+			wantOutcome: NegotiationUnsupported,
+		},
+		{
+			name:        "present and an unknown FUTURE revision is refused, not assumed fine",
+			header:      "2099-01-01",
+			sendHeader:  true,
+			wantStatus:  http.StatusBadRequest,
+			wantOutcome: NegotiationUnsupported,
+		},
+		{
+			name:        "date-ish but not the revision form is unparseable, not compared",
+			header:      "2025-3-26",
+			sendHeader:  true,
+			wantStatus:  http.StatusBadRequest,
+			wantOutcome: NegotiationUnsupported,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The classifier itself.
+			raw := ""
+			if tc.sendHeader {
+				raw = tc.header
+			}
+			neg := NegotiateProtocol(raw)
+			if neg.Outcome != tc.wantOutcome {
+				t.Errorf("NegotiateProtocol(%q).Outcome = %v, want %v", raw, neg.Outcome, tc.wantOutcome)
+			}
+			// An accepted or assumed negotiation must yield a version in the
+			// window; a refusal must yield NO version, so a caller that
+			// ignores Outcome cannot read a usable revision out of a refusal.
+			if neg.Refused() && neg.Version != "" {
+				t.Errorf("refused negotiation carries a version %q", neg.Version)
+			}
+			if !neg.Refused() && neg.Version == "" {
+				t.Errorf("accepted negotiation carries no version")
+			}
+
+			// And the same three answers through the mounted route.
+			r := newTransportRouter(t, liveGrantStore(uuid.New()))
+			hdr := map[string]string{}
+			if tc.sendHeader {
+				hdr[ProtocolHeader] = tc.header
+			}
+			w := post(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, hdr)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("HTTP %d, want %d\nbody: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestProtocolHeader_AbsentIsNotABadRequest is PROOF 2's headline case stated
+// on its own, because it is the one a stricter-looking implementation gets
+// wrong while every other test still passes.
+func TestProtocolHeader_AbsentIsNotABadRequest(t *testing.T) {
+	r := newTransportRouter(t, liveGrantStore(uuid.New()))
+	w := post(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+
+	if w.Code == http.StatusBadRequest {
+		t.Fatalf("a header-less request was rejected with 400; the specification says assume %s", ProtocolFloor)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+	if got := NegotiateProtocol("").Version; got != ProtocolFloor {
+		t.Errorf("absent header negotiated %q, want the floor %q", got, ProtocolFloor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 3 -- 401, NEVER 404.
+//
+// A 404 hides a routing failure behind something that looks like a deliberate
+// refusal. The two facts are different: one is an outage, the other is
+// expected. This asserts against the MOUNTED route, and asserts the
+// distinction is real by showing an unmounted sibling path does 404.
+// ---------------------------------------------------------------------------
+
+func TestTransport_UnauthenticatedIs401Not404(t *testing.T) {
+	r := newTransportRouter(t, &fakeStore{}) // tokenOK false: nothing resolves
+
+	cases := []struct {
+		name string
+		auth string
+	}{
+		{"no Authorization header at all", ""},
+		{"empty bearer", "Bearer "},
+		{"wrong scheme", "Basic abc123"},
+		{"unknown token", "Bearer not-a-real-token"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, TransportPath,
+				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code == http.StatusNotFound {
+				t.Fatalf("unauthenticated request answered 404; it must be 401 so a routing "+
+					"failure stays distinguishable from a refusal\nbody: %s", w.Body.String())
+			}
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("HTTP %d, want 401\nbody: %s", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Bearer") {
+				t.Errorf("401 does not name the scheme: WWW-Authenticate = %q", got)
+			}
+		})
+	}
+
+	// The 404 control: a path that genuinely is not mounted DOES 404, which is
+	// what makes the assertion above meaningful rather than vacuous.
+	req := httptest.NewRequest(http.MethodPost, "/mcp-not-mounted", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("control path returned %d, want 404 — the 401-not-404 assertion above is vacuous", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 4 -- STALENESS IS HONEST.
+//
+// sites.components_updated_at is nullable with NO backfill precisely so that
+// "we have never collected this" stays distinguishable from "collected at time
+// T". A null must not render as a date, and must not fall back to updated_at:
+// that fallback was removed deliberately because a 60s heartbeat bumps
+// updated_at without touching components.
+// ---------------------------------------------------------------------------
+
+func siteRow(name string, componentsAt *time.Time) sqlc.ListSitesRow {
+	row := sqlc.ListSitesRow{
+		ID:              uuid.New(),
+		Name:            name,
+		Url:             "https://" + name + ".example",
+		ConnectionState: "connected",
+		HealthStatus:    "healthy",
+		WpVersion:       "6.5.2",
+		PhpVersion:      "8.2.14",
+		AgentVersion:    "0.61.136",
+		// updated_at is ALWAYS recent, which is exactly the trap: a fallback
+		// to it would make a never-collected site look freshly inventoried.
+		UpdatedAt: time.Now(),
+		CreatedAt: time.Now(),
+	}
+	if componentsAt != nil {
+		row.ComponentsUpdatedAt = pgtype.Timestamptz{Time: *componentsAt, Valid: true}
+	}
+	return row
+}
+
+func TestListSites_NullComponentsUpdatedAtRendersNeverCollected(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	rows := []sqlc.ListSitesRow{
+		siteRow("never", nil),
+		siteRow("collected", &collected),
+	}
+
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	text, err := buildListSitesResult(rows, false, now)
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+
+	var payload struct {
+		Sites []siteRecord `json:"sites"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart(t, text)), &payload); err != nil {
+		t.Fatalf("payload is not JSON: %v\n%s", err, text)
+	}
+	if len(payload.Sites) != 2 {
+		t.Fatalf("got %d sites, want 2", len(payload.Sites))
+	}
+
+	never := payload.Sites[0]
+	if never.InventoryStatus != inventoryNeverCollected {
+		t.Errorf("never-collected site has status %q, want %q", never.InventoryStatus, inventoryNeverCollected)
+	}
+	if never.InventoryCollectedAt != nil {
+		t.Errorf("a null components_updated_at was rendered as the date %q", *never.InventoryCollectedAt)
+	}
+	if never.InventoryAgeSeconds != nil {
+		t.Errorf("a null components_updated_at was given the age %d; zero/any age reads as "+
+			"'collected', which is the inversion of the truth", *never.InventoryAgeSeconds)
+	}
+
+	// The raw JSON must carry an explicit null, not an omitted key: an absent
+	// key invites a reader to supply its own default.
+	if !strings.Contains(text, `"inventory_collected_at":null`) {
+		t.Errorf("never-collected site does not serialise an explicit null:\n%s", text)
+	}
+
+	got := payload.Sites[1]
+	if got.InventoryStatus != inventoryCollected {
+		t.Errorf("collected site has status %q, want %q", got.InventoryStatus, inventoryCollected)
+	}
+	if got.InventoryCollectedAt == nil || *got.InventoryCollectedAt != collected.Format(time.RFC3339) {
+		t.Errorf("collected site rendered %v, want %s", got.InventoryCollectedAt, collected.Format(time.RFC3339))
+	}
+	if got.InventoryAgeSeconds == nil || *got.InventoryAgeSeconds != int64(now.Sub(collected).Seconds()) {
+		t.Errorf("collected site age = %v, want %d", got.InventoryAgeSeconds, int64(now.Sub(collected).Seconds()))
+	}
+
+	// And the two must not be equal on any staleness field — if they were, the
+	// distinction the nullable column exists for would be gone.
+	if never.InventoryStatus == got.InventoryStatus {
+		t.Error("never-collected and collected sites report the same inventory_status")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 5 -- TRUNCATION IS VISIBLE AND CUTS AT A RECORD BOUNDARY.
+//
+// A silently truncated result is a lie about the fleet. The payload here is
+// sized to STRADDLE the cap: enough sites that the budget runs out partway
+// through the list, so the cut lands between two records rather than at a
+// convenient edge.
+// ---------------------------------------------------------------------------
+
+func TestListSites_TruncationCutsAtRecordBoundaryWithAMarker(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+
+	// Build enough records to overrun recordByteBudget several times over, so
+	// the budget is certain to run out mid-list.
+	var rows []sqlc.ListSitesRow
+	for i := 0; i < 400; i++ {
+		rows = append(rows, siteRow(fmt.Sprintf("site-%03d-with-a-deliberately-long-name-to-consume-budget", i), &collected))
+	}
+
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	text, err := buildListSitesResult(rows, false, now)
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+
+	raw := jsonPart(t, text)
+
+	// 1. THE RESULT IS STILL VALID JSON. This is what "cut at a record
+	//    boundary" buys: a mid-record cut would leave a truncated object and
+	//    the model would get a parse error instead of a short list.
+	var payload struct {
+		Sites      []siteRecord   `json:"sites"`
+		Truncation truncationInfo `json:"truncation"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("truncated payload is not valid JSON — the cut landed mid-record: %v", err)
+	}
+
+	// 2. IT ACTUALLY TRUNCATED, so the rest of this test is not vacuous.
+	if len(payload.Sites) >= len(rows) {
+		t.Fatalf("nothing was truncated (%d of %d returned); the cap is not being applied",
+			len(payload.Sites), len(rows))
+	}
+	if len(payload.Sites) == 0 {
+		t.Fatal("everything was truncated; the budget is too small to prove a boundary cut")
+	}
+
+	// 3. EVERY RETURNED RECORD IS WHOLE. The last one in particular must be a
+	//    complete site, not a fragment.
+	last := payload.Sites[len(payload.Sites)-1]
+	if last.ID == "" || last.Name == "" || last.InventoryStatus == "" {
+		t.Errorf("the final record is a fragment, not a whole record: %#v", last)
+	}
+
+	// 4. THE MARKER IS PRESENT AND MACHINE-READABLE.
+	if !payload.Truncation.Truncated {
+		t.Error("a truncated result reports truncated=false — it reads as complete")
+	}
+	if payload.Truncation.Returned != len(payload.Sites) {
+		t.Errorf("truncation.returned = %d but %d sites present", payload.Truncation.Returned, len(payload.Sites))
+	}
+	if payload.Truncation.Available != len(rows) {
+		t.Errorf("truncation.available = %d, want %d", payload.Truncation.Available, len(rows))
+	}
+
+	// 5. THE MARKER IS ALSO AT THE HEAD, not only in the tail. The tail is
+	//    what gets cut by a downstream context trim, so a marker that lives
+	//    only at the end turns back into a silent truncation.
+	head := text[:len(text)-len(raw)]
+	if !strings.Contains(head, "INCOMPLETE RESULT") {
+		t.Errorf("the truncation marker is not in the prepended header:\n%s", head)
+	}
+
+	// 6. THE BUDGET WAS ACTUALLY RESPECTED BY THE BYTES ACTUALLY EMITTED.
+	//    The allowance over recordByteBudget is the JSON envelope (the "sites"
+	//    and "truncation" keys and the truncation explanation), not slack in
+	//    the record budget itself.
+	const envelopeAllowance = 1024
+	if len(raw) > recordByteBudget+envelopeAllowance {
+		t.Errorf("emitted payload is %d bytes, over the %d-byte record budget (+%d envelope); "+
+			"the cap is not governing the bytes actually sent", len(raw), recordByteBudget, envelopeAllowance)
+	}
+}
+
+// TestListSites_UntruncatedResultDoesNotClaimTruncation is the over-fire half:
+// a guard that reddens correct work gets switched off. A result that fits must
+// NOT carry the marker.
+func TestListSites_UntruncatedResultIsNotMarked(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	rows := []sqlc.ListSitesRow{siteRow("one", &collected), siteRow("two", nil)}
+
+	text, err := buildListSitesResult(rows, false, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+	var payload struct {
+		Sites      []siteRecord   `json:"sites"`
+		Truncation truncationInfo `json:"truncation"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart(t, text)), &payload); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if payload.Truncation.Truncated {
+		t.Error("a complete result claims to be truncated")
+	}
+	if len(payload.Sites) != 2 {
+		t.Errorf("got %d sites, want 2", len(payload.Sites))
+	}
+	if strings.Contains(text, "INCOMPLETE RESULT") {
+		t.Error("a complete result carries the truncation banner")
+	}
+}
+
+// TestListSites_PageBoundIsReportedAsTruncation proves the OTHER truncation
+// source is not silent: rows the query never read are still missing rows.
+func TestListSites_PageBoundIsReportedAsTruncation(t *testing.T) {
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	rows := []sqlc.ListSitesRow{siteRow("one", &collected)}
+
+	text, err := buildListSitesResult(rows, true /* more */, time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("buildListSitesResult: %v", err)
+	}
+	var payload struct {
+		Truncation truncationInfo `json:"truncation"`
+	}
+	if err := json.Unmarshal([]byte(jsonPart(t, text)), &payload); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if !payload.Truncation.Truncated {
+		t.Fatal("a page-bounded result reports truncated=false — it reads as the whole fleet")
+	}
+	// available must NOT claim a total it cannot know.
+	if payload.Truncation.Available != -1 {
+		t.Errorf("truncation.available = %d; a page-bounded read cannot know the total and "+
+			"must not state one", payload.Truncation.Available)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 6 -- AN EMPTY SITE SCOPE IS A NAMED REFUSAL, NEVER AN EMPTY SUCCESS.
+//
+// An empty result that reads as "nothing to do" is how a scoping bug becomes
+// invisible, and an empty SiteSet must never widen into "all sites".
+// ---------------------------------------------------------------------------
+
+func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
+	store := liveGrantStore() // scopeSites nil: the tag matched no site
+	r := newTransportRouter(t, store)
+
+	w := post(t, r, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+
+	resp := decodeRPC(t, w)
+	if resp.Error == nil {
+		t.Fatalf("an empty site scope produced a SUCCESS: %s", w.Body.String())
+	}
+	if resp.Error.Code != codeScopeEmpty {
+		t.Errorf("error code = %d, want %d (%s)", resp.Error.Code, codeScopeEmpty, ErrCodeScopeEmpty)
+	}
+	if strings.Contains(w.Body.String(), `"sites"`) {
+		t.Error("the refusal body contains a sites list; it must not look like a result")
+	}
+	// It must not have read any sites either: an empty scope is refused before
+	// the query, so a scoping bug cannot be masked by a tenant-wide read.
+	for _, c := range store.calls {
+		if c == "ListSitesForRead" {
+			t.Error("an empty-scope request still read the sites table")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 7 -- THE CONNECT RECORD KEEPS HEADER ABSENCE AS ABSENCE.
+//
+// Decision 10: a stamped client_identity_recorded_at with a NULL
+// protocol_version is "connected and sent no header", which is a compatibility
+// signal an operator needs. Defaulting it to the negotiated floor would
+// manufacture a header the client never sent.
+// ---------------------------------------------------------------------------
+
+func TestInitialize_RecordsClientIdentityAndHeaderAbsence(t *testing.T) {
+	t.Run("header absent is persisted as NULL", func(t *testing.T) {
+		store := liveGrantStore(uuid.New())
+		r := newTransportRouter(t, store)
+
+		w := post(t, r, initBody(ProtocolTarget), nil) // no MCP-Protocol-Version
+		if w.Code != http.StatusOK {
+			t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+		}
+		if len(store.identityCalls) != 1 {
+			t.Fatalf("got %d identity records, want 1", len(store.identityCalls))
+		}
+		rec := store.identityCalls[0]
+		if rec.ProtocolVersion != nil {
+			t.Errorf("an ABSENT header was persisted as %q; absence must stay NULL", *rec.ProtocolVersion)
+		}
+		if rec.ProtocolVersion == nil && strings.Contains(w.Body.String(), `"protocolVersion":""`) {
+			t.Error("the negotiated version leaked as empty")
+		}
+		if rec.Name != "Claude Desktop" || rec.Version != "1.2.3" {
+			t.Errorf("client identity = %q/%q, want Claude Desktop/1.2.3", rec.Name, rec.Version)
+		}
+	})
+
+	t.Run("header present is persisted verbatim", func(t *testing.T) {
+		store := liveGrantStore(uuid.New())
+		r := newTransportRouter(t, store)
+
+		w := post(t, r, initBody(ProtocolTarget), map[string]string{ProtocolHeader: ProtocolTarget})
+		if w.Code != http.StatusOK {
+			t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+		}
+		rec := store.identityCalls[0]
+		if rec.ProtocolVersion == nil {
+			t.Fatal("a PRESENT header was persisted as NULL; the two absences are now indistinguishable")
+		}
+		if *rec.ProtocolVersion != ProtocolTarget {
+			t.Errorf("persisted %q, want %q", *rec.ProtocolVersion, ProtocolTarget)
+		}
+	})
+}
+
+// TestInitialize_FailedConnectRecordIsNotSwallowed: a failed write must refuse
+// the session, not proceed with an unattributable connection.
+func TestInitialize_FailedConnectRecordRefusesTheSession(t *testing.T) {
+	store := liveGrantStore(uuid.New())
+	store.identityErr = fmt.Errorf("database is down")
+	r := newTransportRouter(t, store)
+
+	w := post(t, r, initBody(ProtocolTarget), nil)
+	resp := decodeRPC(t, w)
+	if resp.Error == nil {
+		t.Fatalf("a failed connect record was swallowed and the session succeeded: %s", w.Body.String())
+	}
+	if resp.Error.Code != codeInternalError {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, codeInternalError)
+	}
+	if strings.Contains(resp.Error.Message, "database is down") {
+		t.Error("the internal error message leaked to the client")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 8 -- tools/list IS TOOLS ONLY, AND THE SURFACE IS READ-ONLY.
+// ---------------------------------------------------------------------------
+
+func TestToolsList_IsToolsOnlyAndReadOnly(t *testing.T) {
+	r := newTransportRouter(t, liveGrantStore(uuid.New()))
+	w := post(t, r, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			Tools []ToolDescriptor `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("tools/list is not JSON: %v", err)
+	}
+	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0].Name != ToolListSites {
+		t.Fatalf("tools = %#v, want exactly [%s]", resp.Result.Tools, ToolListSites)
+	}
+	if len(resp.Result.Tools[0].InputSchema) == 0 {
+		t.Error("the tool carries no inputSchema, so a model cannot call it without guessing")
+	}
+
+	// Resources and prompts are refused BY NAME, not answered with an empty
+	// list: "this server has no resources" is a different and false statement
+	// from "this server does not implement resources".
+	for _, method := range []string{"resources/list", "prompts/list"} {
+		w := post(t, r, fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":%q}`, method), nil)
+		resp := decodeRPC(t, w)
+		if resp.Error == nil {
+			t.Errorf("%s returned a result; Phase 1 exposes tools only", method)
+			continue
+		}
+		if resp.Error.Code != codeMethodNotFound {
+			t.Errorf("%s error code = %d, want %d", method, resp.Error.Code, codeMethodNotFound)
+		}
+	}
+}
+
+// TestToolsCall_ReadPathReturnsStampedSites is the happy path end to end
+// through the mounted route, so the tool is proven reachable and not merely
+// unit-tested.
+func TestToolsCall_ReadPathReturnsStampedSites(t *testing.T) {
+	allowed := uuid.New()
+	store := liveGrantStore(allowed)
+
+	collected := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	inScope := siteRow("in-scope", &collected)
+	inScope.ID = allowed
+	outOfScope := siteRow("out-of-scope", &collected) // a different, unscoped id
+	store.sites = []sqlc.ListSitesRow{inScope, outOfScope}
+
+	r := newTransportRouter(t, store)
+	w := post(t, r, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "in-scope") {
+		t.Errorf("the scoped site is missing from the result: %s", body)
+	}
+	// THE SITE SET IS A FILTER, NOT DECORATION. A site outside the resolved set
+	// must not appear even though the tenant read returned it.
+	if strings.Contains(body, "out-of-scope") {
+		t.Error("a site outside the grant's resolved site set was returned")
+	}
+}
+
+// jsonPart returns the JSON payload half of a tool result, i.e. everything
+// from the first '{' that begins the payload object. The instructions are
+// PREPENDED, so the payload is the tail.
+func jsonPart(t *testing.T, text string) string {
+	t.Helper()
+	i := strings.Index(text, "{")
+	if i < 0 {
+		t.Fatalf("no JSON payload found in tool result:\n%s", text)
+	}
+	return text[i:]
+}
+
+var _ = io.Discard

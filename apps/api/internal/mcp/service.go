@@ -38,6 +38,13 @@ const (
 	ErrCodeInvalidRequest      = "mcp_invalid_request"
 	ErrCodeUnsupportedResponse = "mcp_unsupported_response_type"
 	ErrCodeRegistrationInvalid = "mcp_invalid_client_metadata"
+
+	// ErrCodeScopeEmpty is the NAMED refusal for a grant whose site scope
+	// resolves to no sites at all -- a tag that matches nothing, or a list
+	// whose every id was dropped by tenant RLS. It exists because the only
+	// alternative is returning an empty success, and an empty result that
+	// reads as "nothing to do" is how a scoping bug becomes invisible.
+	ErrCodeScopeEmpty = "mcp_scope_empty"
 )
 
 // Clock is injectable so expiry behaviour is testable without sleeping.
@@ -763,6 +770,62 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 		TokenID:  chk.TokenID,
 		Sites:    NewSiteSet(ids),
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Transport-facing service methods (S6b)
+// ---------------------------------------------------------------------------
+
+// RecordConnect persists what the client said about itself at initialize:
+// name, version, the protocol header value OR ITS ABSENCE, and the time.
+//
+// protocolHeader is nil when the client sent no MCP-Protocol-Version header.
+// It is passed straight through as NULL and is NEVER defaulted to a string:
+// absence is a fact worth storing, and NULL here is what separates "connected
+// and sent no header" from "has never connected".
+//
+// The error is RETURNED, not logged and dropped. The caller refuses the
+// session on failure -- a connection the control plane could not attribute is
+// worse than a refused one.
+func (s *Service) RecordConnect(ctx context.Context, auth AuthorizedRequest, name, version string, protocolHeader *string) error {
+	if err := s.store.RecordClientIdentity(ctx, auth.TenantID, auth.GrantID, name, version, protocolHeader); err != nil {
+		return fmt.Errorf("record mcp connect: %w", err)
+	}
+	return nil
+}
+
+// ListSitesForModel is the one Phase 1 read tool. It returns the rendered tool
+// text, already byte-capped and staleness-stamped.
+//
+// THE EMPTY-SCOPE BRANCH IS A REFUSAL, NOT AN EMPTY LIST. auth.Sites is the
+// resolved set from the audited chokepoint, and an empty one means NO SITES --
+// never every site. Returning `{"sites": []}` here would be indistinguishable
+// from a healthy organisation that owns nothing, which is exactly how a
+// scoping bug stays invisible.
+func (s *Service) ListSitesForModel(ctx context.Context, auth AuthorizedRequest) (string, error) {
+	if auth.Sites.IsEmpty() {
+		return "", domain.Forbidden(ErrCodeScopeEmpty,
+			"this connection's site scope resolves to no sites, so there is nothing it may read. "+
+				"This is a refusal, not an empty fleet: check the grant's site scope.")
+	}
+
+	rows, more, err := s.store.ListSitesForRead(ctx, auth.TenantID, sitesPageBound)
+	if err != nil {
+		return "", fmt.Errorf("list sites for mcp read: %w", err)
+	}
+
+	// Filter to the grant's resolved set. The query is tenant-scoped by RLS;
+	// this narrows it further to the sites THIS GRANT may read. SiteSet.Allows
+	// returns false for every id on an empty or zero-value set, so there is no
+	// widening path even if the set were somehow lost between here and there.
+	allowed := make([]sqlc.ListSitesRow, 0, len(rows))
+	for _, r := range rows {
+		if auth.Sites.Allows(r.ID) {
+			allowed = append(allowed, r)
+		}
+	}
+
+	return buildListSitesResult(allowed, more, s.now())
 }
 
 // ---------------------------------------------------------------------------
