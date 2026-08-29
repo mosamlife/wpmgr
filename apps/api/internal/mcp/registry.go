@@ -107,7 +107,7 @@ type ToolPolicy struct {
 // A write tool arrives with its own capability, its own migration for the
 // stored narrowing, and its own review -- never by being appended here.
 func registryTools() []ToolPolicy {
-	return []ToolPolicy{{
+	entries := []ToolPolicy{{
 		Name: ToolListSites,
 		Description: "List the WordPress sites this connection may read, with their " +
 			"connection state, health, WordPress/PHP/agent versions, and an explicit " +
@@ -122,6 +122,36 @@ func registryTools() []ToolPolicy {
 			return svc.ListSitesForModel(ctx, auth)
 		},
 	}}
+
+	// EVERY ENTRY GETS ITS OWN COPY OF ITS SCHEMA BYTES.
+	//
+	// A fresh slice of entries is not enough. json.RawMessage is a []byte, so
+	// assigning listSitesSchema into the literal shares one backing array with
+	// every entry this function has ever returned and ever will. The closure
+	// property was therefore half-built: nobody could add a tool, and anybody
+	// holding a returned descriptor could rewrite what an existing tool claims
+	// to accept -- for every later caller, including the tools/list of every
+	// other connection on the instance.
+	//
+	// It is the same failure the SiteSet and CapabilitySet reasoning is built
+	// around, one level in: the container is safe and the contents leak. The
+	// container being immutable is the thing that makes the sharing invisible,
+	// which is why it survived a security review.
+	for i := range entries {
+		entries[i].InputSchema = cloneSchema(entries[i].InputSchema)
+	}
+	return entries
+}
+
+// cloneSchema copies schema bytes so a caller cannot mutate the package's
+// copy. A nil schema stays nil rather than becoming an empty non-nil slice:
+// "no schema" and "an empty schema" are different, and
+// TestRegistryEntriesAreWellFormed refuses the first.
+func cloneSchema(s json.RawMessage) json.RawMessage {
+	if s == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), s...)
 }
 
 // ---------------------------------------------------------------------------

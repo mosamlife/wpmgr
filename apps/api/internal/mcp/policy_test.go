@@ -14,6 +14,13 @@ import (
 // The whole reason CapabilitySet is a struct is that a []Capability's zero
 // value reads as "no filter" at any call site that forgets to check it.
 func TestZeroCapabilitySetAllowsNothing(t *testing.T) {
+	// The loops below range over AllCapabilities(), so an empty vocabulary
+	// would make this report PASS having checked nothing. Same class as the
+	// registry guards -- see nonEmptyRegistry in registry_test.go.
+	if len(AllCapabilities()) == 0 {
+		t.Fatal("the capability vocabulary is empty, so the loops below check nothing")
+	}
+
 	var zero CapabilitySet
 	empty := NewCapabilitySet(nil)
 

@@ -16,6 +16,27 @@ import (
 // schema-guessing model, and discovery never grants.
 // ---------------------------------------------------------------------------
 
+// nonEmptyRegistry returns the registry, having first asserted it is not empty.
+//
+// EVERY GUARD IN THIS FILE THAT LOOPS OVER THE REGISTRY GOES THROUGH IT. A
+// range over an empty slice succeeds having checked nothing, so a guard written
+// as a bare loop reports PASS on an empty registry -- which is CLAUDE.md's rule
+// verbatim: a guard that finds nothing must go red, not green.
+//
+// This is the second vacuous-guard finding on this file (TestRegistryIsClosed
+// was the first, and it was misnamed rather than empty), so the fix is one
+// accessor the guards share rather than one assertion pasted into each, which
+// would drift the moment somebody adds a guard and forgets.
+func nonEmptyRegistry(t *testing.T) []ToolPolicy {
+	t.Helper()
+	entries := registryTools()
+	if len(entries) == 0 {
+		t.Fatal("the registry is empty, so every guard that ranges over it would " +
+			"pass having checked nothing")
+	}
+	return entries
+}
+
 // authWith builds an AuthorizedRequest directly, which is how a test reaches
 // the registry gate with a chosen capability set. Both fields are set
 // explicitly: the zero value of each allows nothing, so a test that forgot one
@@ -154,7 +175,7 @@ func TestExitGate_VisibilityAndCallabilityAgree(t *testing.T) {
 			}
 		}
 
-		for _, e := range registryTools() {
+		for _, e := range nonEmptyRegistry(t) {
 			_, _, err := AuthorizeTool(e.Name, auth)
 			if err == nil && !seen[e.Name] {
 				t.Fatalf("caps=%v: %q was CALLABLE but never shown by tools/list", caps.Sorted(), e.Name)
@@ -193,11 +214,7 @@ func TestSiteScopeIsRefusedByName(t *testing.T) {
 // way an entry can be added that compiles, passes every other test, and is
 // wrong at runtime.
 func TestRegistryEntriesAreWellFormed(t *testing.T) {
-	entries := registryTools()
-	if len(entries) == 0 {
-		// An empty registry would make every proof above pass vacuously.
-		t.Fatal("the registry is empty; every exit-gate proof above is vacuous")
-	}
+	entries := nonEmptyRegistry(t)
 
 	names := map[string]bool{}
 	for _, e := range entries {
@@ -247,7 +264,7 @@ func TestRegistryEntriesAreWellFormed(t *testing.T) {
 // test. A test whose name claims the stronger property is worse than no test,
 // because the next reader stops looking.
 func TestRegistryIsNotAliasedAcrossCalls(t *testing.T) {
-	before := len(registryTools())
+	before := len(nonEmptyRegistry(t))
 
 	stolen := registryTools()
 	stolen = append(stolen, ToolPolicy{Name: "smuggled_write_tool", Capability: CapSitesRead})
@@ -273,6 +290,61 @@ func TestRegistryIsNotAliasedAcrossCalls(t *testing.T) {
 	_ = t1
 }
 
+// TestSchemaBytesAreNotSharedAcrossCallers is the other half of the closure
+// property, and the half that was missing.
+//
+// A fresh slice of descriptors is not enough. json.RawMessage is a []byte, so
+// before this the schema bytes were shared with every descriptor the package
+// ever handed out: nobody could add a tool, and anybody holding one returned
+// descriptor could rewrite what an existing tool claims to accept, for every
+// later caller on the instance. The container was immutable, which is exactly
+// what made the sharing invisible.
+func TestSchemaBytesAreNotSharedAcrossCallers(t *testing.T) {
+	first := Tools()
+	if len(first) == 0 {
+		t.Fatal("Tools() is empty, so this guard checks nothing")
+	}
+	if len(first[0].InputSchema) == 0 {
+		t.Fatal("the first tool has no schema, so this guard checks nothing")
+	}
+
+	original := string(first[0].InputSchema)
+
+	// A caller scribbles on the schema it was handed.
+	for i := range first[0].InputSchema {
+		first[0].InputSchema[i] = 'X'
+	}
+
+	if got := string(Tools()[0].InputSchema); got != original {
+		t.Fatalf("mutating one caller's schema changed the package's copy:\n got  %s\n want %s", got, original)
+	}
+
+	// VisibleTools and AuthorizeTool hand out the same bytes and must be
+	// independent too.
+	auth := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
+	vis := VisibleTools(auth)
+	if len(vis) == 0 {
+		t.Fatal("a fully-capable connection saw no tools, so this half checks nothing")
+	}
+	for i := range vis[0].InputSchema {
+		vis[0].InputSchema[i] = 'Y'
+	}
+	if got := string(VisibleTools(auth)[0].InputSchema); got != original {
+		t.Fatalf("VisibleTools shares schema bytes across callers:\n got  %s\n want %s", got, original)
+	}
+
+	entry, _, err := AuthorizeTool(ToolListSites, auth)
+	if err != nil {
+		t.Fatalf("AuthorizeTool: %v", err)
+	}
+	for i := range entry.InputSchema {
+		entry.InputSchema[i] = 'Z'
+	}
+	if got := string(Tools()[0].InputSchema); got != original {
+		t.Fatalf("AuthorizeTool shares schema bytes with the registry:\n got  %s\n want %s", got, original)
+	}
+}
+
 // TestNoRegisteredToolIsWriteShaped is the closure half the aliasing test above
 // does NOT cover, kept here so the registry file carries its own read-only
 // guard rather than relying on a transport test to catch a registry change.
@@ -287,7 +359,7 @@ func TestNoRegisteredToolIsWriteShaped(t *testing.T) {
 		"install", "uninstall", "activate", "deactivate", "write",
 		"set_", "purge", "restore", "rollback", "run_", "exec",
 	}
-	for _, e := range registryTools() {
+	for _, e := range nonEmptyRegistry(t) {
 		lower := strings.ToLower(e.Name)
 		for _, verb := range forbidden {
 			if strings.Contains(lower, verb) {
@@ -313,8 +385,12 @@ func TestVisibleToolNamesDiscloseOnlyTheConnectionsOwnSurface(t *testing.T) {
 		t.Fatalf("a connection holding no capability was told about %v", got)
 	}
 
+	// len(got) == len(registry) is satisfied by 0 == 0, so the registry is
+	// asserted non-empty first: otherwise this guard reports PASS on a server
+	// with no tools at all.
+	want := len(nonEmptyRegistry(t))
 	full := authWith(NewCapabilitySet(AllCapabilities()), uuid.New())
-	if got := visibleToolNames(full); len(got) != len(registryTools()) {
-		t.Fatalf("a fully-capable connection saw %d of %d tools", len(got), len(registryTools()))
+	if got := visibleToolNames(full); len(got) != want {
+		t.Fatalf("a fully-capable connection saw %d of %d tools", len(got), want)
 	}
 }
