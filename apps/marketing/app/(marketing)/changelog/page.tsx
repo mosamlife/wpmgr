@@ -50,6 +50,46 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.147",
+    date: "2026-08-30",
+    summary:
+      "A read-only AI connection surface, so an AI client can be granted scoped read access to a fleet behind an explicit consent screen. Governed per-site and organisation context arrives with it: five screens for writing the context an AI client reads, with version history, diff and restore. Also: network-activated plugins on a multisite network now report as active, the site inventory stops presenting \"never collected\" as a collection date, and authentication rate limits now derive the client address from the deployment's proxy configuration. Self-hosted operators should read the upgrade note in the changelog before updating.",
+    items: [
+      {
+        tag: "Added",
+        text: "A read-only AI connection surface. An AI client can be granted scoped read access to a fleet through a standard authorization flow, with an explicit consent screen before anything is granted. A client that asks for no recognised scope is refused rather than given a default, and every tool call is checked against the connection's own policy in its own right, so a tool that was filtered out of what a connection can see cannot be invoked by naming it directly.",
+      },
+      {
+        tag: "Added",
+        text: "The AI-connection consent screen shows what a client is asking for before you grant it, and marks a client's self-declared identity as unverified rather than presenting it as established.",
+      },
+      {
+        tag: "Added",
+        text: "Governed per-site and organisation context: five screens for the standing context an AI client reads, including an effective-context preview, separate site and organisation editors, and version history with diff and restore. Where a layer could not be loaded or had to be truncated, the screens say so rather than rendering a partial answer as a complete one.",
+      },
+      {
+        tag: "Changed",
+        text: "Authentication rate limits now derive the client address from the deployment's proxy configuration rather than assuming one topology. Self-hosters running the bundled deployment or their own reverse proxy should set the new proxy hop count deliberately; the install guide explains how to count it.",
+      },
+      {
+        tag: "Changed",
+        text: "Updating your own profile now returns your scope and role with it, so a client no longer needs a second call to learn what the account it just updated can do.",
+      },
+      {
+        tag: "Fixed",
+        text: "On a multisite network, a plugin activated for the whole network now reports as active in site metadata. It was reported inactive, so it went missing from the plugin inventory and from everything that reads it, including update and vulnerability checks.",
+      },
+      {
+        tag: "Fixed",
+        text: "The site inventory no longer presents \"never collected\" as though it were a collection date. Inventory age is stamped from when the component list was actually gathered rather than from the site's last heartbeat, a site with nothing gathered renders an explicit unknown state, and a failed load is now distinguishable from a genuinely empty inventory.",
+      },
+      {
+        tag: "Security",
+        text: "The control plane now validates its session secret at boot and refuses to start on a value unfit to hold confidentially, naming the setting in the error. Self-hosted operators upgrading should rotate that value as part of the upgrade; see the changelog entry for the one step to take first.",
+      },
+    ],
+  },
+  {
     version: "0.61.146",
     date: "2026-08-26",
     summary:

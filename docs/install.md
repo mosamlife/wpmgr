@@ -97,6 +97,7 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | Var | Purpose | Default |
 |-----|---------|---------|
 | `WPMGR_HTTP_ADDR` | API listen address | `:8080` |
+| `WPMGR_AUTH_PROXY_HOPS` | proxies in front of the control plane that append to `X-Forwarded-For`. **Set this deliberately**, see [Proxy hops](#proxy-hops) below | `2` (the hosted topology; the bundled compose stack needs `1`) |
 | `WPMGR_DB_HOST` | Postgres host | `localhost` |
 | `WPMGR_DB_PORT` | Postgres port | `5432` |
 | `WPMGR_DB_NAME` | Postgres database | `wpmgr` |
@@ -113,6 +114,39 @@ example for each — read it top-to-bottom. Key env vars (all prefixed `WPMGR_`)
 | `WPMGR_SCREENSHOT_READY_WAIT` | screenshot capture wait budget in whole seconds (media-encoder; raise on slow hosting) | `8` |
 | `WPMGR_HOSTED` | managed-SaaS entitlements switch; hosted only, leave unset on self-host | `false` |
 | `VITE_API_BASE_URL` | API base for the SPA | `http://localhost:8080` |
+
+### Proxy hops: `WPMGR_AUTH_PROXY_HOPS` {#proxy-hops}
+
+The number of proxies in front of the control plane that append to
+`X-Forwarded-For`. The authentication rate limiters key on this position, so a
+wrong value either stops the sign-in limits binding or refuses every legitimate
+user. Neither symptom is visible from inside the process, which is why this is
+worth setting deliberately rather than discovering later.
+
+Count the proxies that **append an entry**, not the network hops:
+
+| Value | Deployment |
+|-------|------------|
+| `0` | Nothing in front. Clients reach the API port directly, with no proxy at all. |
+| `1` | A single reverse proxy. **This is the bundled compose deployment**: the shipped `web` container is the only thing that appends, and it appends exactly one entry. `.env.example` ships this value. |
+| `2` | The default. A load balancer appending the client address and then its own, which is the hosted topology. |
+
+If you run the bundled compose stack behind one more proxy of your own (a TLS
+terminator, a CDN, a corporate load balancer), you have two options. Either
+raise this to `2`, or declare that front proxy trusted to the bundled nginx by
+mounting a file of `set_real_ip_from <cidr>;` lines into
+`/etc/nginx/trusted-proxies/` on the `web` container, in which case nginx
+resolves the real client itself, still emits exactly one entry, and this stays
+`1`. See `infra/nginx/nginx.conf`, and the fuller reasoning in `.env.example`
+next to the variable itself.
+
+The value must be a plain decimal integer: no sign, no surrounding whitespace,
+no `0x` form and no leading zero. **Leave the variable out entirely to take the
+default.** A present-but-empty value is refused at boot rather than read as `0`,
+because empty and absent are not the same thing, and reading empty as `0` would
+silently reconfigure a load-balanced deployment onto a single shared limiter
+key. The control plane logs the value it resolved, and names the variable in
+the error when it refuses one.
 
 ### Postgres: two-DSN model and the `wpmgr_app` role
 
@@ -225,7 +259,7 @@ quickstart or a clone), bring up the stack with the pull-only overlay:
 <!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
 
 ```bash
-export WPMGR_VERSION=v0.61.146   # omit to track :latest
+export WPMGR_VERSION=v0.61.147   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 

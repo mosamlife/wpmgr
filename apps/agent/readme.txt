@@ -4,7 +4,7 @@ Tags: backup, security, performance, updates, site management
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.61.146
+Stable tag: 0.61.147
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -286,6 +286,10 @@ This plugin ships two minified JavaScript files. Their human-readable source and
 
 The entries below summarize the notable changes since 0.31.1. This project ships frequently and not every intermediate patch release is listed here. Full history: https://github.com/mosamlife/wpmgr/blob/main/CHANGELOG.md
 
+= 0.61.147 =
+* Fixed: on a multisite network, a plugin activated for the whole network is now reported as active in this site's metadata. It was reported inactive, so it was missing from the plugin inventory and from everything that reads it, including update and vulnerability checks.
+* Changed: this plugin is licensed MIT, and now says so consistently on every surface that declares a licence (the plugin header, the mu-plugin headers, this readme, composer.json and the bundled licence file). Some of those previously declared GPLv2 or later. No functional change.
+
 = 0.61.146 =
 * Security: the application-password two-factor control now actually runs. It was registered against a name that is a core WordPress function, not a hook anything fires, so it silently never took effect on any site. Breaking change for integrations: a site with two-factor authentication enabled will have application passwords stop working for a user who has a second factor enrolled or whose role requires one, returning HTTP 401. That is the intended fix.
 * Fixed: a database restore could silently drop the dump's last SQL statement while still reporting success, when the restorer could not tell whether the very end of the dump was nothing but comments. It now aborts the restore instead of finishing on an uncertain guess.
@@ -442,6 +446,9 @@ The entries below summarize the notable changes since 0.31.1. This project ships
 * New: WOFF2 font transcoding. TTF, OTF and WOFF are converted on the control plane; the flag defaults to off.
 
 == Upgrade Notice ==
+
+= 0.61.147 =
+On a multisite network, plugins activated for the whole network are now reported as active, so they stop being missing from the plugin inventory and from the update and vulnerability checks that read it. This plugin's licence is also now declared as MIT consistently across every surface that states one. Safe to update in place.
 
 = 0.61.146 =
 The application-password two-factor control now actually takes effect: if this site has two-factor authentication enabled, an application password will stop working for a user who has a second factor enrolled or whose role requires one, returning HTTP 401. Review any integration on this site that authenticates with an application password before updating. Also fixes a database restore that could write into live tables while reporting success, and a user-agent ban that could lock administrators out of the login page.
