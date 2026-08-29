@@ -95,7 +95,12 @@ describe("/connect/ai — a failed load is not approvable", () => {
       initialPath: LAUNCH,
     });
 
-    await screen.findByRole("generic", { busy: true }).catch(() => null);
+    // ASSERTED, NOT SWALLOWED. The previous version wrapped this in a .catch,
+    // which made the whole test unfailable -- it passed against a build with no
+    // skeleton at all. findByRole rejects on absence, and that rejection is now
+    // the test's verdict rather than something it recovers from.
+    const busy = await screen.findByRole("status", { busy: true });
+    expect(busy).toBeTruthy();
     expect(container.querySelector('[data-testid="consent-approve"]')).toBeNull();
   });
 
@@ -163,5 +168,42 @@ describe("/connect/ai — 'Do not connect' answers the client", () => {
     expect(back).not.toHaveBeenCalled();
     expect(mockedNavigate).toHaveBeenCalledTimes(1);
     back.mockRestore();
+  });
+});
+
+
+describe("/connect/ai — a failed tags load is not an empty tag registry", () => {
+  it("does not tell the operator the organisation has no tags", async () => {
+    // The same collapse the site list carries a FleetSnapshot to avoid: "we
+    // could not ask" rendered as "there are none", stated as a fact about the
+    // organisation on the screen where facts drive an irreversible decision.
+    mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: CONSENT }));
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ isError: true, isSuccess: false, error: new Error("boom") }),
+    );
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    fireEvent.click(await screen.findByText("Sites with a tag"));
+
+    expect(screen.queryByTestId("consent-tags-empty")).toBeNull();
+    expect(screen.getByTestId("consent-tags-failed").textContent).toMatch(
+      /could not load this organisation's tags/i,
+    );
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("still says 'no tags yet' when the registry really is empty", async () => {
+    // The over-fire case. An org with no tags is a real state and must keep its
+    // own true sentence, or the fix has only moved the lie.
+    mockedConsent.mockReturnValue(mockQueryResult<ConsentContext>({ data: CONSENT }));
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: [] }));
+
+    renderWithProviders(<ConnectAiPage />, { withRouter: true, initialPath: LAUNCH });
+
+    fireEvent.click(await screen.findByText("Sites with a tag"));
+
+    expect(screen.queryByTestId("consent-tags-failed")).toBeNull();
+    expect(screen.getByTestId("consent-tags-empty").textContent).toMatch(/no tags yet/i);
   });
 });

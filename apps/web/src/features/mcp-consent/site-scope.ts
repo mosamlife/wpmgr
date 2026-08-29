@@ -201,36 +201,43 @@ export function resolveSiteScope(input: ResolveInput): ResolvedSiteScope {
  *   - no branch other than `all` contains "all" or "every" as a claim about
  *     coverage;
  *   - no branch claims a complete list unless `listComplete` is true, and the
- *     open-ended bases ('all', 'tags') always say that future sites are covered.
+ *     open-ended bases ('all', 'tags') always say that future sites are covered;
+ *   - no branch ASSERTS THAT MORE EXIST. `listComplete: false` means "we cannot
+ *     tell", not "there are more" -- a page that came back exactly full with
+ *     nothing behind it satisfies it. The rows in hand support a floor and the
+ *     absence of a claim; they do not support the existence of a 201st site.
  */
+function siteCount(n: number): string {
+  return n === 1 ? "1 site" : `${n} sites`;
+}
+
 export function describeSiteScope(scope: ResolvedSiteScope): string {
   switch (scope.kind) {
     case "all": {
       const future = "Any site added later is covered too, without asking you again.";
       if (!scope.listComplete) {
-        // NO TOTAL. We hold `shown.length` rows and cannot see past them, so the
-        // only true quantity is a floor.
-        return `Every site in this organisation. We can only list ${scope.shown.length} of them here, and there are more than that. ${future}`;
+        // NO TOTAL, AND NO ASSERTION THAT ONE IS LARGER. We hold `shown.length`
+        // rows and cannot see past them. "There are more than that" would be a
+        // claim about the 201st site, which is exactly the row we do not have;
+        // a fleet of exactly 200 makes that sentence false. What the rows
+        // support is the floor and an admission of the limit.
+        return `Every site in this organisation. We can list ${siteCount(scope.shown.length)} here and cannot tell you whether there are others. ${future}`;
       }
-      return scope.shown.length === 1
-        ? `Every site in this organisation. That is 1 site today, listed below. ${future}`
-        : `Every site in this organisation. That is ${scope.shown.length} sites today, listed below. ${future}`;
+      return `Every site in this organisation. That is ${siteCount(scope.shown.length)} today, listed below. ${future}`;
     }
     case "sites": {
       if (scope.basis === "list") {
         // Exhaustive AND fixed: the operator picked these out of what they saw.
-        return scope.sites.length === 1
-          ? "1 site, listed below. No other site is covered, including sites added later."
-          : `${scope.sites.length} sites, listed below. No other site is covered, including sites added later.`;
+        return `${siteCount(scope.sites.length)}, listed below. No other site is covered, including sites added later.`;
       }
       const future =
         "Any site given one of these tags later is covered too, without asking you again.";
       if (!scope.listComplete) {
-        return `At least ${scope.sites.length} sites carry these tags. We could not check every site in this organisation, so there may be more. ${future}`;
+        const verb = scope.sites.length === 1 ? "carries" : "carry";
+        return `At least ${siteCount(scope.sites.length)} ${verb} these tags. We could not check every site in this organisation, so there may be others. ${future}`;
       }
-      return scope.sites.length === 1
-        ? `1 site carries these tags today, listed below. ${future}`
-        : `${scope.sites.length} sites carry these tags today, listed below. ${future}`;
+      const verb = scope.sites.length === 1 ? "carries" : "carry";
+      return `${siteCount(scope.sites.length)} ${verb} these tags today, listed below. ${future}`;
     }
     case "none":
       return scope.because === "no-selection"

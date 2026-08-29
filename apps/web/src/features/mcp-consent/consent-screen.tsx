@@ -250,7 +250,7 @@ function SiteScopeBlock({
   mode: SiteScopeMode;
   onModeChange: (mode: SiteScopeMode) => void;
   scope: ResolvedSiteScope;
-  tags: readonly { id: string; name: string }[];
+  tags: readonly { id: string; name: string }[] | null;
   selectedTagNames: readonly string[];
   onToggleTag: (name: string) => void;
   sites: readonly ScopedSite[];
@@ -295,6 +295,12 @@ function SiteScopeBlock({
               key={value}
               className={cn(
                 "cursor-pointer rounded-md border px-3 py-1.5 text-sm",
+                // The ring rides on the label because the input it belongs to
+                // is visually hidden; without this a keyboard user cannot see
+                // which option they are on.
+                "has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2",
+                "has-[:focus-visible]:ring-[var(--color-ring)] has-[:focus-visible]:ring-offset-2",
+                "has-[:focus-visible]:ring-offset-[var(--color-card)]",
                 mode === value
                   ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 font-medium"
                   : "border-[var(--color-border)]",
@@ -316,12 +322,28 @@ function SiteScopeBlock({
 
       {mode === "tags" && (
         <div className="mt-3 flex flex-wrap gap-3">
-          {tags.length === 0 ? (
-            <p className="text-sm text-[var(--color-muted-foreground)]">
+          {/* NULL IS NOT EMPTY. A failed tags request used to arrive here as an
+              empty array, and the screen then stated a fact about the
+              organisation that it did not know -- the same collapse of "we
+              could not ask" into "there are none" that the site list carries
+              a FleetSnapshot to avoid. Two queries, one screen, one consent
+              decision; they have to be honest in the same way. */}
+          {tags === null ? (
+            <p
+              role="alert"
+              data-testid="consent-tags-failed"
+              className="text-sm text-[var(--color-destructive)]"
+            >
+              We could not load this organisation&apos;s tags, so we cannot show you what
+              this would cover. That is not the same as having no tags. Do not approve
+              until this loads.
+            </p>
+          ) : tags.length === 0 ? (
+            <p data-testid="consent-tags-empty" className="text-sm text-[var(--color-muted-foreground)]">
               This organisation has no tags yet, so there is nothing to scope by.
             </p>
           ) : (
-            tags.map((tag) => (
+            (tags ?? []).map((tag) => (
               <label key={tag.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={selectedTagNames.includes(tag.name)}
@@ -451,7 +473,12 @@ export const consentNameSchema = z.object({
 
 export interface ConsentScreenProps {
   readonly consent: ConsentContext;
-  readonly tags: readonly { id: string; name: string }[];
+  /**
+   * The tenant's tag registry, or null when we could not load it. Null is NOT
+   * an empty registry: one is a fact about the organisation and the other is a
+   * fact about our request, and only one of them belongs on a consent screen.
+   */
+  readonly tags: readonly { id: string; name: string }[] | null;
   /**
    * What we loaded of the fleet, or null when the load has not finished or
    * failed. Null is NOT an empty snapshot, and an incomplete snapshot is NOT a
@@ -527,7 +554,7 @@ export function ConsentScreen({
       // sending the unused array populated would be a 400 the user cannot act on.
       scopeTagIds:
         mode === "tags"
-          ? tags.filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id)
+          ? (tags ?? []).filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id)
           : [],
       scopeSiteIds: mode === "list" ? [...selectedSiteIds] : [],
     });
@@ -609,7 +636,12 @@ export function ConsentScreen({
 /** The skeleton state. Deliberately has no approve control. */
 export function ConsentScreenSkeleton() {
   return (
-    <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6" aria-busy="true">
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="Loading the connection request"
+      className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6"
+    >
       <Skeleton className="h-7 w-64" />
       <Skeleton className="h-40 w-full" />
       <Skeleton className="h-56 w-full" />

@@ -185,8 +185,13 @@ describe("an org larger than the page cap is never shown the page as the fleet",
     // "That is N sites today" is the sentence that must NOT appear: it presents
     // the page as the fleet size.
     expect(sentence).not.toMatch(/That is \d+ sites? today/);
-    expect(sentence).toMatch(/there are more than that/i);
+    expect(sentence).toMatch(/cannot tell you whether there are others/i);
     expect(sentence).toMatch(/added later is covered/i);
+    // AND IT MUST NOT ASSERT THAT MORE EXIST. `listComplete: false` means we
+    // cannot tell, not that there is a 201st site -- a page that came back
+    // exactly full with nothing behind it satisfies it and makes any such
+    // sentence false. The rows support a floor, not an inequality.
+    expect(sentence).not.toMatch(/there are more/i);
   });
 
   it("mode 'all' on a COMPLETE list may state the exact count", () => {
@@ -203,8 +208,12 @@ describe("an org larger than the page cap is never shown the page as the fleet",
     );
     expect(scope.kind === "sites" && scope.listComplete).toBe(false);
     const sentence = describeSiteScope(scope);
-    expect(sentence).toMatch(/^At least 1 sites carry these tags/);
+    // Count and noun agree. "At least 1 sites" is the tell of a template that
+    // never read its own number.
+    expect(sentence).toMatch(/^At least 1 site carries these tags/);
+    expect(sentence).not.toMatch(/1 sites/);
     expect(sentence).toMatch(/could not check every site/i);
+    expect(sentence).not.toMatch(/there are more/i);
   });
 
   it("a tag matching nothing IN A CAPPED PAGE is unresolved, not a zero", () => {
@@ -227,5 +236,41 @@ describe("an org larger than the page cap is never shown the page as the fleet",
     );
     expect(scope.kind === "sites" && scope.listComplete).toBe(true);
     expect(describeSiteScope(scope)).toMatch(/No other site is covered/);
+  });
+});
+
+
+describe("no branch asserts that more sites exist", () => {
+  // `listComplete: false` means "we cannot tell", never "there are more". Every
+  // sentence the screen can produce is checked against that, so a future copy
+  // edit cannot quietly reintroduce the inequality.
+  const CAPPED = { sites: SITES, complete: false };
+
+  const everySentence = [
+    resolveSiteScope(input({ mode: "all" })),
+    resolveSiteScope(input({ mode: "all", fleet: CAPPED })),
+    resolveSiteScope(input({ mode: "all", fleet: { sites: [], complete: true } })),
+    resolveSiteScope(input({ mode: "tags", selectedTagNames: ["prod"] })),
+    resolveSiteScope(input({ mode: "tags", selectedTagNames: ["prod"], fleet: CAPPED })),
+    resolveSiteScope(input({ mode: "tags", selectedTagNames: [] })),
+    resolveSiteScope(input({ mode: "list", selectedSiteIds: ["s1"] })),
+    resolveSiteScope(input({ mode: "list", selectedSiteIds: ["s1", "s2"] })),
+    resolveSiteScope(input({ mode: "list", selectedSiteIds: [] })),
+    resolveSiteScope(input({ fleet: null, sitesLoading: true })),
+    resolveSiteScope(input({ fleet: null, sitesLoading: false })),
+  ].map(describeSiteScope);
+
+  it("never claims more sites exist than it can see", () => {
+    for (const sentence of everySentence) {
+      expect(sentence).not.toMatch(/there are more/i);
+      expect(sentence).not.toMatch(/more than that/i);
+    }
+  });
+
+  it("never disagrees with itself about singular and plural", () => {
+    for (const sentence of everySentence) {
+      expect(sentence).not.toMatch(/\b1 sites\b/);
+      expect(sentence).not.toMatch(/\b1 sites? carry\b/);
+    }
   });
 });

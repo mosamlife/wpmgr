@@ -203,7 +203,10 @@ describe("ConsentScreen — a page of sites is not presented as the fleet", () =
     fireEvent.click(screen.getByText("Every site"));
     const summary = screen.getByTestId("consent-scope-summary").textContent ?? "";
     expect(summary).not.toMatch(/That is \d+ sites? today/);
-    expect(summary).toMatch(/there are more than that/i);
+    expect(summary).toMatch(/cannot tell you whether there are others/i);
+    // And it must not assert that more exist: listComplete false means we
+    // cannot tell, not that a 201st site is out there.
+    expect(summary).not.toMatch(/there are more/i);
   });
 
   it("labels the enumeration as partial rather than letting it pose as the list", () => {

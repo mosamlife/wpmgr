@@ -108,10 +108,14 @@ function ConnectAiPage() {
     return out;
   }, [sitesQuery.data]);
 
-  const tags = useMemo(
-    () => (tagsQuery.data ?? []).map((t) => ({ id: t.id, name: t.name })),
-    [tagsQuery.data],
-  );
+  // NULL, NOT [], WHEN THE TAG REGISTRY DID NOT LOAD. `?? []` turned a failed
+  // request into the sentence "this organisation has no tags yet", which is a
+  // claim about the org made out of a fact about our own request. Same defect
+  // as the site list two hooks up, same screen, same consent decision.
+  const tags = useMemo(() => {
+    if (tagsQuery.data === undefined) return null;
+    return tagsQuery.data.map((t) => ({ id: t.id, name: t.name }));
+  }, [tagsQuery.data]);
 
   if (params === null) {
     return (
