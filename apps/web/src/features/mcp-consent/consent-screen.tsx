@@ -253,7 +253,7 @@ function SiteScopeBlock({
   tags: readonly { id: string; name: string }[] | null;
   selectedTagNames: readonly string[];
   onToggleTag: (name: string) => void;
-  sites: readonly ScopedSite[];
+  sites: readonly ScopedSite[] | null;
   pickerComplete: boolean;
   selectedSiteIds: readonly string[];
   onToggleSite: (id: string) => void;
@@ -343,7 +343,7 @@ function SiteScopeBlock({
               This organisation has no tags yet, so there is nothing to scope by.
             </p>
           ) : (
-            (tags ?? []).map((tag) => (
+            tags.map((tag) => (
               <label key={tag.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={selectedTagNames.includes(tag.name)}
@@ -356,7 +356,18 @@ function SiteScopeBlock({
         </div>
       )}
 
-      {mode === "list" && !pickerComplete && (
+      {mode === "list" && sites === null && (
+        <p
+          role="alert"
+          data-testid="consent-sites-failed"
+          className="mt-3 rounded-md border border-[var(--color-destructive)]/30 p-3 text-sm text-[var(--color-destructive)]"
+        >
+          We could not load this organisation&apos;s sites, so there is nothing to pick
+          from. That is not the same as having no sites. Do not approve until this loads.
+        </p>
+      )}
+
+      {mode === "list" && sites !== null && !pickerComplete && (
         <p
           role="alert"
           data-testid="consent-picker-truncated"
@@ -367,7 +378,7 @@ function SiteScopeBlock({
         </p>
       )}
 
-      {mode === "list" && (
+      {mode === "list" && sites !== null && (
         <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
           {sites.map((site) => (
             <label key={site.id} className="flex items-start gap-2 text-sm">
@@ -467,6 +478,20 @@ function DurationBlock() {
 // The screen
 // ---------------------------------------------------------------------------
 
+/**
+ * Unwrap a tag payload that the approve gate has already proved is present.
+ *
+ * A throw rather than a default. The whole finding was a `?? []` standing where
+ * a refusal belonged, and replacing it with a different silent fallback would
+ * leave the same shape in place for the next refactor to trip over.
+ */
+function assertTagPayload(payload: readonly string[] | null): string[] {
+  if (payload === null) {
+    throw new Error("consent: refused to submit a tag scope with no tags");
+  }
+  return [...payload];
+}
+
 export const consentNameSchema = z.object({
   name: z.string().trim().min(1, "Give this connection a name so you can find it later."),
 });
@@ -535,7 +560,32 @@ export function ConsentScreen({
 
   const scopeOk = isScopeApprovable(scope);
   const scopesOk = allScopesRecognised(consent.scopes);
-  const canApprove = scopeOk && scopesOk && !isApproving;
+
+  // THE PAYLOAD THE SUBMIT PATH WOULD ACTUALLY SEND, resolved once and shared
+  // with the approve gate, so the button and the request cannot disagree.
+  //
+  // resolveSiteScope reads `fleet` and `tagsBySiteId`; it never reads `tags`.
+  // So a registry that goes null AFTER a tag is ticked leaves the scope
+  // resolving happily to a real site set while the id lookup behind it has
+  // nothing left to look in. `(tags ?? []).filter(...)` then yields [], and the
+  // operator's chosen tag is dropped from the request they are pressing the
+  // button on. Null refused to guess in the display path and still resolved to
+  // an empty array one function below it.
+  //
+  // Null here means "cannot build this payload", and empty means the same
+  // thing: a selected tag that no longer resolves to an id (deleted, or a
+  // registry reloaded without it) is an absence, not a request for nothing.
+  // m124's CHECK and internal/mcp/scope.go:177-182 both refuse mode 'tags'
+  // with an empty array, so this is the client half of a gate the server
+  // already holds -- and the half that keeps the button honest.
+  const tagPayload = useMemo((): readonly string[] | null => {
+    if (mode !== "tags") return [];
+    if (tags === null) return null;
+    const ids = tags.filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id);
+    return ids.length === 0 ? null : ids;
+  }, [mode, tags, selectedTagNames]);
+
+  const canApprove = scopeOk && scopesOk && tagPayload !== null && !isApproving;
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -552,10 +602,10 @@ export function ConsentScreen({
       // The payload each mode is allowed to carry, and only that payload.
       // mcp_grants_site_scope_payload_check refuses any other combination, so
       // sending the unused array populated would be a 400 the user cannot act on.
-      scopeTagIds:
-        mode === "tags"
-          ? (tags ?? []).filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id)
-          : [],
+      // Never `?? []`. canApprove is false whenever tagPayload is null, so this
+      // is unreachable with a null payload; it throws rather than defaulting so
+      // that stays true if the gate is ever refactored apart from it.
+      scopeTagIds: assertTagPayload(tagPayload),
       scopeSiteIds: mode === "list" ? [...selectedSiteIds] : [],
     });
   }
@@ -583,8 +633,8 @@ export function ConsentScreen({
             prev.includes(tagName) ? prev.filter((t) => t !== tagName) : [...prev, tagName],
           )
         }
-        sites={fleet?.sites ?? []}
-        pickerComplete={fleet?.complete ?? true}
+        sites={fleet === null ? null : fleet.sites}
+        pickerComplete={fleet === null ? true : fleet.complete}
         selectedSiteIds={selectedSiteIds}
         onToggleSite={(id) =>
           setSelectedSiteIds((prev) =>

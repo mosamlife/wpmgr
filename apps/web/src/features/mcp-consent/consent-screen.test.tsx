@@ -248,3 +248,105 @@ describe("ConsentScreen — a page of sites is not presented as the fleet", () =
     );
   });
 });
+
+
+describe("ConsentScreen — a registry that disappears under a selection", () => {
+  // resolveSiteScope reads `fleet` and `tagsBySiteId`. It never reads `tags`.
+  // So a registry going null AFTER a tag is ticked leaves the scope resolving
+  // to a real site set while the id lookup behind it has nothing to look in,
+  // and the submitted payload silently loses the tag the operator picked.
+  //
+  // The display path already refused to guess at null. This is its neighbour.
+
+  it("blocks approval when the registry drops away after a tag is selected", () => {
+    const onApprove = vi.fn();
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ onApprove, tags: [{ id: "t1", name: "prod" }] })} />,
+    );
+
+    fireEvent.click(screen.getByText("Sites with a tag"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /prod/i }));
+
+    // The selection is live and approvable while the registry is there.
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
+
+    // The registry disappears underneath the operator, selection intact.
+    rerender(<ConsentScreen {...props({ onApprove, tags: null })} />);
+
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-tags-failed")).toBeTruthy();
+  });
+
+  it("submits nothing at all rather than a tag scope with an empty tag list", () => {
+    const onApprove = vi.fn();
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ onApprove, tags: [{ id: "t1", name: "prod" }] })} />,
+    );
+
+    fireEvent.click(screen.getByText("Sites with a tag"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /prod/i }));
+    rerender(<ConsentScreen {...props({ onApprove, tags: null })} />);
+
+    // Submit the form directly, past the disabled button, because the button
+    // being disabled is not the same guarantee as the payload being refused.
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  it("refuses a selected tag that no longer resolves to an id", () => {
+    // The registry is present but has been reloaded without the tag -- deleted
+    // by someone else mid-flow. The ids resolve to [], which is the same
+    // absence wearing a different shape.
+    const onApprove = vi.fn();
+    const { rerender } = renderWithProviders(
+      <ConsentScreen {...props({ onApprove, tags: [{ id: "t1", name: "prod" }] })} />,
+    );
+
+    fireEvent.click(screen.getByText("Sites with a tag"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /prod/i }));
+    rerender(<ConsentScreen {...props({ onApprove, tags: [{ id: "t9", name: "other" }] })} />);
+
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  it("still submits a real tag scope when the registry is intact", () => {
+    // The over-fire case. A gate that blocks correct work gets removed.
+    const onApprove = vi.fn();
+    renderWithProviders(
+      <ConsentScreen {...props({ onApprove, tags: [{ id: "t1", name: "prod" }] })} />,
+    );
+
+    fireEvent.click(screen.getByText("Sites with a tag"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /prod/i }));
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+
+    expect(onApprove).toHaveBeenCalledWith({
+      name: "Claude Desktop",
+      siteScopeMode: "tags",
+      scopeTagIds: ["t1"],
+      scopeSiteIds: [],
+    });
+  });
+});
+
+describe("ConsentScreen — the site picker over a fleet we could not read", () => {
+  // The neighbour the sweep found: `sites={fleet?.sites ?? []}` rendered an
+  // empty picker with no explanation when the site load failed, which reads as
+  // "this organisation has no sites".
+
+  it("says the sites could not be loaded rather than showing an empty picker", () => {
+    renderWithProviders(<ConsentScreen {...props({ fleet: null, sitesLoading: false })} />);
+    expect(screen.getByTestId("consent-sites-failed").textContent).toMatch(
+      /not the same as having no sites/i,
+    );
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("does not show that message when the sites loaded", () => {
+    renderWithProviders(<ConsentScreen {...props()} />);
+    expect(screen.queryByTestId("consent-sites-failed")).toBeNull();
+  });
+});
