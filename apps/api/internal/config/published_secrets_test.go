@@ -118,14 +118,14 @@ func TestLoadRefusesPublishedSessionSecretWhenEnvIsPresentButEmpty(t *testing.T)
 // TestLoadAllowsPublishedSessionSecretInDeclaredDevelopment is the OVER-FIRE
 // proof, at the env layer.
 //
-// infra/docker-compose.dev.yml sets WPMGR_ENV=development explicitly and does
-// NOT set WPMGR_SESSION_SECRET, so a zero-config `make dev` inherits the
-// published fallback from the base compose file. If this test fails, `make dev`
-// cannot boot, and a guard that breaks local development gets deleted.
+// infra/docker-compose.dev.yml supplies BOTH the published fallback secret and
+// WPMGR_ENV=development, so a zero-config `make dev` runs on a published value
+// by design. If this test fails, `make dev` cannot boot, and a guard that breaks
+// local development gets deleted.
 //
 // It must still be loud: the advisory is what keeps the exempted state visible.
 func TestLoadAllowsPublishedSessionSecretInDeclaredDevelopment(t *testing.T) {
-	for _, env := range []string{"development", "dev", "local", "test", "Development"} {
+	for _, env := range []string{"development", "Development", "  development  "} {
 		t.Run(env, func(t *testing.T) {
 			cfg := loadWithEnv(t, publishedSecret, strptr(env))
 			if err := cfg.ValidateSessionSecret(); err != nil {
@@ -144,6 +144,39 @@ func TestLoadAllowsPublishedSessionSecretInDeclaredDevelopment(t *testing.T) {
 			}
 			if !advised {
 				t.Error("Advisories() said nothing about running on a published session secret; the exemption would be completely silent")
+			}
+		})
+	}
+}
+
+// TestLoadRefusesPublishedSessionSecretForNearMissEnvLabels pins the width of
+// the exemption. Exactly one WPMGR_ENV spelling unlocks a published secret;
+// everything that merely looks like a development label does not.
+//
+// These are the refusal cases for aliases the exemption once accepted. They are
+// what stops the aliases creeping back: widening explicitDevelopmentEnv
+// again turns each of these red. "test" and "local" are the same shape as the
+// case this check exists for — a plausible label on a real box, not a statement
+// that a publicly known session secret is acceptable there.
+func TestLoadRefusesPublishedSessionSecretForNearMissEnvLabels(t *testing.T) {
+	for _, env := range []string{"dev", "local", "test", "", "staging", "developmentt", "prod"} {
+		name := env
+		if name == "" {
+			name = "present but empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := loadWithEnv(t, publishedSecret, strptr(env))
+			if err := cfg.ValidateSessionSecret(); err == nil {
+				t.Fatalf("ValidateSessionSecret() = nil with WPMGR_ENV=%q; only an explicit \"development\" may exempt a published secret", env)
+			}
+			var flagged bool
+			for _, is := range Validate(cfg) {
+				if is.Name == "WPMGR_SESSION_SECRET" {
+					flagged = true
+				}
+			}
+			if !flagged {
+				t.Fatalf("Validate() reported no issue with WPMGR_ENV=%q; the boot gate disagrees with ValidateSessionSecret", env)
 			}
 		})
 	}
@@ -223,8 +256,10 @@ func TestExplicitDevelopmentEnvRequiresPresence(t *testing.T) {
 	if !explicitDevelopmentEnv() {
 		t.Fatal("explicitDevelopmentEnv() = false with WPMGR_ENV=development; make dev cannot boot")
 	}
-	t.Setenv("WPMGR_ENV", "staging")
-	if explicitDevelopmentEnv() {
-		t.Fatal("explicitDevelopmentEnv() = true for staging")
+	for _, env := range []string{"staging", "dev", "local", "test", "production", ""} {
+		t.Setenv("WPMGR_ENV", env)
+		if explicitDevelopmentEnv() {
+			t.Fatalf("explicitDevelopmentEnv() = true for WPMGR_ENV=%q; the exemption must be exactly one spelling wide", env)
+		}
 	}
 }

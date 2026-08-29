@@ -26,9 +26,13 @@ import (
 // never remove one: an operator who copied it years ago is exactly the person
 // this check is for.
 var publishedSessionSecrets = []string{
-	// infra/docker-compose.yml carried this as the api service's built-in
-	// WPMGR_SESSION_SECRET fallback. Decoded, it reads
-	// "dev-only-session-secret-do-not-use-in-production-48bytes".
+	// The api service's built-in WPMGR_SESSION_SECRET fallback. It sat in
+	// infra/docker-compose.yml, where every stack inherited it; it now sits in
+	// infra/docker-compose.dev.yml, where only the dev overlay does. Decoded, it
+	// reads "dev-only-session-secret-do-not-use-in-production-48bytes".
+	//
+	// It stays listed regardless of where it lives, because the operator this
+	// check is for is the one still holding a copy of it.
 	"ZGV2LW9ubHktc2Vzc2lvbi1zZWNyZXQtZG8tbm90LXVzZS1pbi1wcm9kdWN0aW9uLTQ4Ynl0ZXM=",
 }
 
@@ -122,13 +126,22 @@ func isPublishedSessionSecret(raw string) bool {
 // defaults() supplies env="development" when nothing is set, so an unconfigured
 // production install and a developer's laptop are the same string. Validate
 // already reaches for the environment this way for WPMGR_SITE_DEST_AGE_SECRET.
+//
+// Exactly one spelling is accepted, case-insensitively. Not "dev", not "local",
+// not "test". Nothing in this repository sets any of them — the dev overlay,
+// .env.example, the Makefile and the docs all write "development" or
+// "production" — so the aliases bought nothing, and each one widened the
+// exemption for free. "test" in particular is the same shape as the case this
+// whole check exists to reject: a plausible label on a real box that is not a
+// statement of "I accept a publicly known session secret here". The exemption
+// should be no wider than the thing it was meant to permit.
 func explicitDevelopmentEnv() bool {
 	v, ok := os.LookupEnv("WPMGR_ENV")
 	if !ok {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "development", "dev", "local", "test":
+	case "development":
 		return true
 	default:
 		return false
@@ -157,13 +170,12 @@ func explicitDevelopmentEnv() bool {
 // never exempts. That is the direction a wrong answer has to fail in: an
 // unlabelled install is treated as real, because it usually is.
 //
-// The exemption exists because it has to. The dev overlay
-// (infra/docker-compose.dev.yml) does not set WPMGR_SESSION_SECRET, so a
-// zero-config `make dev` inherits the published fallback from the base compose
-// file and would be unable to boot at all. That overlay does set
-// WPMGR_ENV=development explicitly, which is the signal this keys on. A guard
-// that breaks the standard local-dev bring-up gets switched off, and then it
-// guards nothing.
+// The exemption exists because it has to. infra/docker-compose.dev.yml supplies
+// this fallback secret to the api service, so a zero-config `make dev` runs on a
+// published value by design and would otherwise be unable to boot at all. That
+// same overlay sets WPMGR_ENV=development explicitly, which is the signal this
+// keys on. A guard that breaks the standard local-dev bring-up gets switched
+// off, and then it guards nothing.
 //
 // Config.Advisories still reports the exempted case, so a developer sitting on
 // the published secret is told so on every boot rather than never.
