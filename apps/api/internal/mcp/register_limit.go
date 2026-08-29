@@ -144,11 +144,36 @@ func perMinuteLimiter(perMin int) *rate.Limiter {
 	return rate.NewLimiter(rate.Limit(float64(perMin)/60.0), perMin)
 }
 
-// allow consumes one token from the global bucket and one from the peer's.
+// allow admits a request only when BOTH buckets can pay for it, and charges
+// BOTH only when it is admitted.
 //
-// The global bucket is consulted FIRST and, when it refuses, the peer bucket is
-// left untouched -- a rejected request must not also spend the caller's own
-// fair-share budget.
+// A REFUSED REQUEST COSTS NOTHING, IN EITHER BUCKET, AND THAT IS STRUCTURAL.
+//
+// This function used to take a global reservation and keep it before consulting
+// the peer bucket, so a peer that had already exhausted its own budget still
+// spent process-wide capacity on every request it was REFUSED for. One flooding
+// peer therefore drained the global bucket and starved everyone else -- the
+// fairness layer became the denial-of-service, and the attacker did not have to
+// beat the limiter, they beat it by being rejected, which is free and fast.
+//
+// The shape below is what makes that unrepeatable, rather than a rule someone
+// has to remember. EVERY REJECTION PATH RUNS BEFORE ANY MUTATION, and there is
+// exactly ONE mutation site, reached only on the admit path. A future branch
+// added to a rejection path CANNOT leak a token, because at the point those
+// branches run there is nothing yet to leak. Contrast the alternative that was
+// considered and rejected -- reserve, then release on failure -- which stays
+// correct only for as long as every future early return remembers to release.
+//
+// The two shortfall calls are pure queries: TokensAt reads the bucket without
+// advancing it. Both are evaluated at the same `now` under the same mutex, and
+// a token count for a fixed instant cannot fall between the query and the
+// commit, so the two AllowN calls below are guaranteed to succeed. That is why
+// "check both, then charge both" needs no rollback at all.
+//
+// Ordering within the checks is a memory optimisation only, NOT the invariant:
+// global is checked first so a globally-saturated process does not allocate a
+// bucket per attacking source. Because nothing is charged until both checks
+// pass, swapping these two blocks would change no accounting.
 //
 // A nil receiver returns false. An unconstructed limiter is a wiring failure,
 // and the one thing it must never do is read as "no limit configured,
@@ -163,7 +188,9 @@ func (l *registrationLimiter) allow(peer string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if ok, wait := reserveOne(l.global, now); !ok {
+	// ---- QUERY ONLY. Nothing below this line is charged until both pass. ----
+
+	if wait := shortfall(l.global, now); wait > 0 {
 		return false, wait
 	}
 
@@ -180,28 +207,35 @@ func (l *registrationLimiter) allow(peer string) (bool, time.Duration) {
 		b = &peerBucket{lim: perMinuteLimiter(l.perPeer)}
 		l.peers[peer] = b
 	}
+	// Touched on refusal too, deliberately: a flooding peer's bucket must stay
+	// alive rather than be swept and handed back empty, which would reset the
+	// very limit it is hitting.
 	b.seen = now
 
-	if ok, wait := reserveOne(b.lim, now); !ok {
+	if wait := shortfall(b.lim, now); wait > 0 {
 		return false, wait
 	}
+
+	// ---- ADMITTED. The one and only mutation site. ----
+	l.global.AllowN(now, 1)
+	b.lim.AllowN(now, 1)
 	return true, 0
 }
 
-// reserveOne takes one token if one is available now, and otherwise cancels the
-// reservation so a later polite retry is not penalised for this attempt.
-func reserveOne(lim *rate.Limiter, now time.Time) (bool, time.Duration) {
-	r := lim.ReserveN(now, 1)
-	if !r.OK() {
-		// Burst cannot satisfy a single token: the budget is zero by
-		// configuration. Refuse.
-		return false, time.Minute
+// shortfall reports how long until the bucket could pay for one token, and zero
+// when it can pay right now. It is a PURE QUERY: TokensAt does not advance the
+// limiter, so calling this never charges anything and never has to be undone.
+func shortfall(lim *rate.Limiter, now time.Time) time.Duration {
+	// Burst below one, or a non-positive rate, is a bucket that can never pay.
+	// Refuse with a fixed wait rather than dividing by zero into an infinity.
+	if lim.Burst() < 1 || lim.Limit() <= 0 {
+		return time.Minute
 	}
-	if wait := r.DelayFrom(now); wait > 0 {
-		r.CancelAt(now)
-		return false, wait
+	deficit := 1 - lim.TokensAt(now)
+	if deficit <= 0 {
+		return 0
 	}
-	return true, 0
+	return time.Duration(deficit / float64(lim.Limit()) * float64(time.Second))
 }
 
 // sweepLocked bounds the peer map. Idle buckets go first; if that is not enough

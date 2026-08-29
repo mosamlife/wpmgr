@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -317,6 +318,78 @@ func TestOAuthRoutes_UnsupportedVerbsAre405Not404(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// A REFUSED REQUEST MUST COST NOTHING, IN EITHER BUCKET.
+//
+// The accounting bug this exists for: allow() took and KEPT a global
+// reservation before consulting the peer bucket, so a peer that had already
+// exhausted its own budget still spent process-wide capacity on every request
+// it was REFUSED for. That inverts the whole design -- the fairness layer
+// becomes the thing that lets one peer deny everyone else, and an attacker does
+// not have to beat the limiter, they beat it by being rejected, which is free
+// and fast.
+//
+// A SINGLE-PEER TEST CANNOT SEE THIS, which is why nothing caught it: the
+// flooding peer is refused either way, so only a SECOND, unrelated peer reveals
+// where the tokens went.
+// ---------------------------------------------------------------------------
+
+func TestRegisterLimiter_OnePeerFloodingDoesNotStarveAnother(t *testing.T) {
+	const (
+		global  = 60
+		perPeer = 5
+		flood   = 300 // far more than global, so a leak drains it many times over
+	)
+	l := newRegistrationLimiter(global, perPeer)
+
+	// The quiet peer goes first so it cannot be accused of arriving too late.
+	if ok, _ := l.allow("198.51.100.2"); !ok {
+		t.Fatal("the quiet peer was refused on its very first request")
+	}
+
+	// The flooding peer exhausts its own bucket and then keeps going. Every
+	// request past the first perPeer is refused, and each refusal must cost
+	// nothing anywhere.
+	var floodAdmitted int
+	for range flood {
+		if ok, _ := l.allow("198.51.100.1"); ok {
+			floodAdmitted++
+		}
+	}
+	if floodAdmitted > perPeer {
+		t.Fatalf("the flooding peer was admitted %d times against a per-peer "+
+			"budget of %d", floodAdmitted, perPeer)
+	}
+
+	// THE ASSERTION. The quiet peer is well inside its own budget, and the
+	// global budget was never legitimately spent, so every one of these must be
+	// admitted. Under the defect they are all refused.
+	for i := range perPeer - 1 {
+		ok, wait := l.allow("198.51.100.2")
+		if !ok {
+			t.Fatalf("request %d from a QUIET peer was refused (retry in %v) after "+
+				"another peer was rejected %d times. Only %d requests were ever "+
+				"admitted out of a global budget of %d, so the REJECTIONS consumed "+
+				"the global capacity: one peer can deny registration to everyone "+
+				"else by being refused quickly, which costs it nothing",
+				i+1, wait, flood-floodAdmitted, floodAdmitted+1, global)
+		}
+	}
+
+	// And the books balance: global is charged once per ADMITTED request and
+	// never for a refusal.
+	admitted := float64(floodAdmitted + perPeer)
+	left := l.global.TokensAt(time.Now())
+	if left < float64(global)-admitted-0.5 {
+		t.Fatalf("global bucket has %.1f tokens left; %.0f admitted requests should "+
+			"leave about %.1f. The difference was spent on refusals",
+			left, admitted, float64(global)-admitted)
+	}
+	t.Logf("one peer refused %d times, a quiet peer admitted throughout; global "+
+		"tokens left %.1f of %d after %.0f admitted requests",
+		flood-floodAdmitted, left, global, admitted)
 }
 
 // itoa avoids pulling strconv into this file's namespace for a loop counter.
