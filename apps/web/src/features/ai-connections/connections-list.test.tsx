@@ -174,13 +174,20 @@ describe("a field the client did not send is rendered as absent", () => {
   });
 
   it("says the client reported no name rather than backfilling one", async () => {
+    // ASSERTED ON THE BRANCH, NOT THE SENTENCE. The over-fire pass caught this
+    // matching /reported no client name/i: rewording the sentinel is correct
+    // work and it reddened. The testid renders only in the null-name branch, so
+    // it pins the decision without freezing the copy.
     renderList({
       status: "ready",
       connections: [
         { ...CONNECTED, reportedClientName: null, reportedClientVersion: null },
       ],
     });
-    expect(await screen.findByText(/reported no client name/i)).toBeInTheDocument();
+    const cell = await screen.findByTestId("reported-client");
+    // And it must not have been backfilled from the operator's chosen client.
+    expect(cell.textContent).not.toContain("claude-code");
+    expect((cell.textContent ?? "").trim().length).toBeGreaterThan(0);
   });
 
   it("keeps the version when the client reported one but no name", async () => {
