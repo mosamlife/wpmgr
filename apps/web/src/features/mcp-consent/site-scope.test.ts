@@ -72,9 +72,9 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
     expect(scope.kind).toBe("none");
   });
 
-  it("an empty resolution is not approvable", () => {
-    expect(isScopeApprovable(resolveSiteScope(input({ mode: "tags", selectedTagNames: ["gone"] })))).toBe(false);
-    expect(isScopeApprovable(resolveSiteScope(input({ mode: "list", selectedSiteIds: [] })))).toBe(false);
+  it("an empty resolution IS approvable -- reading nothing is a working state, not an error (2026-08-23 revision)", () => {
+    expect(isScopeApprovable(resolveSiteScope(input({ mode: "tags", selectedTagNames: ["gone"] })))).toBe(true);
+    expect(isScopeApprovable(resolveSiteScope(input({ mode: "list", selectedSiteIds: [] })))).toBe(true);
   });
 
   it("only mode 'all' ever produces kind 'all'", () => {
@@ -92,6 +92,24 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
     const scope = resolveSiteScope(input({ mode: "all", fleet: { sites: [], complete: true } }));
     expect(scope.kind).toBe("all");
     expect(describeSiteScope(scope)).toMatch(/added later/i);
+  });
+});
+
+describe("isScopeApprovable — an empty allowlist is approvable, an unread one never is", () => {
+  // The 2026-08-23 wireframe revision (line 3559) rules that a connection with
+  // an empty allowlist "can read nothing and propose nothing. That is a
+  // working state, not an error." This block pins BOTH halves of that with
+  // equal force: `none` (however it was reached) now passes, and `unresolved`
+  // (however it was reached) still fails. Weakening either half back to the
+  // pre-2026-08-23 shape must redden this block, not just the copy tests.
+  it("accepts a resolved-to-nothing scope, from no selection and from no matches alike", () => {
+    expect(isScopeApprovable({ kind: "none", because: "no-selection" })).toBe(true);
+    expect(isScopeApprovable({ kind: "none", because: "no-matches" })).toBe(true);
+  });
+
+  it("still refuses a scope nobody has read, whether pending or failed", () => {
+    expect(isScopeApprovable({ kind: "unresolved", because: "loading" })).toBe(false);
+    expect(isScopeApprovable({ kind: "unresolved", because: "failed" })).toBe(false);
   });
 });
 
