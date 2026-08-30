@@ -25,6 +25,7 @@ import {
   type ScopedSite,
   type SiteScopeMode,
 } from "./site-scope";
+import { SiteEnforcementBox } from "./site-enforcement-box";
 
 // The consent screen (design Step 7).
 //
@@ -433,6 +434,12 @@ function SiteScopeBlock({
         Your organisation&apos;s records decide what this connection reads on each
         request, not this list. The list is what this dashboard could load just now.
       </p>
+
+      {/* Screen 8 (wireframes.html#s8) — the enforcement box. No `refusals`
+          prop: this connection does not exist yet (approval has not
+          happened), so there is no refusal history, tracked or otherwise, to
+          have an opinion about. See site-enforcement-box.tsx's module doc. */}
+      <SiteEnforcementBox scope={scope} />
     </section>
   );
 }
