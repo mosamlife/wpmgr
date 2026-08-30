@@ -100,6 +100,31 @@ type fakeStore struct {
 	sitesMore bool
 	sitesErr  error
 
+	// S16 connections surface.
+	//
+	// grants is what ListGrants returns and grantsErr forces the read to fail.
+	// The two are independent so a test can drive "the read failed" separately
+	// from "the read returned nothing", which is the pair this whole slice
+	// exists to keep apart.
+	grants    []sqlc.McpGrant
+	grantsErr error
+
+	// revokeRow is what RevokeGrantWithTokens returns and revokeErr is the
+	// error it returns instead. revokeErr set to pgx.ErrNoRows models THE
+	// GRANT NOT BEING VISIBLE -- the only outcome that means "not there" --
+	// while a revokeRow of two zeroes models an already-fully-revoked grant,
+	// which is a SUCCESS. A fake that could not express both would let a
+	// handler map them to the same status and still pass.
+	revokeRow sqlc.RevokeMCPGrantWithTokensInTenantTxRow
+	revokeErr error
+
+	// revokePrincipals records the principal every revoke was issued with, so a
+	// test can assert the repo is handed the principal (and therefore reaches
+	// RunTenantTx's site-scope dispatch) rather than a bare tenant id.
+	revokePrincipals []domain.Principal
+	// listPrincipals does the same for the list path.
+	listPrincipals []domain.Principal
+
 	// call log. mu guards all four -- see note().
 	mu           sync.Mutex
 	consumeCalls int
@@ -280,6 +305,46 @@ func (f *fakeStore) ListSitesForRead(_ context.Context, _ uuid.UUID, limit int32
 		return f.sites[:limit], true, nil
 	}
 	return f.sites, f.sitesMore, nil
+}
+
+// ListGrants models Repo.ListGrants, INCLUDING its nil-on-error contract.
+//
+// It returns (nil, err) and never ([]T{}, err). Handing back an empty slice
+// beside an error is the fixture-level version of the defect this whole slice
+// guards against, and a fake that did it would let a service which ignores the
+// error still look correct.
+func (f *fakeStore) ListGrants(_ context.Context, p domain.Principal) ([]sqlc.McpGrant, error) {
+	f.note("ListGrants")
+	f.mu.Lock()
+	f.listPrincipals = append(f.listPrincipals, p)
+	f.mu.Unlock()
+	if f.grantsErr != nil {
+		return nil, f.grantsErr
+	}
+	return f.grants, nil
+}
+
+// RevokeGrantWithTokens models the four-outcome contract of
+// RevokeMCPGrantWithTokensInTenantTx.
+//
+// revokeErr is returned VERBATIM so a test can set pgx.ErrNoRows and drive the
+// "grant not visible" branch through errors.Is, exactly as the real repo does.
+// Otherwise revokeRow comes back -- including a row of two zeroes, which is the
+// idempotent-retry SUCCESS and is the outcome most easily mistaken for a
+// failure.
+func (f *fakeStore) RevokeGrantWithTokens(
+	_ context.Context,
+	p domain.Principal,
+	_ uuid.UUID,
+) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
+	f.note("RevokeGrantWithTokens")
+	f.mu.Lock()
+	f.revokePrincipals = append(f.revokePrincipals, p)
+	f.mu.Unlock()
+	if f.revokeErr != nil {
+		return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, f.revokeErr
+	}
+	return f.revokeRow, nil
 }
 
 // ---------------------------------------------------------------------------

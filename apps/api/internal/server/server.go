@@ -598,6 +598,19 @@ func New(deps Deps) *Server {
 	// Refusing at the gate is what stops uuid.Nil being treated as a tenant.
 	if deps.MCPOAuthH != nil {
 		deps.MCPOAuthH.Register(v1)
+		// S16 — the operator-facing connection management surface:
+		// GET /api/v1/mcp/connections and
+		// POST /api/v1/mcp/connections/:connectionId/revoke.
+		//
+		// Mounted from the SAME nil check as Register above, deliberately. The
+		// connections list and the consent flow are two halves of one feature:
+		// an installation that can mint a grant and cannot show or revoke it is
+		// the exact gap this slice closes, so there is no assembly order in
+		// which one is mounted without the other.
+		//
+		// On v1, so RequireAuth and RequireTenant both apply before the
+		// per-route RequirePermission inside RegisterConnections.
+		deps.MCPOAuthH.RegisterConnections(v1)
 	}
 	deps.TenantH.Register(v1)
 	deps.SiteH.Register(v1)

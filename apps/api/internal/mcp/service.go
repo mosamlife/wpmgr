@@ -46,6 +46,19 @@ const (
 	// alternative is returning an empty success, and an empty result that
 	// reads as "nothing to do" is how a scoping bug becomes invisible.
 	ErrCodeScopeEmpty = "mcp_scope_empty"
+
+	// ErrCodeConnectionNotFound is the answer for a grant id this principal
+	// cannot see. It carries NO information about whether the id exists
+	// elsewhere: an id from another organisation and an id that never existed
+	// produce the identical response, which is the same non-oracle stance
+	// authz.RequireSiteAccess takes when it 404s instead of 403ing.
+	ErrCodeConnectionNotFound = "mcp_connection_not_found"
+
+	// ErrCodeOrgScopeRequired refuses a site-constrained principal at the
+	// connections surface. It mirrors the authz middleware's own
+	// "org_scope_required" and exists as a SECOND, independent refusal -- see
+	// requireOrgScopedPrincipal for why one is not enough.
+	ErrCodeOrgScopeRequired = "mcp_org_scope_required"
 )
 
 // The OAuth vocabulary this server implements, named once.
@@ -1025,4 +1038,199 @@ func orEmpty(ids []uuid.UUID) []uuid.UUID {
 		return []uuid.UUID{}
 	}
 	return ids
+}
+
+// ---------------------------------------------------------------------------
+// Operator-facing connection management (S16 -- design Step 10, list + revoke)
+// ---------------------------------------------------------------------------
+
+// requireOrgScopedPrincipal is the site-scope refusal, and it is the SECOND of
+// three independent layers rather than the only one.
+//
+// The three, outermost first:
+//
+//  1. authz.RequirePermission(PermAPIKeyRead / PermAPIKeyManage) in the route.
+//     Both are members of authz.orgLevelPerms, so a site-constrained principal
+//     is refused 403 there and never reaches this service.
+//  2. THIS FUNCTION.
+//  3. mcp_grants_site_scope_select / _update, RESTRICTIVE policies keyed on the
+//     app.site_scope GUC that Repo's RunTenantTx sets.
+//
+// LAYER 2 IS NOT REDUNDANT WITH LAYER 3, AND THAT IS THE ENTIRE POINT. Layer 3
+// refuses by returning ZERO ROWS WITH NO ERROR. On the list path that is
+// indistinguishable at the Go layer from an organisation that has minted no
+// connections, so a service relying on RLS alone would answer a refused
+// collaborator with `{"connections": []}` and the UI would render "you have no
+// connections" -- a false statement produced by a security control working
+// correctly. Refusing here is what makes the refusal SAYABLE.
+//
+// It is not redundant with layer 1 either: layer 1 lives in the route
+// registration, and a route mounted without its middleware is a wiring mistake
+// that presents as a working endpoint. This function is inside the call.
+func requireOrgScopedPrincipal(p domain.Principal) error {
+	if p.TenantID == uuid.Nil {
+		return domain.Validation(ErrCodeInvalidRequest, "an organisation is required")
+	}
+	if p.IsSiteConstrained() {
+		return domain.Forbidden(ErrCodeOrgScopeRequired,
+			"an AI connection is an organisation-wide credential, so listing or revoking one "+
+				"requires full organisation membership. This is a refusal, not an empty list.")
+	}
+	return nil
+}
+
+// ListConnections returns every grant in the principal's organisation, revoked
+// ones included.
+//
+// REVOKED GRANTS ARE RETURNED ON PURPOSE (m124 Decision 2). The row is kept
+// after revocation precisely so last_used_at and revoked_at stay readable: what
+// the credential did while it was live is the thing an operator reviews after
+// revoking it. The caller renders the status column and must never infer
+// liveness from presence in this list.
+//
+// The returned slice is nil on error and non-nil on success, including for a
+// genuinely empty organisation. That asymmetry is deliberate and is what lets
+// the layer above tell "we did not read the list" from "the list is empty".
+func (s *Service) ListConnections(ctx context.Context, p domain.Principal) ([]Connection, error) {
+	if err := requireOrgScopedPrincipal(p); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.store.ListGrants(ctx, p)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp connections: %w", err)
+	}
+
+	out := make([]Connection, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, connectionFromGrant(r))
+	}
+	return out, nil
+}
+
+// RevokeOutcome is what a revoke actually did. It is a struct of counts rather
+// than a bool because the query distinguishes four outcomes and three of them
+// are successes that differ in what was left to do -- see the query comment on
+// RevokeMCPGrantWithTokensInTenantTx.
+type RevokeOutcome struct {
+	// GrantsRevoked is 1 when this call flipped the grant, 0 when it was
+	// already revoked.
+	GrantsRevoked int64
+	// TokensRevoked is how many live bearer tokens this call killed. It can be
+	// non-zero while GrantsRevoked is 0: that is the REPAIR of a half-revoked
+	// grant, and it is the state a security review of this stack actually
+	// observed in the database.
+	TokensRevoked int64
+	// AlreadyRevoked reports that the grant was not active when this call ran.
+	// The request still succeeded -- the end state the caller asked for holds.
+	AlreadyRevoked bool
+}
+
+// RevokeConnection revokes a grant AND every live token beneath it.
+//
+// THE CASCADE IS THE POINT OF THIS METHOD. A revoke that flips only the grant
+// leaves a live bearer token in a client's config file, and this stack has
+// already been observed in exactly that state (`grant_status revoked /
+// token_status active`). The Store interface deliberately offers no grant-only
+// revoke, so there is no way to express the half here.
+//
+// FOUR OUTCOMES, AND ONLY ONE OF THEM IS A FAILURE:
+//
+//	pgx.ErrNoRows       the grant is not visible to this principal -- absent,
+//	                    another organisation's, or refused by RLS. 404. NOTHING
+//	                    WAS WRITTEN, and this is the ONLY reading of "matched no
+//	                    rows" that means failure.
+//	grants=1            flipped now, with TokensRevoked tokens killed.
+//	grants=0, tokens>0  the grant was already revoked and its tokens were not.
+//	                    This call CONVERGED that half-revoked state. Success.
+//	grants=0, tokens=0  already fully revoked. The requested end state holds, so
+//	                    this is an idempotent retry and it SUCCEEDED.
+//
+// THE LAST ONE IS THE TRAP AND IT IS WHY THIS COMMENT IS LONG. Two zeroes look
+// like "nothing happened, therefore something went wrong". Mapping them to 404
+// or 500 would report a correctly revoked credential as a failure, which invites
+// an operator to retry or -- much worse -- to believe the credential is still
+// live and go hunting for it. What separates the two cases is whether a ROW CAME
+// BACK AT ALL, never what the counts say.
+func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, grantID uuid.UUID) (RevokeOutcome, error) {
+	if err := requireOrgScopedPrincipal(p); err != nil {
+		return RevokeOutcome{}, err
+	}
+	if grantID == uuid.Nil {
+		// uuid.Nil is what a failed parse decays to. Refusing it by name stops
+		// a malformed id being sent to the database as a real-looking key.
+		return RevokeOutcome{}, domain.Validation(ErrCodeInvalidRequest,
+			"a connection id is required")
+	}
+
+	row, err := s.store.RevokeGrantWithTokens(ctx, p, grantID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RevokeOutcome{}, domain.NotFound(ErrCodeConnectionNotFound,
+				"no such connection")
+		}
+		return RevokeOutcome{}, fmt.Errorf("revoke mcp connection: %w", err)
+	}
+
+	return RevokeOutcome{
+		GrantsRevoked: row.GrantsRevoked,
+		TokensRevoked: row.TokensRevoked,
+		// Derived from the count and NOT from a second read: "the grant was not
+		// active when this statement ran" is exactly grants_revoked = 0, and
+		// asking the database again would be asking a different moment.
+		AlreadyRevoked: row.GrantsRevoked == 0,
+	}, nil
+}
+
+// connectionFromGrant maps one stored row onto the operator-facing shape.
+//
+// EVERY NULLABLE COLUMN STAYS NULLABLE. pgtype's Valid flag is consulted for
+// each timestamp rather than reading .Time unconditionally: an invalid
+// pgtype.Timestamptz carries the Go zero time, which serialises as a real
+// date in the year 1 and would render as "last used 1 Jan 0001" for a
+// connection that has never been used.
+//
+// Scopes is DERIVED, not read. mcp_grants has no scopes column (m124 Decision
+// 1 declines to add one, so that a write capability cannot appear without a
+// migration), and grantScopes() returns the one scope every live grant holds by
+// construction. That is exact only while recognisedScopes has one entry, which
+// is what TestGrantScopesIsExactOnlyWhileOneScopeExists pins -- when a second
+// scope is added, that test goes red and this line has to start reading the
+// grant instead of a constant.
+func connectionFromGrant(g sqlc.McpGrant) Connection {
+	return Connection{
+		ID:                    g.ID,
+		Name:                  g.Name,
+		Status:                GrantStatus(g.Status),
+		SiteScopeMode:         SiteScopeMode(g.SiteScopeMode),
+		Scopes:                grantScopes(),
+		CreatedAt:             g.CreatedAt,
+		ReportedClientName:    g.ClientName,
+		ReportedClientVersion: g.ClientVersion,
+		Protocol: ClassifyStoredProtocol(
+			timestamptzTimeOrNil(g.ClientIdentityRecordedAt), g.ProtocolVersion),
+		LastUsedAt: timestamptzTimeOrNil(g.LastUsedAt),
+		RevokedAt:  timestamptzTimeOrNil(g.RevokedAt),
+	}
+}
+
+// timestamptzTimeOrNil converts a pgtype.Timestamptz to *time.Time, mapping SQL
+// NULL to nil rather than to the Go zero time.
+//
+// It is the single line that keeps "never" distinguishable from "at
+// 0001-01-01", so it exists once and is called everywhere rather than being
+// restated per field.
+//
+// Distinct from tools.go's timestampOrNil, which renders straight to *string for
+// the model-facing tool output. This one stays in the time domain because the
+// DOMAIN type holds *time.Time; the string rendering happens later, in dto.go,
+// where the wire shape is decided. Two functions, because the two layers answer
+// to different consumers and collapsing them would make one of them render at
+// the wrong layer.
+func timestamptzTimeOrNil(ts pgtype.Timestamptz) *time.Time {
+	if !ts.Valid {
+		return nil
+	}
+	t := ts.Time
+	return &t
 }

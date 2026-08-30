@@ -10,6 +10,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // Store is the database surface the service depends on. It exists as an
@@ -50,6 +51,29 @@ type Store interface {
 	// with rows still unread, because a page-bounded list that reports itself
 	// as complete is a lie about the fleet.
 	ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error)
+
+	// ListGrants and RevokeGrantWithTokens are the operator-facing pair (S16).
+	//
+	// BOTH TAKE THE PRINCIPAL AND NOT A BARE tenantID, and that is the whole
+	// reason the signature differs from every other method on this interface.
+	// mcp_grants carries RESTRICTIVE _site_scope policies that key on the
+	// app.site_scope GUC, and only db.Pool.RunTenantTx sets that GUC -- so a
+	// method taking a tenantID could only reach InTenantTx, which leaves those
+	// policies INERT. Passing the principal is what puts the dispatch in
+	// db.dispatchTenantTx's hands instead of this package's memory.
+	ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error)
+
+	// RevokeGrantWithTokens flips the grant AND every active token in ONE
+	// statement. There is deliberately no grant-only revoke on this interface:
+	// a security review of this stack observed `grant_status revoked /
+	// token_status active`, and the only structural fix is that no caller can
+	// express the half.
+	//
+	// pgx.ErrNoRows means the grant is NOT VISIBLE -- absent, another
+	// organisation's, or refused by RLS. It is the ONLY outcome meaning "not
+	// there"; a returned row of two zeroes is an idempotent success. See the
+	// query's four-outcome comment.
+	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and
@@ -364,6 +388,91 @@ func (r *Repo) ListSitesForRead(ctx context.Context, tenantID uuid.UUID, limit i
 		return rows[:limit], true, nil
 	}
 	return rows, false, nil
+}
+
+// ListGrants reads the organisation's grants NEWEST FIRST, through
+// db.Pool.RunTenantTx.
+//
+// RunTenantTx AND NOT InTenantTx, AND THAT IS THE SECURITY BOUNDARY OF THIS
+// METHOD. m124 carries mcp_grants_site_scope_select as a RESTRICTIVE FOR SELECT
+// policy whose predicate is `app.site_scope <> 'on'`, and app.site_scope is set
+// by exactly one helper: InScopedTenantTx, which RunTenantTx dispatches to for
+// a site-constrained principal. Calling InTenantTx here would leave that policy
+// permanently inert -- the query would succeed, return the whole organisation's
+// grant list including scope_site_ids, and every test would pass. That is the
+// documented shape of the m112 failure and it is why this method takes a
+// principal it does not otherwise use.
+//
+// WHAT THIS METHOD CANNOT DO, said here because the caller must: when RLS
+// refuses, PostgreSQL returns ZERO ROWS AND NO ERROR. This method therefore
+// cannot distinguish "your organisation has no connections" from "you were
+// refused", and it must not try -- an empty slice is a truthful report of what
+// the transaction could see. Service.ListConnections refuses a site-constrained
+// principal BEFORE reaching here precisely so that the empty result never has
+// to carry that ambiguity.
+//
+// No pagination. A grant is minted by a human clicking consent, so the row
+// count per organisation is bounded by human effort rather than by machines;
+// the ordering matches the house keyset convention (created_at DESC, id DESC)
+// so a cursor can be added later without the order changing under anyone.
+func (r *Repo) ListGrants(ctx context.Context, principal domain.Principal) ([]sqlc.McpGrant, error) {
+	var out []sqlc.McpGrant
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		rows, err := sqlc.New(tx).ListMCPGrantsForOrg(ctx, principal.TenantID)
+		if err != nil {
+			return fmt.Errorf("list mcp grants: %w", err)
+		}
+		out = rows
+		return nil
+	})
+	if err != nil {
+		// nil, NOT an empty slice. A failed read must never reach a caller
+		// looking like a successful empty one -- that is this project's
+		// signature defect, and returning `[]T{}` alongside an error is how it
+		// gets made at the layer that is supposed to prevent it.
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevokeGrantWithTokens revokes the grant and every active token under it, in
+// the ONE CTE statement that cannot leave the half-revoked state.
+//
+// The four outcomes are the query's, restated here only where Go changes them:
+// pgx.ErrNoRows is returned VERBATIM so the caller can 404 on it, because it is
+// the only outcome that means the grant is not visible to this principal. Every
+// other outcome comes back as a row of counts and is a success of some kind.
+//
+// RunTenantTx for the same reason ListGrants uses it: mcp_grants carries a
+// RESTRICTIVE _site_scope UPDATE gate as well as the SELECT one, and running
+// this under InTenantTx would leave it inert. Note what that would look like --
+// a site-constrained principal successfully revoking an organisation-wide
+// credential, with a 200 and no trace.
+func (r *Repo) RevokeGrantWithTokens(
+	ctx context.Context,
+	principal domain.Principal,
+	grantID uuid.UUID,
+) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
+	var out sqlc.RevokeMCPGrantWithTokensInTenantTxRow
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
+		row, err := sqlc.New(tx).RevokeMCPGrantWithTokensInTenantTx(ctx,
+			sqlc.RevokeMCPGrantWithTokensInTenantTxParams{
+				TenantID: principal.TenantID,
+				ID:       grantID,
+			})
+		if err != nil {
+			// pgx.ErrNoRows is meaningful to the caller and is NOT wrapped in a
+			// message that would make errors.Is harder to reach for. Every
+			// other error is an infra failure.
+			return err
+		}
+		out = row
+		return nil
+	})
+	if err != nil {
+		return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, err
+	}
+	return out, nil
 }
 
 // nullableText is the pgtype-free helper for the *string columns sqlc emits.

@@ -9,7 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
+	"github.com/mosamlife/wpmgr/apps/api/internal/server/httpx"
 )
 
 // Handler serves the OAuth surface for the read-only MCP endpoint.
@@ -91,6 +93,148 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	g := r.Group(oauthGroupPath)
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
+}
+
+// RegisterConnections mounts the OPERATOR-FACING connection management surface
+// (S16, design Step 10):
+//
+//	GET  /api/v1/mcp/connections
+//	POST /api/v1/mcp/connections/:connectionId/revoke
+//
+// It is a THIRD mount point, separate from Register and RegisterPublic, because
+// these are house API routes rather than OAuth endpoints: they answer in the
+// house error envelope, they are read by the dashboard, and they carry per-route
+// RBAC that the OAuth endpoints cannot (RFC 7591 registration is anonymous by
+// specification).
+//
+// THE PERMISSIONS ARE THE SITE-SCOPE GATE, AND THE CHOICE OF THESE TWO IS
+// DELIBERATE. There is no RequireSiteAccess here and there must not be: a grant
+// is an ORGANISATION-wide credential with no :siteId in its path, so a per-site
+// gate has nothing to key on. What closes the hole instead is that
+// PermAPIKeyRead and PermAPIKeyManage are both members of authz.orgLevelPerms,
+// which makes RequirePermission refuse ANY site-constrained principal outright,
+// regardless of the role it holds on the one site it can see. That is the
+// permission-layer half of what mcp_grants_site_scope_select does in the
+// database, and reusing the API-key permissions rather than minting new ones is
+// what guarantees the orgLevelPerms membership is not a step somebody has to
+// remember -- a fresh permission that was left out of that map would look
+// identical here and gate nothing.
+//
+// An MCP grant is the same class of object as an API key -- a long-lived,
+// organisation-scoped bearer credential -- so the trust tier matches too: admin+
+// to read, admin+ to revoke (authz.minRoleFor).
+//
+// POST /revoke AND NOT DELETE. Revocation is not a delete: m124 Decision 2 keeps
+// the row precisely so last_used_at and revoked_at stay readable afterwards.
+// Naming it DELETE would promise a removal this endpoint does not perform.
+func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
+	g := r.Group(connectionsGroupPath)
+
+	g.GET("", authz.RequirePermission(authz.PermAPIKeyRead), h.listConnections)
+	g.POST("/:"+connectionIDParam+"/revoke",
+		authz.RequirePermission(authz.PermAPIKeyManage), h.revokeConnection)
+
+	// 405 rather than gin's bare 404 on a wrong verb, for the reason
+	// RegisterPublic gives: a 404 reads as "not deployed", which is exactly how
+	// the S6b-2 blocker presented and cost a debugging session. These carry NO
+	// permission middleware on purpose -- the verb is wrong regardless of who is
+	// asking, and answering 403 to a DELETE sends an operator to check a role
+	// when the fix is to send a POST.
+	houseMethodNotAllowedExcept(g, "", http.MethodGet)
+	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/revoke", http.MethodPost)
+}
+
+// listConnections answers GET /api/v1/mcp/connections.
+//
+// There is no branch here that can turn a failure into an empty list: every
+// error path goes to httpx.Error with a non-2xx, and the only 200 is built from
+// a slice the service returned alongside a nil error.
+func (h *Handler) listConnections(c *gin.Context) {
+	principal, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		// Unreachable behind RequireAuth; refusing anyway, because a handler
+		// that trusts its mount point is one refactor away from anonymous.
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+
+	conns, err := h.svc.ListConnections(c.Request.Context(), principal)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, toConnectionListDTO(conns))
+}
+
+// revokeConnection answers POST /api/v1/mcp/connections/:connectionId/revoke.
+//
+// It revokes the grant AND every live token under it. The service refuses to
+// express the half; see Service.RevokeConnection.
+func (h *Handler) revokeConnection(c *gin.Context) {
+	principal, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+
+	grantID, err := uuid.Parse(c.Param(connectionIDParam))
+	if err != nil {
+		// 404 AND NOT 400, matching authz.RequireSiteAccess's stance on a
+		// malformed :siteId. A caller who cannot see this organisation's
+		// connections must get the same answer for a malformed id, an id from
+		// another organisation, and an id that never existed -- otherwise the
+		// status code is an existence oracle.
+		httpx.Error(c, domain.NotFound(ErrCodeConnectionNotFound, "no such connection"))
+		return
+	}
+
+	out, err := h.svc.RevokeConnection(c.Request.Context(), principal, grantID)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	// 200 for all three success shapes, including the idempotent retry that
+	// changed nothing. The counts say what happened; the status says the end
+	// state the caller asked for now holds. Answering 404 or 500 on a
+	// zero-count success would report a correctly revoked credential as a
+	// failure and invite the operator to believe it is still live.
+	c.JSON(http.StatusOK, revokeResponseDTO{
+		Status:         string(GrantStatusRevoked),
+		GrantsRevoked:  out.GrantsRevoked,
+		TokensRevoked:  out.TokensRevoked,
+		AlreadyRevoked: out.AlreadyRevoked,
+	})
+}
+
+// houseMethodNotAllowedExcept is methodNotAllowedExcept for house API routes.
+//
+// Same shape, different envelope, and the duplication is the point: the OAuth
+// version answers in oauthErrorDTO because an OAuth client library parses that
+// shape, while these routes are read by the dashboard and must answer in the
+// house envelope {"code","message"}.
+//
+// It writes that envelope DIRECTLY rather than going through httpx.Error,
+// because domain.Kind has no 405 member -- there is no domain error that maps
+// to StatusMethodNotAllowed, and inventing one would put a transport-level
+// concept into the domain vocabulary to serve one wrong-verb response. The
+// field names are kept identical to httpx's errorEnvelope so a client parses
+// one shape for every error on this surface.
+func houseMethodNotAllowedExcept(g *gin.RouterGroup, path string, supported ...string) {
+	allowed := strings.Join(supported, ", ")
+	for _, verb := range allVerbs {
+		if slices.Contains(supported, verb) {
+			continue
+		}
+		g.Handle(verb, path, func(c *gin.Context) {
+			c.Header("Allow", allowed)
+			c.AbortWithStatusJSON(http.StatusMethodNotAllowed, gin.H{
+				"code":    "method_not_allowed",
+				"message": "this endpoint accepts " + allowed + " only",
+			})
+		})
+	}
 }
 
 // allVerbs is every method the 405 fallback covers. CONNECT and TRACE are
