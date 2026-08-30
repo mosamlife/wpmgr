@@ -5651,6 +5651,36 @@ CREATE TABLE mcp_grants (
     client_version              text        NULL,
     protocol_version            text        NULL,
     client_identity_recorded_at timestamptz NULL,
+    -- m128. THE OPERATOR'S CHOICE at S29 step 2, as a client-table.ts slug.
+    -- A FOURTH client fact, not a replacement for the three above: those are
+    -- self-reported by the client at `initialize`, this one is what a human
+    -- said the connection was for. They disagree legitimately and permanently
+    -- (set up for Claude Desktop, URL pasted into Cursor), so neither
+    -- overwrites the other and RecordConnect must never write this column.
+    --
+    -- NULL MEANS "NO OPERATOR CHOICE WAS RECORDED", and is NOT 'generic'.
+    -- 'generic' means an operator saw nine cards and chose "Other MCP client",
+    -- which the wireframe calls "a complete path, not a placeholder". S29 step
+    -- 9's never-connected state needs both facts and needs them apart.
+    --
+    -- NULLABLE WITH NO DEFAULT, deliberately unlike m127's capabilities and
+    -- expires_at: this column carries NO AUTHORITY, so there is no fail-open
+    -- for a NOT NULL to close, and a DEFAULT 'generic' would make every row
+    -- ever created assert a choice nobody made.
+    --
+    -- The CHECK pins SPELLING, not MEMBERSHIP. It does not enumerate the nine
+    -- clients: a new MCP client arrives on a vendor's cadence and should cost
+    -- one row in client-table.ts, not a migration applied inside main() at
+    -- boot. What it does buy is S31's filter -- `client is windsurf` then
+    -- "None of them was set up for Windsurf" is only true if equality is
+    -- trustworthy, so 'Windsurf' and 'windsurf ' are unrepresentable. An
+    -- unrecognised slug degrades at the render layer to the generic panel.
+    -- See m128 DECISION 3 for the full argument.
+    setup_client                text        NULL
+        CONSTRAINT mcp_grants_setup_client_shape_check
+        CHECK (setup_client IS NULL
+               OR (setup_client ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                   AND length(setup_client) <= 64)),
     created_by_user_id          uuid        NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_used_at timestamptz NULL,

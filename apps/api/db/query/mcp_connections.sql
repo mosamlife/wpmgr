@@ -268,11 +268,22 @@ RETURNING *;
 -- either gets 23502 rather than a live organisation-wide grant (Decision 1).
 -- The caller passes status explicitly -- 'active' -- rather than relying on the
 -- schema to assume it.
+-- setup_client (m128) IS THE OPERATOR'S CHOICE AT S29 STEP 2 and is passed
+-- explicitly, like status, rather than being left to the schema. It is NULLABLE
+-- with NO DEFAULT precisely so a caller that never asked -- any path that is
+-- not the step-2 wizard -- can pass NULL and mean "no operator choice was
+-- recorded". PASS NULL RATHER THAN 'generic' ON SUCH A PATH: 'generic' asserts
+-- the operator saw nine cards and chose "Other MCP client", which is a
+-- different fact and the one S29 step 9 distinguishes.
+--
+-- Do NOT derive it from client_name. That column is self-reported at
+-- `initialize`, is NULL until the client first connects, and inferring a
+-- choice from it manufactures a fact the operator never stated.
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
-    client_id, created_by_user_id
+    client_id, created_by_user_id, setup_client
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING *;
 

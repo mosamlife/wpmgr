@@ -188,11 +188,11 @@ const createMCPGrant = `-- name: CreateMCPGrant :one
 
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
-    client_id, created_by_user_id
+    client_id, created_by_user_id, setup_client
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at
 `
 
 type CreateMCPGrantParams struct {
@@ -204,6 +204,7 @@ type CreateMCPGrantParams struct {
 	ScopeSiteIds    []uuid.UUID `json:"scope_site_ids"`
 	ClientID        *string     `json:"client_id"`
 	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+	SetupClient     *string     `json:"setup_client"`
 }
 
 // ===========================================================================
@@ -231,6 +232,17 @@ type CreateMCPGrantParams struct {
 // either gets 23502 rather than a live organisation-wide grant (Decision 1).
 // The caller passes status explicitly -- 'active' -- rather than relying on the
 // schema to assume it.
+// setup_client (m128) IS THE OPERATOR'S CHOICE AT S29 STEP 2 and is passed
+// explicitly, like status, rather than being left to the schema. It is NULLABLE
+// with NO DEFAULT precisely so a caller that never asked -- any path that is
+// not the step-2 wizard -- can pass NULL and mean "no operator choice was
+// recorded". PASS NULL RATHER THAN 'generic' ON SUCH A PATH: 'generic' asserts
+// the operator saw nine cards and chose "Other MCP client", which is a
+// different fact and the one S29 step 9 distinguishes.
+//
+// Do NOT derive it from client_name. That column is self-reported at
+// `initialize`, is NULL until the client first connects, and inferring a
+// choice from it manufactures a fact the operator never stated.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -241,6 +253,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		arg.ScopeSiteIds,
 		arg.ClientID,
 		arg.CreatedByUserID,
+		arg.SetupClient,
 	)
 	var i McpGrant
 	err := row.Scan(
@@ -256,6 +269,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
@@ -413,7 +427,7 @@ func (q *Queries) GetMCPConnectionTokenByHashForLookup(ctx context.Context, toke
 }
 
 const getMCPGrant = `-- name: GetMCPGrant :one
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
 WHERE tenant_id = $1 AND id = $2
 `
 
@@ -441,6 +455,7 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
@@ -531,7 +546,7 @@ func (q *Queries) ListMCPConnectionTokensForGrant(ctx context.Context, arg ListM
 }
 
 const listMCPGrantsForOrg = `-- name: ListMCPGrantsForOrg :many
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
 `
@@ -568,6 +583,7 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 			&i.ClientVersion,
 			&i.ProtocolVersion,
 			&i.ClientIdentityRecordedAt,
+			&i.SetupClient,
 			&i.CreatedByUserID,
 			&i.CreatedAt,
 			&i.LastUsedAt,
@@ -676,7 +692,7 @@ SET client_name                 = $3,
     protocol_version            = $5,
     client_identity_recorded_at = now()
 WHERE tenant_id = $1 AND id = $2
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, setup_client, created_by_user_id, created_at, last_used_at, revoked_at
 `
 
 type RecordMCPGrantClientIdentityInTenantTxParams struct {
@@ -719,6 +735,7 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 		&i.ClientVersion,
 		&i.ProtocolVersion,
 		&i.ClientIdentityRecordedAt,
+		&i.SetupClient,
 		&i.CreatedByUserID,
 		&i.CreatedAt,
 		&i.LastUsedAt,
