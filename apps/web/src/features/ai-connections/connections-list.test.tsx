@@ -156,8 +156,19 @@ describe("a field the client did not send is rendered as absent", () => {
       status: "ready",
       connections: [{ ...CONNECTED, protocolHeader: { kind: "never_connected" } }],
     });
-    expect(await screen.findByText(/has not connected yet/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no protocol header sent/i)).not.toBeInTheDocument();
+    // DERIVED, NOT HARDCODED. The over-fire pass caught an earlier version
+    // matching /has not connected yet/i: rewording that sentence is correct
+    // work and it reddened. Fourth instance of this trap in this slice. What
+    // must not regress is that this state renders as ITSELF and not as one of
+    // the other three, so the expected string comes from the same function the
+    // component uses.
+    const floor = "2025-03-26";
+    const expected = protocolHeaderLabel({ kind: "never_connected" }, floor);
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    // And not as either neighbouring state.
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
   });
 
