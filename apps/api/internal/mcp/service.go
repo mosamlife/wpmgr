@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/audit"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -177,6 +178,16 @@ type Clock func() time.Time
 type Service struct {
 	store Store
 	now   Clock
+	// audit is nil unless WithAudit is called. Every audit write in this
+	// package guards on it being nil first -- see Approve, RevokeConnection,
+	// and RecordToolCall -- so a Service built by the many unit tests in this
+	// package (fakeStore, no real Postgres pool to back an audit.Recorder)
+	// keeps working unaudited. Production wiring (cmd/wpmgr/main.go) always
+	// calls WithAudit; a Service that reaches a request path without it is a
+	// wiring bug, not a supported configuration, and the finding to raise if
+	// one is ever found is "this deploy path is unattributable", not "make the
+	// nil check quieter".
+	audit *audit.Recorder
 }
 
 func NewService(store Store) *Service {
@@ -187,6 +198,18 @@ func NewService(store Store) *Service {
 func (s *Service) WithClock(c Clock) *Service {
 	cp := *s
 	cp.now = c
+	return &cp
+}
+
+// WithAudit returns a copy that appends ActionMCPGrantCreated,
+// ActionMCPGrantRevoked and ActionMCPToolCalled through rec. Mirrors
+// WithClock's copy-and-return shape. cmd/wpmgr/main.go calls this on the one
+// Service the process constructs; a Service left without it (as most of this
+// package's unit tests are, deliberately, since they drive a fakeStore with no
+// backing Postgres pool) simply does not audit -- see the field doc on audit.
+func (s *Service) WithAudit(rec *audit.Recorder) *Service {
+	cp := *s
+	cp.audit = rec
 	return &cp
 }
 
@@ -589,6 +612,29 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 				RedirectUri:         req.Consent.RedirectURI,
 				ExpiresAt:           expiresAt,
 			}
+		},
+		// ActionMCPGrantCreated, in the SAME transaction as both inserts above.
+		// This is "the row written to the audit log" the operator-facing
+		// consent flow promises: if the grant or the code fails to insert, or
+		// this append fails, the whole approval rolls back and there is no
+		// mcp.grant.created row for a grant that does not exist.
+		func(tx pgx.Tx, gr sqlc.McpGrant) error {
+			if s.audit == nil {
+				return nil
+			}
+			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+				TenantID:   req.Principal.TenantID,
+				ActorType:  audit.ActorUser,
+				ActorID:    req.Principal.UserID.String(),
+				Action:     audit.ActionMCPGrantCreated,
+				TargetType: "mcp_grant",
+				TargetID:   gr.ID.String(),
+				Metadata: map[string]any{
+					"grant_name":      gr.Name,
+					"site_scope_mode": gr.SiteScopeMode,
+				},
+			})
+			return aerr
 		})
 	if err != nil {
 		return Approval{}, fmt.Errorf("create grant and code: %w", err)
@@ -848,6 +894,14 @@ type AuthorizedRequest struct {
 	TenantID uuid.UUID
 	GrantID  uuid.UUID
 	TokenID  uuid.UUID
+	// GrantName is the grant's operator-assigned name (mcp_grants.name), read
+	// at the same ReCheckAuthorization call that resolves GrantID -- no extra
+	// query. It exists so RecordToolCall can stamp a human-readable label onto
+	// an ActionMCPToolCalled event without a database join: ActorName
+	// resolution (ListAuditEntries) has no arm for ActorAssistant today, so
+	// this is how the label travels until it does. Never used for
+	// authorization, only for display.
+	GrantName string
 
 	// Sites is the resolved site scope: the PER-CONNECTION narrowing on the
 	// site axis. Zero value allows nothing.
@@ -955,6 +1009,7 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	return AuthorizedRequest{
 		TenantID:     tok.TenantID,
 		GrantID:      chk.GrantID,
+		GrantName:    chk.GrantName,
 		TokenID:      chk.TokenID,
 		Sites:        NewSiteSet(ids),
 		Capabilities: caps,
@@ -981,6 +1036,48 @@ func (s *Service) RecordConnect(ctx context.Context, auth AuthorizedRequest, nam
 		return fmt.Errorf("record mcp connect: %w", err)
 	}
 	return nil
+}
+
+// RecordToolCall appends the ActionMCPToolCalled audit row for one
+// successfully executed tool call. The caller (TransportHandler.callTool)
+// invokes this AFTER entry.invoke returns without error -- a refused call
+// never reaches a tenant's data, and is already visible in the operator log
+// TransportHandler writes at refusal time (h.log.WarnContext), so it earns no
+// row here.
+//
+// ActorType is ActorAssistant, the one actor kind in this whole log that
+// attributes the row to the MODEL rather than to the human who granted it
+// access: auth.GrantID identifies WHICH connection acted, which is the fact an
+// operator reviewing "what did this MCP client touch" actually wants, and it
+// is a fact ActorUser (the approving human, possibly long gone from the
+// account) cannot carry. operatorPermission and toolName both come from the
+// registry entry AuthorizeTool already resolved -- see the OperatorPermission
+// doc on ToolPolicy for why that field lands here.
+//
+// BEST-EFFORT, deliberately unlike Approve/RevokeConnection's RecordInTx:
+// there is no companion write in the same transaction to roll back alongside a
+// failed append (a tool call in this phase is a read), so failing the whole
+// tool call because its own audit trail could not be appended would let a
+// purely observational feature take down the read path it exists to observe.
+// The error is returned so the caller can log it, never to be treated as a
+// reason to withhold the tool's answer.
+func (s *Service) RecordToolCall(ctx context.Context, auth AuthorizedRequest, toolName string, operatorPermission string) error {
+	if s.audit == nil {
+		return nil
+	}
+	_, err := s.audit.Record(ctx, audit.Event{
+		TenantID:   auth.TenantID,
+		ActorType:  audit.ActorAssistant,
+		ActorID:    auth.GrantID.String(),
+		Action:     audit.ActionMCPToolCalled,
+		TargetType: "mcp_tool",
+		TargetID:   toolName,
+		Metadata: map[string]any{
+			"grant_name":          auth.GrantName,
+			"operator_permission": operatorPermission,
+		},
+	})
+	return err
 }
 
 // ListSitesForModel is the one Phase 1 read tool. It returns the rendered tool
@@ -1196,7 +1293,32 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			"a connection id is required")
 	}
 
-	row, err := s.store.RevokeGrantWithTokens(ctx, p, grantID)
+	row, err := s.store.RevokeGrantWithTokens(ctx, p, grantID,
+		// ActionMCPGrantRevoked, in the SAME transaction as the revoke
+		// statement. Runs on all three non-error outcomes (freshly revoked,
+		// half-revoked repair, idempotent no-op): the operator explicitly
+		// asked for this credential to be revoked and the request is what is
+		// being attributed, not merely a state transition. It never runs
+		// alongside pgx.ErrNoRows -- see onRevoked's doc on the interface.
+		func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error {
+			if s.audit == nil {
+				return nil
+			}
+			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
+				TenantID:   p.TenantID,
+				ActorType:  audit.ActorUser,
+				ActorID:    p.UserID.String(),
+				Action:     audit.ActionMCPGrantRevoked,
+				TargetType: "mcp_grant",
+				TargetID:   grantID.String(),
+				Metadata: map[string]any{
+					"grants_revoked":  row.GrantsRevoked,
+					"tokens_revoked":  row.TokensRevoked,
+					"already_revoked": row.GrantsRevoked == 0,
+				},
+			})
+			return aerr
+		})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return RevokeOutcome{}, domain.NotFound(ErrCodeConnectionNotFound,

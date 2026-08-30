@@ -286,7 +286,7 @@ func buildEngine() (engine *gin.Engine, omittedDepsFields []string, err error) {
 	// cmd/wpmgr/main.go wires it (mcp.NewService(mcp.NewRepo(pool)) etc.), so
 	// POST /mcp, the four OAuth paths and the three well-known discovery
 	// documents all mount.
-	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now)
+	mcpSvc := mcp.NewService(mcp.NewRepo(pool)).WithClock(clock.Now).WithAudit(auditRec)
 	mcpTransportH := mcp.NewTransportHandler(mcpSvc, logger, "dump-routes")
 	mcpOAuthH := mcp.NewHandler(mcpSvc)
 	mcpDiscoveryH := mcp.NewDiscoveryHandler("https://cp.example.test")

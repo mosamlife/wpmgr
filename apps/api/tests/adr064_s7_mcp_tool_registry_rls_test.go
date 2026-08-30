@@ -103,7 +103,7 @@ func s7GrantWithBearer(
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("create grant for tenant %s: %v", tenantID, err)
 	}
