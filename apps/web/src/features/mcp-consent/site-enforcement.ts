@@ -29,10 +29,14 @@ export const ENFORCEMENT_BANNED_WORDS: readonly string[] = [
 ];
 
 function bannedWordPattern(word: string): RegExp {
-  // Multi-word phrases match as a literal substring. Single words match at a
-  // word boundary so "safe" fires on "Safe." and "unsafe" alike (both start a
-  // fresh word after a boundary) but not inside "safety", which shares no
-  // boundary with the "e" that would need to end the match.
+  // Multi-word phrases match as a literal substring. Single words need a word
+  // boundary on BOTH sides, so "safe" fires on "Safe." and on "safe," but not
+  // inside "safety" and NOT inside "unsafe": "un" and "safe" are both word
+  // characters, so there is no boundary between "n" and "s" for the leading
+  // \b to match. PREFIXED AND SUFFIXED FORMS ARE OUT OF REACH BY DESIGN and
+  // widening the pattern would redden honest copy -- "unsafe" is the opposite
+  // of the overclaim this list exists to catch, and a guard that flags a
+  // truthful warning is a guard someone switches off.
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(word.includes(" ") ? escaped : `\\b${escaped}\\b`, "i");
 }

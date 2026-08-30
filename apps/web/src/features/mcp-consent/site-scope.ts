@@ -296,12 +296,33 @@ export function isScopeApprovable(scope: ResolvedSiteScope): boolean {
  * array missing exactly the tag the operator chose -- narrowing the request
  * without telling anyone. Null is "cannot build this payload" and every caller
  * must refuse to submit on it, loudly, rather than sending the smaller set.
+ *
+ * PARTIAL RESOLUTION IS THE SAME ABSENCE. Filtering the registry down to the
+ * ticked names returns whatever survived, so a selection of two tags where one
+ * was deleted resolved to the ONE that remained and the request went out
+ * covering half of what was chosen. Narrowing is not the safer direction when
+ * nobody is told it happened: the operator reads the scope line, sees both
+ * tags they ticked, and deploys a credential that carries one. Every selected
+ * name must resolve or the whole payload is null.
+ *
+ * EMPTY IN, EMPTY OUT. No ticked names resolves to `[]`, not null: there is
+ * nothing unresolved about choosing nothing. It is NOT a mintable payload --
+ * ValidateSiteScopeRequest (apps/api/internal/mcp/scope.go:177-182) refuses
+ * mode 'tags' with an empty list, and mint.go:264 runs the same check -- but
+ * that refusal belongs to the callers' gates, stated in their own words, not
+ * smuggled in here as a null that every caller then reports as a registry
+ * failure the operator cannot act on.
  */
 export function resolveTagIds(
   selectedTagNames: readonly string[],
   tags: readonly { readonly id: string; readonly name: string }[] | null,
 ): readonly string[] | null {
   if (tags === null) return null;
-  const ids = tags.filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id);
-  return ids.length === 0 ? null : ids;
+  const ids: string[] = [];
+  for (const name of selectedTagNames) {
+    const tag = tags.find((candidate) => candidate.name === name);
+    if (tag === undefined) return null;
+    if (!ids.includes(tag.id)) ids.push(tag.id);
+  }
+  return ids;
 }
