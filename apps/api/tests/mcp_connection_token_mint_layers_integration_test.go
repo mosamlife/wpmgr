@@ -24,6 +24,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -202,6 +203,25 @@ func TestMCPMintRollsBackTheCredentialWhenTheAuditAppendFailsAsAppRole(t *testin
 	if err == nil {
 		t.Fatal("an onCreated error did not abort the mint")
 	}
+
+	// THE ERROR IS PINNED TO THE PROBE, not merely observed to be non-nil.
+	// The mint can fail BEFORE onCreated ever runs -- a 23502 from a NOT NULL
+	// grant column, or a CHECK violation on expires_at or capabilities. In
+	// that case nothing was ever inserted, both count assertions below still
+	// pass, and this test stays green while proving nothing about the
+	// transaction boundary it is named for.
+	//
+	// mintProbeGrant supplies Capabilities and ExpiresAt today, so the probe
+	// does reach onCreated right now. The point is that WITHOUT THIS CHECK
+	// this test cannot report the day that stops being true. Same approach as
+	// the sibling probe,
+	// TestMCPAuditEvents_RolledBackGrantCreationLeavesNoAuditRow_AsAppRole.
+	if !errors.Is(err, errMintAuditProbe) {
+		t.Fatalf("the mint failed with %v, which is NOT the injected onCreated failure. "+
+			"The insert aborted before onCreated ran, so the rollback assertions below "+
+			"are vacuous and this probe proves nothing about the transaction boundary.", err)
+	}
+
 	if after := countAllGrants(t, pool, tenantID); after != beforeGrants {
 		t.Fatalf("A CREDENTIAL SURVIVED A FAILED AUDIT APPEND: grants %d -> %d",
 			beforeGrants, after)

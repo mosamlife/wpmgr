@@ -48,6 +48,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"testing"
 	"time"
 
@@ -563,13 +564,43 @@ func TestMCPStoredCapabilitiesAreTheAuthorityAsAppRole(t *testing.T) {
 		t.Fatalf("grant_capabilities = %v after emptying, want []", chk.GrantCapabilities)
 	}
 
-	if _, err := svc.Authenticate(ctx, bearer); err == nil {
+	_, err = svc.Authenticate(ctx, bearer)
+	if err == nil {
 		t.Fatal("Authenticate ADMITTED a grant whose stored capability set is empty. " +
 			"The capability set is being computed from the scope registry instead of " +
 			"read from the grant, so the column is decorative and a narrowed connection " +
 			"would hold the org default regardless of what was stored.")
 	}
-	t.Log("a grant with capabilities = '{}' is REFUSED: the stored column is the authority")
+
+	// THE STATUS IS ASSERTED BY VALUE, not as "an error occurred". This
+	// assertion was previously `err == nil` alone, which is green under 401
+	// and under 403 alike -- so the refusal could change kind underneath it
+	// without anything going red.
+	//
+	// It must be 403. Authenticate's refusals reach writeUnauthorized, and an
+	// MCP client that gets 401 re-runs the OAuth handshake, which cannot
+	// refill an empty capabilities column: the client loops forever and the
+	// operator is sent to rotate a working credential. 403 says the credential
+	// is valid and the grant is not permitted, which is the true state.
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("Authenticate returned a non-domain error %v; the refusal must be a "+
+			"typed domain error or httpx cannot map it to anything but 500", err)
+	}
+	if de.Kind != domain.KindForbidden {
+		t.Fatalf("empty-capabilities refusal Kind = %d (HTTP %d), want %d (HTTP %d). "+
+			"401 makes an MCP client re-run the OAuth handshake, which cannot change a "+
+			"stored capability set, so the client loops.",
+			de.Kind, domain.HTTPStatus(err), domain.KindForbidden, http.StatusForbidden)
+	}
+	if got := domain.HTTPStatus(err); got != http.StatusForbidden {
+		t.Fatalf("empty-capabilities refusal HTTPStatus = %d, want %d", got, http.StatusForbidden)
+	}
+	if de.Code != mcp.ErrCodeCapabilityUnmapped {
+		t.Fatalf("empty-capabilities refusal Code = %q, want %q", de.Code, mcp.ErrCodeCapabilityUnmapped)
+	}
+	t.Logf("a grant with capabilities = '{}' is REFUSED %d/%s: the stored column is the authority",
+		domain.HTTPStatus(err), de.Code)
 }
 
 // repoTouch issues the activity stamp through the Store interface the service
