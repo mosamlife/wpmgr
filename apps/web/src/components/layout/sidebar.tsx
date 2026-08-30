@@ -13,6 +13,7 @@ import {
   Share2,
   Shield,
   ShieldAlert,
+  Sparkles,
   TrendingUp,
   Users,
   type LucideIcon,
@@ -144,6 +145,15 @@ const TOP_GROUPS: ReadonlyArray<NavGroup> = [
     label: "Email",
     icon: Mail,
     to: "/email",
+  },
+  // AI connections. A leaf, not a group: /ai is the destination and
+  // /ai/connect hangs off its primary action, so only the index belongs here.
+  // The consent screen at /connect/ai stays out entirely -- it is an OAuth
+  // redirect target, not somewhere anyone navigates to.
+  {
+    label: "AI",
+    icon: Sparkles,
+    to: "/ai",
   },
   {
     label: "Security",

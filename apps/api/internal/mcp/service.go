@@ -58,7 +58,22 @@ const (
 	// connections surface. It mirrors the authz middleware's own
 	// "org_scope_required" and exists as a SECOND, independent refusal -- see
 	// requireOrgScopedPrincipal for why one is not enough.
+	//
+	// Distinct from ErrCodeAccessDenied below, and the split is deliberate: that
+	// one is the OAuth-envelope refusal for the CONSENT routes, which a browser
+	// screen parses as RFC 6749 {error, error_description}. This one travels in
+	// the house {code, message} envelope because the connections routes are read
+	// by the dashboard's own data layer. Same predicate
+	// (domain.Principal.IsSiteConstrained), two envelopes, because two different
+	// consumers parse them.
 	ErrCodeOrgScopeRequired = "mcp_org_scope_required"
+
+	// ErrCodeAccessDenied is the refusal for a principal that is authenticated
+	// and carries a tenant but may not authorize an ORG-LEVEL object. It maps
+	// to RFC 6749 section 4.1.2.1 "access_denied", which is the spec's own name
+	// for "the resource owner refused", and 403 rather than 401: re-presenting
+	// the same credential will not help.
+	ErrCodeAccessDenied = "mcp_access_denied"
 )
 
 // The OAuth vocabulary this server implements, named once.
@@ -455,9 +470,15 @@ func exactMatchRedirectURI(registered []string, presented string) bool {
 
 // ApprovalRequest is a human's consent, submitted by the authenticated
 // operator whose organisation the grant will belong to.
+//
+// Principal is the WHOLE principal and not the (TenantID, UserID) pair it
+// replaced. The pair could be filled in correctly while Scope and
+// AllowedSiteIDs were silently dropped, and dropping them is precisely what
+// makes the site-scope RLS inert on the write below -- a caller that populates
+// two of four fields would still compile and would still escalate. One field
+// cannot be half-populated.
 type ApprovalRequest struct {
-	TenantID  uuid.UUID
-	UserID    uuid.UUID
+	Principal domain.Principal
 	Consent   ConsentContext
 	GrantName string
 	SiteScope SiteScopeRequest
@@ -475,8 +496,18 @@ type Approval struct {
 // Approve records the human's consent as a grant and mints the single-use PKCE
 // code. Grant and code are created in one transaction.
 func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, error) {
-	if req.TenantID == uuid.Nil {
+	if req.Principal.TenantID == uuid.Nil {
 		return Approval{}, domain.Validation(ErrCodeInvalidRequest, "an organisation is required")
+	}
+
+	// A grant is org-level: site_scope_mode 'all' resolves to every site in the
+	// organisation. authz.RequireOrgScope on the route is the primary refusal
+	// and this is the service-layer restatement of it, so a future caller that
+	// reaches Approve without passing through that middleware is refused too.
+	// The repo's RunTenantTx is the third layer, in the database.
+	if req.Principal.IsSiteConstrained() {
+		return Approval{}, domain.Forbidden(ErrCodeAccessDenied,
+			"site-scoped access cannot authorize an organisation-level connection")
 	}
 	if strings.TrimSpace(req.GrantName) == "" {
 		return Approval{}, domain.Validation(ErrCodeInvalidRequest, "a connection name is required")
@@ -533,9 +564,11 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 	codeHash := hashCredential(code)
 	expiresAt := s.now().UTC().Add(authorizationCodeTTL)
 
-	grant, _, err := s.store.CreateGrantWithCode(ctx,
+	// req.Principal, not a tenant id: it is what routes the write to the correct
+	// tx helper, and therefore what decides whether the site-scope RLS is live.
+	grant, _, err := s.store.CreateGrantWithCode(ctx, req.Principal,
 		sqlc.CreateMCPGrantParams{
-			TenantID:      req.TenantID,
+			TenantID:      req.Principal.TenantID,
 			Name:          strings.TrimSpace(req.GrantName),
 			Status:        string(GrantStatusActive),
 			SiteScopeMode: string(req.SiteScope.Mode),
@@ -543,11 +576,11 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			ScopeSiteIds:  orEmpty(req.SiteScope.SiteIDs),
 			// The RESOLVED client id, not the body's copy of it.
 			ClientID:        nullableText(client.ClientID),
-			CreatedByUserID: uuidToPG(req.UserID),
+			CreatedByUserID: uuidToPG(req.Principal.UserID),
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
-				TenantID:            req.TenantID,
+				TenantID:            req.Principal.TenantID,
 				GrantID:             grantID,
 				ClientID:            client.ClientID,
 				CodeHash:            codeHash,

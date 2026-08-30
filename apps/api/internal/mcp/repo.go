@@ -35,7 +35,13 @@ type Store interface {
 	// that never produced a token, stranding a client that did nothing wrong.
 	RedeemAuthorizationCode(ctx context.Context, tenantID, codeID uuid.UUID, tok sqlc.CreateMCPConnectionTokenParams) (sqlc.McpConnectionToken, error)
 
-	CreateGrantWithCode(ctx context.Context, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
+	// CreateGrantWithCode takes the authorizing principal as its own argument
+	// and not merely a tenant id, because the principal is what selects the
+	// transaction scope: a site-constrained one must reach InScopedTenantTx so
+	// the RESTRICTIVE insert policy on mcp_grants is live. A tenant id alone
+	// cannot express that, which is how the site-scope GUC came to be unset on
+	// this path. See the method on Repo.
+	CreateGrantWithCode(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
 
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
@@ -209,14 +215,28 @@ func (r *Repo) RedeemAuthorizationCode(
 }
 
 // CreateGrantWithCode mints the grant and its first authorization code in ONE
-// InTenantTx, so a crash between them cannot leave a grant nobody can redeem
+// transaction, so a crash between them cannot leave a grant nobody can redeem
 // or a code pointing at no grant. mkCode receives the new grant id.
 //
-// Not run under app.site_scope: mcp_grants_site_scope_insert is RESTRICTIVE FOR
-// INSERT, so a site-scoped collaborator inserting here would match nothing.
-// Minting a grant is an operator action and the handler gates it accordingly.
+// RunTenantTx, NOT InTenantTx, and the difference is the security boundary.
+// InScopedTenantTx is the only helper that sets app.site_scope, and the
+// RESTRICTIVE mcp_grants_site_scope_insert policy keys on that GUC, so only a
+// transaction opened through the scope-aware dispatch has the policy live. This
+// is the invariant db.go states over RunTenantTx: a repo that picks its own
+// helper is a call-site that can silently fall outside the site-scope RLS.
+//
+// The route-level authz.RequireOrgScope on /consent is the primary gate and
+// refuses a site-constrained principal before this is reached; Approve restates
+// it in the service. This layer is the third, and it is the one that turns a
+// missing gate into a loud database error rather than a quiet success -- which
+// matters because the middleware is one edit away from being absent and nothing
+// below the SQL layer would otherwise notice.
+//
+// principal is what selects the transaction, so it must be the principal that
+// actually authorized the grant -- never one synthesised from g.TenantID.
 func (r *Repo) CreateGrantWithCode(
 	ctx context.Context,
+	principal db.ScopedPrincipal,
 	g sqlc.CreateMCPGrantParams,
 	mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams,
 ) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
@@ -224,7 +244,16 @@ func (r *Repo) CreateGrantWithCode(
 		grant sqlc.McpGrant
 		code  sqlc.McpAuthorizationCode
 	)
-	err := r.pool.InTenantTx(ctx, g.TenantID, func(tx pgx.Tx) error {
+	// The transaction is scoped by the principal's tenant while the INSERT names
+	// g.TenantID. If those disagree the row belongs to neither and RLS would
+	// refuse it anyway; refusing here says so in one line instead of as a 42501
+	// from three frames down.
+	if principal.GetTenantID() != g.TenantID {
+		return grant, code, fmt.Errorf(
+			"create mcp grant: principal tenant %s does not match grant tenant %s",
+			principal.GetTenantID(), g.TenantID)
+	}
+	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
 		q := sqlc.New(tx)
 		gr, err := q.CreateMCPGrant(ctx, g)
 		if err != nil {

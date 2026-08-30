@@ -4,6 +4,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 
+// The forwarded-path list lives in src/ so a test can read it and check it
+// against the paths the Go server actually mounts. See
+// src/lib/dev-proxy-paths.test.ts -- an untested proxy list is what let
+// three root-mounted routes ship unreachable.
+import { DEV_PROXY_PATHS } from "./src/lib/dev-proxy-paths";
+
 // Build version is injected via the `BUILD_VERSION` env var at vite-build
 // time (set by Cloud Build). `apps/web/src/lib/build.ts` reads it as
 // `__BUILD_VERSION__`. Local `vite dev` and unsuffixed `vite build` runs fall
@@ -33,11 +39,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Proxy every backend surface to the API (mirrors the prod nginx routing).
-    // The client uses same-origin relative paths (baseUrl ""), so each real API
-    // prefix must be forwarded: /api/v1/*, /auth/*, /enroll, /agent/*, health.
+    // Proxy every backend surface to the API. The client uses same-origin
+    // relative paths (baseUrl ""), so a surface that is not forwarded here is
+    // answered by the SPA's index.html with a 200 and an HTML body -- which no
+    // client reports as an error. DEV_PROXY_PATHS carries the list and its
+    // test checks it against what the Go server mounts.
     proxy: Object.fromEntries(
-      ["/api", "/auth", "/enroll", "/agent", "/healthz", "/readyz"].map((p) => [
+      DEV_PROXY_PATHS.map((p) => [
         p,
         {
           target: process.env.VITE_API_BASE_URL ?? "http://localhost:8080",
