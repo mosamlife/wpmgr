@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent, within } from "@testing-library/react";
+import { screen, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 
-import { renderWithProviders } from "@/test/render";
+import { renderWithProviders, createTestQueryClient } from "@/test/render";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
@@ -603,12 +611,71 @@ function pickerBoxes(): HTMLElement[] {
  */
 async function reachMintButton() {
   renderWizard();
+  return advanceToMintButton();
+}
+
+/**
+ * The same walk to the mint button, on a wizard that is ALREADY RENDERED. Split
+ * out of `reachMintButton` so the route-blocker tests can reach the same state
+ * through a router they hold a handle on, rather than duplicating the steps and
+ * letting the two copies drift.
+ */
+async function advanceToMintButton() {
   await pickClient("Cursor");
   fireEvent.click(authCard("token"));
   await screen.findByTestId("site-step-count");
   fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
   fireEvent.click(pickerBoxes()[0]!);
   return screen.findByRole("button", { name: /generate connection token/i });
+}
+
+/**
+ * The wizard inside a REAL router with a REAL second route, returning the
+ * router so a test can assert where the operator actually ended up.
+ *
+ * This is not `renderWithProviders({ withRouter: true })` and cannot be. That
+ * harness builds a bare root route deliberately (see its module doc), so every
+ * path resolves to no matched route, and the blocker under test is route
+ * behaviour: a test that cannot observe the location cannot tell "the
+ * navigation was refused" from "the navigation happened and the notice
+ * rendered anyway". Two matched routes make the difference observable, and
+ * `router.state.location.pathname` is the assertion that a rendered banner
+ * cannot fake.
+ */
+function renderWizardInRouter() {
+  const rootRoute = createRootRoute();
+  const connectRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/ai/connect",
+    component: ConnectPage,
+  });
+  const listRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/ai",
+    component: () => <p>the AI connections list</p>,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([connectRoute, listRoute]),
+    history: createMemoryHistory({ initialEntries: ["/ai/connect"] }),
+  });
+  render(
+    <QueryClientProvider client={createTestQueryClient()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  return router;
+}
+
+/**
+ * Attempt to leave for /ai, the way the page header's back link does.
+ *
+ * The promise is caught rather than awaited. A blocked navigation is not an
+ * error, but nothing in the router's contract promises this settles when the
+ * navigation never happens, and a bare `await` on it would hang the test
+ * instead of failing it. What the test waits on is the observable outcome.
+ */
+function attemptLeave(router: { navigate: (opts: { to: string }) => Promise<void> }) {
+  void router.navigate({ to: "/ai" }).catch(() => {});
 }
 
 /**
@@ -761,6 +828,127 @@ describe("minting a connection token", () => {
     // for the duration of the request, not for the rest of the session.
     expect(authCard("oauth")).toBeEnabled();
     expect(screen.getByRole("button", { name: /claude desktop/i })).toBeEnabled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE FOURTH ROUTE OUT, AND THE ONE THE OTHER THREE DO NOT COVER: leaving the
+  // page. Lifting the mint to the wizard makes the response land on a mounted
+  // surface for every click INSIDE the screen, and does nothing at all when the
+  // screen itself goes away. The back link, a sidebar entry and the browser's
+  // back button all unmount the wizard with the POST still open, and the
+  // credential the server has already created is then a live grant whose
+  // plaintext was shown to no one.
+  //
+  // Every test below holds the response open on a promise and proves the
+  // in-flight state was genuinely reached before it acts. A test that raced a
+  // resolved stub would pass against a component with no blocker at all.
+  // ---------------------------------------------------------------------------
+
+  it("refuses to leave the route while a mint is in the air, and says why", async () => {
+    loadedFleet(3);
+    const { release } = heldMint();
+    const router = renderWizardInRouter();
+
+    fireEvent.click(await advanceToMintButton());
+    // IN FLIGHT, AND PROVABLY SO. Everything below is vacuous otherwise.
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+    // And nothing is claiming to hold anyone yet, so the assertion after the
+    // navigation is about the navigation and not about a banner that was
+    // always there.
+    expect(screen.queryByTestId("navigation-held")).toBeNull();
+
+    attemptLeave(router);
+
+    // THE REASON. A refusal the operator cannot see is indistinguishable from
+    // a broken link.
+    await waitFor(() => {
+      expect(screen.getByTestId("navigation-held")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("navigation-held")).toHaveTextContent(/shown once/i);
+    expect(screen.getByTestId("navigation-held")).toHaveTextContent(
+      /live credential .* nobody holds/i,
+    );
+    // THE REFUSAL ITSELF, which the banner cannot fake: the location never
+    // moved and the other route never rendered.
+    expect(router.state.location.pathname).toBe("/ai/connect");
+    expect(screen.queryByText(/the ai connections list/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /minting/i })).toBeInTheDocument();
+
+    release();
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
+  });
+
+  it("lifts the block when the mint succeeds", async () => {
+    // A blocker that outlives its request strands the operator on a page they
+    // cannot leave, which is a worse defect than the one it was added to fix.
+    loadedFleet(3);
+    const { release } = heldMint();
+    const router = renderWizardInRouter();
+
+    fireEvent.click(await advanceToMintButton());
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+    attemptLeave(router);
+    await waitFor(() => {
+      expect(screen.getByTestId("navigation-held")).toBeInTheDocument();
+    });
+
+    release();
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
+    // The reason goes with the request that caused it, rather than sitting
+    // there telling the operator they are held when they are not.
+    expect(screen.queryByTestId("navigation-held")).toBeNull();
+
+    attemptLeave(router);
+    expect(await screen.findByText(/the ai connections list/i)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/ai");
+  });
+
+  it("lifts the block when the mint fails", async () => {
+    // The half that a blocker keyed on "a mint was started" would get wrong.
+    // A 500 creates no credential and leaves nothing to protect, so holding
+    // the operator after it would be a trap with no purpose at all.
+    loadedFleet(3);
+    const { release } = heldMint({ error: "internal" }, 500);
+    const router = renderWizardInRouter();
+
+    fireEvent.click(await advanceToMintButton());
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+    attemptLeave(router);
+    await waitFor(() => {
+      expect(screen.getByTestId("navigation-held")).toBeInTheDocument();
+    });
+    expect(router.state.location.pathname).toBe("/ai/connect");
+
+    release();
+    // The request settled as a failure, and provably so: the button came back
+    // and no token was revealed.
+    expect(
+      await screen.findByRole("button", { name: /generate connection token/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(MINTED.token)).toBeNull();
+    expect(screen.queryByTestId("navigation-held")).toBeNull();
+
+    attemptLeave(router);
+    expect(await screen.findByText(/the ai connections list/i)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/ai");
+  });
+
+  it("does not block a route change when no mint is outstanding", async () => {
+    // THE OVER-FIRE CASE. A blocker that fires on a screen with nothing in the
+    // air makes the wizard a room with no door, and the first operator it
+    // traps is the one who opened it to read the instructions.
+    loadedFleet(3);
+    const router = renderWizardInRouter();
+
+    // All the way to the mint button, and deliberately no further: every input
+    // the wizard has is filled in and still nothing has been sent.
+    await advanceToMintButton();
+
+    attemptLeave(router);
+
+    expect(await screen.findByText(/the ai connections list/i)).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/ai");
+    expect(screen.queryByTestId("navigation-held")).toBeNull();
   });
 
   it("names the credential it just made, so a lost plaintext is still revocable", async () => {

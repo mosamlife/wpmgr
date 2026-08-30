@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { UseMutationResult } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
 import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -184,6 +185,48 @@ export function ConnectWizard({
   // second half, and it is the half that holds when this one is bypassed.
   const mintInFlight = mint.isPending;
 
+  // THE ROUTE IS A CONTROL TOO. Locking the client and method cards closed the
+  // doors inside this screen and left the front one open: the back link in the
+  // page header, a sidebar entry, the browser's own back button all unmount the
+  // wizard mid-request, and the response then lands on nothing. The server has
+  // already created a working credential whose one-time plaintext is shown to
+  // no one, that nobody knows to revoke because nobody knows it exists. So the
+  // same reasoning that disables the cards is extended to the route.
+  //
+  // `disabled` is what makes this NOT a trap. When no mint is open the blocker
+  // is never installed at all, so shouldBlockFn cannot run and cannot decide
+  // wrongly; when the mint settles -- resolved OR rejected -- isPending goes
+  // false, the effect tears the block down, and the operator leaves freely. A
+  // block that outlived its request would strand them on a page they cannot
+  // exit, which is a worse defect than the one being fixed.
+  const [navigationHeld, setNavigationHeld] = useState(false);
+  // WHAT THIS DOES NOT COVER, said here rather than left to be discovered:
+  // closing the tab, reloading, or typing an address. Those never reach the
+  // router. `enableBeforeUnload` is off on purpose rather than by omission --
+  // the browser's prompt is generic, cannot name the credential, is suppressed
+  // without prior interaction, and preserves nothing if the operator confirms.
+  // It would make this screen look protected against a case it does not
+  // protect, which this file refuses to do elsewhere for the same reason. Only
+  // owning the mint response outside the render tree closes those, and that is
+  // filed separately.
+  useBlocker({
+    disabled: !mintInFlight,
+    enableBeforeUnload: false,
+    shouldBlockFn: () => {
+      // A refusal the operator cannot see reads as a broken link, and they
+      // click it again harder. Recording it here is what puts a reason on the
+      // screen naming the credential being created and shown once.
+      setNavigationHeld(true);
+      return true;
+    },
+  });
+  // The reason is scoped to the request that caused it. Once nothing is in
+  // flight there is nothing being held, so a notice still claiming otherwise
+  // would be a false statement about the page the operator is now free to
+  // leave. Adjusted during render, the same way the stale-error reset below
+  // is, rather than in an effect that would paint the lie for one frame.
+  if (navigationHeld && !mintInFlight) setNavigationHeld(false);
+
   // Clearing a STALE ERROR when the configuration changes, and NOTHING ELSE.
   // This used to clear the reveal too, which is the same defect as the unmount
   // race wearing different clothes: a single keystroke in the name field, after
@@ -240,6 +283,19 @@ export function ConnectWizard({
             mint.reset();
           }}
         />
+      ) : null}
+
+      {navigationHeld ? (
+        <p
+          role="alert"
+          data-testid="navigation-held"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+        >
+          We kept you on this page. A connection token is being created right now, and it is shown
+          once, so leaving before it arrives would leave a live credential on your organisation
+          that nobody holds and nobody knows to revoke. This releases the moment the request
+          finishes, whether it succeeds or fails.
+        </p>
       ) : null}
 
       {mintInFlight ? (
