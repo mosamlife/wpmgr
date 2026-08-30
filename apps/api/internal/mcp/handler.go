@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -100,10 +99,63 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 // It sits on the group and not on the caller's mount so that every mount of
 // these two routes gets it, including the integration harness. A gate that
 // only exists in server.New is a gate no test exercises.
+//
+// BOTH ROUTES CARRY IT, not just the one that writes. /consent does not require
+// a prior /authorize: Approve re-resolves the client and re-matches the redirect
+// from the POST body, and /register is unauthenticated, so the write is
+// reachable with a self-registered client and a single POST -- no consent
+// screen, no operator interaction, no /authorize call. Gating only the writing
+// route would therefore gate nothing, and gating only /authorize would leave the
+// write open. The pair is the boundary.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group(oauthGroupPath, authz.RequireOrgScope())
+	g := r.Group(oauthGroupPath, h.requireOrgScope())
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
+}
+
+// requireOrgScope is authz.RequireOrgScope's refusal in THIS package's error
+// envelope. It is deliberately not authz.RequireOrgScope itself.
+//
+// The predicate is identical -- domain.Principal.IsSiteConstrained, the single
+// definition every other site gate calls -- so there is no second opinion about
+// who is constrained. Only the response shape differs, and it has to: the two
+// routes below answer in the RFC 6749 section 5.2 envelope
+// {error, error_description}, and the dashboard's consent screen parses exactly
+// that (apps/web/src/features/mcp-consent/use-consent.ts reads `error` and
+// `error_description`, falling back to "server_error" when neither is present).
+// Aborting through the generic {code, message} responder would make a
+// deliberate, correct refusal arrive at the screen as an unexplained server
+// fault, which tells a collaborator the system is broken when the truth is that
+// they may not approve this.
+//
+// The status is NOT softened to make the body prettier: oauthError maps
+// ErrCodeAccessDenied to 403. 401 would be wrong here -- the credential is
+// valid and re-presenting it cannot help, so inviting a retry is inviting a
+// pointless one.
+//
+// No OAuth CLIENT ever reads this body. authorization_endpoint is opened in the
+// user's browser and /consent is posted by our own screen; a client learns of a
+// refusal from the redirect the screen builds (buildDenialTarget), carrying
+// error=access_denied and the original state. The envelope matters for the
+// screen, not for the protocol.
+func (h *Handler) requireOrgScope() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p, ok := domain.PrincipalFromContext(c.Request.Context())
+		if !ok {
+			// Mirrors the handlers' own unauthenticated answer rather than the
+			// generic 401, for the same envelope reason.
+			c.AbortWithStatusJSON(http.StatusUnauthorized, oauthErrorDTO{
+				Err: "access_denied", ErrDesc: "sign in to authorize a connection"})
+			return
+		}
+		if p.IsSiteConstrained() {
+			status, dto := oauthError(domain.Forbidden(ErrCodeAccessDenied,
+				"site-scoped access cannot authorize an organisation-level connection"))
+			c.AbortWithStatusJSON(status, dto)
+			return
+		}
+		c.Next()
+	}
 }
 
 // allVerbs is every method the 405 fallback covers. CONNECT and TRACE are

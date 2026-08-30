@@ -195,8 +195,27 @@ func TestMCPConsentRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 			"body error=%q code=%q desc=%q",
 			status, consentErr.Err, consentErr.Code, consentErr.ErrDesc)
 	}
-	t.Logf("POST /consent refused the collaborator with %d (error=%q code=%q)",
-		status, consentErr.Err, consentErr.Code)
+	// THE REFUSAL MUST BE LEGIBLE TO THE CONSENT SCREEN, not merely correct.
+	// apps/web/src/features/mcp-consent/use-consent.ts reads `error` and
+	// `error_description` and falls back to "server_error" when neither is
+	// present, so a refusal in the generic {code, message} envelope reaches the
+	// user as an unexplained server fault. Asserting only the status would let
+	// that regress silently.
+	if consentErr.Err != "access_denied" {
+		t.Errorf("POST /consent refused with error=%q, want %q. The consent screen "+
+			"parses this field and shows a server fault when it is absent.",
+			consentErr.Err, "access_denied")
+	}
+	if consentErr.ErrDesc == "" {
+		t.Error("POST /consent refused with an empty error_description; the screen " +
+			"has nothing to tell the user beyond the error code")
+	}
+	if consentErr.Code != "" {
+		t.Errorf("POST /consent answered in the generic {code, message} envelope "+
+			"(code=%q); these routes answer in the OAuth envelope", consentErr.Code)
+	}
+	t.Logf("POST /consent refused the collaborator with %d (error=%q desc=%q)",
+		status, consentErr.Err, consentErr.ErrDesc)
 
 	// A 403 that committed first is still an escalation.
 	if after := mcpCountGrants(t, pool, tenantID); after != before {
@@ -220,13 +239,23 @@ func TestMCPConsentRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 
+	var authErr struct {
+		Err     string `json:"error"`
+		ErrDesc string `json:"error_description"`
+		Code    string `json:"code"`
+	}
 	authStatus := mcpDoJSON(t, eng, http.MethodGet,
-		"/api/v1/oauth/mcp/authorize?"+q.Encode(), nil, nil, nil)
+		"/api/v1/oauth/mcp/authorize?"+q.Encode(), nil, nil, &authErr)
 	if authStatus != http.StatusForbidden {
 		t.Errorf("GET /authorize answered %d for a site-scoped collaborator, want 403",
 			authStatus)
 	}
-	t.Logf("GET /authorize refused the collaborator with %d", authStatus)
+	if authErr.Err != "access_denied" || authErr.Code != "" {
+		t.Errorf("GET /authorize refused with error=%q code=%q, want the OAuth "+
+			"envelope carrying access_denied", authErr.Err, authErr.Code)
+	}
+	t.Logf("GET /authorize refused the collaborator with %d (error=%q)",
+		authStatus, authErr.Err)
 
 	if final := mcpCountGrants(t, pool, tenantID); final != before {
 		t.Fatalf("grant count moved %d -> %d across the whole flow", before, final)
