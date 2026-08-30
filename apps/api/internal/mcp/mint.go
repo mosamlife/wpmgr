@@ -213,7 +213,6 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	//   2. THIS CALL.
 	//   3. mcp_grants_site_scope_insert, the RESTRICTIVE policy keyed on the
 	//      app.site_scope GUC that Repo's RunTenantTx sets.
-	// MUTATION M1 targets this line.
 	if err := requireOrgScopedPrincipal(req.Principal); err != nil {
 		return MintedConnection{}, err
 	}
@@ -223,7 +222,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// service is limited, including a test harness -- a limiter that exists
 	// only in the route registration is one refactor away from being absent,
 	// which is the same reasoning Handler.Register gives for putting
-	// RequireOrgScope on the group. MUTATION M2 targets this block.
+	// RequireOrgScope on the group.
 	if ok, retryAfter := s.mintLimit.allow(mintLimiterKey(req.Principal.UserID)); !ok {
 		return MintedConnection{}, domain.RateLimited(ErrCodeMintRateLimited,
 			"too many connection tokens minted; retry shortly").
@@ -268,7 +267,6 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 
 	// 6. THE CREDENTIAL. Generated only now, after the last refusal, and held
 	// in memory alone: the insert takes the PREFIX and the HASH, never this.
-	// MUTATION M3 targets the two fields below.
 	secret, err := randomToken(32)
 	if err != nil {
 		return MintedConnection{}, fmt.Errorf("generate connection token: %w", err)
@@ -426,7 +424,6 @@ func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet
 // Distinguishing them is what makes the empty-scope acceptance safe. Without
 // this check, "accept empty" would also silently accept a typo.
 //
-// MUTATION M4 targets the tag arm; MUTATION M5 targets the acceptance above.
 func (s *Service) verifyScopeReferents(ctx context.Context, tenantID uuid.UUID, req SiteScopeRequest) error {
 	switch req.Mode {
 	case SiteScopeModeTags:
