@@ -82,18 +82,53 @@ func newMintLimiter() *registrationLimiter {
 	return newRegistrationLimiter(MintGlobalPerMin, MintPerUserPerMin)
 }
 
-// mintLimiterKey is the per-operator bucket key.
+// mintLimiterKey is the per-CALLER bucket key, and the caller is whichever
+// credential actually authenticated -- a session user OR an API key.
 //
-// A NIL user id gets a single shared reserved bucket rather than a fresh one,
-// for the reason registrationLimiter.allow gives the empty peer string: "we
-// could not identify who is asking" must be MORE restrictive than identifying
-// them, never less. RequireAuth makes uuid.Nil unreachable here in production;
-// this is what it costs to be wrong about that.
-func mintLimiterKey(userID uuid.UUID) string {
-	if userID == uuid.Nil {
+// IT MUST NOT READ UserID DIRECTLY. apikey.PrincipalFor never sets UserID, and
+// this route is mounted under Auth.Authenticate() whose Bearer branch returns
+// exactly that principal, so uuid.Nil is REACHABLE here and reaching it is the
+// ordinary case rather than the exotic one: this is the documented HEADLESS
+// path and an API key is its natural caller. Keying on UserID therefore
+// collapsed every API-key mint in every tenant, process-wide, into the one
+// shared "\x00unattributed" bucket -- one tenant's CI runner could spend the
+// 5/min budget belonging to every other tenant's keys. Direction is fail-closed
+// so that was availability only, but the per-caller layer is the FAIRNESS
+// layer, and it degraded to nothing for exactly the caller class this endpoint
+// was built for.
+//
+// Principal.ActorID() is the only correct source (it returns APIKeyID for an
+// API-key principal, UserID otherwise), and the principal TYPE is prefixed so
+// the two id spaces cannot alias.
+//
+// A principal that names neither still gets a single shared reserved bucket
+// rather than a fresh one, for the reason registrationLimiter.allow gives the
+// empty peer string: "we could not identify who is asking" must be MORE
+// restrictive than identifying them, never less.
+func mintLimiterKey(p domain.Principal) string {
+	id := p.ActorID()
+	if id == "" || id == uuid.Nil.String() {
 		return "\x00unattributed"
 	}
-	return userID.String()
+	return string(p.Type) + ":" + id
+}
+
+// mintAuditActor resolves the audit actor for a mint, and it exists because
+// hardcoding ActorUser over req.Principal.UserID recorded "a user did this"
+// against a zero UUID for every API-key caller. The TYPE and the ID must move
+// together: the type drives audit.go's actor-name join (users.name for
+// ActorUser, api_keys.name for ActorAPIKey), so a mismatched pair resolves to
+// no name at all and the row names nobody.
+//
+// This is the one credential-issuance event this file exists to explain. An
+// entry asserting a human acted while naming a user that does not exist is
+// worse than no entry: a missing record prompts a question, a wrong one answers
+// it incorrectly.
+func mintAuditActor(p domain.Principal) (actorType, actorID string) {
+	if p.Type == domain.PrincipalAPIKey {
+		return audit.ActorAPIKey, p.ActorID()
+	}
+	return audit.ActorUser, p.ActorID()
 }
 
 // ErrCodeMintRateLimited is the refusal for an operator who has exhausted
@@ -217,26 +252,28 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 		return MintedConnection{}, err
 	}
 
-	// 2. THE RATE LIMIT, charged before any work and keyed on the operator.
-	// Placed here rather than in the handler so that every mount of this
-	// service is limited, including a test harness -- a limiter that exists
-	// only in the route registration is one refactor away from being absent,
-	// which is the same reasoning Handler.Register gives for putting
-	// RequireOrgScope on the group.
-	if ok, retryAfter := s.mintLimit.allow(mintLimiterKey(req.Principal.UserID)); !ok {
-		return MintedConnection{}, domain.RateLimited(ErrCodeMintRateLimited,
-			"too many connection tokens minted; retry shortly").
-			WithDetails(map[string]any{"retry_after_seconds": retryAfterSeconds(retryAfter)})
-	}
-
+	// 2. THE STRUCTURAL REFUSALS, WHICH ARE FREE, AND DELIBERATELY SO.
+	//
+	// Everything in this step is a PURE FUNCTION OF THE CALLER'S OWN REQUEST
+	// BODY -- a name that is blank after trimming, and the site-scope shape
+	// rules. Nothing here reads the database, so nothing here can answer a
+	// question about this organisation's data that the caller could not already
+	// answer offline.
+	//
+	// THEY RUN BEFORE THE CHARGE BECAUSE A TYPO MUST NOT SPEND BUDGET. With the
+	// charge first, five malformed requests exhausted the per-caller budget and
+	// the sixth -- the one that finally carried a real defect to report -- was
+	// answered "slow down" instead of "your name is blank". That is precisely
+	// the confusion ErrCodeMintRateLimited exists to prevent: the wizard must be
+	// able to tell "slow down" from "you may not do this at all", and a limiter
+	// charged ahead of validation makes the wrong one of those two the answer to
+	// the other's question.
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return MintedConnection{}, domain.Validation(ErrCodeInvalidRequest,
 			"a connection name is required")
 	}
 
-	// 3. SITE SCOPE: the STRUCTURAL rules first, unchanged.
-	//
 	// ValidateSiteScopeRequest is the Go mirror of
 	// mcp_grants_site_scope_payload_check and it is reused verbatim: mode 'all'
 	// names nothing, mode 'tags' names at least one tag, mode 'list' names at
@@ -244,6 +281,34 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// An empty allowlist is never a way to ask for every site.
 	if err := ValidateSiteScopeRequest(req.SiteScope); err != nil {
 		return MintedConnection{}, err
+	}
+
+	// 3. THE RATE LIMIT, charged on the last line before anything reads tenant
+	// data, and keyed on the CALLER (see mintLimiterKey).
+	//
+	// THIS PLACEMENT IS THE ORACLE BOUND, and it is the reason the charge did
+	// not simply move to the end. Step 4 below resolves scope ids against this
+	// organisation's tag registry and site table and names the offending id in
+	// its refusal, which makes it the only refusal on this endpoint that
+	// DISCLOSES ANYTHING -- "this uuid does or does not name a tag here". Every
+	// request that reaches it has therefore already paid, so referent probing
+	// stays bounded at MintPerUserPerMin per caller and MintGlobalPerMin
+	// process-wide, exactly as before this moved.
+	//
+	// What is now free is only step 2, whose answers the caller computes from
+	// its own payload, and which an anonymous attacker cannot reach at all:
+	// the route sits behind Auth.Authenticate() and
+	// authz.RequirePermission(PermAPIKeyManage).
+	//
+	// Charged in the service rather than in the handler so that every mount of
+	// this service is limited, including a test harness -- a limiter that exists
+	// only in the route registration is one refactor away from being absent,
+	// which is the same reasoning Handler.Register gives for putting
+	// RequireOrgScope on the group.
+	if ok, retryAfter := s.mintLimit.allow(mintLimiterKey(req.Principal)); !ok {
+		return MintedConnection{}, domain.RateLimited(ErrCodeMintRateLimited,
+			"too many connection tokens minted; retry shortly").
+			WithDetails(map[string]any{"retry_after_seconds": retryAfterSeconds(retryAfter)})
 	}
 
 	// 4. SITE SCOPE: the REFERENTIAL check, which the structural one cannot do.
@@ -292,7 +357,16 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			// fabricated one would be rendered with the same weight as a real
 			// one. NULL is the honest answer and it is also the one that makes
 			// this path identifiable in the data.
-			ClientID:        nil,
+			ClientID: nil,
+
+			// NULL FOR AN API-KEY CALLER, AND THAT IS THE HONEST ANSWER, NOT A
+			// GAP. uuidToPG maps uuid.Nil to NULL rather than to a zero uuid
+			// that looks like a real author, and an API-key mint genuinely has
+			// no user behind it. Do not "fix" this by inventing one: the actor
+			// is recorded on the audit row, where an api_key actor_type has a
+			// name join of its own (see mintAuditActor), and this column means
+			// "the human who created it" -- an answer of "none" beats an answer
+			// naming a user that does not exist.
 			CreatedByUserID: uuidToPG(req.Principal.UserID),
 
 			// m127's columns, ALL SUPPLIED EXPLICITLY, exactly as Approve
@@ -330,10 +404,15 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			if s.audit == nil {
 				return nil
 			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// mintAuditActor rather than hardcoded. This is the headless path,
+			// so an API key is its natural caller and ActorUser over
+			// Principal.UserID named a user that does not exist.
+			actorType, actorID := mintAuditActor(req.Principal)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   req.Principal.TenantID,
-				ActorType:  audit.ActorUser,
-				ActorID:    req.Principal.UserID.String(),
+				ActorType:  actorType,
+				ActorID:    actorID,
 				Action:     audit.ActionMCPGrantCreated,
 				TargetType: "mcp_grant",
 				TargetID:   gr.ID.String(),

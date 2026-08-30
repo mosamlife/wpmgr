@@ -366,11 +366,19 @@ const (
 	// before this the surface wrote zero.
 	//
 	// ActionMCPGrantCreated is recorded on the SAME transaction as the grant
-	// insert (internal/mcp.Service.Approve, via RecordInTx), so a rolled-back
-	// grant leaves no row claiming one was created. ActorType is ActorUser:
-	// the grant belongs to the organisation of the human who approved it, and
-	// ActorID is that user's id, not the grant's. Metadata: grant_name,
-	// site_scope_mode.
+	// insert, so a rolled-back grant leaves no row claiming one was created.
+	// TWO paths write it and they differ only in how the grant was authorised:
+	// internal/mcp.Service.Approve (browser consent) and
+	// internal/mcp.Service.MintConnection (the headless connection-token mint,
+	// which adds issuance and token_prefix to Metadata).
+	//
+	// ActorID is NEVER the grant's own id -- it is the id of the credential
+	// that authorised it, and ActorType says which kind. ActorUser with the
+	// approving human's user id on the consent path; ActorAPIKey with the key's
+	// id when a machine mints headlessly, which is the mint's ordinary case
+	// (apikey.PrincipalFor sets APIKeyID and never UserID, so reading UserID
+	// there yields uuid.Nil -- see mcp.mintAuditActor, which is the only
+	// correct resolver). Metadata: grant_name, site_scope_mode.
 	ActionMCPGrantCreated = "mcp.grant.created"
 	// ActionMCPGrantRevoked is recorded on the SAME transaction as the revoke
 	// (internal/mcp.Service.RevokeConnection, via RecordInTx). ActorType is
