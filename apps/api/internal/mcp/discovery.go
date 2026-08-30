@@ -32,6 +32,29 @@ const APIV1Prefix = "/api/v1"
 // never by rebuilding the path.
 const oauthGroupPath = "/oauth/mcp"
 
+// connectionsGroupPath is the group Handler.RegisterConnections opens under
+// APIV1Prefix, and connectionIDParam is the path parameter it binds.
+//
+// They live here beside the OAuth paths, and as CONSTANTS rather than literals,
+// for the reason the block above gives: a path that is written twice is a path
+// that drifts. infra/urlmap.yaml routes these under its `/api/*` rule, so no
+// new url-map path rule is required -- unlike the root-mounted /mcp and
+// /.well-known documents, which each needed one and were unreachable until they
+// got it.
+const (
+	connectionsGroupPath = "/mcp/connections"
+	connectionIDParam    = "connectionId"
+)
+
+// ConnectionsPath and ConnectionRevokePathFor are the absolute forms, exported
+// so a test asserts the mounted route rather than restating the string.
+const ConnectionsPath = APIV1Prefix + connectionsGroupPath
+
+// ConnectionRevokePathFor builds the revoke path for one connection id.
+func ConnectionRevokePathFor(id string) string {
+	return ConnectionsPath + "/" + id + "/revoke"
+}
+
 // The four OAuth paths, absolute, exactly as mounted.
 const (
 	RegisterPath  = APIV1Prefix + oauthGroupPath + "/register"
