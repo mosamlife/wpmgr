@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -49,10 +50,17 @@ func validConsent() ConsentContext {
 	}
 }
 
+// validApproval is an ORG-scoped approver: Scope "org" and no allowlist, which
+// is what every pre-existing case in this file assumes. The site-scoped
+// counterpart is exercised by TestApprove_RefusesASiteScopedApprover below and
+// end to end in tests/mcp_consent_org_scope_integration_test.go.
 func validApproval() ApprovalRequest {
 	return ApprovalRequest{
-		TenantID:  uuid.New(),
-		UserID:    uuid.New(),
+		Principal: domain.Principal{
+			TenantID: uuid.New(),
+			UserID:   uuid.New(),
+			Scope:    domain.ScopeOrg,
+		},
 		Consent:   validConsent(),
 		GrantName: "Claude Desktop on my laptop",
 		SiteScope: SiteScopeRequest{Mode: SiteScopeModeAll},
@@ -294,6 +302,103 @@ func TestConsentHandler_RefusesAnUnregisteredRedirect(t *testing.T) {
 		if c == "CreateGrantWithCode" {
 			t.Fatal("the handler minted a grant for an unregistered redirect")
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ORG SCOPE. A grant is an org-level object -- site_scope_mode 'all' resolves
+// to every site in the organisation -- so a site-scoped collaborator may not
+// mint one.
+//
+// These two are the SERVICE layer only. They cannot see a GUC or a policy, so
+// they prove nothing about the RLS beneath; that is
+// tests/mcp_consent_org_scope_integration_test.go, through the mounted routes
+// as wpmgr_app. What they pin is that Approve refuses on its own, so a caller
+// arriving without the route middleware is still refused.
+// ---------------------------------------------------------------------------
+
+// TestApprove_RefusesASiteScopedApprover is the service-layer half of the
+// escalation refusal.
+func TestApprove_RefusesASiteScopedApprover(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		principal domain.Principal
+	}{
+		{
+			name: "scope site with an allowlist",
+			principal: domain.Principal{
+				TenantID:       uuid.New(),
+				UserID:         uuid.New(),
+				Scope:          domain.ScopeSite,
+				AllowedSiteIDs: []uuid.UUID{uuid.New()},
+			},
+		},
+		{
+			// The fail-closed backstop: an allowlist with no scope label. A
+			// principal built by hand, or by a future constructor that forgets
+			// the label, must still be refused.
+			name: "an allowlist with no scope label",
+			principal: domain.Principal{
+				TenantID:       uuid.New(),
+				UserID:         uuid.New(),
+				AllowedSiteIDs: []uuid.UUID{uuid.New()},
+			},
+		},
+		{
+			// Restricted to zero sites is a legitimate fail-CLOSED state and
+			// must not become an org-wide approver.
+			name: "scope site with an empty allowlist",
+			principal: domain.Principal{
+				TenantID: uuid.New(),
+				UserID:   uuid.New(),
+				Scope:    domain.ScopeSite,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := approvalStore()
+			svc := NewService(store)
+
+			req := validApproval()
+			req.Principal = tc.principal
+
+			_, err := svc.Approve(context.Background(), req)
+			if err == nil {
+				t.Fatal("Approve accepted a site-scoped approver and minted a grant")
+			}
+			for _, c := range store.calls {
+				if c == "CreateGrantWithCode" {
+					t.Fatal("Approve reached the store for a site-scoped approver; " +
+						"the refusal must happen before any write is attempted")
+				}
+			}
+		})
+	}
+}
+
+// TestApprove_HandsTheWholePrincipalToTheStore pins the plumbing the RLS layer
+// depends on. If Approve flattens the principal to a tenant id on the way down,
+// RunTenantTx cannot route to InScopedTenantTx, app.site_scope is never set and
+// the RESTRICTIVE insert policy is inert -- which is exactly the defect this
+// file's neighbours exist to prevent recurring. The fake cannot evaluate the
+// policy; it can prove the principal arrived.
+func TestApprove_HandsTheWholePrincipalToTheStore(t *testing.T) {
+	store := approvalStore()
+	svc := NewService(store)
+
+	req := validApproval()
+	if _, err := svc.Approve(context.Background(), req); err != nil {
+		t.Fatalf("Approve refused a valid org-scoped approval: %v", err)
+	}
+	if store.grantPrincipal == nil {
+		t.Fatal("CreateGrantWithCode was handed a nil principal")
+	}
+	if got := store.grantPrincipal.GetTenantID(); got != req.Principal.TenantID {
+		t.Errorf("store received tenant %s, want %s", got, req.Principal.TenantID)
+	}
+	if got := store.grantPrincipal.GetScope(); got != req.Principal.Scope {
+		t.Errorf("store received scope %q, want %q; the scope is what routes the "+
+			"write to a site-scoped transaction", got, req.Principal.Scope)
 	}
 }
 

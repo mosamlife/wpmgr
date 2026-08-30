@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/authz"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
 
@@ -87,8 +88,20 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 // is already behind session auth AND authz.RequireAuth/RequireTenant; the
 // handlers below re-check the principal anyway, because a handler that trusts
 // its mount point is one refactor away from being anonymous.
+//
+// RequireOrgScope is applied HERE, on the group, rather than left to the
+// caller. A grant is an ORG-LEVEL object: it carries a site_scope_mode of
+// 'all' | 'tags' | 'sites' chosen by the approver, and 'all' resolves to every
+// site in the organisation at read time. There is no :siteId to bind, so
+// RequireSiteAccess cannot express the boundary and RequireOrgScope is the
+// whole gate -- the same reason the update-run orchestrator and the fleet
+// rollups carry it.
+//
+// It sits on the group and not on the caller's mount so that every mount of
+// these two routes gets it, including the integration harness. A gate that
+// only exists in server.New is a gate no test exercises.
 func (h *Handler) Register(r *gin.RouterGroup) {
-	g := r.Group(oauthGroupPath)
+	g := r.Group(oauthGroupPath, authz.RequireOrgScope())
 	g.GET("/authorize", h.authorize)
 	g.POST("/consent", h.consent)
 }
@@ -231,8 +244,10 @@ func (h *Handler) consent(c *gin.Context) {
 	}
 
 	out, err := h.svc.Approve(c.Request.Context(), ApprovalRequest{
-		TenantID: principal.TenantID,
-		UserID:   principal.UserID,
+		// The whole principal. Its Scope and AllowedSiteIDs are what route the
+		// grant insert to a site-scoped transaction, so narrowing this to
+		// (TenantID, UserID) here would disarm the RLS layer beneath.
+		Principal: principal,
 		Consent: ConsentContext{
 			ClientID:            body.ClientID,
 			RedirectURI:         body.RedirectURI,

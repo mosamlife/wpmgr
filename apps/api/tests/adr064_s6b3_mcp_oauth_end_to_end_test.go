@@ -73,7 +73,10 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 	siteID := seedSite(t, pool, tenantID, siteURL)
 
 	svc := mcp.NewService(mcp.NewRepo(pool))
-	eng := mountLikeProduction(t, svc, tenantID, userID)
+	// An ORG-scoped operator: the only scope /consent admits.
+	eng := mountLikeProduction(t, svc, domain.Principal{
+		UserID: userID, TenantID: tenantID, Scope: domain.ScopeOrg,
+	})
 
 	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
 
@@ -300,7 +303,13 @@ func TestMCPOAuthEndToEndThroughMountedRoutesAsAppRole(t *testing.T) {
 // The two Register calls and their groups are the part under test. If
 // server.New's mounting diverges from this, that is a defect in one of the two
 // and this comment is where to start.
-func mountLikeProduction(t *testing.T, svc *mcp.Service, tenantID, userID uuid.UUID) *gin.Engine {
+// It takes the WHOLE principal rather than (tenantID, userID) because scope is
+// now load-bearing on these routes: Handler.Register applies
+// authz.RequireOrgScope, and a harness that could only express a scopeless
+// principal could never exercise it. Flattening this back to two ids would
+// make the org-scope gate untestable from here, which is how it came to be
+// absent.
+func mountLikeProduction(t *testing.T, svc *mcp.Service, principal domain.Principal) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -312,11 +321,12 @@ func mountLikeProduction(t *testing.T, svc *mcp.Service, tenantID, userID uuid.U
 
 	// Operator-authenticated half. The middleware stands in for session auth +
 	// authz.RequireAuth + authz.RequireTenant, which is exactly a principal
-	// carrying a non-nil tenant.
+	// carrying a non-nil tenant. It deliberately does NOT apply
+	// authz.RequireOrgScope: that gate belongs to Handler.Register itself, and
+	// applying it here too would prove only that this file can add middleware.
 	authed := eng.Group("/api/v1")
 	authed.Use(func(c *gin.Context) {
-		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(),
-			domain.Principal{UserID: userID, TenantID: tenantID}))
+		c.Request = c.Request.WithContext(domain.WithPrincipal(c.Request.Context(), principal))
 		c.Next()
 	})
 	h.Register(authed)
