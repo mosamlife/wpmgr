@@ -25,7 +25,18 @@ export type ProtocolHeader =
   | { readonly kind: "never_connected" }
   | { readonly kind: "absent" }
   | { readonly kind: "recognised"; readonly version: string }
-  | { readonly kind: "unrecognised"; readonly version: string };
+  | { readonly kind: "unrecognised"; readonly version: string }
+  // A FIFTH KIND THAT IS NOT A FIFTH WIRE STATE. The server never sends this;
+  // it is what WE say when the two fields it did send contradict each other --
+  // a `recognised` or `unrecognised` state carrying a null version.
+  //
+  // It exists because the first version of this mapping folded that
+  // contradiction into `absent`, and `absent` is a specific, confident claim
+  // ABOUT THE CLIENT: "it connected and sent no header". A malformed response
+  // is not that. It is us failing to understand the answer, which is a fact
+  // about us, and it belongs in the same family as the list's `unavailable`
+  // state rather than in the vocabulary of things the client did.
+  | { readonly kind: "unreadable" };
 
 /**
  * When a connection was last used.
@@ -121,6 +132,10 @@ export function connectionsState(input: {
 /** Human label for a protocol header, keeping absence visible as absence. */
 export function protocolHeaderLabel(header: ProtocolHeader, floorVersion: string): string {
   switch (header.kind) {
+    case "unreadable":
+      // Phrased as OUR failure, not the client's behaviour. Nothing here
+      // claims anything about what the client sent.
+      return "We could not read this client's protocol report";
     case "never_connected":
       // NOT "no header". This client has never opened a session at all, so it
       // has never had the chance to send one.

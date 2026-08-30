@@ -94,11 +94,35 @@ describe("the four protocol states survive the wire", () => {
     ).toThrow();
   });
 
-  it("does not render a version the server contradicted its own state with", () => {
-    // recognised with a null version is a contradiction. Degrade to the one
-    // state that truthfully claims no version rather than printing "null".
-    const c = one(({ protocol: { state: "recognised", version: null } }));
-    expect(c.protocolHeader.kind).toBe("absent");
+  it("reports a contradicted pair as unreadable, NEVER as absent", () => {
+    // THE DEFECT THIS REPLACES. Both of these used to map to `absent`, which is
+    // a confident claim about the CLIENT -- "it connected and sent no header".
+    // A response that disagrees with itself supports no such claim. dto.go only
+    // populates Version for these two states, so a null here means we could not
+    // read the answer, which is a fact about us and not about anyone else.
+    for (const state of ["recognised", "unrecognised"]) {
+      const c = one({ protocol: { state, version: null } });
+      expect(c.protocolHeader.kind, `${state} with a null version`).toBe("unreadable");
+      // Named explicitly, so the wrong answer cannot come back by another route.
+      expect(c.protocolHeader.kind).not.toBe("absent");
+      expect(c.protocolHeader.kind).not.toBe("never_connected");
+    }
+  });
+
+  it("does not put a version on an unreadable report", () => {
+    const c = one({ protocol: { state: "recognised", version: null } });
+    expect("version" in c.protocolHeader).toBe(false);
+  });
+
+  it("still maps a well-formed absent, so the guard does not over-fire", () => {
+    // Routing every version-less state to `unreadable` would be the opposite
+    // defect: a genuine absent must still read as absent.
+    expect(one({ protocol: { state: "absent", version: null } }).protocolHeader.kind).toBe(
+      "absent",
+    );
+    expect(
+      one({ protocol: { state: "never_connected", version: null } }).protocolHeader.kind,
+    ).toBe("never_connected");
   });
 });
 

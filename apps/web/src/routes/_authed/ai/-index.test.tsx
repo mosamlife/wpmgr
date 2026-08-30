@@ -184,6 +184,40 @@ describe("revoke", () => {
     expect(screen.getByText(/next request/i)).toBeInTheDocument();
   });
 
+  it("does not carry a failed revoke from one connection to the next", async () => {
+    // A's revoke fails; the operator closes and opens B. B must not be shown
+    // A's failure -- that tells them a revoke failed for something nobody
+    // tried to revoke. Same family as everything else on this page: state
+    // belonging to one subject presented as a fact about another.
+    const rowB = { ...ROW, id: "22222222-2222-2222-2222-222222222222", name: "CI reader" };
+    stubFetch((url) =>
+      url.includes("/revoke")
+        ? json({ code: "conflict", message: "REVOKE FAILED FOR FLEET MANAGER" }, 409)
+        : json({ connections: [ROW, rowB] }),
+    );
+    renderPage();
+    await screen.findByText("Fleet manager");
+
+    const [revokeA] = screen.getAllByRole("button", { name: /^revoke$/i });
+    fireEvent.click(revokeA!);
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "Fleet manager" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /revoke connection/i }));
+    expect(await screen.findByText(/REVOKE FAILED FOR FLEET MANAGER/i)).toBeInTheDocument();
+
+    // Close, then open the OTHER connection's dialog.
+    fireEvent.click(screen.getByRole("button", { name: /keep it connected/i }));
+    await waitFor(() =>
+      expect(screen.queryByText(/REVOKE FAILED FOR FLEET MANAGER/i)).not.toBeInTheDocument(),
+    );
+    const revokeB = screen.getAllByRole("button", { name: /^revoke$/i })[1];
+    fireEvent.click(revokeB!);
+    await screen.findByText(/next request/i);
+
+    expect(screen.queryByText(/REVOKE FAILED FOR FLEET MANAGER/i)).not.toBeInTheDocument();
+  });
+
   it("does not revoke anything merely by opening the dialog", async () => {
     const posts: string[] = [];
     stubFetch((url) => {

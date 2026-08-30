@@ -94,17 +94,24 @@ function toProtocolHeader(p: z.infer<typeof protocolSchema>): ProtocolHeader {
       return { kind: "never_connected" };
     case "absent":
       return { kind: "absent" };
+    // A CONTRADICTION IS NOT AN ABSENCE. Both branches below used to return
+    // `{kind: "absent"}` when the version was null, with a comment arguing
+    // that absent "truthfully claims no version". That was wrong, and it was
+    // the same defect this whole feature was built to avoid, one layer in:
+    // `absent` is a confident claim about the CLIENT -- it connected and sent
+    // no header -- so a malformed pair rendered as `absent` puts words in the
+    // client's mouth on the strength of a response we could not read.
+    //
+    // dto.go only populates Version for these two states, so a null here means
+    // the response disagrees with itself. That is our problem to report, not a
+    // fact to assert about anyone.
     case "recognised":
-      // A recognised state with no version is a contradiction. Report it as
-      // unrecognised-with-no-version rather than inventing one... except there
-      // is nothing honest to put in `version`, so it degrades to absent, which
-      // is the only state that truthfully claims no version.
       return p.version === null
-        ? { kind: "absent" }
+        ? { kind: "unreadable" }
         : { kind: "recognised", version: p.version };
     case "unrecognised":
       return p.version === null
-        ? { kind: "absent" }
+        ? { kind: "unreadable" }
         : { kind: "unrecognised", version: p.version };
   }
 }

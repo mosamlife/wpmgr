@@ -172,18 +172,50 @@ describe("a field the client did not send is rendered as absent", () => {
     expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
   });
 
-  it("gives all four protocol states four different sentences", () => {
+  it("gives all five protocol kinds five different sentences", () => {
     const floor = "2025-03-26";
     const labels = [
       protocolHeaderLabel({ kind: "never_connected" }, floor),
       protocolHeaderLabel({ kind: "absent" }, floor),
       protocolHeaderLabel({ kind: "recognised", version: "2025-11-25" }, floor),
       protocolHeaderLabel({ kind: "unrecognised", version: "2025-11-25" }, floor),
+      // Not a wire state: what we say when the response contradicts itself.
+      protocolHeaderLabel({ kind: "unreadable" }, floor),
     ];
-    // Same version string in the last two on purpose: if the label ever stopped
-    // marking the unrecognised one, these two would collide and this fails.
-    expect(new Set(labels).size).toBe(4);
+    // Same version string in the middle two on purpose: if the label ever
+    // stopped marking the unrecognised one, they would collide and this fails.
+    expect(new Set(labels).size).toBe(5);
     for (const l of labels) expect(l.trim().length).toBeGreaterThan(0);
+  });
+
+  it("phrases the unreadable label as our failure, not the client's behaviour", () => {
+    // The distinction the kind exists for. Asserted on the pronoun rather than
+    // the whole sentence, so rewording stays free.
+    const label = protocolHeaderLabel({ kind: "unreadable" }, "2025-03-26");
+    expect(label.toLowerCase()).toMatch(/\bwe\b|\bcould not\b|\bunreadable\b/);
+    // And it must not read as a claim about what the client sent.
+    expect(label.toLowerCase()).not.toContain("sent no");
+  });
+
+  it("renders an unreadable report as unreadable, not as 'sent no header'", async () => {
+    // Derived expectations, first time of asking. The property is that this
+    // kind renders as itself and not as a neighbour; the wording is free.
+    const floor = "2025-03-26";
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, protocolHeader: { kind: "unreadable" } }],
+    });
+    expect(
+      await screen.findByText(protocolHeaderLabel({ kind: "unreadable" }, floor)),
+    ).toBeInTheDocument();
+    // The specific wrong answer: a malformed response rendered as a confident
+    // fact about the client.
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "never_connected" }, floor)),
+    ).not.toBeInTheDocument();
   });
 
   it("distinguishes an unrecognised version from a recognised one", () => {

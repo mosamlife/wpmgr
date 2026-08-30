@@ -108,7 +108,16 @@ function AiConnectionsPage() {
 
       <DestructiveConfirm
         open={pending !== null}
-        onClose={() => setPending(null)}
+        // RESET THE MUTATION, NOT JUST THE SUBJECT. Clearing `pending` alone
+        // left revoke.error set, so opening the dialog for connection B
+        // rendered connection A's failure -- telling the operator a revoke
+        // failed for something nobody tried to revoke. Same family as
+        // everything else here: state belonging to one subject presented as a
+        // fact about another.
+        onClose={() => {
+          setPending(null);
+          revoke.reset();
+        }}
         title="Revoke this connection"
         resourceName={pending?.name ?? ""}
         confirmLabel="Revoke connection"
