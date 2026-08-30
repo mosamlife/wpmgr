@@ -5731,6 +5731,32 @@ CREATE TABLE mcp_grants (
     -- mechanisms distinct is what keeps revoked_at honest.
     CONSTRAINT mcp_grants_expires_at_after_created_check
         CHECK (expires_at > created_at),
+    -- ...and it cannot be effectively immortal either (m129). The owner's
+    -- ruling is a ONE YEAR cap, which is also the largest option Step 5 offers,
+    -- so the ceiling sits exactly at the control's own maximum and is
+    -- INCLUSIVE: exactly one year INSERTs, one year plus a day is refused.
+    --
+    -- Before m129 this column was bounded only BELOW, and a security review
+    -- inserted expires_at = year 9999 as wpmgr_app with a nil error -- a
+    -- never-expiring credential in the column whose stated purpose is that a
+    -- never-expiring connection is not a thing the schema can hold. The other
+    -- expiry axis was bounded on both ends from the start
+    -- (idle_expire_after_days, 1..3650, "so a fat-fingered value cannot become
+    -- an effectively-absent control"); this is that same sentence applied to
+    -- the axis that was missing it.
+    --
+    -- interval '1 year' AND NOT 365 days: a calendar year spanning 29 February
+    -- is 366 days, and Go's AddDate(1, 0, 0) returns the calendar year, so a
+    -- 365-day ceiling would refuse the UI's own "1 year" option for grants
+    -- created in the run-up to a leap year. Normalised to UTC on both sides
+    -- because timestamptz + interval is STABLE (it resolves year units in the
+    -- session TimeZone, so a DST-straddling boundary would shift by an hour and
+    -- the bound would disagree with itself between sessions); timezone('UTC',
+    -- ts) and timestamp + interval are both IMMUTABLE, and UTC is the frame Go
+    -- computes the value in.
+    CONSTRAINT mcp_grants_expires_at_max_one_year_check
+        CHECK (timezone('UTC', expires_at)
+               <= timezone('UTC', created_at) + interval '1 year'),
 
     -- IDLE EXPIRY (m127 DECISION 2), a WINDOW LENGTH IN DAYS and not an
     -- instant. NULL MEANS NEVER IDLE-EXPIRE, and only that -- Step 5's second
