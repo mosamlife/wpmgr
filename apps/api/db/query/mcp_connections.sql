@@ -246,10 +246,22 @@ RETURNING *;
 -- ===========================================================================
 
 -- name: CreateMCPGrant :one
--- Runs InTenantTx, and never under app.site_scope: mcp_grants_site_scope_insert
--- is RESTRICTIVE FOR INSERT, so a site-scoped collaborator inserting here
--- matches nothing (Decision 9 -- a per-site principal must not mint an
--- organisation-wide read credential).
+-- THE POLICY ON THIS INSERT ONLY BINDS IF THE CALLER SET THE GUC IT READS.
+-- mcp_grants_site_scope_insert is RESTRICTIVE FOR INSERT and its WITH CHECK
+-- coalesces current_setting('app.site_scope', true) to the empty string and
+-- compares it against 'on', so it refuses a site-scoped collaborator only
+-- inside a transaction where app.site_scope has actually been set to 'on'.
+-- Nothing else sets it: reach this query through db.RunTenantTx, which
+-- dispatches on the principal's scope and is the sole thing that does (its doc
+-- comment in internal/db/db.go states the rule for every table, not just this
+-- one). A call site that picks InTenantTx, InTenantTxAsUser or
+-- InScopedTenantTx itself leaves the setting unset, the coalesced empty string
+-- is not equal to 'on', the RESTRICTIVE check passes, and the row inserts with
+-- no error raised anywhere.
+--
+-- Decision 9 -- a per-site principal must not mint an organisation-wide read
+-- credential -- is therefore a property of the policy AND the dispatch
+-- together. The policy alone does not carry it.
 --
 -- No parameter defaults to a permissive value because no COLUMN does: status
 -- and site_scope_mode are NOT NULL with no default, so a caller that omits
