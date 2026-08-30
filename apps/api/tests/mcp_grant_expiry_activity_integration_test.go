@@ -491,6 +491,87 @@ func TestMCPAbsoluteExpiryRefusesAndActivityCannotRescueItAsAppRole(t *testing.T
 		"deadline and never the absolute one")
 }
 
+// TestMCPStoredCapabilitiesAreTheAuthorityAsAppRole is the proof that
+// Authenticate READS the capability column rather than recomputing it.
+//
+// IT IS THE ONLY CONSTRUCTION IN WHICH THE TWO ANSWERS DIFFER TODAY. The
+// vocabulary holds exactly one name, so for any grant carrying
+// [mcp.sites.read] the stored set and the set computed from grantScopes() are
+// identical and no test can tell them apart. An EMPTY stored set is the
+// discriminator: the column's shape CHECK admits '{}' (the restrictive value
+// passes the vocabulary containment test), the computed answer is still
+// [mcp.sites.read], and only a path that reads the row refuses.
+//
+// Deleting the verdict-row read and restoring OrgDefaultCapabilities(
+// grantScopes()) makes this test, and only this test, go red.
+func TestMCPStoredCapabilitiesAreTheAuthorityAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	repo := mcp.NewRepo(pool)
+	siteRepo := site.NewRepo(pool)
+	svc := mcp.NewService(repo)
+
+	tenant := seedTenant(t, pool, "mcp-127-caps-"+uuid.NewString()[:8])
+
+	s1, err := siteRepo.Create(ctx, site.CreateInput{
+		TenantID: tenant, URL: "https://caps.example.com", Name: "caps-alpha"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	grant, bearer := s7GrantWithBearer(t, repo, tenant, "list", []uuid.UUID{s1.ID})
+
+	// It authenticates with the seeded capability, so the refusal below is
+	// attributable to the emptied column and not to a broken fixture.
+	auth, err := svc.Authenticate(ctx, bearer)
+	if err != nil {
+		t.Fatalf("Authenticate before emptying capabilities: %v", err)
+	}
+	if !auth.Capabilities.Allows(mcp.CapSitesRead) {
+		t.Fatal("the seeded grant did not resolve to its own capability")
+	}
+
+	// Empty the column. The grant stays 'active' and unexpired -- ONLY the
+	// capability set changes, so nothing else can explain the refusal.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE mcp_grants SET capabilities = '{}'::text[]
+			  WHERE tenant_id = $1 AND id = $2`, tenant, grant.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("capability fixture updated %d rows, want 1", tag.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("empty capabilities: %v", err)
+	}
+
+	// The verdict itself is unchanged: an empty capability set is not an
+	// expiry and not a revocation, so `authorized` stays true. That is what
+	// makes this a test of the Go read and not of the SQL predicate.
+	chk, err := repo.ReCheckAuthorization(ctx, tenant, auth.TokenID)
+	if err != nil {
+		t.Fatalf("re-check after emptying capabilities: %v", err)
+	}
+	if !chk.Authorized {
+		t.Fatalf("emptying capabilities changed the SQL verdict; this test can no longer "+
+			"isolate the Go read (grant_status=%q)", chk.GrantStatus)
+	}
+	if len(chk.GrantCapabilities) != 0 {
+		t.Fatalf("grant_capabilities = %v after emptying, want []", chk.GrantCapabilities)
+	}
+
+	if _, err := svc.Authenticate(ctx, bearer); err == nil {
+		t.Fatal("Authenticate ADMITTED a grant whose stored capability set is empty. " +
+			"The capability set is being computed from the scope registry instead of " +
+			"read from the grant, so the column is decorative and a narrowed connection " +
+			"would hold the org default regardless of what was stored.")
+	}
+	t.Log("a grant with capabilities = '{}' is REFUSED: the stored column is the authority")
+}
+
 // repoTouch issues the activity stamp through the Store interface the service
 // uses, so this file never reimplements the UPDATE it is testing.
 func repoTouch(ctx context.Context, repo *mcp.Repo, tenantID, grantID, tokenID uuid.UUID) error {
