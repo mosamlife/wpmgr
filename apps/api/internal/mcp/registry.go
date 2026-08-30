@@ -24,16 +24,22 @@ import (
 // plausible name never takes the discovery path at all, so nothing it guesses
 // is ever filtered.
 //
-// The fix is not a second check bolted onto tools/call. It is that BOTH paths
-// resolve through the SAME function over the SAME closed list:
+// The fix is not a second check bolted onto tools/call. It is that the
+// INVOCATION path resolves the name through one function over the closed list,
+// and that function decides authority for itself:
 //
-//	tools/list  -> VisibleTools(auth)  -> visible(entry, auth)
-//	tools/call  -> AuthorizeTool(name, auth) -> visible(entry, auth)
+//	tools/list  -> VisibleTools(auth)        -> every entry, annotated
+//	tools/call  -> AuthorizeTool(name, auth) -> capabilityHeld(entry, auth)
 //
-// so a tool cannot be callable and invisible. There is no path from a tool name
-// to an invocation that does not pass visible(); the dispatch function itself
-// hangs off the registry entry, so tools/call has no switch and therefore no
-// `default` arm to fall through.
+// so nothing tools/list said can make a tool callable. There is no path from a
+// tool name to an invocation that does not pass AuthorizeTool; the dispatch
+// function itself hangs off the registry entry, so tools/call has no switch and
+// therefore no `default` arm to fall through.
+//
+// tools/list NO LONGER FILTERS. Under the D1 ruling an unticked capability
+// refuses rather than hides, so the listing is the whole registry and the
+// capability answer is given at invocation, by name. See the D1 note further
+// down for the reasoning and for what that does and does not change.
 //
 // THE LIST STAYS CLOSED AND STAYS A FUNCTION. registryTools() returns a fresh
 // slice built from a literal, exactly as Tools() did before this slice, and for
@@ -92,8 +98,8 @@ type ToolPolicy struct {
 	// turns that into a NAMED refusal at the registry gate rather than an empty
 	// result deeper in that reads as a healthy org owning nothing.
 	//
-	// It does NOT hide the tool from tools/list. See the asymmetry note on
-	// visible() for why visibility follows the capability axis alone.
+	// It does NOT hide the tool from tools/list, and neither does the
+	// capability axis any more. See the D1 note below.
 	RequiresSiteScope bool
 
 	invoke toolInvoker
@@ -155,7 +161,7 @@ func cloneSchema(s json.RawMessage) json.RawMessage {
 }
 
 // ---------------------------------------------------------------------------
-// The one predicate both paths use
+// The invocation gate
 // ---------------------------------------------------------------------------
 
 // refusalReason is the OPERATOR-FACING classification of why a tool was not
@@ -167,7 +173,11 @@ const (
 	// reasonUnregistered: no entry of that name exists. The model guessed.
 	reasonUnregistered refusalReason = "unregistered"
 	// reasonCapabilityNotHeld: the entry exists and this connection's
-	// capability set does not hold what it requires.
+	// capability set does not hold what it requires. Since the D1 ruling this
+	// one is ALSO disclosed to the caller, by name, as
+	// mcp_capability_not_granted -- it is still recorded here because the
+	// operator log is what an operator greps when a customer says "the model
+	// says it cannot do X".
 	reasonCapabilityNotHeld refusalReason = "capability_not_held"
 	// reasonSiteScopeEmpty: the entry exists, the capability IS held, and the
 	// connection's resolved site scope is empty, so a site-keyed tool has
@@ -181,67 +191,127 @@ const (
 	reasonSiteScopeEmpty refusalReason = "site_scope_empty"
 )
 
-// visible reports whether auth may SEE AND CALL entry. tools/list and
-// tools/call both go through it, which is what makes "callable" and "visible"
-// the same predicate rather than two that agree by convention.
+// ---------------------------------------------------------------------------
+// D1 RULING: AN UNTICKED CAPABILITY REFUSES, IT DOES NOT HIDE.
 //
-// IT TESTS THE CAPABILITY AXIS AND NOT THE SITE AXIS, and the asymmetry is
-// deliberate. The two axes answer different questions and are disclosable to
-// different degrees:
+// This file used to delete a tool from tools/list when the connection did not
+// hold its capability, on the reasoning that such a caller "is not entitled to
+// know the tool exists". That bought non-enumerability and paid for it with the
+// one thing this surface exists to give a model: a fact it can act on. An
+// absent tool is indistinguishable from a tool that was never built, so the
+// model's only available reading is "wpmgr cannot do this" -- and the one
+// person who could fix it, the operator who ticks the capability on the
+// connection, never hears that anything was refused.
 //
-//   - CAPABILITY answers "may this connection reach this tool at all". A
-//     connection that does not hold the capability is not entitled to know the
-//     tool exists, so the tool is absent from tools/list and its name gets the
-//     uniform refusal.
+// The capability axis now behaves like the site axis already did: the tool is
+// LISTED, its descriptor says plainly that this connection does not hold what
+// it requires, and CALLING it returns a typed, terminal refusal naming the
+// capability (ErrCodeCapabilityNotGranted). Enumerability is the accepted cost
+// of the ruling, and it is bounded: registryTools() is a closed literal in a
+// reviewed file and every entry in it is a read tool.
 //
-//   - SITE SCOPE answers "is there any data for it to read". A connection whose
-//     org enabled the tool and whose capability set covers it IS entitled to
-//     know the tool exists -- it would have been listed but for an empty site
-//     scope, which is a fact about its own grant. Gating VISIBILITY on it would
-//     turn the most common benign misconfiguration in this surface into an
-//     unexplainable dead end, and would buy nothing: the only names it hides
-//     are ones the caller's own capability set already entitles it to see.
+// WHAT DID NOT CHANGE IS THE PART THAT MATTERS. The gate is still on the
+// INVOCATION path and it is still the only thing between a name and its invoke
+// function. tools/list never granted anything and still does not; AuthorizeTool
+// re-derives the capability answer for itself rather than trusting what was
+// listed, so a model that guesses a name is refused exactly as before. The
+// invariant kept is the one-directional one -- NOTHING IS CALLABLE THAT WAS NOT
+// LISTED -- which is now trivially true because everything is listed. The
+// converse, "everything listed is callable", is deliberately given up; that is
+// precisely what the ruling asks for, and TestExitGate_ListedIsNotCallable
+// pins it so nobody restores the old identity by accident.
 //
-// So site scope is enforced at INVOCATION, by AuthorizeTool, with the named
-// mcp_scope_empty refusal that says exactly what is wrong. That keeps the
-// invariant that matters -- nothing is callable that was not visible -- while
-// leaving the actionable half actionable.
-func visible(entry ToolPolicy, auth AuthorizedRequest) (bool, refusalReason) {
-	if !auth.Capabilities.Allows(entry.Capability) {
-		return false, reasonCapabilityNotHeld
-	}
-	return true, ""
+// SITE-SCOPE VISIBILITY IS UNTOUCHED BY THIS CHANGE. The design's other half --
+// that site scope should hide -- was not ruled on and is not implemented here.
+// A site-keyed tool with an empty resolved scope is still listed and still
+// refuses at invocation with mcp_scope_empty.
+// ---------------------------------------------------------------------------
+
+// capabilityHeld reports whether auth's capability set covers what entry
+// requires.
+//
+// It is consulted by AuthorizeTool for the refusal decision and by VisibleTools
+// only to decide whether to ANNOTATE a descriptor -- never to drop one. A
+// future edit that turns its false answer back into a `continue` in
+// VisibleTools is the thing the D1 ruling forbids.
+func capabilityHeld(entry ToolPolicy, auth AuthorizedRequest) bool {
+	return auth.Capabilities.Allows(entry.Capability)
 }
 
-// VisibleTools is the tools/list answer: the descriptors for exactly the tools
-// this connection may call. A tool it may not call is ABSENT, not present and
-// marked unavailable -- a disabled entry in a list is still a disclosure that
-// the tool exists.
+// capabilityNotice is the LISTING half of the ruling. The descriptor for a tool
+// this connection cannot currently call says so, in the description, which is
+// the one field of a tools/list entry every MCP client already puts in front of
+// the model.
 //
-// It returns a fresh, possibly empty slice. An empty tools/list is a truthful
-// answer for a connection that reaches nothing, and it is not an error: the
-// client is entitled to know its own surface is empty. The refusal with a
-// reason happens when it CALLS something.
+// IT SAYS THE REFUSAL IS PERMANENT, and that sentence is load-bearing rather
+// than polite. A model that reads "unavailable" as transient retries, and a
+// retry loop against a permanent refusal is the exact failure this surface has
+// already shipped once: the empty-capability path answered 401, and clients
+// re-ran an entire OAuth handshake that could not possibly change the outcome.
+// The wording here and in AuthorizeTool's message agree on that point on
+// purpose.
+func capabilityNotice(entry ToolPolicy) string {
+	return fmt.Sprintf(
+		"\n\nNOT AVAILABLE TO THIS CONNECTION. This tool requires the %q capability and "+
+			"this connection's grant does not hold it. Calling it refuses with %s. That "+
+			"refusal is permanent for this connection: retrying, refreshing the token or "+
+			"re-running the OAuth authorisation will return the same answer. A wpmgr "+
+			"operator must grant %[1]q to this connection before it can be used.",
+		entry.Capability, ErrCodeCapabilityNotGranted)
+}
+
+// capabilityNames renders a capability set for an error body. It is the
+// caller's OWN grant, so returning it discloses nothing new and it lets a
+// model tell the user exactly what the connection can and cannot do.
+func capabilityNames(set CapabilitySet) []string {
+	held := set.Sorted()
+	out := make([]string, 0, len(held))
+	for _, c := range held {
+		out = append(out, string(c))
+	}
+	return out
+}
+
+// VisibleTools is the tools/list answer: EVERY tool this server has, with the
+// ones this connection cannot currently call marked as such in their
+// description. Nothing is dropped. That is the D1 ruling, and the note above
+// says why a dropped tool was the worse of the two answers.
+//
+// IT IS STILL A PER-CONNECTION VALUE AND IT IS STILL NOT Tools(). The
+// descriptions differ by connection, and handing a caller the unannotated
+// registry would give the model a tool that looks callable and is not -- the
+// silent half of exactly the problem this change fixes. transport.go calls this
+// one; the drift tests call Tools().
+//
+// It returns a fresh slice, non-empty while the registry is non-empty. An empty
+// tools/list is now a SYMPTOM rather than an answer: before this, a connection
+// whose grant was missing a capability got an empty list, which is
+// indistinguishable from a server that has no tools.
 func VisibleTools(auth AuthorizedRequest) []ToolDescriptor {
 	entries := registryTools()
 	out := make([]ToolDescriptor, 0, len(entries))
 	for _, e := range entries {
-		if ok, _ := visible(e, auth); !ok {
-			continue
-		}
-		out = append(out, ToolDescriptor{
+		d := ToolDescriptor{
 			Name:        e.Name,
 			Description: e.Description,
 			InputSchema: e.InputSchema,
-		})
+		}
+		if !capabilityHeld(e, auth) {
+			d.Description += capabilityNotice(e)
+		}
+		out = append(out, d)
 	}
 	return out
 }
 
 // visibleToolNames lists what this connection was actually shown. Safe to
 // return in an error body: it is exactly the tools/list answer this connection
-// is already entitled to, so it discloses nothing new, and it lets a model that
-// mistyped a name it legitimately holds correct in one round trip.
+// has already been given, so it discloses nothing new, and it lets a model that
+// mistyped a real name correct in one round trip.
+//
+// It carries NAMES ONLY, so it does not repeat the capability notice. A model
+// that finds its name in this list and still cannot call the tool is looking at
+// the capability refusal, which names the capability itself.
 func visibleToolNames(auth AuthorizedRequest) []string {
 	ts := VisibleTools(auth)
 	out := make([]string, 0, len(ts))
@@ -256,51 +326,52 @@ func visibleToolNames(auth AuthorizedRequest) []string {
 // ---------------------------------------------------------------------------
 
 // AuthorizeTool resolves a tool name for INVOCATION. It is the only way to get
-// a callable ToolPolicy, and it applies the same visible() predicate tools/list
-// applies, so a name that was never shown is not callable.
+// a callable ToolPolicy, and it decides the capability question for itself
+// rather than trusting that tools/list ran.
 //
 // ------------------------------------------------------------------------
-// THE DISCLOSURE DECISION, AND THE TENSION IT RESOLVES.
+// THE DISCLOSURE DECISION, AS THE D1 RULING SETTLED IT.
 //
-// The brief for this slice asks for "typed refusals that name the reason", and
-// non-disclosure pulls directly against that. "Your organisation has not
-// enabled sites.restart" is a precise, actionable, well-typed refusal -- and it
-// confirms that sites.restart EXISTS to a caller who was never shown it. Repeat
-// that against a wordlist and the refusal messages enumerate the entire tool
-// surface of a product the caller has no entitlement to see, including tools
-// that are unreleased, gated, or being trialled by one organisation.
+// The tension is real and it was previously resolved the other way. "Your
+// connection does not hold mcp.sites.restart" is a precise, actionable, typed
+// refusal -- and it confirms that a tool named sites.restart exists. This file
+// used to answer registered-but-not-held and never-existed identically so that
+// no wordlist could tell them apart.
 //
-// The line drawn here is: A NAME THE CONNECTION WAS NOT SHOWN GETS ONE
-// INDISTINGUISHABLE ANSWER. Unregistered and registered-but-capability-not-held
-// return the same code, the same message and the same data. There is no
-// existence oracle, because there is no observable difference between "no such
-// tool" and "not yours".
+// THE OWNER RULED THAT REFUSAL BEATS CONCEALMENT, and the ruling is right on
+// the facts of this surface. The blur bought nothing once tools/list stopped
+// filtering -- the listing already hands over every name -- and it cost the
+// model the only information that could end the exchange usefully. A model told
+// "not available, ask tools/list" by a server whose tools/list DOES show the
+// tool has been handed a contradiction, and its next move is to try again.
 //
-// This is the same call authz.RequireSiteAccess makes one layer down, where a
-// site the caller may not reach answers 404 and not 403 SPECIFICALLY so that
-// probing ids cannot enumerate the fleet. A different answer here would undo
-// that at the MCP boundary for anyone holding any valid connection token.
+// SO THERE ARE NOW TWO ANSWERS, AND THEY ARE DIFFERENT ON PURPOSE:
 //
-// THE REFUSAL IS STILL TYPED -- just not on the caller's axis. The operator
-// gets the precise reason, on the operator's own surface, where the audience is
-// entitled to it: refusalReason is returned to the transport, which logs it
-// with the tenant, the grant and the attempted name. An operator debugging
-// "why can't my client call this" reads one log line and gets the exact answer;
-// an attacker probing names gets one sentence, identical every time.
+//   - A NAME NOT IN THE REGISTRY gets ErrCodeToolNotAvailable. The model
+//     guessed. Nothing exists to disclose.
+//   - A REGISTERED NAME WHOSE CAPABILITY IS NOT HELD gets
+//     ErrCodeCapabilityNotGranted, naming the capability, naming what this
+//     connection does hold, and saying the refusal is PERMANENT.
 //
-// WHAT REMAINS DISCLOSABLE, AND WHY IT IS NOT A LEAK. A tool the connection CAN
-// see fails with its real reason. Two such reasons exist and both are facts
-// about the caller's own grant, for a tool tools/list already showed it:
+// TERMINALITY IS PART OF THE CONTRACT. The refusal must not read as a transient
+// failure, because a model that reads it that way retries, and a retry loop
+// against a permanent refusal is a failure this surface has already shipped:
+// the empty-capability path answered 401, and clients responded by re-running
+// an OAuth handshake that could not change the outcome. The message says so in
+// words for the model and the details carry retryable=false for the client.
+//
+// The other two disclosable refusals are unchanged, and both remain facts about
+// the caller's own grant for a tool it was shown:
 //
 //   - the named mcp_scope_empty refusal, when a site-keyed tool has an empty
-//     resolved site scope. This is the actionable case an operator actually
-//     hits, and blurring it would send them hunting a capability problem they
-//     do not have. See the asymmetry note on visible().
+//     resolved site scope. SITE-SCOPE VISIBILITY IS NOT PART OF THIS CHANGE.
 //   - invalid arguments, which carries the schema so a model corrects in one
 //     round trip.
 //
-// The error body also carries the connection's OWN visible tool list, which is
-// exactly the tools/list answer it is already entitled to.
+// THE OPERATOR LOG STILL GETS THE PRECISE REASON EITHER WAY. refusalReason is
+// returned to the transport, which logs it with the tenant, the grant and the
+// attempted name -- that was the only typed channel before this change, and it
+// is still the one an operator greps.
 // ------------------------------------------------------------------------
 //
 // The returned ToolPolicy is not "found"; it is "found AND permitted AND
@@ -316,53 +387,66 @@ func AuthorizeTool(name string, auth AuthorizedRequest) (ToolPolicy, refusalReas
 		}
 	}
 
-	reason := reasonUnregistered
-	if found {
-		var ok bool
-		if ok, reason = visible(entry, auth); ok {
-			if entry.invoke == nil {
-				// A registry entry with no implementation is a build defect,
-				// and it is refused as an INTERNAL failure rather than as a
-				// permission one. Reporting it as "not available to this
-				// connection" would tell an operator their grant is wrong when
-				// the truth is that the server is broken, and they would go and
-				// widen a scope that was never the problem.
-				return ToolPolicy{}, "", fmt.Errorf("registry entry %q has no implementation", name)
-			}
-
-			// THE SITE AXIS, ENFORCED AT THE GATE AND NOT ONLY IN THE SERVICE.
-			//
-			// ListSitesForModel makes this same check, and the redundancy is
-			// deliberate in the same way the Go mirror of a schema CHECK is:
-			// the service check protects the one tool that has it, this one
-			// protects every tool that ever declares RequiresSiteScope,
-			// including the next one whose author forgets. A site-keyed read
-			// reached with an empty resolved scope must REFUSE and say so, not
-			// return an empty result that reads as a healthy org owning
-			// nothing.
-			//
-			// Only a caller who passed visible() reaches here, so naming the
-			// reason discloses nothing beyond that caller's own tools/list.
-			if entry.RequiresSiteScope && auth.Sites.IsEmpty() {
-				// The reason is returned, NOT "". An empty reason here made the
-				// refusal invisible to the operator log, which is half of what
-				// justifies blurring the other two reasons on the wire.
-				return ToolPolicy{}, reasonSiteScopeEmpty, domain.Forbidden(ErrCodeScopeEmpty,
-					"this connection's site scope resolves to no sites, so there is nothing it may read. "+
-						"This is a refusal, not an empty fleet: check the grant's site scope.")
-			}
-			return entry, "", nil
-		}
+	if !found {
+		// The model guessed a name. This is now the ONLY use of the uniform
+		// answer, and there is no longer a second reason hiding behind it.
+		return ToolPolicy{}, reasonUnregistered, domain.Forbidden(ErrCodeToolNotAvailable,
+			fmt.Sprintf("no tool named %q exists on this server. Call tools/list for the "+
+				"tools this server has; every one of them appears there, so a name absent "+
+				"from that list will never resolve however it is spelled.", name))
 	}
 
-	// ONE answer for all three reasons. The reason is returned alongside for
-	// the operator log and never reaches the wire.
-	return ToolPolicy{}, reason, domain.Forbidden(ErrCodeToolNotAvailable,
-		fmt.Sprintf("tool %q is not available to this connection. This answer is the same "+
-			"whether no such tool exists or whether this connection's capabilities do "+
-			"not cover it -- the server does not distinguish those to a caller. Call "+
-			"tools/list for the tools this connection may use; a tool absent from that "+
-			"list is not reachable by naming it here.", name))
+	if !capabilityHeld(entry, auth) {
+		// THE TYPED CAPABILITY REFUSAL. Naming the capability is the ruling;
+		// naming the held set and marking it non-retryable is what makes it
+		// actionable rather than merely precise.
+		return ToolPolicy{}, reasonCapabilityNotHeld, domain.Forbidden(ErrCodeCapabilityNotGranted,
+			fmt.Sprintf("tool %q requires the %q capability and this connection's grant does "+
+				"not hold it. This is a permanent property of the grant and not a transient "+
+				"failure: retrying this call, refreshing the connection token or re-running "+
+				"the OAuth authorisation will return exactly this answer. A wpmgr operator "+
+				"must grant %[2]q to this connection before it can be called.",
+				name, entry.Capability)).
+			WithDetails(map[string]any{
+				"tool":                name,
+				"required_capability": string(entry.Capability),
+				"held_capabilities":   capabilityNames(auth.Capabilities),
+				"retryable":           false,
+			})
+	}
+
+	if entry.invoke == nil {
+		// A registry entry with no implementation is a build defect, and it is
+		// refused as an INTERNAL failure rather than as a permission one.
+		// Reporting it as "not available to this connection" would tell an
+		// operator their grant is wrong when the truth is that the server is
+		// broken, and they would go and widen a scope that was never the
+		// problem.
+		return ToolPolicy{}, "", fmt.Errorf("registry entry %q has no implementation", name)
+	}
+
+	// THE SITE AXIS, ENFORCED AT THE GATE AND NOT ONLY IN THE SERVICE.
+	//
+	// ListSitesForModel makes this same check, and the redundancy is deliberate
+	// in the same way the Go mirror of a schema CHECK is: the service check
+	// protects the one tool that has it, this one protects every tool that ever
+	// declares RequiresSiteScope, including the next one whose author forgets.
+	// A site-keyed read reached with an empty resolved scope must REFUSE and
+	// say so, not return an empty result that reads as a healthy org owning
+	// nothing.
+	//
+	// THIS IS UNCHANGED BY THE D1 RULING and deliberately so: the ruling covers
+	// the capability axis only. The tool is listed, as it always was, and this
+	// refusal is by name, as it always was.
+	if entry.RequiresSiteScope && auth.Sites.IsEmpty() {
+		// The reason is returned, NOT "". An empty reason here made the refusal
+		// invisible to the operator log, which is half of what justified
+		// blurring the other reasons on the wire.
+		return ToolPolicy{}, reasonSiteScopeEmpty, domain.Forbidden(ErrCodeScopeEmpty,
+			"this connection's site scope resolves to no sites, so there is nothing it may read. "+
+				"This is a refusal, not an empty fleet: check the grant's site scope.")
+	}
+	return entry, "", nil
 }
 
 // Tools returns the FULL registry surface as descriptors, unfiltered by any

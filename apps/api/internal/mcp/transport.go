@@ -68,20 +68,33 @@ const (
 	// inline, so the model corrects in one round trip.
 	codeInvalidToolArguments = -32003
 
-	// codeToolNotAvailable is the single code for the TWO reasons a named tool
-	// is not reachable that a caller must not be able to tell apart: no such
-	// tool exists, or this connection's capabilities do not cover it. One code
-	// for two reasons is deliberate and is the whole disclosure decision -- see
-	// the note on AuthorizeTool. A client branching on the number learns "ask
-	// tools/list", which is the only correct action in both cases.
+	// codeToolNotAvailable means THE NAME IS NOT IN THE REGISTRY. The model
+	// guessed. A client branching on the number learns "ask tools/list", which
+	// is the only correct action.
+	//
+	// IT NO LONGER DOUBLES AS THE CAPABILITY REFUSAL. It used to answer both
+	// "no such tool" and "your capabilities do not cover it" identically, so a
+	// wordlist could not tell them apart; the D1 ruling replaced that blur with
+	// codeCapabilityNotGranted below. See the disclosure note on AuthorizeTool.
 	//
 	// AN EMPTY SITE SCOPE IS NOT ONE OF THEM and does not answer -32004. It
-	// answers codeScopeEmpty (-32002) above, by name, because a connection
-	// whose capability set already covers the tool is entitled to know the tool
-	// exists -- see the asymmetry note on visible(). An earlier version of this
-	// comment claimed -32004 covered the scope-empty case too. It never did:
-	// TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
+	// answers codeScopeEmpty (-32002) above, by name. An earlier version of
+	// this comment claimed -32004 covered the scope-empty case too. It never
+	// did: TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList asserts -32002.
 	codeToolNotAvailable = -32004
+
+	// codeCapabilityNotGranted is the D1 refusal: the tool EXISTS, it was
+	// listed to this connection, and this connection's grant does not hold the
+	// capability it requires.
+	//
+	// A CLIENT MUST READ IT AS PERMANENT. The error data carries
+	// retryable:false and required_capability alongside, and the message says
+	// so in words, because the failure mode being designed against is a client
+	// that treats a refusal as transient: the empty-capability path once
+	// answered 401 and clients re-ran an entire OAuth handshake that could not
+	// change the outcome. Nothing the client can do on its own changes this
+	// answer -- an operator must widen the grant.
+	codeCapabilityNotGranted = -32005
 )
 
 // TransportHandler serves the single MCP endpoint. It is separate from Handler
@@ -343,11 +356,11 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{}), http.StatusOK, true
 
 	case "tools/list":
-		// VisibleTools, NOT Tools. Tools() is the whole registry and is not a
-		// request-path value; VisibleTools filters by this connection's
-		// capability set and site scope through the SAME predicate tools/call
-		// applies. An empty list here is a truthful answer for a connection
-		// that reaches nothing, not an error.
+		// VisibleTools, NOT Tools. Tools() is the raw registry and is not a
+		// request-path value; VisibleTools annotates each descriptor for THIS
+		// connection, so a tool whose capability this grant lacks arrives
+		// marked as such rather than looking callable. It hides nothing: under
+		// the D1 ruling an unticked capability refuses at tools/call, by name.
 		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
@@ -512,8 +525,7 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 		if de, ok := domain.AsDomain(err); ok && de.Code == ErrCodeToolNotAvailable {
 			// available_tools is this connection's OWN tools/list answer, so it
 			// discloses nothing it was not already shown, and it lets a model
-			// that mistyped a name it legitimately holds correct in one round
-			// trip.
+			// that mistyped a real name correct in one round trip.
 			data, _ := json.Marshal(map[string]any{
 				"argument":        "name",
 				"supplied":        p.Name,
@@ -521,10 +533,11 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 			})
 			return newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data)
 		}
-		// Everything else keeps its own named answer: mcp_scope_empty becomes
-		// -32002 through toolError, and a non-domain error (a registry entry
-		// with no implementation) becomes the internal code. Neither is
-		// reported as a permission refusal.
+		// Everything else keeps its own named answer: mcp_capability_not_granted
+		// becomes -32005 and mcp_scope_empty becomes -32002, both through
+		// toolError, and a non-domain error (a registry entry with no
+		// implementation) becomes the internal code rather than a permission
+		// refusal.
 		return h.toolError(req.ID, err)
 	}
 
@@ -552,6 +565,27 @@ func (h *TransportHandler) toolError(id json.RawMessage, err error) jsonrpcRespo
 		if de.Code == ErrCodeScopeEmpty {
 			data, _ := json.Marshal(map[string]any{"code": de.Code})
 			return newErrorResponse(id, codeScopeEmpty, de.Message, data)
+		}
+		if de.Code == ErrCodeCapabilityNotGranted {
+			// The details AuthorizeTool attached are the machine-readable half
+			// of the refusal: which capability is required, which ones this
+			// grant holds, and that retrying will not help. They are copied
+			// onto the wire rather than summarised, so a client branches on a
+			// field instead of parsing English.
+			//
+			// retryable is written HERE as well as carried in the details, so
+			// a details map that ever arrives incomplete still answers false.
+			// Defaulting a missing "is this worth retrying" to true is how a
+			// permanent refusal becomes a retry loop.
+			payload := map[string]any{"code": de.Code, "retryable": false}
+			for k, v := range de.Details {
+				if k == "retryable" {
+					continue
+				}
+				payload[k] = v
+			}
+			data, _ := json.Marshal(payload)
+			return newErrorResponse(id, codeCapabilityNotGranted, de.Message, data)
 		}
 		return newErrorResponse(id, codeInvalidParams, de.Message, nil)
 	}
