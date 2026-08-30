@@ -50,6 +50,42 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.148",
+    date: "2026-08-30",
+    summary:
+      "The AI connection surface is now usable end to end. There is a page for it in the dashboard, a wizard that writes the configuration block for the client you pick, a list of what is connected and when it was last used, and revoke. OAuth discovery documents let a client with no endpoint field find the authorization endpoints for itself, and the bundled proxy now routes the paths those clients need. Self-hosted operators running their own reverse proxy have one routing change to make; the changelog entry lists the exact paths.",
+    items: [
+      {
+        tag: "Added",
+        text: "A dashboard home for AI connections, with a connection wizard. Pick your client and the wizard generates the configuration block for it. The per-client differences come from a tested table rather than hand-written snippets, each entry carrying the date it was last verified, and a configuration shape we have no source for is refused rather than guessed at.",
+      },
+      {
+        tag: "Added",
+        text: "A connections list showing which clients are connected, what each negotiated, and when it was last used, plus revoke. A client that has never connected reads differently from one that connected without declaring a protocol version, and a list that failed to load is distinguishable from an organisation that has no connections yet.",
+      },
+      {
+        tag: "Added",
+        text: "OAuth discovery documents, so a client with no field in which to be told where to authorize can find the authorization endpoints for itself. The issuer is derived from the configured public address rather than a fixed value, so a self-hosted install advertises its own origin; an install with that value unset returns an error naming the setting rather than a document pointing somewhere real and wrong.",
+      },
+      {
+        tag: "Changed",
+        text: "Revoking a connection now revokes its tokens in the same step, so the client stops working on its next request rather than continuing until its token expires.",
+      },
+      {
+        tag: "Changed",
+        text: "The bundled reverse proxy and the development proxy now route the AI connection endpoint and the discovery documents. These sit at the root rather than under the API prefix and were previously answered by the dashboard itself, so an endpoint copied out of the wizard returned a web page. Self-hosted operators running their own proxy in place of the bundled one need to forward those paths; the install guide lists all four and explains why one of them is easy to miss.",
+      },
+      {
+        tag: "Added",
+        text: "The production routing configuration now lives in the repository, with a check on every change that proves each route the API actually serves has a rule pointing at it. The route list is read from the running engine rather than kept by hand, so a route that ships unreachable is caught before the deploy rather than after it.",
+      },
+      {
+        tag: "Security",
+        text: "Organisation-scope enforcement is now applied to the AI connection authorization endpoints. Upgrading is recommended for any install with that surface reachable. The session secret rotation guidance from 0.61.147 still stands and is not superseded; if you are coming from 0.61.146 or earlier, read that entry's upgrade note before rotating.",
+      },
+    ],
+  },
+  {
     version: "0.61.147",
     date: "2026-08-30",
     summary:

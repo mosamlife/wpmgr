@@ -6,6 +6,36 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.148] - 2026-08-30
+
+### Added
+
+- The AI connection surface is now usable end to end from the dashboard. `/ai` is a sidebar entry and the front door, and `/ai/connect` is a wizard that generates the configuration block for the client you pick. The per-client differences come from a tested table rather than hand-written snippets, so each published block is generated from a recorded entry carrying the date it was last verified, and a shape we have no source for is refused rather than approximated.
+- A connections list, showing which AI clients are connected, what each one negotiated, and when it was last used. "Never connected" and "connected but sent no protocol version" are kept distinct, and a list that failed to load is distinguishable from an organisation with no connections.
+- Revoke, from that list.
+- OAuth discovery documents (RFC 8414 and RFC 9728), so a GUI client with no field for an authorization endpoint can find one for itself. The issuer is derived from the configured public base URL rather than a constant, and an unset or unparseable value returns an error naming `WPMGR_PUBLIC_BASE_URL` instead of serving a document that names the wrong host.
+- The production load-balancer routing configuration now lives in this repository (`infra/urlmap.yaml`), with a CI check that proves every route the API actually mounts has a rule pointing at the API backend. The route list is dumped from the real engine, never hand-kept.
+
+### Changed
+
+- Revoking a connection now revokes its tokens in the same step, so the client stops working on its next request rather than continuing until its token expires.
+- The bundled nginx configuration and the development proxy now forward the MCP endpoint and the OAuth discovery paths. These are mounted at the root rather than under `/api/`, and were previously answered by the dashboard web app, so an operator who copied the endpoint out of the connection wizard got a page of HTML and no client could complete a handshake.
+- **Self-hosted action, if you run your own reverse proxy** rather than the bundled one. Forward these four paths to the control plane; all four are root-mounted, so a rule that only forwards `/api/` will miss every one of them:
+
+  ```
+  /mcp
+  /.well-known/oauth-authorization-server
+  /.well-known/oauth-protected-resource
+  /.well-known/oauth-protected-resource/mcp
+  ```
+
+  The last is not covered by the one above it: RFC 9728 inserts the resource path after the well-known segment, and current clients try that form first. Prefer exact-match rules over a `/.well-known/` prefix, so an ACME HTTP-01 challenge served from the same host keeps working. The bundled `infra/nginx/nginx.conf` already does all of this and needs no action. Without these rules the connection wizard will hand you an endpoint that returns your own dashboard.
+
+### Security
+
+- Organisation-scope enforcement is now applied to the AI connection authorization endpoints. Upgrading is recommended for every install that has the AI connection surface reachable.
+- **The `WPMGR_SESSION_SECRET` rotation guidance from 0.61.147 still stands and is not superseded by this release.** If you are upgrading from 0.61.146 or earlier you have not seen it yet: read the "Self-hosted upgrade action" note in the [0.61.147 entry](#061147---2026-08-30) below before rotating, because there is one prerequisite that has to come first or stored secrets become unreadable.
+
 ## [0.61.147] - 2026-08-30
 
 ### Added
