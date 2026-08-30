@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyableMono } from "@/components/shared/copyable-mono";
@@ -20,7 +21,19 @@ import {
 } from "./client-table";
 import { buildSnippet, type Snippet } from "./snippet";
 import { SiteScopeStep, type SiteScopeSelection } from "./site-scope-step";
-import type { FleetSnapshot } from "@/features/mcp-consent/site-scope";
+import {
+  ConnectionsRequestError,
+  useMintConnection,
+  type MintedConnection,
+} from "./use-ai-connections";
+import {
+  describeSiteScope,
+  isScopeApprovable,
+  resolveSiteScope,
+  resolveTagIds,
+  type FleetSnapshot,
+  type ResolvedSiteScope,
+} from "@/features/mcp-consent/site-scope";
 
 // The connection wizard (design §18). Client first, method second.
 //
@@ -114,6 +127,32 @@ export function ConnectWizard({
   // answers. Picking a different client with an incompatible method drops the
   // method rather than carrying a stale one into step 3.
   const step: Step = client === null ? 1 : method === null ? 2 : 3;
+
+  // Resolved once here rather than inside the mint panel, so the SAME answer
+  // gates the mint button and is described back in the one-time reveal -- a
+  // panel that re-resolved its own copy could disagree with the gate that let
+  // it run.
+  const scope: ResolvedSiteScope = useMemo(
+    () =>
+      resolveSiteScope({
+        mode: selection.mode,
+        selectedTagNames: selection.tagNames,
+        selectedSiteIds: selection.siteIds,
+        fleet,
+        tagsBySiteId,
+        sitesLoading,
+      }),
+    [selection, fleet, tagsBySiteId, sitesLoading],
+  );
+
+  // NULL means a selected tag name no longer resolves to an id -- see
+  // resolveTagIds. The mint panel refuses to submit on null rather than
+  // sending the smaller array that survives, because that would narrow the
+  // connection's reach without telling the operator.
+  const scopeTagIds: readonly string[] | null = useMemo(
+    () => (selection.mode === "tags" ? resolveTagIds(selection.tagNames, tags) : []),
+    [selection.mode, selection.tagNames, tags],
+  );
 
   const snippet: Snippet | null = useMemo(() => {
     if (client === null || method === null) return null;
@@ -266,7 +305,18 @@ export function ConnectWizard({
               <SnippetBlock client={client} snippet={snippet} />
             )}
 
-            <NextSteps method={method} clientName={client.name} />
+            {method === "oauth" ? (
+              <NextSteps clientName={client.name} />
+            ) : (
+              <TokenMintPanel
+                clientName={client.name}
+                name={name}
+                scope={scope}
+                siteScopeMode={selection.mode}
+                scopeTagIds={scopeTagIds}
+                scopeSiteIds={selection.siteIds}
+              />
+            )}
           </div>
         </Section>
       ) : null}
@@ -512,28 +562,243 @@ function SnippetBlock({ client, snippet }: { client: McpClientRow; snippet: Snip
   );
 }
 
-function NextSteps({ method, clientName }: { method: AuthMethod; clientName: string }) {
-  if (method === "oauth") {
-    return (
-      <div className="rounded-md border border-[var(--color-border)] p-3 text-sm text-[var(--color-foreground)]">
-        <p className="font-medium">What happens next</p>
-        <p className="mt-1 text-[var(--color-muted-foreground)]">
-          Start the connection in {clientName}. It sends you back here to approve, and that approval
-          screen is where you choose which sites it may touch and what it may do. Nothing is created
-          until you approve.
-        </p>
-      </div>
-    );
-  }
+function NextSteps({ clientName }: { clientName: string }) {
   return (
     <div className="rounded-md border border-[var(--color-border)] p-3 text-sm text-[var(--color-foreground)]">
-      <p className="font-medium">You cannot mint a token here yet</p>
+      <p className="font-medium">What happens next</p>
       <p className="mt-1 text-[var(--color-muted-foreground)]">
-        The config above is correct and ready, but the dashboard has no way to issue a connection
-        token today, so the placeholder in it stays a placeholder. Use browser sign-in if{" "}
-        {clientName} supports it. We would rather tell you this now than after you have pasted a
-        config that cannot authenticate.
+        Start the connection in {clientName}. It sends you back here to approve, and that approval
+        screen is where you choose which sites it may touch and what it may do. Nothing is created
+        until you approve.
       </p>
+    </div>
+  );
+}
+
+/**
+ * The reason minting is refused, or null when it is not.
+ *
+ * Every branch here is a FAILURE, rendered with a remedy, never a silently
+ * disabled button. `tagsResolved` being false is the client-side half of the
+ * refusal this whole panel exists to make loud: see resolveTagIds.
+ */
+function mintBlockedReason(
+  nameOk: boolean,
+  scope: ResolvedSiteScope,
+  tagsResolved: boolean,
+): string | null {
+  if (!nameOk) return "Name this connection before minting a token.";
+  if (!tagsResolved) {
+    return "A tag you picked in step 3 no longer resolves to an id -- the tag list may have reloaded since you chose it. Re-open step 3, re-pick it, and try again.";
+  }
+  if (!isScopeApprovable(scope)) {
+    return scope.kind === "unresolved" && scope.because === "loading"
+      ? "Still reading this organisation's sites for step 3. Wait for that to finish before minting."
+      : "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
+  }
+  return null;
+}
+
+/** Title and remedy for a failed mint. Every branch is distinct and named. */
+function mintErrorCopy(error: Error): { title: string; body: string } {
+  if (!(error instanceof ConnectionsRequestError)) {
+    // A raw fetch failure -- offline, DNS, a dropped connection -- never
+    // reaches readHouseError, so it is never a ConnectionsRequestError. It is
+    // still a failure and still gets a remedy, not the fact-shaped silence of
+    // an empty catch.
+    return {
+      title: "The request did not reach the server",
+      body: "Check your connection and try again. Nothing was created.",
+    };
+  }
+  if (error.status === 403) {
+    return {
+      title: "Your role cannot mint a connection token",
+      body: "An AI connection is an organisation-wide credential, so minting one needs full organisation membership, not access to one site. Ask an organisation admin to mint it, or ask them to raise your role.",
+    };
+  }
+  if (error.status === 429) {
+    const retry =
+      typeof error.details?.retry_after_seconds === "number"
+        ? error.details.retry_after_seconds
+        : null;
+    return {
+      title: "Too many connection tokens minted recently",
+      body:
+        retry !== null
+          ? `Wait about ${retry} second${retry === 1 ? "" : "s"} and try again.`
+          : "Wait a short while and try again.",
+    };
+  }
+  if (error.code === "mcp_unknown_scope_tag" || error.code === "mcp_unknown_scope_site") {
+    return {
+      title: "A site or tag from step 3 no longer exists",
+      body: "Something in the scope you picked was deleted since step 3 loaded. Reopen step 3, re-pick sites or tags, and try again.",
+    };
+  }
+  return { title: "The server refused this request", body: error.message };
+}
+
+/**
+ * Step 6's one-time reveal, and the button that produces it (design §S29,
+ * revision 2026-08-24; the wireframe's own header badge marks this the
+ * governing generation).
+ *
+ * THE TOKEN LIVES ONLY IN THIS COMPONENT'S OWN STATE. It is never handed to
+ * TanStack Query's cache (useMintConnection.onSuccess invalidates the list, it
+ * does not setQueryData the token), so there is no cache key that could hand
+ * it back. Leaving this step -- picking a different client or method, which
+ * unmounts this panel, or navigating away from the route entirely -- drops the
+ * state with it. Editing an input THIS panel depends on without leaving also
+ * clears it, below, so a revealed token can never be shown beside a
+ * configuration it was not actually minted for.
+ */
+function TokenMintPanel({
+  clientName,
+  name,
+  scope,
+  siteScopeMode,
+  scopeTagIds,
+  scopeSiteIds,
+}: {
+  clientName: string;
+  name: string;
+  scope: ResolvedSiteScope;
+  siteScopeMode: SiteScopeSelection["mode"];
+  scopeTagIds: readonly string[] | null;
+  scopeSiteIds: readonly string[];
+}) {
+  const mint = useMintConnection();
+  const [token, setToken] = useState<MintedConnection | null>(null);
+  const trimmedName = name.trim();
+
+  const configKey = `${siteScopeMode}|${scopeSiteIds.join(",")}|${(scopeTagIds ?? []).join(",")}|${trimmedName}`;
+  // React's own "adjusting state when a prop changes" pattern -- state, not a
+  // ref, so this stays a value the compiler can reason about. Comparing and
+  // resetting DURING RENDER (React bails out and re-renders before committing)
+  // is what keeps a token or an error from ever painting even once beside a
+  // configuration it was not produced for; a useEffect here would let that
+  // one stale paint through first.
+  const [lastConfigKey, setLastConfigKey] = useState(configKey);
+  if (lastConfigKey !== configKey) {
+    setLastConfigKey(configKey);
+    if (token !== null) setToken(null);
+    if (mint.isError || mint.isSuccess) mint.reset();
+  }
+
+  const nameOk = trimmedName.length > 0;
+  const tagsResolved = scopeTagIds !== null;
+  const blocked = mintBlockedReason(nameOk, scope, tagsResolved);
+  const canMint = blocked === null && !mint.isPending;
+
+  if (token !== null) {
+    return <TokenReveal clientName={clientName} scope={scope} token={token} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-[var(--color-muted-foreground)]">
+        Mint a connection token for {clientName}. It is shown once, here, and never again.
+      </p>
+
+      {blocked !== null ? (
+        <p
+          role="alert"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+        >
+          {blocked}
+        </p>
+      ) : null}
+
+      {mint.isError
+        ? (() => {
+            const { title, body } = mintErrorCopy(mint.error);
+            return (
+              <div
+                role="alert"
+                className="rounded-md border border-[var(--color-destructive)]/40 bg-[var(--color-destructive)]/5 p-3 text-sm"
+              >
+                <p className="font-medium text-[var(--color-foreground)]">{title}</p>
+                <p className="mt-1 text-[var(--color-muted-foreground)]">{body}</p>
+              </div>
+            );
+          })()
+        : null}
+
+      <Button
+        type="button"
+        disabled={!canMint}
+        onClick={() => {
+          mint.mutate(
+            {
+              name: trimmedName,
+              siteScopeMode,
+              scopeTagIds: scopeTagIds ?? [],
+              scopeSiteIds,
+            },
+            { onSuccess: (data) => setToken(data) },
+          );
+        }}
+      >
+        {mint.isPending ? "Minting..." : "Generate connection token"}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The one-time reveal itself. Rendered exactly once per mint, from state the
+ * parent never repopulates -- see TokenMintPanel's own doc.
+ *
+ * THE SHELL SETUP COMMAND FOR {clientName} IS NOT RENDERED HERE. This client's
+ * table entry (client-table.ts) emits a JSON or raw config, not a CLI
+ * invocation, so there is no `claude mcp add`-shaped command in this codebase
+ * to fill in without inventing a third snippet kind under time pressure. What
+ * ships is the reveal itself, matching the wireframe's non-negotiables; the
+ * setup-command shape is outstanding.
+ */
+function TokenReveal({
+  clientName,
+  scope,
+  token,
+}: {
+  clientName: string;
+  scope: ResolvedSiteScope;
+  token: MintedConnection;
+}) {
+  const capabilities =
+    token.capabilities.length > 0 ? token.capabilities.join(", ") : "no capabilities";
+  return (
+    <div className="space-y-3">
+      <div
+        role="alert"
+        className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm"
+      >
+        <p className="flex items-center gap-1.5 font-medium text-[var(--color-foreground)]">
+          <AlertTriangle aria-hidden="true" className="size-4" />
+          This is the only time this token is shown
+        </p>
+        <p className="mt-1 text-[var(--color-muted-foreground)]">
+          We store a hash, not the token. Copy it into your password manager now, or rotate the
+          connection later and reconfigure {clientName}. There is no showing it again.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-[var(--color-border)] p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-[var(--color-foreground)]">
+            Your connection token
+          </span>
+          <Badge variant="muted">Shown once</Badge>
+        </div>
+        <div className="mt-2">
+          <CopyableMono value={token.token} label="Copy the connection token" truncate />
+        </div>
+        <p className="mt-2 text-xs text-[var(--color-muted-foreground)]">
+          {describeSiteScope(scope)} Capabilities: {capabilities}. Revocable from the connections
+          list, immediately, at the next request.
+        </p>
+      </div>
     </div>
   );
 }

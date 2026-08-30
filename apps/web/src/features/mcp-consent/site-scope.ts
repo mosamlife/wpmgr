@@ -279,3 +279,29 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
 export function isScopeApprovable(scope: ResolvedSiteScope): boolean {
   return scope.kind !== "unresolved";
 }
+
+/**
+ * Resolve selected tag NAMES to the ids a mint or approval request must carry.
+ *
+ * SHARED BETWEEN THE CONSENT SCREEN AND THE WIZARD, because both hold tag
+ * choices as names (what the operator clicked) and both wire endpoints
+ * (approvalRequestDTO, mintConnectionRequestDTO) want `scope_tag_ids` as
+ * UUIDs. A tag id survives a rename; a name does not, so translating late and
+ * once, here, is what keeps a renamed tag from silently changing which sites a
+ * stored grant covers.
+ *
+ * NULL, NOT A SHORTER ARRAY, when a selected name no longer resolves. The
+ * registry can go null after a name is ticked (still loading, or reloaded
+ * without that tag), and `(tags ?? []).filter(...)` would silently produce an
+ * array missing exactly the tag the operator chose -- narrowing the request
+ * without telling anyone. Null is "cannot build this payload" and every caller
+ * must refuse to submit on it, loudly, rather than sending the smaller set.
+ */
+export function resolveTagIds(
+  selectedTagNames: readonly string[],
+  tags: readonly { readonly id: string; readonly name: string }[] | null,
+): readonly string[] | null {
+  if (tags === null) return null;
+  const ids = tags.filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id);
+  return ids.length === 0 ? null : ids;
+}

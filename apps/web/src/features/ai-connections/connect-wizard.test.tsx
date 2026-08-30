@@ -214,14 +214,21 @@ describe("the setup artefact is generated per client", () => {
     expect(document.body.textContent ?? "").not.toMatch(/[A-Z]:\\|%APPDATA%/);
   });
 
-  it("tells the user a token cannot be minted here yet rather than showing a fake one", async () => {
+  it("shows the config placeholder alongside a real mint button, not the old refusal", async () => {
+    // The endpoint this refusal predated now exists (POST CONNECTIONS_PATH),
+    // so the stale "you cannot mint a token here yet" copy is gone. The config
+    // block above still shows the placeholder -- buildSnippet emits the real
+    // token only when one has actually been minted, and none has yet here.
     renderWizard();
     await pickClient("Cursor");
     fireEvent.click(authCard("token"));
 
     const text = (await screen.findByText(/"mcpServers"/)).textContent ?? "";
     expect(text).toContain("YOUR_CONNECTION_TOKEN");
-    expect(screen.getByText(/cannot mint a token here yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/cannot mint a token here yet/i)).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /generate connection token/i }),
+    ).toBeInTheDocument();
   });
 });
 

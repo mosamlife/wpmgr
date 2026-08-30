@@ -20,6 +20,7 @@ import {
   describeSiteScope,
   isScopeApprovable,
   resolveSiteScope,
+  resolveTagIds,
   type FleetSnapshot,
   type ResolvedSiteScope,
   type ScopedSite,
@@ -587,9 +588,7 @@ export function ConsentScreen({
   // already holds -- and the half that keeps the button honest.
   const tagPayload = useMemo((): readonly string[] | null => {
     if (mode !== "tags") return [];
-    if (tags === null) return null;
-    const ids = tags.filter((t) => selectedTagNames.includes(t.name)).map((t) => t.id);
-    return ids.length === 0 ? null : ids;
+    return resolveTagIds(selectedTagNames, tags);
   }, [mode, tags, selectedTagNames]);
 
   const canApprove = scopeOk && scopesOk && tagPayload !== null && !isApproving;

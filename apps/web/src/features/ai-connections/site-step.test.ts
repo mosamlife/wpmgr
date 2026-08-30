@@ -160,19 +160,27 @@ describe("an empty scope is a working state, and this is where that is decided",
     expect(canLeaveSiteStep(scope)).toBe(true);
   });
 
-  it("disagrees with the approval gate on exactly that input", () => {
-    // Two gates exist because they differ here and nowhere else. If these ever
-    // agree on every input, one of them is redundant and the empty state has
-    // silently become an error again.
+  it("now agrees with the approval gate on the empty scope, and both still refuse unresolved", () => {
+    // The 2026-08-23 revision (wireframes.html:3559) made an empty scope
+    // approvable, so isScopeApprovable was changed to
+    // `scope.kind !== "unresolved"` -- the same rule canLeaveSiteStep already
+    // used. The two gates used to disagree on exactly one input (empty); pin
+    // that they now agree on it, with equal force in both directions: neither
+    // gate may go back to refusing empty, and neither may start accepting
+    // unresolved.
     const fleet = fleetOf(60, 200);
     const empty = resolve({ mode: "list", fleet });
     const picked = resolve({ mode: "list", siteIds: ["s1"], fleet });
     const every = resolve({ mode: "all", fleet });
     const unknown = resolve({ mode: "list", fleet: null });
 
-    expect([canLeaveSiteStep(empty), isScopeApprovable(empty)]).toEqual([true, false]);
-    // And they agree everywhere else.
-    for (const scope of [picked, every, unknown]) {
+    expect(empty.kind).toBe("none");
+    expect(unknown.kind).toBe("unresolved");
+
+    expect([canLeaveSiteStep(empty), isScopeApprovable(empty)]).toEqual([true, true]);
+    expect([canLeaveSiteStep(unknown), isScopeApprovable(unknown)]).toEqual([false, false]);
+    // And they agree everywhere else, as they always have.
+    for (const scope of [empty, picked, every, unknown]) {
       expect(canLeaveSiteStep(scope)).toBe(isScopeApprovable(scope));
     }
   });
