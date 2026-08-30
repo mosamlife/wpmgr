@@ -24,11 +24,19 @@ import (
 type Scope string
 
 // ScopeRead is the only scope this surface grants, and the surface is
-// read-only by construction rather than by configuration (m124 DECISION 1:
-// there is deliberately no capability column, because it would be the place a
-// write capability could later appear without a migration and without a
-// review). A write scope does not belong here; it belongs in its own migration
-// with its own review.
+// read-only by construction rather than by configuration.
+//
+// m127 DID MINT mcp_grants.capabilities, so the older statement here -- that
+// there is deliberately no capability column -- is no longer true and has been
+// removed rather than left to be believed. What it was protecting survives, and
+// survives in a stronger form: the column is NOT NULL with no default and
+// carries a CHECK closed over the same one-name vocabulary this package holds
+// (capabilityVocabulary), so a write capability STILL cannot appear in a row
+// without a migration and without a review. The column narrows what a
+// connection may do; it cannot widen it past what scopeCapabilities maps.
+//
+// A write scope does not belong here; it belongs in its own migration with its
+// own review.
 const ScopeRead Scope = "mcp:read"
 
 // SiteScopeMode says which sites a grant may read. It mirrors

@@ -187,6 +187,74 @@ type connectionListDTO struct {
 	Connections []connectionDTO `json:"connections"`
 }
 
+// mintConnectionRequestDTO is the wizard's headless-connection request.
+//
+// THE TAG FIELD IS `scope_tag_ids` AND IT CARRIES UUIDs, deliberately spelled
+// the same as approvalRequestDTO.ScopeTagIDs (above) so there is ONE wire
+// vocabulary for a tag across both mint paths. The consent screen already holds
+// the name->id map and refuses its own submit when the tag registry went null
+// mid-flight; the wizard reuses that map rather than introducing a name form
+// this endpoint would have to disambiguate on case and duplicates.
+//
+// Ids also survive a rename and names do not: a grant scoped by name would
+// silently change which sites it covers the day somebody renames a tag, and
+// nothing would say so. The server-side half of the bargain is that an id
+// naming no tag is REFUSED by id rather than dropped -- see
+// ErrCodeUnknownScopeTag.
+type mintConnectionRequestDTO struct {
+	Name          string   `json:"name"`
+	SiteScopeMode string   `json:"site_scope_mode"`
+	ScopeTagIDs   []string `json:"scope_tag_ids"`
+	ScopeSiteIDs  []string `json:"scope_site_ids"`
+
+	// Capabilities is OPTIONAL and an omitted list means the organisation
+	// default, never an empty set. See Service.resolveMintCapabilities: an
+	// empty stored capability set is a connection that authenticates and can
+	// then reach no tool at all.
+	Capabilities []string `json:"capabilities"`
+}
+
+// mintConnectionResponseDTO carries the plaintext EXACTLY ONCE.
+//
+// `token` has no `omitempty` and is not a pointer: it is always present on a
+// 201 and there is no success shape in which it is absent. If this struct is
+// ever reused for a read-back it must lose the field entirely rather than let
+// it marshal as empty -- an empty `token` key on a later response would read as
+// "the credential is blank" rather than "it was never stored", and the second
+// is the truth. Nothing can read it back, because nothing holds it: the row
+// carries token_prefix and a SHA-256 hash.
+type mintConnectionResponseDTO struct {
+	GrantID string `json:"grant_id"`
+
+	// The plaintext. Once, here, in the response body -- never logged, never in
+	// a URL or query string, never persisted.
+	Token string `json:"token"`
+
+	// The PUBLIC handle. The schema says it "carries no authentication weight",
+	// so it is safe to display and log, and it is how an operator matches a
+	// token in a config file to a row in the connections list.
+	TokenPrefix string `json:"token_prefix"`
+
+	ExpiresAt     string   `json:"expires_at"`
+	SiteScopeMode string   `json:"site_scope_mode"`
+	Capabilities  []string `json:"capabilities"`
+}
+
+func toMintConnectionResponse(m MintedConnection) mintConnectionResponseDTO {
+	return mintConnectionResponseDTO{
+		GrantID:       m.GrantID.String(),
+		Token:         m.Token,
+		TokenPrefix:   m.TokenPrefix,
+		ExpiresAt:     m.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		SiteScopeMode: string(m.SiteScopeMode),
+		// Non-nil even when empty, so the field serialises as [] rather than
+		// null. MintConnection cannot return an empty set today; the guarantee
+		// is written here so a consumer never has to treat null as a third
+		// state.
+		Capabilities: capabilityNames(m.Capabilities),
+	}
+}
+
 // revokeResponseDTO reports WHAT THE REVOKE DID, not merely that it returned.
 //
 // The counts are on the wire because three different successes are possible and

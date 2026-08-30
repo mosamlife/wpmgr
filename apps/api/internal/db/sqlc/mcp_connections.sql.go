@@ -188,22 +188,26 @@ const createMCPGrant = `-- name: CreateMCPGrant :one
 
 INSERT INTO mcp_grants (
     tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids,
-    client_id, created_by_user_id
+    client_id, created_by_user_id, capabilities, expires_at,
+    idle_expire_after_days
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
 `
 
 type CreateMCPGrantParams struct {
-	TenantID        uuid.UUID   `json:"tenant_id"`
-	Name            string      `json:"name"`
-	Status          string      `json:"status"`
-	SiteScopeMode   string      `json:"site_scope_mode"`
-	ScopeTagIds     []uuid.UUID `json:"scope_tag_ids"`
-	ScopeSiteIds    []uuid.UUID `json:"scope_site_ids"`
-	ClientID        *string     `json:"client_id"`
-	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+	TenantID            uuid.UUID   `json:"tenant_id"`
+	Name                string      `json:"name"`
+	Status              string      `json:"status"`
+	SiteScopeMode       string      `json:"site_scope_mode"`
+	ScopeTagIds         []uuid.UUID `json:"scope_tag_ids"`
+	ScopeSiteIds        []uuid.UUID `json:"scope_site_ids"`
+	ClientID            *string     `json:"client_id"`
+	CreatedByUserID     pgtype.UUID `json:"created_by_user_id"`
+	Capabilities        []string    `json:"capabilities"`
+	ExpiresAt           time.Time   `json:"expires_at"`
+	IdleExpireAfterDays *int32      `json:"idle_expire_after_days"`
 }
 
 // ===========================================================================
@@ -231,6 +235,29 @@ type CreateMCPGrantParams struct {
 // either gets 23502 rather than a live organisation-wide grant (Decision 1).
 // The caller passes status explicitly -- 'active' -- rather than relying on the
 // schema to assume it.
+//
+// m127 EXTENDS THAT RULE TO EXPIRY AND CAPABILITIES, and the two new NOT NULL
+// columns behave the same way: a caller that omits capabilities or expires_at
+// gets 23502, NOT an unrestricted or never-expiring connection.
+//
+// THAT 23502 IS THE DESIGNED BEHAVIOUR AND IT IS CURRENTLY REACHABLE.
+// CreateMCPGrantParams is a named-field struct literal at
+// internal/mcp/service.go:570 and in three integration fixtures, so adding
+// fields does NOT break the build -- it leaves them zero, which is nil/invalid,
+// which is NULL, which is refused at the INSERT. backend-architect must supply
+// all three. A loud 23502 at creation is the correct failure and is strictly
+// better than the alternative of a DEFAULT that quietly mints a credential
+// nobody chose the terms of.
+//
+// idle_expire_after_days is passed explicitly and MAY be NULL: NULL is a real,
+// meaningful value there ("never idle-expire"). m127 DECISION 4 made a non-NULL
+// value conditional on the activity stamp being wired, and IT NOW IS:
+// TouchMCPGrantInTenantTx is reached through Repo.TouchActivity, via
+// Service.RecordActivity, from the transport's tools/list and tools/call arms.
+// A non-NULL window is therefore representable. Callers still pass NULL because
+// NOTHING ASKS THE OPERATOR FOR A WINDOW YET -- not because the stamp is
+// missing. Read that distinction before removing the NULL: the guard is waiting
+// on an input, not on a fix.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -241,6 +268,9 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		arg.ScopeSiteIds,
 		arg.ClientID,
 		arg.CreatedByUserID,
+		arg.Capabilities,
+		arg.ExpiresAt,
+		arg.IdleExpireAfterDays,
 	)
 	var i McpGrant
 	err := row.Scan(
@@ -251,6 +281,7 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		&i.SiteScopeMode,
 		&i.ScopeTagIds,
 		&i.ScopeSiteIds,
+		&i.Capabilities,
 		&i.ClientID,
 		&i.ClientName,
 		&i.ClientVersion,
@@ -260,6 +291,8 @@ func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) 
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.ExpiresAt,
+		&i.IdleExpireAfterDays,
 	)
 	return i, err
 }
@@ -413,7 +446,7 @@ func (q *Queries) GetMCPConnectionTokenByHashForLookup(ctx context.Context, toke
 }
 
 const getMCPGrant = `-- name: GetMCPGrant :one
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
 WHERE tenant_id = $1 AND id = $2
 `
 
@@ -436,6 +469,7 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 		&i.SiteScopeMode,
 		&i.ScopeTagIds,
 		&i.ScopeSiteIds,
+		&i.Capabilities,
 		&i.ClientID,
 		&i.ClientName,
 		&i.ClientVersion,
@@ -445,6 +479,8 @@ func (q *Queries) GetMCPGrant(ctx context.Context, arg GetMCPGrantParams) (McpGr
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.ExpiresAt,
+		&i.IdleExpireAfterDays,
 	)
 	return i, err
 }
@@ -531,7 +567,7 @@ func (q *Queries) ListMCPConnectionTokensForGrant(ctx context.Context, arg ListM
 }
 
 const listMCPGrantsForOrg = `-- name: ListMCPGrantsForOrg :many
-SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at FROM mcp_grants
+SELECT id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days FROM mcp_grants
 WHERE tenant_id = $1
 ORDER BY created_at DESC, id DESC
 `
@@ -563,6 +599,7 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 			&i.SiteScopeMode,
 			&i.ScopeTagIds,
 			&i.ScopeSiteIds,
+			&i.Capabilities,
 			&i.ClientID,
 			&i.ClientName,
 			&i.ClientVersion,
@@ -572,6 +609,8 @@ func (q *Queries) ListMCPGrantsForOrg(ctx context.Context, tenantID uuid.UUID) (
 			&i.CreatedAt,
 			&i.LastUsedAt,
 			&i.RevokedAt,
+			&i.ExpiresAt,
+			&i.IdleExpireAfterDays,
 		); err != nil {
 			return nil, err
 		}
@@ -592,17 +631,52 @@ SELECT
     g.scope_tag_ids               AS scope_tag_ids,
     g.scope_site_ids              AS scope_site_ids,
     g.client_id                   AS client_id,
+    g.capabilities                AS grant_capabilities,
+    g.expires_at                  AS grant_expires_at,
+    g.idle_expire_after_days      AS grant_idle_expire_after_days,
+    g.last_used_at                AS grant_last_used_at,
     t.id                          AS token_id,
     t.token_prefix                AS token_prefix,
     t.status                      AS token_status,
     t.expires_at                  AS token_expires_at,
+    -- The component reasons, so a refusal can be logged with its cause. Both
+    -- COALESCE to TRUE -- the FAIL-CLOSED direction for a negative flag, since
+    -- these say "expired". An absent value must never read as "still valid".
+    -- They are diagnostics; ` + "`" + `authorized` + "`" + ` below is the verdict.
+    COALESCE(g.expires_at <= now(), true)::boolean AS grant_absolute_expired,
+    COALESCE(g.idle_expire_after_days IS NOT NULL
+        AND COALESCE(g.last_used_at, g.created_at)
+            + make_interval(days => g.idle_expire_after_days) <= now(),
+        true)::boolean AS grant_idle_expired,
     -- COALESCE(..., false)::boolean so this generates as a plain bool and not
     -- a *bool. This is the single column the whole MCP request
     -- boundary turns on; handing it back as a pointer with an absent case is
     -- how a nil comes to be read as anything other than refusal.
     COALESCE(g.status = 'active'
         AND t.status = 'active'
-        AND (t.expires_at IS NULL OR t.expires_at > now()), false)::boolean AS authorized
+        AND (t.expires_at IS NULL OR t.expires_at > now())
+        -- ABSOLUTE EXPIRY. NO ` + "`" + `IS NULL OR` + "`" + ` BRANCH, and its absence is the
+        -- point: mcp_grants.expires_at is NOT NULL (m127 DECISION 2), so
+        -- unlike t.expires_at above there is no nullable case here for a
+        -- reader to get backwards.
+        AND g.expires_at > now()
+        -- IDLE EXPIRY. NULL means never idle-expire, which is a DIFFERENT fact
+        -- from the absolute expiry above and is why the NULL branch appears on
+        -- this line and not that one. coalesce(last_used_at, created_at):
+        -- a grant never used is idle since it was created.
+        --
+        -- SEE m127 DECISION 4 BEFORE WRITING A NON-NULL VALUE INTO THIS COLUMN.
+        -- TouchMCPGrantInTenantTx now runs on the request path -- through
+        -- Repo.TouchActivity, via Service.RecordActivity, from the transport's
+        -- tools/list and tools/call arms -- so last_used_at advances with real
+        -- use and this deadline advances with it. DECISION 4's prerequisite is
+        -- MET. The column stays NULL on every row today only because nothing
+        -- asks the operator for a window yet, and that is the reason to keep it
+        -- NULL: an actively used connection must never idle-expire.
+        AND (g.idle_expire_after_days IS NULL
+             OR COALESCE(g.last_used_at, g.created_at)
+                + make_interval(days => g.idle_expire_after_days) > now()),
+        false)::boolean AS authorized
 FROM mcp_connection_tokens t
 JOIN mcp_grants g
     ON g.id = t.grant_id AND g.tenant_id = t.tenant_id
@@ -615,18 +689,24 @@ type ReCheckMCPRequestAuthorizationInTenantTxParams struct {
 }
 
 type ReCheckMCPRequestAuthorizationInTenantTxRow struct {
-	GrantID        uuid.UUID          `json:"grant_id"`
-	GrantName      string             `json:"grant_name"`
-	GrantStatus    string             `json:"grant_status"`
-	SiteScopeMode  string             `json:"site_scope_mode"`
-	ScopeTagIds    []uuid.UUID        `json:"scope_tag_ids"`
-	ScopeSiteIds   []uuid.UUID        `json:"scope_site_ids"`
-	ClientID       *string            `json:"client_id"`
-	TokenID        uuid.UUID          `json:"token_id"`
-	TokenPrefix    string             `json:"token_prefix"`
-	TokenStatus    string             `json:"token_status"`
-	TokenExpiresAt pgtype.Timestamptz `json:"token_expires_at"`
-	Authorized     bool               `json:"authorized"`
+	GrantID                  uuid.UUID          `json:"grant_id"`
+	GrantName                string             `json:"grant_name"`
+	GrantStatus              string             `json:"grant_status"`
+	SiteScopeMode            string             `json:"site_scope_mode"`
+	ScopeTagIds              []uuid.UUID        `json:"scope_tag_ids"`
+	ScopeSiteIds             []uuid.UUID        `json:"scope_site_ids"`
+	ClientID                 *string            `json:"client_id"`
+	GrantCapabilities        []string           `json:"grant_capabilities"`
+	GrantExpiresAt           time.Time          `json:"grant_expires_at"`
+	GrantIdleExpireAfterDays *int32             `json:"grant_idle_expire_after_days"`
+	GrantLastUsedAt          pgtype.Timestamptz `json:"grant_last_used_at"`
+	TokenID                  uuid.UUID          `json:"token_id"`
+	TokenPrefix              string             `json:"token_prefix"`
+	TokenStatus              string             `json:"token_status"`
+	TokenExpiresAt           pgtype.Timestamptz `json:"token_expires_at"`
+	GrantAbsoluteExpired     bool               `json:"grant_absolute_expired"`
+	GrantIdleExpired         bool               `json:"grant_idle_expired"`
+	Authorized               bool               `json:"authorized"`
 }
 
 // Runs InTenantTx with the tenant the lookup above established. STEP 2 OF 2,
@@ -649,6 +729,21 @@ type ReCheckMCPRequestAuthorizationInTenantTxRow struct {
 // The grant is joined on tenant_id as well as id: the token and its grant must
 // belong to the same organisation, checked in the join rather than assumed
 // from the foreign key.
+// m127 DECISION 3 ADDS BOTH GRANT EXPIRIES TO THIS SAME VERDICT, rather than to
+// a second read the caller might forget. A grant past its absolute expiry, or
+// past its idle deadline, now fails THE SAME PREDICATE a revoked grant fails.
+// Both are evaluated on the already-fetched grant row, so neither costs a round
+// trip and neither needs an index.
+//
+// The wireframe's "there is no silent read-only period" is a consequence of
+// this shape: expiry flips one boolean to false outright and cannot degrade a
+// connection to a reduced capability set, because there is one boolean here and
+// not a tier.
+//
+// g.capabilities is returned so the capability set is read from the SAME ROW
+// and the SAME transaction as the verdict it was authorized under (S7's exit
+// gate: discovery never grants what the registry does not hold, and it cannot
+// hold what this row does not carry).
 func (q *Queries) ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error) {
 	row := q.db.QueryRow(ctx, reCheckMCPRequestAuthorizationInTenantTx, arg.TenantID, arg.ID)
 	var i ReCheckMCPRequestAuthorizationInTenantTxRow
@@ -660,10 +755,16 @@ func (q *Queries) ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, 
 		&i.ScopeTagIds,
 		&i.ScopeSiteIds,
 		&i.ClientID,
+		&i.GrantCapabilities,
+		&i.GrantExpiresAt,
+		&i.GrantIdleExpireAfterDays,
+		&i.GrantLastUsedAt,
 		&i.TokenID,
 		&i.TokenPrefix,
 		&i.TokenStatus,
 		&i.TokenExpiresAt,
+		&i.GrantAbsoluteExpired,
+		&i.GrantIdleExpired,
 		&i.Authorized,
 	)
 	return i, err
@@ -676,7 +777,7 @@ SET client_name                 = $3,
     protocol_version            = $5,
     client_identity_recorded_at = now()
 WHERE tenant_id = $1 AND id = $2
-RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at
+RETURNING id, tenant_id, name, status, site_scope_mode, scope_tag_ids, scope_site_ids, capabilities, client_id, client_name, client_version, protocol_version, client_identity_recorded_at, created_by_user_id, created_at, last_used_at, revoked_at, expires_at, idle_expire_after_days
 `
 
 type RecordMCPGrantClientIdentityInTenantTxParams struct {
@@ -714,6 +815,7 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 		&i.SiteScopeMode,
 		&i.ScopeTagIds,
 		&i.ScopeSiteIds,
+		&i.Capabilities,
 		&i.ClientID,
 		&i.ClientName,
 		&i.ClientVersion,
@@ -723,6 +825,8 @@ func (q *Queries) RecordMCPGrantClientIdentityInTenantTx(ctx context.Context, ar
 		&i.CreatedAt,
 		&i.LastUsedAt,
 		&i.RevokedAt,
+		&i.ExpiresAt,
+		&i.IdleExpireAfterDays,
 	)
 	return i, err
 }
