@@ -178,6 +178,36 @@ describe("the setup artefact is generated per client", () => {
   });
 });
 
+describe("the wizard does not promise things it cannot deliver", () => {
+  it("does not claim the entered name appears on the approval screen", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByText(/"mcpServers"/);
+
+    // The old copy said "shown on the approval screen". Nothing carries the
+    // name there -- the client starts the OAuth flow itself -- so an operator
+    // would go looking for something that is not there. Wrong prose is a defect.
+    expect(screen.queryByText(/shown on the approval screen/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/used as the server key in the config/i)).toBeInTheDocument();
+    expect(screen.getByText(/asks you to name\s+the connection separately/i)).toBeInTheDocument();
+  });
+
+  it("states the self-hosted proxy requirement beside the endpoint it printed", async () => {
+    renderWizard();
+    await pickClient("Claude Code");
+    fireEvent.click(authCard("oauth"));
+    await screen.findByText(/"mcpServers"/);
+
+    // The URL is derived from the origin, which does not prove anything
+    // forwards it: infra/nginx/nginx.conf has no /mcp location and
+    // apps/web/vite.config.ts does not proxy it, so on a self-hosted install
+    // or in dev the copied URL reaches the SPA. Saying nothing would hand
+    // someone a web page and let them debug their AI client.
+    expect(screen.getByText(/reverse proxy must forward \/mcp to the API/i)).toBeInTheDocument();
+  });
+});
+
 describe("changing the client recomputes rather than carrying a stale answer", () => {
   it("drops a method the newly chosen client cannot use", async () => {
     renderWizard();

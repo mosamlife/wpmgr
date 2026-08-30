@@ -8,6 +8,7 @@ import { mcpEndpointUrl } from "@/features/ai-connections/endpoint";
 import {
   PROTOCOL_FLOOR_VERSION,
   PROTOCOL_TARGET_VERSION,
+  SELF_HOSTED_PROXY_REQUIREMENT,
 } from "@/features/ai-connections/client-table";
 import type { ConnectionsState } from "@/features/ai-connections/connection-model";
 
@@ -61,6 +62,11 @@ function AiConnectionsPage() {
           anything below {PROTOCOL_FLOOR_VERSION}.
         </p>
         <CopyableMono value={endpoint} label="Copy the MCP endpoint" />
+        {/* Derived from this origin, which does not prove anything forwards it.
+            See SELF_HOSTED_PROXY_REQUIREMENT for the two proxies that do not. */}
+        <p className="text-xs text-[var(--color-muted-foreground)]">
+          {SELF_HOSTED_PROXY_REQUIREMENT}
+        </p>
       </section>
 
       <section aria-label="Connections" className="space-y-3">

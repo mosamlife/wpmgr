@@ -51,6 +51,15 @@ describe("/ai", () => {
     expect(screen.getByText(expected)).toBeInTheDocument();
   });
 
+  it("states the self-hosted proxy requirement beside the endpoint", async () => {
+    renderPage();
+    await screen.findByTestId("connections-unavailable");
+    // Deriving /mcp from the origin does not prove anything forwards it.
+    // infra/urlmap.yaml routes it on hosted; infra/nginx/nginx.conf and
+    // apps/web/vite.config.ts do not.
+    expect(screen.getByText(/reverse proxy must forward \/mcp to the API/i)).toBeInTheDocument();
+  });
+
   it("offers a route into the wizard, which is how that page is reached at all", async () => {
     renderPage();
     // /ai/connect is deliberately absent from the sidebar, so this link is its

@@ -170,8 +170,21 @@ export function ConnectionsList({
                     what the software claimed about itself, the other is what a
                     human selected, and they can disagree. */}
                 {c.reportedClientName === null ? (
-                  <span className="text-[var(--color-muted-foreground)]">
+                  // A NAMELESS CLIENT CAN STILL HAVE REPORTED A VERSION. The
+                  // type permits it, and dropping the version would throw away
+                  // a fact the client actually sent -- the same defect as
+                  // rendering an absent header as a version, pointing the other
+                  // way. Both halves are said.
+                  <span
+                    data-testid="reported-client"
+                    className="text-[var(--color-muted-foreground)]"
+                  >
                     Reported no client name
+                    {c.reportedClientVersion === null ? null : (
+                      <span data-testid="reported-version">
+                        , version {c.reportedClientVersion}
+                      </span>
+                    )}
                   </span>
                 ) : (
                   <span className="text-[var(--color-foreground)]">

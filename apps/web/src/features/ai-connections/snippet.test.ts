@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   MCP_CLIENTS,
@@ -375,8 +375,13 @@ describe("no hand-written config snippet in the UI (S16 exit gate)", () => {
   // client-table.ts and snippet.ts are the table and its generator; they are
   // the only files allowed to contain these literals.
   const GENERATORS = new Set(["client-table.ts", "snippet.ts"]);
+  // basename(), not split("/"): on Windows the separator is "\\", so the split
+  // form returns the whole path, the exclusion never matches, and the two
+  // generator files get scanned as if they were UI -- reddening a correct tree
+  // on one platform only. A guard that fails by OS is a guard that gets
+  // switched off.
   const files = [...sourceFiles(FEATURE_ROOT), ...sourceFiles(ROUTES_ROOT)].filter(
-    (f) => !GENERATORS.has(f.split("/").pop() ?? ""),
+    (f) => !GENERATORS.has(basename(f)),
   );
 
   it("finds the files it is supposed to be guarding", () => {

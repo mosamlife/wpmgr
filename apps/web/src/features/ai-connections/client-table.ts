@@ -181,6 +181,33 @@ export interface McpClientRow {
  * someone else's verification date is a false provenance claim on exactly the
  * surface where a wrong path wastes an hour.
  */
+/**
+ * What a self-hosted operator has to do for the endpoint we print to work.
+ *
+ * WE CANNOT VERIFY THIS FROM THE BROWSER, SO WE SAY SO RATHER THAN IMPLYING IT
+ * IS FINE. The endpoint is derived from the running origin, which is right, but
+ * derivable is not routed:
+ *
+ *   - Hosted IS routed. infra/urlmap.yaml:81 lists `/mcp`.
+ *   - The self-hosted reverse proxy is NOT. infra/nginx/nginx.conf carries
+ *     locations for /api/, /auth/, /enroll, /agent/, /rum/, /webhooks/,
+ *     /healthz and /readyz, and none for /mcp -- so `location /` serves the
+ *     SPA and the copied URL returns a web page.
+ *   - Neither is the dev server. apps/web/vite.config.ts proxies /api, /auth,
+ *     /enroll, /agent, /healthz and /readyz only.
+ *
+ * That exact shape -- a Go route mounted, no proxy rule, silently answered by
+ * something else -- is what nginx.conf's own header comment records happening
+ * to self-hosted RUM ingest, and what made POST /mcp unreachable in production
+ * once already. A wizard that prints the URL and says nothing hands a
+ * self-hosted operator a web page and lets them debug their AI client.
+ *
+ * Phrased as a deployment requirement rather than an alarm: for a hosted
+ * operator it is already satisfied, and a warning there would be crying wolf.
+ */
+export const SELF_HOSTED_PROXY_REQUIREMENT =
+  "Self-hosted: your reverse proxy must forward /mcp to the API, alongside the /api and /auth rules it already has. We cannot check that from your browser, so we say it rather than assume it.";
+
 export const CONFIG_PATH_GAP =
   "We have not verified config file locations ourselves, so we link to each client's own docs instead of printing a path that may have moved.";
 

@@ -183,6 +183,37 @@ describe("a field the client did not send is rendered as absent", () => {
     expect(await screen.findByText(/reported no client name/i)).toBeInTheDocument();
   });
 
+  it("keeps the version when the client reported one but no name", async () => {
+    // The type permits name===null with a version present. Dropping the version
+    // there throws away a fact the client actually sent.
+    //
+    // ASSERTED ON STRUCTURE, NOT ON THE SENTENCE. An earlier version matched
+    // /reported no client name/i, and the over-fire pass caught it: rewording
+    // that sentinel copy is correct work and it reddened. Same trap the sidebar
+    // guard fell into. What must not regress is that the version survives.
+    renderList({
+      status: "ready",
+      connections: [
+        { ...CONNECTED, reportedClientName: null, reportedClientVersion: "0.9.1" },
+      ],
+    });
+    const version = await screen.findByTestId("reported-version");
+    expect(version.textContent).toContain("0.9.1");
+  });
+
+  it("does not invent a version when the client sent neither", async () => {
+    // The over-fire half: a genuinely empty pair must not grow a stray comma or
+    // a fabricated number.
+    renderList({
+      status: "ready",
+      connections: [
+        { ...CONNECTED, reportedClientName: null, reportedClientVersion: null },
+      ],
+    });
+    expect(await screen.findByTestId("reported-client")).toBeInTheDocument();
+    expect(screen.queryByTestId("reported-version")).not.toBeInTheDocument();
+  });
+
   it("says a client sent no version rather than dropping the field silently", async () => {
     renderList({
       status: "ready",

@@ -13,6 +13,7 @@ import {
   PROTOCOL_TARGET_VERSION,
   availableAuthMethods,
   CONFIG_PATH_GAP,
+  SELF_HOSTED_PROXY_REQUIREMENT,
   type AuthAvailability,
   type AuthMethod,
   type McpClientRow,
@@ -173,7 +174,16 @@ export function ConnectWizard({ endpointUrl, className }: ConnectWizardProps) {
                 placeholder="Fleet manager"
               />
               <p className="text-xs text-[var(--color-muted-foreground)]">
-                Used as the server key in the config, and shown on the approval screen.
+                {/* THE OLD COPY HERE WAS FALSE. It promised this name appears on
+                    the approval screen, and nothing carries it there: the client
+                    starts the OAuth flow itself, so this page never hands the
+                    name to /connect/ai, which asks for its own. Sending an
+                    operator to look for something that will not be there is a
+                    defect. Carrying it through would need a parameter the flow
+                    does not have, so the copy is corrected rather than the
+                    behaviour invented. */}
+                Used as the server key in the config below. The approval screen asks you to name
+                the connection separately, so this name stays on your machine.
               </p>
             </div>
 
@@ -410,6 +420,12 @@ function SnippetBlock({ client, snippet }: { client: McpClientRow; snippet: Snip
           ) : null}
         </div>
       ) : null}
+
+      {/* The endpoint just printed is derived from this origin, which does not
+          prove anything forwards it. Said once, beside every artefact. */}
+      <p className="text-xs text-[var(--color-muted-foreground)]">
+        {SELF_HOSTED_PROXY_REQUIREMENT}
+      </p>
 
       <p className="text-xs text-[var(--color-muted-foreground)]">
         {/* Stated as data from the table, so it reads as "we have not checked"
