@@ -141,6 +141,23 @@ type fakeStore struct {
 	// listPrincipals does the same for the list path.
 	listPrincipals []domain.Principal
 
+	// The headless mint surface.
+	//
+	// minted captures every CreateGrantWithToken call WHOLE (principal, grant
+	// params, token params), because the properties this endpoint has to hold
+	// are properties of what reached the INSERT: that the token row carries a
+	// hash and a prefix and not the plaintext, that the scope arrays were
+	// stored as given rather than widened, and that the principal was not
+	// flattened on the way down. mintErr forces the write itself to fail.
+	minted  []mintedGrant
+	mintErr error
+
+	// tagIDs is the tenant's tag registry and tagIDsErr forces the read to
+	// fail. Independent, so "the registry is empty" and "the registry could not
+	// be read" are separately reachable.
+	tagIDs    []uuid.UUID
+	tagIDsErr error
+
 	// call log. mu guards all four -- see note().
 	mu           sync.Mutex
 	consumeCalls int
@@ -284,6 +301,77 @@ func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPr
 		}
 	}
 	return grant, sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
+}
+
+// mintedGrant is one captured CreateGrantWithToken call. The TOKEN PARAMS are
+// captured whole, so a test can assert what was actually sent to the INSERT --
+// which is the only way to prove the plaintext was not among it.
+type mintedGrant struct {
+	Principal db.ScopedPrincipal
+	Grant     sqlc.CreateMCPGrantParams
+	Token     sqlc.CreateMCPConnectionTokenParams
+}
+
+// CreateGrantWithToken records the principal and BOTH parameter sets.
+//
+// Like CreateGrantWithCode, THIS FAKE CANNOT PROVE THE RLS: it runs no
+// transaction and evaluates no policy. What it pins is the plumbing and the
+// PAYLOAD -- that the scope-carrying principal reaches the store rather than
+// being flattened to a tenant id, and that the token row carries a hash and a
+// prefix and never the plaintext. The policy itself is proved in tests/, as
+// wpmgr_app.
+func (f *fakeStore) CreateGrantWithToken(
+	_ context.Context,
+	principal db.ScopedPrincipal,
+	g sqlc.CreateMCPGrantParams,
+	mkToken func(uuid.UUID) sqlc.CreateMCPConnectionTokenParams,
+	onCreated func(pgx.Tx, sqlc.McpGrant) error,
+) (sqlc.McpGrant, sqlc.McpConnectionToken, error) {
+	f.note("CreateGrantWithToken")
+	if f.mintErr != nil {
+		return sqlc.McpGrant{}, sqlc.McpConnectionToken{}, f.mintErr
+	}
+	id := uuid.New()
+	tp := mkToken(id)
+
+	f.mu.Lock()
+	f.grantPrincipal = principal
+	f.minted = append(f.minted, mintedGrant{Principal: principal, Grant: g, Token: tp})
+	f.tokensMinted++
+	f.mu.Unlock()
+
+	grant := sqlc.McpGrant{
+		ID: id, TenantID: g.TenantID, Name: g.Name,
+		Status: g.Status, SiteScopeMode: g.SiteScopeMode,
+		ScopeTagIds: g.ScopeTagIds, ScopeSiteIds: g.ScopeSiteIds,
+		Capabilities: g.Capabilities,
+	}
+	// No real tx, same reasoning as CreateGrantWithCode: MintConnection's
+	// callback checks s.audit == nil before touching tx, and no test in this
+	// package wires WithAudit.
+	if onCreated != nil {
+		if err := onCreated(nil, grant); err != nil {
+			return sqlc.McpGrant{}, sqlc.McpConnectionToken{}, err
+		}
+	}
+	return grant, sqlc.McpConnectionToken{
+		ID: uuid.New(), TenantID: tp.TenantID, GrantID: tp.GrantID,
+		TokenPrefix: tp.TokenPrefix, TokenHash: tp.TokenHash, Status: tp.Status,
+	}, nil
+}
+
+// ListTagIDs models the tenant tag registry.
+//
+// tagIDsErr is separate from an empty tagIDs so a test can drive "the registry
+// read FAILED" apart from "this organisation has no tags" -- the pair this
+// package keeps apart everywhere else, and the pair that decides whether an
+// unknown-tag refusal is honest or is an infra failure wearing a 422.
+func (f *fakeStore) ListTagIDs(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	f.note("ListTagIDs")
+	if f.tagIDsErr != nil {
+		return nil, f.tagIDsErr
+	}
+	return f.tagIDs, nil
 }
 
 func (f *fakeStore) LookupConnectionToken(_ context.Context, _ string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error) {

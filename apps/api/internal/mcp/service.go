@@ -204,10 +204,30 @@ type Service struct {
 	// one is ever found is "this deploy path is unattributable", not "make the
 	// nil check quieter".
 	audit *audit.Recorder
+
+	// mintLimit bounds POST /api/v1/mcp/connections. It lives on the SERVICE
+	// and not on the Handler, unlike Handler.regLimit, and the placement is
+	// deliberate: /register is unauthenticated so its limiter can only key on
+	// the transport (RemoteIP), which only the handler can see, whereas this
+	// one keys on the authenticated operator and is therefore expressible at
+	// the service layer -- where every mount of MintConnection is covered,
+	// including a test harness that forgot the middleware.
+	//
+	// Never nil after NewService. registrationLimiter.allow refuses on a nil
+	// receiver anyway, so a Service built by a struct literal that skipped it
+	// mints NOTHING rather than minting unlimited.
+	mintLimit *registrationLimiter
 }
 
 func NewService(store Store) *Service {
-	return &Service{store: store, now: time.Now}
+	return &Service{
+		store: store,
+		now:   time.Now,
+		// Armed HERE rather than injected with a nil default, for the reason
+		// NewHandler gives about its own limiter: an unarmed limiter would be a
+		// wiring failure that presents as a working endpoint.
+		mintLimit: newMintLimiter(),
+	}
 }
 
 // WithClock returns a copy using the supplied clock. Test-only in practice.
