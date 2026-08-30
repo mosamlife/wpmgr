@@ -4,6 +4,7 @@ import {
   describeSiteScope,
   isScopeApprovable,
   resolveSiteScope,
+  resolveTagIds,
   snapshotFromPage,
   type ResolveInput,
   type ScopedSite,
@@ -72,9 +73,9 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
     expect(scope.kind).toBe("none");
   });
 
-  it("an empty resolution is not approvable", () => {
-    expect(isScopeApprovable(resolveSiteScope(input({ mode: "tags", selectedTagNames: ["gone"] })))).toBe(false);
-    expect(isScopeApprovable(resolveSiteScope(input({ mode: "list", selectedSiteIds: [] })))).toBe(false);
+  it("an empty resolution IS approvable -- reading nothing is a working state, not an error (2026-08-23 revision)", () => {
+    expect(isScopeApprovable(resolveSiteScope(input({ mode: "tags", selectedTagNames: ["gone"] })))).toBe(true);
+    expect(isScopeApprovable(resolveSiteScope(input({ mode: "list", selectedSiteIds: [] })))).toBe(true);
   });
 
   it("only mode 'all' ever produces kind 'all'", () => {
@@ -92,6 +93,24 @@ describe("resolveSiteScope — an empty resolution is never everything", () => {
     const scope = resolveSiteScope(input({ mode: "all", fleet: { sites: [], complete: true } }));
     expect(scope.kind).toBe("all");
     expect(describeSiteScope(scope)).toMatch(/added later/i);
+  });
+});
+
+describe("isScopeApprovable — an empty allowlist is approvable, an unread one never is", () => {
+  // The 2026-08-23 wireframe revision (line 3559) rules that a connection with
+  // an empty allowlist "can read nothing and propose nothing. That is a
+  // working state, not an error." This block pins BOTH halves of that with
+  // equal force: `none` (however it was reached) now passes, and `unresolved`
+  // (however it was reached) still fails. Weakening either half back to the
+  // pre-2026-08-23 shape must redden this block, not just the copy tests.
+  it("accepts a resolved-to-nothing scope, from no selection and from no matches alike", () => {
+    expect(isScopeApprovable({ kind: "none", because: "no-selection" })).toBe(true);
+    expect(isScopeApprovable({ kind: "none", because: "no-matches" })).toBe(true);
+  });
+
+  it("still refuses a scope nobody has read, whether pending or failed", () => {
+    expect(isScopeApprovable({ kind: "unresolved", because: "loading" })).toBe(false);
+    expect(isScopeApprovable({ kind: "unresolved", because: "failed" })).toBe(false);
   });
 });
 
@@ -272,5 +291,75 @@ describe("no branch asserts that more sites exist", () => {
       expect(sentence).not.toMatch(/\b1 sites\b/);
       expect(sentence).not.toMatch(/\b1 sites? carry\b/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveTagIds
+//
+// The whole value of this function is the distinction between three answers
+// that a `.filter()` collapses into one: the ids (send this), `[]` (send an
+// empty scope, which is a choice) and `null` (send NOTHING, because we cannot
+// build the payload the operator asked for). The failure it exists to stop is
+// silent NARROWING, which no error surface ever reports because the request
+// succeeds -- the operator ticks two tags, one no longer resolves, and a
+// credential goes out covering half of what its own screen says it covers.
+// ---------------------------------------------------------------------------
+
+const REGISTRY = [
+  { id: "tag-uuid-prod", name: "prod" },
+  { id: "tag-uuid-staging", name: "staging" },
+];
+
+describe("resolveTagIds", () => {
+  it("resolves every ticked name to its id, in the order they were ticked", () => {
+    expect(resolveTagIds(["staging", "prod"], REGISTRY)).toEqual([
+      "tag-uuid-staging",
+      "tag-uuid-prod",
+    ]);
+  });
+
+  it("refuses the whole payload when one of two ticked tags no longer resolves", () => {
+    // THE REGRESSION. Filtering the registry down to the ticked names returned
+    // ["tag-uuid-prod"] here: one real id, a request the server accepts, and a
+    // token covering one tag while the screen that minted it named two. The
+    // only honest answer is that this payload cannot be built.
+    expect(resolveTagIds(["prod", "deleted-since-step-3"], REGISTRY)).toBeNull();
+    expect(resolveTagIds(["deleted-since-step-3", "prod"], REGISTRY)).toBeNull();
+  });
+
+  it("refuses when NO ticked name resolves, rather than falling back to an empty scope", () => {
+    // A narrowing all the way down to nothing is still a narrowing, and `[]`
+    // is a different sentence to the operator: it means "covers nothing on
+    // purpose", not "we lost your selection".
+    expect(resolveTagIds(["gone", "also-gone"], REGISTRY)).toBeNull();
+  });
+
+  it("refuses on an unread registry even when nothing is ticked", () => {
+    // null registry is our request, not the organisation. Distinct from the
+    // empty-selection case directly below, which is the operator's answer.
+    expect(resolveTagIds([], null)).toBeNull();
+    expect(resolveTagIds(["prod"], null)).toBeNull();
+  });
+
+  it("returns an empty array, NOT null, for an empty selection", () => {
+    const resolved = resolveTagIds([], REGISTRY);
+    expect(resolved).toEqual([]);
+    // The two must be distinguishable at a call site, because they lead to
+    // different screens: connect-wizard.tsx:153 feeds this into
+    // mintBlockedReason as `scopeTagIds !== null` and reports null as a
+    // registry failure the operator is told to fix. An empty tick list is not
+    // a failure and must not be reported as one.
+    expect(resolved).not.toBeNull();
+    expect(resolveTagIds([], REGISTRY) === null).toBe(false);
+  });
+
+  it("collapses a duplicated name to one id rather than sending it twice", () => {
+    expect(resolveTagIds(["prod", "prod"], REGISTRY)).toEqual(["tag-uuid-prod"]);
+  });
+
+  it("resolves against an empty registry only when nothing is ticked", () => {
+    expect(resolveTagIds([], [])).toEqual([]);
+    expect(resolveTagIds(["prod"], [])).toBeNull();
   });
 });
