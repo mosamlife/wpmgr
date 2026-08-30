@@ -51,7 +51,7 @@ describe("bannedWordHits — fires on the wireframe's own banned words", () => {
 // reddens a truthful warning is a guard someone switches off.
 // ---------------------------------------------------------------------------
 
-describe("bannedWordHits — the word-boundary contract, which the comment must keep matching", () => {
+describe("bannedWordHits: the word-boundary contract, which the comment must keep matching", () => {
   it.each([
     ["a prefixed form", "Treat every connection as unsafe until you have scoped it."],
     ["a suffixed form", "Read our safety guidance before connecting an assistant."],
