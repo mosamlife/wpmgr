@@ -328,7 +328,7 @@ func TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole(t *testing.T
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("CreateGrantWithCode accepted a site-scoped principal. The write " +
 			"reached mcp_grants with app.site_scope unset, so the RESTRICTIVE " +

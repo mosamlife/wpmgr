@@ -96,7 +96,7 @@ func mcpSeedGrant(t *testing.T, repo *mcp.Repo, tenantID uuid.UUID, mode string,
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
 			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
 		}
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("seed grant for tenant %s: %v", tenantID, err)
 	}
