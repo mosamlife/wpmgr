@@ -331,7 +331,7 @@ func TestMCPAuditEvents_RolledBackGrantCreationLeavesNoAuditRow_AsAppRole(t *tes
 			TenantID:            tenantID,
 			GrantID:             grantID,
 			ClientID:            "rollback-probe-client",
-			CodeHash:            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+			CodeHash:            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			CodeChallenge:       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
 			CodeChallengeMethod: "S256",
 			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
