@@ -39,6 +39,7 @@ import { Route as AuthedSettingsIndexRouteImport } from './routes/_authed/settin
 import { Route as AuthedEmailIndexRouteImport } from './routes/_authed/email/index'
 import { Route as AuthedClientsIndexRouteImport } from './routes/_authed/clients/index'
 import { Route as AuthedBackupsIndexRouteImport } from './routes/_authed/backups/index'
+import { Route as AuthedAiIndexRouteImport } from './routes/_authed/ai/index'
 import { Route as AuthedAdminIndexRouteImport } from './routes/_authed/admin/index'
 import { Route as PortalSitesSiteIdRouteImport } from './routes/portal/sites.$siteId'
 import { Route as AuthedWelcomeCheckoutRouteImport } from './routes/_authed/welcome.checkout'
@@ -56,6 +57,7 @@ import { Route as AuthedScheduleRunsRunIdRouteImport } from './routes/_authed/sc
 import { Route as AuthedRestoresRestoreIdRouteImport } from './routes/_authed/restores/$restoreId'
 import { Route as AuthedConnectAiRouteImport } from './routes/_authed/connect.ai'
 import { Route as AuthedClientsClientIdRouteImport } from './routes/_authed/clients/$clientId'
+import { Route as AuthedAiConnectRouteImport } from './routes/_authed/ai/connect'
 import { Route as AuthedAdminVulnFeedRouteImport } from './routes/_authed/admin/vuln-feed'
 import { Route as AuthedAdminRevenueRouteImport } from './routes/_authed/admin/revenue'
 import { Route as AuthedAdminAgentMirrorRouteImport } from './routes/_authed/admin/agent-mirror'
@@ -233,6 +235,11 @@ const AuthedBackupsIndexRoute = AuthedBackupsIndexRouteImport.update({
   path: '/backups/',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAiIndexRoute = AuthedAiIndexRouteImport.update({
+  id: '/ai/',
+  path: '/ai/',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -317,6 +324,11 @@ const AuthedConnectAiRoute = AuthedConnectAiRouteImport.update({
 const AuthedClientsClientIdRoute = AuthedClientsClientIdRouteImport.update({
   id: '/clients/$clientId',
   path: '/clients/$clientId',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedAiConnectRoute = AuthedAiConnectRouteImport.update({
+  id: '/ai/connect',
+  path: '/ai/connect',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedAdminVulnFeedRoute = AuthedAdminVulnFeedRouteImport.update({
@@ -498,6 +510,7 @@ export interface FileRoutesByFullPath {
   '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/ai/connect': typeof AuthedAiConnectRoute
   '/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
   '/connect/ai': typeof AuthedConnectAiRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
@@ -515,6 +528,7 @@ export interface FileRoutesByFullPath {
   '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
+  '/ai/': typeof AuthedAiIndexRoute
   '/backups/': typeof AuthedBackupsIndexRoute
   '/clients/': typeof AuthedClientsIndexRoute
   '/email/': typeof AuthedEmailIndexRoute
@@ -570,6 +584,7 @@ export interface FileRoutesByTo {
   '/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/admin/revenue': typeof AuthedAdminRevenueRoute
   '/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/ai/connect': typeof AuthedAiConnectRoute
   '/connect/ai': typeof AuthedConnectAiRoute
   '/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
   '/schedule-runs/$runId': typeof AuthedScheduleRunsRunIdRoute
@@ -585,6 +600,7 @@ export interface FileRoutesByTo {
   '/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/admin': typeof AuthedAdminIndexRoute
+  '/ai': typeof AuthedAiIndexRoute
   '/backups': typeof AuthedBackupsIndexRoute
   '/clients': typeof AuthedClientsIndexRoute
   '/email': typeof AuthedEmailIndexRoute
@@ -644,6 +660,7 @@ export interface FileRoutesById {
   '/_authed/admin/agent-mirror': typeof AuthedAdminAgentMirrorRoute
   '/_authed/admin/revenue': typeof AuthedAdminRevenueRoute
   '/_authed/admin/vuln-feed': typeof AuthedAdminVulnFeedRoute
+  '/_authed/ai/connect': typeof AuthedAiConnectRoute
   '/_authed/clients/$clientId': typeof AuthedClientsClientIdRouteWithChildren
   '/_authed/connect/ai': typeof AuthedConnectAiRoute
   '/_authed/restores/$restoreId': typeof AuthedRestoresRestoreIdRoute
@@ -661,6 +678,7 @@ export interface FileRoutesById {
   '/_authed/welcome/checkout': typeof AuthedWelcomeCheckoutRoute
   '/portal/sites/$siteId': typeof PortalSitesSiteIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
+  '/_authed/ai/': typeof AuthedAiIndexRoute
   '/_authed/backups/': typeof AuthedBackupsIndexRoute
   '/_authed/clients/': typeof AuthedClientsIndexRoute
   '/_authed/email/': typeof AuthedEmailIndexRoute
@@ -721,6 +739,7 @@ export interface FileRouteTypes {
     | '/admin/agent-mirror'
     | '/admin/revenue'
     | '/admin/vuln-feed'
+    | '/ai/connect'
     | '/clients/$clientId'
     | '/connect/ai'
     | '/restores/$restoreId'
@@ -738,6 +757,7 @@ export interface FileRouteTypes {
     | '/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/admin/'
+    | '/ai/'
     | '/backups/'
     | '/clients/'
     | '/email/'
@@ -793,6 +813,7 @@ export interface FileRouteTypes {
     | '/admin/agent-mirror'
     | '/admin/revenue'
     | '/admin/vuln-feed'
+    | '/ai/connect'
     | '/connect/ai'
     | '/restores/$restoreId'
     | '/schedule-runs/$runId'
@@ -808,6 +829,7 @@ export interface FileRouteTypes {
     | '/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/admin'
+    | '/ai'
     | '/backups'
     | '/clients'
     | '/email'
@@ -866,6 +888,7 @@ export interface FileRouteTypes {
     | '/_authed/admin/agent-mirror'
     | '/_authed/admin/revenue'
     | '/_authed/admin/vuln-feed'
+    | '/_authed/ai/connect'
     | '/_authed/clients/$clientId'
     | '/_authed/connect/ai'
     | '/_authed/restores/$restoreId'
@@ -883,6 +906,7 @@ export interface FileRouteTypes {
     | '/_authed/welcome/checkout'
     | '/portal/sites/$siteId'
     | '/_authed/admin/'
+    | '/_authed/ai/'
     | '/_authed/backups/'
     | '/_authed/clients/'
     | '/_authed/email/'
@@ -1142,6 +1166,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedBackupsIndexRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/ai/': {
+      id: '/_authed/ai/'
+      path: '/ai'
+      fullPath: '/ai/'
+      preLoaderRoute: typeof AuthedAiIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/admin/': {
       id: '/_authed/admin/'
       path: '/'
@@ -1259,6 +1290,13 @@ declare module '@tanstack/react-router' {
       path: '/clients/$clientId'
       fullPath: '/clients/$clientId'
       preLoaderRoute: typeof AuthedClientsClientIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/ai/connect': {
+      id: '/_authed/ai/connect'
+      path: '/ai/connect'
+      fullPath: '/ai/connect'
+      preLoaderRoute: typeof AuthedAiConnectRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/admin/vuln-feed': {
@@ -1605,6 +1643,7 @@ interface AuthedRouteChildren {
   AuthedSharedWithMeRoute: typeof AuthedSharedWithMeRoute
   AuthedUptimeRoute: typeof AuthedUptimeRoute
   AuthedVulnerabilitiesRoute: typeof AuthedVulnerabilitiesRoute
+  AuthedAiConnectRoute: typeof AuthedAiConnectRoute
   AuthedClientsClientIdRoute: typeof AuthedClientsClientIdRouteWithChildren
   AuthedConnectAiRoute: typeof AuthedConnectAiRoute
   AuthedRestoresRestoreIdRoute: typeof AuthedRestoresRestoreIdRoute
@@ -1612,6 +1651,7 @@ interface AuthedRouteChildren {
   AuthedSitesSiteIdRoute: typeof AuthedSitesSiteIdRouteWithChildren
   AuthedUpdatesRunIdRoute: typeof AuthedUpdatesRunIdRoute
   AuthedWelcomeCheckoutRoute: typeof AuthedWelcomeCheckoutRoute
+  AuthedAiIndexRoute: typeof AuthedAiIndexRoute
   AuthedBackupsIndexRoute: typeof AuthedBackupsIndexRoute
   AuthedClientsIndexRoute: typeof AuthedClientsIndexRoute
   AuthedEmailIndexRoute: typeof AuthedEmailIndexRoute
@@ -1630,6 +1670,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSharedWithMeRoute: AuthedSharedWithMeRoute,
   AuthedUptimeRoute: AuthedUptimeRoute,
   AuthedVulnerabilitiesRoute: AuthedVulnerabilitiesRoute,
+  AuthedAiConnectRoute: AuthedAiConnectRoute,
   AuthedClientsClientIdRoute: AuthedClientsClientIdRouteWithChildren,
   AuthedConnectAiRoute: AuthedConnectAiRoute,
   AuthedRestoresRestoreIdRoute: AuthedRestoresRestoreIdRoute,
@@ -1637,6 +1678,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSitesSiteIdRoute: AuthedSitesSiteIdRouteWithChildren,
   AuthedUpdatesRunIdRoute: AuthedUpdatesRunIdRoute,
   AuthedWelcomeCheckoutRoute: AuthedWelcomeCheckoutRoute,
+  AuthedAiIndexRoute: AuthedAiIndexRoute,
   AuthedBackupsIndexRoute: AuthedBackupsIndexRoute,
   AuthedClientsIndexRoute: AuthedClientsIndexRoute,
   AuthedEmailIndexRoute: AuthedEmailIndexRoute,
