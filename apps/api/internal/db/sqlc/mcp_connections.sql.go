@@ -250,8 +250,14 @@ type CreateMCPGrantParams struct {
 // nobody chose the terms of.
 //
 // idle_expire_after_days is passed explicitly and MAY be NULL: NULL is a real,
-// meaningful value there ("never idle-expire") and, per m127 DECISION 4, the
-// only safe one until TouchMCPGrantInTenantTx has a caller.
+// meaningful value there ("never idle-expire"). m127 DECISION 4 made a non-NULL
+// value conditional on the activity stamp being wired, and IT NOW IS:
+// TouchMCPGrantInTenantTx is reached through Repo.TouchActivity, via
+// Service.RecordActivity, from the transport's tools/list and tools/call arms.
+// A non-NULL window is therefore representable. Callers still pass NULL because
+// NOTHING ASKS THE OPERATOR FOR A WINDOW YET -- not because the stamp is
+// missing. Read that distinction before removing the NULL: the guard is waiting
+// on an input, not on a fix.
 func (q *Queries) CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error) {
 	row := q.db.QueryRow(ctx, createMCPGrant,
 		arg.TenantID,
@@ -660,8 +666,13 @@ SELECT
         -- a grant never used is idle since it was created.
         --
         -- SEE m127 DECISION 4 BEFORE WRITING A NON-NULL VALUE INTO THIS COLUMN.
-        -- TouchMCPGrantInTenantTx has no Go caller, so last_used_at is always
-        -- NULL and this collapses to created_at + N days for every row.
+        -- TouchMCPGrantInTenantTx now runs on the request path -- through
+        -- Repo.TouchActivity, via Service.RecordActivity, from the transport's
+        -- tools/list and tools/call arms -- so last_used_at advances with real
+        -- use and this deadline advances with it. DECISION 4's prerequisite is
+        -- MET. The column stays NULL on every row today only because nothing
+        -- asks the operator for a window yet, and that is the reason to keep it
+        -- NULL: an actively used connection must never idle-expire.
         AND (g.idle_expire_after_days IS NULL
              OR COALESCE(g.last_used_at, g.created_at)
                 + make_interval(days => g.idle_expire_after_days) > now()),

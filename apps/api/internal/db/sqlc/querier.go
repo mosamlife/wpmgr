@@ -629,8 +629,14 @@ type Querier interface {
 	// nobody chose the terms of.
 	//
 	// idle_expire_after_days is passed explicitly and MAY be NULL: NULL is a real,
-	// meaningful value there ("never idle-expire") and, per m127 DECISION 4, the
-	// only safe one until TouchMCPGrantInTenantTx has a caller.
+	// meaningful value there ("never idle-expire"). m127 DECISION 4 made a non-NULL
+	// value conditional on the activity stamp being wired, and IT NOW IS:
+	// TouchMCPGrantInTenantTx is reached through Repo.TouchActivity, via
+	// Service.RecordActivity, from the transport's tools/list and tools/call arms.
+	// A non-NULL window is therefore representable. Callers still pass NULL because
+	// NOTHING ASKS THE OPERATOR FOR A WINDOW YET -- not because the stamp is
+	// missing. Read that distinction before removing the NULL: the guard is waiting
+	// on an input, not on a fix.
 	CreateMCPGrant(ctx context.Context, arg CreateMCPGrantParams) (McpGrant, error)
 	// ---------------------------------------------------------------------------
 	// backup_manifest_entries
