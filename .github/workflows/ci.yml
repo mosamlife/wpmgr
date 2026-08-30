@@ -117,6 +117,45 @@ jobs:
         # can infer from a path.
         run: go test $(go list ./... | grep -Ev -e '/cmd/media-encoder' -e '/internal/media/encoder' -e '/apps/api/tests($|/)') ./tests/contract/...
 
+      # ---- Load-balancer route coverage -------------------------------------
+      # Twice in one day a route shipped, deployed, and was unreachable: the API
+      # mounted it and the url-map did not route it, so it fell through to the
+      # matcher default and the web SPA answered it. POST /mcp was the first;
+      # the OAuth discovery documents from #589 were about to be the second.
+      #
+      # Both failures return 200 text/html, so no status-code check after the
+      # deploy can see them — something answered, it was just the wrong
+      # something. This guard reads the route list out of the REAL Gin engine
+      # (apps/api/cmd/dump-routes, which mounts EVERY optional Deps handler) and
+      # proves each path has a rule in infra/urlmap.yaml pointing at the API
+      # backend. It needs no cloud credentials, which is the entire point of it
+      # running here: on every PR, before the deploy, instead of being something
+      # someone remembers to curl afterwards.
+      #
+      # It lives in this job rather than `security` because it needs the Go
+      # toolchain to build the engine, and this is the job that already has it
+      # set up and cached. The `security` job's setup-go comes after its guard
+      # steps, so the same two steps there would run on whatever Go the runner
+      # happened to ship.
+      #
+      # The live-versus-committed drift check is deliberately NOT in CI. It
+      # needs gcloud credentials, so wiring it in would gate the half that
+      # matters behind the half that cannot run on a fork PR. It is
+      # `make check-urlmap-drift`, run before an apply.
+      #
+      # Self-test FIRST, so a guard broken into failing open cannot pass by
+      # reporting success over its own errors.
+      - name: URL-map route coverage guard self-test
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-urlmap-routes_test.sh
+
+      - name: URL-map route coverage guard (every mounted API route has a path rule)
+        working-directory: ${{ github.workspace }}
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: scripts/check-urlmap-routes.sh
+
   # ---- JS / web ----
   js:
     name: JS (web)
@@ -422,6 +461,7 @@ jobs:
 
       - name: Version surface guard (openapi, changelog page, badge, agent, install pins)
         run: scripts/check-version-surfaces.sh
+
 
       # ---- License surfaces --------------------------------------------------
       # GH #547: the agent declared MIT in its plugin header and GPLv2 or later

@@ -1,0 +1,96 @@
+# infra/urlmap.yaml — the production global external ALB url-map, as source.
+#
+# WHAT THIS IS. `wpmgr-urlmap` (global) in project `wpmgr-prod`. Until this file
+# existed the url-map lived ONLY in GCP: nothing in this repo described which
+# paths reach the API, so nothing could review a gap and nothing could fail on
+# one. That cost us twice in one day:
+#
+#   1. POST /mcp shipped, deployed, and was unreachable. The API mounted it; the
+#      url-map did not route it, so it fell to `defaultService` and the web SPA
+#      answered it — 200 text/html, which reads as "something answered".
+#   2. The OAuth discovery documents (PR #589) would have done exactly the same
+#      thing: three root-mounted paths, no path rule, answered by the SPA.
+#
+# This file is the DESIRED state, not a snapshot. It is the live export plus the
+# three /.well-known paths from #589, which are not applied to GCP yet.
+#
+# APPLY IT (nobody has; do this as part of the next deploy):
+#   gcloud compute url-maps import wpmgr-urlmap --global \
+#     --source=infra/urlmap.yaml --project=wpmgr-prod
+#
+# `fingerprint:` IS DELIBERATELY ABSENT. `gcloud compute url-maps export` emits
+# one; it is an optimistic-locking token that changes on every single update, so
+# a committed fingerprint is stale the moment anyone applies anything and every
+# later diff is noise. `import` fetches the current one when the file omits it.
+# scripts/check-urlmap-drift.sh strips it from the live side before comparing.
+#
+# THE GUARD. scripts/check-urlmap-routes.sh proves every path the API actually
+# mounts is covered by a path rule below. It needs no cloud credentials and runs
+# on every PR. It derives the route list from the real Gin engine, never from a
+# hand-kept list, because a hand-kept list is the thing that drifts.
+#
+# BACKENDS. wpmgr-bes-api and wpmgr-bes-web are serverless NEGs onto Cloud Run
+# in asia-south1. wpmgr-api runs with ingress=internal-and-cloud-load-balancing,
+# so this url-map is the ONLY path into the API: a path missing from the rules
+# below is not slow or degraded, it is unreachable. The TLS cert wpmgr-cert-www
+# is MANAGED, so there is no ACME HTTP-01 challenge path to preserve here.
+
+defaultService: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-web
+name: wpmgr-urlmap
+hostRules:
+- hosts:
+  - app.oscod.dev
+  - manage.wpmgr.app
+  pathMatcher: main
+- hosts:
+  - wpmgr.app
+  pathMatcher: landing
+- hosts:
+  - www.wpmgr.app
+  pathMatcher: www-redirect
+pathMatchers:
+- defaultService: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-web
+  name: main
+  pathRules:
+  # Long-lived SSE streams. Same backend as everything else below; this rule is
+  # kept separate and FIRST because it is the seam where a streaming-specific
+  # backend service (different timeout / no response buffering) would be
+  # attached without touching the general API rule.
+  - paths:
+    - /api/v1/backups/*/events
+    - /api/v1/updates/*/events
+    service: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-api
+  # Everything the API serves. Anything mounted by apps/api that is not matched
+  # here falls through to defaultService above and is answered by the web SPA.
+  - paths:
+    - /api/*
+    - /agent/*
+    - /auth/*
+    - /enroll
+    - /enroll/*
+    - /healthz
+    - /readyz
+    - /metrics
+    - /rum
+    - /rum/*
+    - /mcp
+    - /webhooks/*
+    # RFC 8414 / RFC 9728 OAuth discovery for the MCP server (PR #589).
+    # Root-mounted on the Gin engine by internal/mcp/discovery.go's Register,
+    # NOT under /api/*, because a GUI MCP client fetches these before it holds
+    # any credential and has no field in which to be told a different prefix.
+    # All three are EXACT paths: an exact rule does not cover its own subpaths,
+    # which is why the /mcp form below is listed separately from its parent.
+    - /.well-known/oauth-authorization-server
+    - /.well-known/oauth-protected-resource
+    # The RFC 9728 path-inserted form. MCP 2025-11-25 clients try this FIRST,
+    # before the bare /.well-known/oauth-protected-resource above.
+    - /.well-known/oauth-protected-resource/mcp
+    service: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-api
+- defaultService: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-marketing
+  name: landing
+- defaultUrlRedirect:
+    hostRedirect: wpmgr.app
+    redirectResponseCode: MOVED_PERMANENTLY_DEFAULT
+    stripQuery: false
+  name: www-redirect
