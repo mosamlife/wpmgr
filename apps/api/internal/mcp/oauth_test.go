@@ -100,6 +100,16 @@ type fakeStore struct {
 	// coerced into a string.
 	identityCalls []recordedIdentity
 
+	// touchErr forces the activity stamp to fail, which the transport must
+	// surface as a REFUSED request rather than serve the tool anyway: an
+	// unrecorded use is indistinguishable from no use at all once
+	// idle_expire_after_days starts reading last_used_at.
+	touchErr error
+	// touchCalls records every TouchActivity argument set, so a test can assert
+	// the stamp happened, happened on the right ids, and did NOT happen on the
+	// methods that must not refresh an idle deadline.
+	touchCalls []touchedActivity
+
 	// sites is what ListSitesForRead returns; sitesMore is its page-bound
 	// overflow flag; sitesErr forces the read to fail.
 	sites     []sqlc.ListSitesRow
@@ -314,6 +324,30 @@ func (f *fakeStore) RecordClientIdentity(
 		Name: name, Version: version, ProtocolVersion: protocolVersion,
 	})
 	return f.identityErr
+}
+
+// touchedActivity is one TouchActivity call, recorded with all three ids so a
+// test can assert the stamp reached the grant AND the token, and reached them
+// under the tenant the request resolved to.
+type touchedActivity struct {
+	TenantID uuid.UUID
+	GrantID  uuid.UUID
+	TokenID  uuid.UUID
+}
+
+func (f *fakeStore) TouchActivity(
+	_ context.Context, tenantID, grantID, tokenID uuid.UUID,
+) (time.Time, error) {
+	f.note("TouchActivity")
+	f.touchCalls = append(f.touchCalls, touchedActivity{
+		TenantID: tenantID, GrantID: grantID, TokenID: tokenID,
+	})
+	if f.touchErr != nil {
+		// The zero time.Time goes back WITH the error, so a caller that ignores
+		// the error and uses the stamp gets year 1 rather than a plausible one.
+		return time.Time{}, f.touchErr
+	}
+	return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), nil
 }
 
 func (f *fakeStore) ListSitesForRead(_ context.Context, _ uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
@@ -761,8 +795,10 @@ func TestAuthenticate_RevocationBitesOnTheNextRequest(t *testing.T) {
 		recheck: sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow{
 			GrantID: tok.GrantID, GrantStatus: "active",
 			SiteScopeMode: "all", TokenID: tok.ID, TokenStatus: "active",
-			TokenExpiresAt: tok.ExpiresAt,
-			Authorized:     true,
+			TokenExpiresAt:    tok.ExpiresAt,
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
+			Authorized:        true,
 		},
 		scopeSites: []uuid.UUID{siteID},
 	}
@@ -841,7 +877,10 @@ func TestAuthenticate_EmptyResolvedScopeGrantsNoSites(t *testing.T) {
 			GrantID: tok.GrantID, GrantStatus: "active",
 			SiteScopeMode: "tags", ScopeTagIds: []uuid.UUID{uuid.New()},
 			TokenID: tok.ID, TokenStatus: "active",
-			TokenExpiresAt: tok.ExpiresAt, Authorized: true,
+			TokenExpiresAt:    tok.ExpiresAt,
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
+			Authorized:        true,
 		},
 		scopeSites: nil, // the tag matched no site
 	}

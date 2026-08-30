@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,23 @@ type Store interface {
 	// identity on the grant. protocolVersion is a *string and NOT a string so
 	// that "sent no header" survives as NULL -- see the method on Repo.
 	RecordClientIdentity(ctx context.Context, tenantID, grantID uuid.UUID, name, version string, protocolVersion *string) error
+
+	// TouchActivity stamps last_used_at on the grant AND on the token that
+	// carried the request, in ONE transaction.
+	//
+	// IT TAKES BOTH IDS AND WRITES BOTH ROWS BECAUSE THEY ANSWER DIFFERENT
+	// QUESTIONS AND MUST NOT DISAGREE. mcp_grants.last_used_at is what the
+	// connections list renders and what the idle-expiry predicate reads;
+	// mcp_connection_tokens.last_used_at is what tells an operator mid-rotation
+	// which of two live tokens is still in use. A grant stamped without its
+	// token would make the rotation UI claim a token nobody has retired is
+	// dead.
+	//
+	// It returns the stamped instant rather than nothing, so a caller can
+	// assert the write happened instead of trusting a nil error over a query
+	// that matched no row -- both underlying statements are :one for that
+	// reason, and pgx.ErrNoRows here means the row was not visible.
+	TouchActivity(ctx context.Context, tenantID, grantID, tokenID uuid.UUID) (time.Time, error)
 
 	// ListSitesForRead reads one bounded page of the tenant's sites for the
 	// list_sites tool. It returns the rows AND whether the bound was reached
@@ -404,6 +422,52 @@ func (r *Repo) RecordClientIdentity(
 		}
 		return nil
 	})
+}
+
+// TouchActivity stamps last_used_at on the grant and on its token.
+//
+// IT RUNS InTenantTx, NEVER THE TOKEN-LOOKUP TRANSACTION THAT JUST RESOLVED
+// THIS TOKEN. mcp_connection_tokens_lookup is FOR SELECT, so an UPDATE inside
+// that scope matches zero rows and reports success -- the same silent zero-row
+// write both queries' own comments warn about. That is also why both are :one:
+// a stamp that hit nothing is pgx.ErrNoRows here rather than a nil error over a
+// column that never moved.
+//
+// BOTH WRITES ARE IN ONE TRANSACTION so the two stamps cannot disagree about
+// whether this request happened.
+//
+// The returned instant comes from the GRANT's RETURNING clause, not from the Go
+// clock: now() is evaluated by the database, and reading it back is what makes
+// "the row moved" provable rather than assumed. LastUsedAt is checked for
+// validity because a NULL returned by an UPDATE that sets the column to now()
+// would mean the write did not land, and reporting that as a zero time.Time
+// would hand the caller a stamp from year 1 that reads as success.
+func (r *Repo) TouchActivity(ctx context.Context, tenantID, grantID, tokenID uuid.UUID) (time.Time, error) {
+	var stamped time.Time
+	err := r.pool.InTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		q := sqlc.New(tx)
+
+		grantRow, err := q.TouchMCPGrantInTenantTx(ctx,
+			sqlc.TouchMCPGrantInTenantTxParams{TenantID: tenantID, ID: grantID})
+		if err != nil {
+			return fmt.Errorf("touch mcp grant: %w", err)
+		}
+		if !grantRow.LastUsedAt.Valid {
+			return fmt.Errorf("touch mcp grant: last_used_at came back NULL from an UPDATE that sets it to now()")
+		}
+
+		if _, err := q.TouchMCPConnectionTokenInTenantTx(ctx,
+			sqlc.TouchMCPConnectionTokenInTenantTxParams{TenantID: tenantID, ID: tokenID}); err != nil {
+			return fmt.Errorf("touch mcp connection token: %w", err)
+		}
+
+		stamped = grantRow.LastUsedAt.Time
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return stamped, nil
 }
 
 // ListSitesForRead reads one bounded page of the tenant's sites inside

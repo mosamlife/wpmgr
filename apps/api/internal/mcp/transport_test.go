@@ -54,6 +54,14 @@ func liveGrantStore(siteIDs ...uuid.UUID) *fakeStore {
 			Authorized: true,
 			GrantID:    uuid.New(),
 			TokenID:    uuid.New(),
+			// m127: the capability set is READ FROM THIS ROW, so a fixture that
+			// omits it models a grant holding NO capability and every request
+			// against it is refused. That is the honest default -- leaving the
+			// field zero here and having the transport work anyway would mean
+			// the service was still computing capabilities instead of reading
+			// them.
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 		},
 		scopeSites: siteIDs,
 	}

@@ -325,6 +325,13 @@ func TestMCPAuditEvents_RolledBackGrantCreationLeavesNoAuditRow_AsAppRole(t *tes
 		SiteScopeMode: "all",
 		ScopeTagIds:   []uuid.UUID{},
 		ScopeSiteIds:  []uuid.UUID{},
+		// m127: both NOT NULL with no default. Supplied so the rollback this
+		// test asserts is the SIMULATED audit failure and not a 23502 that
+		// would roll the same transaction back for the wrong reason -- which
+		// would make the assertion pass while proving nothing.
+		Capabilities:        []string{"mcp.sites.read"},
+		ExpiresAt:           time.Now().UTC().Add(90 * 24 * time.Hour),
+		IdleExpireAfterDays: nil,
 	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 		capturedGrantID = grantID
 		return sqlc.CreateMCPAuthorizationCodeParams{
