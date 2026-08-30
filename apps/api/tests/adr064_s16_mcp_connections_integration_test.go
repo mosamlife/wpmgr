@@ -335,8 +335,14 @@ func TestMCPConnectionsListThroughMountedRouteAsAppRole(t *testing.T) {
 		t.Errorf("protocol.version = %q after a header-less connect; the client "+
 			"sent nothing and the negotiated floor is not its claim", *after.Protocol.Version)
 	}
+	// t.Fatal AND NOT t.Error, because the t.Logf at the end of this function
+	// dereferences after.ReportedName. On t.Error execution continues, the
+	// deref panics, and the panic is what gets reported -- so the one thing the
+	// reader needs, WHICH assertion failed, is the one thing buried. Fail here
+	// or the failure lies about itself.
 	if after.ReportedName == nil || *after.ReportedName != "Claude Desktop" {
-		t.Error("the client's self-reported name did not survive to the list")
+		t.Fatalf("the client's self-reported name did not survive to the list: %v",
+			after.ReportedName)
 	}
 	// The operator's name is a different assertion and must not have been
 	// overwritten by the client's.
