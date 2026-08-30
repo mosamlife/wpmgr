@@ -585,12 +585,50 @@ const MINTED = {
   capabilities: ["read_fleet", "propose_changes"],
 };
 
-/** Client and method picked, fleet loaded, sitting at the mint button. */
+/** The site checkboxes inside step 3's picker. Throws rather than returning []. */
+function pickerBoxes(): HTMLElement[] {
+  return within(screen.getByTestId("site-step-picker")).getAllByRole("checkbox");
+}
+
+/**
+ * Client and method picked, fleet loaded, ONE SITE PICKED, sitting at the mint
+ * button.
+ *
+ * The site is picked deliberately and is not scaffolding. The wizard opens on
+ * mode 'list' with nothing selected, and ValidateSiteScopeRequest
+ * (apps/api/internal/mcp/scope.go) refuses mode 'list' with no site ids, so a
+ * mint from the opening state is a 400 rather than a token. These tests are
+ * about what happens to a token that WAS minted, which needs a scope the
+ * server would actually accept.
+ */
 async function reachMintButton() {
   renderWizard();
   await pickClient("Cursor");
   fireEvent.click(authCard("token"));
+  await screen.findByTestId("site-step-count");
+  fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+  fireEvent.click(pickerBoxes()[0]!);
   return screen.findByRole("button", { name: /generate connection token/i });
+}
+
+/**
+ * A mint whose response is held open until the returned `release` is called.
+ *
+ * Every in-flight test uses this rather than racing a resolved stub. A test
+ * that assumed the operator acted before the response landed would pass
+ * against a component that does the wrong thing, because the wrong thing would
+ * never get the chance to happen.
+ */
+function heldMint(body: unknown = MINTED, status = 201) {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  stubMintFetch(async () => {
+    await held;
+    return jsonResponse(body, status);
+  });
+  return { release: () => release() };
 }
 
 afterEach(() => {
@@ -615,7 +653,22 @@ describe("minting a connection token", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("clears the reveal the moment an input it was minted for changes", async () => {
+  // -------------------------------------------------------------------------
+  // A MINTED TOKEN IS NEVER LOST. Three routes reached the same outcome: a
+  // live organisation credential that authenticates, whose plaintext was shown
+  // to nobody, that nobody knows to revoke because nobody knows it exists.
+  // Each is pinned separately, because they are three different mechanisms and
+  // a single test would let two of them come back.
+  // -------------------------------------------------------------------------
+
+  it("keeps a revealed token when an input it was minted for changes", async () => {
+    // THE TRIPWIRE THAT USED TO POINT THE OTHER WAY. This test previously
+    // asserted that editing the name CLEARED the reveal, which was written to
+    // stop a token being shown beside a configuration it was not minted for.
+    // MintedReveal made that unconstructible -- the reveal carries the scope
+    // and client the request was sent with -- and what the clearing did after
+    // that was destroy the only copy of a live credential on one keystroke.
+    // The property being pinned is the inverse, and with the same force.
     loadedFleet(3);
     stubMintFetch(() => jsonResponse(MINTED, 201));
 
@@ -625,12 +678,102 @@ describe("minting a connection token", () => {
     fireEvent.change(screen.getByLabelText(/name this connection/i), {
       target: { value: "Fleet manager, renamed" },
     });
+    // And the scope too: the other half of what configKey watched.
+    fireEvent.click(pickerBoxes()[1]!);
+    expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(/2 sites/i);
 
-    expect(screen.queryByText(/this is the only time this token is shown/i)).not.toBeInTheDocument();
+    expect(screen.getByText(MINTED.token)).toBeInTheDocument();
+    expect(screen.getByText(/this is the only time this token is shown/i)).toBeInTheDocument();
+    // Still labelled with what it was minted FOR, not with the newer scope --
+    // surviving the edit must not mean drifting into describing it.
+    expect(screen.getByText(/Capabilities:/)).toHaveTextContent(/1 site, listed below/i);
+  });
+
+  it("gives up the token only when the operator says they have saved it", async () => {
+    // The over-fire case for the test above. A reveal that can never be
+    // dismissed is its own defect: the operator cannot mint a second token and
+    // the screen is stuck.
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(MINTED.token);
+
+    fireEvent.click(screen.getByRole("button", { name: /i have saved this token/i }));
+
     expect(screen.queryByText(MINTED.token)).not.toBeInTheDocument();
     expect(
       await screen.findByRole("button", { name: /generate connection token/i }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the token on screen after the step that minted it is gone", async () => {
+    // THE UNMOUNT DEFECT, PINNED AT ITS ROOT. The reveal used to live in
+    // TokenMintPanel, which step 4 renders only for method 'token'. Anything
+    // that unmounted that panel took the token with it. Switching to OAuth
+    // here unmounts the panel completely -- step 4 renders NextSteps instead --
+    // and the token must still be on screen, because a credential the server
+    // has already created cannot be un-created by a click.
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(MINTED.token);
+
+    fireEvent.click(authCard("oauth"));
+
+    // The panel is genuinely gone, so this is not passing by nothing happening.
+    expect(await screen.findByText(/start the connection in cursor/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /generate connection token/i })).toBeNull();
+    // And the token survived it.
+    expect(screen.getByText(MINTED.token)).toBeInTheDocument();
+    expect(screen.getByText(/this is the only time this token is shown/i)).toBeInTheDocument();
+  });
+
+  it("refuses to unmount the panel while its request is still in the air", async () => {
+    // THE OUTER LAYER. Lifting the state is what makes the bad outcome
+    // impossible; this is what stops the operator walking into it in the first
+    // place. Both are here because a guard that depends on the operator not
+    // clicking during a round trip is not a guard, and state that survives an
+    // unmount is not a reason to offer the unmount.
+    loadedFleet(3);
+    const { release } = heldMint();
+
+    fireEvent.click(await reachMintButton());
+    // IN FLIGHT, AND PROVABLY SO. Every assertion below is vacuous if the
+    // response has already landed.
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+
+    expect(authCard("oauth")).toBeDisabled();
+    expect(authCard("token")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeDisabled();
+    // Said out loud, not silently greyed out.
+    expect(screen.getByRole("status")).toHaveTextContent(/strand a live credential nobody holds/i);
+
+    // Clicking anyway changes nothing, which is what "refuses" has to mean.
+    fireEvent.click(authCard("oauth"));
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+
+    release();
+
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
+    // And the controls come back once nothing is outstanding -- the lock is
+    // for the duration of the request, not for the rest of the session.
+    expect(authCard("oauth")).toBeEnabled();
+    expect(screen.getByRole("button", { name: /claude desktop/i })).toBeEnabled();
+  });
+
+  it("names the credential it just made, so a lost plaintext is still revocable", async () => {
+    // If anything goes wrong between this screen and the operator's password
+    // manager, the prefix is what lets them find and kill this exact
+    // credential. Without it, "revoke the one I just made" is a guess.
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+
+    await screen.findByText(MINTED.token);
+    expect(screen.getByText(MINTED.token_prefix)).toBeInTheDocument();
   });
 
   it("describes the scope the token was minted FOR when the scope changed mid-flight", async () => {
@@ -737,6 +880,103 @@ describe("minting a connection token", () => {
 
     expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+  });
+
+  // -------------------------------------------------------------------------
+  // THE PAYLOAD THE SERVER WOULD REFUSE IS NEVER SENT. ValidateSiteScopeRequest
+  // (apps/api/internal/mcp/scope.go lines 168-200) refuses mode 'tags' with no
+  // tag ids, mode 'list' with no site ids, and mode 'all' that carries either.
+  // The gate on this screen asked isScopeApprovable instead, which holds an
+  // empty scope to be a working state, so the button was enabled for requests
+  // the server answers with a 400 the operator can do nothing about.
+  // -------------------------------------------------------------------------
+
+  it("refuses to mint from the state the wizard opens in, with a local remedy", async () => {
+    // Reachable by doing nothing: the wizard opens on mode 'list' with no
+    // sites picked, so this was pick a client, pick the token method, press
+    // the button, get a 400.
+    loadedFleet(3);
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+
+    const button = await screen.findByRole("button", { name: /generate connection token/i });
+    expect(button).toBeDisabled();
+    expect(screen.getByText(/no site is picked/i)).toHaveTextContent(
+      /pick at least one site in step 3, or switch that step to all sites/i,
+    );
+    // The remedy is the operator's own, not "the server said no".
+    expect(screen.queryByText(/the server refused this request/i)).toBeNull();
+  });
+
+  it("refuses a by-tag scope with no tag picked, distinctly from an unreadable registry", async () => {
+    // The registry HAS loaded and does contain tags. Nothing is unresolved
+    // here; the operator has simply picked none, and telling them to go and
+    // fix a tag registry that is working is a remedy they cannot follow.
+    loadedFleet(3, () => ["prod"]);
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
+    );
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+
+    expect(
+      await screen.findByRole("button", { name: /generate connection token/i }),
+    ).toBeDisabled();
+    expect(screen.getByText(/no tag is picked/i)).toBeInTheDocument();
+    expect(screen.queryByText(/tag scope could not be resolved/i)).toBeNull();
+  });
+
+  it("sends no site ids under 'all sites', even when sites were picked first", async () => {
+    // Step 3 KEEPS the other mode's selection when the segmented control is
+    // flipped, on purpose, so a mode changed by accident does not throw away
+    // the other answer. That is right for the picker and wrong for the wire:
+    // mode 'all' carrying site ids is refused outright.
+    loadedFleet(3);
+    const requestBodies: Record<string, unknown>[] = [];
+    stubMintFetch((init) => {
+      requestBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return jsonResponse({ ...MINTED, site_scope_mode: "all" }, 201);
+    });
+
+    const button = await reachMintButton();
+    expect(button).toBeEnabled();
+    fireEvent.click(screen.getByRole("radio", { name: /all sites/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+
+    await screen.findByText(MINTED.token);
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]?.site_scope_mode).toBe("all");
+    expect(requestBodies[0]?.scope_site_ids).toEqual([]);
+    expect(requestBodies[0]?.scope_tag_ids).toEqual([]);
+  });
+
+  it("sends no site ids under 'by tag', even when sites were picked first", async () => {
+    // The same leak in the other direction: mode 'tags' must not also name
+    // sites, and the picked site ids were going out beside the tag ids.
+    loadedFleet(3, () => ["prod"]);
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
+    );
+    const requestBodies: Record<string, unknown>[] = [];
+    stubMintFetch((init) => {
+      requestBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return jsonResponse({ ...MINTED, site_scope_mode: "tags" }, 201);
+    });
+
+    await reachMintButton();
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+    fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+
+    await screen.findByText(MINTED.token);
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]?.scope_tag_ids).toEqual(["tag-uuid-1"]);
+    expect(requestBodies[0]?.scope_site_ids).toEqual([]);
   });
 
   it("renders a network failure as a network failure, never a confident empty state", async () => {
