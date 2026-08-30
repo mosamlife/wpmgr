@@ -1101,9 +1101,20 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// answers every tools/call with "not available" and every tools/list with
 	// nothing, which is precisely the half-working connection m127 DECISION 3
 	// says this boundary must not be able to produce.
+	//
+	// IT IS 403, NOT 401, and the distinction is the client's control flow
+	// rather than a matter of taste. Authenticate's refusals reach
+	// TransportHandler.writeUnauthorized, and an MCP client that receives 401
+	// re-runs the OAuth handshake -- which cannot change a stored capability
+	// set, so the client loops and the operator is sent to rotate a credential
+	// that was never the problem. An empty capabilities column is a
+	// CONFIGURATION state: the credential is valid and the grant is not
+	// permitted. That is what 403 says, and it is what every other producer of
+	// ErrCodeCapabilityUnmapped already returns (all three in
+	// OrgDefaultCapabilities).
 	stored := capabilitiesFromColumn(chk.GrantCapabilities)
 	if len(stored) == 0 {
-		return AuthorizedRequest{}, domain.Unauthorized(ErrCodeCapabilityUnmapped,
+		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no capability, so it can reach no tool")
 	}
 
