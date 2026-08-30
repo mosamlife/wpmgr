@@ -138,16 +138,32 @@ describe("ConsentScreen — what it can do and what it cannot", () => {
   });
 });
 
-describe("ConsentScreen — an empty site scope is not everything", () => {
-  it("starts with nothing selected and cannot be approved", () => {
+describe("ConsentScreen — an empty site scope is a working state, not an error (2026-08-23 revision)", () => {
+  it("starts with nothing selected, states the consequence, and CAN be approved", () => {
+    // Superseded framing (pre-2026-08-23): this blocked approval. The current
+    // wireframe rules an empty allowlist mints a credential that reads and
+    // proposes nothing, decided later -- a working state, not an error.
     renderWithProviders(<ConsentScreen {...props()} />);
-    expect(screen.getByTestId("consent-scope-summary").textContent).toMatch(
-      /No sites are selected yet/i,
-    );
-    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    const summary = screen.getByTestId("consent-scope-summary").textContent ?? "";
+    expect(summary).toMatch(/No sites are selected/i);
+    expect(summary).toMatch(/read nothing and propose nothing/i);
+    expect(summary).toMatch(/working state, not an error/i);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("a tag matching no site says so, never that it covers everything", () => {
+  it("submits an empty list-mode scope when approved with nothing selected", () => {
+    const onApprove = vi.fn();
+    renderWithProviders(<ConsentScreen {...props({ onApprove })} />);
+    fireEvent.submit(screen.getByTestId("consent-approve").closest("form")!);
+    expect(onApprove).toHaveBeenCalledWith({
+      name: "Claude Desktop",
+      siteScopeMode: "list",
+      scopeTagIds: [],
+      scopeSiteIds: [],
+    });
+  });
+
+  it("a tag matching no site says so, states the consequence, and CAN be approved", () => {
     renderWithProviders(
       <ConsentScreen
         {...props({ tags: [{ id: "t9", name: "archived" }], tagsBySiteId: { s1: [], s2: [] } })}
@@ -157,9 +173,10 @@ describe("ConsentScreen — an empty site scope is not everything", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /archived/i }));
     const summary = screen.getByTestId("consent-scope-summary");
     expect(summary.textContent).toMatch(/matches no sites/i);
-    expect(summary.textContent).toMatch(/read nothing/i);
+    expect(summary.textContent).toMatch(/read nothing and propose nothing/i);
+    expect(summary.textContent).toMatch(/working state, not an error/i);
     expect(screen.queryByTestId("consent-scope-sites")).toBeNull();
-    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("consent-approve").hasAttribute("disabled")).toBe(false);
   });
 
   it("a failed site load blocks approval instead of resolving to zero or to all", () => {

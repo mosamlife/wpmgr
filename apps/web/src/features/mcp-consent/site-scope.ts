@@ -240,9 +240,13 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
       return `${siteCount(scope.sites.length)} ${verb} these tags today, listed below. ${future}`;
     }
     case "none":
+      // 2026-08-23 revision (wireframes.html:3559): an empty allowlist "is a
+      // working state, not an error -- it is how you mint a credential now and
+      // decide its reach later." Both branches say that consequence plainly
+      // rather than treating the choice as incomplete.
       return scope.because === "no-selection"
-        ? "No sites are selected yet. Choose what this client may read before approving."
-        : "This selection matches no sites, so this connection would be able to read nothing. That is not the same as covering every site.";
+        ? "No sites are selected. That is a working state, not an error: this connection will read nothing and propose nothing until you give it sites to cover, now or later."
+        : "This selection matches no sites, so this connection will read nothing and propose nothing right now. That is a working state, not an error: you can widen its scope later.";
     case "unresolved":
       return scope.because === "loading"
         ? "Working out which sites this covers."
@@ -253,11 +257,19 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
 /**
  * Whether a scope may be approved.
  *
- * `none` is refusable rather than blocked-with-a-warning: server-side, an empty
- * payload is unstorable for mode 'list' and a tag matching nothing resolves to
- * an empty set, so approving it creates a grant that reads nothing. Better to
- * say that on this screen than to mint a credential that silently does nothing.
- * `unresolved` is blocked because consenting to an unread set is not consent.
+ * 2026-08-23 revision (wireframes.html:3559): "A connection with an empty
+ * allowlist can read nothing and propose nothing. That is a working state, not
+ * an error -- it is how you mint a credential now and decide its reach later."
+ * `none` is therefore approvable, on equal footing with `all` and `sites`.
+ * Narrowing to nothing is not refused here because it is enforced where it
+ * actually matters: by which tools are registered for the connection
+ * (wireframes.html:1743, "narrowing is applied by unregistering the tool, not
+ * by denying it at call time"), not by a client-side gate on this screen. The
+ * older rule that blocked an empty allowlist (wireframes.html:1293) is
+ * superseded.
+ *
+ * `unresolved` is the only kind that still blocks. Consenting to a scope
+ * nobody has read is not consent, whether the read is pending or failed.
  *
  * A TRUNCATED LIST DOES NOT BLOCK. It is disclosed instead. Blocking would
  * refuse every organisation past the page size, and the operator choosing "every
@@ -265,5 +277,5 @@ export function describeSiteScope(scope: ResolvedSiteScope): string {
  * is a false count or a list that poses as the whole fleet.
  */
 export function isScopeApprovable(scope: ResolvedSiteScope): boolean {
-  return scope.kind === "all" || scope.kind === "sites";
+  return scope.kind !== "unresolved";
 }
