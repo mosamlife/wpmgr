@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 )
@@ -43,6 +44,11 @@ import (
 type fakeStore struct {
 	client   sqlc.McpOauthClient
 	clientOK bool
+
+	// grantPrincipal is the principal handed to CreateGrantWithCode, recorded
+	// so a test can assert the scope-carrying principal actually reaches the
+	// store rather than being flattened to a tenant id on the way down.
+	grantPrincipal db.ScopedPrincipal
 
 	// registerRows is what the :execrows INSERT reports. Defaults to 0, so a
 	// test that means "registration succeeds" must SAY 1 -- the honest default,
@@ -221,8 +227,15 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 	return sqlc.McpConnectionToken{ID: uuid.New(), TenantID: tok.TenantID, GrantID: tok.GrantID}, nil
 }
 
-func (f *fakeStore) CreateGrantWithCode(_ context.Context, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
+// CreateGrantWithCode records the principal it was handed. THIS FAKE CANNOT
+// PROVE THE RLS -- it runs no transaction and evaluates no policy, so it is
+// blind to whether app.site_scope was set. What it can pin is the plumbing:
+// that the principal reaches the store at all, so a refactor which narrows
+// ApprovalRequest back to a bare tenant id fails here rather than silently in
+// production. The policy itself is proved in tests/, as wpmgr_app.
+func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	f.note("CreateGrantWithCode")
+	f.grantPrincipal = principal
 	id := uuid.New()
 	cp := mk(id)
 	return sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name},

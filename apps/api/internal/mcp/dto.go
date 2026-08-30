@@ -156,6 +156,10 @@ func oauthError(err error) (int, oauthErrorDTO) {
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
 	case ErrCodeInvalidSiteScope, ErrCodeInvalidRequest:
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
+	case ErrCodeAccessDenied:
+		// 403, not the default 400: the request is well-formed and this
+		// principal is simply not permitted to authorize an org-level grant.
+		return http.StatusForbidden, oauthErrorDTO{Err: "access_denied", ErrDesc: domErr.Message}
 	default:
 		return http.StatusBadRequest, oauthErrorDTO{Err: "invalid_request", ErrDesc: domErr.Message}
 	}

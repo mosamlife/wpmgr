@@ -45,6 +45,7 @@ import (
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
 	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
+	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 	"github.com/mosamlife/wpmgr/apps/api/internal/site"
 )
@@ -73,7 +74,10 @@ func mcpSeedGrant(t *testing.T, repo *mcp.Repo, tenantID uuid.UUID, mode string,
 	if siteIDs == nil {
 		siteIDs = []uuid.UUID{}
 	}
-	grant, _, err := repo.CreateGrantWithCode(ctx, sqlc.CreateMCPGrantParams{
+	// An ORG-scoped principal: seeding a grant is what an operator does, and it
+	// is the only scope the consent route now admits.
+	approver := domain.Principal{TenantID: tenantID, Scope: domain.ScopeOrg}
+	grant, _, err := repo.CreateGrantWithCode(ctx, approver, sqlc.CreateMCPGrantParams{
 		TenantID:      tenantID,
 		Name:          "test grant",
 		Status:        "active",
