@@ -1,72 +1,200 @@
-import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
 
 import { Route } from "./index";
 import { MCP_TRANSPORT_PATH } from "@/features/ai-connections/client-table";
+import { CONNECTIONS_PATH } from "@/features/ai-connections/use-ai-connections";
 
 // FOUND BY THE MUTATION SWEEP. This route had no test at all, so the one
-// decision it makes -- pass `unavailable` to the list rather than `empty` --
-// was pinned by nothing. The sweep's "red" for that mutation was vitest
-// exiting 1 on "No test files found", which is a guard finding nothing and
-// being scored as a catch: the exact failure mode this project calls its
-// signature defect, reproduced inside the tool checking for it.
+// decision it makes was pinned by nothing. The sweep's "red" for that mutation
+// was vitest exiting 1 on "No test files found" -- a guard finding nothing and
+// being scored as a catch, which is this project's signature defect reproduced
+// inside the tool checking for it.
 //
-// The component-level states are covered in
-// features/ai-connections/connections-list.test.tsx. What is covered HERE is
-// the wiring: which state this page actually hands down.
+// Now that /ai does a REAL READ, the wiring is what this file covers: which
+// state the page hands down for each answer the endpoint can give. The states
+// themselves are covered in features/ai-connections/connections-list.test.tsx,
+// and the wire mapping in use-ai-connections.test.ts.
+//
+// The fetch is stubbed at the network boundary rather than the hook being
+// mocked, so the real queryFn, the real zod parse and the real state mapping
+// all run. A hook mock here would assert that the component renders whatever it
+// is handed, which is not the question.
 
 const AiPage = Route.options.component!;
+
+/**
+ * Resolve a fetch input to its URL.
+ *
+ * String(input) would stringify a Request object as "[object Object]" and the
+ * URL assertions below would then pass or fail for the wrong reason. Every
+ * branch is handled explicitly.
+ */
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function stubFetch(impl: (url: string) => Response | Promise<Response>) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => Promise.resolve(impl(urlOf(input)))),
+  );
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 function renderPage() {
   return renderWithProviders(<AiPage />, { withRouter: true, initialPath: "/ai" });
 }
 
-describe("/ai", () => {
-  it("says we cannot list connections yet, and never that the operator has none", async () => {
-    renderPage();
-    expect(await screen.findByTestId("connections-unavailable")).toBeInTheDocument();
-    expect(screen.getByText(/cannot list your connections yet/i)).toBeInTheDocument();
+const ROW = {
+  id: "11111111-1111-1111-1111-111111111111",
+  name: "Fleet manager",
+  status: "active",
+  site_scope_mode: "all",
+  scopes: ["mcp:read"],
+  created_at: "2026-08-01T00:00:00Z",
+  reported_client_name: "claude-code",
+  reported_client_version: "2.1.0",
+  protocol: { state: "recognised", version: "2025-11-25" },
+  last_used_at: "2026-08-29T10:00:00Z",
+  revoked_at: null,
+};
 
-    // The sentence that would be a claim about the operator's account made out
-    // of a gap in our own API.
-    expect(screen.queryByText(/no ai clients are connected/i)).not.toBeInTheDocument();
-    expect(screen.queryByTestId("connections-empty")).not.toBeInTheDocument();
-    // Nor a failure, which would send someone to retry something that cannot
-    // succeed.
-    expect(screen.queryByText(/could not load your ai connections/i)).not.toBeInTheDocument();
+beforeEach(() => vi.clearAllMocks());
+afterEach(() => vi.unstubAllGlobals());
+
+describe("/ai reads the real connections endpoint", () => {
+  it("asks the path the API actually mounts", async () => {
+    const seen: string[] = [];
+    stubFetch((url) => {
+      seen.push(url);
+      return json({ connections: [] });
+    });
+    renderPage();
+    await screen.findByTestId("connections-empty");
+    // apps/api/internal/mcp/discovery.go: ConnectionsPath = "/api/v1" +
+    // "/mcp/connections". A wrong path here would 404 and render as a failure,
+    // which is at least honest, but it would never show a connection.
+    expect(seen).toContain(CONNECTIONS_PATH);
+    expect(CONNECTIONS_PATH).toBe("/api/v1/mcp/connections");
   });
 
-  it("names the missing endpoint as the reason rather than staying vague", async () => {
+  it("renders the connections it was given", async () => {
+    stubFetch(() => json({ connections: [ROW] }));
     renderPage();
-    await screen.findByTestId("connections-unavailable");
-    expect(screen.getByText(/does not expose an endpoint/i)).toBeInTheDocument();
+    expect(await screen.findByText("Fleet manager")).toBeInTheDocument();
+    expect(screen.getByText(/claude-code 2\.1\.0/)).toBeInTheDocument();
+  });
+
+  it("renders a failed load as a failure, never as an empty list", async () => {
+    // The whole reason this page exists in the shape it does.
+    stubFetch(() => json({ code: "internal", message: "the server said 500" }, 500));
+    renderPage();
+    expect(await screen.findByText(/could not load your ai connections/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no ai clients are connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connections-empty")).not.toBeInTheDocument();
+  });
+
+  it("renders a 403 with the reason, not as an empty org", async () => {
+    // The route carries RequirePermission(PermAPIKeyRead), which refuses any
+    // site-constrained principal outright, so this is a real expected answer
+    // rather than a hypothetical.
+    stubFetch(() => json({ code: "forbidden", message: "" }, 403));
+    renderPage();
+    expect(await screen.findByText(/could not load your ai connections/i)).toBeInTheDocument();
+    expect(screen.getByText(/needs an admin/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("connections-empty")).not.toBeInTheDocument();
+  });
+
+  it("renders a malformed 200 as a failure rather than a confident list", async () => {
+    // A 200 whose body is not the promised shape. Rendering it half-parsed
+    // would be a partial list shown as a complete one.
+    stubFetch(() => json({ connections: [{ id: "x" }] }));
+    renderPage();
+    expect(await screen.findByText(/could not load your ai connections/i)).toBeInTheDocument();
+  });
+
+  it("renders a genuinely empty organisation as empty", async () => {
+    // The over-fire half: correct empty work must still say "none".
+    stubFetch(() => json({ connections: [] }));
+    renderPage();
+    expect(await screen.findByTestId("connections-empty")).toBeInTheDocument();
+    expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+  });
+
+  it("no longer claims the feature does not exist", async () => {
+    // It was hardcoded to `unavailable` while there was no endpoint. Shipping
+    // that now would tell an operator the feature is missing while the endpoint
+    // sits there working.
+    stubFetch(() => json({ connections: [ROW] }));
+    renderPage();
+    await screen.findByText("Fleet manager");
+    expect(screen.queryByTestId("connections-unavailable")).not.toBeInTheDocument();
+  });
+});
+
+describe("/ai's static surfaces", () => {
+  beforeEach(() => stubFetch(() => json({ connections: [] })));
+
+  it("states the self-hosted proxy requirement beside the endpoint", async () => {
+    renderPage();
+    await screen.findByTestId("connections-empty");
+    expect(screen.getByText(/reverse proxy must forward \/mcp to the API/i)).toBeInTheDocument();
   });
 
   it("publishes this deployment's endpoint, not a hardcoded host", async () => {
     renderPage();
-    await screen.findByTestId("connections-unavailable");
-    const expected = `${window.location.origin}${MCP_TRANSPORT_PATH}`;
-    expect(screen.getByText(expected)).toBeInTheDocument();
-  });
-
-  it("states the self-hosted proxy requirement beside the endpoint", async () => {
-    renderPage();
-    await screen.findByTestId("connections-unavailable");
-    // Deriving /mcp from the origin does not prove anything forwards it.
-    // infra/urlmap.yaml routes it on hosted; infra/nginx/nginx.conf and
-    // apps/web/vite.config.ts do not.
-    expect(screen.getByText(/reverse proxy must forward \/mcp to the API/i)).toBeInTheDocument();
+    await screen.findByTestId("connections-empty");
+    expect(
+      screen.getByText(`${window.location.origin}${MCP_TRANSPORT_PATH}`),
+    ).toBeInTheDocument();
   });
 
   it("offers a route into the wizard, which is how that page is reached at all", async () => {
     renderPage();
-    // /ai/connect is deliberately absent from the sidebar, so this link is its
-    // only entry point. If it goes, the wizard becomes unreachable in exactly
-    // the way the whole slice exists to fix.
+    await screen.findByTestId("connections-empty");
     const links = await screen.findAllByRole("link", { name: /connect an ai client/i });
     expect(links.length).toBeGreaterThanOrEqual(1);
     expect(links[0]).toHaveAttribute("href", "/ai/connect");
+  });
+});
+
+describe("revoke", () => {
+  it("says what revoking actually does, on the client's next request", async () => {
+    stubFetch(() => json({ connections: [ROW] }));
+    renderPage();
+    await screen.findByText("Fleet manager");
+    fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
+
+    // NOT "will no longer have access". The cascade kills the tokens and the
+    // grant is re-checked per request, so there is no expiry delay to imply.
+    await waitFor(() =>
+      expect(screen.getByText(/stops working on its/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/next request/i)).toBeInTheDocument();
+  });
+
+  it("does not revoke anything merely by opening the dialog", async () => {
+    const posts: string[] = [];
+    stubFetch((url) => {
+      if (url.includes("/revoke")) posts.push(url);
+      return json({ connections: [ROW] });
+    });
+    renderPage();
+    await screen.findByText("Fleet manager");
+    fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
+    await screen.findByText(/next request/i);
+    // Opening a destructive dialog must not perform the destructive thing.
+    expect(posts).toEqual([]);
   });
 });

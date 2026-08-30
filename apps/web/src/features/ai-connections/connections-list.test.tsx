@@ -29,6 +29,8 @@ const CONNECTED: AiConnection = {
   scopes: ["mcp:read"],
   status: "active",
   createdAt: "2026-08-01T00:00:00.000Z",
+  siteScopeMode: "all",
+  revokedAt: null,
 };
 
 /** The copy that must never appear over a failure. */
@@ -143,6 +145,34 @@ describe("a field the client did not send is rendered as absent", () => {
     expect(screen.getByText(/treated as 2025-03-26/i)).toBeInTheDocument();
     // The number it would have been coerced into must not appear on its own.
     expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
+  });
+
+  it("says a client has not connected yet, rather than that it sent no header", async () => {
+    // FOUR STATES, NOT THREE. This one was missing from the model until the
+    // endpoint existed. "Has never dialled in" and "dialled in and sent no
+    // header" are different facts about different things, and the server went
+    // out of its way not to flatten them into a nullable string.
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, protocolHeader: { kind: "never_connected" } }],
+    });
+    expect(await screen.findByText(/has not connected yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no protocol header sent/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
+  });
+
+  it("gives all four protocol states four different sentences", () => {
+    const floor = "2025-03-26";
+    const labels = [
+      protocolHeaderLabel({ kind: "never_connected" }, floor),
+      protocolHeaderLabel({ kind: "absent" }, floor),
+      protocolHeaderLabel({ kind: "recognised", version: "2025-11-25" }, floor),
+      protocolHeaderLabel({ kind: "unrecognised", version: "2025-11-25" }, floor),
+    ];
+    // Same version string in the last two on purpose: if the label ever stopped
+    // marking the unrecognised one, these two would collide and this fails.
+    expect(new Set(labels).size).toBe(4);
+    for (const l of labels) expect(l.trim().length).toBeGreaterThan(0);
   });
 
   it("distinguishes an unrecognised version from a recognised one", () => {

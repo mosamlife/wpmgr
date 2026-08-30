@@ -17,6 +17,12 @@
  * version is a claim the client never made.
  */
 export type ProtocolHeader =
+  // FOUR states, matching apps/api/internal/mcp/model.go ClientProtocolState
+  // exactly. This type carried three until the endpoint existed; the server
+  // distinguishes "has never connected at all" from "connected and sent no
+  // header", and folding the first into the second would report a client that
+  // has never dialled in as one that dialled in badly.
+  | { readonly kind: "never_connected" }
   | { readonly kind: "absent" }
   | { readonly kind: "recognised"; readonly version: string }
   | { readonly kind: "unrecognised"; readonly version: string };
@@ -32,7 +38,11 @@ export type LastUsed =
   | { readonly kind: "never" }
   | { readonly kind: "at"; readonly iso: string };
 
-export type ConnectionStatus = "active" | "paused" | "revoked";
+// Exactly the two values mcp_grants_status_check permits (model.go
+// GrantStatus). "paused" was in this type before the endpoint existed and is
+// removed: the server cannot return it, there is no endpoint to produce it, and
+// a status the API cannot emit is a branch that renders for no reason.
+export type ConnectionStatus = "active" | "revoked";
 
 export interface AiConnection {
   readonly id: string;
@@ -50,6 +60,10 @@ export interface AiConnection {
   readonly scopes: readonly string[];
   readonly status: ConnectionStatus;
   readonly createdAt: string;
+  /** all | tags | sites - which sites the grant covers. */
+  readonly siteScopeMode: string;
+  /** null means not revoked. Never inferred from status, and never a zero date. */
+  readonly revokedAt: string | null;
 }
 
 /**
@@ -107,6 +121,10 @@ export function connectionsState(input: {
 /** Human label for a protocol header, keeping absence visible as absence. */
 export function protocolHeaderLabel(header: ProtocolHeader, floorVersion: string): string {
   switch (header.kind) {
+    case "never_connected":
+      // NOT "no header". This client has never opened a session at all, so it
+      // has never had the chance to send one.
+      return "Has not connected yet";
     case "absent":
       // Not "unknown", not blank, and not the floor version on its own: the
       // client sent nothing, and we treat that as the floor. Both halves are
