@@ -81,7 +81,10 @@ func s7GrantWithBearer(
 	codePlain := "s7-code-" + uuid.NewString()
 	codeSum := sha256.Sum256([]byte(codePlain))
 
-	grant, code, err := repo.CreateGrantWithCode(ctx, sqlc.CreateMCPGrantParams{
+	// An ORG-scoped principal: seeding a grant is what an operator does, and it
+	// is the only scope the consent route now admits.
+	approver := domain.Principal{TenantID: tenantID, Scope: domain.ScopeOrg}
+	grant, code, err := repo.CreateGrantWithCode(ctx, approver, sqlc.CreateMCPGrantParams{
 		TenantID:      tenantID,
 		Name:          "s7 grant",
 		Status:        "active",
