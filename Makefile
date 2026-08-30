@@ -213,6 +213,27 @@ check-versions: ## Check every version-naming surface (docs, marketing, agent)
 check-versions-test: ## Run the version surface guard's regression suite
 	scripts/check-version-surfaces_test.sh
 
+# The load-balancer url-map. Twice in one day a route shipped, deployed and was
+# unreachable because the API mounted it and the LB did not route it — POST
+# /mcp, then very nearly the OAuth discovery documents. Both answer 200
+# text/html from the web SPA, so no status-code smoke test can see them.
+# check-urlmap proves every mounted route has a path rule and needs NO cloud
+# credentials, which is why it is the one wired into ci.yml. check-urlmap-drift
+# compares the committed file against live GCP and does need credentials, so it
+# is a separate target and not a CI gate. check-urlmap-test is the guard's own
+# regression suite; run it after editing the guard.
+.PHONY: check-urlmap
+check-urlmap: ## Check every API route is routed by infra/urlmap.yaml (no cloud access)
+	scripts/check-urlmap-routes.sh
+
+.PHONY: check-urlmap-test
+check-urlmap-test: ## Run the url-map route-coverage guard's regression suite
+	scripts/check-urlmap-routes_test.sh
+
+.PHONY: check-urlmap-drift
+check-urlmap-drift: ## Compare infra/urlmap.yaml against the live GCP url-map (needs gcloud)
+	scripts/check-urlmap-drift.sh
+
 # GH #547: the agent declared MIT in its plugin header and GPLv2 or later in
 # the wp.org readme.txt at the same time. This reconciles every place in
 # apps/agent (plus the repo-root LICENSE-AGENT carve-out) that names the

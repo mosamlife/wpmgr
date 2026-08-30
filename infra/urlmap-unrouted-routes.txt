@@ -1,0 +1,36 @@
+# infra/urlmap-unrouted-routes.txt
+#
+# Routes the API mounts that are DELIBERATELY not reachable through the public
+# load balancer, read by scripts/check-urlmap-routes.sh.
+#
+# This file distinguishes "missing from the url-map because nobody noticed" —
+# the defect that made POST /mcp and the OAuth discovery documents unreachable —
+# from "absent on purpose". Without that distinction the guard could only be
+# switched off.
+#
+# FORMAT. A path pattern on its own line, with a '# reason:' line DIRECTLY
+# above it. The reason is mandatory and the guard exits 2 without it. Patterns
+# use the same syntax as a url-map path rule: an exact path, or a trailing /*
+# for a prefix. A route's {param} segments match a wildcard, never a literal.
+#
+#   # reason: in-cluster only; served on the admin port, never exposed publicly
+#   /internal/debug/*
+#
+# TWO RULES THAT KEEP THIS HONEST, both enforced by the guard:
+#
+#   1. No silent skips. An entry without a reason is a hard error, not an
+#      ignored line. Adding to this file is meant to be visible in review,
+#      because the failure mode being defended against is someone learning to
+#      add to the ignore list instead of adding the path rule.
+#
+#   2. No stale entries. An entry matching no currently-mounted route fails the
+#      guard. An ignore list that outlives its routes grows until it excuses
+#      something that matters.
+#
+# EMPTY IS THE GOAL, and it is empty today: every route apps/api mounts is
+# expected to be reachable through the load balancer. wpmgr-api runs with
+# ingress=internal-and-cloud-load-balancing, so the url-map is the only path in
+# and there is no second, private door for an "internal" route to arrive
+# through. Before adding an entry, check that the route really is unreachable
+# by design rather than merely unrouted by accident — the second one is the bug
+# this guard was written for.
