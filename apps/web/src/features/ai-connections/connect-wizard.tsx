@@ -29,6 +29,7 @@ import {
   type MintConnectionInput,
   type MintedConnection,
 } from "./use-ai-connections";
+import { formatAbsolute } from "@/features/updates/schedule";
 import {
   describeSiteScope,
   isScopeApprovable,
@@ -1070,9 +1071,16 @@ function TokenReveal({ reveal, onDismiss }: { reveal: MintedReveal; onDismiss: (
             them find and kill this exact credential; without it, "revoke the
             one I just made" is a guess. It is not the secret and is safe to
             leave on screen. */}
+        {/* EXPIRY IS FOR A PERSON TO READ, so it is not the wire format. This
+            printed `expiresAt` raw and put "2026-09-06T12:00:00Z" inside an
+            English sentence, on the one screen the operator reads once and
+            cannot come back to. formatAbsolute is the same helper the update
+            runs use and it always names the zone it resolved the time in: an
+            expiry without a zone is not an answer to "when does this stop
+            working", and this token's whole value is knowing that. */}
         <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
           Listed as <span className="font-mono">{token.tokenPrefix}</span> in the connections
-          list. Expires {token.expiresAt}.
+          list. Expires {formatAbsolute(token.expiresAt)}.
         </p>
       </div>
 

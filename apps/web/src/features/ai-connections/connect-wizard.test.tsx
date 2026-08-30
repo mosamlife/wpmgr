@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-router";
 
 import { renderWithProviders, createTestQueryClient } from "@/test/render";
+import { formatAbsolute } from "@/features/updates/schedule";
 import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
@@ -962,6 +963,30 @@ describe("minting a connection token", () => {
 
     await screen.findByText(MINTED.token);
     expect(screen.getByText(MINTED.token_prefix)).toBeInTheDocument();
+  });
+
+  it("dates the expiry for a person to read, not in the wire format", async () => {
+    // `expires_at` arrives as ISO-8601 and was printed straight into an
+    // English sentence, so the operator read "2026-11-27T00:00:00Z" mid-line
+    // on the one screen they see once and cannot return to.
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(MINTED.token);
+
+    // Not merely joined by a formatted copy elsewhere: the machine string is
+    // off the screen entirely.
+    expect(document.body.textContent).not.toContain(MINTED.expires_at);
+    // And what replaced it is the app's shared formatter, zone included,
+    // rather than a second hand-rolled one that could drift from the rest of
+    // the app.
+    expect(screen.getByText(/Listed as/)).toHaveTextContent(
+      formatAbsolute(MINTED.expires_at),
+    );
+    // The guard on the guard: if formatAbsolute were a passthrough, the
+    // assertion above would hold while the defect stood.
+    expect(formatAbsolute(MINTED.expires_at)).not.toContain("T00:00:00Z");
   });
 
   it("describes the scope the token was minted FOR when the scope changed mid-flight", async () => {
