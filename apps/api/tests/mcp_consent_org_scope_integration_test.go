@@ -44,12 +44,14 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mosamlife/wpmgr/apps/api/internal/db"
+	"github.com/mosamlife/wpmgr/apps/api/internal/db/sqlc"
 	"github.com/mosamlife/wpmgr/apps/api/internal/domain"
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
@@ -172,7 +174,11 @@ func TestMCPConsentRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 		"state":                 "orgscope-state",
 		"code_challenge":        challenge,
 		"code_challenge_method": "S256",
-		"grant_name":            "escalation probe",
+		// "name", the field approvalRequestDTO actually binds. It matters that
+		// this body is otherwise VALID: a body the handler would reject anyway
+		// makes the refusal ambiguous, and this test would then pass on an
+		// unrelated 400 while proving nothing about scope.
+		"name": "org scope probe",
 		// The whole point: an ORG-WIDE grant, requested by a principal that can
 		// see one site.
 		"site_scope_mode": "all",
@@ -224,6 +230,85 @@ func TestMCPConsentRefusesASiteScopedCollaboratorAsAppRole(t *testing.T) {
 
 	if final := mcpCountGrants(t, pool, tenantID); final != before {
 		t.Fatalf("grant count moved %d -> %d across the whole flow", before, final)
+	}
+}
+
+// TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole pins the
+// DEEPEST layer on its own, at the repo, with no middleware anywhere near it.
+//
+// It exists because the two route-level tests above cannot see this layer while
+// the route-level gates hold: the middleware refuses first, so swapping
+// RunTenantTx back to InTenantTx changes nothing they observe and the RLS layer
+// would be unpinned -- defence in depth that no test defends. Here the call is
+// made directly, so the only thing that can refuse it is the database.
+//
+// The failure it guards against is silent by construction: with app.site_scope
+// unset the RESTRICTIVE policy admits the row and the write simply succeeds.
+func TestMCPCreateGrantWithCodeRefusesASiteScopedPrincipalAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+
+	if err := pool.InMCPClientLookupTx(ctx, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InMCPClientLookupTx")
+		return nil
+	}); err != nil {
+		t.Fatalf("open lookup tx: %v", err)
+	}
+
+	tenantID := seedTenant(t, pool, "mcp-repolayer-"+uuid.NewString()[:8])
+	userID := seedUserRow(t, pool, "mcp-repolayer-"+uuid.NewString()[:8]+"@example.test")
+	siteID := seedSite(t, pool, tenantID, "https://repolayer-"+uuid.NewString()[:8]+".example.test")
+
+	repo := mcp.NewRepo(pool)
+	before := mcpCountGrants(t, pool, tenantID)
+
+	collaborator := domain.Principal{
+		UserID:         userID,
+		TenantID:       tenantID,
+		Scope:          domain.ScopeSite,
+		AllowedSiteIDs: []uuid.UUID{siteID},
+	}
+
+	clientID := "repolayer-client-" + uuid.NewString()
+	secretHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if n, err := repo.RegisterClient(ctx, sqlc.RegisterMCPOAuthClientParams{
+		ClientID:                clientID,
+		ClientSecretHash:        &secretHash,
+		TokenEndpointAuthMethod: "client_secret_basic",
+		RedirectUris:            []string{"https://claude.ai/api/mcp/auth_callback"},
+	}); err != nil || n != 1 {
+		t.Fatalf("seed client: affected=%d err=%v", n, err)
+	}
+
+	_, _, err := repo.CreateGrantWithCode(ctx, collaborator, sqlc.CreateMCPGrantParams{
+		TenantID:      tenantID,
+		Name:          "repo layer probe",
+		Status:        "active",
+		SiteScopeMode: "all",
+		ScopeTagIds:   []uuid.UUID{},
+		ScopeSiteIds:  []uuid.UUID{},
+		ClientID:      &clientID,
+	}, func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
+		return sqlc.CreateMCPAuthorizationCodeParams{
+			TenantID:            tenantID,
+			GrantID:             grantID,
+			ClientID:            clientID,
+			CodeHash:            "beefcafe0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+			CodeChallenge:       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+			CodeChallengeMethod: "S256",
+			RedirectUri:         "https://claude.ai/api/mcp/auth_callback",
+			ExpiresAt:           time.Now().UTC().Add(5 * time.Minute),
+		}
+	})
+	if err == nil {
+		t.Fatal("CreateGrantWithCode accepted a site-scoped principal. The write " +
+			"reached mcp_grants with app.site_scope unset, so the RESTRICTIVE " +
+			"site-scope policy was not live for this transaction.")
+	}
+	t.Logf("the database refused the write: %v", err)
+
+	if after := mcpCountGrants(t, pool, tenantID); after != before {
+		t.Fatalf("the call errored but the grant count moved %d -> %d", before, after)
 	}
 }
 
@@ -292,7 +377,7 @@ func TestMCPConsentAdmitsAnOrgMemberAsAppRole(t *testing.T) {
 		"state":                 "orgmember-state",
 		"code_challenge":        challenge,
 		"code_challenge_method": "S256",
-		"grant_name":            "my laptop",
+		"name":                  "my laptop",
 		"site_scope_mode":       "all",
 	}, nil, &approval)
 
