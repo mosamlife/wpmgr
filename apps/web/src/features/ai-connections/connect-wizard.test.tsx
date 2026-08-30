@@ -399,6 +399,40 @@ describe("a failed load is not an empty fleet", () => {
     expect(screen.queryByTestId("site-step-picker")).toBeNull();
   });
 
+  it("says the read is still running rather than that it failed, while it is still running", async () => {
+    // `fleet === null` covers two different worlds -- we asked and it failed,
+    // and we have not finished asking -- and the picker used to render the
+    // failure copy for both. That is this feature's recurring defect: a load
+    // in progress stated as a fact about the organisation. It is worse here
+    // than a bare spinner would be, because the add control stays live beside
+    // it, so an operator can act on a failure that has not happened.
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined, isPending: true }));
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+
+    expect(await screen.findByTestId("site-step-sites-loading")).toHaveTextContent(
+      /still reading/i,
+    );
+    expect(screen.queryByTestId("site-step-sites-failed")).toBeNull();
+    // Still no picker: nothing is tickable yet either way. The claim being
+    // corrected is about WHY, not about what is offered.
+    expect(screen.queryByTestId("site-step-picker")).toBeNull();
+  });
+
+  it("still says the read failed once it is no longer running", async () => {
+    // The other half of the guard. A loading branch that swallowed the failure
+    // branch would be the same defect pointing the other way, and this is the
+    // case that would catch it.
+    mockedSites.mockReturnValue(
+      mockQueryResult<Site[]>({ data: undefined, isPending: false, isError: true }),
+    );
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+
+    expect(await screen.findByTestId("site-step-sites-failed")).toBeInTheDocument();
+    expect(screen.queryByTestId("site-step-sites-loading")).toBeNull();
+  });
+
   it("distinguishes a failed tag registry from an organisation with no tags", async () => {
     loadedFleet(3);
     mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined }));
@@ -597,6 +631,65 @@ describe("minting a connection token", () => {
     expect(
       await screen.findByRole("button", { name: /generate connection token/i }),
     ).toBeInTheDocument();
+  });
+
+  it("describes the scope the token was minted FOR when the scope changed mid-flight", async () => {
+    // THE RACE, AND THE WORST OUTCOME THIS SCREEN CAN PRODUCE. The mint is a
+    // round trip; the site scope is an input the operator can go on clicking
+    // while it is open. A reveal that reads the scope at RESPONSE time pairs a
+    // real, shown-once credential with a description of access it does not
+    // carry -- on the one screen whose whole job is saying what was just made,
+    // at the only moment the token is ever visible. Nothing downstream can
+    // correct it: the operator reads that line and deploys the token.
+    //
+    // The response is held open deliberately rather than raced against a
+    // timer. A test that depended on the operator being slower than a stubbed
+    // fetch would pass on a fixed component and on a broken one.
+    loadedFleet(3);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubMintFetch(async () => {
+      await held;
+      return jsonResponse(MINTED, 201);
+    });
+
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("button", { name: /\+ add sites/i }));
+
+    const boxes = () =>
+      within(screen.getByTestId("site-step-picker")).getAllByRole("checkbox");
+    fireEvent.click(boxes()[0]!);
+    expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
+      /1 site, listed below/i,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+    // In flight, and provably so: the assertions below mean nothing if the
+    // scope was widened after the response had already landed.
+    expect(await screen.findByRole("button", { name: /minting/i })).toBeInTheDocument();
+
+    // The operator widens the scope from one site to three, mid-request.
+    fireEvent.click(boxes()[1]!);
+    fireEvent.click(boxes()[2]!);
+    expect(await screen.findByTestId("site-step-summary")).toHaveTextContent(
+      /3 sites, listed below/i,
+    );
+
+    release();
+
+    expect(await screen.findByText(MINTED.token)).toBeInTheDocument();
+    const scopeLine = screen.getByText(/Capabilities:/);
+    expect(scopeLine).toHaveTextContent(/1 site, listed below/i);
+    expect(scopeLine).not.toHaveTextContent(/3 sites/i);
+    // And the live step still shows the operator's newer, wider selection, so
+    // the reveal is not merely lagging the whole screen -- the two disagree on
+    // purpose, because they are describing two different things.
+    expect(screen.getByTestId("site-step-summary")).toHaveTextContent(/3 sites, listed below/i);
   });
 
   it("sends the tag ids the registry resolved, never the tag names the operator clicked", async () => {

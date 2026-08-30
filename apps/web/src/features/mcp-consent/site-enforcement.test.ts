@@ -36,6 +36,49 @@ describe("bannedWordHits — fires on the wireframe's own banned words", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The word-boundary contract, pinned.
+//
+// The comment above bannedWordPattern used to claim "safe" fires on "unsafe".
+// It never did: \b needs a boundary before the "s", and "n" and "s" are both
+// word characters, so there is none. A comment that describes coverage the
+// guard does not have is worse than no comment, because the next reader trusts
+// it and ships the phrasing it says is caught. These cases hold the comment to
+// the behaviour in both directions, so neither can drift alone.
+//
+// The exclusion is deliberate, not a gap to close later. "unsafe" is the
+// OPPOSITE of the overclaim this list exists to catch, and a guard that
+// reddens a truthful warning is a guard someone switches off.
+// ---------------------------------------------------------------------------
+
+describe("bannedWordHits — the word-boundary contract, which the comment must keep matching", () => {
+  it.each([
+    ["a prefixed form", "Treat every connection as unsafe until you have scoped it."],
+    ["a suffixed form", "Read our safety guidance before connecting an assistant."],
+    ["prefixed and suffixed at once", "An unsafely scoped connection is still yours to fix."],
+    ["a banned word inside a longer word", "This is insecurely configured."],
+  ] as const)("%s does not fire the single-word guard", (_label, text) => {
+    expect(bannedWordHits(text)).toEqual([]);
+  });
+
+  it.each([
+    ["a trailing full stop", "Nothing about this is safe."],
+    ["a trailing comma", "It is not safe, and we will not pretend otherwise."],
+    ["a leading capital at the start of a sentence", "Safe is a word this screen may not use."],
+    ["surrounded by punctuation", "The scope is (safe) once you have read this."],
+  ] as const)("%s does fire it", (_label, text) => {
+    expect(bannedWordHits(text)).toContain("safe");
+  });
+
+  it("matches a multi-word phrase as a bare substring, with no boundary required", () => {
+    // The asymmetry is real and worth pinning: the phrase branch escapes but
+    // does not wrap in \b, so a phrase straddling longer words still hits.
+    // Nothing on this screen is phrased that way, and a phrase overclaim is
+    // the more dangerous miss of the two.
+    expect(bannedWordHits("The request was stonewalled offhand.")).toContain("walled off");
+  });
+});
+
 describe("bannedWordHits — does not over-fire on the shipped copy", () => {
   it("every string this screen renders is clean", () => {
     for (const text of allEnforcementScreenStrings()) {
