@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import type { UseMutationResult } from "@tanstack/react-query";
 import { AlertTriangle, Check, ExternalLink, Lock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import { SiteScopeStep, type SiteScopeSelection } from "./site-scope-step";
 import {
   ConnectionsRequestError,
   useMintConnection,
+  type MintConnectionInput,
   type MintedConnection,
 } from "./use-ai-connections";
 import {
@@ -661,27 +663,112 @@ function NextSteps({ clientName }: { clientName: string }) {
   );
 }
 
+/** The site-scope fields a mint request carries, exactly as they go on the wire. */
+interface MintScope {
+  readonly siteScopeMode: SiteScopeSelection["mode"];
+  readonly scopeTagIds: readonly string[];
+  readonly scopeSiteIds: readonly string[];
+}
+
+type MintScopeRequest =
+  | { readonly ok: true; readonly scope: MintScope }
+  | {
+      readonly ok: false;
+      readonly because: "tags-unresolved" | "names-nothing";
+      readonly refusal: string;
+    };
+
+/**
+ * The site-scope payload for the CURRENT selection, or the reason there is none.
+ *
+ * THE GATE AND THE REQUEST ARE THE SAME VALUE. They used to be two derivations
+ * of one selection, and they disagreed: the gate asked `isScopeApprovable`,
+ * which says an empty scope is a working state (site-scope.ts, the 2026-08-23
+ * wireframe revision), while the request sent whatever was in state. So a
+ * button the screen had enabled produced a 400 the operator could do nothing
+ * with. Returning the payload and the refusal from one function means an
+ * enabled button always has a payload, and it is that payload that is sent.
+ *
+ * TWO THINGS THE SERVER REFUSES, AND THE SCREEN MUST NOT SEND:
+ *
+ *   NAMING NOTHING. ValidateSiteScopeRequest (apps/api/internal/mcp/scope.go
+ *   lines 168-200) refuses mode 'tags' with no tag ids and mode 'list' with no
+ *   site ids, both with the same reason: "an empty tag list grants nothing and
+ *   is not a way to request every site". The wizard OPENS on mode 'list' with
+ *   nothing selected, so this was reachable by doing nothing at all: pick a
+ *   client, pick the token method, press the button, get a 400.
+ *
+ *   NAMING THE WRONG KIND. The same function refuses mode 'all' that also
+ *   carries tags or sites, and mode 'tags' that also carries sites. Step 3
+ *   deliberately KEEPS the other mode's selection when the segmented control
+ *   is flipped (site-scope-step.tsx: "a mode flipped by accident does not throw
+ *   away the other answer"), which is right for the picker and wrong for the
+ *   wire. Ticking three sites and then choosing "All sites" sent mode 'all'
+ *   with three site ids. Only the ids belonging to the live mode are carried.
+ */
+function mintScopeRequest(
+  mode: SiteScopeSelection["mode"],
+  scopeTagIds: readonly string[] | null,
+  scopeSiteIds: readonly string[],
+): MintScopeRequest {
+  if (mode === "all") {
+    return { ok: true, scope: { siteScopeMode: "all", scopeTagIds: [], scopeSiteIds: [] } };
+  }
+  if (mode === "tags") {
+    if (scopeTagIds === null) {
+      return {
+        ok: false,
+        because: "tags-unresolved",
+        refusal:
+          "This connection's tag scope could not be resolved to ids -- the tag registry has not finished loading, or a tag you picked is no longer in it. Reopen step 3, confirm your tags once it loads, and try again.",
+      };
+    }
+    if (scopeTagIds.length === 0) {
+      return {
+        ok: false,
+        because: "names-nothing",
+        refusal:
+          "This connection is scoped by tag and no tag is picked, so there is nothing to mint it against. Pick at least one tag in step 3, or switch that step to All sites. An empty tag list is refused rather than read as every site.",
+      };
+    }
+    return { ok: true, scope: { siteScopeMode: "tags", scopeTagIds, scopeSiteIds: [] } };
+  }
+  if (scopeSiteIds.length === 0) {
+    return {
+      ok: false,
+      because: "names-nothing",
+      refusal:
+        "This connection is scoped to named sites and no site is picked, so there is nothing to mint it against. Pick at least one site in step 3, or switch that step to All sites. An empty list is refused rather than read as every site.",
+    };
+  }
+  return { ok: true, scope: { siteScopeMode: "list", scopeTagIds: [], scopeSiteIds } };
+}
+
 /**
  * The reason minting is refused, or null when it is not.
  *
  * Every branch here is a FAILURE, rendered with a remedy, never a silently
- * disabled button. `tagsResolved` being false is the client-side half of the
- * refusal this whole panel exists to make loud: see resolveTagIds.
+ * disabled button.
+ *
+ * THE ORDER IS LOAD-BEARING. An unresolved tag registry is reported first,
+ * because a selection that cannot be translated is not the same complaint as a
+ * selection that is empty. A fleet still loading is reported before "you have
+ * picked nothing", because telling an operator to pick a site out of a list
+ * that has not arrived is a remedy they cannot follow.
  */
 function mintBlockedReason(
   nameOk: boolean,
   scope: ResolvedSiteScope,
-  tagsResolved: boolean,
+  scopeRequest: MintScopeRequest,
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
-  if (!tagsResolved) {
-    return "This connection's tag scope could not be resolved to ids -- the tag registry has not finished loading, or a tag you picked is no longer in it. Reopen step 3, confirm your tags once it loads, and try again.";
-  }
+  if (!scopeRequest.ok && scopeRequest.because === "tags-unresolved") return scopeRequest.refusal;
   if (!isScopeApprovable(scope)) {
     return scope.kind === "unresolved" && scope.because === "loading"
       ? "Still reading this organisation's sites for step 3. Wait for that to finish before minting."
       : "This organisation's sites could not be read for step 3, so we cannot tell what this connection would cover. Fix that above before minting.";
   }
+  if (!scopeRequest.ok) return scopeRequest.refusal;
   return null;
 }
 
@@ -771,45 +858,45 @@ type MintedReveal = {
  * it correctly costs nothing and loses nothing.
  */
 function TokenMintPanel({
+  mint,
+  revealed,
+  onMinted,
   clientName,
   name,
   scope,
-  siteScopeMode,
-  scopeTagIds,
-  scopeSiteIds,
+  scopeRequest,
 }: {
+  /**
+   * The mutation, OWNED BY THE WIZARD. This panel drives it and reads it, and
+   * deliberately does not hold it: a mutation whose lifetime is this
+   * component's lifetime is a request that dies when the operator changes the
+   * method, which is the whole defect.
+   */
+  mint: UseMutationResult<MintedConnection, Error, MintConnectionInput>;
+  /** A token is already on screen, rendered by the wizard above every step. */
+  revealed: boolean;
+  onMinted: (reveal: MintedReveal) => void;
   clientName: string;
   name: string;
   scope: ResolvedSiteScope;
-  siteScopeMode: SiteScopeSelection["mode"];
-  scopeTagIds: readonly string[] | null;
-  scopeSiteIds: readonly string[];
+  scopeRequest: MintScopeRequest;
 }) {
-  const mint = useMintConnection();
-  const [reveal, setReveal] = useState<MintedReveal | null>(null);
   const trimmedName = name.trim();
-
-  const configKey = `${siteScopeMode}|${scopeSiteIds.join(",")}|${(scopeTagIds ?? []).join(",")}|${trimmedName}`;
-  // React's own "adjusting state when a prop changes" pattern -- state, not a
-  // ref, so this stays a value the compiler can reason about. Comparing and
-  // resetting DURING RENDER (React bails out and re-renders before committing)
-  // is what keeps a token or an error from ever painting even once beside a
-  // configuration it was not produced for; a useEffect here would let that
-  // one stale paint through first.
-  const [lastConfigKey, setLastConfigKey] = useState(configKey);
-  if (lastConfigKey !== configKey) {
-    setLastConfigKey(configKey);
-    if (reveal !== null) setReveal(null);
-    if (mint.isError || mint.isSuccess) mint.reset();
-  }
-
   const nameOk = trimmedName.length > 0;
-  const tagsResolved = scopeTagIds !== null;
-  const blocked = mintBlockedReason(nameOk, scope, tagsResolved);
+  const blocked = mintBlockedReason(nameOk, scope, scopeRequest);
   const canMint = blocked === null && !mint.isPending;
 
-  if (reveal !== null) {
-    return <TokenReveal reveal={reveal} />;
+  if (revealed) {
+    // The reveal itself is rendered at the top of the wizard, not here, so
+    // that no step condition governs whether a live credential is visible.
+    // What belongs here is a pointer to it, because an operator who scrolled
+    // to step 4 to press a button must not find the button simply gone.
+    return (
+      <p className="text-sm text-[var(--color-muted-foreground)]">
+        This connection's token is shown at the top of this page. It is shown once and is not
+        shown again, so copy it before you dismiss it.
+      </p>
+    );
   }
 
   return (
@@ -846,18 +933,19 @@ function TokenMintPanel({
         type="button"
         disabled={!canMint}
         onClick={() => {
+          // canMint already proved this, and an enabled button with no payload
+          // would be the gate and the request disagreeing again. Refusing here
+          // rather than sending `?? []` keeps that impossible instead of quiet.
+          if (!scopeRequest.ok) return;
           // Read here, at the moment the request is built, and closed over.
           // Reading them again inside onSuccess is the whole defect: that runs
           // after a round trip the operator can type through.
           const mintedFor = { scope, clientName };
           mint.mutate(
-            {
-              name: trimmedName,
-              siteScopeMode,
-              scopeTagIds: scopeTagIds ?? [],
-              scopeSiteIds,
-            },
-            { onSuccess: (token) => setReveal({ token, ...mintedFor }) },
+            { name: trimmedName, ...scopeRequest.scope },
+            // onMinted writes state the WIZARD owns, so this callback lands on
+            // a mounted component whatever happened to this panel meanwhile.
+            { onSuccess: (token) => onMinted({ token, ...mintedFor }) },
           );
         }}
       >
@@ -878,7 +966,7 @@ function TokenMintPanel({
  * ships is the reveal itself, matching the wireframe's non-negotiables; the
  * setup-command shape is outstanding.
  */
-function TokenReveal({ reveal }: { reveal: MintedReveal }) {
+function TokenReveal({ reveal, onDismiss }: { reveal: MintedReveal; onDismiss: () => void }) {
   // Destructured from the one snapshot, and there is deliberately no second
   // source: this component takes no live prop it could describe the token
   // with, so a stale label is not a race that has to be won but a state that
@@ -920,7 +1008,28 @@ function TokenReveal({ reveal }: { reveal: MintedReveal }) {
           {describeSiteScope(scope)} Capabilities: {capabilities}. Revocable from the connections
           list, immediately, at the next request.
         </p>
+        {/* THE HANDLE FOR REVOKING IT, shown beside the secret rather than
+            only in a list the operator has not opened. If anything goes wrong
+            between here and their password manager, this prefix is what lets
+            them find and kill this exact credential; without it, "revoke the
+            one I just made" is a guess. It is not the secret and is safe to
+            leave on screen. */}
+        <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
+          Listed as <span className="font-mono">{token.tokenPrefix}</span> in the connections
+          list. Expires {token.expiresAt}.
+        </p>
       </div>
+
+      {/* DISMISSAL IS AN ACT, NEVER A SIDE EFFECT. This panel used to clear
+          itself whenever an input it was minted for changed, which meant one
+          keystroke in the name field destroyed the only copy of a live
+          credential -- the same accounting hole as losing the response to an
+          unmount, reached by a shorter route. The reveal carries the
+          configuration it was minted FOR, so it cannot go stale and has
+          nothing to be cleared about. */}
+      <Button type="button" variant="outline" onClick={onDismiss}>
+        I have saved this token
+      </Button>
     </div>
   );
 }
