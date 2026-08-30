@@ -12,9 +12,15 @@
 #      thing: three root-mounted paths, no path rule, answered by the SPA.
 #
 # This file is the DESIRED state, not a snapshot. It is the live export plus the
-# three /.well-known paths from #589, which are not applied to GCP yet.
+# three /.well-known paths from #589. Those three paths were imported into
+# wpmgr-urlmap in wpmgr-prod on 2026-08-30; `make check-urlmap-drift` confirms
+# the live map matches this file. Routed is not the same as served: the API
+# image serving internal/mcp/discovery.go's handler had not been deployed yet
+# at that point, so the routes reached the API and got a 404 from the API
+# itself, not from the SPA. Reconfirm that distinction before assuming both
+# halves have landed.
 #
-# APPLY IT (nobody has; do this as part of the next deploy):
+# TO RE-APPLY after a further edit to this file:
 #   gcloud compute url-maps import wpmgr-urlmap --global \
 #     --source=infra/urlmap.yaml --project=wpmgr-prod
 #
