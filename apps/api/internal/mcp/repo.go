@@ -41,7 +41,14 @@ type Store interface {
 	// the RESTRICTIVE insert policy on mcp_grants is live. A tenant id alone
 	// cannot express that, which is how the site-scope GUC came to be unset on
 	// this path. See the method on Repo.
-	CreateGrantWithCode(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
+	//
+	// onCreated runs INSIDE the same transaction as both inserts, after both
+	// succeed, so the caller (Service.Approve) can append the
+	// ActionMCPGrantCreated audit row via audit.Recorder.RecordInTx over the
+	// SAME tx -- a rolled-back grant then leaves no audit row claiming one
+	// exists, because an error from onCreated rolls the whole transaction back
+	// exactly as an error from either insert would. May be nil.
+	CreateGrantWithCode(ctx context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams, onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error)
 
 	LookupConnectionToken(ctx context.Context, tokenHash string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error)
 	ReCheckAuthorization(ctx context.Context, tenantID, tokenID uuid.UUID) (sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow, error)
@@ -79,7 +86,14 @@ type Store interface {
 	// organisation's, or refused by RLS. It is the ONLY outcome meaning "not
 	// there"; a returned row of two zeroes is an idempotent success. See the
 	// query's four-outcome comment.
-	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
+	//
+	// onRevoked runs INSIDE the same transaction as the revoke statement,
+	// after it succeeds (any of the three non-error outcomes), so the caller
+	// (Service.RevokeConnection) can append the ActionMCPGrantRevoked audit
+	// row via audit.Recorder.RecordInTx over the SAME tx. It does NOT run on
+	// pgx.ErrNoRows -- nothing was written, so nothing should be attributed.
+	// May be nil.
+	RevokeGrantWithTokens(ctx context.Context, principal domain.Principal, grantID uuid.UUID, onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error)
 }
 
 // Repo is the live Store. Every method names the tx helper it runs under, and
@@ -239,6 +253,7 @@ func (r *Repo) CreateGrantWithCode(
 	principal db.ScopedPrincipal,
 	g sqlc.CreateMCPGrantParams,
 	mkCode func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams,
+	onCreated func(tx pgx.Tx, grant sqlc.McpGrant) error,
 ) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	var (
 		grant sqlc.McpGrant
@@ -262,6 +277,13 @@ func (r *Repo) CreateGrantWithCode(
 		cd, err := q.CreateMCPAuthorizationCode(ctx, mkCode(gr.ID))
 		if err != nil {
 			return fmt.Errorf("create mcp authorization code: %w", err)
+		}
+		// Inside the same tx, after both inserts. An error here rolls both of
+		// them back with it -- see the interface doc on onCreated.
+		if onCreated != nil {
+			if err := onCreated(tx, gr); err != nil {
+				return err
+			}
 		}
 		grant, code = gr, cd
 		return nil
@@ -481,6 +503,7 @@ func (r *Repo) RevokeGrantWithTokens(
 	ctx context.Context,
 	principal domain.Principal,
 	grantID uuid.UUID,
+	onRevoked func(tx pgx.Tx, row sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error,
 ) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
 	var out sqlc.RevokeMCPGrantWithTokensInTenantTxRow
 	err := r.pool.RunTenantTx(ctx, principal, func(tx pgx.Tx) error {
@@ -492,10 +515,16 @@ func (r *Repo) RevokeGrantWithTokens(
 		if err != nil {
 			// pgx.ErrNoRows is meaningful to the caller and is NOT wrapped in a
 			// message that would make errors.Is harder to reach for. Every
-			// other error is an infra failure.
+			// other error is an infra failure. Neither reaches onRevoked --
+			// nothing was written, so nothing should be attributed.
 			return err
 		}
 		out = row
+		if onRevoked != nil {
+			if err := onRevoked(tx, row); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {

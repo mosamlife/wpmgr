@@ -28,6 +28,13 @@ const (
 	ActorUser   = "user"
 	ActorAPIKey = "api_key"
 	ActorSystem = "system"
+	// ActorAssistant is the model on the other end of an MCP connection --
+	// never a human and never the control plane itself. actor_type has no
+	// CHECK constraint (db/schema.sql), so this needed no migration.
+	// ActorID for this kind is the grant id (internal/mcp), NOT a user or key
+	// id: an MCP grant is the credential a model acts under, the way a user id
+	// or an api_key id is the credential a human or a script acts under.
+	ActorAssistant = "assistant"
 
 	ActionLoginSuccess = "auth.login.success"
 	ActionLoginFailure = "auth.login.failure"
@@ -352,6 +359,41 @@ const (
 	// ActionAdminBillingStateForced: metadata: reason, old_plan,
 	// old_plan_status, new_plan, new_plan_status.
 	ActionAdminBillingStateForced = "admin.billing.state.forced"
+
+	// The MCP connection surface (ADR-064). Approve, revoke, and every tool
+	// call are the three points where an MCP grant does something a human
+	// operator can be asked about afterward, and each needed a row here --
+	// before this the surface wrote zero.
+	//
+	// ActionMCPGrantCreated is recorded on the SAME transaction as the grant
+	// insert (internal/mcp.Service.Approve, via RecordInTx), so a rolled-back
+	// grant leaves no row claiming one was created. ActorType is ActorUser:
+	// the grant belongs to the organisation of the human who approved it, and
+	// ActorID is that user's id, not the grant's. Metadata: grant_name,
+	// site_scope_mode.
+	ActionMCPGrantCreated = "mcp.grant.created"
+	// ActionMCPGrantRevoked is recorded on the SAME transaction as the revoke
+	// (internal/mcp.Service.RevokeConnection, via RecordInTx). ActorType is
+	// ActorUser -- the operator who revoked, ActorID their user id. Metadata:
+	// grant_name, grants_revoked, tokens_revoked, already_revoked.
+	ActionMCPGrantRevoked = "mcp.grant.revoked"
+	// ActionMCPToolCalled is recorded per successful tool invocation on the
+	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
+	// most of this log (Record, not RecordInTx): there is no companion write
+	// to roll back alongside it, and a purely observational record must not
+	// take down the read path it observes. ActorType is ActorAssistant --
+	// this is the one action class in the whole log recorded as the MODEL's
+	// own act rather than the human who granted it access -- and ActorID is
+	// the mcp_grants id, not a user id. Metadata carries grant_name as the
+	// actor's display label: ListAuditEntries/ListAuditEntriesFiltered
+	// resolve ActorName by joining users/api_keys on actor_type, and neither
+	// join has an arm for "assistant" (that join lives in db/query/*.sql,
+	// database-engineer's surface, and a fourth JOIN did not land alongside
+	// this Go-only change) -- so the label travels in Metadata rather than in
+	// the ActorName column until that join exists. Also carries
+	// operator_permission (the dashboard authority the tool call mirrors) and
+	// tool.
+	ActionMCPToolCalled = "mcp.tool.called"
 )
 
 // Entry is one audit record.
@@ -372,6 +414,12 @@ type Entry struct {
 	// ActorType == ActorAPIKey. Nil for ActorSystem events and for any actor
 	// row that no longer exists (e.g. a deleted user). Only List and
 	// ListFiltered populate this field; Record's returned Entry does not.
+	//
+	// Also nil for ActorType == ActorAssistant: the join that would resolve it
+	// (mcp_grants.name, the same shape as the api_keys.name join above) does
+	// not exist in ListAuditEntries/ListAuditEntriesFiltered today. An
+	// ActionMCPToolCalled recorder carries the grant's name in Metadata
+	// instead, so the label is not lost, only not yet promoted to this column.
 	ActorName *string
 	// ActorEmail is the acting user's email when ActorType == ActorUser. Nil
 	// otherwise. Only List and ListFiltered populate this field.

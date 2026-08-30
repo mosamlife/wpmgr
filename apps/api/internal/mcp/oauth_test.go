@@ -258,13 +258,22 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 // that the principal reaches the store at all, so a refactor which narrows
 // ApprovalRequest back to a bare tenant id fails here rather than silently in
 // production. The policy itself is proved in tests/, as wpmgr_app.
-func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
+func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams, onCreated func(pgx.Tx, sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	f.note("CreateGrantWithCode")
 	f.grantPrincipal = principal
 	id := uuid.New()
 	cp := mk(id)
-	return sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name},
-		sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
+	grant := sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name}
+	// No real tx to hand onCreated -- this fake runs no transaction at all.
+	// Service.Approve's callback checks s.audit == nil before touching tx, and
+	// no test in this package wires WithAudit, so nil here is never
+	// dereferenced.
+	if onCreated != nil {
+		if err := onCreated(nil, grant); err != nil {
+			return sqlc.McpGrant{}, sqlc.McpAuthorizationCode{}, err
+		}
+	}
+	return grant, sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
 }
 
 func (f *fakeStore) LookupConnectionToken(_ context.Context, _ string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error) {
@@ -349,6 +358,7 @@ func (f *fakeStore) RevokeGrantWithTokens(
 	_ context.Context,
 	p domain.Principal,
 	_ uuid.UUID,
+	onRevoked func(pgx.Tx, sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error,
 ) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
 	f.note("RevokeGrantWithTokens")
 	f.mu.Lock()
@@ -356,6 +366,13 @@ func (f *fakeStore) RevokeGrantWithTokens(
 	f.mu.Unlock()
 	if f.revokeErr != nil {
 		return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, f.revokeErr
+	}
+	// No real tx, same reasoning as CreateGrantWithCode above: the callback
+	// checks s.audit == nil before touching it.
+	if onRevoked != nil {
+		if err := onRevoked(nil, f.revokeRow); err != nil {
+			return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, err
+		}
 	}
 	return f.revokeRow, nil
 }

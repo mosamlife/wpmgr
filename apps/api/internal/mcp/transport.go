@@ -423,10 +423,15 @@ func (h *TransportHandler) initialize(
 	}
 	if err := h.svc.RecordConnect(c.Request.Context(), auth,
 		p.ClientInfo.Name, p.ClientInfo.Version, headerValue); err != nil {
-		// A failed audit write is NOT swallowed. The connect record is how an
+		// NOT an audit write -- RecordConnect updates mcp_grants (client name,
+		// version, protocol header) via Store.RecordClientIdentity, and that
+		// update is NOT swallowed on failure. The connect record is how an
 		// operator sees what is attached to their organisation, and a session
 		// that proceeded after failing to record itself would be an
-		// unattributable connection.
+		// unattributable connection. (The actual audit_events row for this
+		// surface is ActionMCPToolCalled, written per tool call by
+		// Service.RecordToolCall -- initialize itself is not a tool call and
+		// writes no audit row.)
 		h.log.ErrorContext(c.Request.Context(), "mcp connect record failed",
 			slog.String("tenant_id", auth.TenantID.String()),
 			slog.String("grant_id", auth.GrantID.String()),
@@ -540,6 +545,23 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 	if err != nil {
 		return h.toolError(req.ID, err)
 	}
+
+	// The operator-facing audit row (ActionMCPToolCalled), for this call and
+	// no other outcome: a refusal above never reached a tenant's data and is
+	// already covered by the WarnContext log at the refusal site. BEST-EFFORT
+	// like RecordConnect's client-identity write is not -- a failure here is
+	// logged, never returned to the caller, because withholding a successful
+	// read's answer over a failure to record having answered it would make an
+	// observational feature take down the read path it observes.
+	if err := h.svc.RecordToolCall(ctx, auth, entry.Name, string(entry.OperatorPermission)); err != nil {
+		h.log.ErrorContext(ctx, "mcp tool call audit write failed",
+			slog.String("tenant_id", auth.TenantID.String()),
+			slog.String("grant_id", auth.GrantID.String()),
+			slog.String("tool", entry.Name),
+			slog.String("error", err.Error()),
+		)
+	}
+
 	return newResponse(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 	})
