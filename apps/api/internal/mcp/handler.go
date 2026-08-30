@@ -151,6 +151,26 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	g := r.Group(connectionsGroupPath)
 
 	g.GET("", authz.RequirePermission(authz.PermAPIKeyRead), h.listConnections)
+
+	// POST "" mints a connection token: the DOCUMENTED HEADLESS PATH, because
+	// no client documents a device-code flow and Claude Code cannot run browser
+	// sign-in non-interactively. It is not a fallback for a failed OAuth dance.
+	//
+	// PermAPIKeyManage, THE SAME PERMISSION AS REVOKE, and that pairing is the
+	// org-scope gate rather than a convenience. Both PermAPIKeyRead and
+	// PermAPIKeyManage are members of authz.orgLevelPerms, so RequirePermission
+	// refuses ANY site-constrained principal outright -- which is what closes
+	// the hole here, since a grant is an organisation-wide credential with no
+	// :siteId for RequireSiteAccess to key on. Reusing the API-key permissions
+	// rather than minting a new one is what guarantees that membership is not a
+	// step somebody has to remember: a fresh permission left out of orgLevelPerms
+	// would look identical on this line and gate nothing.
+	//
+	// Minting is at least as sensitive as revoking -- revoke removes authority,
+	// mint creates a long-lived bearer credential -- so it takes the manage
+	// tier, never the read one.
+	g.POST("", authz.RequirePermission(authz.PermAPIKeyManage), h.mintConnection)
+
 	g.POST("/:"+connectionIDParam+"/revoke",
 		authz.RequirePermission(authz.PermAPIKeyManage), h.revokeConnection)
 
@@ -160,7 +180,7 @@ func (h *Handler) RegisterConnections(r *gin.RouterGroup) {
 	// permission middleware on purpose -- the verb is wrong regardless of who is
 	// asking, and answering 403 to a DELETE sends an operator to check a role
 	// when the fix is to send a POST.
-	houseMethodNotAllowedExcept(g, "", http.MethodGet)
+	houseMethodNotAllowedExcept(g, "", http.MethodGet, http.MethodPost)
 	houseMethodNotAllowedExcept(g, "/:"+connectionIDParam+"/revoke", http.MethodPost)
 }
 
@@ -185,6 +205,85 @@ func (h *Handler) listConnections(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, toConnectionListDTO(conns))
+}
+
+// mintConnection answers POST /api/v1/mcp/connections.
+//
+// It returns 201 with the plaintext token in the body, ONCE. The plaintext is
+// never put in a URL, a query string, a header or a log line -- a URL is
+// written to browser history, proxy logs and Referer headers, and this
+// credential outlives the session that asked for it by up to ninety days.
+//
+// THE HANDLER DOES NO AUTHORIZATION OF ITS OWN beyond re-reading the principal.
+// The org-scope decision belongs to the service (and to the route's
+// RequirePermission, and to the RLS beneath), so there is no fourth opinion
+// here that could drift from the other three.
+func (h *Handler) mintConnection(c *gin.Context) {
+	principal, ok := domain.PrincipalFromContext(c.Request.Context())
+	if !ok {
+		// Unreachable behind RequireAuth; refusing anyway, because a handler
+		// that trusts its mount point is one refactor away from anonymous.
+		httpx.Error(c, domain.Unauthorized("unauthenticated", "authentication required"))
+		return
+	}
+
+	// Capped like the OAuth bodies. This one IS authenticated, so the cap is
+	// not admission control -- it bounds a decoder fed a streamed body by a
+	// caller who is already inside, which is cheap insurance rather than a
+	// security boundary.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthBodyBytes)
+
+	var body mintConnectionRequestDTO
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, domain.Validation(ErrCodeInvalidRequest,
+			"the request body is not valid JSON"))
+		return
+	}
+
+	// parseUUIDs REFUSES a malformed id rather than dropping it, and that is
+	// the point on this path: uuid.Parse failure decays to uuid.Nil, and a
+	// dropped tag id silently NARROWS the scope the operator thought they were
+	// minting -- or empties it entirely, which then looks like a deliberate
+	// choice. The error names which field so the wizard can point at it.
+	tagIDs, err := parseUUIDs(body.ScopeTagIDs)
+	if err != nil {
+		httpx.Error(c, domain.Validation(ErrCodeInvalidSiteScope,
+			"scope_tag_ids contains a value that is not a UUID"))
+		return
+	}
+	siteIDs, err := parseUUIDs(body.ScopeSiteIDs)
+	if err != nil {
+		httpx.Error(c, domain.Validation(ErrCodeInvalidSiteScope,
+			"scope_site_ids contains a value that is not a UUID"))
+		return
+	}
+
+	caps := make([]Capability, 0, len(body.Capabilities))
+	for _, name := range body.Capabilities {
+		caps = append(caps, Capability(name))
+	}
+
+	out, err := h.svc.MintConnection(c.Request.Context(), MintConnectionRequest{
+		// The WHOLE principal. Its Scope and AllowedSiteIDs are what route the
+		// grant insert to a site-scoped transaction, so narrowing this to
+		// (TenantID, UserID) would disarm the RLS layer beneath while still
+		// compiling -- the same trap ApprovalRequest.Principal documents.
+		Principal:    principal,
+		Name:         body.Name,
+		SiteScope:    SiteScopeRequest{Mode: SiteScopeMode(body.SiteScopeMode), TagIDs: tagIDs, SiteIDs: siteIDs},
+		Capabilities: caps,
+	})
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+
+	// Never cached, and never stored by an intermediary: the body holds a
+	// bearer credential. Same stance RFC 6749 5.1 takes on a token response,
+	// applied here because the payload is the same kind of thing.
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.JSON(http.StatusCreated, toMintConnectionResponse(out))
 }
 
 // revokeConnection answers POST /api/v1/mcp/connections/:connectionId/revoke.

@@ -100,6 +100,16 @@ type fakeStore struct {
 	// coerced into a string.
 	identityCalls []recordedIdentity
 
+	// touchErr forces the activity stamp to fail, which the transport must
+	// surface as a REFUSED request rather than serve the tool anyway: an
+	// unrecorded use is indistinguishable from no use at all once
+	// idle_expire_after_days starts reading last_used_at.
+	touchErr error
+	// touchCalls records every TouchActivity argument set, so a test can assert
+	// the stamp happened, happened on the right ids, and did NOT happen on the
+	// methods that must not refresh an idle deadline.
+	touchCalls []touchedActivity
+
 	// sites is what ListSitesForRead returns; sitesMore is its page-bound
 	// overflow flag; sitesErr forces the read to fail.
 	sites     []sqlc.ListSitesRow
@@ -130,6 +140,23 @@ type fakeStore struct {
 	revokePrincipals []domain.Principal
 	// listPrincipals does the same for the list path.
 	listPrincipals []domain.Principal
+
+	// The headless mint surface.
+	//
+	// minted captures every CreateGrantWithToken call WHOLE (principal, grant
+	// params, token params), because the properties this endpoint has to hold
+	// are properties of what reached the INSERT: that the token row carries a
+	// hash and a prefix and not the plaintext, that the scope arrays were
+	// stored as given rather than widened, and that the principal was not
+	// flattened on the way down. mintErr forces the write itself to fail.
+	minted  []mintedGrant
+	mintErr error
+
+	// tagIDs is the tenant's tag registry and tagIDsErr forces the read to
+	// fail. Independent, so "the registry is empty" and "the registry could not
+	// be read" are separately reachable.
+	tagIDs    []uuid.UUID
+	tagIDsErr error
 
 	// call log. mu guards all four -- see note().
 	mu           sync.Mutex
@@ -258,13 +285,93 @@ func (f *fakeStore) RedeemAuthorizationCode(_ context.Context, _, _ uuid.UUID, t
 // that the principal reaches the store at all, so a refactor which narrows
 // ApprovalRequest back to a bare tenant id fails here rather than silently in
 // production. The policy itself is proved in tests/, as wpmgr_app.
-func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
+func (f *fakeStore) CreateGrantWithCode(_ context.Context, principal db.ScopedPrincipal, g sqlc.CreateMCPGrantParams, mk func(uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams, onCreated func(pgx.Tx, sqlc.McpGrant) error) (sqlc.McpGrant, sqlc.McpAuthorizationCode, error) {
 	f.note("CreateGrantWithCode")
 	f.grantPrincipal = principal
 	id := uuid.New()
 	cp := mk(id)
-	return sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name},
-		sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
+	grant := sqlc.McpGrant{ID: id, TenantID: g.TenantID, Name: g.Name}
+	// No real tx to hand onCreated -- this fake runs no transaction at all.
+	// Service.Approve's callback checks s.audit == nil before touching tx, and
+	// no test in this package wires WithAudit, so nil here is never
+	// dereferenced.
+	if onCreated != nil {
+		if err := onCreated(nil, grant); err != nil {
+			return sqlc.McpGrant{}, sqlc.McpAuthorizationCode{}, err
+		}
+	}
+	return grant, sqlc.McpAuthorizationCode{ID: uuid.New(), TenantID: cp.TenantID}, nil
+}
+
+// mintedGrant is one captured CreateGrantWithToken call. The TOKEN PARAMS are
+// captured whole, so a test can assert what was actually sent to the INSERT --
+// which is the only way to prove the plaintext was not among it.
+type mintedGrant struct {
+	Principal db.ScopedPrincipal
+	Grant     sqlc.CreateMCPGrantParams
+	Token     sqlc.CreateMCPConnectionTokenParams
+}
+
+// CreateGrantWithToken records the principal and BOTH parameter sets.
+//
+// Like CreateGrantWithCode, THIS FAKE CANNOT PROVE THE RLS: it runs no
+// transaction and evaluates no policy. What it pins is the plumbing and the
+// PAYLOAD -- that the scope-carrying principal reaches the store rather than
+// being flattened to a tenant id, and that the token row carries a hash and a
+// prefix and never the plaintext. The policy itself is proved in tests/, as
+// wpmgr_app.
+func (f *fakeStore) CreateGrantWithToken(
+	_ context.Context,
+	principal db.ScopedPrincipal,
+	g sqlc.CreateMCPGrantParams,
+	mkToken func(uuid.UUID) sqlc.CreateMCPConnectionTokenParams,
+	onCreated func(pgx.Tx, sqlc.McpGrant) error,
+) (sqlc.McpGrant, sqlc.McpConnectionToken, error) {
+	f.note("CreateGrantWithToken")
+	if f.mintErr != nil {
+		return sqlc.McpGrant{}, sqlc.McpConnectionToken{}, f.mintErr
+	}
+	id := uuid.New()
+	tp := mkToken(id)
+
+	f.mu.Lock()
+	f.grantPrincipal = principal
+	f.minted = append(f.minted, mintedGrant{Principal: principal, Grant: g, Token: tp})
+	f.tokensMinted++
+	f.mu.Unlock()
+
+	grant := sqlc.McpGrant{
+		ID: id, TenantID: g.TenantID, Name: g.Name,
+		Status: g.Status, SiteScopeMode: g.SiteScopeMode,
+		ScopeTagIds: g.ScopeTagIds, ScopeSiteIds: g.ScopeSiteIds,
+		Capabilities: g.Capabilities,
+	}
+	// No real tx, same reasoning as CreateGrantWithCode: MintConnection's
+	// callback checks s.audit == nil before touching tx, and no test in this
+	// package wires WithAudit.
+	if onCreated != nil {
+		if err := onCreated(nil, grant); err != nil {
+			return sqlc.McpGrant{}, sqlc.McpConnectionToken{}, err
+		}
+	}
+	return grant, sqlc.McpConnectionToken{
+		ID: uuid.New(), TenantID: tp.TenantID, GrantID: tp.GrantID,
+		TokenPrefix: tp.TokenPrefix, TokenHash: tp.TokenHash, Status: tp.Status,
+	}, nil
+}
+
+// ListTagIDs models the tenant tag registry.
+//
+// tagIDsErr is separate from an empty tagIDs so a test can drive "the registry
+// read FAILED" apart from "this organisation has no tags" -- the pair this
+// package keeps apart everywhere else, and the pair that decides whether an
+// unknown-tag refusal is honest or is an infra failure wearing a 422.
+func (f *fakeStore) ListTagIDs(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	f.note("ListTagIDs")
+	if f.tagIDsErr != nil {
+		return nil, f.tagIDsErr
+	}
+	return f.tagIDs, nil
 }
 
 func (f *fakeStore) LookupConnectionToken(_ context.Context, _ string) (sqlc.GetMCPConnectionTokenByHashForLookupRow, error) {
@@ -305,6 +412,30 @@ func (f *fakeStore) RecordClientIdentity(
 		Name: name, Version: version, ProtocolVersion: protocolVersion,
 	})
 	return f.identityErr
+}
+
+// touchedActivity is one TouchActivity call, recorded with all three ids so a
+// test can assert the stamp reached the grant AND the token, and reached them
+// under the tenant the request resolved to.
+type touchedActivity struct {
+	TenantID uuid.UUID
+	GrantID  uuid.UUID
+	TokenID  uuid.UUID
+}
+
+func (f *fakeStore) TouchActivity(
+	_ context.Context, tenantID, grantID, tokenID uuid.UUID,
+) (time.Time, error) {
+	f.note("TouchActivity")
+	f.touchCalls = append(f.touchCalls, touchedActivity{
+		TenantID: tenantID, GrantID: grantID, TokenID: tokenID,
+	})
+	if f.touchErr != nil {
+		// The zero time.Time goes back WITH the error, so a caller that ignores
+		// the error and uses the stamp gets year 1 rather than a plausible one.
+		return time.Time{}, f.touchErr
+	}
+	return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), nil
 }
 
 func (f *fakeStore) ListSitesForRead(_ context.Context, _ uuid.UUID, limit int32) ([]sqlc.ListSitesRow, bool, error) {
@@ -349,6 +480,7 @@ func (f *fakeStore) RevokeGrantWithTokens(
 	_ context.Context,
 	p domain.Principal,
 	_ uuid.UUID,
+	onRevoked func(pgx.Tx, sqlc.RevokeMCPGrantWithTokensInTenantTxRow) error,
 ) (sqlc.RevokeMCPGrantWithTokensInTenantTxRow, error) {
 	f.note("RevokeGrantWithTokens")
 	f.mu.Lock()
@@ -356,6 +488,13 @@ func (f *fakeStore) RevokeGrantWithTokens(
 	f.mu.Unlock()
 	if f.revokeErr != nil {
 		return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, f.revokeErr
+	}
+	// No real tx, same reasoning as CreateGrantWithCode above: the callback
+	// checks s.audit == nil before touching it.
+	if onRevoked != nil {
+		if err := onRevoked(nil, f.revokeRow); err != nil {
+			return sqlc.RevokeMCPGrantWithTokensInTenantTxRow{}, err
+		}
 	}
 	return f.revokeRow, nil
 }
@@ -744,8 +883,10 @@ func TestAuthenticate_RevocationBitesOnTheNextRequest(t *testing.T) {
 		recheck: sqlc.ReCheckMCPRequestAuthorizationInTenantTxRow{
 			GrantID: tok.GrantID, GrantStatus: "active",
 			SiteScopeMode: "all", TokenID: tok.ID, TokenStatus: "active",
-			TokenExpiresAt: tok.ExpiresAt,
-			Authorized:     true,
+			TokenExpiresAt:    tok.ExpiresAt,
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
+			Authorized:        true,
 		},
 		scopeSites: []uuid.UUID{siteID},
 	}
@@ -824,7 +965,10 @@ func TestAuthenticate_EmptyResolvedScopeGrantsNoSites(t *testing.T) {
 			GrantID: tok.GrantID, GrantStatus: "active",
 			SiteScopeMode: "tags", ScopeTagIds: []uuid.UUID{uuid.New()},
 			TokenID: tok.ID, TokenStatus: "active",
-			TokenExpiresAt: tok.ExpiresAt, Authorized: true,
+			TokenExpiresAt:    tok.ExpiresAt,
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
+			Authorized:        true,
 		},
 		scopeSites: nil, // the tag matched no site
 	}

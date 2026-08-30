@@ -28,6 +28,13 @@ const (
 	ActorUser   = "user"
 	ActorAPIKey = "api_key"
 	ActorSystem = "system"
+	// ActorAssistant is the model on the other end of an MCP connection --
+	// never a human and never the control plane itself. actor_type has no
+	// CHECK constraint (db/schema.sql), so this needed no migration.
+	// ActorID for this kind is the grant id (internal/mcp), NOT a user or key
+	// id: an MCP grant is the credential a model acts under, the way a user id
+	// or an api_key id is the credential a human or a script acts under.
+	ActorAssistant = "assistant"
 
 	ActionLoginSuccess = "auth.login.success"
 	ActionLoginFailure = "auth.login.failure"
@@ -352,7 +359,88 @@ const (
 	// ActionAdminBillingStateForced: metadata: reason, old_plan,
 	// old_plan_status, new_plan, new_plan_status.
 	ActionAdminBillingStateForced = "admin.billing.state.forced"
+
+	// The MCP connection surface (ADR-064). Approve, revoke, and every tool
+	// call are the three points where an MCP grant does something a human
+	// operator can be asked about afterward, and each needed a row here --
+	// before this the surface wrote zero.
+	//
+	// ActionMCPGrantCreated is recorded on the SAME transaction as the grant
+	// insert, so a rolled-back grant leaves no row claiming one was created.
+	// TWO paths write it and they differ only in how the grant was authorised:
+	// internal/mcp.Service.Approve (browser consent) and
+	// internal/mcp.Service.MintConnection (the headless connection-token mint,
+	// which adds issuance and token_prefix to Metadata).
+	//
+	// ActorID is NEVER the grant's own id -- it is the id of the credential
+	// that authorised it, and ActorType says which kind. NEITHER PATH IS
+	// SINGLE-ACTOR-TYPE: both are mounted on the v1 group, which carries
+	// Auth.Authenticate(), so either can be driven by a session user
+	// (ActorUser, their user id) or by an API key (ActorAPIKey, the key's id).
+	// Browser-only consent is a convention about who usually calls it, never a
+	// constraint on who can. Resolve the pair with ActorFor and never compose
+	// it by hand. Metadata: grant_name, site_scope_mode.
+	ActionMCPGrantCreated = "mcp.grant.created"
+	// ActionMCPGrantRevoked is recorded on the SAME transaction as the revoke
+	// (internal/mcp.Service.RevokeConnection, via RecordInTx). Same two actor
+	// kinds as ActionMCPGrantCreated and for the same reason -- the revoke
+	// route is mounted by the same call as the headless mint -- so the pair
+	// comes from ActorFor. This is the row an auditor reaches for after an
+	// incident, so an actor it names must be one that exists. Metadata:
+	// grants_revoked, tokens_revoked, already_revoked.
+	ActionMCPGrantRevoked = "mcp.grant.revoked"
+	// ActionMCPToolCalled is recorded per successful tool invocation on the
+	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
+	// most of this log (Record, not RecordInTx): there is no companion write
+	// to roll back alongside it, and a purely observational record must not
+	// take down the read path it observes. ActorType is ActorAssistant --
+	// this is the one action class in the whole log recorded as the MODEL's
+	// own act rather than the human who granted it access -- and ActorID is
+	// the mcp_grants id, not a user id. Metadata carries grant_name as the
+	// actor's display label: ListAuditEntries/ListAuditEntriesFiltered
+	// resolve ActorName by joining users/api_keys on actor_type, and neither
+	// join has an arm for "assistant" (that join lives in db/query/*.sql,
+	// database-engineer's surface, and a fourth JOIN did not land alongside
+	// this Go-only change) -- so the label travels in Metadata rather than in
+	// the ActorName column until that join exists. Also carries
+	// operator_permission (the dashboard authority the tool call mirrors) and
+	// tool.
+	ActionMCPToolCalled = "mcp.tool.called"
 )
+
+// ActorFor resolves the (ActorType, ActorID) pair for whichever credential
+// actually authenticated a request. It is the ONLY correct way to fill those
+// two fields from a domain.Principal, and it lives here rather than in a
+// calling package so that there is exactly one of it.
+//
+// IT EXISTS BECAUSE HARDCODING ActorUser OVER Principal.UserID IS WRONG FOR AN
+// API-KEY CALLER, AND SILENTLY SO. apikey.PrincipalFor sets APIKeyID and never
+// UserID, so every route mounted behind Auth.Authenticate() -- whose Bearer
+// branch returns exactly that principal -- can reach this with UserID ==
+// uuid.Nil. The row still writes, still hashes into the chain, and still
+// renders; it just asserts that a user acted and then names a user that does
+// not exist. That is worse than no row at all: a missing record prompts a
+// question, a wrong one answers it incorrectly.
+//
+// THE TYPE AND THE ID MUST MOVE TOGETHER, which is why this returns both and
+// why callers must not compose one of them by hand. ListAuditEntries and
+// ListAuditEntriesFiltered resolve ActorName with two LEFT JOINs gated on
+// actor_type ('user' -> users.name, 'api_key' -> api_keys.name), so a pair
+// that disagrees -- ActorUser beside an api_keys id, or ActorAPIKey beside a
+// users id -- matches neither arm and the row names nobody. Splitting the
+// resolution across two expressions is how the pair drifts apart.
+//
+// Principal.ActorID() is the id source (APIKeyID for an API-key principal,
+// UserID otherwise). A principal that names neither yields ActorUser over
+// uuid.Nil, which is the pre-existing shape for an unattributed row and is not
+// made worse here; the fix for that is to refuse the request upstream, where
+// the caller is still identifiable.
+func ActorFor(p domain.Principal) (actorType, actorID string) {
+	if p.Type == domain.PrincipalAPIKey {
+		return ActorAPIKey, p.ActorID()
+	}
+	return ActorUser, p.ActorID()
+}
 
 // Entry is one audit record.
 type Entry struct {
@@ -372,6 +460,12 @@ type Entry struct {
 	// ActorType == ActorAPIKey. Nil for ActorSystem events and for any actor
 	// row that no longer exists (e.g. a deleted user). Only List and
 	// ListFiltered populate this field; Record's returned Entry does not.
+	//
+	// Also nil for ActorType == ActorAssistant: the join that would resolve it
+	// (mcp_grants.name, the same shape as the api_keys.name join above) does
+	// not exist in ListAuditEntries/ListAuditEntriesFiltered today. An
+	// ActionMCPToolCalled recorder carries the grant's name in Metadata
+	// instead, so the label is not lost, only not yet promoted to this column.
 	ActorName *string
 	// ActorEmail is the acting user's email when ActorType == ActorUser. Nil
 	// otherwise. Only List and ListFiltered populate this field.

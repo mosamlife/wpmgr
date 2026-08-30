@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,6 +55,14 @@ func liveGrantStore(siteIDs ...uuid.UUID) *fakeStore {
 			Authorized: true,
 			GrantID:    uuid.New(),
 			TokenID:    uuid.New(),
+			// m127: the capability set is READ FROM THIS ROW, so a fixture that
+			// omits it models a grant holding NO capability and every request
+			// against it is refused. That is the honest default -- leaving the
+			// field zero here and having the transport work anyway would mean
+			// the service was still computing capabilities instead of reading
+			// them.
+			GrantCapabilities: []string{string(CapSitesRead)},
+			GrantExpiresAt:    time.Now().UTC().Add(90 * 24 * time.Hour),
 		},
 		scopeSites: siteIDs,
 	}
@@ -933,6 +942,113 @@ func TestNotification_ToolsCallWithNoIdDoesNotExecuteTheTool(t *testing.T) {
 	}
 	if !executed {
 		t.Fatal("the id-carrying control did not execute the tool either; the fixture is broken")
+	}
+}
+
+// TestActivityStamp_OnEveryToolCallAndNotOnKeepalives pins the decision GH #605
+// turns on: WHICH methods count as "used".
+//
+// The stamp is what makes mcp_grants.last_used_at real, and last_used_at is the
+// input to the idle-expiry deadline. Both directions are asserted because each
+// alone is a different bug:
+//
+//   - tools/list and tools/call MUST stamp. If they do not, an actively used
+//     connection reads as never used and idle-expires -- the fleet outage m127
+//     DECISION 4 describes.
+//   - ping and notifications/initialized MUST NOT. They are keepalives a stuck
+//     background process emits forever; letting them refresh the deadline makes
+//     "unused for 30 days" unfalsifiable and the feature decorative.
+//
+// initialize does not stamp either: RecordConnect already records that a client
+// connected (client_identity_recorded_at), which is the separate fact.
+func TestActivityStamp_OnEveryToolCallAndNotOnKeepalives(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantStamp bool
+	}{
+		{"tools/list stamps", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, true},
+		{"tools/call stamps",
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, true},
+		{"ping does not stamp", `{"jsonrpc":"2.0","id":1,"method":"ping"}`, false},
+		{"initialize does not stamp",
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := liveGrantStore(uuid.New())
+			r := newTransportRouter(t, store)
+
+			w := post(t, r, tc.body, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+			}
+
+			got := len(store.touchCalls) > 0
+			if got != tc.wantStamp {
+				t.Fatalf("%s: stamped=%v want %v (%d TouchActivity calls)",
+					tc.name, got, tc.wantStamp, len(store.touchCalls))
+			}
+			if !tc.wantStamp {
+				return
+			}
+			// The ids matter as much as the count: a stamp on the wrong grant
+			// keeps the wrong connection alive.
+			c := store.touchCalls[0]
+			if c.TenantID != store.token.TenantID {
+				t.Errorf("stamped tenant %s, want %s", c.TenantID, store.token.TenantID)
+			}
+			if c.GrantID != store.recheck.GrantID {
+				t.Errorf("stamped grant %s, want %s", c.GrantID, store.recheck.GrantID)
+			}
+			if c.TokenID != store.recheck.TokenID {
+				t.Errorf("stamped token %s, want %s", c.TokenID, store.recheck.TokenID)
+			}
+		})
+	}
+}
+
+// TestActivityStamp_FailureRefusesTheRequestAndDoesNotRunTheTool is the other
+// half of the decision: the stamp is NOT best-effort.
+//
+// A stamp that fails silently leaves the connection's idle clock running while
+// it is being used, and the cost lands N days later as an expiry nobody can
+// explain. So the request is refused -- with the INTERNAL code, never an auth
+// or tool-availability code, because nothing is wrong with the caller's token
+// or its capability set and telling it otherwise sends an operator rotating a
+// credential that was never the problem.
+func TestActivityStamp_FailureRefusesTheRequestAndDoesNotRunTheTool(t *testing.T) {
+	store := liveGrantStore(uuid.New())
+	store.touchErr = errors.New("simulated: the stamp could not be written")
+	r := newTransportRouter(t, store)
+
+	w := post(t, r,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`, nil)
+
+	var resp struct {
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+		Result any `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if resp.Error.Code != codeInternalError {
+		t.Fatalf("error code = %d, want %d (internal): %s",
+			resp.Error.Code, codeInternalError, w.Body.String())
+	}
+	if resp.Result != nil {
+		t.Fatalf("a refused request still carried a result: %s", w.Body.String())
+	}
+
+	// AND THE TOOL DID NOT RUN. Serving the read anyway would mean the caller
+	// got its answer while the record that it asked says otherwise -- the stamp
+	// runs before the tool precisely so an unrecordable request is not served.
+	for _, c := range store.callLog() {
+		if c == "ListSitesForRead" {
+			t.Fatal("the tool executed despite the activity stamp failing")
+		}
 	}
 }
 

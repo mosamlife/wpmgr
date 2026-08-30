@@ -343,6 +343,11 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{}), http.StatusOK, true
 
 	case "tools/list":
+		// THE ACTIVITY STAMP IS BEFORE THE ANSWER, NOT AFTER IT. See
+		// stampActivity.
+		if resp, refused := h.stampActivity(ctx, auth, req); refused {
+			return resp, http.StatusOK, true
+		}
 		// VisibleTools, NOT Tools. Tools() is the whole registry and is not a
 		// request-path value; VisibleTools filters by this connection's
 		// capability set and site scope through the SAME predicate tools/call
@@ -351,6 +356,9 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
+		if resp, refused := h.stampActivity(ctx, auth, req); refused {
+			return resp, http.StatusOK, true
+		}
 		return h.callTool(ctx, auth, req), http.StatusOK, true
 
 	// Resources and prompts are OUT OF SCOPE for Phase 1 and are refused by
@@ -423,10 +431,15 @@ func (h *TransportHandler) initialize(
 	}
 	if err := h.svc.RecordConnect(c.Request.Context(), auth,
 		p.ClientInfo.Name, p.ClientInfo.Version, headerValue); err != nil {
-		// A failed audit write is NOT swallowed. The connect record is how an
+		// NOT an audit write -- RecordConnect updates mcp_grants (client name,
+		// version, protocol header) via Store.RecordClientIdentity, and that
+		// update is NOT swallowed on failure. The connect record is how an
 		// operator sees what is attached to their organisation, and a session
 		// that proceeded after failing to record itself would be an
-		// unattributable connection.
+		// unattributable connection. (The actual audit_events row for this
+		// surface is ActionMCPToolCalled, written per tool call by
+		// Service.RecordToolCall -- initialize itself is not a tool call and
+		// writes no audit row.)
 		h.log.ErrorContext(c.Request.Context(), "mcp connect record failed",
 			slog.String("tenant_id", auth.TenantID.String()),
 			slog.String("grant_id", auth.GrantID.String()),
@@ -453,6 +466,39 @@ func (h *TransportHandler) initialize(
 type toolCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// stampActivity records that this connection was used, and reports whether the
+// request must be refused because the record could not be written. GH #605.
+//
+// IT RUNS BEFORE THE TOOL, AND THE ORDERING IS THE POINT. Stamping after a
+// successful call would leave every refused or failed call unrecorded, so a
+// connection whose calls are all being refused would look idle and would
+// eventually idle-expire -- silently converting a permissions problem into an
+// expired credential. What this column answers is "did anyone drive this
+// connection", and driving it is what the request already is by the time this
+// runs: Authenticate has passed, so the caller holds a live token on a live,
+// unexpired grant.
+//
+// A FAILED STAMP REFUSES THE REQUEST rather than being logged and dropped. See
+// Service.RecordActivity for why this one is not best-effort like the audit
+// append in callTool. The refusal is the INTERNAL code, never an auth or a
+// tool-availability code: nothing is wrong with the caller's token or its
+// capability set, and telling it otherwise would send an operator rotating a
+// credential that was never the problem.
+func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
+	if err := h.svc.RecordActivity(ctx, auth); err != nil {
+		h.log.ErrorContext(ctx, "mcp activity stamp failed",
+			slog.String("tenant_id", auth.TenantID.String()),
+			slog.String("grant_id", auth.GrantID.String()),
+			slog.String("token_id", auth.TokenID.String()),
+			slog.String("method", req.Method),
+			slog.String("error", err.Error()),
+		)
+		return newErrorResponse(req.ID, codeInternalError,
+			"this request could not be recorded against the connection, so it was not served", nil), true
+	}
+	return jsonrpcResponse{}, false
 }
 
 // callTool is S7's EXIT GATE, and the gate is the absence of a `default` arm.
@@ -540,6 +586,23 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 	if err != nil {
 		return h.toolError(req.ID, err)
 	}
+
+	// The operator-facing audit row (ActionMCPToolCalled), for this call and
+	// no other outcome: a refusal above never reached a tenant's data and is
+	// already covered by the WarnContext log at the refusal site. BEST-EFFORT
+	// like RecordConnect's client-identity write is not -- a failure here is
+	// logged, never returned to the caller, because withholding a successful
+	// read's answer over a failure to record having answered it would make an
+	// observational feature take down the read path it observes.
+	if err := h.svc.RecordToolCall(ctx, auth, entry.Name, string(entry.OperatorPermission)); err != nil {
+		h.log.ErrorContext(ctx, "mcp tool call audit write failed",
+			slog.String("tenant_id", auth.TenantID.String()),
+			slog.String("grant_id", auth.GrantID.String()),
+			slog.String("tool", entry.Name),
+			slog.String("error", err.Error()),
+		)
+	}
+
 	return newResponse(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 	})
