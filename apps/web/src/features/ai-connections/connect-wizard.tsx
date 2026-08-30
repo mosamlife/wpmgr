@@ -106,6 +106,19 @@ export function ConnectWizard({
   const [clientId, setClientId] = useState<string | null>(null);
   const [method, setMethod] = useState<AuthMethod | null>(null);
   const [name, setName] = useState("Fleet manager");
+  // THE MINT AND ITS REVEAL LIVE HERE, ABOVE EVERY CONTROL THAT CAN UNMOUNT
+  // THE PANEL. They used to live inside TokenMintPanel, which step 4 renders
+  // only for method 'token' on a client that offers it; changing the method,
+  // or picking a client that cannot use a token, unmounted that panel WHILE
+  // ITS REQUEST WAS STILL OPEN. The server had already created the credential,
+  // and the response then wrote the one-time plaintext through a setState on a
+  // component nobody was looking at. The outcome is the worst this screen can
+  // produce: a live organisation credential that authenticates, whose plaintext
+  // was shown to no one, that nobody knows to revoke because nobody knows it
+  // exists. Holding the state at the wizard means a response always lands on a
+  // mounted surface, whatever the operator clicked while it was in the air.
+  const mint = useMintConnection();
+  const [reveal, setReveal] = useState<MintedReveal | null>(null);
   // NO DEFAULT 'all'. The consent screen refuses one for the same reason
   // (m124 DECISION 1) and so does the schema: a scope nobody chose must not
   // begin life as the widest one. 'list' holding nothing is the wireframe's
@@ -154,6 +167,35 @@ export function ConnectWizard({
     [selection.mode, selection.tagNames, tags],
   );
 
+  // The exact site-scope fields a mint would send, or the reason it can send
+  // none. Built ONCE, here, and both the gate and the request read this same
+  // value -- the gate cannot approve a payload different from the one that
+  // goes out, because there is only one payload.
+  const scopeRequest = useMemo(
+    () => mintScopeRequest(selection.mode, scopeTagIds, selection.siteIds),
+    [selection.mode, scopeTagIds, selection.siteIds],
+  );
+
+  // A mint is a network round trip, and every control above is live during it.
+  // Disabling them is the FIRST half of the fix (the operator is not offered a
+  // way to walk out on an open request); holding the state above them is the
+  // second half, and it is the half that holds when this one is bypassed.
+  const mintInFlight = mint.isPending;
+
+  // Clearing a STALE ERROR when the configuration changes, and NOTHING ELSE.
+  // This used to clear the reveal too, which is the same defect as the unmount
+  // race wearing different clothes: a single keystroke in the name field, after
+  // a token had been revealed, destroyed the only copy of a live credential.
+  // The reveal now carries the configuration it was minted for (MintedReveal),
+  // so it cannot go stale and has no reason to be thrown away; it is dismissed
+  // by an explicit act and by nothing else.
+  const configKey = `${selection.mode}|${selection.siteIds.join(",")}|${(scopeTagIds ?? []).join(",")}|${name.trim()}`;
+  const [lastConfigKey, setLastConfigKey] = useState(configKey);
+  if (lastConfigKey !== configKey) {
+    setLastConfigKey(configKey);
+    if (mint.isError) mint.reset();
+  }
+
   const snippet: Snippet | null = useMemo(() => {
     if (client === null || method === null) return null;
     try {
@@ -182,6 +224,33 @@ export function ConnectWizard({
     <div className={cn("space-y-6", className)}>
       <StepRail current={step} />
 
+      {/* THE ONE AND ONLY PLACE A REVEAL IS RENDERED, and it is deliberately
+          outside every step. A second render site inside step 4 would restore
+          exactly the fragility being removed: the token would be visible only
+          while the conditions that mount step 4 happen to hold. Here it is
+          governed by one thing, whether a token exists, so no client, method or
+          step change can take it off the screen. */}
+      {reveal !== null ? (
+        <TokenReveal
+          reveal={reveal}
+          onDismiss={() => {
+            setReveal(null);
+            mint.reset();
+          }}
+        />
+      ) : null}
+
+      {mintInFlight ? (
+        <p
+          role="status"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-3 text-sm text-[var(--color-foreground)]"
+        >
+          Minting a connection token. The client and sign-in choices are held until it finishes,
+          because the token it produces is shown once and leaving now would strand a live
+          credential nobody holds.
+        </p>
+      ) : null}
+
       <Section
         n={1}
         title="Pick your client"
@@ -193,6 +262,7 @@ export function ConnectWizard({
               <ClientCard
                 client={c}
                 selected={c.id === clientId}
+                locked={mintInFlight}
                 onSelect={() => chooseClient(c)}
               />
             </li>
@@ -213,6 +283,7 @@ export function ConnectWizard({
               body="You approve the connection here, and the client stores its own key. Nothing to copy or keep secret."
               availability={client.auth.oauth}
               selected={method === "oauth"}
+              locked={mintInFlight}
               onSelect={() => setMethod("oauth")}
             />
             <AuthCard
@@ -221,6 +292,7 @@ export function ConnectWizard({
               body="The documented path for CI, containers and SSH sessions, where no browser can open."
               availability={client.auth.token}
               selected={method === "token"}
+              locked={mintInFlight}
               onSelect={() => setMethod("token")}
             />
           </div>
@@ -309,12 +381,13 @@ export function ConnectWizard({
               <NextSteps clientName={client.name} />
             ) : (
               <TokenMintPanel
+                mint={mint}
+                revealed={reveal !== null}
+                onMinted={setReveal}
                 clientName={client.name}
                 name={name}
                 scope={scope}
-                siteScopeMode={selection.mode}
-                scopeTagIds={scopeTagIds}
-                scopeSiteIds={selection.siteIds}
+                scopeRequest={scopeRequest}
               />
             )}
           </div>
@@ -385,20 +458,25 @@ function Section({
 function ClientCard({
   client,
   selected,
+  locked,
   onSelect,
 }: {
   client: McpClientRow;
   selected: boolean;
+  /** A mint is open. Changing the client here would unmount its panel. */
+  locked: boolean;
   onSelect: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onSelect}
+      disabled={locked}
       aria-pressed={selected}
       className={cn(
         "flex h-full w-full flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]",
+        locked && "cursor-not-allowed opacity-70",
         selected
           ? "border-[var(--color-primary)] bg-[var(--color-accent)]"
           : "border-[var(--color-border)] hover:bg-[var(--color-accent)]",
@@ -429,6 +507,7 @@ function AuthCard({
   body,
   availability,
   selected,
+  locked,
   onSelect,
 }: {
   method: AuthMethod;
@@ -436,9 +515,16 @@ function AuthCard({
   body: string;
   availability: AuthAvailability;
   selected: boolean;
+  /**
+   * A mint is open. Switching method here unmounts the panel that owns the
+   * request, so it is refused for as long as the request is in the air. The
+   * reason is stated once at the top of the wizard rather than repeated on
+   * every card, because it is one fact about the page, not four.
+   */
+  locked: boolean;
   onSelect: () => void;
 }) {
-  const disabled = availability.state !== "available";
+  const disabled = availability.state !== "available" || locked;
   return (
     <button
       type="button"
