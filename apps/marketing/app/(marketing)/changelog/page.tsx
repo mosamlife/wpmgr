@@ -51,7 +51,7 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 const RELEASES: ChangeEntry[] = [
   {
     version: "0.61.149",
-    date: "2026-08-31",
+    date: "2026-08-30",
     summary:
       "Connection tokens can now be minted straight from the dashboard, for the cases the browser sign-in flow cannot reach: CI, an SSH session, a container. Grants carry an expiry, an idle expiry and a capability set, the connections list now shows real activity instead of always reading \"never used,\" and every grant, revocation and tool call is now audited under a new assistant actor kind.",
     items: [

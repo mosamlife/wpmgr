@@ -6,7 +6,7 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
-## [0.61.149] - 2026-08-31
+## [0.61.149] - 2026-08-30
 
 ### Added
 
