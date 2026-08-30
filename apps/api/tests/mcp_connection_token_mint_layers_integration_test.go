@@ -93,6 +93,22 @@ func TestMCPMintRLSInsertPolicyRefusesASiteScopedPrincipalAloneAsAppRole(t *test
 		t.Fatal("THE RESTRICTIVE INSERT POLICY DID NOT FIRE: a site-scoped principal " +
 			"inserted an mcp_grants row with both app-layer guards bypassed")
 	}
+
+	// THE REFUSAL MUST NAME THIS POLICY, and "some error happened" is not good
+	// enough. mcp_grants carries a SECOND restrictive site-scope policy whose
+	// USING clause Postgres also applies here, so with
+	// mcp_grants_site_scope_insert DROPPED the insert is still refused -- by
+	// the other one. An err != nil assertion therefore stays GREEN through the
+	// deletion of the policy it claims to prove, which is the same shadowing
+	// defect this whole file exists to remove one layer up.
+	const policy = "mcp_grants_site_scope_insert"
+	if !strings.Contains(err.Error(), policy) {
+		t.Fatalf("the insert was refused, but NOT by %s -- so this proof would "+
+			"survive that policy being dropped: %v", policy, err)
+	}
+	if !strings.Contains(err.Error(), "42501") {
+		t.Fatalf("want an RLS violation (SQLSTATE 42501), got: %v", err)
+	}
 	t.Logf("layer 3 refused on its own: %v", err)
 	if after := countAllGrants(t, pool, tenantID); after != before {
 		t.Fatalf("the refused insert still wrote: grants %d -> %d", before, after)
