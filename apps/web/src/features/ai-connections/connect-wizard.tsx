@@ -640,6 +640,21 @@ function mintErrorCopy(error: Error): { title: string; body: string } {
 }
 
 /**
+ * A minted token together with the configuration it was minted FOR.
+ *
+ * The three fields travel as one value on purpose. Splitting the token from
+ * its scope is what let the reveal pair a real secret with a description read
+ * from state that had moved on; keeping them in one object means the reveal
+ * cannot be handed a token without also being handed the scope that token
+ * actually carries.
+ */
+type MintedReveal = {
+  readonly token: MintedConnection;
+  readonly scope: ResolvedSiteScope;
+  readonly clientName: string;
+};
+
+/**
  * Step 6's one-time reveal, and the button that produces it (design §S29,
  * revision 2026-08-24; the wireframe's own header badge marks this the
  * governing generation).
@@ -652,6 +667,22 @@ function mintErrorCopy(error: Error): { title: string; body: string } {
  * state with it. Editing an input THIS panel depends on without leaving also
  * clears it, below, so a revealed token can never be shown beside a
  * configuration it was not actually minted for.
+ *
+ * THE REVEAL IS BUILT FROM THE REQUEST, NOT FROM LIVE STATE. Clearing on edit
+ * cannot cover the in-flight window: a mint started against one configuration
+ * and finishing after the operator edited the name or the scope arrived at an
+ * `onSuccess` that fired unconditionally, and the reveal then described the
+ * scope it read at that moment -- a real token beside access it does not
+ * carry, on the one screen whose whole job is saying what was just made, at
+ * the only moment the token is ever visible. `MintedReveal` snapshots the
+ * scope and client the request was sent with and stores them WITH the
+ * response, so the reveal has no live-state input at all to be stale about.
+ *
+ * DISCARDING THE STALE MINT WOULD HAVE BEEN THE OTHER FIX, AND IS WORSE: the
+ * server has already created that credential. Refusing to show it leaves a
+ * live token in the organisation that nobody holds and nobody was told to
+ * revoke, which trades a mislabelled secret for an unaccounted one. Labelling
+ * it correctly costs nothing and loses nothing.
  */
 function TokenMintPanel({
   clientName,
@@ -669,7 +700,7 @@ function TokenMintPanel({
   scopeSiteIds: readonly string[];
 }) {
   const mint = useMintConnection();
-  const [token, setToken] = useState<MintedConnection | null>(null);
+  const [reveal, setReveal] = useState<MintedReveal | null>(null);
   const trimmedName = name.trim();
 
   const configKey = `${siteScopeMode}|${scopeSiteIds.join(",")}|${(scopeTagIds ?? []).join(",")}|${trimmedName}`;
@@ -682,7 +713,7 @@ function TokenMintPanel({
   const [lastConfigKey, setLastConfigKey] = useState(configKey);
   if (lastConfigKey !== configKey) {
     setLastConfigKey(configKey);
-    if (token !== null) setToken(null);
+    if (reveal !== null) setReveal(null);
     if (mint.isError || mint.isSuccess) mint.reset();
   }
 
@@ -691,8 +722,8 @@ function TokenMintPanel({
   const blocked = mintBlockedReason(nameOk, scope, tagsResolved);
   const canMint = blocked === null && !mint.isPending;
 
-  if (token !== null) {
-    return <TokenReveal clientName={clientName} scope={scope} token={token} />;
+  if (reveal !== null) {
+    return <TokenReveal reveal={reveal} />;
   }
 
   return (
@@ -729,6 +760,10 @@ function TokenMintPanel({
         type="button"
         disabled={!canMint}
         onClick={() => {
+          // Read here, at the moment the request is built, and closed over.
+          // Reading them again inside onSuccess is the whole defect: that runs
+          // after a round trip the operator can type through.
+          const mintedFor = { scope, clientName };
           mint.mutate(
             {
               name: trimmedName,
@@ -736,7 +771,7 @@ function TokenMintPanel({
               scopeTagIds: scopeTagIds ?? [],
               scopeSiteIds,
             },
-            { onSuccess: (data) => setToken(data) },
+            { onSuccess: (token) => setReveal({ token, ...mintedFor }) },
           );
         }}
       >
@@ -757,15 +792,12 @@ function TokenMintPanel({
  * ships is the reveal itself, matching the wireframe's non-negotiables; the
  * setup-command shape is outstanding.
  */
-function TokenReveal({
-  clientName,
-  scope,
-  token,
-}: {
-  clientName: string;
-  scope: ResolvedSiteScope;
-  token: MintedConnection;
-}) {
+function TokenReveal({ reveal }: { reveal: MintedReveal }) {
+  // Destructured from the one snapshot, and there is deliberately no second
+  // source: this component takes no live prop it could describe the token
+  // with, so a stale label is not a race that has to be won but a state that
+  // cannot be constructed.
+  const { clientName, scope, token } = reveal;
   const capabilities =
     token.capabilities.length > 0 ? token.capabilities.join(", ") : "no capabilities";
   return (

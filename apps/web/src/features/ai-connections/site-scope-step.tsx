@@ -200,6 +200,7 @@ export function SiteScopeStep({
               tags={tags}
               tagNames={tagNames}
               siteIds={siteIds}
+              sitesLoading={sitesLoading}
               onToggleTag={toggleTag}
               onToggleSite={toggleSite}
             />
@@ -280,6 +281,14 @@ export function SiteScopeStep({
  * our request failing and says so; `tags === []` is a claim about the
  * organisation and is only made when we actually read the registry. Same split
  * for the fleet one branch down.
+ *
+ * AND A LOAD IN PROGRESS IS NEITHER. `fleet === null` covers both "we asked and
+ * it failed" and "we have not finished asking", so the failure panel used to
+ * render over a read that was still running -- a load in progress stated as a
+ * fact about the world, on the one panel whose job is to be honest about what
+ * we know. `sitesLoading` splits them, and it is checked FIRST because the
+ * failure copy is only true once there is nothing still in flight to be waiting
+ * on.
  */
 function Picker({
   mode,
@@ -287,6 +296,7 @@ function Picker({
   tags,
   tagNames,
   siteIds,
+  sitesLoading,
   onToggleTag,
   onToggleSite,
 }: {
@@ -295,6 +305,7 @@ function Picker({
   tags: readonly { readonly id: string; readonly name: string }[] | null;
   tagNames: readonly string[];
   siteIds: readonly string[];
+  sitesLoading: boolean;
   onToggleTag: (name: string) => void;
   onToggleSite: (id: string) => void;
 }) {
@@ -331,6 +342,13 @@ function Picker({
   }
 
   if (fleet === null) {
+    if (sitesLoading) {
+      return (
+        <PickerNote testId="site-step-sites-loading" tone="muted">
+          Still reading this organisation&apos;s sites. Nothing is missing yet.
+        </PickerNote>
+      );
+    }
     return (
       <PickerNote testId="site-step-sites-failed" tone="error">
         We could not load this organisation&apos;s sites, so there is nothing to pick from.
