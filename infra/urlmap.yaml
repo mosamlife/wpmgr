@@ -35,8 +35,12 @@
 # below is not slow or degraded, it is unreachable. The TLS cert wpmgr-cert-www
 # is MANAGED, so there is no ACME HTTP-01 challenge path to preserve here.
 
+# KEY ORDER MATCHES `gcloud compute url-maps export` EXACTLY (alphabetical:
+# defaultService, hostRules, name, pathMatchers). Do not tidy it into a more
+# readable order — scripts/check-urlmap-drift.sh does a strict ordered diff, so
+# a cosmetic reordering here shows up as drift forever and trains everyone to
+# ignore the drift output.
 defaultService: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-web
-name: wpmgr-urlmap
 hostRules:
 - hosts:
   - app.oscod.dev
@@ -48,6 +52,7 @@ hostRules:
 - hosts:
   - www.wpmgr.app
   pathMatcher: www-redirect
+name: wpmgr-urlmap
 pathMatchers:
 - defaultService: https://www.googleapis.com/compute/v1/projects/wpmgr-prod/global/backendServices/wpmgr-bes-web
   name: main
