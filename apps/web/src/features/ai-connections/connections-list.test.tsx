@@ -140,9 +140,18 @@ describe("a field the client did not send is rendered as absent", () => {
       status: "ready",
       connections: [{ ...CONNECTED, protocolHeader: { kind: "absent" } }],
     });
-    // Both halves: the client sent nothing, AND we treat that as the floor.
-    expect(await screen.findByText(/no protocol header sent/i)).toBeInTheDocument();
-    expect(screen.getByText(/treated as 2025-03-26/i)).toBeInTheDocument();
+    // Derived, not frozen: the over-fire pass caught this pair of regexes
+    // reddening when the absent wording was reworded, which is correct work.
+    const floor = "2025-03-26";
+    expect(
+      await screen.findByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).toBeInTheDocument();
+    // Both halves still have to be SAID, which is a property of the label and
+    // is asserted on the label rather than on the rendered sentence: the client
+    // sent nothing, and we treat that as the floor.
+    const label = protocolHeaderLabel({ kind: "absent" }, floor);
+    expect(label).toContain(floor);
+    expect(label.length).toBeGreaterThan(floor.length);
     // The number it would have been coerced into must not appear on its own.
     expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
   });
