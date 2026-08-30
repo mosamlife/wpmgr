@@ -148,6 +148,52 @@ silently reconfigure a load-balanced deployment onto a single shared limiter
 key. The control plane logs the value it resolved, and names the variable in
 the error when it refuses one.
 
+### Reverse proxy: paths that must reach the API {#proxy-paths}
+
+**If you run the bundled `infra/nginx/` config, there is nothing to do here.**
+It already carries these rules. This section is for an operator fronting the
+stack with their own reverse proxy.
+
+Most of the control plane lives under `/api/`, so a single `/api/` rule covers
+it. Four paths do not: they are mounted at the **root**, and a proxy that
+forwards only `/api/` will send all four to the dashboard SPA instead.
+
+| Path | What it is |
+|------|------------|
+| `/mcp` | the AI connection endpoint, the URL the connect wizard tells you to paste into your client |
+| `/.well-known/oauth-authorization-server` | OAuth authorization server metadata (RFC 8414) |
+| `/.well-known/oauth-protected-resource` | protected resource metadata (RFC 9728) |
+| `/.well-known/oauth-protected-resource/mcp` | the same metadata at the resource-path form of the URL |
+
+The fourth is **not** covered by the third. RFC 9728 section 3.1 inserts the
+resource's path component after the well-known segment, and current AI clients
+try that form first.
+
+This failure is quiet, which is the reason it is called out here rather than
+left to be discovered. An unrouted path falls through to the dashboard, which
+answers `200` with `text/html` for anything. A health check or a status-code
+smoke test sees a `200` and reports success; the client sees a page of HTML
+where it expected metadata, and simply cannot start an authorization flow. If
+the connection wizard hands you an endpoint that returns your dashboard, this
+is why.
+
+Two things to get right in the rules themselves:
+
+- **Match `/.well-known/` exactly, per path, not as a prefix.** `/.well-known/`
+  is a shared namespace. A prefix rule captures `/.well-known/acme-challenge`
+  too, which breaks certificate issuance and renewal if you use an ACME client
+  (certbot and similar) against the same server block.
+- **Do not redefine `proxy_set_header` inside these locations.** Header
+  inheritance in nginx is per level: setting any one header in a location drops
+  every header inherited from the server block, including `X-Forwarded-For`.
+  Doing that on exactly the paths an AI client uses is worth avoiding. Inherit
+  them, and the entry count stays the same, so your
+  [`WPMGR_AUTH_PROXY_HOPS`](#proxy-hops) value is unaffected.
+
+`infra/nginx/nginx.conf` is the worked example, and
+`infra/nginx/routing_smoke_test.sh` is the test that proves the routing rather
+than just the status code.
+
 ### Postgres: two-DSN model and the `wpmgr_app` role
 
 WPMgr uses two Postgres connection strings:
@@ -259,7 +305,7 @@ quickstart or a clone), bring up the stack with the pull-only overlay:
 <!-- wpmgr-install-pins:start (required pin; scripts/check-version-surfaces.sh keeps it current) -->
 
 ```bash
-export WPMGR_VERSION=v0.61.147   # omit to track :latest
+export WPMGR_VERSION=v0.61.148   # omit to track :latest
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d
 ```
 
@@ -377,7 +423,9 @@ Grafana then ships with the WPMgr dashboards pre-provisioned. See
   session secret, DB password, and S3 keys before any network-exposed deploy.
 - Put a TLS-terminating reverse proxy (the bundled `infra/nginx/` config, or
   your own) in front of the published API port (`WPMGR_API_PORT`, default
-  `:8081`) for production.
+  `:8081`) for production. If it is your own rather than the bundled config,
+  see [Reverse proxy: paths that must reach the API](#proxy-paths) for the four
+  root-mounted paths an `/api/`-only rule will miss.
 - **First-run ownership requires the provisioning claim.** The dashboard Sign
   Up form cannot create the first account. `POST /auth/register` only grants
   ownership when the request carries the `X-Wpmgr-Bootstrap-Claim` header set
