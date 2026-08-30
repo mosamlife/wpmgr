@@ -38,6 +38,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,6 +256,133 @@ func TestS7GuessedToolNameIsRefusedForARealConnectionAsAppRole(t *testing.T) {
 		}
 	}
 	t.Logf("all guessed names refused for a real, fully-capable connection")
+}
+
+// TestS7UntickedCapabilityRefusesByNameAsAppRole is the D1 ruling, executed
+// against the real schema as wpmgr_app: an unticked capability REFUSES, it does
+// not hide.
+//
+// HOW THE CAPABILITY-LESS CONNECTION IS BUILT, AND WHY IT IS NOT A LITERAL.
+// Everything about this connection comes from the database: the tenant, the
+// site, the grant, the connection token, and the SiteSet, all resolved by
+// mcp.Service.Authenticate inside InTenantTx under the sites RLS policy as
+// wpmgr_app. Exactly ONE field is then overwritten -- Capabilities -- and it
+// has to be, because the capability axis is not stored per-grant yet: m124
+// DECISION 1 declines to mint a capabilities column, so grantScopes() is a
+// constant and every bearer that can authenticate resolves to mcp.sites.read.
+// There is no bearer in this schema that lacks it.
+//
+// What that costs is stated plainly: this proves the GATE, not the resolution.
+// TestS7CapabilitiesAreResolvedByAuthenticateAsAppRole above proves the
+// resolution half -- that Authenticate really populates the set rather than
+// handing back the zero value -- and the two together cover the path. The
+// moment a capabilities column exists, this test replaces the one assignment
+// with a narrower grant and proves both halves at once.
+func TestS7UntickedCapabilityRefusesByNameAsAppRole(t *testing.T) {
+	ctx := context.Background()
+	pool := startPostgres(t)
+	mcpRepo := mcp.NewRepo(pool)
+	siteRepo := site.NewRepo(pool)
+	svc := mcp.NewService(mcpRepo)
+
+	tenant := seedTenant(t, pool, "mcp-s7-cap-"+uuid.NewString()[:8])
+
+	// The role is asserted and printed INSIDE the transaction the resolution
+	// uses. Either privilege would make the site half of this pass vacuously.
+	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
+		mcpAssertAndReportRole(t, tx, "InTenantTx (capability-refusal proof)")
+		return nil
+	}); err != nil {
+		t.Fatalf("open tenant tx: %v", err)
+	}
+
+	s1, err := siteRepo.Create(ctx, site.CreateInput{
+		TenantID: tenant, URL: "https://s7cap.example.com", Name: "s7-cap"})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	_, bearer := s7GrantWithBearer(t, mcpRepo, tenant, "list", []uuid.UUID{s1.ID})
+
+	auth, err := svc.Authenticate(ctx, bearer)
+	if err != nil {
+		t.Fatalf("Authenticate with a live bearer: %v", err)
+	}
+
+	// POSITIVE CONTROL FIRST. The real connection reaches the tool, so every
+	// refusal below is the capability gate rather than a broken fixture.
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the real, fully-granted connection was refused: %v", err)
+	}
+	if _, err := svc.ListSitesForModel(ctx, auth); err != nil {
+		t.Fatalf("list_sites failed for the real connection: %v", err)
+	}
+
+	// Now the same connection with the capability withheld. Note what is NOT
+	// touched: the site scope stays as the database resolved it, so nothing
+	// below can be attributed to the site axis.
+	denied := auth
+	denied.Capabilities = mcp.NewCapabilitySet(nil)
+	if denied.Sites.IsEmpty() || !denied.Sites.Allows(s1.ID) {
+		t.Fatalf("the DB-resolved site scope did not survive: %d sites, Allows(%s)=%v",
+			denied.Sites.Len(), s1.ID, denied.Sites.Allows(s1.ID))
+	}
+	t.Logf("capability-less connection carries the DB-resolved scope: %d site(s), tenant %s",
+		denied.Sites.Len(), denied.TenantID)
+
+	// (1) IT DOES NOT HIDE. The tool is still listed, and the descriptor says
+	// why it cannot be called.
+	visible := mcp.VisibleTools(denied)
+	if len(visible) != 1 || visible[0].Name != mcp.ToolListSites {
+		t.Fatalf("an unticked capability HID the tool from tools/list: %+v", visible)
+	}
+	if !strings.Contains(visible[0].Description, string(mcp.CapSitesRead)) {
+		t.Fatalf("the listed descriptor does not name the missing capability:\n%s",
+			visible[0].Description)
+	}
+
+	// (2) IT REFUSES, BY NAME. Asserted by VALUE on the code and the kind: an
+	// "err != nil" here would pass under the site-scope refusal, under the
+	// uniform not-available refusal, and under a 401 -- three different bugs,
+	// two of which this change exists to rule out.
+	_, _, err = mcp.AuthorizeTool(mcp.ToolListSites, denied)
+	if err == nil {
+		t.Fatal("a tool was authorized for a connection that does not hold its capability")
+	}
+	de, ok := domain.AsDomain(err)
+	if !ok {
+		t.Fatalf("err = %v, want a domain error", err)
+	}
+	if de.Code != mcp.ErrCodeCapabilityNotGranted {
+		t.Fatalf("code = %q, want %q", de.Code, mcp.ErrCodeCapabilityNotGranted)
+	}
+	if de.Code == mcp.ErrCodeScopeEmpty {
+		t.Fatal("the capability refusal answered on the SITE axis")
+	}
+	if de.Kind != domain.KindForbidden {
+		t.Fatalf("kind = %v, want KindForbidden; a 401 makes clients re-run an OAuth "+
+			"handshake that cannot change the answer", de.Kind)
+	}
+	if !strings.Contains(de.Message, string(mcp.CapSitesRead)) {
+		t.Fatalf("the refusal does not name the capability: %s", de.Message)
+	}
+	if !strings.Contains(de.Message, "permanent") {
+		t.Fatalf("the refusal does not tell the model it is permanent: %s", de.Message)
+	}
+	if got := de.Details["retryable"]; got != false {
+		t.Fatalf("details[retryable] = %v, want false", got)
+	}
+	if got := de.Details["required_capability"]; got != string(mcp.CapSitesRead) {
+		t.Fatalf("details[required_capability] = %v, want %q", got, mcp.CapSitesRead)
+	}
+
+	// (3) IT DOES NOT OVER-FIRE. The untouched connection still works, after
+	// the refusal, against the same live database.
+	if _, _, err := mcp.AuthorizeTool(mcp.ToolListSites, auth); err != nil {
+		t.Fatalf("the granted connection was refused after the denied one: %v", err)
+	}
+	t.Logf("capability refusal: code=%s retryable=%v; granted connection unaffected",
+		de.Code, de.Details["retryable"])
 }
 
 // TestS7EmptySiteScopeRefusesByNameAsAppRole is the site axis, executed.
