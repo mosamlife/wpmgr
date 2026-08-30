@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, fireEvent, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
@@ -10,6 +10,7 @@ import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
 import { useTags } from "@/features/tags/use-tags";
 import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
 import { fleetTotal, scopeCountLabel } from "./site-step";
+import { CONNECTIONS_PATH } from "./use-ai-connections";
 import type { Site, SiteTag } from "@wpmgr/api";
 
 // Step 3 reads the fleet and the tag registry through the same two hooks the
@@ -501,5 +502,199 @@ describe("changing the client recomputes rather than carrying a stale answer", (
     await pickClient("Claude Desktop");
     expect(screen.queryByText(/set this up inside/i)).not.toBeInTheDocument();
     expect(authCard("token")).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Minting a connection token (step 6's one-time reveal)
+//
+// The fetch is stubbed at the network boundary, not the mutation hook, for
+// the same reason routes/_authed/ai/-index.test.tsx gives: the real queryFn,
+// the real zod parse and the real state mapping all run, and a hook mock here
+// would only prove the component renders whatever it is handed.
+// ---------------------------------------------------------------------------
+
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Stub fetch for exactly the mint POST; anything else fails the test loudly. */
+function stubMintFetch(impl: (init: RequestInit | undefined) => Response | Promise<Response>) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = urlOf(input);
+      const method = init?.method ?? "GET";
+      if (url === CONNECTIONS_PATH && method === "POST") {
+        return Promise.resolve(impl(init));
+      }
+      throw new Error(`unstubbed fetch in mint test: ${method} ${url}`);
+    }),
+  );
+}
+
+const MINTED = {
+  grant_id: "11111111-1111-1111-1111-111111111111",
+  token: "wpm_conn_test_token_value_do_not_reuse",
+  token_prefix: "wpm_conn_ab12",
+  expires_at: "2026-11-27T00:00:00Z",
+  site_scope_mode: "list",
+  capabilities: ["read_fleet", "propose_changes"],
+};
+
+/** Client and method picked, fleet loaded, sitting at the mint button. */
+async function reachMintButton() {
+  renderWizard();
+  await pickClient("Cursor");
+  fireEvent.click(authCard("token"));
+  return screen.findByRole("button", { name: /generate connection token/i });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("minting a connection token", () => {
+  it("reveals the plaintext exactly once, stating the scope and capabilities it covers", async () => {
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+
+    expect(
+      await screen.findByText(/this is the only time this token is shown/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(MINTED.token)).toBeInTheDocument();
+    expect(screen.getByText(/read_fleet, propose_changes/i)).toBeInTheDocument();
+    // No "mint again" affordance beside a token that is supposedly shown once.
+    expect(
+      screen.queryByRole("button", { name: /generate connection token/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears the reveal the moment an input it was minted for changes", async () => {
+    loadedFleet(3);
+    stubMintFetch(() => jsonResponse(MINTED, 201));
+
+    fireEvent.click(await reachMintButton());
+    await screen.findByText(/this is the only time this token is shown/i);
+
+    fireEvent.change(screen.getByLabelText(/name this connection/i), {
+      target: { value: "Fleet manager, renamed" },
+    });
+
+    expect(screen.queryByText(/this is the only time this token is shown/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(MINTED.token)).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /generate connection token/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("sends the tag ids the registry resolved, never the tag names the operator clicked", async () => {
+    loadedFleet(3, () => ["prod"]);
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ data: [{ id: "tag-uuid-1", name: "prod" } as SiteTag] }),
+    );
+    const requestBodies: Record<string, unknown>[] = [];
+    stubMintFetch((init) => {
+      // The mutation always sends a JSON string body (use-ai-connections.ts
+      // calls JSON.stringify), so this narrows rather than stringifying an
+      // arbitrary BodyInit.
+      requestBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return jsonResponse({ ...MINTED, site_scope_mode: "tags" }, 201);
+    });
+
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+    fireEvent.click(screen.getByRole("button", { name: /\+ add tags/i }));
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: /generate connection token/i }));
+
+    await screen.findByText(/this is the only time this token is shown/i);
+    expect(requestBodies).toHaveLength(1);
+    const sentBody = requestBodies[0];
+    expect(sentBody?.scope_tag_ids).toEqual(["tag-uuid-1"]);
+    expect(JSON.stringify(sentBody)).not.toContain("prod");
+  });
+
+  it("refuses to mint on an unresolved tag scope, with a remedy distinct from a server failure", async () => {
+    // tags stays null (the registry has not finished loading) while mode is
+    // "tags" -- resolveTagIds returns null regardless of what is selected, so
+    // this is the client-side refusal the mint panel exists to make loud
+    // rather than silently narrowing the request.
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined, isPending: true }));
+    renderWizard();
+    await pickClient("Cursor");
+    fireEvent.click(authCard("token"));
+    await screen.findByTestId("site-step-count");
+    fireEvent.click(screen.getByRole("radio", { name: /by tag/i }));
+
+    expect(await screen.findByText(/tag scope could not be resolved/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate connection token/i })).toBeDisabled();
+  });
+
+  it("renders a network failure as a network failure, never a confident empty state", async () => {
+    loadedFleet(3);
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+
+    fireEvent.click(await reachMintButton());
+
+    expect(await screen.findByText(/did not reach the server/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this is the only time this token is shown/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the 403 org-scope refusal with its own remedy, distinct from every other failure", async () => {
+    loadedFleet(3);
+    stubMintFetch(() =>
+      jsonResponse(
+        {
+          code: "mcp_org_scope_required",
+          message:
+            "an AI connection is an organisation-wide credential, so listing or revoking one requires full organisation membership. This is a refusal, not an empty list.",
+        },
+        403,
+      ),
+    );
+
+    fireEvent.click(await reachMintButton());
+
+    expect(await screen.findByText(/cannot mint a connection token/i)).toBeInTheDocument();
+    expect(screen.getByText(/organisation-wide credential/i)).toBeInTheDocument();
+    // Not the 429 copy, not the network copy, not the tag copy.
+    expect(screen.queryByText(/too many connection tokens/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/did not reach the server/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the 429 rate limit with the server's own retry-after, distinct from a 403", async () => {
+    loadedFleet(3);
+    stubMintFetch(() =>
+      jsonResponse(
+        {
+          code: "mcp_mint_rate_limited",
+          message: "too many connection tokens minted; retry shortly",
+          details: { retry_after_seconds: 42 },
+        },
+        429,
+      ),
+    );
+
+    fireEvent.click(await reachMintButton());
+
+    expect(await screen.findByText(/too many connection tokens minted recently/i)).toBeInTheDocument();
+    expect(screen.getByText(/wait about 42 seconds/i)).toBeInTheDocument();
+    expect(screen.queryByText(/organisation-wide credential/i)).not.toBeInTheDocument();
   });
 });

@@ -589,7 +589,7 @@ function mintBlockedReason(
 ): string | null {
   if (!nameOk) return "Name this connection before minting a token.";
   if (!tagsResolved) {
-    return "A tag you picked in step 3 no longer resolves to an id -- the tag list may have reloaded since you chose it. Re-open step 3, re-pick it, and try again.";
+    return "This connection's tag scope could not be resolved to ids -- the tag registry has not finished loading, or a tag you picked is no longer in it. Reopen step 3, confirm your tags once it loads, and try again.";
   }
   if (!isScopeApprovable(scope)) {
     return scope.kind === "unresolved" && scope.because === "loading"
@@ -792,7 +792,11 @@ function TokenReveal({
           <Badge variant="muted">Shown once</Badge>
         </div>
         <div className="mt-2">
-          <CopyableMono value={token.token} label="Copy the connection token" truncate />
+          {/* NOT truncate. This is the one and only time the operator sees this
+              value; middle-truncating it here would hide characters they may
+              need to visually verify against what lands in their password
+              manager, for a secret that cannot be looked up again to check. */}
+          <CopyableMono value={token.token} label="Copy the connection token" />
         </div>
         <p className="mt-2 text-xs text-[var(--color-muted-foreground)]">
           {describeSiteScope(scope)} Capabilities: {capabilities}. Revocable from the connections
