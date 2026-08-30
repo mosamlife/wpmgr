@@ -17,9 +17,26 @@
  * version is a claim the client never made.
  */
 export type ProtocolHeader =
+  // FOUR states, matching apps/api/internal/mcp/model.go ClientProtocolState
+  // exactly. This type carried three until the endpoint existed; the server
+  // distinguishes "has never connected at all" from "connected and sent no
+  // header", and folding the first into the second would report a client that
+  // has never dialled in as one that dialled in badly.
+  | { readonly kind: "never_connected" }
   | { readonly kind: "absent" }
   | { readonly kind: "recognised"; readonly version: string }
-  | { readonly kind: "unrecognised"; readonly version: string };
+  | { readonly kind: "unrecognised"; readonly version: string }
+  // A FIFTH KIND THAT IS NOT A FIFTH WIRE STATE. The server never sends this;
+  // it is what WE say when the two fields it did send contradict each other --
+  // a `recognised` or `unrecognised` state carrying a null version.
+  //
+  // It exists because the first version of this mapping folded that
+  // contradiction into `absent`, and `absent` is a specific, confident claim
+  // ABOUT THE CLIENT: "it connected and sent no header". A malformed response
+  // is not that. It is us failing to understand the answer, which is a fact
+  // about us, and it belongs in the same family as the list's `unavailable`
+  // state rather than in the vocabulary of things the client did.
+  | { readonly kind: "unreadable" };
 
 /**
  * When a connection was last used.
@@ -32,7 +49,11 @@ export type LastUsed =
   | { readonly kind: "never" }
   | { readonly kind: "at"; readonly iso: string };
 
-export type ConnectionStatus = "active" | "paused" | "revoked";
+// Exactly the two values mcp_grants_status_check permits (model.go
+// GrantStatus). "paused" was in this type before the endpoint existed and is
+// removed: the server cannot return it, there is no endpoint to produce it, and
+// a status the API cannot emit is a branch that renders for no reason.
+export type ConnectionStatus = "active" | "revoked";
 
 export interface AiConnection {
   readonly id: string;
@@ -50,6 +71,10 @@ export interface AiConnection {
   readonly scopes: readonly string[];
   readonly status: ConnectionStatus;
   readonly createdAt: string;
+  /** all | tags | sites - which sites the grant covers. */
+  readonly siteScopeMode: string;
+  /** null means not revoked. Never inferred from status, and never a zero date. */
+  readonly revokedAt: string | null;
 }
 
 /**
@@ -107,6 +132,14 @@ export function connectionsState(input: {
 /** Human label for a protocol header, keeping absence visible as absence. */
 export function protocolHeaderLabel(header: ProtocolHeader, floorVersion: string): string {
   switch (header.kind) {
+    case "unreadable":
+      // Phrased as OUR failure, not the client's behaviour. Nothing here
+      // claims anything about what the client sent.
+      return "We could not read this client's protocol report";
+    case "never_connected":
+      // NOT "no header". This client has never opened a session at all, so it
+      // has never had the chance to send one.
+      return "Has not connected yet";
     case "absent":
       // Not "unknown", not blank, and not the floor version on its own: the
       // client sent nothing, and we treat that as the floor. Both halves are

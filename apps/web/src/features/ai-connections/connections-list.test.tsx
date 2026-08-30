@@ -29,6 +29,8 @@ const CONNECTED: AiConnection = {
   scopes: ["mcp:read"],
   status: "active",
   createdAt: "2026-08-01T00:00:00.000Z",
+  siteScopeMode: "all",
+  revokedAt: null,
 };
 
 /** The copy that must never appear over a failure. */
@@ -138,11 +140,91 @@ describe("a field the client did not send is rendered as absent", () => {
       status: "ready",
       connections: [{ ...CONNECTED, protocolHeader: { kind: "absent" } }],
     });
-    // Both halves: the client sent nothing, AND we treat that as the floor.
-    expect(await screen.findByText(/no protocol header sent/i)).toBeInTheDocument();
-    expect(screen.getByText(/treated as 2025-03-26/i)).toBeInTheDocument();
+    // Derived, not frozen: the over-fire pass caught this pair of regexes
+    // reddening when the absent wording was reworded, which is correct work.
+    const floor = "2025-03-26";
+    expect(
+      await screen.findByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).toBeInTheDocument();
+    // Both halves still have to be SAID, which is a property of the label and
+    // is asserted on the label rather than on the rendered sentence: the client
+    // sent nothing, and we treat that as the floor.
+    const label = protocolHeaderLabel({ kind: "absent" }, floor);
+    expect(label).toContain(floor);
+    expect(label.length).toBeGreaterThan(floor.length);
     // The number it would have been coerced into must not appear on its own.
     expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
+  });
+
+  it("says a client has not connected yet, rather than that it sent no header", async () => {
+    // FOUR STATES, NOT THREE. This one was missing from the model until the
+    // endpoint existed. "Has never dialled in" and "dialled in and sent no
+    // header" are different facts about different things, and the server went
+    // out of its way not to flatten them into a nullable string.
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, protocolHeader: { kind: "never_connected" } }],
+    });
+    // DERIVED, NOT HARDCODED. The over-fire pass caught an earlier version
+    // matching /has not connected yet/i: rewording that sentence is correct
+    // work and it reddened. Fourth instance of this trap in this slice. What
+    // must not regress is that this state renders as ITSELF and not as one of
+    // the other three, so the expected string comes from the same function the
+    // component uses.
+    const floor = "2025-03-26";
+    const expected = protocolHeaderLabel({ kind: "never_connected" }, floor);
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    // And not as either neighbouring state.
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("2025-11-25")).not.toBeInTheDocument();
+  });
+
+  it("gives all five protocol kinds five different sentences", () => {
+    const floor = "2025-03-26";
+    const labels = [
+      protocolHeaderLabel({ kind: "never_connected" }, floor),
+      protocolHeaderLabel({ kind: "absent" }, floor),
+      protocolHeaderLabel({ kind: "recognised", version: "2025-11-25" }, floor),
+      protocolHeaderLabel({ kind: "unrecognised", version: "2025-11-25" }, floor),
+      // Not a wire state: what we say when the response contradicts itself.
+      protocolHeaderLabel({ kind: "unreadable" }, floor),
+    ];
+    // Same version string in the middle two on purpose: if the label ever
+    // stopped marking the unrecognised one, they would collide and this fails.
+    expect(new Set(labels).size).toBe(5);
+    for (const l of labels) expect(l.trim().length).toBeGreaterThan(0);
+  });
+
+  it("phrases the unreadable label as our failure, not the client's behaviour", () => {
+    // The distinction the kind exists for. Asserted on the pronoun rather than
+    // the whole sentence, so rewording stays free.
+    const label = protocolHeaderLabel({ kind: "unreadable" }, "2025-03-26");
+    expect(label.toLowerCase()).toMatch(/\bwe\b|\bcould not\b|\bunreadable\b/);
+    // And it must not read as a claim about what the client sent.
+    expect(label.toLowerCase()).not.toContain("sent no");
+  });
+
+  it("renders an unreadable report as unreadable, not as 'sent no header'", async () => {
+    // Derived expectations, first time of asking. The property is that this
+    // kind renders as itself and not as a neighbour; the wording is free.
+    const floor = "2025-03-26";
+    renderList({
+      status: "ready",
+      connections: [{ ...CONNECTED, protocolHeader: { kind: "unreadable" } }],
+    });
+    expect(
+      await screen.findByText(protocolHeaderLabel({ kind: "unreadable" }, floor)),
+    ).toBeInTheDocument();
+    // The specific wrong answer: a malformed response rendered as a confident
+    // fact about the client.
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "absent" }, floor)),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(protocolHeaderLabel({ kind: "never_connected" }, floor)),
+    ).not.toBeInTheDocument();
   });
 
   it("distinguishes an unrecognised version from a recognised one", () => {

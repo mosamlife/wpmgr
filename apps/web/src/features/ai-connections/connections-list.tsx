@@ -40,9 +40,13 @@ export interface ConnectionsListProps {
   isRetrying?: boolean;
   /** Rendered in the empty state so the operator has somewhere to go. */
   connectAction?: ReactNode;
-  onRotate?: (connection: AiConnection) => void;
-  onPause?: (connection: AiConnection) => void;
+  // ROTATE AND PAUSE ARE GONE, NOT DISABLED. #593 adds list and revoke and
+  // nothing else, so a rotate button could only ever fail. A control that
+  // cannot work is worse than an absent one: it advertises a capability and
+  // spends the operator's trust when it turns out not to exist.
   onRevoke?: (connection: AiConnection) => void;
+  /** Id currently being revoked, so its row can show the in-flight state. */
+  revokingId?: string | null;
 }
 
 function formatIso(iso: string): string {
@@ -58,9 +62,8 @@ export function ConnectionsList({
   onRetry,
   isRetrying,
   connectAction,
-  onRotate,
-  onPause,
   onRevoke,
+  revokingId,
 }: ConnectionsListProps) {
   if (state.status === "loading") {
     return (
@@ -151,13 +154,7 @@ export function ConnectionsList({
                 <span className="font-medium text-[var(--color-foreground)]">{c.name}</span>
                 <span className="ml-2">
                   <Badge
-                    variant={
-                      c.status === "active"
-                        ? "success"
-                        : c.status === "paused"
-                          ? "muted"
-                          : "destructive"
-                    }
+                    variant={c.status === "active" ? "success" : "destructive"}
                   >
                     {c.status}
                   </Badge>
@@ -231,32 +228,23 @@ export function ConnectionsList({
               </TableCell>
 
               <TableCell className="text-right">
-                <span className="inline-flex gap-1">
+                {/* An ALREADY-REVOKED grant gets no revoke button. The
+                    endpoint is idempotent, so pressing it would succeed and
+                    teach the operator nothing. */}
+                {c.status === "revoked" ? (
+                  <span className="text-xs text-[var(--color-muted-foreground)]">
+                    Revoked
+                  </span>
+                ) : (
                   <Button
                     variant="ghost"
                     size="sm"
-                    disabled={onRotate === undefined}
-                    onClick={() => onRotate?.(c)}
-                  >
-                    Rotate
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={onPause === undefined}
-                    onClick={() => onPause?.(c)}
-                  >
-                    {c.status === "paused" ? "Resume" : "Pause"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={onRevoke === undefined}
+                    disabled={onRevoke === undefined || revokingId === c.id}
                     onClick={() => onRevoke?.(c)}
                   >
-                    Revoke
+                    {revokingId === c.id ? "Revoking..." : "Revoke"}
                   </Button>
-                </span>
+                )}
               </TableCell>
             </TableRow>
           ))}
