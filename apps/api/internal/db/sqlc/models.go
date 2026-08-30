@@ -486,6 +486,7 @@ type McpGrant struct {
 	SiteScopeMode            string             `json:"site_scope_mode"`
 	ScopeTagIds              []uuid.UUID        `json:"scope_tag_ids"`
 	ScopeSiteIds             []uuid.UUID        `json:"scope_site_ids"`
+	Capabilities             []string           `json:"capabilities"`
 	ClientID                 *string            `json:"client_id"`
 	ClientName               *string            `json:"client_name"`
 	ClientVersion            *string            `json:"client_version"`
@@ -495,6 +496,8 @@ type McpGrant struct {
 	CreatedAt                time.Time          `json:"created_at"`
 	LastUsedAt               pgtype.Timestamptz `json:"last_used_at"`
 	RevokedAt                pgtype.Timestamptz `json:"revoked_at"`
+	ExpiresAt                time.Time          `json:"expires_at"`
+	IdleExpireAfterDays      *int32             `json:"idle_expire_after_days"`
 }
 
 type McpOauthClient struct {
