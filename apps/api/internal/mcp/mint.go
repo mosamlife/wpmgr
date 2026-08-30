@@ -113,24 +113,6 @@ func mintLimiterKey(p domain.Principal) string {
 	return string(p.Type) + ":" + id
 }
 
-// mintAuditActor resolves the audit actor for a mint, and it exists because
-// hardcoding ActorUser over req.Principal.UserID recorded "a user did this"
-// against a zero UUID for every API-key caller. The TYPE and the ID must move
-// together: the type drives audit.go's actor-name join (users.name for
-// ActorUser, api_keys.name for ActorAPIKey), so a mismatched pair resolves to
-// no name at all and the row names nobody.
-//
-// This is the one credential-issuance event this file exists to explain. An
-// entry asserting a human acted while naming a user that does not exist is
-// worse than no entry: a missing record prompts a question, a wrong one answers
-// it incorrectly.
-func mintAuditActor(p domain.Principal) (actorType, actorID string) {
-	if p.Type == domain.PrincipalAPIKey {
-		return audit.ActorAPIKey, p.ActorID()
-	}
-	return audit.ActorUser, p.ActorID()
-}
-
 // ErrCodeMintRateLimited is the refusal for an operator who has exhausted
 // either mint budget. It is a NAMED code rather than a bare 429 body so the
 // wizard can tell "slow down" from "you may not do this at all" -- the two need
@@ -364,7 +346,7 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			// that looks like a real author, and an API-key mint genuinely has
 			// no user behind it. Do not "fix" this by inventing one: the actor
 			// is recorded on the audit row, where an api_key actor_type has a
-			// name join of its own (see mintAuditActor), and this column means
+			// name join of its own (see audit.ActorFor), and this column means
 			// "the human who created it" -- an answer of "none" beats an answer
 			// naming a user that does not exist.
 			CreatedByUserID: uuidToPG(req.Principal.UserID),
@@ -405,10 +387,10 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 				return nil
 			}
 			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
-			// mintAuditActor rather than hardcoded. This is the headless path,
+			// audit.ActorFor rather than hardcoded. This is the headless path,
 			// so an API key is its natural caller and ActorUser over
 			// Principal.UserID named a user that does not exist.
-			actorType, actorID := mintAuditActor(req.Principal)
+			actorType, actorID := audit.ActorFor(req.Principal)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   req.Principal.TenantID,
 				ActorType:  actorType,

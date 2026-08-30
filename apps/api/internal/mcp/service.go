@@ -691,10 +691,26 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			if s.audit == nil {
 				return nil
 			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// "CONSENT IS BROWSER-ONLY" IS A CONVENTION, NOT A CONSTRAINT, and
+			// an audit row may not rest on one. /consent is mounted on v1
+			// (server.go's Register(v1), where v1 derives from
+			// sessionAuthGroup and therefore carries Auth.Authenticate()) --
+			// the same Bearer-accepting group as the mint and the revoke. An
+			// API-key holder can drive the OAuth flow headlessly, and then
+			// ActorUser over req.Principal.UserID recorded uuid.Nil against a
+			// grant that really was created.
+			//
+			// CreatedByUserID above stays as it is and stays NULL for a key:
+			// that column means "the human who created it", and "none" is the
+			// honest answer where this pair is the complete one.
+			actorType, actorID := audit.ActorFor(req.Principal)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   req.Principal.TenantID,
-				ActorType:  audit.ActorUser,
-				ActorID:    req.Principal.UserID.String(),
+				ActorType:  actorType,
+				ActorID:    actorID,
 				Action:     audit.ActionMCPGrantCreated,
 				TargetType: "mcp_grant",
 				TargetID:   gr.ID.String(),
@@ -1448,10 +1464,24 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			if s.audit == nil {
 				return nil
 			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// THIS ROUTE IS MOUNTED BY THE SAME CALL AS THE HEADLESS MINT --
+			// server.go's RegisterConnections(v1), one nil check below
+			// Register(v1) -- so an API key that can mint a connection can
+			// revoke one, today, with nothing in between. ActorUser over
+			// p.UserID therefore wrote uuid.Nil for exactly the caller class
+			// this surface was built for, and it wrote it on THE ROW AN
+			// AUDITOR REACHES FOR AFTER AN INCIDENT: "who killed this
+			// credential, and when" answered with a user id that resolves to
+			// no user and, because the name join is gated on actor_type, to no
+			// name either.
+			actorType, actorID := audit.ActorFor(p)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   p.TenantID,
-				ActorType:  audit.ActorUser,
-				ActorID:    p.UserID.String(),
+				ActorType:  actorType,
+				ActorID:    actorID,
 				Action:     audit.ActionMCPGrantRevoked,
 				TargetType: "mcp_grant",
 				TargetID:   grantID.String(),

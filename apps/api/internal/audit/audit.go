@@ -373,17 +373,21 @@ const (
 	// which adds issuance and token_prefix to Metadata).
 	//
 	// ActorID is NEVER the grant's own id -- it is the id of the credential
-	// that authorised it, and ActorType says which kind. ActorUser with the
-	// approving human's user id on the consent path; ActorAPIKey with the key's
-	// id when a machine mints headlessly, which is the mint's ordinary case
-	// (apikey.PrincipalFor sets APIKeyID and never UserID, so reading UserID
-	// there yields uuid.Nil -- see mcp.mintAuditActor, which is the only
-	// correct resolver). Metadata: grant_name, site_scope_mode.
+	// that authorised it, and ActorType says which kind. NEITHER PATH IS
+	// SINGLE-ACTOR-TYPE: both are mounted on the v1 group, which carries
+	// Auth.Authenticate(), so either can be driven by a session user
+	// (ActorUser, their user id) or by an API key (ActorAPIKey, the key's id).
+	// Browser-only consent is a convention about who usually calls it, never a
+	// constraint on who can. Resolve the pair with ActorFor and never compose
+	// it by hand. Metadata: grant_name, site_scope_mode.
 	ActionMCPGrantCreated = "mcp.grant.created"
 	// ActionMCPGrantRevoked is recorded on the SAME transaction as the revoke
-	// (internal/mcp.Service.RevokeConnection, via RecordInTx). ActorType is
-	// ActorUser -- the operator who revoked, ActorID their user id. Metadata:
-	// grant_name, grants_revoked, tokens_revoked, already_revoked.
+	// (internal/mcp.Service.RevokeConnection, via RecordInTx). Same two actor
+	// kinds as ActionMCPGrantCreated and for the same reason -- the revoke
+	// route is mounted by the same call as the headless mint -- so the pair
+	// comes from ActorFor. This is the row an auditor reaches for after an
+	// incident, so an actor it names must be one that exists. Metadata:
+	// grants_revoked, tokens_revoked, already_revoked.
 	ActionMCPGrantRevoked = "mcp.grant.revoked"
 	// ActionMCPToolCalled is recorded per successful tool invocation on the
 	// transport path (internal/mcp.Service.RecordToolCall), BEST-EFFORT like
@@ -403,6 +407,40 @@ const (
 	// tool.
 	ActionMCPToolCalled = "mcp.tool.called"
 )
+
+// ActorFor resolves the (ActorType, ActorID) pair for whichever credential
+// actually authenticated a request. It is the ONLY correct way to fill those
+// two fields from a domain.Principal, and it lives here rather than in a
+// calling package so that there is exactly one of it.
+//
+// IT EXISTS BECAUSE HARDCODING ActorUser OVER Principal.UserID IS WRONG FOR AN
+// API-KEY CALLER, AND SILENTLY SO. apikey.PrincipalFor sets APIKeyID and never
+// UserID, so every route mounted behind Auth.Authenticate() -- whose Bearer
+// branch returns exactly that principal -- can reach this with UserID ==
+// uuid.Nil. The row still writes, still hashes into the chain, and still
+// renders; it just asserts that a user acted and then names a user that does
+// not exist. That is worse than no row at all: a missing record prompts a
+// question, a wrong one answers it incorrectly.
+//
+// THE TYPE AND THE ID MUST MOVE TOGETHER, which is why this returns both and
+// why callers must not compose one of them by hand. ListAuditEntries and
+// ListAuditEntriesFiltered resolve ActorName with two LEFT JOINs gated on
+// actor_type ('user' -> users.name, 'api_key' -> api_keys.name), so a pair
+// that disagrees -- ActorUser beside an api_keys id, or ActorAPIKey beside a
+// users id -- matches neither arm and the row names nobody. Splitting the
+// resolution across two expressions is how the pair drifts apart.
+//
+// Principal.ActorID() is the id source (APIKeyID for an API-key principal,
+// UserID otherwise). A principal that names neither yields ActorUser over
+// uuid.Nil, which is the pre-existing shape for an unattributed row and is not
+// made worse here; the fix for that is to refuse the request upstream, where
+// the caller is still identifiable.
+func ActorFor(p domain.Principal) (actorType, actorID string) {
+	if p.Type == domain.PrincipalAPIKey {
+		return ActorAPIKey, p.ActorID()
+	}
+	return ActorUser, p.ActorID()
+}
 
 // Entry is one audit record.
 type Entry struct {
