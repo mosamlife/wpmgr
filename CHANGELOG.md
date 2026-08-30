@@ -6,6 +6,25 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.149] - 2026-08-30
+
+### Added
+
+- Connection tokens can now be minted directly from the dashboard: `POST /api/v1/mcp/connections`, plus a wizard that walks an operator through picking a client, naming the connection, choosing which sites it may reach, choosing how it authenticates, and revealing the token exactly once. This is the headless path, for the cases the browser sign-in flow cannot reach: CI, an SSH session, a container.
+- A site-access explanation on the consent screen, stating plainly that scoping is a check made at the moment the assistant asks rather than a boundary enforced inside the database, and that a site added to a scoped tag later is included without anyone approving it.
+
+### Changed
+
+- Grants now carry an expiry, an idle expiry and a capability set, all enforced inside the same authorization check that already refused a revoked grant.
+- The connections list now records real activity. It previously reported every connection as "never used," including one actively reading the fleet; it now reports the truth.
+- The MCP surface now writes audit events for grant creation, revocation and tool calls, under a new assistant actor kind, inside the same transaction as the thing they record.
+
+### Fixed
+
+- A connection whose grant holds no capability now answers 403 rather than 401, so a client stops re-running an authentication handshake that could not change the outcome.
+- An empty site allowlist is now a valid thing to approve.
+- A tag selection that only partly resolves is now refused rather than silently narrowed.
+
 ## [0.61.148] - 2026-08-30
 
 ### Added
