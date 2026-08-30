@@ -19,6 +19,8 @@ import {
   type McpClientRow,
 } from "./client-table";
 import { buildSnippet, type Snippet } from "./snippet";
+import { SiteScopeStep, type SiteScopeSelection } from "./site-scope-step";
+import type { FleetSnapshot } from "@/features/mcp-consent/site-scope";
 
 // The connection wizard (design §18). Client first, method second.
 //
@@ -28,18 +30,27 @@ import { buildSnippet, type Snippet } from "./snippet";
 // generic 'unavailable'. Asking a user to choose an auth method their client
 // cannot use is asking them to fail."
 //
-// WHAT THIS RENDERS AND WHAT IT DOES NOT. Steps 1, 2, 5 and 6 live here. Steps
-// 3 and 4 -- which sites, what capabilities -- are collected on the approval
-// screen at /connect/ai, because that is where the grant is actually created
-// (features/mcp-consent/consent-screen.tsx). Duplicating them here would build
-// a second, unwired copy of a consent decision, and a wizard that appears to
-// grant scope it cannot grant is worse than one that says where the choice
-// happens. The step rail below says so on screen.
+// WHAT THIS RENDERS AND WHAT IT DOES NOT. Steps 1, 2, 3 and the setup artefact
+// live here. STEP 3 IS NEW AND IS A REAL DECISION SURFACE: the wireframe puts
+// "which sites" before "what it may do" on purpose, and mcp_grants already
+// carries site_scope_mode, scope_tag_ids and scope_site_ids, so nothing about
+// the selection is blocked on the backend.
+//
+// WHAT STEP 3 STILL CANNOT DO, SAID ON SCREEN RATHER THAN HIDDEN. The grant is
+// created by the approval screen at /connect/ai, which the CLIENT redirects
+// into; this wizard never calls it and has no channel to hand it an answer.
+// So the choice made here is the operator arriving with the answer, not the
+// answer being written. The same is already true of the connection name two
+// sections down, and it is stated the same way rather than implied.
+//
+// Step 4 (capabilities) and the token artefact are NOT stubbed here. Their
+// schema and their endpoint do not exist yet, and a disabled control for a
+// feature with no backend is a promise this file cannot keep.
 //
 // NO SNIPPET IS WRITTEN IN THIS FILE. Every block comes from buildSnippet, and
 // snippet.test.ts fails the build if a config literal appears here.
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 interface StepDef {
   readonly n: Step;
@@ -49,20 +60,48 @@ interface StepDef {
 const STEPS: readonly StepDef[] = [
   { n: 1, label: "Pick your client" },
   { n: 2, label: "How it signs in" },
-  { n: 3, label: "Set it up" },
+  { n: 3, label: "Sites it may reach" },
+  { n: 4, label: "Set it up" },
 ];
 
 export interface ConnectWizardProps {
   /** Absolute MCP endpoint for this deployment. Passed in, never assembled here. */
   endpointUrl: string;
+  /**
+   * What the route loaded of the fleet, or null when the load has not finished
+   * or failed. NULL IS NOT AN EMPTY SNAPSHOT, and a full page is NOT a whole
+   * fleet. Both facts travel inside FleetSnapshot rather than being re-derived
+   * on this screen.
+   */
+  fleet: FleetSnapshot | null;
+  /** The tag registry, or null when we could not read it. Null is not empty. */
+  tags: readonly { readonly id: string; readonly name: string }[] | null;
+  tagsBySiteId: Readonly<Record<string, readonly string[]>>;
+  sitesLoading: boolean;
   /** Where the approval flow lives, for the closing instructions. */
   className?: string;
 }
 
-export function ConnectWizard({ endpointUrl, className }: ConnectWizardProps) {
+export function ConnectWizard({
+  endpointUrl,
+  fleet,
+  tags,
+  tagsBySiteId,
+  sitesLoading,
+  className,
+}: ConnectWizardProps) {
   const [clientId, setClientId] = useState<string | null>(null);
   const [method, setMethod] = useState<AuthMethod | null>(null);
   const [name, setName] = useState("Fleet manager");
+  // NO DEFAULT 'all'. The consent screen refuses one for the same reason
+  // (m124 DECISION 1) and so does the schema: a scope nobody chose must not
+  // begin life as the widest one. 'list' holding nothing is the wireframe's
+  // opening state, and it is empty on purpose.
+  const [selection, setSelection] = useState<SiteScopeSelection>({
+    mode: "list",
+    tagNames: [],
+    siteIds: [],
+  });
 
   const client = useMemo(
     () => MCP_CLIENTS.find((c) => c.id === clientId) ?? null,
@@ -161,6 +200,33 @@ export function ConnectWizard({ endpointUrl, className }: ConnectWizardProps) {
       {client !== null && method !== null ? (
         <Section
           n={3}
+          title="Sites this connection may reach"
+          hint="Chosen before capabilities, on purpose. What a connection may do is only meaningful once you have fixed what it may do it to."
+        >
+          <SiteScopeStep
+            selection={selection}
+            onSelectionChange={setSelection}
+            fleet={fleet}
+            tags={tags}
+            tagsBySiteId={tagsBySiteId}
+            sitesLoading={sitesLoading}
+          />
+          {/* The same correction as the name field below, for the same reason.
+              The client opens the approval screen itself, so this page has no
+              channel into it and cannot hand it a scope. Deciding it here is
+              how you arrive with the answer; the approval screen is where it
+              is written, and it asks again. */}
+          <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
+            Nothing carries this selection to the approval screen. The client opens that
+            screen itself, so it asks for the scope again and that is where it is written.
+            Deciding it here is how you get there with the answer ready.
+          </p>
+        </Section>
+      ) : null}
+
+      {client !== null && method !== null ? (
+        <Section
+          n={4}
           title="Set it up"
           hint="Generated for this client. Every difference below is a real difference between clients."
         >
@@ -232,10 +298,11 @@ function StepRail({ current }: { current: Step }) {
       ))}
       <li className="flex items-center gap-2">
         <span aria-hidden="true">/</span>
-        {/* Named so the wizard does not look like it is hiding the consent
-            decision. It is made on the approval screen, which is where the
-            grant is created. */}
-        <span>4. Choose sites and permissions when you approve</span>
+        {/* Capabilities are NOT a numbered step in this rail. The grant columns
+            behind them do not exist yet, and a number for a screen that cannot
+            be built is a promise the rail has no way to keep. What it names
+            instead is where that decision is made today. */}
+        <span>Permissions are chosen on the approval screen</span>
       </li>
     </ol>
   );

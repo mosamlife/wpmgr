@@ -1,10 +1,57 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, fireEvent, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test/render";
+import { mockQueryResult } from "@/test/query-mocks";
 
 import { Route } from "@/routes/_authed/ai/connect";
 import { MCP_CLIENTS } from "./client-table";
+import { useSites, DEFAULT_SITES_LIMIT } from "@/features/sites/use-sites";
+import { useTags } from "@/features/tags/use-tags";
+import { snapshotFromPage } from "@/features/mcp-consent/site-scope";
+import { fleetTotal, scopeCountLabel } from "./site-step";
+import type { Site, SiteTag } from "@wpmgr/api";
+
+// Step 3 reads the fleet and the tag registry through the same two hooks the
+// consent screen uses, so they are mocked the same way (see
+// routes/_authed/-connect.ai.test.tsx). What matters on this screen is that a
+// FAILED read and an EMPTY one produce different screens, which is only
+// testable if the test can put the hook into each state deliberately.
+vi.mock("@/features/sites/use-sites", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/features/sites/use-sites")>();
+  return { ...actual, useSites: vi.fn() };
+});
+vi.mock("@/features/tags/use-tags", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/features/tags/use-tags")>();
+  return { ...actual, useTags: vi.fn() };
+});
+
+const mockedSites = vi.mocked(useSites);
+const mockedTags = vi.mocked(useTags);
+
+function fakeSite(n: number, tags: string[] = []): Site {
+  return {
+    id: `s${n}`,
+    name: `site-${n}.example`,
+    url: `https://site-${n}.example`,
+    tags,
+  } as Site;
+}
+
+/** A loaded fleet of `count` sites, short of the page limit so it is complete. */
+function loadedFleet(count: number, tagsFor: (n: number) => string[] = () => []) {
+  mockedSites.mockReturnValue(
+    mockQueryResult<Site[]>({
+      data: Array.from({ length: count }, (_, i) => fakeSite(i, tagsFor(i))),
+    }),
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  loadedFleet(0);
+  mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: [] }));
+});
 
 // The wizard, through the real route component, the real router and a real
 // QueryClient -- not by calling a hook or rendering a subcomponent in
@@ -205,6 +252,233 @@ describe("the wizard does not promise things it cannot deliver", () => {
     // or in dev the copied URL reaches the SPA. Saying nothing would hand
     // someone a web page and let them debug their AI client.
     expect(screen.getByText(/reverse proxy must forward \/mcp to the API/i)).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 3 -- "Choose which sites this connection may touch"
+// ---------------------------------------------------------------------------
+
+/** Get as far as step 3, which needs a client and a method behind it. */
+async function reachSiteStep() {
+  renderWizard();
+  await pickClient("Claude Code");
+  fireEvent.click(authCard("oauth"));
+  return await screen.findByTestId("site-step-count");
+}
+
+describe("step 3 exists at all, and sits before capabilities", () => {
+  it("renders a site step between the method and the setup artefact", async () => {
+    await reachSiteStep();
+    // The three modes the schema permits, on screen, as one radiogroup.
+    const modes = screen.getByRole("radiogroup", { name: /site scope/i });
+    for (const label of ["All sites", "By tag", "Named sites"]) {
+      expect(within(modes).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it("names the ordering as a decision rather than leaving it implied", async () => {
+    await reachSiteStep();
+    expect(screen.getByText(/chosen before capabilities, on purpose/i)).toBeInTheDocument();
+  });
+
+  it("numbers the setup artefact after it, so the rail and the page agree", async () => {
+    await reachSiteStep();
+    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    // And the rail no longer claims sites are chosen somewhere else.
+    expect(screen.queryByText(/4\. Choose sites and permissions/i)).not.toBeInTheDocument();
+  });
+
+  it("does not invent a numbered step for capabilities, which has no backend", async () => {
+    await reachSiteStep();
+    expect(screen.queryByRole("heading", { name: /what this connection may do/i })).toBeNull();
+    expect(screen.getByText(/permissions are chosen on the approval screen/i)).toBeInTheDocument();
+  });
+});
+
+describe("the count, and the fleet size it is entitled to claim", () => {
+  it("opens on the wireframe's empty ratio against a fleet it could read", async () => {
+    loadedFleet(60);
+    const count = await reachSiteStep();
+
+    // Derived from the same function the component calls, so a reworded
+    // sentence does not redden this and a wrong NUMBER does.
+    const expected = scopeCountLabel(
+      { kind: "none", because: "no-selection" },
+      fleetTotal(snapshotFromPage(Array.from({ length: 60 }, () => null as never), DEFAULT_SITES_LIMIT)),
+    );
+    expect(count).toHaveTextContent(expected);
+    expect(count.textContent?.startsWith("0 of 60")).toBe(true);
+  });
+
+  it("counts up as sites are picked, and back down as they are removed", async () => {
+    loadedFleet(60);
+    await reachSiteStep();
+
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+    const picker = await screen.findByTestId("site-step-picker");
+    const boxes = within(picker).getAllByRole("checkbox");
+    fireEvent.click(boxes[0]!);
+    fireEvent.click(boxes[1]!);
+    expect(screen.getByTestId("site-step-count").textContent?.startsWith("2 of 60")).toBe(true);
+
+    // The token is the removal affordance, and removing must move the count.
+    fireEvent.click(screen.getAllByRole("button", { name: /^remove /i })[0]!);
+    expect(screen.getByTestId("site-step-count").textContent?.startsWith("1 of 60")).toBe(true);
+  });
+
+  it("refuses to state a fleet size when the page it read came back full", async () => {
+    // A full page is byte-identical to a full page with more behind it, so the
+    // denominator is a floor and the copy has to say so.
+    loadedFleet(DEFAULT_SITES_LIMIT);
+    const count = await reachSiteStep();
+    expect(count.textContent).toMatch(/at least/i);
+  });
+
+  it("states the fleet size plainly when the page was short", async () => {
+    loadedFleet(7);
+    const count = await reachSiteStep();
+    expect(count.textContent).not.toMatch(/at least/i);
+    expect(count.textContent?.startsWith("0 of 7")).toBe(true);
+  });
+});
+
+describe("an empty scope is a working state, not an error", () => {
+  it("says so in as many words, and styles nothing as a failure", async () => {
+    loadedFleet(60);
+    await reachSiteStep();
+
+    const empty = screen.getByTestId("site-step-empty");
+    expect(empty).toHaveTextContent(/working state, not an error/i);
+    expect(empty).toHaveTextContent(/read nothing and propose nothing/i);
+    // Not an alert, because it is not one. An empty scope announced by a
+    // screen reader as an error is the same defect as rendering it in red.
+    expect(screen.queryByTestId("site-step-blocked")).toBeNull();
+    expect(empty.getAttribute("role")).toBeNull();
+  });
+
+  it("does not block the wizard on it", async () => {
+    loadedFleet(60);
+    await reachSiteStep();
+    // The setup artefact is reachable with nothing selected. An earlier
+    // revision of this surface disabled Continue here; that is the behaviour
+    // being corrected.
+    expect(screen.getByRole("heading", { name: /^4\. Set it up$/ })).toBeInTheDocument();
+    expect(await screen.findByText(/"mcpServers"/)).toBeInTheDocument();
+  });
+});
+
+describe("a failed load is not an empty fleet", () => {
+  it("holds the step and says the list did not load, rather than showing a zero", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined }));
+    await reachSiteStep();
+
+    expect(screen.getByTestId("site-step-blocked")).toHaveTextContent(/could not read/i);
+    // And no count is asserted over the top of it.
+    expect(screen.getByTestId("site-step-count").textContent).not.toMatch(/\d/);
+    // The empty-state sentence must NOT appear: "you have chosen nothing" and
+    // "we could not read the list" are different facts.
+    expect(screen.queryByTestId("site-step-empty")).toBeNull();
+  });
+
+  it("offers no site picker to choose from when the fleet is unknown", async () => {
+    mockedSites.mockReturnValue(mockQueryResult<Site[]>({ data: undefined }));
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+    expect(await screen.findByTestId("site-step-sites-failed")).toHaveTextContent(
+      /not the same as having no sites/i,
+    );
+    expect(screen.queryByTestId("site-step-picker")).toBeNull();
+  });
+
+  it("distinguishes a failed tag registry from an organisation with no tags", async () => {
+    loadedFleet(3);
+    mockedTags.mockReturnValue(mockQueryResult<SiteTag[]>({ data: undefined }));
+    await reachSiteStep();
+
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("By tag"));
+    fireEvent.click(screen.getByRole("button", { name: /add tags/i }));
+    expect(await screen.findByTestId("site-step-tags-failed")).toBeInTheDocument();
+    expect(screen.queryByTestId("site-step-tags-empty")).toBeNull();
+  });
+});
+
+describe("a tag matching nothing in a partial page is not a zero", () => {
+  it("holds the step rather than claiming the tag reaches no site", async () => {
+    // A full page, and a tag that matches nothing in it. We have not seen every
+    // site, so "matches nothing" is a claim we cannot make.
+    loadedFleet(DEFAULT_SITES_LIMIT);
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ data: [{ id: "t1", name: "seo-2026" } as SiteTag] }),
+    );
+    await reachSiteStep();
+
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("By tag"));
+    fireEvent.click(screen.getByRole("button", { name: /add tags/i }));
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+
+    expect(screen.getByTestId("site-step-blocked")).toBeInTheDocument();
+    expect(screen.getByTestId("site-step-count").textContent).not.toMatch(/\d/);
+  });
+
+  it("resolves the tag to a real set when the fleet is fully in hand", async () => {
+    loadedFleet(10, (n) => (n < 4 ? ["client-retainer"] : []));
+    mockedTags.mockReturnValue(
+      mockQueryResult<SiteTag[]>({ data: [{ id: "t1", name: "client-retainer" } as SiteTag] }),
+    );
+    await reachSiteStep();
+
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: /site scope/i })).getByText("By tag"));
+    fireEvent.click(screen.getByRole("button", { name: /add tags/i }));
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+
+    expect(screen.getByTestId("site-step-count").textContent?.startsWith("4 of 10")).toBe(true);
+    expect(screen.queryByTestId("site-step-blocked")).toBeNull();
+    // A tag is re-resolved per request, and the screen says so rather than
+    // letting the operator read the list as frozen.
+    expect(screen.getByText(/resolved to a site list at every request/i)).toBeInTheDocument();
+    // The token carries the tag: prefix so it cannot be misread as a hostname.
+    // Scoped to the field, because the picker below renders the same label.
+    expect(
+      within(screen.getByTestId("site-step-tokenfield")).getByText("tag:client-retainer"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("the picker discloses what it could not offer", () => {
+  it("warns that the choices are not all of them when the page came back full", async () => {
+    loadedFleet(DEFAULT_SITES_LIMIT);
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+    expect(await screen.findByTestId("site-step-picker-truncated")).toHaveTextContent(
+      /not all of them/i,
+    );
+  });
+
+  it("says nothing of the sort when it listed the whole fleet", async () => {
+    loadedFleet(9);
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+    await screen.findByTestId("site-step-picker");
+    expect(screen.queryByTestId("site-step-picker-truncated")).toBeNull();
+  });
+
+  it("does not offer a never-reach count it cannot compute", async () => {
+    loadedFleet(DEFAULT_SITES_LIMIT);
+    await reachSiteStep();
+    fireEvent.click(screen.getByRole("button", { name: /add sites/i }));
+    fireEvent.click(within(await screen.findByTestId("site-step-picker")).getAllByRole("checkbox")[0]!);
+    expect(screen.queryByTestId("site-step-excluded")).toBeNull();
+  });
+});
+
+describe("the wizard does not promise to carry the scope it collected", () => {
+  it("says plainly that the approval screen asks again", async () => {
+    loadedFleet(5);
+    await reachSiteStep();
+    expect(
+      screen.getByText(/nothing carries this selection to the approval screen/i),
+    ).toBeInTheDocument();
   });
 });
 
