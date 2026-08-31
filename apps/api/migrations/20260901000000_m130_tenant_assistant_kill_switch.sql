@@ -3,9 +3,14 @@
 -- slice 1A Gate, data-phase Phase 1.
 --
 -- This migration CORRECTS NOTHING. It edits no applied migration, it re-runs no
--- earlier backfill, and no database needs converging onto it beyond the
--- one-time backfill in step (1), which is described in DECISION 6. There is no
--- m114/m115-shaped follow-up owed.
+-- earlier backfill, it contains no backfill of its own (DECISION 6), and no
+-- database in any state needs converging onto it. There is no m114/m115-shaped
+-- repair owed.
+--
+-- A FOLLOW-UP IS OWED, AND IT IS NOT A REPAIR. DECISION 5 holds
+-- assistant_enabled_at out of the authorization verdict on purpose; wiring it
+-- is a later, deliberate change with its own ordinal, and DECISION 6 states
+-- the backfill that change must carry.
 --
 -- WHY IT EXISTS. The MCP transport is LIVE IN PRODUCTION and has no off
 -- switch. ADR-061's pre-v1 checklist requires two separate things that this
@@ -244,10 +249,12 @@
 --       has expired
 --     FAIL
 --
--- THE BACKFILL CANNOT REACH A TENANT THAT DOES NOT EXIST YET. Step (1) enables
--- every tenant holding a grant TODAY, but a tenant created AFTER this file
--- applies has assistant_enabled_at IS NULL, so that one line refuses every
--- connection it will ever make. In the suite that is a red test. IN
+-- NO BACKFILL CAN REACH A TENANT THAT DOES NOT EXIST YET. Even the backfill
+-- this file originally carried -- since deleted, DECISION 6 -- enabled only
+-- tenants holding a grant AT APPLY TIME. A tenant created AFTER this file
+-- applies has assistant_enabled_at IS NULL either way, so that one line
+-- refuses every connection it will ever make. In the suite that is a red
+-- test. IN
 -- PRODUCTION IT IS EVERY NEW SIGNUP: the connection wizard completes, a token
 -- is minted, and every request 401s with nothing naming the cause.
 --
@@ -278,55 +285,75 @@
 -- that fails to run can never extend a credential or un-pause a surface.
 --
 -- ===========================================================================
--- DECISION 6: THE BACKFILL PRESERVES TODAY'S EFFECTIVE AUTHORITY EXACTLY AND
---             IS NOT A PERMISSIVE DEFAULT
+-- DECISION 6: THERE IS NO BACKFILL, BECAUSE THE ONE THIS FILE ORIGINALLY HAD
+--             DID NO WORK -- AND IT WAS 90% OF THE LOCK WINDOW
 -- ===========================================================================
 --
--- The brief's hardest constraint: this ships to a live surface, and a
--- migration that silently switches every tenant off is an outage. m127
--- DECISION 6 is the pattern and this follows it exactly.
+-- THIS FILE ORIGINALLY BACKFILLED assistant_enabled_at = now() FOR EVERY
+-- TENANT HOLDING ANY mcp_grants ROW. That statement has been DELETED, and it
+-- was deleted rather than batched. Both halves of that need arguing.
 --
--- NEITHER COLUMN CARRIES A DEFAULT CLAUSE. A DEFAULT and a one-time backfill
--- are not the same thing. Step (1) sets a value on rows that already exist;
--- every future INSERT is unaffected because both columns are NULLABLE. That is
--- what makes constraint 1 -- every existing insert and read path keeps working
--- -- true by construction rather than by assertion: m127's NOT NULL columns
--- reddened ten integration tests, and NOTHING HERE IS NOT NULL.
+-- WHY IT DOES NO WORK. Two independent reasons, either sufficient:
 --
---   assistant_enabled_at -> now(), FOR EVERY TENANT THAT HAS ANY mcp_grants
---     ROW AT ALL.
+--   a. NOTHING READS THE COLUMN. DECISION 5 holds assistant_enabled_at out of
+--      the verdict, and no other query references it. A backfill whose result
+--      is read by nothing changes no behaviour anywhere.
 --
---     THIS GRANTS NOTHING NEW. A tenant with a grant is a tenant already
---     serving the assistant surface today; writing the column down records
---     what the running system already permits. A tenant with no grant serves
---     nothing today and is left NULL, so it loses nothing either. Every live
---     connection in the fleet keeps working with precisely the authority it
---     has now.
+--   b. IT IS SUPERSEDED BY CONSTRUCTION, NOT MERELY UNUSED TODAY. The
+--      follow-up migration that puts enablement into the verdict MUST BACKFILL
+--      AT ITS OWN APPLY TIME REGARDLESS OF WHAT THIS FILE DID, because every
+--      tenant created BETWEEN this file and that one would otherwise hold NULL
+--      and be refused. So this file's backfill is not an early start on that
+--      work; it is the same work, computed against a strictly staler snapshot,
+--      and entirely overwritten in scope by the correct one. Doing it here and
+--      again there is doing it once, later.
 --
---     `EXISTS (SELECT 1 FROM mcp_grants ...)` WITH NO STATUS FILTER, AND THAT
---     BREADTH IS DELIBERATE. Filtering to status = 'active' would leave a
---     tenant whose only grant is currently revoked marked as never-enabled,
---     and the next connection it creates would be refused -- an org that used
---     the surface last week discovering it is off, caused by a migration
---     rather than by a decision. Any tenant that has ever created a connection
---     has demonstrably opted in.
+-- THAT IS AN INSTRUCTION TO WHOEVER WRITES THE FOLLOW-UP, AND IT IS THE ONE
+-- THING IN THIS FILE THAT CAN STILL CAUSE AN OUTAGE IF IT IS MISSED:
+-- THE FOLLOW-UP MIGRATION MUST BACKFILL assistant_enabled_at IN THE SAME FILE
+-- THAT ADDS THE PREDICATE TO THE VERDICT. Adding the predicate without the
+-- backfill refuses every existing connection in the fleet at boot. The
+-- backfill it needs is the statement deleted from step (1) of this file:
 --
---     ROLLING BACK IS AN OPERATOR ACTION, NOT A MIGRATION. If an org should
---     not have been enabled, an operator sets the column to NULL. The backfill
---     deliberately errs toward preserving service.
+--   UPDATE tenants AS tn SET assistant_enabled_at = now()
+--    WHERE tn.assistant_enabled_at IS NULL
+--      AND EXISTS (SELECT 1 FROM mcp_grants g WHERE g.tenant_id = tn.id);
 --
---   assistant_paused_at -> LEFT NULL ON EVERY ROW. Nothing to backfill. The
---     kill switch starts released everywhere, which is today's behaviour
---     exactly. THIS IS THE COLUMN THAT COULD CAUSE THE FLEET-WIDE OUTAGE IF IT
---     WERE BACKFILLED OR DEFAULTED TO ANYTHING NON-NULL, and it is neither.
+--   `EXISTS` WITH NO STATUS FILTER, AND THAT BREADTH IS DELIBERATE. Filtering
+--   to status = 'active' would leave a tenant whose only grant is currently
+--   revoked marked never-enabled, and its next connection would be refused --
+--   an org that used the surface last week discovering it is off, caused by a
+--   migration rather than by a decision. Any tenant that has ever created a
+--   connection has demonstrably opted in. Guard it `WHERE ... IS NULL` so a
+--   re-run cannot overwrite an operator decision; that guard is the m110/m111
+--   lesson.
 --
---   assistant_paused_reason -> LEFT NULL. Meaningless without a pause.
+-- WHY DELETING IT MATTERS RATHER THAN BEING A TIDY-UP. See DECISION 9: that
+-- one statement was ~90% of the time this migration holds ACCESS EXCLUSIVE on
+-- `tenants`, and it was the only part that wrote rows, generated WAL and
+-- bloated the table.
 --
--- EVERY STATEMENT BELOW IS IDEMPOTENT AND THE FILE IS RE-RUNNABLE. The
--- backfill is guarded by IS NULL, so a second application updates zero rows
--- and cannot re-enable an organisation an operator has since turned off. That
--- guard is the m110/m111 lesson: a backfill that can overwrite an operator
--- decision is the thing that needs the repair migration.
+-- WHAT REMAINS TRUE WITH NO BACKFILL AT ALL:
+--
+--   NO COLUMN CARRIES A DEFAULT AND NO COLUMN IS NOT NULL. Every existing row
+--   keeps NULL in all three, and NULL is a legal, meaningful value in each.
+--   Every existing INSERT that does not mention them keeps working. That is
+--   what makes constraint 1 -- every existing insert and read path keeps
+--   working -- true BY CONSTRUCTION rather than by assertion: m127's NOT NULL
+--   columns reddened ten integration tests, and NOTHING HERE IS NOT NULL.
+--
+--   assistant_paused_at IS NULL ON EVERY ROW, WHICH IS TODAY'S BEHAVIOUR
+--   EXACTLY. This is the column that would cause a fleet-wide outage if it
+--   were backfilled or defaulted to anything non-NULL, and it is neither. The
+--   kill switch starts released everywhere.
+--
+--   assistant_enabled_at IS NULL ON EVERY ROW, AND THAT IS SAFE ONLY BECAUSE
+--   NOTHING READS IT. If that ever stops being true without the backfill
+--   above, it is an outage. DECISION 5 is the same warning from the other
+--   side.
+--
+-- THE FILE REMAINS FULLY IDEMPOTENT AND RE-RUNNABLE: every statement is either
+-- ADD COLUMN IF NOT EXISTS or guarded by a pg_constraint probe.
 --
 -- ===========================================================================
 -- DECISION 7: RLS, POLICIES, AND WHAT IS DELIBERATELY NOT ADDED
@@ -369,9 +396,93 @@
 -- failure that looks like an RLS bug for a day -- and on this table, where
 -- there is no RLS to blame, for longer.
 
+-- ===========================================================================
+-- DECISION 9: THE LOCK WINDOW ON `tenants`, MEASURED, AND WHY `NOT VALID` IS
+--             NOT THE FIX HERE EVEN THOUGH IT USUALLY IS
+-- ===========================================================================
+--
+-- WHY THIS TABLE DESERVES THE PARAGRAPH. internal/db/migrate.go applies each
+-- file inside pgx.BeginFunc -- ONE TRANSACTION FOR THE WHOLE FILE (applyOne,
+-- migrate.go:96-98) -- from inside main() at boot, while other instances are
+-- still serving. So EVERY LOCK THIS FILE TAKES IS HELD UNTIL THE FILE COMMITS,
+-- and ACCESS EXCLUSIVE on `tenants` blocks essentially every request in the
+-- product rather than one feature. The window must not scale with customer
+-- count. "Fast on a laptop" is not the property being claimed.
+--
+-- MEASURED, NOT REASONED ABOUT. PostgreSQL 16.15, throwaway container, the
+-- statements below run in one transaction exactly as applyOne runs them, at
+-- two table sizes so the SHAPE is visible and not just a number:
+--
+--                              200,000 tenants     800,000 tenants
+--   ADD COLUMN x3 (nullable)          0.9 ms              0.65 ms
+--   UPDATE backfill (deleted)       152.6 ms            302.9 ms
+--   ADD CONSTRAINT (check)           10.4 ms             34.6 ms
+--   ---------------------------------------------------------------
+--   total, as first written         164 ms              338 ms
+--   total, as it now stands          11 ms               35 ms
+--
+-- WHAT EACH LINE IS PROPORTIONAL TO:
+--
+--   ADD COLUMN IS FLAT AND IS NOT THE PROBLEM. A nullable column with no
+--   DEFAULT is metadata-only on PostgreSQL 11+; it records an attmissingval
+--   and does not rewrite the table. The measurement confirms it: 4x the rows
+--   changed the time not at all. This is why the three ALTERs are left exactly
+--   as they are.
+--
+--   THE BACKFILL WAS THE WHOLE PROBLEM. ~93% of the original window, the only
+--   statement writing rows, and growing with tenant count. DECISION 6 DELETES
+--   IT rather than batching it, because it did no work -- batching would have
+--   preserved a cost while merely spreading it, and the honest fix for work
+--   that need not happen is not to do it.
+--
+--   THE CHECK SCAN REMAINS AND GROWS WITH TENANT COUNT. It is now the entire
+--   window: ~35 ms at 800k tenants, and it is a read-only sequential scan --
+--   no writes, no WAL, no bloat. It is cheaper than a bare scan of the table
+--   because all three columns were added in this same transaction, so every
+--   row carries the missing-value NULL and the constraint short-circuits on
+--   its first disjunct. Measured against pre-existing columns in their own
+--   transaction the same constraint costs 53 ms at 200k rather than 10 ms,
+--   which is the honest ceiling if that fast path is ever lost.
+--
+-- WHY `NOT VALID` + `VALIDATE CONSTRAINT` IS NOT USED, AND THIS IS A DIFFERENT
+-- ARGUMENT FROM m129's.
+--
+--   m129 DECISION 3 rejected NOT VALID because it "buys a skipped table scan
+--   and costs a permanent two-class table in which old rows are exempt from a
+--   SECURITY bound with nothing scheduled to ever VALIDATE them". That
+--   objection is about leaving a constraint PERMANENTLY unvalidated, and it
+--   would NOT apply to NOT VALID immediately followed by VALIDATE in the same
+--   file -- that pair ends in the identical validated state. So m129's reason
+--   alone does not settle this one, and the lock profile really could have
+--   changed the answer.
+--
+--   IT IS REJECTED HERE FOR A STRONGER AND MORE SPECIFIC REASON: UNDER THIS
+--   MIGRATION RUNNER THE PAIR IS INERT. VALIDATE CONSTRAINT takes the weaker
+--   SHARE UPDATE EXCLUSIVE lock, which is the entire benefit -- but a lock is
+--   only weak if nothing stronger is already held, and applyOne has already
+--   taken ACCESS EXCLUSIVE on this table via the ADD COLUMNs in the SAME
+--   TRANSACTION and holds it until COMMIT. A transaction cannot weaken its own
+--   lock. The split buys a lower lock level that nobody can observe, and pays
+--   for it with a constraint that is briefly invalid and a reader who must
+--   work out why. NOT VALID helps only when the two halves are in SEPARATE
+--   transactions, which internal/db/migrate.go cannot express.
+--
+--   AND THE PRIZE IS ~35 ms. Even granting the split worked, it would remove a
+--   35 ms read-only scan at 800k tenants. The measurement is what makes this a
+--   decision rather than a preference: it was worth checking, and having
+--   checked, the constraint is added VALIDATED, in one statement.
+--
+-- IF THIS TABLE EVER NEEDS A GENUINELY LONG DDL, the fix is not NOT VALID; it
+-- is a runner that can apply a file outside a single transaction. That is a
+-- change to migrate.go and is out of scope here, and it is the right place to
+-- start if a future migration on `tenants` cannot be made cheap in place.
+
 -- ---------------------------------------------------------------------------
 -- (0) Columns. All three NULLABLE with NO DEFAULT, so every existing INSERT
 --     that does not mention them keeps working unchanged. See DECISION 6.
+--
+--     METADATA-ONLY ON PG 11+: no table rewrite, and measured flat across a
+--     4x change in row count. See DECISION 9.
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE "public"."tenants"
@@ -384,21 +495,10 @@ ALTER TABLE "public"."tenants"
     ADD COLUMN IF NOT EXISTS "assistant_paused_reason" text;
 
 -- ---------------------------------------------------------------------------
--- (1) Backfill. WHERE ... IS NULL makes this a no-op on a second run and
---     protects a decision an operator has already made. See DECISION 6.
---
---     Only assistant_enabled_at is backfilled. The kill switch and its reason
---     stay NULL on every row, which is today's behaviour exactly.
+-- (1) NO BACKFILL. THE STATEMENT THAT WAS HERE HAS BEEN DELETED, NOT BATCHED.
+--     See DECISION 6. Every column stays NULL on every existing row, which is
+--     today's behaviour exactly, and the lock window below stays flat.
 -- ---------------------------------------------------------------------------
-
-UPDATE "public"."tenants" AS tn
-   SET "assistant_enabled_at" = now()
- WHERE tn."assistant_enabled_at" IS NULL
-   AND EXISTS (
-        SELECT 1
-          FROM "public"."mcp_grants" g
-         WHERE g."tenant_id" = tn."id"
-   );
 
 -- ---------------------------------------------------------------------------
 -- (2) Constraints. Each guarded by a pg_constraint probe so the file re-runs.
