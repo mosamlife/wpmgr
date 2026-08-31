@@ -1,0 +1,298 @@
+-- m131 - seat the ENTIRE v1 READ capability vocabulary in one migration.
+--
+-- This migration CORRECTS NOTHING. It edits no applied migration and re-runs no
+-- earlier backfill. It is not an m114/m115-shaped repair of m127; m127 is
+-- correct and its design intent is preserved here in full.
+--
+-- CONVERGE PATH. Every database in every state converges by applying this file
+-- and nothing else. There is no separate converge migration owed, and no
+-- operator step. The reason is that the only object this migration changes is a
+-- CHECK constraint whose definition is a literal, so the constraint's post-state
+-- is a function of this file alone and not of what the database held before:
+-- step (1) drops the constraint by name whatever its current definition, and
+-- step (2) re-adds the definition written here. A database that ran m127 and a
+-- database created after this file both end with the identical constraint.
+--
+-- ===========================================================================
+-- WHY IT EXISTS
+-- ===========================================================================
+--
+-- m127 minted mcp_grants.capabilities with a CLOSED vocabulary CHECK holding
+-- exactly one member, 'mcp.sites.read', and said so in its own comment:
+--
+--     "EXTENDING THIS LIST IS A MIGRATION, and that is the review gate m124
+--      DECISION 1 asked for."
+--
+-- That gate is correct and this migration does not remove it. What this
+-- migration changes is HOW OFTEN THE TOLL IS PAID. The closed set is on
+-- CAPABILITIES, not on TOOLS: the v1 read preset is specified as fourteen tools
+-- and a wider inventory classified twenty-one read tools as offerable, but those
+-- map onto a handful of capability GROUPS. Paying the migration toll once per
+-- group as each group's tools land would be seven or eight migrations spread
+-- over the build, each one a schema change on an authorisation path. Paying it
+-- once, now, for every group the read preset will ever have, is one review of
+-- one file -- and the tool registry then widens freely inside a set the database
+-- already accepts, with no further schema work.
+--
+-- Downstream of the one-member set today: the Step 4 capability picker (S29,
+-- roadmap 1A-8) renders one checkbox, and the tool registry cannot widen past a
+-- closed database set.
+--
+-- ===========================================================================
+-- DECISION 1: WHAT IS SEATED, AND WHY EACH NAME IS THE NAME
+-- ===========================================================================
+--
+-- GROUPED BY OUTCOME, NEVER BY MECHANISM. The design forbids a group called
+-- "run PHP", "run WP-CLI", "shell" or "open an arbitrary file", and it forbids
+-- mechanism-shaped names generally -- there is no 'file_read' and no 'db_scan'
+-- here, and the two inventory tools that would have needed them are excluded by
+-- the design's own negative-space clause rather than given a capability. Every
+-- name below is a thing an operator would recognise as an OUTCOME on the Step 4
+-- checkbox: what the assistant may LOOK AT, in the operator's words.
+--
+-- THE THREE SEGMENTS. `mcp.` <outcome domain> `.read`.
+--
+--   a. THE `mcp.` PREFIX IS FROZEN, not chosen. 'mcp.sites.read' is held by
+--      every grant this surface has ever minted, and renaming it would strand
+--      them. The wireframes render the operator-facing form as 'site.content.read'
+--      and 'site.inventory.read'; those are the SCREEN's labels, and adopting
+--      them here would leave the vocabulary carrying two prefixes with one
+--      live member on the losing side. One prefix, and the live member sets it.
+--      The frontend picker renders whatever label it likes above these strings.
+--
+--   b. THE MIDDLE SEGMENT IS THE OUTCOME DOMAIN, singular in intent even where
+--      plural in form, and is the unit an operator ticks.
+--
+--   c. THE `.read` SUFFIX IS LOAD-BEARING AND IS CHECKABLE BY PATTERN. Every
+--      member of this vocabulary ends in '.read'. That makes "this migration
+--      seated no write capability" a property anyone can verify by looking,
+--      rather than a claim in a commit message. The write side of the design
+--      uses '.propose' and '.write'; NEITHER APPEARS IN THIS FILE. See
+--      DECISION 2.
+--
+-- THE EIGHT MEMBERS.
+--
+--   mcp.sites.read        EXISTING, UNCHANGED, AND NOT RENAMED. The fleet
+--                         inventory: which sites exist, what WordPress version
+--                         each runs, which plugins and themes at which versions,
+--                         and what updates are pending. Served entirely from
+--                         control-plane tables; no call reaches a site. This is
+--                         the member m127 seated and the only one any live grant
+--                         holds.
+--
+--   mcp.uptime.read       IS IT UP, AND HAS IT BEEN. Reachability now, uptime
+--                         over a period, and certificate expiry. Separated from
+--                         inventory because its clock is the control plane's own
+--                         probe clock rather than an agent-reported stamp, and
+--                         because "is my site down" is the one question an
+--                         operator would grant on its own.
+--
+--   mcp.backups.read      IS IT BACKED UP. Backup coverage across the fleet and
+--                         which sites' last backup failed. Its own group because
+--                         backup posture is the read an operator most plausibly
+--                         wants WITHOUT granting a general security read, and
+--                         because the backup subsystem is control-plane
+--                         orchestrated end to end and so answers with a clean
+--                         date where several neighbours cannot.
+--
+--   mcp.security.read     IS IT EXPOSED OR TAMPERED WITH. Vulnerability matches
+--                         against installed components, changed core files, and
+--                         failed login attempts. Grouped together because they
+--                         answer one operator question and because they share
+--                         one hazard: each can be silent for a good reason or a
+--                         bad one. A security read whose silence is ambiguous is
+--                         the worst possible member of a read preset, which is
+--                         why the per-site scan stamp is a stated prerequisite
+--                         for the TOOLS in this group. That prerequisite is a
+--                         gate on shipping the tools, NOT on seating the name --
+--                         the name costs a migration and the stamp does not.
+--
+--   mcp.activity.read     WHAT CHANGED, AND HOW IT WENT. Recent changes on a
+--                         site and the outcomes of recent update runs. One group
+--                         rather than two because "what happened lately" is one
+--                         question; an update run is a change with a result
+--                         attached, not a different kind of fact.
+--
+--   mcp.performance.read  HOW FAST AND HOW HEAVY. Page speed and caching, real
+--                         user page speed, database size and bloat, and media
+--                         library waste. Grouped by the outcome an operator is
+--                         buying -- "is this site slow, and what is making it
+--                         heavy" -- rather than by the four different subsystems
+--                         that answer it, which is precisely the mechanism-shaped
+--                         split the design forbids.
+--
+--   mcp.diagnostics.read  WHAT IS WRONG RIGHT NOW. The WordPress site-health
+--                         checks and PHP errors. Deliberately NOT folded into
+--                         mcp.activity.read: an error is a current condition, a
+--                         change is a past event, and an operator granting "tell
+--                         me what is broken" is not thereby granting "tell me
+--                         everything that has happened".
+--
+--   mcp.content.read      SEATED DELIBERATELY AND UNREACHABLE TODAY. See
+--                         DECISION 3.
+--
+-- Eight members against the 64-element ceiling m127's shape check imposes, so
+-- the ceiling is not in play and the shape check is untouched.
+--
+-- ===========================================================================
+-- DECISION 2: NO WRITE CAPABILITY IS SEATED, AND THAT IS NOT AN OVERSIGHT
+-- ===========================================================================
+--
+-- The v1 preset is READ EVERYTHING, CHANGE NOTHING. The wireframes draw a write
+-- group ('site.content.propose', approval required, Editor or above) on the same
+-- Step 4 screen, and it is NOT in this file.
+--
+-- The reason is that m124 DECISION 1 built the closed CHECK specifically so a
+-- write capability cannot reach this table until someone writes a migration
+-- naming it -- so that the arrival of the first capability that can lead to a
+-- change on a live site is its own reviewed event, on its own diff, and not a
+-- line inside a migration whose subject is reads. Seating a write here to save a
+-- later migration would spend the gate to save the toll, which is exactly
+-- backwards: the toll is the cheap part and the gate is the point.
+--
+-- Every member of this vocabulary ends in '.read'. The next migration that adds
+-- a member not ending in '.read' is the one that needs the write review.
+--
+-- ===========================================================================
+-- DECISION 3: THE CONTENT GROUP IS SEATED THOUGH NOTHING CAN GRANT IT
+-- ===========================================================================
+--
+-- 'mcp.content.read' is seated here and is UNREACHABLE at the moment this file
+-- applies. Stated plainly so nobody reads its presence as a claim that it works:
+--
+--   - There is no post or page table on the control plane.
+--   - No agent command returns post content. Two new commands and an agent
+--     release are required, plus a privacy disclosure on the plugin listing and
+--     per-site version gating.
+--   - ADR-062 is Accepted with the content work behind ship blockers.
+--   - The tool registry registers no tool that requires it, so nothing lists it
+--     and nothing can call it.
+--
+-- It is seated ANYWAY because the alternative is a second migration on an
+-- authorisation path at the moment the content work lands, and that migration
+-- would be identical to this one but for one string. The capability may exist in
+-- the database while nothing grants it: the CHECK is a CEILING on what a grant
+-- may hold, not a floor and not a default, so a member no code ever writes has
+-- no effect on any row.
+--
+-- The screen is a separate matter and is NOT settled by this file. The Step 4
+-- wireframe pre-ticks this group first, and it is backed by nothing on either
+-- side; pre-ticking an empty group is a defect. Whether it renders disabled with
+-- the reason or comes off Step 4 for v1 is an open decision for the frontend,
+-- and seating the string here must not be read as having decided it.
+--
+-- ===========================================================================
+-- DECISION 4: WIDENING A CONTAINMENT CHECK CANNOT INVALIDATE AN EXISTING ROW
+-- ===========================================================================
+--
+-- The constraint is `capabilities <@ ARRAY[...]`, array containment. Widening
+-- the right-hand array is MONOTONE: if a row satisfied containment in the
+-- smaller array it satisfies it in every superset, so every existing grant --
+-- all of which hold exactly '{mcp.sites.read}' -- still passes. The empty array
+-- is contained by every array, so '{}' (zero capabilities, the restrictive
+-- value) still passes, as m127 intended.
+--
+-- That is a proof about the operator, not an assertion about the data, but the
+-- migration does not rely on it either way: step (2) re-adds the constraint
+-- WITHOUT `NOT VALID`, so PostgreSQL scans the table and would refuse this
+-- migration outright rather than leave an unchecked row behind.
+--
+-- WHAT THIS MIGRATION DOES NOT DO: it does not widen a single existing grant.
+-- Every grant that held '{mcp.sites.read}' before this file still holds exactly
+-- '{mcp.sites.read}' after it. The CHECK is a ceiling; raising a ceiling moves
+-- nothing that was under it. There is no backfill here and none is wanted --
+-- a backfill would silently hand seven new capabilities to credentials whose
+-- operators consented to one.
+--
+-- ===========================================================================
+-- DECISION 5: THE VOCABULARY IS NOW CLOSED IN TWO PLACES AND MUST BE PROVED
+-- ===========================================================================
+--
+-- capabilityVocabulary in apps/api/internal/mcp/policy.go is the other closed
+-- set. Two closed sets with two answers is worse than one open set: a
+-- capability the database accepts and Go does not is refused at a different
+-- layer with a different error, and a capability Go accepts and the database
+-- does not is a 23514 at INSERT on a path an operator reached through a wizard.
+--
+-- The coupling is now PROVED rather than asked for in a comment. This
+-- constraint's array is readable at runtime and the parity test reads it:
+--
+--     SELECT m[1] AS capability
+--       FROM pg_constraint c
+--       CROSS JOIN LATERAL regexp_matches(
+--                pg_get_constraintdef(c.oid), '''([^'']*)''::text', 'g') AS m
+--      WHERE c.conrelid = 'public.mcp_grants'::regclass
+--        AND c.conname  = 'mcp_grants_capabilities_vocabulary_check';
+--
+-- pg_get_constraintdef renders the stored expression tree, not this file's text,
+-- so the test reads what the DATABASE holds and cannot be fooled by editing a
+-- comment. It must assert BOTH directions -- no member Go lacks, no member the
+-- database lacks -- and it must FAIL rather than pass when the extraction
+-- returns no rows, because an empty extraction reads as "the sets agree" and is
+-- the exact shape of a check that guards nothing.
+--
+-- ===========================================================================
+-- (1) DROP THE ONE-MEMBER CONSTRAINT
+-- ===========================================================================
+--
+-- By name, unconditionally, whatever definition it currently carries. A CHECK
+-- constraint's expression cannot be altered in place, so widening is a drop and
+-- a re-add; there is no window in which the column is unconstrained, because
+-- both statements run in the one transaction the runner wraps this file in.
+--
+-- The NAME is deliberately kept. The parity test in DECISION 5 looks the
+-- constraint up by name, and one stable name means one lookup that works
+-- against an m127-era database and a post-m131 database alike.
+
+ALTER TABLE "public"."mcp_grants"
+    DROP CONSTRAINT IF EXISTS "mcp_grants_capabilities_vocabulary_check";
+
+-- ===========================================================================
+-- (2) RE-ADD IT OVER THE FULL v1 READ VOCABULARY
+-- ===========================================================================
+--
+-- Validated on add, not NOT VALID. See DECISION 4.
+--
+-- Alphabetical, which is also the order AllCapabilities() sorts into, so the
+-- two lists can be read side by side without either being re-sorted first.
+--
+-- KEEP IN LOCKSTEP with capabilityVocabulary in apps/api/internal/mcp/policy.go.
+-- Extending this list is still a migration; DECISION 2 says what the next one
+-- has to justify.
+
+ALTER TABLE "public"."mcp_grants"
+    ADD CONSTRAINT "mcp_grants_capabilities_vocabulary_check"
+    CHECK ("capabilities" <@ ARRAY[
+        'mcp.activity.read',
+        'mcp.backups.read',
+        'mcp.content.read',
+        'mcp.diagnostics.read',
+        'mcp.performance.read',
+        'mcp.security.read',
+        'mcp.sites.read',
+        'mcp.uptime.read'
+    ]::text[]);
+
+-- ===========================================================================
+-- (3) WHAT THE GO LAYER MUST NOW DO -- READ THIS BEFORE WIDENING policy.go
+-- ===========================================================================
+--
+-- This is a note to the next engineer, not work this file performs. It is here
+-- because the hazard is created by widening the OTHER closed set, and whoever
+-- widens it will be reading this file.
+--
+--     DefaultGrantCapabilities() RETURNS AllCapabilities().
+--
+-- AllCapabilities() enumerates capabilityVocabulary. So the moment
+-- capabilityVocabulary is widened to match this constraint, EVERY NEWLY MINTED
+-- GRANT IS STAMPED WITH ALL EIGHT CAPABILITIES, including the content group
+-- DECISION 3 describes as unreachable. That is a widening of a credential
+-- nobody chose the terms of, which is the precise failure m127 DECISION 1
+-- exists to prevent, and it arrives silently as a consequence of a one-line map
+-- edit rather than as a decision anyone makes.
+--
+-- The identity DefaultGrantCapabilities() == AllCapabilities() was TRUE AND
+-- SAFE while the vocabulary held one member. It stops being either in the same
+-- commit that widens the map. The default must become an explicit list -- the
+-- v1 preset -- decoupled from the vocabulary, in that same commit and not after
+-- it.

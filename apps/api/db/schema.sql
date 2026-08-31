@@ -5665,13 +5665,44 @@ CREATE TABLE mcp_grants (
     -- exit gate -- discovery never grants what the registry does not hold --
     -- pushed into the one place a call site cannot forget.
     --
-    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go,
-    -- which holds exactly this one entry today. EXTENDING IT IS A MIGRATION,
-    -- and that coupling is the review gate m124 DECISION 1 asked for: a write
-    -- capability cannot reach this table until someone writes a migration
-    -- naming it. Adding a Capability to policy.go alone fails 23514 on INSERT.
+    -- Keep in lockstep with capabilityVocabulary in internal/mcp/policy.go.
+    -- EXTENDING IT IS A MIGRATION, and that coupling is the review gate m124
+    -- DECISION 1 asked for: a write capability cannot reach this table until
+    -- someone writes a migration naming it. Adding a Capability to policy.go
+    -- alone fails 23514 on INSERT.
+    --
+    -- m131 widened this from the single member m127 seated to the WHOLE v1 READ
+    -- vocabulary, so that the registry can widen freely inside a set the
+    -- database already accepts instead of paying a migration per capability
+    -- group. m131's DECISION 1 gives the reasoning for each name; in short, the
+    -- middle segment is the OUTCOME an operator ticks on Step 4 and never the
+    -- mechanism that serves it.
+    --
+    -- EVERY MEMBER ENDS IN '.read', and that is checkable by pattern rather
+    -- than by trust. No write capability is seated: the write side uses
+    -- '.propose' and '.write', and the first migration to add a member not
+    -- ending in '.read' is the one that owes the write review.
+    --
+    -- 'mcp.content.read' is seated DELIBERATELY AND UNREACHABLE -- there is no
+    -- post or page table here and no agent command returns post content, and
+    -- ADR-062 holds the content work behind ship blockers. The CHECK is a
+    -- ceiling on what a grant MAY hold, not a floor and not a default, so a
+    -- member no code writes affects no row. See m131 DECISION 3.
+    --
+    -- This constraint's array is READ AT RUNTIME by the parity test that holds
+    -- it identical to capabilityVocabulary, via pg_get_constraintdef on this
+    -- constraint NAME -- which is why the name did not change in m131.
     CONSTRAINT mcp_grants_capabilities_vocabulary_check
-        CHECK (capabilities <@ ARRAY['mcp.sites.read']::text[]),
+        CHECK (capabilities <@ ARRAY[
+            'mcp.activity.read',
+            'mcp.backups.read',
+            'mcp.content.read',
+            'mcp.diagnostics.read',
+            'mcp.performance.read',
+            'mcp.security.read',
+            'mcp.sites.read',
+            'mcp.uptime.read'
+        ]::text[]),
     -- The registered OAuth client, or NULL on the headless token path. No
     -- foreign key: neither ON DELETE action is right for a recorded fact.
     client_id text NULL,
