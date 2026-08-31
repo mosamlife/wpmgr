@@ -672,6 +672,16 @@ SELECT
         AND COALESCE(g.last_used_at, g.created_at)
             + make_interval(days => g.idle_expire_after_days) <= now(),
         true)::boolean AS grant_idle_expired,
+    -- The two tenant-level reasons (m130), so a refusal names its own cause
+    -- instead of presenting as a mysterious auth error. No COALESCE is needed
+    -- or wanted on these three: IS NULL and IS NOT NULL never return NULL, and
+    -- the tenant row is always present because the join is an inner join on a
+    -- table with no RLS. The reason string is a diagnostic for the operator
+    -- console and MUST NOT be returned to the MCP client -- it is an internal
+    -- incident note, not a protocol-visible error message.
+    (tn.assistant_enabled_at IS NULL)::boolean  AS tenant_assistant_disabled,
+    (tn.assistant_paused_at IS NOT NULL)::boolean AS tenant_assistant_paused,
+    tn.assistant_paused_reason                  AS tenant_assistant_paused_reason,
     -- COALESCE(..., false)::boolean so this generates as a plain bool and not
     -- a *bool. This is the single column the whole MCP request
     -- boundary turns on; handing it back as a pointer with an absent case is
@@ -699,11 +709,33 @@ SELECT
         -- NULL: an actively used connection must never idle-expire.
         AND (g.idle_expire_after_days IS NULL
              OR COALESCE(g.last_used_at, g.created_at)
-                + make_interval(days => g.idle_expire_after_days) > now()),
+                + make_interval(days => g.idle_expire_after_days) > now())
+        -- TENANT ENABLEMENT IS DELIBERATELY *NOT* IN THIS PREDICATE YET, AND
+        -- THE OMISSION IS LOAD-BEARING. See m130 DECISION 5. Adding
+        -- ` + "`" + `AND tn.assistant_enabled_at IS NOT NULL` + "`" + ` here is a ONE-LINE CHANGE
+        -- THAT MUST NOT BE MADE UNTIL A GO PATH WRITES THAT COLUMN: a tenant
+        -- created after m130 applied has it NULL, so the line refuses every
+        -- connection that tenant will ever make. That was executed, not
+        -- reasoned about -- it refused a live bearer in
+        -- TestMCPActivityStampLandsAsAppRole with
+        -- "this connection has been revoked or has expired". The column is
+        -- inert by construction until the enable control exists, which is the
+        -- m127 DECISION 4 shape.
+        --
+        -- THE KILL SWITCH (m130 DECISION 3). NULL means not paused, which is
+        -- RUNNING -- the permissive direction, and the reason every existing
+        -- row keeps working untouched. Because this verdict is recomputed on
+        -- EVERY REQUEST, engaging the switch refuses the very next request on
+        -- an already-issued, otherwise perfectly valid connection. That is the
+        -- requirement: a switch that only blocks new grants while existing
+        -- tokens keep reading is not a kill switch. Do not cache this.
+        AND tn.assistant_paused_at IS NULL,
         false)::boolean AS authorized
 FROM mcp_connection_tokens t
 JOIN mcp_grants g
     ON g.id = t.grant_id AND g.tenant_id = t.tenant_id
+JOIN tenants tn
+    ON tn.id = t.tenant_id
 WHERE t.tenant_id = $1 AND t.id = $2
 `
 
@@ -713,24 +745,27 @@ type ReCheckMCPRequestAuthorizationInTenantTxParams struct {
 }
 
 type ReCheckMCPRequestAuthorizationInTenantTxRow struct {
-	GrantID                  uuid.UUID          `json:"grant_id"`
-	GrantName                string             `json:"grant_name"`
-	GrantStatus              string             `json:"grant_status"`
-	SiteScopeMode            string             `json:"site_scope_mode"`
-	ScopeTagIds              []uuid.UUID        `json:"scope_tag_ids"`
-	ScopeSiteIds             []uuid.UUID        `json:"scope_site_ids"`
-	ClientID                 *string            `json:"client_id"`
-	GrantCapabilities        []string           `json:"grant_capabilities"`
-	GrantExpiresAt           time.Time          `json:"grant_expires_at"`
-	GrantIdleExpireAfterDays *int32             `json:"grant_idle_expire_after_days"`
-	GrantLastUsedAt          pgtype.Timestamptz `json:"grant_last_used_at"`
-	TokenID                  uuid.UUID          `json:"token_id"`
-	TokenPrefix              string             `json:"token_prefix"`
-	TokenStatus              string             `json:"token_status"`
-	TokenExpiresAt           pgtype.Timestamptz `json:"token_expires_at"`
-	GrantAbsoluteExpired     bool               `json:"grant_absolute_expired"`
-	GrantIdleExpired         bool               `json:"grant_idle_expired"`
-	Authorized               bool               `json:"authorized"`
+	GrantID                     uuid.UUID          `json:"grant_id"`
+	GrantName                   string             `json:"grant_name"`
+	GrantStatus                 string             `json:"grant_status"`
+	SiteScopeMode               string             `json:"site_scope_mode"`
+	ScopeTagIds                 []uuid.UUID        `json:"scope_tag_ids"`
+	ScopeSiteIds                []uuid.UUID        `json:"scope_site_ids"`
+	ClientID                    *string            `json:"client_id"`
+	GrantCapabilities           []string           `json:"grant_capabilities"`
+	GrantExpiresAt              time.Time          `json:"grant_expires_at"`
+	GrantIdleExpireAfterDays    *int32             `json:"grant_idle_expire_after_days"`
+	GrantLastUsedAt             pgtype.Timestamptz `json:"grant_last_used_at"`
+	TokenID                     uuid.UUID          `json:"token_id"`
+	TokenPrefix                 string             `json:"token_prefix"`
+	TokenStatus                 string             `json:"token_status"`
+	TokenExpiresAt              pgtype.Timestamptz `json:"token_expires_at"`
+	GrantAbsoluteExpired        bool               `json:"grant_absolute_expired"`
+	GrantIdleExpired            bool               `json:"grant_idle_expired"`
+	TenantAssistantDisabled     bool               `json:"tenant_assistant_disabled"`
+	TenantAssistantPaused       bool               `json:"tenant_assistant_paused"`
+	TenantAssistantPausedReason *string            `json:"tenant_assistant_paused_reason"`
+	Authorized                  bool               `json:"authorized"`
 }
 
 // Runs InTenantTx with the tenant the lookup above established. STEP 2 OF 2,
@@ -768,6 +803,10 @@ type ReCheckMCPRequestAuthorizationInTenantTxRow struct {
 // and the SAME transaction as the verdict it was authorized under (S7's exit
 // gate: discovery never grants what the registry does not hold, and it cannot
 // hold what this row does not carry).
+// INNER JOIN, and it is safe as an inner join ONLY because tenants has no RLS
+// (m130 DECISION 1/3). No policy can filter this row away, the foreign key on
+// t.tenant_id guarantees it exists, and t.tenant_id is already a bound
+// parameter, so this is a primary-key probe and costs no extra round trip.
 func (q *Queries) ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, arg ReCheckMCPRequestAuthorizationInTenantTxParams) (ReCheckMCPRequestAuthorizationInTenantTxRow, error) {
 	row := q.db.QueryRow(ctx, reCheckMCPRequestAuthorizationInTenantTx, arg.TenantID, arg.ID)
 	var i ReCheckMCPRequestAuthorizationInTenantTxRow
@@ -789,6 +828,9 @@ func (q *Queries) ReCheckMCPRequestAuthorizationInTenantTx(ctx context.Context, 
 		&i.TokenExpiresAt,
 		&i.GrantAbsoluteExpired,
 		&i.GrantIdleExpired,
+		&i.TenantAssistantDisabled,
+		&i.TenantAssistantPaused,
+		&i.TenantAssistantPausedReason,
 		&i.Authorized,
 	)
 	return i, err

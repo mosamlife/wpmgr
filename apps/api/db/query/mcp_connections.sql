@@ -566,6 +566,16 @@ SELECT
         AND COALESCE(g.last_used_at, g.created_at)
             + make_interval(days => g.idle_expire_after_days) <= now(),
         true)::boolean AS grant_idle_expired,
+    -- The two tenant-level reasons (m130), so a refusal names its own cause
+    -- instead of presenting as a mysterious auth error. No COALESCE is needed
+    -- or wanted on these three: IS NULL and IS NOT NULL never return NULL, and
+    -- the tenant row is always present because the join is an inner join on a
+    -- table with no RLS. The reason string is a diagnostic for the operator
+    -- console and MUST NOT be returned to the MCP client -- it is an internal
+    -- incident note, not a protocol-visible error message.
+    (tn.assistant_enabled_at IS NULL)::boolean  AS tenant_assistant_disabled,
+    (tn.assistant_paused_at IS NOT NULL)::boolean AS tenant_assistant_paused,
+    tn.assistant_paused_reason                  AS tenant_assistant_paused_reason,
     -- COALESCE(..., false)::boolean so this generates as a plain bool and not
     -- a *bool. This is the single column the whole MCP request
     -- boundary turns on; handing it back as a pointer with an absent case is
@@ -593,11 +603,37 @@ SELECT
         -- NULL: an actively used connection must never idle-expire.
         AND (g.idle_expire_after_days IS NULL
              OR COALESCE(g.last_used_at, g.created_at)
-                + make_interval(days => g.idle_expire_after_days) > now()),
+                + make_interval(days => g.idle_expire_after_days) > now())
+        -- TENANT ENABLEMENT IS DELIBERATELY *NOT* IN THIS PREDICATE YET, AND
+        -- THE OMISSION IS LOAD-BEARING. See m130 DECISION 5. Adding
+        -- `AND tn.assistant_enabled_at IS NOT NULL` here is a ONE-LINE CHANGE
+        -- THAT MUST NOT BE MADE UNTIL A GO PATH WRITES THAT COLUMN: a tenant
+        -- created after m130 applied has it NULL, so the line refuses every
+        -- connection that tenant will ever make. That was executed, not
+        -- reasoned about -- it refused a live bearer in
+        -- TestMCPActivityStampLandsAsAppRole with
+        -- "this connection has been revoked or has expired". The column is
+        -- inert by construction until the enable control exists, which is the
+        -- m127 DECISION 4 shape.
+        --
+        -- THE KILL SWITCH (m130 DECISION 3). NULL means not paused, which is
+        -- RUNNING -- the permissive direction, and the reason every existing
+        -- row keeps working untouched. Because this verdict is recomputed on
+        -- EVERY REQUEST, engaging the switch refuses the very next request on
+        -- an already-issued, otherwise perfectly valid connection. That is the
+        -- requirement: a switch that only blocks new grants while existing
+        -- tokens keep reading is not a kill switch. Do not cache this.
+        AND tn.assistant_paused_at IS NULL,
         false)::boolean AS authorized
 FROM mcp_connection_tokens t
 JOIN mcp_grants g
     ON g.id = t.grant_id AND g.tenant_id = t.tenant_id
+-- INNER JOIN, and it is safe as an inner join ONLY because tenants has no RLS
+-- (m130 DECISION 1/3). No policy can filter this row away, the foreign key on
+-- t.tenant_id guarantees it exists, and t.tenant_id is already a bound
+-- parameter, so this is a primary-key probe and costs no extra round trip.
+JOIN tenants tn
+    ON tn.id = t.tenant_id
 WHERE t.tenant_id = $1 AND t.id = $2;
 
 -- name: ListMCPConnectionTokensForGrant :many
