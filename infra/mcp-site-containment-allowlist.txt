@@ -1,0 +1,128 @@
+# infra/mcp-site-containment-allowlist.txt
+#
+# The reviewed surface of ADR-061 A11 item 4 -- the containment test.
+#
+# ADR-061 A11.1 says the chokepoint is "the only way this surface names a
+# site". scripts/check-mcp-site-containment.sh reconciles that sentence
+# against the code on every PR. This file is the other half of it: the set of
+# places that are ALLOWED to be on the site-scope boundary, each with the
+# reason somebody reviewed it.
+#
+# It is checked in BOTH directions. An entry here that no longer matches
+# anything in the tree is a FAILURE, not a no-op -- a stale allowlist is how a
+# guard comes to be checking a surface that has moved.
+#
+# FORMAT. One record per line, `KIND value` plus an optional `# reason`.
+# Blank lines and lines starting with `#` are ignored. Three kinds:
+#
+#   CALL <path> <func>        A non-test call to the chokepoint
+#                             (ResolveScopeSites) or to NewSiteSet, identified
+#                             by its file relative to apps/api and its
+#                             enclosing function. Line numbers are deliberately
+#                             NOT part of the identity: an allowlist that goes
+#                             stale on every unrelated edit gets deleted.
+#
+#   PARAM <Method>.<param>    A uuid.UUID / []uuid.UUID parameter on the Store
+#                             interface. EVERY uuid parameter on that interface
+#                             needs an entry, not only the site-looking ones,
+#                             because `GetSiteByID(ctx, tenantID, id uuid.UUID)`
+#                             is a site id wearing a name a pattern would not
+#                             match. Default-closed is the point.
+#
+#   TOOLARGS <path>           A file in internal/mcp that BINDS the tool
+#                             invoker's `args json.RawMessage` to a name --
+#                             i.e. reads request-supplied tool arguments.
+#                             Phase 1's one tool discards them (`_`), so there
+#                             are deliberately NO entries of this kind below.
+#                             The first tool that takes an argument turns CI
+#                             red until a reviewer writes the reason here and
+#                             checks that any site id in it goes through the
+#                             chokepoint.
+#
+# ADDING AN ENTRY IS THE REVIEW. If you are here because CI went red, the
+# question to answer in the reason column is A11's question: can a site id
+# supplied by the request reach the database through this, without passing
+# ResolveScopeSites?
+
+# ---- Chokepoint call sites -------------------------------------------------
+CALL internal/mcp/mint.go verifyScopeReferents          # mint path: resolves the requested scope before the grant is written
+CALL internal/mcp/service.go Authenticate               # request path: resolves the stored scope into the SiteSet on every request
+
+# ---- SiteSet construction --------------------------------------------------
+# NewSiteSet is the second half of the chokepoint: it turns resolved ids into
+# the set the tools filter on. Constructing one from UNRESOLVED ids (a request
+# body, a cache, a grant column read directly) defeats the resolution entirely,
+# which is why its callers are enumerated here and not left free.
+# (Service.Authenticate builds it from the ids ResolveScopeSites returned, in
+# the same function, so it needs no second CALL entry.)
+
+# ---- Store interface uuid parameters ---------------------------------------
+# Each of these was read and is not a request-supplied site id.
+PARAM RedeemAuthorizationCode.tenantID                  # tenant of the resolved principal
+PARAM RedeemAuthorizationCode.codeID                    # authorization code row id, from the code lookup
+PARAM CreateGrantWithCode.grantID                       # callback parameter: the id of the row just inserted
+PARAM CreateGrantWithToken.grantID                      # callback parameter: the id of the row just inserted
+PARAM ListTagIDs.tenantID                               # tenant of the resolved principal
+PARAM ListSitesForRead.tenantID                         # tenant of the resolved principal; the list_sites tool then filters the rows through SiteSet.Allows
+PARAM ReCheckAuthorization.tenantID                     # tenant of the resolved principal
+PARAM ReCheckAuthorization.tokenID                      # token row id, from the token lookup
+# ResolveScopeSites.tenantID is GONE, deliberately not replaced. #649 changed
+# the chokepoint to take `principal db.ScopedPrincipal` instead of a bare
+# tenant uuid, so the chokepoint can route on scope rather than be handed a
+# tenant with no scope attached. ScopedPrincipal is not a uuid type, so Rule B
+# does not extract it and it needs no entry -- the parameter this line used to
+# describe does not exist, and an entry naming it would be exactly the stale
+# allowlist the both-directions check exists to catch.
+PARAM ResolveScopeSites.tagIDs                          # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
+PARAM ResolveScopeSites.siteIDs                         # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
+PARAM RecordClientIdentity.tenantID                     # tenant of the resolved principal
+PARAM RecordClientIdentity.grantID                      # grant row id, from the authenticated grant
+PARAM TouchActivity.tenantID                            # tenant of the resolved principal
+PARAM TouchActivity.grantID                             # grant row id, from the authenticated grant
+PARAM TouchActivity.tokenID                             # token row id, from the authenticated token
+PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke, dashboard principal, not the MCP surface
+# grantID here IS request-supplied -- the :connectionId path parameter of
+# GET /api/v1/mcp/connections/:connectionId/status (handler.go:184). Allowlisted
+# because it can only ever be INTERPRETED as a grant id: it binds to
+# mcp_grants.id in GetMCPGrant (db/query/mcp_connections.sql:326-327), and the
+# audit half compares it in Go, never in SQL.
+#
+# THREE LAYERS, AND THEY ARE NOT INDEPENDENT OF EACH OTHER. Route middleware,
+# the service guard, and the RESTRICTIVE _site_scope SELECT policy on
+# mcp_grants (schema.sql:5851) each refuse a site-constrained principal on
+# their own, so they hold independently against three real regressions: a route
+# mounted without middleware, a refactor that drops the service guard, and a
+# handler swapping RunTenantTx for InTenantTx. They all read the SAME
+# predicate, domain.IsSiteConstrained (internal/domain/principal.go:163), and
+# all three fall together if it -- or whatever populates Principal.Scope and
+# AllowedSiteIDs -- is wrong. Do not read "three layers" as three independent
+# probabilities. That is the accepted tenancy architecture, not a defect of
+# this endpoint; tracked in #646.
+#
+# THIS ENTRY IS FALSIFIED IF ANY OF THESE CHANGES:
+#   - connection_status.go:650 stops being the literal SiteID: uuid.Nil.String()
+#     (the sentinel that holds the audit query's site filter off)
+#   - findFirstToolCallTx uses grantID for anything but the Go-side comparison
+#     at connection_status.go:642
+#   - connection_status.go:571 stops being RunTenantTx
+PARAM ConnectionStatusSnapshot.grantID                  # :connectionId path param; only ever bound to mcp_grants.id, never to a site column
+
+# ---- Tool argument surface -------------------------------------------------
+# Intentionally empty, and still the Phase 1 state: registry.go's one tool
+# discards its arguments (`_ json.RawMessage`).
+#
+# It was briefly NOT empty by accident. Rule C used to key on the parameter
+# name `auth` followed by a named json.RawMessage, and matched
+# transport.go:1045 -- writeProtocolRefusal, where that json.RawMessage is the
+# JSON-RPC envelope id being echoed back into an error response. Adding
+# `TOOLARGS internal/mcp/transport.go` here would have been the obvious way to
+# make CI quiet, and because Rule C's granularity is the FILE it would have
+# switched the rule off for the one file that actually dispatches tools. The
+# rule now matches the toolInvoker type sequence instead, so no entry is needed
+# and none should be added to silence a hit without reading it first.
+
+# ---- Second database paths in package mcp (Rule D) -------------------------
+# Rule D is default-closed on every file of package mcp except repo.go. This is
+# the reviewed-exception list, and an entry is a promise that the file is part
+# of the Store implementation rather than a path around it.
+DBPATH internal/mcp/connection_status.go                # Repo split across files: getGrantTx (:601) and findFirstToolCallTx (:634) are unexported, take a pgx.Tx they do not open, and are reached ONLY from Repo.ConnectionStatusSnapshot (:573,:578,:585) inside r.pool.RunTenantTx (:571) -- the same audited boundary Rule B watches
