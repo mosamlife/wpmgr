@@ -585,7 +585,12 @@ func TestToolCall_RefusalDoesNotChargeTheTenantBucket(t *testing.T) {
 		}
 	}
 
-	want := ToolCallTenantPerMin - ToolCallGrantPerMin
+	// The floor is expressed in BURSTS because that is the capacity actually
+	// available at one instant: the noisy connection can consume at most its
+	// own burst from the shared tenant bucket, leaving the rest for siblings.
+	// Expressing it in per-minute allowances would be measuring the wrong
+	// quantity and would only look right while burst equalled allowance.
+	want := ToolCallTenantBurst - ToolCallGrantBurst
 	if admitted < want {
 		t.Errorf("quiet connection admitted %d calls, want at least %d; "+
 			"refused requests are draining the tenant bucket and starving siblings", admitted, want)

@@ -115,12 +115,24 @@ const (
 	// first minute nor the steady state is the actual defect; the mechanism is
 	// fine and was simply being described wrongly.
 	//
-	// Burst equal to the sustained allowance is therefore kept and made
-	// EXPLICIT here rather than left implied by a shared helper. It buys a
-	// bursty conversational turn at the cost of a bounded instantaneous spike,
-	// and both halves are now stated to the client in the refusal payload.
-	ToolCallTenantBurst = ToolCallTenantPerMin
-	ToolCallGrantBurst  = ToolCallGrantPerMin
+	// THE BURST IS SIZED TO AN INTERACTIVE TURN, NOT TO THE WHOLE MINUTE.
+	//
+	// Leaving burst equal to the sustained allowance -- which is what the
+	// shared helper did implicitly -- has two costs. It lets a bucket that has
+	// been idle admit a full minute's traffic in one instant, which on this
+	// endpoint is that many database writes at once. And it makes the two
+	// published numbers identical, so a client cannot tell them apart and the
+	// pair carries no more information than the single figure it replaced.
+	//
+	// These values are sized from the workload the over-fire proof already
+	// pins: an ordinary interactive session is around twenty calls, so a grant
+	// burst of thirty covers a generous turn with margin, and a tenant burst of
+	// sixty covers two connections doing that at once. The worst-case first
+	// minute falls to 90 for a connection and 160 for an organisation, against
+	// 120 and 240 before -- so this also narrows the gap between the advertised
+	// sustained rate and the true ceiling, rather than only describing it.
+	ToolCallTenantBurst = 60
+	ToolCallGrantBurst  = 30
 
 	// toolCallKeyCap bounds each key map. Reaching it is a memory bound being
 	// enforced, not an error.
