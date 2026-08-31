@@ -1,0 +1,80 @@
+# infra/mcp-site-containment-allowlist.txt
+#
+# The reviewed surface of ADR-061 A11 item 4 -- the containment test.
+#
+# ADR-061 A11.1 says the chokepoint is "the only way this surface names a
+# site". scripts/check-mcp-site-containment.sh reconciles that sentence
+# against the code on every PR. This file is the other half of it: the set of
+# places that are ALLOWED to be on the site-scope boundary, each with the
+# reason somebody reviewed it.
+#
+# It is checked in BOTH directions. An entry here that no longer matches
+# anything in the tree is a FAILURE, not a no-op -- a stale allowlist is how a
+# guard comes to be checking a surface that has moved.
+#
+# FORMAT. One record per line, `KIND value` plus an optional `# reason`.
+# Blank lines and lines starting with `#` are ignored. Three kinds:
+#
+#   CALL <path> <func>        A non-test call to the chokepoint
+#                             (ResolveScopeSites) or to NewSiteSet, identified
+#                             by its file relative to apps/api and its
+#                             enclosing function. Line numbers are deliberately
+#                             NOT part of the identity: an allowlist that goes
+#                             stale on every unrelated edit gets deleted.
+#
+#   PARAM <Method>.<param>    A uuid.UUID / []uuid.UUID parameter on the Store
+#                             interface. EVERY uuid parameter on that interface
+#                             needs an entry, not only the site-looking ones,
+#                             because `GetSiteByID(ctx, tenantID, id uuid.UUID)`
+#                             is a site id wearing a name a pattern would not
+#                             match. Default-closed is the point.
+#
+#   TOOLARGS <path>           A file in internal/mcp that BINDS the tool
+#                             invoker's `args json.RawMessage` to a name --
+#                             i.e. reads request-supplied tool arguments.
+#                             Phase 1's one tool discards them (`_`), so there
+#                             are deliberately NO entries of this kind below.
+#                             The first tool that takes an argument turns CI
+#                             red until a reviewer writes the reason here and
+#                             checks that any site id in it goes through the
+#                             chokepoint.
+#
+# ADDING AN ENTRY IS THE REVIEW. If you are here because CI went red, the
+# question to answer in the reason column is A11's question: can a site id
+# supplied by the request reach the database through this, without passing
+# ResolveScopeSites?
+
+# ---- Chokepoint call sites -------------------------------------------------
+CALL internal/mcp/mint.go verifyScopeReferents          # mint path: resolves the requested scope before the grant is written
+CALL internal/mcp/service.go Authenticate               # request path: resolves the stored scope into the SiteSet on every request
+
+# ---- SiteSet construction --------------------------------------------------
+# NewSiteSet is the second half of the chokepoint: it turns resolved ids into
+# the set the tools filter on. Constructing one from UNRESOLVED ids (a request
+# body, a cache, a grant column read directly) defeats the resolution entirely,
+# which is why its callers are enumerated here and not left free.
+# (Service.Authenticate builds it from the ids ResolveScopeSites returned, in
+# the same function, so it needs no second CALL entry.)
+
+# ---- Store interface uuid parameters ---------------------------------------
+# Each of these was read and is not a request-supplied site id.
+PARAM RedeemAuthorizationCode.tenantID                  # tenant of the resolved principal
+PARAM RedeemAuthorizationCode.codeID                    # authorization code row id, from the code lookup
+PARAM CreateGrantWithCode.grantID                       # callback parameter: the id of the row just inserted
+PARAM CreateGrantWithToken.grantID                      # callback parameter: the id of the row just inserted
+PARAM ListTagIDs.tenantID                               # tenant of the resolved principal
+PARAM ListSitesForRead.tenantID                         # tenant of the resolved principal; the list_sites tool then filters the rows through SiteSet.Allows
+PARAM ReCheckAuthorization.tenantID                     # tenant of the resolved principal
+PARAM ReCheckAuthorization.tokenID                      # token row id, from the token lookup
+PARAM ResolveScopeSites.tenantID                        # the chokepoint itself; tenant of the resolved principal
+PARAM ResolveScopeSites.tagIDs                          # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
+PARAM ResolveScopeSites.siteIDs                         # THE CHOKEPOINT'S OWN INPUT: stored grant scope, resolved under RLS
+PARAM RecordClientIdentity.tenantID                     # tenant of the resolved principal
+PARAM RecordClientIdentity.grantID                      # grant row id, from the authenticated grant
+PARAM TouchActivity.tenantID                            # tenant of the resolved principal
+PARAM TouchActivity.grantID                             # grant row id, from the authenticated grant
+PARAM TouchActivity.tokenID                             # token row id, from the authenticated token
+PARAM RevokeGrantWithTokens.grantID                     # operator-facing revoke, dashboard principal, not the MCP surface
+
+# ---- Tool argument surface -------------------------------------------------
+# Intentionally empty. See TOOLARGS above.
