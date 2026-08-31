@@ -595,15 +595,28 @@ func (s *Service) resolveMintCapabilities(requested []Capability) (CapabilitySet
 // because verifying is what lets the mint store it. That would be an operator
 // minting a credential wider than themselves.
 //
-// TODAY THAT PATH IS UNREACHABLE, AND THIS IS STILL NOT REDUNDANT.
+// TODAY THE ESCALATION IS UNREACHABLE, AND THIS IS STILL NOT REDUNDANT.
 // MintConnection's step 1 calls requireOrgScopedPrincipal, which refuses a
 // site-constrained principal outright, so every principal arriving here is
-// org-scoped and RunTenantTx dispatches it exactly as InTenantTx did. Passing
-// the principal changes no behaviour by one bit today. It is the fail-closed
-// backstop for the day that guard moves or a site-scoped mint becomes a
-// product decision -- the same reason IsSiteConstrained carries its second
-// disjunct, and the same reason ADR-061 A11 lists three independent gates on
-// this path and says none of them is redundant.
+// org-scoped and never reaches InScopedTenantTx. It is the fail-closed backstop
+// for the day that guard moves or a site-scoped mint becomes a product
+// decision -- the same reason IsSiteConstrained carries its second disjunct,
+// and the same reason ADR-061 A11 lists three independent gates on this path
+// and says none of them is redundant.
+//
+// IT IS NOT, HOWEVER, A NO-OP, AND THE EARLIER CLAIM THAT IT CHANGED "NO
+// BEHAVIOUR BY ONE BIT" WAS WRONG. The operator principal forwarded from the
+// handler carries a non-nil UserID, so dispatchTenantTx routes it to
+// InTenantTxAsUser and NOT to InTenantTx -- one extra
+// set_config('app.user_id', ...) per resolution. See
+// TestDispatchTenantTxRoutes's "org scope, no allowlist, with user" case, which
+// pins that branch.
+//
+// The CONSEQUENCE is nil, and that is a checked claim rather than an assumed
+// one: the only app.user_id-keyed policy on `sites` is sites_shared_read (m22),
+// which is PERMISSIVE FOR SELECT and can only add rows shared with that user in
+// OTHER tenants. This query's own `WHERE s.tenant_id = $1` excludes those, so
+// the resolved set cannot widen by a single row.
 func (s *Service) verifyScopeReferents(ctx context.Context, principal domain.Principal, req SiteScopeRequest) error {
 	tenantID := principal.TenantID
 	switch req.Mode {
@@ -632,8 +645,9 @@ func (s *Service) verifyScopeReferents(ctx context.Context, principal domain.Pri
 
 	case SiteScopeModeList:
 		// Site ids are verified through the AUDITED CHOKEPOINT rather than a
-		// second query: ResolveScopeSites runs InTenantTx and joins through
-		// `sites`, so tenant RLS drops every foreign or non-existent id. Under
+		// second query: ResolveScopeSites runs a tenant transaction chosen by
+		// the principal's scope (RunTenantTx) and joins through `sites`, so
+		// tenant RLS drops every foreign or non-existent id. Under
 		// mode 'list' the resolution is exactly the subset of the requested ids
 		// that exist here, so anything missing from the result names nothing.
 		//

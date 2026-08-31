@@ -104,9 +104,15 @@ func TestA11ScopeChokepointRoutesOnPrincipalAsAppRole(t *testing.T) {
 	}
 	named := []uuid.UUID{inside.ID, outside.ID}
 
-	// BEFORE: the tenant-wide read. This is byte-for-byte what the old
-	// bare-uuid signature did for every caller, and it must keep working --
-	// an org-scoped operator legitimately reaches every site in the tenant.
+	// BEFORE: the tenant-wide read. NOT "byte-for-byte what the old signature
+	// did" -- that claim was wrong. orgPrincipal carries a UserID, so
+	// dispatchTenantTx routes it to InTenantTxAsUser rather than the InTenantTx
+	// the bare-uuid version always took, which sets app.user_id as well as
+	// app.tenant_id. The RESOLVED SET is what must be unchanged, and it is: the
+	// only app.user_id-keyed policy on `sites` is sites_shared_read (m22),
+	// PERMISSIVE FOR SELECT over other tenants' shares, which this query's
+	// `WHERE s.tenant_id = $1` excludes. An org-scoped operator must still
+	// reach every site in its own tenant.
 	org, err := mcpRepo.ResolveScopeSites(ctx, orgPrincipal(tenant), "list", nil, named)
 	if err != nil {
 		t.Fatalf("resolve as an org-scoped principal: %v", err)
