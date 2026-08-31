@@ -94,6 +94,34 @@ const (
 	// workable share.
 	ToolCallGrantPerMin = 60
 
+	// ---------------------------------------------------------------------
+	// THE BURST IS A SEPARATE NUMBER AND IS PART OF THE PUBLISHED CONTRACT.
+	//
+	// These buckets are token buckets, so the sustained rate above is NOT the
+	// most calls that can occur in a 60-second window. A bucket starting full
+	// admits its whole burst immediately and then admits the refill on top, so
+	// the true worst case over the first minute is BURST + SUSTAINED --
+	// measured, not reasoned: 240 for the tenant bucket and 120 for the grant
+	// bucket, exactly twice the sustained figures, which is what the refusal
+	// used to advertise as though it were the ceiling.
+	//
+	// WHY THE FIX IS TO PUBLISH BOTH NUMBERS RATHER THAN SHRINK THE BURST.
+	// For burst B and sustained N, the worst-case 60s window is B + N. Making
+	// the single advertised number true would require B = 0, which is not a
+	// smaller burst but no burst at all: the limiter degrades into a hard
+	// inter-arrival gap of one call every 500ms, and an ordinary interactive
+	// turn -- a model making several tool calls to answer one question -- is
+	// refused halfway through. A single number that is true of neither the
+	// first minute nor the steady state is the actual defect; the mechanism is
+	// fine and was simply being described wrongly.
+	//
+	// Burst equal to the sustained allowance is therefore kept and made
+	// EXPLICIT here rather than left implied by a shared helper. It buys a
+	// bursty conversational turn at the cost of a bounded instantaneous spike,
+	// and both halves are now stated to the client in the refusal payload.
+	ToolCallTenantBurst = ToolCallTenantPerMin
+	ToolCallGrantBurst  = ToolCallGrantPerMin
+
 	// toolCallKeyCap bounds each key map. Reaching it is a memory bound being
 	// enforced, not an error.
 	toolCallKeyCap = 4096
@@ -101,6 +129,22 @@ const (
 	// toolCallIdle is how long an untouched bucket survives a sweep.
 	toolCallIdle = 10 * time.Minute
 )
+
+// toolCallBucket builds one bucket from an EXPLICIT sustained rate and burst.
+//
+// Deliberately not perMinuteLimiter, which is shared with the unauthenticated
+// registration limiter: that endpoint's tuning is not in this slice, and
+// changing a helper underneath another endpoint to fix this one's advertised
+// numbers would be a silent behaviour change to /oauth/mcp/register.
+//
+// A non-positive rate or burst means "allow nothing", never "allow everything"
+// -- the direction a misconfiguration has to fail in.
+func toolCallBucket(sustainedPerMin, burst int) *rate.Limiter {
+	if sustainedPerMin <= 0 || burst <= 0 {
+		return rate.NewLimiter(0, 0)
+	}
+	return rate.NewLimiter(rate.Limit(float64(sustainedPerMin)/60.0), burst)
+}
 
 // toolCallLimiter is the two-layer bucket described above. The zero value is
 // NOT usable: construct it with newToolCallLimiter.
@@ -110,6 +154,8 @@ type toolCallLimiter struct {
 	grants       map[uuid.UUID]*keyBucket
 	tenantPerMin int
 	grantPerMin  int
+	tenantBurst  int
+	grantBurst   int
 	cap          int
 	idle         time.Duration
 }
@@ -122,12 +168,14 @@ type keyBucket struct {
 // newToolCallLimiter builds the limiter. Like its sibling it runs no janitor
 // goroutine: each map is swept inline when it grows past the cap, which is the
 // only moment the memory bound is actually at risk.
-func newToolCallLimiter(tenantPerMin, grantPerMin int) *toolCallLimiter {
+func newToolCallLimiter(tenantPerMin, grantPerMin, tenantBurst, grantBurst int) *toolCallLimiter {
 	return &toolCallLimiter{
 		tenants:      make(map[uuid.UUID]*keyBucket),
 		grants:       make(map[uuid.UUID]*keyBucket),
 		tenantPerMin: tenantPerMin,
 		grantPerMin:  grantPerMin,
+		tenantBurst:  tenantBurst,
+		grantBurst:   grantBurst,
 		cap:          toolCallKeyCap,
 		idle:         toolCallIdle,
 	}
@@ -182,10 +230,24 @@ func (l *toolCallLimiter) allow(tenantID, grantID uuid.UUID) toolCallDecision {
 		return toolCallDecision{Allowed: false, RetryAfter: time.Minute, Scope: scopeOrganisation}
 	}
 
-	now := time.Now()
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// THE CLOCK IS SAMPLED AFTER THE LOCK, AND THAT ORDERING IS LOAD-BEARING.
+	//
+	// rate.Limiter advances its internal state monotonically from whatever
+	// timestamp it is handed and refuses to go backwards. Sampling before the
+	// lock lets goroutine A read t1, block on the mutex while goroutine B
+	// advances the bucket to t2 > t1, and then evaluate its request against t1
+	// -- a state the limiter has already moved past. The accounting comes out
+	// wrong, in whichever direction the interleaving happens to produce, and
+	// NO SINGLE-THREADED TEST CAN EVER SHOW IT.
+	//
+	// Reading the clock inside the critical section makes the timestamp and the
+	// bucket state consistent by construction. It is one syscall-free
+	// monotonic read inside a lock this function already holds for the whole
+	// decision, so it costs nothing worth trading for.
+	now := time.Now()
 
 	// ---- QUERY ONLY. Nothing below this line is charged until both pass. ----
 
@@ -220,7 +282,7 @@ func (l *toolCallLimiter) tenantBucketLocked(key uuid.UUID, now time.Time) *keyB
 	b, ok := l.tenants[key]
 	if !ok {
 		sweepFullOnly(l.tenants, l.cap, now)
-		b = &keyBucket{lim: perMinuteLimiter(l.tenantPerMin)}
+		b = &keyBucket{lim: toolCallBucket(l.tenantPerMin, l.tenantBurst)}
 		l.tenants[key] = b
 	}
 	b.seen = now
@@ -236,7 +298,7 @@ func (l *toolCallLimiter) grantBucketLocked(key uuid.UUID, now time.Time) *keyBu
 	b, ok := l.grants[key]
 	if !ok {
 		sweep(l.grants, l.cap, l.idle, now)
-		b = &keyBucket{lim: perMinuteLimiter(l.grantPerMin)}
+		b = &keyBucket{lim: toolCallBucket(l.grantPerMin, l.grantBurst)}
 		l.grants[key] = b
 	}
 	b.seen = now

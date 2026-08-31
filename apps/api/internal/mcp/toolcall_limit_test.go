@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -148,7 +149,8 @@ func postWith(t *testing.T, r *gin.Engine, bearer, body string, headers map[stri
 type limitData struct {
 	RetryAfterSeconds        int    `json:"retry_after_seconds"`
 	LimitScope               string `json:"limit_scope"`
-	LimitPerMinute           int    `json:"limit_per_minute"`
+	SustainedLimitPerMinute  int    `json:"sustained_limit_per_minute"`
+	BurstLimit               int    `json:"burst_limit"`
 	RetryImmediatelyWillFail bool   `json:"retry_immediately_will_fail"`
 }
 
@@ -220,8 +222,14 @@ func assertConnectionBudgetRefuses(t *testing.T, body string) {
 	if d.LimitScope != string(scopeConnection) {
 		t.Errorf("limit_scope = %q, want %q", d.LimitScope, scopeConnection)
 	}
-	if d.LimitPerMinute != ToolCallGrantPerMin {
-		t.Errorf("limit_per_minute = %d, want %d", d.LimitPerMinute, ToolCallGrantPerMin)
+	if d.SustainedLimitPerMinute != ToolCallGrantPerMin {
+		t.Errorf("sustained_limit_per_minute = %d, want %d", d.SustainedLimitPerMinute, ToolCallGrantPerMin)
+	}
+	// THE BURST MUST BE PUBLISHED TOO. A payload carrying only the sustained
+	// figure is the defect this pair of fields replaced: it is true of neither
+	// the first minute nor the steady state.
+	if d.BurstLimit != ToolCallGrantBurst {
+		t.Errorf("burst_limit = %d, want %d", d.BurstLimit, ToolCallGrantBurst)
 	}
 	if !d.RetryImmediatelyWillFail {
 		t.Error("retry_immediately_will_fail = false; a model reads that as permission to retry at once")
@@ -232,6 +240,14 @@ func assertConnectionBudgetRefuses(t *testing.T, body string) {
 	// instruction. Asserted on the message because that is what the model reads.
 	if !strings.Contains(resp.Error.Message, "retrying immediately will not succeed") {
 		t.Errorf("refusal message does not tell the model that an immediate retry fails: %q", resp.Error.Message)
+	}
+	// The prose must carry BOTH numbers, not just the one the payload used to
+	// publish. A model reads the message, not the data object.
+	if !strings.Contains(resp.Error.Message, fmt.Sprintf("%d calls per minute sustained", ToolCallGrantPerMin)) {
+		t.Errorf("refusal message does not state the sustained rate: %q", resp.Error.Message)
+	}
+	if !strings.Contains(resp.Error.Message, fmt.Sprintf("bursts of up to %d", ToolCallGrantBurst)) {
+		t.Errorf("refusal message does not state the burst: %q", resp.Error.Message)
 	}
 }
 
@@ -514,7 +530,7 @@ func assertRefusalWritesNothing(t *testing.T, body string) {
 // ---------------------------------------------------------------------------
 
 func TestToolCall_ManyGrantsCannotExceedTheTenantBound(t *testing.T) {
-	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin)
+	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin, ToolCallTenantBurst, ToolCallGrantBurst)
 	tenant := uuid.New()
 
 	admitted := 0
@@ -548,7 +564,7 @@ func TestToolCall_ManyGrantsCannotExceedTheTenantBound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolCall_RefusalDoesNotChargeTheTenantBucket(t *testing.T) {
-	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin)
+	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin, ToolCallTenantBurst, ToolCallGrantBurst)
 	tenant := uuid.New()
 	noisy := uuid.New()
 
@@ -613,7 +629,7 @@ func TestToolCall_NilLimiterRefuses(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolCall_NewTenantsDoNotResetASaturatedTenantsBound(t *testing.T) {
-	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin)
+	l := newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin, ToolCallTenantBurst, ToolCallGrantBurst)
 	victim := uuid.New()
 
 	// Saturate the victim's TENANT bucket. The grant id is rotated so the
@@ -696,10 +712,10 @@ func TestToolCall_SweepFullOnlyReclaimsRefilledButKeepsIndebtedBuckets(t *testin
 	m := map[uuid.UUID]*keyBucket{}
 
 	full := uuid.New()
-	m[full] = &keyBucket{lim: perMinuteLimiter(ToolCallTenantPerMin), seen: now}
+	m[full] = &keyBucket{lim: toolCallBucket(ToolCallTenantPerMin, ToolCallTenantBurst), seen: now}
 
 	indebt := uuid.New()
-	spent := perMinuteLimiter(ToolCallTenantPerMin)
+	spent := toolCallBucket(ToolCallTenantPerMin, ToolCallTenantBurst)
 	for i := 0; i < ToolCallTenantPerMin; i++ {
 		spent.AllowN(now, 1)
 	}
@@ -763,4 +779,90 @@ func exposesHeader(list, name string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 13 -- THE ADVERTISED NUMBERS ARE THE ENFORCED NUMBERS.
+//
+// The refusal payload tells a client its sustained rate and its burst, and a
+// client that self-paces against those numbers is relying on them being the
+// real ones. This drives the constructed bucket with SYNTHETIC timestamps, so
+// it measures the limiter's actual admission behaviour rather than asserting
+// the constants back at themselves, and it is fully deterministic -- no clock,
+// no sleeping, no scheduling luck.
+//
+// The property proven is the one that was previously mis-advertised: over the
+// first 60 seconds from a full bucket the ceiling is BURST + SUSTAINED, not
+// SUSTAINED. Measured at 240 and 120 for the two buckets before this change,
+// against advertised figures of 120 and 60.
+// ---------------------------------------------------------------------------
+
+func TestToolCall_AdvertisedBurstAndSustainedRateAreTheRealOnes(t *testing.T) {
+	cases := []struct {
+		name      string
+		sustained int
+		burst     int
+	}{
+		{"tenant", ToolCallTenantPerMin, ToolCallTenantBurst},
+		{"grant", ToolCallGrantPerMin, ToolCallGrantBurst},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// 1. THE BURST IS EXACTLY WHAT IS ADVERTISED: from full, exactly
+			//    `burst` consecutive calls are admitted at one instant.
+			b := toolCallBucket(c.sustained, c.burst)
+			at := time.Now()
+			immediate := 0
+			for b.AllowN(at, 1) {
+				immediate++
+			}
+			if immediate != c.burst {
+				t.Errorf("%s admitted %d calls at one instant, want burst_limit = %d",
+					c.name, immediate, c.burst)
+			}
+
+			// 2. THE SUSTAINED RATE IS EXACTLY WHAT IS ADVERTISED: over the
+			//    following minute the drained bucket refills by `sustained`.
+			refill := 0
+			for ms := 0; ms <= 60000; ms += 10 {
+				tick := at.Add(time.Duration(ms) * time.Millisecond)
+				for b.AllowN(tick, 1) {
+					refill++
+				}
+			}
+			if refill != c.sustained {
+				t.Errorf("%s refilled %d calls over 60s, want sustained_limit_per_minute = %d",
+					c.name, refill, c.sustained)
+			}
+
+			// 3. THE WORST-CASE FIRST MINUTE IS BURST + SUSTAINED. Stated as a
+			//    positive assertion so the number cannot drift unnoticed, and
+			//    so nobody "fixes" it back to the single figure that was wrong.
+			if got, want := immediate+refill, c.burst+c.sustained; got != want {
+				t.Errorf("%s admitted %d over the first 60s from full, want %d", c.name, got, want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 14 -- A MISCONFIGURED BUCKET ADMITS NOTHING.
+//
+// A non-positive rate or burst has to mean "allow nothing", never "no limit
+// configured, therefore permitted". Same direction of failure as the nil
+// receiver in PROOF 9, one layer down.
+// ---------------------------------------------------------------------------
+
+func TestToolCall_NonPositiveBucketConfigurationAdmitsNothing(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct{ sustained, burst int }{
+		{0, 10}, {10, 0}, {-1, 10}, {10, -1}, {0, 0},
+	} {
+		b := toolCallBucket(c.sustained, c.burst)
+		if b.AllowN(now, 1) {
+			t.Errorf("toolCallBucket(%d, %d) admitted a request; a misconfigured budget "+
+				"must refuse, not permit", c.sustained, c.burst)
+		}
+	}
 }

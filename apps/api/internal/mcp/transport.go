@@ -133,7 +133,8 @@ func NewTransportHandler(svc *Service, log *slog.Logger, version string) *Transp
 		// Armed HERE rather than injected with a nil default, for the reason
 		// NewService gives about its own limiter: an unarmed limiter would be a
 		// wiring failure that presents as a perfectly working endpoint.
-		toolLimit: newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin),
+		toolLimit: newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin,
+			ToolCallTenantBurst, ToolCallGrantBurst),
 	}
 }
 
@@ -782,29 +783,38 @@ func (h *TransportHandler) rateLimit(c *gin.Context, auth AuthorizedRequest, req
 		slog.Int("retry_after_seconds", secs),
 	)
 
+	sustained, burst := limitsForScope(d.Scope)
+
 	var msg string
 	switch d.Scope {
 	case scopeConnection:
 		msg = fmt.Sprintf(
-			"This connection has reached its tool-call rate limit of %d calls per minute. "+
-				"Wait %d seconds before calling this tool again -- retrying immediately will not "+
-				"succeed and will not shorten the wait. Nothing is misconfigured and no credential "+
-				"needs to be changed; the same call will work after the wait.",
-			ToolCallGrantPerMin, secs)
-	default:
-		msg = fmt.Sprintf(
-			"This organisation has reached its tool-call rate limit of %d calls per minute across "+
-				"all of its connections. Wait %d seconds before calling this tool again -- retrying "+
+			"This connection has reached its tool-call rate limit: %d calls per minute sustained, "+
+				"in bursts of up to %d. Wait %d seconds before calling this tool again -- retrying "+
 				"immediately will not succeed and will not shorten the wait. Nothing is "+
 				"misconfigured and no credential needs to be changed; the same call will work "+
 				"after the wait.",
-			ToolCallTenantPerMin, secs)
+			sustained, burst, secs)
+	default:
+		msg = fmt.Sprintf(
+			"This organisation has reached its tool-call rate limit across all of its "+
+				"connections: %d calls per minute sustained, in bursts of up to %d. Wait %d "+
+				"seconds before calling this tool again -- retrying immediately will not succeed "+
+				"and will not shorten the wait. Nothing is misconfigured and no credential needs "+
+				"to be changed; the same call will work after the wait.",
+			sustained, burst, secs)
 	}
 
+	// TWO NUMBERS, NOT ONE. A single "limit_per_minute" was true of neither the
+	// first minute nor the steady state: these are token buckets, so a client
+	// self-pacing against the sustained figure alone under-uses its allowance,
+	// and one that treats it as a hard ceiling is wrong by the burst. Both are
+	// published so a client can pace correctly against either.
 	data, _ := json.Marshal(map[string]any{
-		"retry_after_seconds": secs,
-		"limit_scope":         string(d.Scope),
-		"limit_per_minute":    limitForScope(d.Scope),
+		"retry_after_seconds":        secs,
+		"limit_scope":                string(d.Scope),
+		"sustained_limit_per_minute": sustained,
+		"burst_limit":                burst,
 		// Stated as a field and not only in the prose, so a client that
 		// branches on structure rather than reading the message reaches the
 		// same conclusion.
@@ -813,13 +823,14 @@ func (h *TransportHandler) rateLimit(c *gin.Context, auth AuthorizedRequest, req
 	return newErrorResponse(req.ID, codeRateLimited, msg, data), true
 }
 
-// limitForScope reports the per-minute budget that refused, so the data object
-// and the message can never disagree about which number applies.
-func limitForScope(s limitScope) int {
+// limitsForScope reports the sustained rate AND the burst of whichever bucket
+// refused, from one place, so the data object and the message can never
+// disagree about either number.
+func limitsForScope(s limitScope) (sustained, burst int) {
 	if s == scopeConnection {
-		return ToolCallGrantPerMin
+		return ToolCallGrantPerMin, ToolCallGrantBurst
 	}
-	return ToolCallTenantPerMin
+	return ToolCallTenantPerMin, ToolCallTenantBurst
 }
 
 func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
