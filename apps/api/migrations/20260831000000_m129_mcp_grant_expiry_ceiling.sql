@@ -1,0 +1,243 @@
+-- m129 - close the OPEN UPPER END of mcp_grants.expires_at. An absolute expiry
+-- may now be at most ONE YEAR after the row was created.
+--
+-- This migration CORRECTS NOTHING IN THE m110/m111 SENSE. It edits no applied
+-- migration, it re-runs no backfill, and it repairs no database that applied an
+-- earlier version of itself. It ADDS a bound m127 did not have. See ORDINAL and
+-- CONVERGE PATH below.
+--
+-- ORDINAL. 20260831000000, above m128 (20260830000000) and m127
+-- (20260829000000). Ordinal is APPLY ORDER, not commit order -- the m113/m114
+-- lesson -- and this file MUST apply after m127, because it constrains a column
+-- m127 creates. Ordering against m128 does not matter (m128 adds setup_client,
+-- which this file never mentions) but the ordinal is above it anyway so the
+-- sequence has no gaps to argue about. Verified as the highest ordinal in the
+-- tree across every ref, not just this branch:
+--
+--   git log --all --diff-filter=A --name-only --format='' \
+--     -- 'apps/api/migrations/*.sql' \
+--     | grep -oE '2026[0-9]{10}_m[0-9]+_[a-z_]+\.sql' | sort -u | tail -3
+--       -> ...m127... / ...m128... and nothing above 20260830000000
+--
+-- CONVERGE PATH FOR A DATABASE ON THE EARLIER VERSION: NONE IS OWED, AND THE
+-- REASON IS NOT "it is only a CHECK". A converge migration (m114, m115) is owed
+-- when databases can be in DIFFERENT END STATES for the same ordinal. Every
+-- database that reaches this file reaches the same end state, because the
+-- constraint is added VALIDATED (see DECISION 3) and therefore either applies
+-- to every row present or fails the boot loudly. A database that has not yet
+-- applied m129 simply has no upper bound, which is exactly the state m127 left
+-- and which the whole of this file argues is wrong but not corrupting. There is
+-- no half-applied shape for a later file to repair.
+--
+-- ===========================================================================
+-- WHY IT EXISTS: THE BOUND IS ASYMMETRIC AND THE OPEN END IS THE DANGEROUS ONE
+-- ===========================================================================
+--
+-- m127 bounded expires_at BELOW and not above:
+--
+--   mcp_grants_expires_at_after_created_check  CHECK (expires_at > created_at)
+--
+-- and in the same file bounded the OTHER expiry axis on BOTH ends, with a
+-- stated reason that applies verbatim to this one:
+--
+--   mcp_grants_idle_expire_after_days_check ... >= 1 AND <= 3650
+--   "ten years is the ceiling so a fat-fingered value cannot become an
+--    effectively-absent control"
+--
+-- The absolute deadline got no equivalent. A security review executed the gap
+-- as wpmgr_app and both halves were accepted with a nil error:
+--
+--   CASE D  expires_at = now() + 1 second   -> accepted
+--   CASE E  expires_at = year 9999          -> accepted
+--
+-- CASE E is a credential that never expires, stored in the column whose entire
+-- purpose per m127 DECISION 2 is that a never-expiring connection "is not a
+-- thing the product offers, so it is not a thing the schema can hold". The
+-- column achieved that for NULL and not for the year 9999, which is the same
+-- fact spelled differently.
+--
+-- CASE D IS DELIBERATELY LEFT ACCEPTED. A one-second expiry is a credential
+-- that dies immediately; it fails closed, it is a legitimate thing to ask for,
+-- and refusing it would need a MINIMUM lifetime that no wireframe asks for.
+-- This file bounds only the end where absence means unlimited authority.
+--
+-- WHY NOW, WHILE IT IS STILL UNREACHABLE. Nothing writes this column except
+-- internal/mcp/service.go, which stamps s.now().UTC().Add(grantAbsoluteTTL) at
+-- a hardcoded 90 days. The comment on that constant says what changes:
+--
+--   "When Step 5's control ships, the operator's choice arrives on
+--    ApprovalRequest and REPLACES this default at this line"
+--
+-- At that moment ONE LINE OF GO stands between a request body and an immortal
+-- credential, and the database has no backstop under it. The schema is the
+-- right place for the ceiling for m127 DECISION 1's own reason: it is the one
+-- place that cannot be forgotten at a call site. Landing it BEFORE the control
+-- means Step 5 is built against a bound that already exists, rather than
+-- against a bound somebody must remember to add afterwards.
+--
+-- ===========================================================================
+-- DECISION 1: ONE YEAR, AND IT IS EXPRESSED AS interval '1 year' AND NOT AS A
+--             DAY COUNT. THE LEAP YEAR DECIDES THIS, NOT TASTE.
+-- ===========================================================================
+--
+-- The owner's ruling is "capped at 1 year". Step 5 of the wireframe offers
+-- 30 days / 90 days / 1 year / on a date, so ONE YEAR IS THE LARGEST VALUE THE
+-- PRODUCT ITSELF OFFERS. The ceiling is set exactly there rather than at some
+-- rounder-looking number above it: a ceiling above the control's own maximum
+-- would be a bound nothing can reach through the UI and would only ever be hit
+-- by the "on a date" free field, which is the field the review executed.
+--
+-- interval '1 year' AND NOT interval '365 days'. THESE ARE DIFFERENT VALUES AND
+-- THE DIFFERENCE IS A SEASONAL BUG. A calendar year that spans 29 February is
+-- 366 days. Go's time.Time.AddDate(1, 0, 0) -- the natural way to implement
+-- Step 5's "1 year" option -- returns the CALENDAR year, so for a grant created
+-- on 2027-06-01 it returns 2028-06-01, which is 366 days later because
+-- 2028 is a leap year.
+--
+--   Under a 365-day ceiling that INSERT fails 23514.
+--
+-- The operator would have picked the option the UI pre-draws, on a date the UI
+-- cannot know is special, and the wizard would break at the last step -- for
+-- part of the year only, which is the hardest possible bug to reproduce and the
+-- exact "fails for a condition that is nobody's error" shape m128 DECISION 3
+-- rejected. A day count is easier to hold in your head. A calendar year is
+-- easier to be right about at 3am, because it is the same unit the control, the
+-- copy, the ruling and the Go call all speak, and it CANNOT be narrower than
+-- any of them.
+--
+-- The ceiling is INCLUSIVE (<=). Exactly one year is the maximum the control
+-- offers, so exactly one year must INSERT rather than be refused by one
+-- microsecond. The proofs name this boundary explicitly.
+--
+-- ===========================================================================
+-- DECISION 2: THE COMPARISON IS NORMALISED TO UTC, WHICH MAKES IT IMMUTABLE
+-- ===========================================================================
+--
+-- Written the obvious way -- expires_at <= created_at + interval '1 year' --
+-- this constraint would be STABLE rather than IMMUTABLE, because
+-- timestamptz + interval resolves year and day units in the SESSION's
+-- TimeZone. Two consequences, one cosmetic and one not:
+--
+--   a. m127's shape check states the house standard as "IMMUTABLE expressions
+--      only so the constraint is valid in a CHECK". PostgreSQL does not
+--      actually refuse a STABLE expression in a CHECK, which is precisely why
+--      the standard has to be kept by hand.
+--
+--   b. THE REAL ONE: a year boundary that straddles a daylight-saving
+--      transition shifts by an hour depending on the session TimeZone. A row
+--      written at exactly one year would then pass in one session and be
+--      refused in another, for the same data. That is a bound that disagrees
+--      with itself, and finding it would cost a day.
+--
+-- timezone('UTC', ts) returns timestamp WITHOUT time zone and is IMMUTABLE, and
+-- timestamp + interval is IMMUTABLE too, so normalising both sides removes the
+-- session dependence entirely. UTC is also the frame Go writes in
+-- (s.now().UTC()), so the database is checking the arithmetic in the same frame
+-- the caller computed it in.
+--
+-- ===========================================================================
+-- DECISION 3: ADDED VALIDATED, NOT `NOT VALID`
+-- ===========================================================================
+--
+-- NO EXISTING ROW CAN VIOLATE THIS BOUND, AND THAT WAS CONFIRMED BY QUERY
+-- RATHER THAN BY REASONING. The only writer of this column is
+-- internal/mcp/service.go at a hardcoded 90 days, and m127's backfill wrote
+-- now() + interval '90 days'; both are far inside a one-year ceiling. The
+-- census run against the integration database was:
+--
+--   SELECT count(*) FROM mcp_grants
+--    WHERE timezone('UTC', expires_at)
+--          > timezone('UTC', created_at) + interval '1 year';
+--
+-- `NOT VALID` was considered and rejected. It buys a skipped table scan and
+-- costs a permanent two-class table in which old rows are exempt from a
+-- SECURITY bound with nothing scheduled to ever VALIDATE them -- and an
+-- immortal credential that predates the ceiling is exactly the row the ceiling
+-- exists to refuse. mcp_grants holds a handful of rows per organisation, the
+-- scan is trivial, and a validated constraint means the bound is true of the
+-- table rather than true of future writes.
+--
+-- IF THE SCAN EVER DOES FAIL, IT FAILS INSIDE main() AT BOOT AND TAKES THE
+-- CONTROL PLANE DOWN ON EVERY INSTALL. That is stated rather than hidden: it is
+-- the accepted cost, it is loud, and the alternative is a silent exemption. The
+-- census above is what makes it a cost that is not going to be paid.
+--
+-- ===========================================================================
+-- DECISION 4: NO EXISTING INSERT PATH CHANGES, AND NO GO CHANGE IS OWED
+-- ===========================================================================
+--
+-- Four branches open at the time of writing insert into mcp_grants. Every one
+-- of them reaches expires_at through the same constant, 90 days, which is
+-- inside the ceiling by a factor of four. This migration therefore changes no
+-- caller and REQUIRES NO COMPANION Go CHANGE to keep the tree green -- unlike
+-- m127, whose NOT NULL additions reddened ten integration tests at once. That
+-- is a claim about behaviour, so it is proved by running the suite rather than
+-- asserted here.
+--
+-- WHAT backend-architect MUST DO WHEN STEP 5 SHIPS is the one thing this file
+-- cannot do for them: an operator-supplied expiry that exceeds the ceiling must
+-- be refused at the API edge with a 400 naming the field, NOT allowed to reach
+-- the database and come back as a 23514 from the bottom of the stack. This
+-- constraint is the backstop for a bug, not the validator for a form.
+--
+-- ===========================================================================
+-- DECISION 5: RLS IS INHERITED. NO POLICY. NO LEDGER ROW.
+-- ===========================================================================
+--
+-- This file creates NO TABLE and NO POLICY, so rule 2's site-scope checklist
+-- has nothing to attach to -- it adds one CHECK to a column on a table m124
+-- already put under ENABLE plus FORCE ROW LEVEL SECURITY with the permissive
+-- mcp_grants_tenant_isolation and the four RESTRICTIVE
+-- mcp_grants_site_scope_{select,insert,update,delete}. A CHECK constrains
+-- VALUES; RLS filters ROWS; neither displaces the other and a redundant policy
+-- here would be a second thing to keep in sync. This is m127 DECISION 5 and
+-- m128 DECISION 6 for the same table and the same reason.
+--
+-- NO ROW IS OWED IN db/rls-cross-tenant-policies.txt. That ledger records
+-- policies granting access ACROSS tenants; this file adds no policy of any
+-- kind, so scripts/check-rls-cross-tenant.sh must stay green WITHOUT AN EDIT. A
+-- ledger diff accompanying this migration would be a defect, not a completion.
+--
+-- ===========================================================================
+-- DECISION 6: NO GRANT, NO INDEX, NO QUERY, NO sqlc MOVEMENT
+-- ===========================================================================
+--
+-- No grant: m1's ALTER DEFAULT PRIVILEGES and m124's table-level
+-- GRANT ... ON mcp_grants TO wpmgr_app already cover this table and a CHECK
+-- confers nothing to grant.
+--
+-- No index: a CHECK is evaluated per row at write time and reads nothing.
+--
+-- No query change, and therefore THE GENERATED sqlc TREE MUST NOT MOVE. sqlc
+-- models columns and queries; a CHECK is neither. If regeneration produces a
+-- diff under internal/db/sqlc after this file, something else changed and it
+-- should be understood before it is committed, not accepted as noise.
+--
+-- EVERY STATEMENT BELOW IS IDEMPOTENT AND THE FILE IS RE-RUNNABLE.
+
+-- ---------------------------------------------------------------------------
+-- (1) The ceiling. Guarded by a pg_constraint probe so the file re-runs, which
+--     is the same shape m127 and m128 use on this table.
+--
+--     The lower bound (mcp_grants_expires_at_after_created_check, m127) is
+--     UNTOUCHED. This is an ADDITION and not a replacement: the two constraints
+--     together read `created_at < expires_at <= created_at + 1 year`, and each
+--     names itself in the error so a violation says which end was hit.
+-- ---------------------------------------------------------------------------
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.mcp_grants'::regclass
+          AND conname  = 'mcp_grants_expires_at_max_one_year_check'
+    ) THEN
+        ALTER TABLE "public"."mcp_grants"
+            ADD CONSTRAINT "mcp_grants_expires_at_max_one_year_check"
+            CHECK (
+                timezone('UTC', "expires_at")
+                <= timezone('UTC', "created_at") + interval '1 year'
+            );
+    END IF;
+END;
+$$;

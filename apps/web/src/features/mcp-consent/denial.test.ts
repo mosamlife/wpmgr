@@ -19,6 +19,7 @@ function ctx(over: Record<string, unknown> = {}) {
     redirect_uri: "https://client.example/oauth/cb",
     redirect_host: "client.example",
     scopes: [SCOPE_READ],
+    grant_lifetime_days: 90,
     state: "opaque-csrf-token",
     ...over,
   });

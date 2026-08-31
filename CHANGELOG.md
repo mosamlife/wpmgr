@@ -6,6 +6,17 @@ House rules: no em dashes, no en dashes, no competitor names. Use "to" for range
 
 ## [Unreleased]
 
+## [0.61.150] - 2026-08-31
+
+### Fixed
+
+- The consent screen now states the truth about how long a connection lasts. It previously said "This connection does not expire on its own. It lasts until you revoke it," and that the key a client holds is short-lived and renews itself. Every grant is stamped with a 90-day absolute expiry, enforced in the authentication lookup, and the connection token carries the same lifetime. The screen now states the term it is actually consenting to, supplied by the API rather than computed in the browser.
+
+### Changed
+
+- Agent worktrees are now excluded from the Cloud Build upload, so a build no longer uploads the repository once for every live worktree.
+- ADR-062 and ADR-064 are now Accepted. ADR-062 is accepted with four checklist items open, converted from acceptance criteria to ship blockers, so no content-write code ships until each closes.
+
 ## [0.61.149] - 2026-08-30
 
 ### Added
