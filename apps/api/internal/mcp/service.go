@@ -47,6 +47,22 @@ const (
 	grantAbsoluteTTL = 90 * 24 * time.Hour
 )
 
+// grantLifetimeDays is grantAbsoluteTTL in whole days, and it is the ONLY
+// lifetime figure the consent screen is given.
+//
+// A TERM AND NOT A DATE, because at consent time no grant exists. expires_at is
+// stamped at approval from s.now(), which is later than the moment this
+// response was built by however long the human spends reading the screen, so a
+// timestamp computed here would be a date the row never holds. The term is
+// exact at both moments: approve it and it expires this many days later.
+//
+// DERIVED, NEVER RETYPED. The screen's sentence and the column's value now have
+// one source, so a change to grantAbsoluteTTL cannot leave the consent copy
+// stating the old term.
+func grantLifetimeDays() int {
+	return int(grantAbsoluteTTL / (24 * time.Hour))
+}
+
 // Error codes. These are domain codes; the OAuth wire errors are mapped from
 // them in dto.go so that RFC 6749 section 5.2 naming lives at the edge.
 const (
@@ -669,6 +685,28 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			// So: NULL until Step 5's second control ships and supplies a
 			// chosen value. The prerequisite is now met; the input is not.
 			IdleExpireAfterDays: nil,
+
+			// m128. NULL, AND NULL IS THE ANSWER RATHER THAN 'generic'.
+			//
+			// THE CONSENT PATH NEVER ASKS. An OAuth grant is authorised by a
+			// consent screen that shows the client's own unverified claim about
+			// itself; it never puts the nine-card chooser in front of the
+			// operator, so no operator choice exists to record. NULL is the
+			// column's word for "nobody asked" and it is the truth here.
+			//
+			// 'generic' WOULD BE A LIE, not a harmless default. It asserts the
+			// operator saw nine cards and picked "Other MCP client", and S31's
+			// filter and S29 step 9 both read that as a stated choice: every
+			// OAuth connection would then answer a filter chip no operator ever
+			// selected. m128 DECISION 2(b) refuses the schema default for this
+			// reason, and a Go-side default would reintroduce it one layer up.
+			//
+			// Do NOT derive it from client.ClientName either. That is the
+			// client's self-report, m128 DECISION 2(c), and inferring a choice
+			// from it manufactures a fact the operator never stated -- and
+			// makes an inferred row indistinguishable from a chosen one at
+			// exactly the screen that exists to tell them apart.
+			SetupClient: nil,
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
@@ -691,10 +729,26 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			if s.audit == nil {
 				return nil
 			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// "CONSENT IS BROWSER-ONLY" IS A CONVENTION, NOT A CONSTRAINT, and
+			// an audit row may not rest on one. /consent is mounted on v1
+			// (server.go's Register(v1), where v1 derives from
+			// sessionAuthGroup and therefore carries Auth.Authenticate()) --
+			// the same Bearer-accepting group as the mint and the revoke. An
+			// API-key holder can drive the OAuth flow headlessly, and then
+			// ActorUser over req.Principal.UserID recorded uuid.Nil against a
+			// grant that really was created.
+			//
+			// CreatedByUserID above stays as it is and stays NULL for a key:
+			// that column means "the human who created it", and "none" is the
+			// honest answer where this pair is the complete one.
+			actorType, actorID := audit.ActorFor(req.Principal)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   req.Principal.TenantID,
-				ActorType:  audit.ActorUser,
-				ActorID:    req.Principal.UserID.String(),
+				ActorType:  actorType,
+				ActorID:    actorID,
 				Action:     audit.ActionMCPGrantCreated,
 				TargetType: "mcp_grant",
 				TargetID:   gr.ID.String(),
@@ -1085,9 +1139,20 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 	// answers every tools/call with "not available" and every tools/list with
 	// nothing, which is precisely the half-working connection m127 DECISION 3
 	// says this boundary must not be able to produce.
+	//
+	// IT IS 403, NOT 401, and the distinction is the client's control flow
+	// rather than a matter of taste. Authenticate's refusals reach
+	// TransportHandler.writeUnauthorized, and an MCP client that receives 401
+	// re-runs the OAuth handshake -- which cannot change a stored capability
+	// set, so the client loops and the operator is sent to rotate a credential
+	// that was never the problem. An empty capabilities column is a
+	// CONFIGURATION state: the credential is valid and the grant is not
+	// permitted. That is what 403 says, and it is what every other producer of
+	// ErrCodeCapabilityUnmapped already returns (all three in
+	// OrgDefaultCapabilities).
 	stored := capabilitiesFromColumn(chk.GrantCapabilities)
 	if len(stored) == 0 {
-		return AuthorizedRequest{}, domain.Unauthorized(ErrCodeCapabilityUnmapped,
+		return AuthorizedRequest{}, domain.Forbidden(ErrCodeCapabilityUnmapped,
 			"this connection holds no capability, so it can reach no tool")
 	}
 
@@ -1126,6 +1191,30 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 // The error is RETURNED, not logged and dropped. The caller refuses the
 // session on failure -- a connection the control plane could not attribute is
 // worse than a refused one.
+//
+// ============================================================================
+// IT MUST NEVER WRITE mcp_grants.setup_client. THIS IS LOAD-BEARING (m128).
+// ============================================================================
+//
+// The tidy-looking change is to notice that this function already writes the
+// client's name and to "keep setup_client in sync" from it. That destroys the
+// column. setup_client is THE OPERATOR'S CHOICE at wizard step 2; name and
+// version are THE CLIENT'S SELF-REPORT at initialize. They are different facts
+// about different actors and they DISAGREE LEGITIMATELY AND PERMANENTLY -- set
+// up for Claude Desktop, URL pasted into Cursor. Neither is the other's stale
+// copy, so neither may overwrite the other.
+//
+// The damage is not hypothetical and it is silent. S29 step 9's failure state
+// reads setup_client precisely when NOTHING HAS EVER CONNECTED, which is by
+// definition the state in which this function has never run and both reported
+// columns are NULL; and S31 filters on "was set up for", not "last connected
+// as". A sync here would overwrite the operator's stated choice with an
+// observation on first connect, and every screen would keep rendering, wrong.
+//
+// The write path for that column is CreateGrant/MintConnection, once, at
+// creation. There is no second one. TestRecordConnectLeavesSetupClientAlone
+// and the integration proof of the same name are what make removing this
+// paragraph go red rather than green.
 func (s *Service) RecordConnect(ctx context.Context, auth AuthorizedRequest, name, version string, protocolHeader *string) error {
 	if err := s.store.RecordClientIdentity(ctx, auth.TenantID, auth.GrantID, name, version, protocolHeader); err != nil {
 		return fmt.Errorf("record mcp connect: %w", err)
@@ -1448,10 +1537,24 @@ func (s *Service) RevokeConnection(ctx context.Context, p domain.Principal, gran
 			if s.audit == nil {
 				return nil
 			}
+			// THE ACTOR IS WHICHEVER CREDENTIAL AUTHENTICATED, resolved by
+			// audit.ActorFor rather than hardcoded.
+			//
+			// THIS ROUTE IS MOUNTED BY THE SAME CALL AS THE HEADLESS MINT --
+			// server.go's RegisterConnections(v1), one nil check below
+			// Register(v1) -- so an API key that can mint a connection can
+			// revoke one, today, with nothing in between. ActorUser over
+			// p.UserID therefore wrote uuid.Nil for exactly the caller class
+			// this surface was built for, and it wrote it on THE ROW AN
+			// AUDITOR REACHES FOR AFTER AN INCIDENT: "who killed this
+			// credential, and when" answered with a user id that resolves to
+			// no user and, because the name join is gated on actor_type, to no
+			// name either.
+			actorType, actorID := audit.ActorFor(p)
 			_, aerr := s.audit.RecordInTx(ctx, tx, audit.Event{
 				TenantID:   p.TenantID,
-				ActorType:  audit.ActorUser,
-				ActorID:    p.UserID.String(),
+				ActorType:  actorType,
+				ActorID:    actorID,
 				Action:     audit.ActionMCPGrantRevoked,
 				TargetType: "mcp_grant",
 				TargetID:   grantID.String(),
@@ -1506,6 +1609,11 @@ func connectionFromGrant(g sqlc.McpGrant) Connection {
 		CreatedAt:             g.CreatedAt,
 		ReportedClientName:    g.ClientName,
 		ReportedClientVersion: g.ClientVersion,
+		// The OPERATOR's choice, read straight off the row and never
+		// substituted from ClientName above. The two fields sit adjacent here
+		// on purpose: they answer different questions and either may be nil
+		// while the other is set. See Connection.SetupClient.
+		SetupClient: g.SetupClient,
 		Protocol: ClassifyStoredProtocol(
 			timestamptzTimeOrNil(g.ClientIdentityRecordedAt), g.ProtocolVersion),
 		LastUsedAt: timestamptzTimeOrNil(g.LastUsedAt),

@@ -50,6 +50,50 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.150",
+    date: "2026-08-31",
+    summary:
+      "The MCP consent screen now states the truth about how long a connection lasts, instead of claiming it never expires on its own.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The consent screen now states the truth about how long a connection lasts. It previously said the connection does not expire on its own and that the key a client holds is short-lived and renews itself. Every grant carries a 90-day absolute expiry, enforced by the control plane, and the screen now shows the term it is actually consenting to instead of a claim computed in the browser.",
+      },
+    ],
+  },
+  {
+    version: "0.61.149",
+    date: "2026-08-30",
+    summary:
+      "Connection tokens can now be minted straight from the dashboard, for the cases the browser sign-in flow cannot reach: CI, an SSH session, a container. Grants carry an expiry, an idle expiry and a capability set, the connections list now shows real activity instead of always reading \"never used,\" and every grant, revocation and tool call is now audited under a new assistant actor kind.",
+    items: [
+      {
+        tag: "Added",
+        text: "Connection tokens can now be minted directly from the dashboard: a new endpoint plus a wizard that walks an operator through picking a client, naming the connection, choosing which sites it may reach, choosing how it authenticates, and revealing the token exactly once.",
+      },
+      {
+        tag: "Added",
+        text: "A site-access explanation on the consent screen, stating plainly that scoping is a check made at the moment the assistant asks rather than a boundary enforced inside the database, and that a site added to a scoped tag later is included without anyone approving it.",
+      },
+      {
+        tag: "Changed",
+        text: "Grants now carry an expiry, an idle expiry and a capability set, all enforced inside the same authorization check that already refused a revoked grant.",
+      },
+      {
+        tag: "Changed",
+        text: "The connections list now records real activity. It previously reported every connection as \"never used,\" including one actively reading the fleet; it now reports the truth.",
+      },
+      {
+        tag: "Changed",
+        text: "The MCP surface now writes audit events for grant creation, revocation and tool calls, under a new assistant actor kind, inside the same transaction as the thing they record.",
+      },
+      {
+        tag: "Fixed",
+        text: "A connection whose grant holds no capability now answers with a permission error rather than an authentication error, so a client stops re-running a handshake that could not change the outcome. An empty site allowlist is now a valid thing to approve, and a tag selection that only partly resolves is refused rather than silently narrowed.",
+      },
+    ],
+  },
+  {
     version: "0.61.148",
     date: "2026-08-30",
     summary:

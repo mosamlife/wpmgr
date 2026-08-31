@@ -5765,13 +5765,25 @@ CREATE TABLE mcp_grants (
     -- time from coalesce(last_used_at, created_at) so it moves whenever the
     -- connection is used, which is what "expire it if unused for N days" means.
     --
-    -- WARNING (m127 DECISION 4): mcp_grants.last_used_at IS NEVER WRITTEN
-    -- TODAY. TouchMCPGrantInTenantTx has zero Go callers, so
-    -- coalesce(last_used_at, created_at) collapses to created_at permanently.
-    -- A non-NULL value here would therefore kill every affected connection N
-    -- days after CREATION however active it is. NULL with no default is what
-    -- makes that unreachable. Wiring the activity stamp is a PREREQUISITE of
-    -- writing this column, not a follow-up.
+    -- m127 DECISION 4 MADE A NON-NULL VALUE HERE CONDITIONAL ON THE ACTIVITY
+    -- STAMP BEING WIRED, AND IT NOW IS. TouchMCPGrantInTenantTx is reached
+    -- through Repo.TouchActivity, via Service.RecordActivity, from the
+    -- transport's tools/list and tools/call arms, so last_used_at advances with
+    -- real use and coalesce(last_used_at, created_at) advances with it.
+    --
+    -- THE HAZARD THAT PREREQUISITE GUARDED IS STILL REAL AND STILL WORTH
+    -- KNOWING: with the stamp unwired, coalesce(last_used_at, created_at)
+    -- collapses to created_at permanently, and a non-NULL value here would kill
+    -- every affected connection N days after CREATION however active it is. An
+    -- actively used connection must never idle-expire. That is why the stamp
+    -- had to land first, and it is why nothing may unwire it while this column
+    -- can hold a value.
+    --
+    -- THE COLUMN IS NEVERTHELESS NULL ON EVERY ROW TODAY, FOR A DIFFERENT
+    -- REASON: nothing asks the operator for a window yet. NULL with no default
+    -- is what keeps a window nobody chose unrepresentable. Do not read the
+    -- wiring above as permission to write a default -- what is missing now is
+    -- the operator input, not the stamp.
     idle_expire_after_days integer NULL,
     CONSTRAINT mcp_grants_idle_expire_after_days_check CHECK (
         idle_expire_after_days IS NULL

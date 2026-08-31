@@ -143,11 +143,24 @@ export function parseConnectionList(body: unknown): AiConnection[] {
 export class ConnectionsRequestError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, message: string, status: number) {
+  /**
+   * The house envelope's optional `details` object (respond.go), e.g.
+   * `retry_after_seconds` on a 429 or `unknown_tag_id` / `unknown_site_id` on
+   * the mint endpoint's referential refusals. Undefined, never a fabricated
+   * empty object, when the response carried none.
+   */
+  readonly details?: Readonly<Record<string, unknown>>;
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message || code);
     this.name = "ConnectionsRequestError";
     this.code = code;
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -156,12 +169,16 @@ async function readHouseError(res: Response): Promise<ConnectionsRequestError> {
   // error, never a success with empty fields.
   let code = "server_error";
   let message = "";
+  let details: Record<string, unknown> | undefined;
   try {
     const body: unknown = await res.json();
     if (body && typeof body === "object") {
       const rec = body as Record<string, unknown>;
       if (typeof rec.code === "string" && rec.code.length > 0) code = rec.code;
       if (typeof rec.message === "string") message = rec.message;
+      if (rec.details && typeof rec.details === "object") {
+        details = rec.details as Record<string, unknown>;
+      }
     }
   } catch {
     // Defaults stand; `code` is already the pessimistic value.
@@ -175,7 +192,7 @@ async function readHouseError(res: Response): Promise<ConnectionsRequestError> {
         ? "Your role cannot view AI connections. They are organisation-wide credentials, so this needs an admin."
         : "The server did not answer with a list we could read.";
   }
-  return new ConnectionsRequestError(code, message, res.status);
+  return new ConnectionsRequestError(code, message, res.status, details);
 }
 
 export function useAiConnections(): UseQueryResult<AiConnection[], Error> {
@@ -192,6 +209,102 @@ export function useAiConnections(): UseQueryResult<AiConnection[], Error> {
       // that resolves to a partial list, because a partial list renders as a
       // complete one.
       return parseConnectionList((await res.json()) as unknown);
+    },
+  });
+}
+
+/**
+ * A headless mint request: an authenticated operator asking for a connection
+ * token directly, without the OAuth dance.
+ *
+ * `scopeTagIds` and `scopeSiteIds` ARE UUIDs, never names. dto.go's
+ * mintConnectionRequestDTO spells the tag field `scope_tag_ids` -- the same
+ * wire vocabulary approvalRequestDTO already uses -- because an id survives a
+ * tag rename and a name does not; a grant scoped by name would silently
+ * change which sites it covers the day somebody renames a tag. The caller
+ * resolves names to ids itself (see resolveTagIds in mcp-consent/site-scope)
+ * and refuses to call this at all when a chosen name has none.
+ */
+export interface MintConnectionInput {
+  readonly name: string;
+  readonly siteScopeMode: string;
+  readonly scopeTagIds: readonly string[];
+  readonly scopeSiteIds: readonly string[];
+}
+
+/**
+ * The mint response. `token` is the plaintext bearer credential and it is
+ * ONLY EVER HERE: the server holds a token_prefix and a SHA-256 hash, nothing
+ * that can reconstruct it, and there is no read-back endpoint. Whatever calls
+ * this mutation must render `token` once and let it go -- not stash it in a
+ * query cache, not carry it past the component that shows it.
+ */
+export interface MintedConnection {
+  readonly grantId: string;
+  readonly token: string;
+  readonly tokenPrefix: string;
+  readonly expiresAt: string;
+  readonly siteScopeMode: string;
+  readonly capabilities: readonly string[];
+}
+
+const mintResponseSchema = z.object({
+  grant_id: z.string(),
+  token: z.string(),
+  token_prefix: z.string(),
+  expires_at: z.string(),
+  site_scope_mode: z.string(),
+  capabilities: z.array(z.string()),
+});
+
+function toMintedConnection(raw: z.infer<typeof mintResponseSchema>): MintedConnection {
+  return {
+    grantId: raw.grant_id,
+    token: raw.token,
+    tokenPrefix: raw.token_prefix,
+    expiresAt: raw.expires_at,
+    siteScopeMode: raw.site_scope_mode,
+    capabilities: raw.capabilities,
+  };
+}
+
+/**
+ * Mint a connection token: POST the same CONNECTIONS_PATH the list GETs.
+ *
+ * INVALIDATES ON SUCCESS so a freshly-minted connection shows up in the list
+ * without a manual refresh, same as revoke.
+ *
+ * NEVER CACHED BY QUERY. This is a mutation, not a query -- its `data` lives
+ * only in the calling component's render and in TanStack's in-memory mutation
+ * state, never in `queryClient`'s cache, and nothing here calls
+ * `setQueryData`. A remount (leaving the step, navigating back) starts over
+ * with no token in scope, which is the property the one-time reveal depends
+ * on.
+ */
+export function useMintConnection(): UseMutationResult<
+  MintedConnection,
+  Error,
+  MintConnectionInput
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: MintConnectionInput): Promise<MintedConnection> => {
+      const res = await fetch(CONNECTIONS_PATH, {
+        method: "POST",
+        credentials: "include",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: input.name,
+          site_scope_mode: input.siteScopeMode,
+          scope_tag_ids: [...input.scopeTagIds],
+          scope_site_ids: [...input.scopeSiteIds],
+        }),
+      });
+      if (!res.ok) throw await readHouseError(res);
+      return toMintedConnection(mintResponseSchema.parse((await res.json()) as unknown));
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: connectionKeys.all });
     },
   });
 }

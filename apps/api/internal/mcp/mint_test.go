@@ -295,6 +295,244 @@ func TestMintIsRateLimitedPerOperator(t *testing.T) {
 	}
 }
 
+// apiKeyPrincipal is EXACTLY what apikey.PrincipalFor builds for an org-scoped
+// key: APIKeyID set, UserID left at uuid.Nil. This route is mounted under
+// Auth.Authenticate(), whose Bearer branch returns that principal, so this is
+// the ordinary caller of the headless path and not an exotic one.
+func apiKeyPrincipal(tenantID uuid.UUID) domain.Principal {
+	return domain.Principal{
+		Type:      domain.PrincipalAPIKey,
+		APIKeyID:  uuid.New(),
+		TenantID:  tenantID,
+		Role:      "owner",
+		Scope:     domain.ScopeOrg,
+		AuthModel: domain.AuthModelRole,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 3b -- TWO API KEYS DO NOT SHARE ONE BUCKET.
+//
+// mintLimiterKey used to read Principal.UserID, which apikey.PrincipalFor never
+// sets, so EVERY API-key mint in EVERY tenant collapsed into the single shared
+// "\x00unattributed" bucket: one tenant's CI runner spent the 5/min budget of
+// every other tenant's keys, process-wide. The per-caller layer is the fairness
+// layer, and it had degraded to nothing for exactly the caller class this
+// endpoint was built for.
+// ---------------------------------------------------------------------------
+
+func TestMintBudgetsAreIndependentPerAPIKeyAndAcrossTenants(t *testing.T) {
+	store := &fakeStore{}
+	svc := mintService(store)
+
+	mint := func(p domain.Principal) error {
+		_, err := svc.MintConnection(context.Background(), MintConnectionRequest{
+			Principal: p, Name: "ci", SiteScope: SiteScopeRequest{Mode: SiteScopeModeAll},
+		})
+		return err
+	}
+	isLimited := func(err error) bool {
+		var domErr *domain.Error
+		return errors.As(err, &domErr) && domErr.Code == ErrCodeMintRateLimited
+	}
+
+	tenantA := uuid.New()
+	noisy := apiKeyPrincipal(tenantA)
+
+	// One key spends its whole budget and is then refused. Without this the
+	// rest of the test proves nothing: an unlimited limiter would also let
+	// every other key through.
+	for i := 0; i < MintPerUserPerMin; i++ {
+		if err := mint(noisy); err != nil {
+			t.Fatalf("mint %d of the noisy key's budget failed: %v", i+1, err)
+		}
+	}
+	err := mint(noisy)
+	if !isLimited(err) {
+		t.Fatalf("the noisy API key was not limited after %d mints: %v",
+			MintPerUserPerMin, err)
+	}
+
+	// A SECOND KEY IN THE SAME TENANT is untouched.
+	if err := mint(apiKeyPrincipal(tenantA)); err != nil {
+		t.Fatalf("a second API key in the same tenant was refused by the first key's budget: %v", err)
+	}
+	// A KEY IN A DIFFERENT TENANT is untouched. This is the cross-tenant half:
+	// with the old key, one tenant's runner locked out every other tenant.
+	if err := mint(apiKeyPrincipal(uuid.New())); err != nil {
+		t.Fatalf("ANOTHER TENANT'S API KEY WAS REFUSED BY THIS TENANT'S BUDGET: %v", err)
+	}
+	// And a session user is not in the key's bucket either.
+	if err := mint(orgPrincipal(tenantA)); err != nil {
+		t.Fatalf("a session user was refused by an API key's budget: %v", err)
+	}
+
+	// The key itself is STILL limited -- the exemptions above are per-caller,
+	// not a hole that resets the offender.
+	if err := mint(noisy); !isLimited(err) {
+		t.Fatalf("the noisy key's budget stopped applying to itself: %v", err)
+	}
+
+	// Every refusal wrote nothing. Successes: the noisy key's budget plus the
+	// three distinct callers admitted above.
+	wantWrites := MintPerUserPerMin + 3
+	if len(store.minted) != wantWrites {
+		t.Fatalf("want %d grants written, got %d: a refused mint still wrote",
+			wantWrites, len(store.minted))
+	}
+}
+
+// TestMintLimiterKeyDistinguishesEveryPrincipalKind is the direct unit on the
+// key function, so a regression names the cause rather than the symptom.
+func TestMintLimiterKeyDistinguishesEveryPrincipalKind(t *testing.T) {
+	tenant := uuid.New()
+	keyA, keyB := apiKeyPrincipal(tenant), apiKeyPrincipal(tenant)
+	userA := orgPrincipal(tenant)
+
+	if mintLimiterKey(keyA) == mintLimiterKey(keyB) {
+		t.Fatal("TWO DISTINCT API KEYS SHARE ONE BUCKET")
+	}
+	if mintLimiterKey(keyA) == "\x00unattributed" {
+		t.Fatal("an API-key principal fell into the shared unattributed bucket")
+	}
+	if mintLimiterKey(keyA) == mintLimiterKey(userA) {
+		t.Fatal("an API key and a session user share one bucket")
+	}
+	// Same underlying uuid on the two axes must NOT alias: the type is part of
+	// the key precisely so the two id spaces cannot collide.
+	shared := uuid.New()
+	asKey := domain.Principal{Type: domain.PrincipalAPIKey, APIKeyID: shared, TenantID: tenant}
+	asUser := domain.Principal{Type: domain.PrincipalUser, UserID: shared, TenantID: tenant}
+	if mintLimiterKey(asKey) == mintLimiterKey(asUser) {
+		t.Fatal("a key id and a user id with the same uuid alias onto one bucket")
+	}
+	// A principal naming neither is still MORE restricted, never less: it gets
+	// the single shared reserved bucket rather than a fresh one.
+	nameless := domain.Principal{Type: domain.PrincipalUser, TenantID: tenant}
+	if got := mintLimiterKey(nameless); got != "\x00unattributed" {
+		t.Fatalf("an unidentifiable principal got its own bucket %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PROOF 3c -- A REQUEST REFUSED ON ITS OWN SHAPE SPENDS NO BUDGET.
+//
+// The charge used to run before the name check and both scope checks, so a
+// malformed request that would be refused 422 still consumed a mint token.
+// Five typos then made the sixth request answer "slow down" to a caller whose
+// actual problem was a typo -- the exact confusion ErrCodeMintRateLimited was
+// named to prevent.
+// ---------------------------------------------------------------------------
+
+func TestMintStructuralRefusalsDoNotSpendBudget(t *testing.T) {
+	tenant := uuid.New()
+	store := &fakeStore{}
+	svc := mintService(store)
+	p := orgPrincipal(tenant)
+
+	call := func(name string, scope SiteScopeRequest) error {
+		_, err := svc.MintConnection(context.Background(), MintConnectionRequest{
+			Principal: p, Name: name, SiteScope: scope,
+		})
+		return err
+	}
+	codeOf := func(t *testing.T, err error) string {
+		t.Helper()
+		var domErr *domain.Error
+		if !errors.As(err, &domErr) {
+			t.Fatalf("want a domain error, got %v", err)
+		}
+		return domErr.Code
+	}
+
+	// Every structurally invalid shape this endpoint refuses, sent well past
+	// the per-caller budget. None may be charged.
+	invalid := []struct {
+		what  string
+		name  string
+		scope SiteScopeRequest
+	}{
+		{"blank name", "   ", SiteScopeRequest{Mode: SiteScopeModeAll}},
+		{"absent mode", "ci", SiteScopeRequest{}},
+		{"tags mode, empty allowlist", "ci", SiteScopeRequest{Mode: SiteScopeModeTags}},
+		{"list mode, empty allowlist", "ci", SiteScopeRequest{Mode: SiteScopeModeList}},
+		{"all mode naming tags", "ci", SiteScopeRequest{
+			Mode: SiteScopeModeAll, TagIDs: []uuid.UUID{uuid.New()}}},
+	}
+	for round := 0; round < 3; round++ {
+		for _, c := range invalid {
+			err := call(c.name, c.scope)
+			if err == nil {
+				t.Fatalf("%s was accepted", c.what)
+			}
+			if got := codeOf(t, err); got == ErrCodeMintRateLimited {
+				t.Fatalf("%s was answered %q: the limiter shadowed a structural refusal",
+					c.what, ErrCodeMintRateLimited)
+			}
+		}
+	}
+	if len(store.minted) != 0 {
+		t.Fatalf("a structurally invalid mint wrote %d grants", len(store.minted))
+	}
+
+	// THE BLANK-NAME REFUSAL IS REACHABLE, AND IT IS THE NAMED ONE. The
+	// reviewer could not prove this before, because the 429 shadowed it.
+	if got := codeOf(t, call("   ", SiteScopeRequest{Mode: SiteScopeModeAll})); got != ErrCodeInvalidRequest {
+		t.Fatalf("blank name answered %q, want %q", got, ErrCodeInvalidRequest)
+	}
+
+	// AND THE BUDGET IS STILL WHOLE: the full allowance is available after all
+	// of that, so no invalid request was charged.
+	for i := 0; i < MintPerUserPerMin; i++ {
+		if err := call("ci", SiteScopeRequest{Mode: SiteScopeModeAll}); err != nil {
+			t.Fatalf("mint %d of an UNSPENT budget was refused: %v", i+1, err)
+		}
+	}
+	// It does not over-fire either: the limiter still bites on the valid path.
+	if err := call("ci", SiteScopeRequest{Mode: SiteScopeModeAll}); codeOf(t, err) != ErrCodeMintRateLimited {
+		t.Fatalf("the budget never ran out: moving the charge disarmed the limiter: %v", err)
+	}
+}
+
+// TestMintChargesBeforeTheReferentialCheck bounds the oracle. verifyScopeReferents
+// is the one refusal on this endpoint that discloses anything about the
+// organisation's data ("this uuid does or does not name a tag here"), so it must
+// sit BEHIND the charge -- otherwise moving the limiter past validation would
+// have bought unbounded referent probing.
+func TestMintChargesBeforeTheReferentialCheck(t *testing.T) {
+	tenant := uuid.New()
+	store := &fakeStore{tagIDs: []uuid.UUID{uuid.New()}}
+	svc := mintService(store)
+	p := orgPrincipal(tenant)
+
+	probe := func() error {
+		_, err := svc.MintConnection(context.Background(), MintConnectionRequest{
+			Principal: p, Name: "probe",
+			// Structurally VALID, referentially unknown: it reaches the
+			// registry read and is refused there, naming the id.
+			SiteScope: SiteScopeRequest{Mode: SiteScopeModeTags, TagIDs: []uuid.UUID{uuid.New()}},
+		})
+		return err
+	}
+	for i := 0; i < MintPerUserPerMin; i++ {
+		err := probe()
+		var domErr *domain.Error
+		if !errors.As(err, &domErr) || domErr.Code != ErrCodeUnknownScopeTag {
+			t.Fatalf("probe %d answered %v, want %q", i+1, err, ErrCodeUnknownScopeTag)
+		}
+	}
+	// The budget is spent by probing alone, so probing is bounded.
+	err := probe()
+	var domErr *domain.Error
+	if !errors.As(err, &domErr) || domErr.Code != ErrCodeMintRateLimited {
+		t.Fatalf("UNBOUNDED REFERENT PROBING: probe %d answered %v, want %q",
+			MintPerUserPerMin+1, err, ErrCodeMintRateLimited)
+	}
+	if len(store.minted) != 0 {
+		t.Fatalf("a refused probe wrote %d grants", len(store.minted))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PROOF 4 -- AN UNRESOLVABLE TAG IS REFUSED, LOUDLY AND BY ID.
 //
