@@ -50,6 +50,18 @@ const TAG_COLOR: Record<ChangeTag, string> = {
 
 const RELEASES: ChangeEntry[] = [
   {
+    version: "0.61.150",
+    date: "2026-08-31",
+    summary:
+      "The MCP consent screen now states the truth about how long a connection lasts, instead of claiming it never expires on its own.",
+    items: [
+      {
+        tag: "Fixed",
+        text: "The consent screen now states the truth about how long a connection lasts. It previously said the connection does not expire on its own and that the key a client holds is short-lived and renews itself. Every grant carries a 90-day absolute expiry, enforced by the control plane, and the screen now shows the term it is actually consenting to instead of a claim computed in the browser.",
+      },
+    ],
+  },
+  {
     version: "0.61.149",
     date: "2026-08-30",
     summary:
