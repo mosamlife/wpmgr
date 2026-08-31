@@ -43,9 +43,9 @@ each file (see "Status line formats" below — the tree is not normalized).
 | 059 | Site-User Authentication Policy (2FA + Password Policy) | Accepted — 2026-06-20 | 2026-06-20 | [ADR-059-site-user-auth-policy.md](./ADR-059-site-user-auth-policy.md) |
 | 060 | Phase order: safety and truth before capability | Accepted (amended 2026-08-27) | 2026-08-18 | [ADR-060-phase-order-safety-before-capability.md](./ADR-060-phase-order-safety-before-capability.md) |
 | 061 | Assistant surface, Phase 1: control-plane server and out-of-band approval | Accepted (amended 2026-08-23 and 2026-08-24) | 2026-08-22 | [ADR-061-assistant-surface-phase-1.md](./ADR-061-assistant-surface-phase-1.md) |
-| 062 | Assistant surface, Phase 2: governed fleet content operations | Proposed | 2026-08-27 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
+| 062 | Assistant surface, Phase 2: governed fleet content operations | Accepted (2026-08-31, amended the same day by A1); items 3, 4, 9 and 10 open as ship blockers | 2026-08-27 | [ADR-062-assistant-surface-phase-2-content-operations.md](./ADR-062-assistant-surface-phase-2-content-operations.md) |
 | 063 | Repository licensing, and the rules for third-party reuse | Accepted | 2026-08-24 | [ADR-063-licensing-and-third-party-reuse.md](./ADR-063-licensing-and-third-party-reuse.md) |
-| 064 | Governed per-site and organisation context | Proposed | 2026-08-27 | [ADR-064-governed-site-org-context.md](./ADR-064-governed-site-org-context.md) |
+| 064 | Governed per-site and organisation context | Accepted (2026-08-31) | 2026-08-27 | [ADR-064-governed-site-org-context.md](./ADR-064-governed-site-org-context.md) |
 
 Not part of the numbering: [`font-subsetting-phase2-plan.md`](./font-subsetting-phase2-plan.md)
 is a build plan, not a decision record. It lives in this directory because it
