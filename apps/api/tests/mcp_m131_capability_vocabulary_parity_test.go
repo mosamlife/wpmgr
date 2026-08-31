@@ -45,6 +45,14 @@ import (
 	"github.com/mosamlife/wpmgr/apps/api/internal/mcp"
 )
 
+// m131VocabularyConstraint is the name the extraction looks up and the name the
+// INDETERMINATE message prints. ONE constant, bound as $1 rather than
+// interpolated into the SQL, so the two can never disagree: a failure message
+// naming a constraint the query did not actually look for is a message that
+// sends the reader to the wrong place, and the whole point of the INDETERMINATE
+// arm is that the reader believes it.
+const m131VocabularyConstraint = "mcp_grants_capabilities_vocabulary_check"
+
 // m131VocabularyExtraction is m131 DECISION 5's statement, used rather than
 // rewritten so the two halves of the proof read the constraint identically.
 const m131VocabularyExtraction = `
@@ -53,7 +61,7 @@ const m131VocabularyExtraction = `
 	  CROSS JOIN LATERAL regexp_matches(
 	           pg_get_constraintdef(c.oid), '''([^'']*)''::text', 'g') AS m
 	 WHERE c.conrelid = 'public.mcp_grants'::regclass
-	   AND c.conname  = 'mcp_grants_capabilities_vocabulary_check'`
+	   AND c.conname  = $1`
 
 // TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole is the parity proof.
 //
@@ -81,7 +89,7 @@ func TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole(t *testing.T) {
 	// database, not about the one the request path reaches.
 	if err := pool.InTenantTx(ctx, tenant, func(tx pgx.Tx) error {
 		mcpAssertAndReportRole(t, tx, "InTenantTx (vocabulary parity)")
-		rows, err := tx.Query(ctx, m131VocabularyExtraction)
+		rows, err := tx.Query(ctx, m131VocabularyExtraction, m131VocabularyConstraint)
 		if err != nil {
 			return err
 		}
@@ -114,7 +122,7 @@ func TestCapabilityVocabularyMatchesTheDatabaseCheckAsAppRole(t *testing.T) {
 			"renamed or dropped, or pg_get_constraintdef no longer renders the "+
 			"vocabulary as quoted ::text literals. Fix the extraction or the "+
 			"constraint; do not read this as a pass.",
-			"mcp_grants_capabilities_vocabulary_check")
+			m131VocabularyConstraint)
 	}
 
 	sort.Strings(inDB)
