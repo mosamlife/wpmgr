@@ -604,13 +604,18 @@ SELECT
         AND (g.idle_expire_after_days IS NULL
              OR COALESCE(g.last_used_at, g.created_at)
                 + make_interval(days => g.idle_expire_after_days) > now())
-        -- TENANT ENABLEMENT (m130 DECISION 4). NULL means the organisation has
-        -- never turned the assistant on, which is OFF. This is the restrictive
-        -- direction of NULL and it is the OPPOSITE of the line below it -- the
-        -- two tenant columns are not symmetric and must not be folded into one
-        -- helper. Existing tenants were backfilled by m130 step (1), so no live
-        -- connection changed behaviour when that file applied.
-        AND tn.assistant_enabled_at IS NOT NULL
+        -- TENANT ENABLEMENT IS DELIBERATELY *NOT* IN THIS PREDICATE YET, AND
+        -- THE OMISSION IS LOAD-BEARING. See m130 DECISION 5. Adding
+        -- `AND tn.assistant_enabled_at IS NOT NULL` here is a ONE-LINE CHANGE
+        -- THAT MUST NOT BE MADE UNTIL A GO PATH WRITES THAT COLUMN: a tenant
+        -- created after m130 applied has it NULL, so the line refuses every
+        -- connection that tenant will ever make. That was executed, not
+        -- reasoned about -- it refused a live bearer in
+        -- TestMCPActivityStampLandsAsAppRole with
+        -- "this connection has been revoked or has expired". The column is
+        -- inert by construction until the enable control exists, which is the
+        -- m127 DECISION 4 shape.
+        --
         -- THE KILL SWITCH (m130 DECISION 3). NULL means not paused, which is
         -- RUNNING -- the permissive direction, and the reason every existing
         -- row keeps working untouched. Because this verdict is recomputed on

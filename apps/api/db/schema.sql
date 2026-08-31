@@ -184,9 +184,14 @@ CREATE TABLE tenants (
     -- switch after an incident must not enable a surface that was deliberately
     -- off. NULL means a DIFFERENT thing on each: assistant_enabled_at IS NULL
     -- means never enabled (off), assistant_paused_at IS NULL means not paused
-    -- (running). Both join the `authorized` verdict in
-    -- ReCheckMCPRequestAuthorizationInTenantTx, so the switch stops in-flight
-    -- requests on the next request rather than only blocking new grants.
+    -- (running).
+    --
+    -- ONLY assistant_paused_at IS IN THE `authorized` VERDICT in
+    -- ReCheckMCPRequestAuthorizationInTenantTx, so the kill switch stops
+    -- in-flight requests on the next request rather than only blocking new
+    -- grants. assistant_enabled_at is NOT in the verdict and nothing reads it
+    -- yet: a tenant created after m130 has it NULL, so gating on it would
+    -- refuse every new signup. See m130 DECISION 5 before wiring it.
     --
     -- These live on tenants, and NOT in a settings table, because tenants has
     -- no RLS: a kill switch read on the authentication path from behind a

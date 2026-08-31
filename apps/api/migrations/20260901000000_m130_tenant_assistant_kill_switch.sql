@@ -212,32 +212,65 @@
 -- billing signal.
 --
 -- ===========================================================================
--- DECISION 5: THE ORDERING CONSTRAINT THIS PLACES ON backend-architect, WHICH
---             IS HARD, AND WHICH IS THE MOST DANGEROUS THING IN THIS FILE
+-- DECISION 5: THE KILL SWITCH JOINS THE VERDICT NOW. ENABLEMENT DOES NOT, AND
+--             IS INERT BY CONSTRUCTION UNTIL GO WRITES IT.
+--
+--             THIS IS THE MOST DANGEROUS THING IN THIS FILE AND IT IS WRITTEN
+--             DOWN RATHER THAN LEFT TO BE DISCOVERED, in the manner of m127
+--             DECISION 4.
 -- ===========================================================================
 --
--- WRITTEN DOWN RATHER THAN LEFT TO BE DISCOVERED, in the manner of m127
--- DECISION 4.
+-- THE TWO COLUMNS ARE NOT WIRED AT THE SAME TIME, ON PURPOSE.
 --
--- After this migration, assistant_enabled_at IS PART OF THE VERDICT. Existing
--- tenants are backfilled (DECISION 6) and are unaffected. But A TENANT CREATED
--- AFTER THIS FILE APPLIES HAS assistant_enabled_at IS NULL, therefore IS OFF,
--- and every request on any connection it creates will be refused until
--- something writes that column.
+--   assistant_paused_at  -> IN THE VERDICT, IN THIS MIGRATION.
+--     Safe by construction: it is NULL on every existing row and NULL means
+--     "running", so applying this file changes no behaviour anywhere. It needs
+--     no Go code to be CORRECT on the read path -- only to be REACHABLE on the
+--     write path -- so the enforcement half ships now and the console catches
+--     up. This is the urgent item: the surface is live with no off switch.
 --
--- THAT IS THE CORRECT AND INTENDED DIRECTION -- it is literally what "off by
--- default at the tenant level" means, and the surface is a pre-v1 pilot with
--- agreed kill criteria, not a generally available feature. A new tenant unable
--- to use an unlaunched pilot surface is not an outage. A new tenant silently
--- opted INTO it would be the defect.
+--   assistant_enabled_at -> NOT IN THE VERDICT. NOTHING READS IT YET.
 --
--- BUT IT MEANS THE ENABLE CONTROL IS A PREREQUISITE OF ONBOARDING, NOT A
--- FOLLOW-UP TO IT. Until backend-architect ships a path that sets
--- assistant_enabled_at, the connection wizard will complete successfully for a
--- new tenant and then every subsequent request will 401, with the cause
--- visible only in the tenant_assistant_disabled diagnostic column added below.
--- The diagnostic exists so that failure names itself instead of presenting as
--- a mysterious auth error.
+-- WHY ENABLEMENT IS HELD BACK, AND IT IS NOT TIMIDITY -- IT WAS EXECUTED.
+-- The predicate `AND tn.assistant_enabled_at IS NOT NULL` was written into
+-- ReCheckMCPRequestAuthorizationInTenantTx and the integration suite was run
+-- against it as wpmgr_app:
+--
+--   go test ./tests/ -run 'TestMCPActivityStampLandsAsAppRole' -count=1
+--     mcp_grant_expiry_activity_integration_test.go:238:
+--       current_user=wpmgr_app rolsuper=false rolbypassrls=false
+--     mcp_grant_expiry_activity_integration_test.go:260:
+--       Authenticate with a live bearer: this connection has been revoked or
+--       has expired
+--     FAIL
+--
+-- THE BACKFILL CANNOT REACH A TENANT THAT DOES NOT EXIST YET. Step (1) enables
+-- every tenant holding a grant TODAY, but a tenant created AFTER this file
+-- applies has assistant_enabled_at IS NULL, so that one line refuses every
+-- connection it will ever make. In the suite that is a red test. IN
+-- PRODUCTION IT IS EVERY NEW SIGNUP: the connection wizard completes, a token
+-- is minted, and every request 401s with nothing naming the cause.
+--
+-- That is the exact defect shape this project keeps repeating -- m127's NOT
+-- NULL columns reddened ten integration tests -- and shipping it because "off
+-- by default is what the ADR says" would be following the letter of ADR-061
+-- into an outage. OFF BY DEFAULT IS STILL THE GOAL AND THE COLUMN STILL
+-- ENCODES IT. What is not yet true is that anything can turn it ON, and a gate
+-- with no key is not a gate, it is a wall.
+--
+-- THE ORDERING CONSTRAINT THIS PLACES ON backend-architect IS HARD, and it is
+-- a TWO-PART CHANGE THAT MUST SHIP TOGETHER, never one half of it:
+--
+--   1. A Go path that writes assistant_enabled_at (EnableTenantAssistant in
+--      db/query/tenants.sql is generated and waiting), reachable from the
+--      console, AND called wherever a tenant legitimately opts in.
+--   2. ONLY THEN, a follow-up migration adding the one line to the verdict --
+--      a NEW ORDINAL, never an edit to this file or to m130's applied form.
+--
+-- Until step 1 exists, assistant_enabled_at is a record of intent that costs
+-- nothing and refuses nothing. The diagnostic column tenant_assistant_disabled
+-- is returned by the verdict query from day one so that when step 2 lands, the
+-- refusal names itself instead of presenting as a mysterious auth error.
 --
 -- NO SWEEP JOB IS REQUIRED FOR ENFORCEMENT, on either column. Both are
 -- evaluated at read time against the row, so the switch takes effect at the
