@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -136,6 +137,72 @@ const ErrCodeMintRateLimited = "mcp_mint_rate_limited"
 // still has the context to fix it.
 const ErrCodeUnknownScopeTag = "mcp_unknown_scope_tag"
 
+// ErrCodeInvalidSetupClient refuses a setup_client whose SPELLING could not be
+// compared reliably. It is never returned for a slug the server simply has not
+// heard of; see setupClientShape.
+const ErrCodeInvalidSetupClient = "mcp_invalid_setup_client"
+
+// setupClientShapeMaxLen mirrors the length half of m128's CHECK.
+const setupClientShapeMaxLen = 64
+
+// setupClientShape mirrors mcp_grants_setup_client_shape_check EXACTLY --
+// `^[a-z0-9]+(-[a-z0-9]+)*$` -- and deliberately encodes nothing else.
+//
+// WHY THE API VALIDATES SHAPE AND NOT MEMBERSHIP, which is the decision worth
+// arguing rather than asserting. The vocabulary is nine ids and it lives in
+// apps/web/src/features/ai-connections/client-table.ts, whose header states the
+// intended cost of a new client: "when a client changes, one row changes". Go
+// cannot import that file, so a closed server-side list would be a SECOND copy
+// of the vocabulary in a second language on a second release cadence -- and the
+// failure mode of a stale copy is the wizard rejecting, at the end of a ten-step
+// flow, a client its own UI is offering. m128 DECISION 3 refused a closed
+// database CHECK for precisely that reason, and re-adding the closure one layer
+// up in Go would defeat the migration while leaving its rationale in place.
+//
+// The three alternatives and why each loses: a generated Go constant from the
+// TS table couples the control-plane release to a frontend data edit, which is
+// the coupling DECISION 3 was written to remove; a config-driven allowlist moves
+// the same staleness into an env var nobody updates; validating nothing lets
+// 'Windsurf', 'windsurf ' and 'Windsurf (Desktop)' all land in the column, and
+// then S31 renders "None of them was set up for Windsurf" with a matching
+// connection sitting in the list -- an absence coerced into a confident answer,
+// this project's signature defect.
+//
+// So the server guarantees the ONE property the screens actually need, which is
+// that equality is trustworthy, and stays silent on which slugs exist. An
+// unrecognised id is a LEGITIMATE STORED STATE that degrades at the render layer
+// to the generic panel -- "a complete path, not a placeholder" in the
+// wireframe's own words -- not a 400.
+//
+// It mirrors the CHECK rather than relaxing it so the refusal is a 400 naming
+// the field, not a 23514 surfacing as a 500 from the INSERT. The database stays
+// the backstop; this is the diagnosis.
+var setupClientShape = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// validateSetupClient refuses a present-but-malformed value and accepts nil.
+//
+// nil is "the caller never asked" and is always valid -- the consent path and
+// every non-wizard caller are entitled to it. A PRESENT value is held to the
+// shape, INCLUDING the empty string: "" is a caller that sent the key and put
+// nothing in it, which is a malformed claim rather than an absent one, and
+// silently rewriting it to NULL would report success for a step-2 choice that
+// was never stored.
+//
+// No trimming, no lowercasing, no repair of any kind. Coercing " Windsurf " into
+// "windsurf" would accept a caller that is wrong about the vocabulary and hide
+// the bug at the only layer positioned to name it; the operator would then see
+// a stored value they never chose. Refuse and say which field.
+func validateSetupClient(v *string) error {
+	if v == nil {
+		return nil
+	}
+	if len(*v) > setupClientShapeMaxLen || !setupClientShape.MatchString(*v) {
+		return domain.Validation(ErrCodeInvalidSetupClient,
+			"setup_client must be a lowercase slug of letters, digits and single hyphens")
+	}
+	return nil
+}
+
 // ErrCodeUnknownScopeSite is the same refusal on the site axis. Same column
 // shape (uuid[], no foreign key), same silent-narrowing outcome, and it is
 // detected differently: a site id is verified by resolving it through the
@@ -182,6 +249,13 @@ type MintConnectionRequest struct {
 	// A non-empty list is NARROWED against the org ceiling, never widened past
 	// it -- CapabilitySet.NarrowTo refuses rather than intersects.
 	Capabilities []Capability
+
+	// SetupClient is the operator's step-2 choice, OPTIONAL, and nil means the
+	// caller never asked -- which is stored as NULL and NOT as "generic". See
+	// Connection.SetupClient for why those two are not interchangeable.
+	//
+	// Validated for SHAPE ONLY, never for membership: see validateSetupClient.
+	SetupClient *string
 }
 
 // MintedConnection is the response. Token is present exactly once, here.
@@ -262,6 +336,22 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 	// least one site, and an absent mode is refused rather than read as 'all'.
 	// An empty allowlist is never a way to ask for every site.
 	if err := ValidateSiteScopeRequest(req.SiteScope); err != nil {
+		return MintedConnection{}, err
+	}
+
+	// validateSetupClient is the Go mirror of
+	// mcp_grants_setup_client_shape_check, and it belongs in THIS step for the
+	// reason the step's own comment gives: it is a pure function of the request
+	// body, it reads no database, and it discloses nothing. Running it before
+	// the charge means a malformed slug is answered "your setup_client is
+	// malformed" rather than "slow down".
+	//
+	// It is in the SERVICE and not only in the handler on purpose. The handler
+	// is one caller; the invariant that a stored setup_client is comparable by
+	// equality is a property of the column, so it is enforced at the layer
+	// every caller passes through. A handler-only check is one new call site
+	// away from a row S31's filter cannot match.
+	if err := validateSetupClient(req.SetupClient); err != nil {
 		return MintedConnection{}, err
 	}
 
@@ -363,6 +453,19 @@ func (s *Service) MintConnection(ctx context.Context, req MintConnectionRequest)
 			// window yet, and inventing one nobody chose is the credential-terms
 			// defect that column refuses to default.
 			IdleExpireAfterDays: nil,
+
+			// m128. THE OPERATOR'S STEP-2 CHOICE, PASSED THROUGH UNCHANGED --
+			// nil included. This is the one path in the codebase that has a
+			// real answer for this column, because it is the one the wizard
+			// calls.
+			//
+			// nil here is a caller that did not ask, and it stores NULL. It is
+			// NOT rewritten to "generic": that would assert the operator saw
+			// nine cards and chose "Other MCP client", which is a different
+			// fact and the one S29 step 9 exists to distinguish. Already
+			// validated for shape in step 2; the database CHECK is the backstop
+			// behind that, not the diagnosis.
+			SetupClient: req.SetupClient,
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPConnectionTokenParams {
 			return sqlc.CreateMCPConnectionTokenParams{

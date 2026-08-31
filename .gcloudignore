@@ -33,5 +33,12 @@ infra/postgres/data
 **/*.log
 **/.DS_Store
 
+# Agent worktrees. Each is a full checkout of this repository, so without this
+# every `gcloud builds submit` uploads the source once per live worktree. On
+# 2026-08-14 that reached 9.3G across 32 of them, 12G of source in total, and
+# both the api and the web build failed with an HTTP 408: "your client has taken
+# too long to issue its request". Nothing in a worktree belongs in a build.
+.claude/worktrees
+
 # PHPUnit result cache (transient; can vanish mid-archive)
 **/.phpunit.result.cache

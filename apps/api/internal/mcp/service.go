@@ -47,6 +47,22 @@ const (
 	grantAbsoluteTTL = 90 * 24 * time.Hour
 )
 
+// grantLifetimeDays is grantAbsoluteTTL in whole days, and it is the ONLY
+// lifetime figure the consent screen is given.
+//
+// A TERM AND NOT A DATE, because at consent time no grant exists. expires_at is
+// stamped at approval from s.now(), which is later than the moment this
+// response was built by however long the human spends reading the screen, so a
+// timestamp computed here would be a date the row never holds. The term is
+// exact at both moments: approve it and it expires this many days later.
+//
+// DERIVED, NEVER RETYPED. The screen's sentence and the column's value now have
+// one source, so a change to grantAbsoluteTTL cannot leave the consent copy
+// stating the old term.
+func grantLifetimeDays() int {
+	return int(grantAbsoluteTTL / (24 * time.Hour))
+}
+
 // Error codes. These are domain codes; the OAuth wire errors are mapped from
 // them in dto.go so that RFC 6749 section 5.2 naming lives at the edge.
 const (
@@ -669,6 +685,28 @@ func (s *Service) Approve(ctx context.Context, req ApprovalRequest) (Approval, e
 			// So: NULL until Step 5's second control ships and supplies a
 			// chosen value. The prerequisite is now met; the input is not.
 			IdleExpireAfterDays: nil,
+
+			// m128. NULL, AND NULL IS THE ANSWER RATHER THAN 'generic'.
+			//
+			// THE CONSENT PATH NEVER ASKS. An OAuth grant is authorised by a
+			// consent screen that shows the client's own unverified claim about
+			// itself; it never puts the nine-card chooser in front of the
+			// operator, so no operator choice exists to record. NULL is the
+			// column's word for "nobody asked" and it is the truth here.
+			//
+			// 'generic' WOULD BE A LIE, not a harmless default. It asserts the
+			// operator saw nine cards and picked "Other MCP client", and S31's
+			// filter and S29 step 9 both read that as a stated choice: every
+			// OAuth connection would then answer a filter chip no operator ever
+			// selected. m128 DECISION 2(b) refuses the schema default for this
+			// reason, and a Go-side default would reintroduce it one layer up.
+			//
+			// Do NOT derive it from client.ClientName either. That is the
+			// client's self-report, m128 DECISION 2(c), and inferring a choice
+			// from it manufactures a fact the operator never stated -- and
+			// makes an inferred row indistinguishable from a chosen one at
+			// exactly the screen that exists to tell them apart.
+			SetupClient: nil,
 		},
 		func(grantID uuid.UUID) sqlc.CreateMCPAuthorizationCodeParams {
 			return sqlc.CreateMCPAuthorizationCodeParams{
@@ -1153,6 +1191,30 @@ func (s *Service) Authenticate(ctx context.Context, bearer string) (AuthorizedRe
 // The error is RETURNED, not logged and dropped. The caller refuses the
 // session on failure -- a connection the control plane could not attribute is
 // worse than a refused one.
+//
+// ============================================================================
+// IT MUST NEVER WRITE mcp_grants.setup_client. THIS IS LOAD-BEARING (m128).
+// ============================================================================
+//
+// The tidy-looking change is to notice that this function already writes the
+// client's name and to "keep setup_client in sync" from it. That destroys the
+// column. setup_client is THE OPERATOR'S CHOICE at wizard step 2; name and
+// version are THE CLIENT'S SELF-REPORT at initialize. They are different facts
+// about different actors and they DISAGREE LEGITIMATELY AND PERMANENTLY -- set
+// up for Claude Desktop, URL pasted into Cursor. Neither is the other's stale
+// copy, so neither may overwrite the other.
+//
+// The damage is not hypothetical and it is silent. S29 step 9's failure state
+// reads setup_client precisely when NOTHING HAS EVER CONNECTED, which is by
+// definition the state in which this function has never run and both reported
+// columns are NULL; and S31 filters on "was set up for", not "last connected
+// as". A sync here would overwrite the operator's stated choice with an
+// observation on first connect, and every screen would keep rendering, wrong.
+//
+// The write path for that column is CreateGrant/MintConnection, once, at
+// creation. There is no second one. TestRecordConnectLeavesSetupClientAlone
+// and the integration proof of the same name are what make removing this
+// paragraph go red rather than green.
 func (s *Service) RecordConnect(ctx context.Context, auth AuthorizedRequest, name, version string, protocolHeader *string) error {
 	if err := s.store.RecordClientIdentity(ctx, auth.TenantID, auth.GrantID, name, version, protocolHeader); err != nil {
 		return fmt.Errorf("record mcp connect: %w", err)
@@ -1547,6 +1609,11 @@ func connectionFromGrant(g sqlc.McpGrant) Connection {
 		CreatedAt:             g.CreatedAt,
 		ReportedClientName:    g.ClientName,
 		ReportedClientVersion: g.ClientVersion,
+		// The OPERATOR's choice, read straight off the row and never
+		// substituted from ClientName above. The two fields sit adjacent here
+		// on purpose: they answer different questions and either may be nil
+		// while the other is set. See Connection.SetupClient.
+		SetupClient: g.SetupClient,
 		Protocol: ClassifyStoredProtocol(
 			timestamptzTimeOrNil(g.ClientIdentityRecordedAt), g.ProtocolVersion),
 		LastUsedAt: timestamptzTimeOrNil(g.LastUsedAt),

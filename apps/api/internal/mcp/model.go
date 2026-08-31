@@ -243,6 +243,26 @@ type Connection struct {
 	ReportedClientName    *string
 	ReportedClientVersion *string
 
+	// SetupClient is THE OPERATOR'S CHOICE at the wizard's step 2, written once
+	// at creation and never again. It is a fourth client fact, not a tidier
+	// spelling of the two above, and the distinction is the whole reason the
+	// column exists (m128 DECISION 1).
+	//
+	// nil MEANS "NO OPERATOR CHOICE WAS RECORDED" AND NOTHING ELSE. It does not
+	// mean "generic": "generic" is the operator actively choosing "Other MCP
+	// client" from the nine cards, which is a stated choice, and step 9 renders
+	// the two differently. Never substitute one for the other in either
+	// direction.
+	//
+	// IT MAY DISAGREE WITH ReportedClientName PERMANENTLY AND LEGITIMATELY --
+	// set up for Claude Desktop, URL pasted into Cursor -- and neither is the
+	// other's stale copy, so neither may overwrite the other. In particular
+	// RecordConnect writes the reported pair and MUST NOT write this. It is
+	// also the only one of the three that survives the never-connected case,
+	// where both reported columns are nil by definition and step 9 still has to
+	// say what the connection was set up for.
+	SetupClient *string
+
 	// Protocol is the four-state classification of the stored header.
 	Protocol ClientProtocol
 
