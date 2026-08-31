@@ -763,16 +763,19 @@ func TestToolsCall_EmptyScopeIsRefusedNotAnEmptyList(t *testing.T) {
 // -32005 and not -32004, and the data says which capability is missing and that
 // retrying will not help.
 //
-// IT GOES THROUGH h.callTool, the same function the router dispatches
-// tools/call to. The AuthorizedRequest is built here rather than authenticated,
-// because the capability axis is not stored per-grant yet (m124 DECISION 1) and
-// every bearer the fake store mints therefore holds mcp.sites.read. The DB-side
+// IT GOES THROUGH h.authorizeCall, the same function the router now calls
+// before the rate-limit gate on the tools/call path (1A-11 merge): the
+// capability check runs first specifically so it cannot be preempted by a
+// rate-limit refusal, and that is what this test exercises. The
+// AuthorizedRequest is built here rather than authenticated, because the
+// capability axis is not stored per-grant yet (m124 DECISION 1) and every
+// bearer the fake store mints therefore holds mcp.sites.read. The DB-side
 // proof of the same refusal lives in
 // apps/api/tests/adr064_s7_mcp_tool_registry_rls_test.go, as wpmgr_app.
 // ---------------------------------------------------------------------------
 
 func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
-	// A REAL Service, not nil. callTool now records the refusal
+	// A REAL Service, not nil. authorizeCall now records the refusal
 	// (RecordToolDenied), which dereferences the service; its audit recorder is
 	// nil in unit configuration and records nothing, which is what this test
 	// wants. A nil *Service panics on the refusal path -- the path this test
@@ -797,12 +800,15 @@ func TestToolsCall_UntickedCapabilityRefusesWithItsOwnCode(t *testing.T) {
 		t.Fatalf("tools/list hid the tool from a connection lacking its capability: %+v", got)
 	}
 
-	resp := h.callTool(context.Background(), auth, jsonrpcRequest{
+	_, _, resp, refused := h.authorizeCall(context.Background(), auth, jsonrpcRequest{
 		ID:     json.RawMessage(`61`),
 		Method: "tools/call",
 		Params: json.RawMessage(`{"name":"list_sites","arguments":{}}`),
 	})
 
+	if !refused {
+		t.Fatal("a connection holding no capability was not refused")
+	}
 	if resp.Error == nil {
 		t.Fatalf("a connection holding no capability got a SUCCESS: %+v", resp)
 	}

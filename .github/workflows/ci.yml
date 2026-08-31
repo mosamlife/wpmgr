@@ -159,6 +159,56 @@ jobs:
           CGO_ENABLED: "0"
         run: scripts/check-urlmap-routes.sh
 
+      # ---- MCP site-scope containment (ADR-061 A11 item 4) -------------------
+      # "No handler on this surface may take a site id from a request and pass
+      # it anywhere but the chokepoint."
+      #
+      # The chokepoint is mcp.Repo.ResolveScopeSites, which resolves a grant's
+      # stored scope inside InTenantTx so `sites` RLS drops every foreign UUID —
+      # scope_site_ids is a uuid[] and PostgreSQL has no foreign key over array
+      # elements, so that column accepts any site id in the world. The
+      # chokepoint shipped. NOTHING STOPPED THE NEXT HANDLER GOING ROUND IT,
+      # and ADR-060's freeze clause counts that an open auth-boundary item.
+      # These two steps are what close it.
+      #
+      # IT RUNS ON EVERY PR AND NOT ONLY ON CHANGES UNDER internal/mcp. A
+      # bypass can be added from anywhere: a Store method declared in one
+      # commit and called in another, a new file in the package, a second
+      # database path. A path filter here would be the guard agreeing not to
+      # look at the diff that needs looking at.
+      #
+      # It lives in this job for the same reason the url-map guard above does:
+      # it reads the mcp.Store interface through `go doc`, i.e. Go's own parser,
+      # rather than by grepping repo.go — so a wrapped signature or a method
+      # moved to another file in the package cannot make it quietly match less.
+      # That needs the Go toolchain, and this is the job that already has it set
+      # up and cached. It needs no database and no cloud credentials, so it runs
+      # on fork PRs too. `go doc` parses rather than type-checks (measured: with
+      # a bypass planted, `go build ./internal/mcp` exits 1 and `go doc -u
+      # ./internal/mcp Store` exits 0), so the guard fires on a bypass in
+      # progress rather than waiting for the branch to compile.
+      #
+      # THE GUARD'S THREE EXIT CODES ARE DISTINCT AND THAT IS THE POINT: 0 all
+      # reviewed, 1 a containment violation or a stale allowlist entry, 2 GUARD
+      # BROKEN — an empty extraction, a control pattern that stopped matching,
+      # a package that will not compile. There is deliberately no exit code
+      # meaning "checked nothing, fine".
+      #
+      # Self-test FIRST, so a guard broken into failing open cannot pass by
+      # reporting success over its own errors. The suite is hermetic (fixture
+      # trees, no Go toolchain, no network) and plants each bypass and each
+      # broken-input state as a real case.
+      - name: MCP site-containment guard self-test (ADR-061 A11)
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-mcp-site-containment_test.sh
+
+      - name: MCP site-containment guard (no request site id may bypass the chokepoint)
+        working-directory: ${{ github.workspace }}
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: scripts/check-mcp-site-containment.sh
+
   # ---- JS / web ----
   js:
     name: JS (web)

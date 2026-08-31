@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -96,6 +98,23 @@ const (
 	// change the outcome. Nothing the client can do on its own changes this
 	// answer -- an operator must widen the grant.
 	codeCapabilityNotGranted = -32005
+
+	// codeRateLimited is the tool-call budget refusing (1A-11). It is a
+	// SEPARATE code from every refusal above -- including codeCapabilityNotGranted,
+	// which claimed -32005 first -- because it is the only one that is
+	// TRANSIENT-BUT-NOT-IMMEDIATELY: the request was well-formed, the
+	// credential is valid, the capability is held, and the same call will
+	// succeed later without anything being reconfigured.
+	//
+	// THAT DISTINCTION IS THE WHOLE POINT AND IT IS AIMED AT A MODEL, NOT AT A
+	// HUMAN. A model that reads a refusal as transient retries at once, and a
+	// model that reads it as permanent gives up and tells the user something
+	// false. Neither is right here; the correct behaviour is to wait the stated
+	// interval and then retry, so the message says so in words and the data
+	// object carries the interval as a number. This is the same failure the
+	// empty-capability refusal was moved off 401 to avoid -- there the client
+	// looped re-running OAuth, here it would loop re-calling the tool.
+	codeRateLimited = -32006
 )
 
 // TransportHandler serves the single MCP endpoint. It is separate from Handler
@@ -106,12 +125,31 @@ type TransportHandler struct {
 	svc     *Service
 	log     *slog.Logger
 	version string
+
+	// toolLimit bounds the tools/* methods (1A-11). It lives on the HANDLER
+	// rather than the Service because it gates a transport-level decision --
+	// the request is refused before any service method runs, so no activity
+	// stamp is written and no tool executes for a call that was never admitted.
+	//
+	// Never nil after NewTransportHandler. toolCallLimiter.allow refuses on a
+	// nil receiver anyway, so a handler built by a struct literal that skipped
+	// it serves NOTHING rather than serving unlimited.
+	toolLimit *toolCallLimiter
 }
 
 // NewTransportHandler builds the MCP transport handler. version is reported in
 // initialize's serverInfo.
 func NewTransportHandler(svc *Service, log *slog.Logger, version string) *TransportHandler {
-	return &TransportHandler{svc: svc, log: log, version: version}
+	return &TransportHandler{
+		svc:     svc,
+		log:     log,
+		version: version,
+		// Armed HERE rather than injected with a nil default, for the reason
+		// NewService gives about its own limiter: an unarmed limiter would be a
+		// wiring failure that presents as a perfectly working endpoint.
+		toolLimit: newToolCallLimiter(ToolCallTenantPerMin, ToolCallGrantPerMin,
+			ToolCallTenantBurst, ToolCallGrantBurst),
+	}
 }
 
 // Register mounts the ONE endpoint on the given group.
@@ -238,8 +276,18 @@ var corsAllowHeaders = strings.Join([]string{
 // WWW-Authenticate is the load-bearing one: writeUnauthorized sets it to name
 // the scheme, and a browser client that cannot read it learns only "401" with
 // no indication of how to authenticate.
+//
+// Retry-After is load-bearing for the same reason on the other refusal:
+// rateLimit sets it on every 429, and a browser-hosted client that cannot read
+// it knows it was refused but not for how long -- so it either gives up or
+// retries immediately, which is the loop that refusal exists to break. THE RULE
+// THIS LIST FOLLOWS IS "EVERY HEADER THIS FILE SETS THAT A CLIENT MUST ACT ON",
+// and the three it sets are Allow (405), WWW-Authenticate (401) and Retry-After
+// (429), all three now present. Mcp-Session-Id is listed ahead of need, matching
+// corsAllowHeaders above. A new response header that a client is expected to
+// branch on belongs here in the same commit that introduces it.
 var corsExposeHeaders = strings.Join([]string{
-	"WWW-Authenticate", "Mcp-Session-Id", "Allow",
+	"WWW-Authenticate", "Mcp-Session-Id", "Allow", "Retry-After",
 }, ", ")
 
 // writeCORS sets the headers that must appear on an ACTUAL response, as opposed
@@ -553,6 +601,11 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{}), http.StatusOK, true
 
 	case "tools/list":
+		// THE BUDGET IS CHECKED BEFORE THE STAMP, which is before the answer.
+		// A refused request must not write.
+		if resp, refused := h.rateLimit(c, auth, req); refused {
+			return resp, http.StatusTooManyRequests, true
+		}
 		// THE ACTIVITY STAMP IS BEFORE THE ANSWER, NOT AFTER IT. See
 		// stampActivity.
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
@@ -577,10 +630,22 @@ func (h *TransportHandler) dispatch(
 		return newResponse(req.ID, map[string]any{"tools": VisibleTools(auth)}), http.StatusOK, true
 
 	case "tools/call":
+		// AUTHORIZATION RUNS BEFORE THE BUDGET GATE for this method, unlike
+		// tools/list above. See the ordering note on authorizeCall: a
+		// capability refusal must never be preempted by a rate-limit refusal,
+		// because the rate-limit response's own text promises the capability
+		// is held.
+		entry, p, resp, refused := h.authorizeCall(ctx, auth, req)
+		if refused {
+			return resp, http.StatusOK, true
+		}
+		if resp, refused := h.rateLimit(c, auth, req); refused {
+			return resp, http.StatusTooManyRequests, true
+		}
 		if resp, refused := h.stampActivity(ctx, auth, req); refused {
 			return resp, http.StatusOK, true
 		}
-		return h.callTool(ctx, auth, req), http.StatusOK, true
+		return h.callTool(ctx, auth, req, entry, p), http.StatusOK, true
 
 	// Resources and prompts are OUT OF SCOPE for Phase 1 and are refused by
 	// name rather than answered with an empty list. An empty list would claim
@@ -707,6 +772,101 @@ type toolCallParams struct {
 // tool-availability code: nothing is wrong with the caller's token or its
 // capability set, and telling it otherwise would send an operator rotating a
 // credential that was never the problem.
+// rateLimit applies the tool-call budget (1A-11). The bool is true when the
+// request was REFUSED, matching stampActivity's shape.
+//
+// BOTH KEYS COME FROM auth, WHICH IS SERVER-RESOLVED. AuthorizedRequest was
+// built by Service.Authenticate from the hashed bearer credential and re-checked
+// under the resolved tenant, so no header this caller sent participates in
+// choosing a bucket. Varying X-Forwarded-For, X-Real-IP or anything else cannot
+// obtain a fresh budget, which is the property two other limiters in this tree
+// were recently found to be missing.
+//
+// THE REFUSAL IS WRITTEN FOR TWO READERS AT ONCE, and that is why it is not
+// simply a 429.
+//
+//   - The HTTP layer gets 429 with Retry-After in whole seconds, which is what
+//     a conforming HTTP client already knows how to back off on.
+//   - The MODEL gets the JSON-RPC error body, because an MCP client typically
+//     surfaces the error content to the model and not the status line. The
+//     message therefore states IN WORDS that retrying immediately will not
+//     help and names the wait, rather than leaving the model to infer urgency
+//     from a bare "rate limited" -- an inference it reliably gets wrong by
+//     retrying at once.
+//
+// The data object carries the numbers so a client can act without parsing
+// prose, and names the scope so an operator learns whether one connection or
+// the whole organisation is affected.
+func (h *TransportHandler) rateLimit(c *gin.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
+	d := h.toolLimit.allow(auth.TenantID, auth.GrantID)
+	if d.Allowed {
+		return jsonrpcResponse{}, false
+	}
+
+	secs := int(math.Ceil(d.RetryAfter.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(secs))
+
+	h.log.WarnContext(c.Request.Context(), "mcp tool call rate limited",
+		slog.String("tenant_id", auth.TenantID.String()),
+		slog.String("grant_id", auth.GrantID.String()),
+		slog.String("method", req.Method),
+		slog.String("limit_scope", string(d.Scope)),
+		slog.Int("retry_after_seconds", secs),
+	)
+
+	sustained, burst := limitsForScope(d.Scope)
+
+	var msg string
+	switch d.Scope {
+	case scopeConnection:
+		msg = fmt.Sprintf(
+			"This connection has reached its tool-call rate limit: %d calls per minute sustained, "+
+				"in bursts of up to %d. Wait %d seconds before calling this tool again -- retrying "+
+				"immediately will not succeed and will not shorten the wait. Nothing is "+
+				"misconfigured and no credential needs to be changed; the same call will work "+
+				"after the wait.",
+			sustained, burst, secs)
+	default:
+		msg = fmt.Sprintf(
+			"This organisation has reached its tool-call rate limit across all of its "+
+				"connections: %d calls per minute sustained, in bursts of up to %d. Wait %d "+
+				"seconds before calling this tool again -- retrying immediately will not succeed "+
+				"and will not shorten the wait. Nothing is misconfigured and no credential needs "+
+				"to be changed; the same call will work after the wait.",
+			sustained, burst, secs)
+	}
+
+	// TWO NUMBERS, NOT ONE. A single "limit_per_minute" was true of neither the
+	// first minute nor the steady state: these are token buckets, so a client
+	// self-pacing against the sustained figure alone under-uses its allowance,
+	// and one that treats it as a hard ceiling is wrong by the burst. Both are
+	// published so a client can pace correctly against either.
+	data, _ := json.Marshal(map[string]any{
+		"retry_after_seconds":        secs,
+		"limit_scope":                string(d.Scope),
+		"sustained_limit_per_minute": sustained,
+		"burst_limit":                burst,
+		// Stated as a field and not only in the prose, so a client that
+		// branches on structure rather than reading the message reaches the
+		// same conclusion.
+		"retry_immediately_will_fail": true,
+	})
+	return newErrorResponse(req.ID, codeRateLimited, msg, data), true
+}
+
+// limitsForScope reports the sustained rate AND the burst of whichever bucket
+// refused, from one place, so the data object and the message can never
+// disagree about either number.
+func limitsForScope(s limitScope) (sustained, burst int) {
+	if s == scopeConnection {
+		return ToolCallGrantPerMin, ToolCallGrantBurst
+	}
+	return ToolCallTenantPerMin, ToolCallTenantBurst
+}
+
 func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (jsonrpcResponse, bool) {
 	if err := h.svc.RecordActivity(ctx, auth); err != nil {
 		h.log.ErrorContext(ctx, "mcp activity stamp failed",
@@ -722,6 +882,33 @@ func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedReq
 	return jsonrpcResponse{}, false
 }
 
+// authorizeCall resolves and authorizes the named tool for tools/call. It runs
+// BEFORE the rate limiter and before any write (1A-11 merge, see the ordering
+// note on codeRateLimited).
+//
+// THAT ORDERING IS DELIBERATE AND NOT INCIDENTAL. codeRateLimited's own text
+// promises "the capability is held ... the same call will work after the
+// wait" -- a promise that is false for a caller who does not hold the
+// capability. If the budget gate ran first, an out-of-budget caller who also
+// lacks the capability would be told to wait and retry a call that can never
+// succeed: a permanent refusal dressed as a transient one, which is exactly
+// the model-facing failure this whole refusal design exists to prevent (see
+// the note on codeCapabilityNotGranted and the OAuth-retry-loop precedent).
+// Resolving authorization first makes that promise true whenever it is sent.
+//
+// This is safe to do ahead of the budget gate because AuthorizeTool is a pure
+// in-memory check against auth's already-resolved capability set and the
+// static registry -- no DB round trip -- so it does not reintroduce the
+// problem stampActivity's ordering guards against ("a refused request must
+// not write"). The one write on this path, RecordToolDenied, already ran
+// unconditionally on every refusal before this split; moving it earlier only
+// means an unauthorized caller who is ALSO over budget still gets an accurate
+// denial reason instead of a misleading rate-limit one, at the cost of that
+// caller's unauthorized attempts no longer being charged against the same
+// budget as authorized calls -- acceptable, since nothing on this path is
+// expensive enough for that specific caller to need throttling by this
+// limiter.
+//
 // callTool is S7's EXIT GATE, and the gate is the absence of a `default` arm.
 //
 // This function used to switch on the tool name with a `default` that answered
@@ -742,10 +929,10 @@ func (h *TransportHandler) stampActivity(ctx context.Context, auth AuthorizedReq
 // tools/list applies, and the implementation hangs off the registry entry that
 // resolution returned. A name that AuthorizeTool did not authorize has no
 // invoke function to reach.
-func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) jsonrpcResponse {
+func (h *TransportHandler) authorizeCall(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest) (ToolPolicy, toolCallParams, jsonrpcResponse, bool) {
 	var p toolCallParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil)
+		return ToolPolicy{}, p, newErrorResponse(req.ID, codeInvalidParams, "tools/call params could not be parsed", nil), true
 	}
 
 	entry, reason, err := AuthorizeTool(p.Name, auth)
@@ -806,16 +993,23 @@ func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest,
 				"supplied":        p.Name,
 				"available_tools": visibleToolNames(auth),
 			})
-			return newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data)
+			return ToolPolicy{}, p, newErrorResponse(req.ID, codeToolNotAvailable, de.Message, data), true
 		}
 		// Everything else keeps its own named answer: mcp_capability_not_granted
 		// becomes -32005 and mcp_scope_empty becomes -32002, both through
 		// toolError, and a non-domain error (a registry entry with no
 		// implementation) becomes the internal code rather than a permission
 		// refusal.
-		return h.toolError(req.ID, err)
+		return ToolPolicy{}, p, h.toolError(req.ID, err), true
 	}
 
+	return entry, p, jsonrpcResponse{}, false
+}
+
+// callTool invokes an ALREADY-AUTHORIZED tool. entry and p are the values
+// authorizeCall resolved; callTool trusts them without re-checking, since
+// re-deriving them here would just be authorizeCall's work done twice.
+func (h *TransportHandler) callTool(ctx context.Context, auth AuthorizedRequest, req jsonrpcRequest, entry ToolPolicy, p toolCallParams) jsonrpcResponse {
 	h.log.InfoContext(ctx, "mcp tool call",
 		slog.String("tenant_id", auth.TenantID.String()),
 		slog.String("grant_id", auth.GrantID.String()),
