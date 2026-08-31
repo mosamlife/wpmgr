@@ -32,7 +32,7 @@ func (q *Queries) AdminPurgeTenant(ctx context.Context, tenantID uuid.UUID) (boo
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, slug)
 VALUES ($1, $2)
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 type CreateTenantParams struct {
@@ -61,14 +61,107 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.CancelAtPeriodEnd,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const disableTenantAssistant = `-- name: DisableTenantAssistant :execrows
+UPDATE tenants
+SET assistant_enabled_at = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND assistant_enabled_at IS NOT NULL
+`
+
+// DisableTenantAssistant turns the surface off. Also a configuration change.
+// It is NOT the kill switch and must not be offered as one in the UI: it is
+// the durable "this organisation does not use the assistant" decision, whereas
+// the kill switch is the incident action. Both refuse requests through the
+// same verdict, so the effect on traffic is immediate either way; the
+// difference is what the record says afterwards and what the release action
+// restores.
+//
+// Grants are left untouched on purpose (m130 DECISION 4c): disabling must not
+// destroy the connection history that documents what the surface did, and an
+// owner re-enabling later must get their connections back unchanged.
+func (q *Queries) DisableTenantAssistant(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, disableTenantAssistant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enableTenantAssistant = `-- name: EnableTenantAssistant :execrows
+UPDATE tenants
+SET assistant_enabled_at = now(),
+    updated_at = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND assistant_enabled_at IS NULL
+`
+
+// EnableTenantAssistant turns the surface on for an organisation. This is a
+// CONFIGURATION change, made in daylight by an owner, and it is not the kill
+// switch's inverse — it deliberately does NOT touch assistant_paused_at, so
+// enabling a paused organisation leaves it paused and the operator must
+// release the switch as a separate, visible act.
+//
+// assistant_enabled_at IS NULL in the WHERE clause makes this idempotent and
+// preserves the ORIGINAL enablement timestamp: re-enabling an already-enabled
+// org affects 0 rows rather than rewriting when the decision was made.
+// :execrows so the caller can tell "already enabled" from "no such tenant".
+func (q *Queries) EnableTenantAssistant(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, enableTenantAssistant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const engageTenantAssistantKillSwitch = `-- name: EngageTenantAssistantKillSwitch :execrows
+UPDATE tenants
+SET assistant_paused_at = now(),
+    assistant_paused_reason = $1,
+    updated_at = now()
+WHERE id = $2 AND deleted_at IS NULL
+`
+
+type EngageTenantAssistantKillSwitchParams struct {
+	Reason   *string   `json:"reason"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// EngageTenantAssistantKillSwitch is the 3am control. ONE UPDATE, ONE ROW, no
+// INSERT and no row that has to exist first — that is what makes a one-click
+// control possible and is a reason the state lives on tenants (m130 DECISION
+// 1c). Every in-flight connection for this organisation is refused on its NEXT
+// request, because the verdict is recomputed per request.
+//
+// No assistant_paused_at IS NULL guard: re-engaging an already-paused
+// organisation refreshes the timestamp and the reason, which is what an
+// operator escalating an ongoing incident wants. Idempotent in effect.
+//
+// The reason is required to be present and non-blank by
+// tenants_assistant_paused_reason_check when it is not NULL; pass NULL for
+// "no reason given" rather than a string of zero length, which the constraint
+// refuses.
+func (q *Queries) EngageTenantAssistantKillSwitch(ctx context.Context, arg EngageTenantAssistantKillSwitchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, engageTenantAssistantKillSwitch, arg.Reason, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getTenant = `-- name: GetTenant :one
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 WHERE id = $1
 `
 
@@ -93,8 +186,59 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		&i.CancelAtPeriodEnd,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTenantAssistantState = `-- name: GetTenantAssistantState :one
+
+SELECT id,
+       assistant_enabled_at,
+       assistant_paused_at,
+       assistant_paused_reason
+FROM tenants
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type GetTenantAssistantStateRow struct {
+	ID                    uuid.UUID          `json:"id"`
+	AssistantEnabledAt    pgtype.Timestamptz `json:"assistant_enabled_at"`
+	AssistantPausedAt     pgtype.Timestamptz `json:"assistant_paused_at"`
+	AssistantPausedReason *string            `json:"assistant_paused_reason"`
+}
+
+// ===========================================================================
+// M130 — the assistant / MCP surface's per-tenant enablement flag and kill
+// switch. Four statements, deliberately NOT two: enabling and pausing are
+// different facts with different lifecycles (m130 DECISION 2), so releasing
+// the kill switch after an incident cannot accidentally enable a surface an
+// owner had deliberately turned off.
+//
+// ENFORCEMENT DOES NOT LIVE HERE. All four of these are WRITE paths for the
+// operator console. The read that matters runs on every request inside
+// ReCheckMCPRequestAuthorizationInTenantTx, which joins tenants and folds both
+// columns into the single `authorized` verdict. Do not add a second read of
+// these columns on the request path and do not cache them: a cached kill
+// switch is not a kill switch.
+// ===========================================================================
+// GetTenantAssistantState is the operator console's read. NOT the request
+// path — the request path reads these columns through the verdict, never here.
+// :one and no RLS on tenants, so the tenant_id filter in the WHERE clause is
+// the ONLY thing scoping this row; a caller that drops it reads another
+// organisation's state.
+func (q *Queries) GetTenantAssistantState(ctx context.Context, tenantID uuid.UUID) (GetTenantAssistantStateRow, error) {
+	row := q.db.QueryRow(ctx, getTenantAssistantState, tenantID)
+	var i GetTenantAssistantStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 	)
 	return i, err
 }
@@ -187,7 +331,7 @@ func (q *Queries) ListOrgsForUser(ctx context.Context, userID uuid.UUID) ([]List
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -224,6 +368,9 @@ func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Ten
 			&i.CancelAtPeriodEnd,
 			&i.DeletedAt,
 			&i.PurgeStartedAt,
+			&i.AssistantEnabledAt,
+			&i.AssistantPausedAt,
+			&i.AssistantPausedReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -292,7 +439,7 @@ func (q *Queries) ListTenantsForUser(ctx context.Context, arg ListTenantsForUser
 }
 
 const listTenantsPendingPurge = `-- name: ListTenantsPendingPurge :many
-SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at FROM tenants
+SELECT id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at FROM tenants
 WHERE deleted_at IS NOT NULL AND deleted_at < $1
 ORDER BY deleted_at ASC
 `
@@ -329,6 +476,9 @@ func (q *Queries) ListTenantsPendingPurge(ctx context.Context, cutoff pgtype.Tim
 			&i.CancelAtPeriodEnd,
 			&i.DeletedAt,
 			&i.PurgeStartedAt,
+			&i.AssistantEnabledAt,
+			&i.AssistantPausedAt,
+			&i.AssistantPausedReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -362,11 +512,41 @@ func (q *Queries) MarkPurgeStarted(ctx context.Context, tenantID uuid.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const releaseTenantAssistantKillSwitch = `-- name: ReleaseTenantAssistantKillSwitch :execrows
+UPDATE tenants
+SET assistant_paused_at = NULL,
+    assistant_paused_reason = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND assistant_paused_at IS NOT NULL
+`
+
+// ReleaseTenantAssistantKillSwitch clears the pause after an incident.
+//
+// IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part
+// of the pause, tenants_assistant_paused_reason_check refuses a reason without
+// a pause, and clearing only assistant_paused_at would violate that constraint
+// and fail — loudly, which is the correct direction, but the caller should
+// never have to discover it.
+//
+// IT DOES NOT TOUCH assistant_enabled_at. That is the whole point of two
+// columns (m130 DECISION 2): an organisation that was deliberately off before
+// the incident is still off after it, and releasing the switch never enables
+// a surface nobody chose to enable.
+func (q *Queries) ReleaseTenantAssistantKillSwitch(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseTenantAssistantKillSwitch, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const restoreTenant = `-- name: RestoreTenant :one
 UPDATE tenants
 SET deleted_at = NULL
 WHERE id = $1 AND deleted_at IS NOT NULL AND purge_started_at IS NULL
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 // RestoreTenant clears deleted_at within the grace window (GH #152 undelete).
@@ -398,6 +578,9 @@ func (q *Queries) RestoreTenant(ctx context.Context, tenantID uuid.UUID) (Tenant
 		&i.CancelAtPeriodEnd,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -408,7 +591,7 @@ const softDeleteTenant = `-- name: SoftDeleteTenant :one
 UPDATE tenants
 SET deleted_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 // SoftDeleteTenant sets deleted_at (GH #152 Lane B — populated org). The read-
@@ -438,6 +621,9 @@ func (q *Queries) SoftDeleteTenant(ctx context.Context, tenantID uuid.UUID) (Ten
 		&i.CancelAtPeriodEnd,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -448,7 +634,7 @@ const updateTenantName = `-- name: UpdateTenantName :one
 UPDATE tenants
 SET name = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, created_at, updated_at
+RETURNING id, name, slug, plan, plan_status, plan_overrides, grace_until, billing_provider, provider_customer_id, provider_subscription_id, current_period_end, comp_reason, suspended_at, suspended_reason, cancel_at_period_end, deleted_at, purge_started_at, assistant_enabled_at, assistant_paused_at, assistant_paused_reason, created_at, updated_at
 `
 
 type UpdateTenantNameParams struct {
@@ -479,6 +665,9 @@ func (q *Queries) UpdateTenantName(ctx context.Context, arg UpdateTenantNamePara
 		&i.CancelAtPeriodEnd,
 		&i.DeletedAt,
 		&i.PurgeStartedAt,
+		&i.AssistantEnabledAt,
+		&i.AssistantPausedAt,
+		&i.AssistantPausedReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

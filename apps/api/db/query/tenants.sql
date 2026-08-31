@@ -112,3 +112,110 @@ WHERE id = @tenant_id AND deleted_at IS NOT NULL AND purge_started_at IS NULL;
 -- on an org an owner already confirmed deleting.
 -- name: AdminPurgeTenant :one
 SELECT admin_purge_tenant(@tenant_id) AS purged;
+
+-- ===========================================================================
+-- M130 — the assistant / MCP surface's per-tenant enablement flag and kill
+-- switch. Four statements, deliberately NOT two: enabling and pausing are
+-- different facts with different lifecycles (m130 DECISION 2), so releasing
+-- the kill switch after an incident cannot accidentally enable a surface an
+-- owner had deliberately turned off.
+--
+-- ENFORCEMENT DOES NOT LIVE HERE. All four of these are WRITE paths for the
+-- operator console. The read that matters runs on every request inside
+-- ReCheckMCPRequestAuthorizationInTenantTx, which joins tenants and folds both
+-- columns into the single `authorized` verdict. Do not add a second read of
+-- these columns on the request path and do not cache them: a cached kill
+-- switch is not a kill switch.
+-- ===========================================================================
+
+-- GetTenantAssistantState is the operator console's read. NOT the request
+-- path — the request path reads these columns through the verdict, never here.
+-- :one and no RLS on tenants, so the tenant_id filter in the WHERE clause is
+-- the ONLY thing scoping this row; a caller that drops it reads another
+-- organisation's state.
+-- name: GetTenantAssistantState :one
+SELECT id,
+       assistant_enabled_at,
+       assistant_paused_at,
+       assistant_paused_reason
+FROM tenants
+WHERE id = @tenant_id AND deleted_at IS NULL;
+
+-- EnableTenantAssistant turns the surface on for an organisation. This is a
+-- CONFIGURATION change, made in daylight by an owner, and it is not the kill
+-- switch's inverse — it deliberately does NOT touch assistant_paused_at, so
+-- enabling a paused organisation leaves it paused and the operator must
+-- release the switch as a separate, visible act.
+--
+-- assistant_enabled_at IS NULL in the WHERE clause makes this idempotent and
+-- preserves the ORIGINAL enablement timestamp: re-enabling an already-enabled
+-- org affects 0 rows rather than rewriting when the decision was made.
+-- :execrows so the caller can tell "already enabled" from "no such tenant".
+-- name: EnableTenantAssistant :execrows
+UPDATE tenants
+SET assistant_enabled_at = now(),
+    updated_at = now()
+WHERE id = @tenant_id
+  AND deleted_at IS NULL
+  AND assistant_enabled_at IS NULL;
+
+-- DisableTenantAssistant turns the surface off. Also a configuration change.
+-- It is NOT the kill switch and must not be offered as one in the UI: it is
+-- the durable "this organisation does not use the assistant" decision, whereas
+-- the kill switch is the incident action. Both refuse requests through the
+-- same verdict, so the effect on traffic is immediate either way; the
+-- difference is what the record says afterwards and what the release action
+-- restores.
+--
+-- Grants are left untouched on purpose (m130 DECISION 4c): disabling must not
+-- destroy the connection history that documents what the surface did, and an
+-- owner re-enabling later must get their connections back unchanged.
+-- name: DisableTenantAssistant :execrows
+UPDATE tenants
+SET assistant_enabled_at = NULL,
+    updated_at = now()
+WHERE id = @tenant_id
+  AND deleted_at IS NULL
+  AND assistant_enabled_at IS NOT NULL;
+
+-- EngageTenantAssistantKillSwitch is the 3am control. ONE UPDATE, ONE ROW, no
+-- INSERT and no row that has to exist first — that is what makes a one-click
+-- control possible and is a reason the state lives on tenants (m130 DECISION
+-- 1c). Every in-flight connection for this organisation is refused on its NEXT
+-- request, because the verdict is recomputed per request.
+--
+-- No assistant_paused_at IS NULL guard: re-engaging an already-paused
+-- organisation refreshes the timestamp and the reason, which is what an
+-- operator escalating an ongoing incident wants. Idempotent in effect.
+--
+-- The reason is required to be present and non-blank by
+-- tenants_assistant_paused_reason_check when it is not NULL; pass NULL for
+-- "no reason given" rather than a string of zero length, which the constraint
+-- refuses.
+-- name: EngageTenantAssistantKillSwitch :execrows
+UPDATE tenants
+SET assistant_paused_at = now(),
+    assistant_paused_reason = @reason,
+    updated_at = now()
+WHERE id = @tenant_id AND deleted_at IS NULL;
+
+-- ReleaseTenantAssistantKillSwitch clears the pause after an incident.
+--
+-- IT CLEARS THE REASON IN THE SAME STATEMENT, and it must: the reason is part
+-- of the pause, tenants_assistant_paused_reason_check refuses a reason without
+-- a pause, and clearing only assistant_paused_at would violate that constraint
+-- and fail — loudly, which is the correct direction, but the caller should
+-- never have to discover it.
+--
+-- IT DOES NOT TOUCH assistant_enabled_at. That is the whole point of two
+-- columns (m130 DECISION 2): an organisation that was deliberately off before
+-- the incident is still off after it, and releasing the switch never enables
+-- a surface nobody chose to enable.
+-- name: ReleaseTenantAssistantKillSwitch :execrows
+UPDATE tenants
+SET assistant_paused_at = NULL,
+    assistant_paused_reason = NULL,
+    updated_at = now()
+WHERE id = @tenant_id
+  AND deleted_at IS NULL
+  AND assistant_paused_at IS NOT NULL;
